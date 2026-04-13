@@ -41,9 +41,10 @@ jobs:
 
       - name: Install dependencies
         run: |
-          poetry source remove pytorch-cu126 2>/dev/null || true
-          poetry lock --no-interaction
-          poetry install --with docs --without dev --no-interaction
+          poetry install --only docs --no-interaction
+          # docs_gen only needs work_buddy.knowledge (stdlib-only imports)
+          # Make the package importable without installing heavy main deps
+          pip install -e . --no-deps
 
       - name: Generate handbook pages
         run: |
