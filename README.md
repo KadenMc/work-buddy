@@ -5,7 +5,7 @@
 <h1 align="center">work-buddy</h1>
 
 <p align="center">
-    <em>Your AI doesn't know you; it can't remember yesterday. Meet <b>work buddy</b>.</em>
+    Your AI doesn't know you; it can't remember yesterday. Meet <b>work buddy</b>.
 </p>
 
 <p align="center">
@@ -28,7 +28,7 @@
 
 ---
 
-**work-buddy** is a personal agent framework that turns [Claude Code](https://docs.anthropic.com/en/docs/claude-code) into a persistent, workflow-driven system. It gives your AI agent structured multi-step workflows, memory that survives across sessions, and deep integration with the tools you already use — Obsidian, Chrome, Telegram, Google Calendar.
+**work-buddy** is a personal agent framework built on [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and [Obsidian](https://obsidian.md/) which orchestrates tasks, manages workflows, coordinates across projects — so you can focus on your actual work. It gives your AI agent structured multi-step workflows, memory that survives across sessions, deep integration with external tooling, and a dashboard that empowers you directly!
 
 It runs locally, uses your own API keys, and stores everything on your machine. No cloud dependencies. Your workflows, your data, your agent.
 
