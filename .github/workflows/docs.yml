@@ -42,9 +42,10 @@ jobs:
       - name: Install dependencies
         run: |
           poetry install --only docs --no-interaction
-          # docs_gen only needs work_buddy.knowledge (stdlib-only imports)
+          # docs_gen needs work_buddy.knowledge + pyyaml (for nav generation)
           # Make the package importable without installing heavy main deps
           pip install -e . --no-deps
+          pip install pyyaml
 
       - name: Generate handbook pages
         run: |
