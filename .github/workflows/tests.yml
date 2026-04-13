@@ -33,18 +33,12 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .venv
-          key: venv-${{ runner.os }}-py3.11-${{ hashFiles('pyproject.toml') }}
+          key: venv-${{ runner.os }}-py3.11-${{ hashFiles('poetry.lock') }}
           restore-keys: |
             venv-${{ runner.os }}-py3.11-
 
       - name: Install dependencies
-        run: |
-          # The lock file pins CUDA torch (2.11.0+cu126) from the dev machine's
-          # supplemental source. CI needs CPU-only torch from PyPI, so we drop
-          # the supplemental source and re-resolve.
-          poetry source remove pytorch-cu126 2>/dev/null || true
-          poetry lock --no-interaction
-          poetry install --with dev --no-interaction
+        run: poetry install --with dev --no-interaction
 
       - name: Run tests with coverage
         run: |

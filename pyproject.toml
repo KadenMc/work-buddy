@@ -47,14 +47,6 @@ memory = ["hindsight-api-slim", "hindsight-client"]
 telegram = ["python-telegram-bot"]
 all = ["hindsight-api-slim", "hindsight-client", "python-telegram-bot"]
 
-# For CUDA/GPU support, install the CUDA torch wheel after install.
-# See README.md "Optional: GPU Acceleration" for platform-specific instructions.
-
-[[tool.poetry.source]]
-name = "pytorch-cu126"
-url = "https://download.pytorch.org/whl/cu126"
-priority = "supplemental"
-
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"

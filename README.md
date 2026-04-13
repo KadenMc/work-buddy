@@ -295,38 +295,38 @@ Then:
 > /wb-dev        # Enter development mode
 ```
 
-### Optional: GPU Acceleration
+### GPU Acceleration
 
-PyPI only hosts CPU-only PyTorch wheels. For GPU acceleration:
+The default install uses CPU-only PyTorch from PyPI. If you have an NVIDIA GPU, installing CUDA-enabled PyTorch will significantly speed up embeddings, semantic search, and anything that touches `sentence-transformers`.
 
 <details>
 <summary><strong>[Windows/Linux] NVIDIA CUDA</strong></summary>
 
-```bash
-# Register the CUDA 12.6 wheel index (one-time)
-poetry source add pytorch-cu126 https://download.pytorch.org/whl/cu126 --priority=explicit
+After `poetry install`, override torch with the CUDA wheel:
 
-# Add torch from the CUDA source
-poetry add torch --source pytorch-cu126
+```bash
+# Install CUDA-enabled PyTorch (replaces the CPU-only wheel)
+pip install torch --index-url https://download.pytorch.org/whl/cu126 --force-reinstall
 ```
 
 Verify GPU access:
 ```bash
 python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+# Expected: True NVIDIA GeForce RTX ...
 ```
+
+This replaces the CPU wheel in your virtualenv with the CUDA 12.6 build. The `poetry.lock` stays clean (CPU-only) so CI and other environments aren't affected.
 </details>
 
 <details>
 <summary><strong>[macOS] Apple Silicon (MPS)</strong></summary>
 
-The default PyPI torch wheel includes MPS support on Apple Silicon. No extra source needed.
+The default PyPI torch wheel includes MPS support on Apple Silicon. No extra step needed.
 
 ```bash
 python -c "import torch; print(torch.backends.mps.is_available())"
 ```
 </details>
-
-If you don't need GPU acceleration, skip this — the default torch wheel from PyPI is CPU-only and works everywhere.
 
 > **Note:** `pyproject.toml` pins `python = ">=3.11,<3.12"` because `triton` (a torch dependency) doesn't declare support for Python 3.14+, and Poetry's resolver rejects ranges that *could* include unsupported versions.
 
