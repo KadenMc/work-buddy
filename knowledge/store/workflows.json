@@ -1,0 +1,1174 @@
+{
+  "contracts/analyze-contracts": {
+    "kind": "workflow",
+    "name": "Analyze Contracts",
+    "description": "Review all active contracts, check health, and surface issues for the user.",
+    "workflow_name": "analyze-contracts",
+    "execution": "main",
+    "steps": [
+      {
+        "id": "load-contracts",
+        "name": "Load contracts from directory",
+        "step_type": "code",
+        "depends_on": []
+      },
+      {
+        "id": "health-check",
+        "name": "Run health check and flag issues",
+        "step_type": "reasoning",
+        "depends_on": [
+          "load-contracts"
+        ]
+      },
+      {
+        "id": "check-alignment",
+        "name": "Check alignment with current work",
+        "step_type": "reasoning",
+        "depends_on": [
+          "health-check"
+        ]
+      },
+      {
+        "id": "surface-actions",
+        "name": "Surface one next action per active contract",
+        "step_type": "reasoning",
+        "depends_on": [
+          "check-alignment"
+        ]
+      },
+      {
+        "id": "handle-no-contracts",
+        "name": "Handle case where no contracts exist",
+        "step_type": "reasoning",
+        "depends_on": [
+          "load-contracts"
+        ],
+        "optional": true
+      }
+    ],
+    "tags": [
+      "contracts",
+      "analyze"
+    ],
+    "parents": [
+      "contracts"
+    ],
+    "step_instructions": {
+      "load-contracts": "(main, code)\n\nLoad contract data via the gateway:\n\n```\nhealth = mcp__work-buddy__wb_run(\"contract_health\")\nactive = mcp__work-buddy__wb_run(\"active_contracts\")\nstale = mcp__work-buddy__wb_run(\"stale_contracts\")\noverdue = mcp__work-buddy__wb_run(\"overdue_contracts\")\nconstraints = mcp__work-buddy__wb_run(\"contract_constraints\")\n```\n\nIf no contracts exist (health shows total=0), skip to `handle-no-contracts`.",
+      "health-check": "(main, reasoning)\n\nAgentic step. The agent reviews the health data and flags issues. Behavioral instructions (health flags, what to surface, phrasing) are in the slash command, not here.",
+      "check-alignment": "(main, reasoning)\n\nAgentic step. The agent checks whether current work maps to an active contract. Behavioral instructions (mode naming, alignment categories) are in the slash command, not here.",
+      "surface-actions": "(main, reasoning)\n\nAgentic step. The agent identifies one next action per active contract. Behavioral instructions (format, what to identify) are in the slash command, not here.",
+      "handle-no-contracts": "(main, reasoning, optional)\n\nAgentic step. The agent handles the case where no contracts exist. Behavioral instructions (response format, tone) are in the slash command, not here."
+    }
+  },
+  "browser/chrome-triage": {
+    "kind": "workflow",
+    "name": "Chrome Triage",
+    "description": "Triage currently-open Chrome tabs through a four-tier pipeline:",
+    "workflow_name": "chrome-triage",
+    "execution": "main",
+    "steps": [
+      {
+        "id": "collect",
+        "name": "Collect currently-open Chrome tabs",
+        "step_type": "code",
+        "depends_on": [],
+        "auto_run": {
+          "callable": "work_buddy.triage.adapters.chrome.chrome_tabs_to_items",
+          "kwargs": {
+            "engagement_window": "24h",
+            "include_summaries": true
+          }
+        },
+        "visibility": {
+          "mode": "none"
+        }
+      },
+      {
+        "id": "extract-and-cluster",
+        "name": "Extract page content and cluster by similarity",
+        "step_type": "code",
+        "depends_on": [
+          "collect"
+        ],
+        "auto_run": {
+          "callable": "work_buddy.triage.adapters.chrome.extract_and_cluster_tabs",
+          "input_map": {
+            "collect_result": "collect"
+          },
+          "timeout": 120
+        },
+        "visibility": {
+          "mode": "none"
+        }
+      },
+      {
+        "id": "summarize",
+        "name": "Haiku-summarize all tabs",
+        "step_type": "code",
+        "depends_on": [
+          "extract-and-cluster"
+        ],
+        "auto_run": {
+          "callable": "work_buddy.triage.adapters.chrome.enrich_items_with_summaries",
+          "input_map": {
+            "clusters_data": "extract-and-cluster"
+          },
+          "timeout": 120
+        },
+        "visibility": {
+          "mode": "none"
+        }
+      },
+      {
+        "id": "intent-group",
+        "name": "Sonnet intent grouping",
+        "step_type": "code",
+        "depends_on": [
+          "summarize"
+        ],
+        "auto_run": {
+          "callable": "work_buddy.triage.recommend.group_intents_from_raw",
+          "input_map": {
+            "clusters_data": "summarize"
+          },
+          "timeout": 90
+        },
+        "visibility": {
+          "mode": "none"
+        }
+      },
+      {
+        "id": "contextualize",
+        "name": "Contextualize intents with task state and activity",
+        "step_type": "code",
+        "depends_on": [
+          "intent-group"
+        ],
+        "auto_run": {
+          "callable": "work_buddy.triage.recommend.contextualize_intents_from_raw",
+          "input_map": {
+            "intent_data": "intent-group"
+          }
+        },
+        "visibility": {
+          "mode": "none"
+        }
+      },
+      {
+        "id": "build-presentation",
+        "name": "Build modal-ready presentation object",
+        "step_type": "code",
+        "depends_on": [
+          "contextualize"
+        ],
+        "auto_run": {
+          "callable": "work_buddy.triage.presentation.build_presentation_from_raw",
+          "input_map": {
+            "contextualize_output": "contextualize",
+            "summarize_output": "summarize"
+          },
+          "timeout": 10
+        },
+        "visibility": {
+          "mode": "summary",
+          "include_keys": [
+            "total_groups",
+            "total_items",
+            "narrative",
+            "groups_by_action"
+          ]
+        }
+      },
+      {
+        "id": "resolve-and-clarify",
+        "name": "Resolve ambiguities and write clarifying questions",
+        "step_type": "reasoning",
+        "depends_on": [
+          "build-presentation"
+        ],
+        "result_schema": {
+          "required_keys": [
+            "groups_by_action",
+            "total_groups",
+            "total_items"
+          ],
+          "key_types": {
+            "groups_by_action": "dict",
+            "total_groups": "int",
+            "total_items": "int",
+            "has_clarifying_questions": "bool"
+          }
+        }
+      },
+      {
+        "id": "dispatch-clarify",
+        "name": "Dispatch clarifying questions modal",
+        "step_type": "code",
+        "depends_on": [
+          "resolve-and-clarify"
+        ],
+        "auto_run": {
+          "callable": "work_buddy.triage.dispatch.dispatch_clarify",
+          "input_map": {
+            "presentation": "resolve-and-clarify"
+          },
+          "timeout": 330
+        }
+      },
+      {
+        "id": "build-recommendations",
+        "name": "Process answers and build final recommendations",
+        "step_type": "reasoning",
+        "depends_on": [
+          "dispatch-clarify"
+        ],
+        "result_schema": {
+          "required_keys": [
+            "groups_by_action",
+            "total_groups",
+            "total_items"
+          ],
+          "key_types": {
+            "groups_by_action": "dict",
+            "total_groups": "int",
+            "total_items": "int"
+          }
+        }
+      },
+      {
+        "id": "dispatch-review",
+        "name": "Dispatch review modal and collect decisions",
+        "step_type": "code",
+        "depends_on": [
+          "build-recommendations"
+        ],
+        "auto_run": {
+          "callable": "work_buddy.triage.dispatch.dispatch_review",
+          "input_map": {
+            "presentation": "build-recommendations"
+          },
+          "timeout": 630
+        }
+      },
+      {
+        "id": "execute",
+        "name": "Execute approved triage actions",
+        "step_type": "code",
+        "depends_on": [
+          "dispatch-review"
+        ],
+        "auto_run": {
+          "callable": "work_buddy.triage.execute.execute_from_raw",
+          "input_map": {
+            "decisions": "dispatch-review",
+            "presentation": "build-recommendations"
+          },
+          "timeout": 120
+        }
+      }
+    ],
+    "tags": [
+      "browser",
+      "chrome",
+      "triage"
+    ],
+    "parents": [
+      "browser"
+    ],
+    "allow_override": false,
+    "content": {
+      "summary": "Triage currently-open Chrome tabs through a four-tier pipeline:",
+      "full": "## What NOT to do\n\n- Don't auto-close tabs without user confirmation (the review modal is the confirmation)\n- Don't blindly trust Sonnet's groupings â€” check them against your context in step 7\n- Don't present every singleton individually â€” batch by action\n- Don't explain the pipeline internals â€” just do your reasoning work\n- Don't re-derive what Sonnet already computed â€” validate and refine it\n- Don't dispatch modals yourself â€” the auto_run steps handle that\n"
+    },
+    "step_instructions": {
+      "resolve-and-clarify": "Read the `build-presentation` step result. Your job: use your richer context (conversation history, task knowledge, user patterns) to improve the presentation before it reaches the user.\n\n**Step A: Resolve ambiguities you CAN resolve**\n\nScan groups for ambiguities. If the Haiku summary (in `item.summary`) or your contextual knowledge resolves an ambiguity, update the group's action and rationale accordingly. Only use `triage_item_detail` for deeper inspection when summaries are empty or insufficient.\n\n**Step B: Write clarifying questions with theories for what you CANNOT resolve**\n\nFor remaining real-world ambiguities (\"Why this tab?\", \"Has this meeting happened?\", \"Is this exploratory or tracked?\"), create clarifying questions. Each question should include 0-3 **theories** â€” short hypotheses the user can confirm with a checkbox instead of typing.\n\nFormat each entry in `clarifying_questions` as an object:\n```json\n{\n  \"question\": \"Is the Smart Connections support issue resolved?\",\n  \"theories\": [\n    \"Resolved â€” safe to close\",\n    \"Still waiting on a response\"\n  ]\n}\n```\n\nPlain strings are also accepted (backward-compatible, no theories shown). Theories should be mutually non-exclusive (the user can select multiple). Keep them short and actionable â€” they represent plausible answers the user can confirm at a glance.\n\nAdd them PROGRAMMATICALLY to the presentation dict â€” write a Python script that iterates the groups and adds `clarifying_questions` arrays based on your analysis. DO NOT manually write JSON for each group.\n\n**Step C: Clean suggested_task_text**\n\nFor `create_task` groups, ensure `suggested_task_text` contains ONLY the task description â€” no agent reasoning, no conditional logic, no \"if X then Y\". Write it as you would write an actual task title. Example:\n- BAD: \"If Raycast integration is a distinct workstream, create a new task. Otherwise record into t-9fe42d9c.\"\n- GOOD: \"Set up Raycast integration for Work Buddy\"\n\n**Output:** The updated presentation dict (with clarifying_questions added, ambiguities resolved, task text cleaned). Pass this as your step result via `wb_advance`.\n\n**CRITICAL:** Your step result MUST be the **complete presentation dict** â€” the same structure as `build-presentation` output, with your modifications applied. It must contain `groups_by_action`, `total_groups`, `total_items`, etc. Do NOT pass a summary, a file reference, or metadata about your changes. The downstream `dispatch-clarify` auto_run step receives your result directly and checks `groups_by_action` for clarifying questions. If your result is malformed, schema validation will reject it and ask you to retry.",
+      "dispatch-clarify": "Handled automatically. If your presentation has groups with `clarifying_questions`, a dashboard modal opens for the user to answer them. Each question shows theory checkboxes (if provided) alongside a text input. The user can confirm theories, type a freeform answer, or both.\n\nIf no questions exist, this step passes through immediately. The step result will contain either `{\"answers\": {...}}` or `{\"skipped\": true}`. Each answer has shape: `{\"text\": \"...\", \"confirmed_theories\": [\"...\", ...]}`.",
+      "build-recommendations": "Read `step_results[\"dispatch-clarify\"]` to get the user's answers (or confirmation that it was skipped). Also read `step_results[\"build-presentation\"]` for the original presentation.\n\n**If clarifying questions were answered:**\n\nProcess EVERY answer carefully:\n\n1. **Update the group's action** based on what the user said. Do not ignore any answer.\n2. **Update the group's rationale** to reflect the new understanding â€” the old rationale is stale after clarification.\n3. **Preserve ALL detail** from the user's answers. If they mentioned specific tools (e.g., \"Audacity\"), deadlines (\"soon\", \"next week\"), or context (\"it's for my therapy sessions\"), include this in `suggested_task_text` or the group's context field. Do not summarize away specifics.\n4. **Extract metadata**: if the user indicated urgency/timing (\"do this soon\", \"by next week\"), note it in the context so the execute step can set appropriate urgency/dates.\n5. **Move groups between action categories** if the user's answer changes the appropriate action.\n\n**If skipped:** Use the presentation from step 7 as-is.\n\n**If `timeout_recovery` is present in the response:** The `dispatch-clarify` step timed out waiting for user response. You have three options:\n1. **Re-poll:** Call `wb_run(\"request_poll\", {\"notification_id\": \"<request_id from timeout_recovery>\", \"timeout_seconds\": 120})` to check if the user responded late.\n2. **Chat fallback:** Present the clarifying questions directly in chat, collect answers, then update the presentation accordingly.\n3. **Skip:** If the questions aren't critical, proceed with the presentation as-is.\n\n**Output:** The final presentation dict. Pass this as your step result via `wb_advance`. This triggers steps 10 and 11 to auto_run in sequence.\n\n**CRITICAL:** Same rule as step 7 â€” your result must be the complete presentation dict with `groups_by_action`, `total_groups`, `total_items`, etc.",
+      "dispatch-review": "Handled automatically. The presentation is saved to disk and a dashboard modal opens for the user to:\n- Confirm or override group actions (close, create_task, record, group, leave)\n- Set per-item action overrides\n- Drag items between groups\n- Create new groups\n- Assign to existing tasks via search\n- Write new task names\n- Provide override reasons\n\nThe user's decisions are saved to disk alongside the presentation.",
+      "execute": "Handled automatically. For each group decision:\n\n- **close**: Batch-close tabs via Chrome extension API (with stale-tab detection)\n- **group**: Create Chrome tab group\n- **create_task**: Create task in Obsidian with source tab URLs in the note\n- **record_into_task**: Append tab URLs to existing task note\n- **leave**: Log only\n\nPer-item overrides and new groups (negative indices) are handled. Override reasons are included in task notes.\n\n**After step 11 completes**, you receive the execution summary in the `wb_advance` response. Report it to the user:\n\n\"Triaged N tabs: X closed, Y -> new tasks, Z -> existing tasks, W grouped, V left as-is.\"\n\nInclude any errors or skipped-stale tabs if present.\n\n## Timeout handling\n\nThe dispatch steps (8 and 10) poll for user responses with timeouts:\n- **Clarify modal**: 5 minutes\n- **Review modal**: 10 minutes\n\nIf a timeout occurs, the conductor injects a `timeout_recovery` block into your response with:\n- `step_id` and `step_name` of the timed-out step\n- `request_id` for re-polling\n- `hint` with recovery options\n\n**Recovery options:**\n1. **Re-poll:** `wb_run(\"request_poll\", {\"notification_id\": \"<request_id>\", \"timeout_seconds\": 120})` â€” check if user responded late\n2. **Chat fallback:** Present the data in chat and collect decisions interactively â€” this is often the fastest path\n3. **Late response check:** The user may respond on Telegram/Dashboard after timeout â€” the response is still recorded\n\n**State is preserved:** Both dispatch steps save the presentation to disk before dispatching. If the workflow breaks, the saved presentation at `{session_dir}/triage_presentation.json` can be loaded via `load_presentation()` from `work_buddy.triage.presentation`."
+    }
+  },
+  "context/collect-and-orient": {
+    "kind": "workflow",
+    "name": "Collect And Orient",
+    "description": "Generate a fresh context bundle and use it to orient on the user's current work state. This is the primary \"what's going on right now?\" workflow.",
+    "workflow_name": "collect-and-orient",
+    "execution": "main",
+    "steps": [
+      {
+        "id": "run-collector",
+        "name": "Run the context bundle collector",
+        "step_type": "code",
+        "depends_on": []
+      },
+      {
+        "id": "read-bundle",
+        "name": "Read the context bundle files in priority order",
+        "step_type": "code",
+        "depends_on": [
+          "run-collector"
+        ],
+        "visibility": {
+          "mode": "summary"
+        }
+      },
+      {
+        "id": "synthesize",
+        "name": "Synthesize a brief orientation",
+        "step_type": "reasoning",
+        "depends_on": [
+          "read-bundle"
+        ]
+      },
+      {
+        "id": "connect-contracts",
+        "name": "Cross-reference with active contracts",
+        "step_type": "reasoning",
+        "depends_on": [
+          "synthesize"
+        ]
+      },
+      {
+        "id": "suggest-action",
+        "name": "Suggest one next action",
+        "step_type": "reasoning",
+        "depends_on": [
+          "connect-contracts"
+        ]
+      }
+    ],
+    "tags": [
+      "context",
+      "collect",
+      "and",
+      "orient"
+    ],
+    "parents": [
+      "context"
+    ]
+  },
+  "contracts/create-contract": {
+    "kind": "workflow",
+    "name": "Create Contract",
+    "description": "Guide the user through defining a new contract for a bounded deliverable.",
+    "workflow_name": "create-contract",
+    "execution": "main",
+    "steps": [
+      {
+        "id": "identify-deliverable",
+        "name": "Identify the deliverable",
+        "step_type": "reasoning",
+        "depends_on": []
+      },
+      {
+        "id": "draft-contract",
+        "name": "Draft the contract file",
+        "step_type": "reasoning",
+        "depends_on": [
+          "identify-deliverable"
+        ]
+      },
+      {
+        "id": "check-scope",
+        "name": "Check for scope issues",
+        "step_type": "reasoning",
+        "depends_on": [
+          "draft-contract"
+        ]
+      },
+      {
+        "id": "review-existing",
+        "name": "Review against existing contracts",
+        "step_type": "reasoning",
+        "depends_on": [
+          "draft-contract"
+        ]
+      },
+      {
+        "id": "confirm-save",
+        "name": "Confirm and save",
+        "step_type": "reasoning",
+        "depends_on": [
+          "check-scope",
+          "review-existing"
+        ]
+      }
+    ],
+    "tags": [
+      "contracts",
+      "create",
+      "contract"
+    ],
+    "parents": [
+      "contracts"
+    ],
+    "allow_override": false,
+    "step_instructions": {
+      "identify-deliverable": "(main, reasoning)\n\nAgentic step. The agent interviews the user to identify the deliverable. Behavioral instructions (questions to ask, interview flow) are in the slash command, not here.",
+      "draft-contract": "(main, reasoning)\n\nAgentic step. The agent drafts the contract file using the template at `_template.md` in the contracts directory (resolved via `get_contracts_dir()`).\n\nCreate a new file in the contracts directory with a descriptive name (e.g., `my-project-experiment-1.md`, `deployment-pipeline.md`). The contracts directory is in the Obsidian vault, configured by `contracts.vault_path` in config.yaml. Behavioral instructions (minimum viable fields, initial status, what to tell the user) are in the slash command, not here.",
+      "check-scope": "(main, reasoning)\n\nAgentic step. The agent checks for scope issues before finalizing. Behavioral instructions (scope questions, what to challenge) are in the slash command, not here.",
+      "review-existing": "(main, reasoning)\n\nAgentic step. The agent reviews the new contract against existing active contracts. Behavioral instructions (competition check, branch detection) are in the slash command, not here.",
+      "confirm-save": "(main, reasoning)\n\nAgentic step. The agent presents the complete contract for user confirmation and saves it. Behavioral instructions (confirmation requirements, status rules) are in the slash command, not here."
+    }
+  },
+  "tasks/inline-todos": {
+    "kind": "workflow",
+    "name": "Inline Todos",
+    "description": "Find `#wb/TODO` markers across the vault, present them for triage, execute the freeform instructions, and clean up handled tags.",
+    "workflow_name": "inline-todos",
+    "execution": "main",
+    "steps": [
+      {
+        "id": "discover",
+        "name": "Discover inline TODOs across vault",
+        "step_type": "code",
+        "depends_on": []
+      },
+      {
+        "id": "triage",
+        "name": "Present TODOs and collect user decisions",
+        "step_type": "reasoning",
+        "depends_on": [
+          "discover"
+        ]
+      },
+      {
+        "id": "execute",
+        "name": "Execute instructions for selected TODOs",
+        "step_type": "reasoning",
+        "depends_on": [
+          "triage"
+        ]
+      },
+      {
+        "id": "cleanup",
+        "name": "Clean up handled TODO tags",
+        "step_type": "code",
+        "depends_on": [
+          "execute"
+        ],
+        "visibility": {
+          "mode": "none"
+        }
+      }
+    ],
+    "tags": [
+      "tasks",
+      "inline",
+      "todos"
+    ],
+    "parents": [
+      "tasks"
+    ],
+    "allow_override": false,
+    "step_instructions": {
+      "discover": "No gateway capability exists yet for inline TODO discovery â€” use Python directly:\n\n```python\nfrom work_buddy.obsidian.inline_todos import discover_inline_todos\n\nresult = discover_inline_todos(limit=100)\n```\n\nIf `result[\"count\"] == 0`, report \"No #wb/TODO items found in the vault.\" and skip remaining steps.\n\nReturn the result as step output.",
+      "triage": "Agentic step. The agent presents TODO items and collects user decisions. Behavioral instructions (batch size, presentation format, action options) are in the slash command, not here.\n\nCollect decisions as structured output:\n```json\n[\n  {\"index\": 0, \"action\": \"handle\"},\n  {\"index\": 1, \"action\": \"skip\"},\n  {\"index\": 2, \"action\": \"delete_tag\"}\n]\n```\n\nIf all items are skipped, report that and end the workflow.",
+      "execute": "Agentic step. The agent interprets and acts on freeform instructions for handled items. Behavioral instructions (interpretation rules, confirmation requirements) are in the slash command, not here.\n\nReport what was done for each handled item.",
+      "cleanup": "Build the list of items to clean up (those with `action == \"handle\"` or `action == \"delete_tag\"`). No gateway capability exists yet â€” use Python directly:\n\n```python\nfrom work_buddy.obsidian.inline_todos import cleanup_handled_todos\n\nresult = cleanup_handled_todos(items_to_clean)\n```\n\n> **Note:** For task creation within the execute step, use `mcp__work-buddy__wb_run(\"task_create\", {...})` rather than importing task mutation functions directly.\n\nReport the cleanup summary:\n- N items cleaned across M files\n- Any skipped items (due to file edits during the workflow)\n- Any errors"
+    }
+  },
+  "morning/morning-routine": {
+    "kind": "workflow",
+    "name": "Morning Routine",
+    "description": "Configurable morning routine that coordinates journal, tasks, contracts, calendar, and metacognition into a single briefing-first flow. Collect everything, then synthesize and act.",
+    "workflow_name": "morning-routine",
+    "execution": "main",
+    "steps": [
+      {
+        "id": "load-config",
+        "name": "Load morning config",
+        "step_type": "code",
+        "depends_on": [],
+        "auto_run": {
+          "callable": "work_buddy.morning.get_morning_config"
+        }
+      },
+      {
+        "id": "resolve-phases",
+        "name": "Resolve enabled phases",
+        "step_type": "code",
+        "depends_on": [
+          "load-config"
+        ],
+        "auto_run": {
+          "callable": "work_buddy.morning.resolve_phases",
+          "input_map": {
+            "cfg": "load-config"
+          }
+        }
+      },
+      {
+        "id": "context-snapshot",
+        "name": "Collect fresh context snapshot",
+        "step_type": "code",
+        "depends_on": [
+          "resolve-phases"
+        ],
+        "execution": "subagent",
+        "visibility": {
+          "mode": "summary"
+        }
+      },
+      {
+        "id": "sign-in",
+        "name": "Morning sign-in conversation",
+        "step_type": "reasoning",
+        "depends_on": [
+          "context-snapshot"
+        ]
+      },
+      {
+        "id": "yesterday-close",
+        "name": "Close out yesterday's journal",
+        "step_type": "reasoning",
+        "depends_on": [
+          "context-snapshot"
+        ],
+        "optional": true
+      },
+      {
+        "id": "calendar-today",
+        "name": "Fetch today's calendar schedule",
+        "step_type": "code",
+        "depends_on": [
+          "context-snapshot"
+        ],
+        "optional": true
+      },
+      {
+        "id": "task-briefing",
+        "name": "Get task status summary",
+        "step_type": "code",
+        "depends_on": [
+          "context-snapshot"
+        ],
+        "optional": true,
+        "visibility": {
+          "mode": "summary",
+          "include_keys": [
+            "focused",
+            "mit",
+            "overdue",
+            "inbox_count",
+            "stale"
+          ]
+        }
+      },
+      {
+        "id": "contract-check",
+        "name": "Check contract health and constraints",
+        "step_type": "code",
+        "depends_on": [
+          "context-snapshot"
+        ],
+        "optional": true,
+        "visibility": {
+          "mode": "full"
+        }
+      },
+      {
+        "id": "blindspot-scan",
+        "name": "Scan yesterday's work for blindspot patterns",
+        "step_type": "reasoning",
+        "depends_on": [
+          "context-snapshot"
+        ],
+        "optional": true
+      },
+      {
+        "id": "synthesize",
+        "name": "Synthesize morning briefing",
+        "step_type": "reasoning",
+        "depends_on": [
+          "sign-in",
+          "yesterday-close",
+          "calendar-today",
+          "task-briefing",
+          "contract-check",
+          "blindspot-scan"
+        ]
+      },
+      {
+        "id": "plan-today",
+        "name": "Plan today's focus and write to journal",
+        "step_type": "reasoning",
+        "depends_on": [
+          "synthesize"
+        ]
+      }
+    ],
+    "tags": [
+      "morning",
+      "routine"
+    ],
+    "parents": [
+      "morning"
+    ],
+    "step_instructions": {
+      "context-snapshot": "**Purpose:** Gather fresh context from all tracked systems. This is always the first step â€” everything downstream depends on it.\n\n**Phase gate:** Always enabled (core). No skip check needed.\n\n**Procedure:**\n\n0. **Ensure today's journal exists.** Call `mcp__work-buddy__wb_run(\"journal_state\", {\"target\": \"today\"})` â€” if the result shows `exists: false`, the journal needs creating via Obsidian.\n\n1. Get the configured lookback window: `hours = step_results[\"load-config\"].get(\"morning\", {}).get(\"context_hours\", 24)` (default: 24).\n\n2. Run the context bundle collector:\n   ```\n   mcp__work-buddy__wb_run(\"context_bundle\", {\"hours\": <hours>})\n   ```\n\n3. Read the resulting pack files from the bundle path returned in the result. Priority files: `git_summary.md`, `tasks_summary.md`, `projects_summary.md`, `obsidian_summary.md`, `messages_summary.md`, `chat_summary.md`, `calendar_summary.md`, `wellness_summary.md`.\n\n4. Condense into a structured activity digest â€” not the raw pack, but a ~20 line summary of: what repos had activity, what journal entries exist, outstanding tasks, recent conversations, messages.\n\n**Result:** Condensed activity digest string.\n\n---",
+      "sign-in": "**Purpose:** Brief morning check-in that fills the journal Sign-In fields. Always enabled.\n\nAgentic step. The agent conducts a conversational check-in and writes responses to the journal. Behavioral instructions (conversation tone, what to ask, how to use wellness data) are in the slash command, not here.\n\n**Procedure:**\n\n1. Read current sign-in state and wellness trends:\n   ```\n   mcp__work-buddy__wb_run(\"journal_sign_in\")\n   ```\n   Returns `{sign_in: {sleep, energy, mood, check_in, motto, all_filled}, wellness: \"...\"}`.\n\n2. **If `sign_in.all_filled`**: Return `{\"summary\": \"Sign-in already complete. Sleep: X, Energy: X, Mood: X\", \"wellness_context\": wellness}`.\n\n3. **If NOT all filled**: Conduct check-in conversation for missing fields.\n\n4. Write responses to the journal:\n   ```\n   mcp__work-buddy__wb_run(\"journal_sign_in\", {\"write_fields\": \"{\\\"sleep\\\": 7, \\\"energy\\\": 8, \\\"mood\\\": 7, \\\"check_in\\\": \\\"...\\\", \\\"motto\\\": \\\"...\\\"}\"})\n   ```\n   This is consent-gated â€” on `consent_required` response, follow the standard consent flow.\n\n5. Return `{\"summary\": \"...\", \"wellness_context\": wellness}` for downstream steps.\n\n**Result:** Sign-in summary with wellness context.\n\n---",
+      "yesterday-close": "**Purpose:** Close out yesterday's journal by filling Log gaps.\n\nAgentic step. The agent checks yesterday's journal and auto-fills gaps. Behavioral instructions (interaction rules) are in the slash command, not here.\n\n**Phase gate:** Check `step_results[\"resolve-phases\"][\"yesterday-close\"]`. If `false`, skip.\n\n**Procedure:**\n\n1. Read yesterday's journal state:\n   ```\n   mcp__work-buddy__wb_run(\"journal_state\", {\"target\": \"yesterday\"})\n   ```\n\n2. **If `error`**: Log the error and skip: `{\"skipped\": true, \"reason\": error}`.\n\n3. **If `ambiguous`**: Log a warning and skip.\n\n4. **If NOT `exists`**: Return `{\"skipped\": true, \"reason\": \"no journal for {date}\"}`.\n\n5. **If `exists`**: Check the journal content. If the Log section has 3+ entries, return `{\"summary\": \"Yesterday ({date}) has N log entries. Last: HH:MM AM/PM.\"}`.\n\n6. **If the Log is sparse (< 3 entries)**: Delegate to `update-journal` workflow: `mcp__work-buddy__wb_run(\"update-journal\", {\"target\": \"yesterday\"})` and advance to completion. Return the summary.\n\n**Result:** Brief summary string describing yesterday's state.\n\n---",
+      "calendar-today": "**Purpose:** Fetch today's Google Calendar schedule.\n\n**Phase gate:** Check `step_results[\"resolve-phases\"][\"calendar-today\"]`. If `false`, skip.\n\n**Procedure:**\n\n1. Fetch today's calendar (includes readiness check):\n   ```\n   mcp__work-buddy__wb_run(\"context_calendar\")\n   ```\n\n2. If the result indicates unavailability, return `{\"available\": false, \"reason\": \"Calendar not available\"}`. Do NOT fail â€” graceful degradation.\n\n3. Otherwise return the calendar data.\n\n**Result:** Calendar data or unavailability notice.\n\n---",
+      "task-briefing": "**Purpose:** Get current task status.\n\n**Phase gate:** Check `step_results[\"resolve-phases\"][\"task-briefing\"]`. If `false`, skip.\n\n**Procedure:**\n```\nmcp__work-buddy__wb_run(\"task_briefing\")\n```\nReturn the result directly.\n\n**Result:** Task briefing data dict.\n\n---",
+      "contract-check": "**Purpose:** Check contract health, active constraints, and deadlines.\n\n**Phase gate:** Check `step_results[\"resolve-phases\"][\"contract-check\"]`. If `false`, skip.\n\n**Procedure:**\n\n1. `mcp__work-buddy__wb_run(\"contract_constraints\")` â€” active contracts with bottleneck constraints.\n2. `mcp__work-buddy__wb_run(\"contract_health\")` â€” health check report.\n3. Combine into a single result dict with `active_count`, `constraints`, `health`, `top_constraint`, `has_paper_contract`.\n4. If no active contracts exist, note it explicitly.\n\n**Result:** Combined contract data dict.\n\n---",
+      "blindspot-scan": "**Purpose:** Check yesterday's work against metacognition patterns.\n\n**Phase gate:** Check `step_results[\"resolve-phases\"][\"blindspot-scan\"]`. If `false`, skip.\n\n**Procedure depends on `step_results[\"load-config\"][\"morning\"][\"blindspot_depth\"]`:**\n\n#### Light mode (default)\n\nAgentic step. The agent scans for HIGH-severity patterns using context-snapshot and yesterday-close data. Behavioral instructions (pattern list, what to look for) are in the slash command, not here.\n\nReturn a brief summary: either \"None detected\" or a list of pattern names with one-line evidence.\n\n#### Full mode\n\nDelegate to the `detect-blindspots` workflow: `mcp__work-buddy__wb_run(\"detect-blindspots\")`. Return the full result.\n\n**Result:** Pattern summary string or full blindspot report.\n\n---",
+      "synthesize": "**Purpose:** Combine all collected data into a concise morning briefing.\n\nAgentic step. The agent builds a briefing from all prior step results and presents it. Behavioral instructions (tone, follow-up offers, presentation style) are in the slash command, not here.\n\n**Procedure:**\n\n1. Gather results from all prior steps. For skipped/failed steps, the result will be `None` or contain `{\"skipped\": true}` â€” handle gracefully.\n\n2. Build a briefing. Use `work_buddy.morning.format_briefing()` if available:\n   ```python\n   from work_buddy.morning import format_briefing\n\n   results = {\n       \"yesterday\": yesterday_close_result.get(\"summary\") if yesterday_close_result else None,\n       \"calendar\": calendar_result if calendar_result and not calendar_result.get(\"skipped\") else None,\n       \"tasks\": task_result if task_result and not task_result.get(\"skipped\") else None,\n       \"contracts\": contract_result if contract_result and not contract_result.get(\"skipped\") else None,\n       \"projects\": context_snapshot_result.get(\"projects_summary\") if context_snapshot_result else None,\n       \"blindspots\": blindspot_result if blindspot_result and not blindspot_result.get(\"skipped\") else None,\n   }\n   briefing_md = format_briefing(results)\n   ```\n   Alternatively, synthesize the briefing directly from step results.\n\n3. Present the briefing and offer follow-ups.\n\n4. Return `{\"briefing_md\": briefing_md, \"results\": results}` for `plan-today`.\n\n**Result:** Briefing markdown and underlying data.\n\n---",
+      "plan-today": "**Purpose:** Propose today's Most Important Tasks, create them, generate a Day Planner schedule, and persist the briefing.\n\nAgentic step. The agent proposes MITs, creates tasks, writes to journal, and generates a day plan. Behavioral instructions (MIT quality rules, user review, presentation) are in the slash command, not here.\n\n**Procedure:**\n\n1. Using the synthesized briefing and underlying data, propose up to `step_results[\"load-config\"][\"morning\"][\"max_mits\"]` MITs.\n\n2. Present the proposed MITs to the user for review.\n\n3. **Create MIT tasks** in the master task list:\n   ```\n   mcp__work-buddy__wb_run(\"task_create\", {\"task_text\": \"...\", \"urgency\": \"medium\", \"project\": \"...\", \"due_date\": \"...\", \"contract\": \"...\"})\n   ```\n   Then set each created task to focused:\n   ```\n   mcp__work-buddy__wb_run(\"task_change_state\", {\"task_id\": \"...\", \"state\": \"focused\"})\n   ```\n   This makes them appear in the journal's MITs Dataview query automatically.\n\n4. **Journal persistence** (if `step_results[\"load-config\"][\"morning\"][\"persist_briefing\"]` is true):\n\n   **Placement:** The briefing callout goes in the **Sign-In section**, after the Motto field and before `# **Tasks & Objectives**`. The `journal_write` capability handles placement automatically. The callout header includes the generation timestamp.\n\n   ```\n   mcp__work-buddy__wb_run(\"journal_write\", {\"mode\": \"briefing\", \"briefing_md\": \"<briefing markdown>\"})\n   ```\n   This is consent-gated â€” follow the standard consent flow on `consent_required`.\n\n5. **Day Planner schedule** (if `step_results[\"load-config\"][\"morning\"][\"day_planner\"][\"enabled\"]` is true):\n\n   a. Check plugin readiness:\n      ```\n      mcp__work-buddy__wb_run(\"day_planner\", {\"action\": \"status\"})\n      ```\n      If not ready, log a warning and skip to step 6.\n\n   b. Check for existing plan entries (don't clobber user edits):\n      ```\n      mcp__work-buddy__wb_run(\"day_planner\", {\"action\": \"read\"})\n      ```\n      If `entry_count > 0`, skip â€” the user already has a plan.\n\n   c. Gather inputs:\n      - **Calendar events**: from the synthesize step's `results[\"calendar\"]`.\n        If calendar was skipped/unavailable, use `[]`.\n      - **Focused tasks**: both the MITs just created in step 3 and any pre-existing focused tasks\n        (from the task briefing data in `results[\"tasks\"]`).\n\n   d. Check if plugin has remote calendar feeds configured. If `hasRemoteCalendars` in status,\n      set `include_calendar_events: false` in config overrides to avoid duplication.\n\n   e. Generate and write the plan:\n      ```\n      mcp__work-buddy__wb_run(\"day_planner\", {\"action\": \"generate_and_write\", \"calendar_events\": \"<json>\", \"focused_tasks\": \"<json>\"})\n      ```\n\n   f. Present a brief plan summary to the user (timed blocks for the day).\n\n6. Confirm what was created and where.\n\n**Result:** Final MITs list, Day Planner schedule, and persistence confirmation.\n\n---"
+    }
+  },
+  "daily-journal/process-backlog": {
+    "kind": "workflow",
+    "name": "Process Backlog",
+    "description": "Orchestrates the full backlog processing pipeline: segment Running Notes into threads, route each thread to its destination with user confirmation, and rewrite Running Notes with only the items that remain open.",
+    "workflow_name": "process-backlog",
+    "execution": "main",
+    "steps": [
+      {
+        "id": "extract",
+        "name": "Extract Running Notes section from journal",
+        "step_type": "code",
+        "depends_on": []
+      },
+      {
+        "id": "segment",
+        "name": "Segment Running Notes into coherent threads",
+        "step_type": "reasoning",
+        "depends_on": [
+          "extract"
+        ],
+        "execution": "subagent",
+        "workflow_ref": "segment-notes"
+      },
+      {
+        "id": "analyze-similarity",
+        "name": "Embed threads and cluster into information units",
+        "step_type": "code",
+        "depends_on": [
+          "segment"
+        ],
+        "visibility": {
+          "mode": "summary",
+          "include_keys": [
+            "clusters",
+            "cluster_count"
+          ]
+        }
+      },
+      {
+        "id": "review-clusters",
+        "name": "Review clusters and apply merge/split decisions",
+        "step_type": "reasoning",
+        "depends_on": [
+          "analyze-similarity"
+        ]
+      },
+      {
+        "id": "route",
+        "name": "Route information units to destinations with user confirmation",
+        "step_type": "reasoning",
+        "depends_on": [
+          "review-clusters"
+        ],
+        "workflow_ref": "route-information"
+      },
+      {
+        "id": "rewrite",
+        "name": "Rewrite Running Notes with only open items",
+        "step_type": "code",
+        "depends_on": [
+          "route"
+        ],
+        "visibility": {
+          "mode": "full"
+        }
+      }
+    ],
+    "tags": [
+      "daily-journal",
+      "process",
+      "backlog"
+    ],
+    "parents": [
+      "daily-journal"
+    ],
+    "allow_override": false,
+    "step_instructions": {
+      "extract": "(main)\n\nRead the target journal file and extract the Running Notes section.\n\n```python\n# Read journal file\njournal_path = \"<vault-root>/journal/2026-04-02.md\"  # resolve from config vault_root\n\n# Extract Running Notes section (between header and % RUNNING END or next heading)\n# Store: raw_text, full_file_content (needed for rewrite phase)\n```\n\n**Handle edge cases:**\n- No Running Notes section â†’ nothing to process, complete workflow\n- Empty Running Notes â†’ nothing to process\n- Very short Running Notes (< 3 items) â†’ ask user if they really want to run the full pipeline, or just handle inline\n\n**Output:** `raw_text` (the Running Notes content) and `full_file_content` (the entire journal file, needed for rewrite).",
+      "segment": "(subagent)\n\nSpawn a subagent to run `workflows/daily-journal/segment-notes.md`.\n\n**Subagent prompt must include:**\n- The `raw_text` from the extract phase\n- The pool of pre-generated thread IDs\n- The segmentation rules from the workflow spec\n\n**Output:** tagged text + thread list + validation result.\n\nIf validation fails, the subagent should fix and re-validate (up to 3 attempts). If it still fails, return the error and the main agent handles it.",
+      "analyze-similarity": "(main, code)\n\nEmbed all thread summaries and compute multi-signal similarity to cluster threads into coherent information units.\n\n```python\nfrom work_buddy.journal_backlog.similarity import analyze_threads, generate_agent_context\nfrom work_buddy.obsidian.smart import check_ready\n\n# Verify Smart Environment is loaded (embeddings require it)\nstatus = check_ready()\nif not status.get(\"ready\"):\n    from work_buddy.obsidian.smart import wait_until_ready\n    wait_until_ready(timeout_seconds=120)\n\n# Run the full analysis pipeline\n# manifest_path is the thread_manifest.jsonl from the segment step\nresult = analyze_threads(manifest_path, is_journal=True)\n\n# result contains: clusters, merges, top_pairs, report, threads\n```\n\n**Output:** `result` dict containing clusters, the agent report (markdown), and the structured agent context (JSON).",
+      "review-clusters": "(main, reasoning)\n\nAgentic step. The agent reviews clustering results and confirms merge/split decisions with the user. Behavioral instructions (confidence thresholds, presentation format, merge/split procedures) are in the slash command, not here.\n\n**Applying decisions (data contracts):**\n- **MERGE clusters**: Combine thread lists, concatenate raw text, union tags\n- **SPLIT cluster**: Move specified threads to their own new unit or an existing cluster\n- **MOVE singleton**: Add to specified cluster\n\n**Output:** Final list of information units (merged/cleaned clusters), each with combined raw text, unified tags, and a summary. These become the routing input items for the next step.",
+      "route": "(main)\n\nAgentic step. Convert reviewed information units into routing input items and invoke `workflows/routing/route-information.md`. Behavioral instructions (proposal generation, confidence levels) are in the slash command, not here.\n\nBefore proposing destinations, call `mcp__work-buddy__wb_run(\"project_list\")` to get the list of known projects. Only propose `work/projects/<slug>/` destinations for slugs that appear in the project list â€” do not invent project paths.\n\nEach information unit becomes one routing input item:\n\n```json\n{\n  \"id\": \"unit_0\",\n  \"raw_text\": \"Combined text from all threads in this unit\",\n  \"source\": \"journal/<date>/RunningNotes\",\n  \"thread_ids\": [\"t_a3f8c1\", \"t_b2c3d4\"],\n  \"agent_summary\": \"Best guess at what this unit is about\",\n  \"tags\": [\"#projects/my-project\", \"#research/my-topic\"],\n  \"proposed_type\": \"task | consideration | reference | admin | personal | delete | unknown\",\n  \"proposed_destination\": \"best guess at where it should go\",\n  \"confidence\": \"high | medium | low\",\n  \"staleness_note\": \"any indication this might be completed or stale\"\n}\n```\n\nThe routing workflow handles user interaction, confirmation, and execution. It returns a routing record.",
+      "rewrite": "(main, consent-gated)\n\nAgentic step. The agent rewrites Running Notes with only remaining items after routing. Behavioral instructions (presentation format, consent requirements) are in the slash command, not here.\n\nRewrite rules:\n1. **Items with action `delete` or `route`**: remove from Running Notes\n2. **Items with action `skip`**: keep in Running Notes\n3. **Items with action `split`**: keep un-routed portions, remove routed portions\n\n**This is a filesystem write and is consent-gated.**\n\n## Parallelization notes\n\n- Segmentation: single subagent (needs full context)\n- Similarity analysis: single main agent (embeds all threads in one batch, ~35 threads takes ~10s)\n- Cluster review: single main agent (interactive with user)\n- Routing: sequential units in main agent, but sub-agents can pre-compute routing proposals in parallel\n- Rewrite: single main agent operation\n\nFor very large backlogs (50+ threads), consider pre-computing all routing proposals via parallel sub-agents.\n\n## Cost management\n\n- **First run** on a large backlog will be expensive (full segmentation + many routing interactions)\n- **Subsequent runs** process only new items since last run â€” much cheaper\n- Track last-processed date in session metadata to scope future runs\n- For enormous backlogs (100+ items), suggest processing in chunks across sessions\n\n## DAG state persistence\n\nThe DAG state is saved to `agents/<session>/workflows/process-backlog.json`. If the session is interrupted, the workflow can resume from the last completed task. The segmentation result and routing record are stored as task results in the DAG."
+    }
+  },
+  "context/review-latest-bundle": {
+    "kind": "workflow",
+    "name": "Review Latest Bundle",
+    "description": "Read the most recent existing context bundle without re-collecting. Faster than collect-and-orient when a recent bundle already exists.",
+    "workflow_name": "review-latest-bundle",
+    "execution": "main",
+    "steps": [
+      {
+        "id": "find-bundle",
+        "name": "Find the latest context bundle",
+        "step_type": "code",
+        "depends_on": []
+      },
+      {
+        "id": "check-freshness",
+        "name": "Check bundle freshness and warn if stale",
+        "step_type": "code",
+        "depends_on": [
+          "find-bundle"
+        ]
+      },
+      {
+        "id": "read-and-synthesize",
+        "name": "Read bundle files and synthesize orientation",
+        "step_type": "reasoning",
+        "depends_on": [
+          "check-freshness"
+        ]
+      }
+    ],
+    "tags": [
+      "context",
+      "review",
+      "latest",
+      "bundle"
+    ],
+    "parents": [
+      "context"
+    ],
+    "step_instructions": {
+      "find-bundle": "Find the most recent context bundle in your session directory:\n\n```\nls -t agents/<your-session>/context/ | head -1\n```\n\nThis returns the latest timestamped bundle directory (e.g., `2026-04-02T18-35-49`). If no bundles exist, tell the user and suggest running `/wb-context-collect` instead.",
+      "check-freshness": "Read `agents/<your-session>/context/<latest-timestamp>/bundle_meta.json` for the `collected_at` timestamp. If older than 24 hours, warn:\n\n\"The latest bundle is from [time]. It may be stale. Want me to collect a fresh one?\"",
+      "read-and-synthesize": "Follow Steps 2-5 from `collect-and-orient.md` â€” read the context files, synthesize, cross-reference contracts, suggest one next action.\n\n## When to prefer this over collect-and-orient\n\n- The user just ran the collector manually and wants the results interpreted\n- You're mid-conversation and need a quick check â€” re-collecting would break flow\n- The bundle is less than a few hours old and conditions haven't changed much"
+    }
+  },
+  "routing/route-information": {
+    "kind": "workflow",
+    "name": "Route Information",
+    "description": "Given a batch of discrete information items (each with an ID, raw text, and optional agent-proposed metadata), present routing recommendations to the user in clusters, get confirmation or correction, and execute the approved routings.",
+    "workflow_name": "route-information",
+    "execution": "main",
+    "steps": [
+      {
+        "id": "cluster-items",
+        "name": "Cluster items for review by type/theme",
+        "step_type": "reasoning",
+        "depends_on": []
+      },
+      {
+        "id": "present-clusters",
+        "name": "Present each cluster to the user for confirmation",
+        "step_type": "reasoning",
+        "depends_on": [
+          "cluster-items"
+        ]
+      },
+      {
+        "id": "record-decisions",
+        "name": "Record user decisions for each item",
+        "step_type": "reasoning",
+        "depends_on": [
+          "present-clusters"
+        ],
+        "visibility": {
+          "mode": "full"
+        }
+      },
+      {
+        "id": "execute-routing",
+        "name": "Execute approved routings (consent-gated writes)",
+        "step_type": "code",
+        "depends_on": [
+          "record-decisions"
+        ],
+        "visibility": {
+          "mode": "summary",
+          "include_keys": [
+            "executed",
+            "failed",
+            "skipped"
+          ]
+        }
+      },
+      {
+        "id": "return-results",
+        "name": "Return complete routing record",
+        "step_type": "code",
+        "depends_on": [
+          "execute-routing"
+        ],
+        "visibility": {
+          "mode": "full"
+        }
+      }
+    ],
+    "tags": [
+      "routing",
+      "route",
+      "information"
+    ],
+    "parents": [
+      "routing"
+    ],
+    "content": {
+      "summary": "Given a batch of discrete information items (each with an ID, raw text, and optional agent-proposed metadata), present routing recommendations to the user in clusters, get confirmation or correction, and execute the approved routings.",
+      "full": "## What NOT to do\n\n- Don't modify the raw text of any item â€” present it verbatim\n- Don't auto-route without user confirmation, even at high confidence\n- Don't create elaborate categorization hierarchies â€” use existing destinations\n- Don't invent new filing locations the user hasn't established\n- Don't pressure the user to decide on every item â€” \"skip\" is always valid\n- Don't treat \"unknown\" as a problem â€” some items need the user's context, that's expected\n- Don't batch-delete without showing each item â€” the user might spot something worth keeping\n\n\n## Related blindspots\n\n- **Insight hoarding**: if the user parks everything and deletes nothing, name the pattern. But don't force deletion â€” that triggers avoidance\n- **Infrastructure displacement**: if routing itself is taking longer than the items are worth, flag it. \"We've spent 20 minutes on 3 items â€” should we batch the rest?\"\n- **Organization skill gap**: if the user can't decide where things go, the destination system might need simplification, not more process\n"
+    },
+    "step_instructions": {
+      "cluster-items": "Group items by `proposed_type` (or by theme if types are mixed). The goal is to minimize the number of review interactions while keeping each interaction coherent.\n\nSuggested clustering:\n- **Admin/personal** items together (usually quick decisions)\n- **Research/technical** items together (need domain context)\n- **Unknown/low-confidence** items together (need the most user input)\n- **Proposed deletions** together (batch confirm)",
+      "present-clusters": "For each cluster, present:\n1. The cluster theme/type\n2. For each item in the cluster:\n   - The **raw text** (verbatim, never modified)\n   - The agent's **one-line interpretation**\n   - The **proposed action** (route to X, delete, park with review date)\n   - **Confidence level** and any staleness notes\n3. Ask the user to confirm, correct, or skip each item\n\n**Example interaction:**\n\n```\n## Admin items (3 items)\n\n**[t_d44f12]** \"Admin - VPN/taxes/new laptop stuff\"\nâ†’ Proposed: task (inbox) â€” \"Set up VPN, handle tax prep, research laptops\"\nâ†’ Confidence: low â€” this bundles 3 things, and taxes may be done\nWhat is this? Confirm / correct / skip?\n\n**[t_c44d1a]** \"Taxes - Varsha\"\nâ†’ Proposed: task (inbox) â€” \"Tax-related task involving Varsha\"\nâ†’ Confidence: low â€” don't know who Varsha is or what the task is\nWhat is this? Confirm / correct / skip?\n\n**[t_7b2e09]** \"Varsha - T4 / T4A\"\nâ†’ Proposed: linked to t_c44d1a? â€” \"Tax form from Varsha\"\nâ†’ Confidence: low\nWhat is this? Confirm / correct / skip?\n```\n\nThe user might reply: \"Varsha is the lab admin. I already got the T4A. Delete both of those. The VPN/taxes/laptop thing â€” VPN is done, taxes are done, laptop is still a live task.\"",
+      "record-decisions": "Update each item with the user's confirmed routing:\n\n```json\n{\n  \"id\": \"t_c44d1a\",\n  \"action\": \"delete\",\n  \"user_note\": \"Already completed â€” got T4A from Varsha\"\n}\n```\n\n```json\n{\n  \"id\": \"t_d44f12\",\n  \"action\": \"split\",\n  \"splits\": [\n    {\"text\": \"VPN setup\", \"action\": \"delete\", \"reason\": \"done\"},\n    {\"text\": \"Taxes\", \"action\": \"delete\", \"reason\": \"done\"},\n    {\"text\": \"New laptop research\", \"action\": \"route\", \"destination\": \"tasks/master-task-list.md\", \"task_text\": \"Research and purchase new laptop\"}\n  ]\n}\n```",
+      "execute-routing": "For each confirmed item, execute the routing:\n\n- **Task creation**: Use `mcp__work-buddy__wb_run(\"task_create\", {\"task_text\": \"...\", \"project\": \"...\", \"due_date\": \"...\"})` which produces clean lines and creates a SQLite metadata record:\n  ```\n  - [ ] #todo <task text> #projects/<project> ðŸ†” t-<hex> ðŸ“… <date if applicable>\n  ```\n  State and urgency are stored in `tasks/task_metadata.db`, not inline tags.\n- **Consideration creation**: Create a new file in `work/considerations/<project>/` using the consideration template frontmatter\n- **Project note append**: Append to the relevant project file\n- **Park with review date**: Create a consideration with `status: parked` and a `decision_date` set to the review date\n- **Delete**: Mark as deleted in the routing record (the caller handles actual text removal)\n\n**All write operations are consent-gated.** The first write triggers `@requires_consent`. Grant with a reasonable TTL (e.g., 30 minutes) to cover the batch.",
+      "return-results": "Return the complete routing record as JSON â€” the caller uses this to know what was processed and what action was taken.\n\n```json\n{\n  \"routed\": [{\"id\": \"t_7b2e09\", \"action\": \"route\", \"destination\": \"tasks/master-task-list.md\"}],\n  \"deleted\": [{\"id\": \"t_c44d1a\", \"reason\": \"Already completed\"}],\n  \"split\": [{\"id\": \"t_d44f12\", \"splits\": [...]}],\n  \"skipped\": [{\"id\": \"t_x9y8z7\", \"reason\": \"User wants to think about it\"}]\n}\n```"
+    }
+  },
+  "daily-journal/segment-notes": {
+    "kind": "workflow",
+    "name": "Segment Notes",
+    "description": "Read the Running Notes section from a journal file, identify coherent threads of related content, and annotate the text with inline thread IDs. The raw text is never modified â€” only HTML comment tags are inserted.",
+    "workflow_name": "segment-notes",
+    "execution": "subagent",
+    "steps": [
+      {
+        "id": "extract-section",
+        "name": "Extract Running Notes section from journal",
+        "step_type": "code",
+        "depends_on": [],
+        "execution": "main"
+      },
+      {
+        "id": "generate-ids",
+        "name": "Generate pool of thread IDs",
+        "step_type": "code",
+        "depends_on": [
+          "extract-section"
+        ],
+        "execution": "main",
+        "visibility": {
+          "mode": "full"
+        }
+      },
+      {
+        "id": "segment-and-tag",
+        "name": "Segment content and insert thread tags",
+        "step_type": "reasoning",
+        "depends_on": [
+          "generate-ids"
+        ],
+        "execution": "main"
+      },
+      {
+        "id": "validate",
+        "name": "Validate segmentation with Python",
+        "step_type": "code",
+        "depends_on": [
+          "segment-and-tag"
+        ],
+        "execution": "main"
+      },
+      {
+        "id": "extract-threads",
+        "name": "Extract thread objects from tagged text",
+        "step_type": "code",
+        "depends_on": [
+          "validate"
+        ],
+        "execution": "main",
+        "visibility": {
+          "mode": "none"
+        }
+      },
+      {
+        "id": "return-results",
+        "name": "Return tagged text, thread list, and validation",
+        "step_type": "code",
+        "depends_on": [
+          "extract-threads"
+        ],
+        "execution": "main",
+        "visibility": {
+          "mode": "full"
+        }
+      }
+    ],
+    "tags": [
+      "daily-journal",
+      "segment",
+      "notes"
+    ],
+    "parents": [
+      "daily-journal"
+    ],
+    "content": {
+      "summary": "Read the Running Notes section from a journal file, identify coherent threads of related content, and annotate the text with inline thread IDs. The raw text is never modified â€” only HTML comment tags are inserted.",
+      "full": "## What NOT to do\n\n- Don't modify, rephrase, summarize, or reorder any raw text\n- Don't interpret what items mean â€” that's the router's job (with user input)\n- Don't delete content, even if it looks stale or irrelevant\n- Don't merge threads aggressively â€” when in doubt, keep separate\n- Don't try to route or triage during segmentation â€” separation of concerns\n- Don't skip the Python validation step\n\n\n## Output quality checks\n\nBefore returning, verify:\n- [ ] Every content line is inside exactly one thread\n- [ ] All thread tags are properly opened and closed\n- [ ] No content was modified, deleted, or reordered\n- [ ] Code blocks and links are intact\n- [ ] Carried-over banners are stripped (noted as metadata, not content)\n- [ ] Multi-concern lines are flagged with `<!-- [multi] -->`\n"
+    },
+    "step_instructions": {
+      "extract-section": "If given a `journal_path`, read the file and extract everything between:\n- Start: `# **Running Notes / Considerations**`\n- End: `% RUNNING END` marker (if present) or the next top-level heading\n\nStrip the `carried over from YYYY-MM-DD` banners â€” these are structural artifacts of the carry-forward mechanism, not content. Preserve the dates as metadata (they indicate when items were originally written).",
+      "generate-ids": "Use Python to pre-generate a pool of random IDs:\n\n```python\nimport uuid\n\ndef generate_thread_id() -> str:\n    return f\"t_{uuid.uuid4().hex[:6]}\"\n```\n\nGenerate more IDs than you expect to need (e.g., 50). Pass these to the LLM so it uses consistent, collision-free IDs.",
+      "segment-and-tag": "This is the reasoning-heavy step. Read the full extracted text and identify coherent threads â€” groups of content that belong to the same concern, topic, or action item.\n\n**Insert open/close HTML comment tags around each thread:**\n\n```markdown\n<!-- [t_a3f8c1] -->\n- Graph tokenization approach for entity linking\n- Looked at paper X, relates to graph tok idea\n<!-- [/t_a3f8c1] -->\n```\n\n**Segmentation rules:**\n\n1. **Preserve all raw text exactly** â€” do not edit, rephrase, reorder, or delete any content. Only insert `<!-- [t_xxxxxx] -->` and `<!-- [/t_xxxxxx] -->` tags\n2. **Every line of content must be inside exactly one thread** â€” no orphaned lines\n3. **A thread is content that belongs to the same concern.** This requires interpretation â€” \"Taxes - Varsha\" and \"Varsha - T4 / T4A\" are the same thread even though they appear on different dates. A 40-line technical exploration about graph tokenization is one thread\n4. **Multi-concern lines must be flagged.** If a single bullet contains two unrelated concerns (e.g., \"VPN/taxes/new laptop stuff\"), wrap it in one thread but add a `<!-- [multi] -->` annotation so the router knows it may need splitting\n5. **Sub-bullets belong to their parent's thread** unless they clearly introduce a new topic\n6. **Code blocks, links, and formatted text are preserved exactly** â€” tags go outside these, not inside\n7. **Empty lines and horizontal rules between threads are fine** â€” place tags around content, not whitespace\n8. **Carried-over banners are stripped** â€” they are not content. But note the source dates in a separate metadata output\n9. **When uncertain whether two items are the same thread, keep them separate.** Over-splitting is better than under-splitting â€” the router can propose merges, but splitting a wrongly-merged thread is harder\n\n**Edge cases:**\n\n- **Long multi-paragraph explorations**: one thread, even if they span 50+ lines. The thread is the coherent unit\n- **Isolated one-liners with no context**: each gets its own thread ID. The router will ask the user what they mean\n- **Links/references followed by commentary**: group together as one thread\n- **Empty carried-over sections** (just banners, no content between them): skip entirely",
+      "validate": "After the LLM produces the tagged text, run Python validation:\n\n```python\nimport re\n\ndef validate_segmentation(tagged_text: str, original_text: str) -> dict:\n    \"\"\"Validate that segmentation is complete and consistent.\"\"\"\n\n    # Extract all thread IDs used\n    open_tags = re.findall(r'<!-- \\[(t_[a-f0-9]{6})\\] -->', tagged_text)\n    close_tags = re.findall(r'<!-- \\[/(t_[a-f0-9]{6})\\] -->', tagged_text)\n\n    thread_ids = set(open_tags)\n\n    errors = []\n\n    # Every open tag has a matching close tag\n    if sorted(open_tags) != sorted(close_tags):\n        errors.append(\"Mismatched open/close tags\")\n\n    # No nested threads (open inside open without close)\n    # ... validation logic ...\n\n    # All content lines from original are present in tagged version\n    original_lines = [l.strip() for l in original_text.splitlines() if l.strip() and not l.strip().startswith('---') and 'carried over from' not in l]\n    tagged_content = re.sub(r'<!-- \\[/?t_[a-f0-9]{6}\\??]\\s*-->', '', tagged_text)\n    tagged_lines = [l.strip() for l in tagged_content.splitlines() if l.strip() and not l.strip().startswith('---')]\n\n    if len(original_lines) != len(tagged_lines):\n        errors.append(f\"Line count mismatch: {len(original_lines)} original vs {len(tagged_lines)} tagged\")\n\n    return {\n        \"valid\": len(errors) == 0,\n        \"thread_count\": len(thread_ids),\n        \"thread_ids\": sorted(thread_ids),\n        \"errors\": errors,\n    }\n```\n\nIf validation fails, the LLM should fix the issues and re-validate. Do not proceed to routing with invalid segmentation.",
+      "extract-threads": "Once validated, extract each thread into a structured object:\n\n```python\ndef extract_threads(tagged_text: str) -> list[dict]:\n    \"\"\"Extract thread objects from tagged text.\"\"\"\n    threads = []\n    # Parse tagged text, group content by thread ID\n    # For each thread:\n    threads.append({\n        \"id\": \"t_a3f8c1\",\n        \"raw_text\": \"The exact text between open/close tags\",\n        \"line_count\": 3,\n        \"source_dates\": [\"2026-03-03\", \"2026-03-14\", \"2026-03-28\"],  # from banner positions\n        \"has_multi_flag\": False,\n    })\n    return threads\n```",
+      "return-results": "Return:\n1. The **tagged text** (original content with inserted thread tags)\n2. The **thread list** (extracted structured objects)\n3. The **validation result**\n\nThe caller (`process-backlog.md`) uses the thread list to feed into the routing workflow."
+    }
+  },
+  "testing/stress-test": {
+    "kind": "workflow",
+    "name": "Stress Test",
+    "description": "Subprocess isolation validation workflow. The `compute-primes` step runs",
+    "workflow_name": "stress-test",
+    "execution": "main",
+    "steps": [
+      {
+        "id": "compute-primes",
+        "name": "CPU stress test (primes sieve)",
+        "step_type": "code",
+        "depends_on": [],
+        "auto_run": {
+          "callable": "work_buddy.stress_test.compute_primes",
+          "kwargs": {
+            "limit": 1000000
+          },
+          "timeout": 60
+        },
+        "visibility": {
+          "mode": "summary",
+          "include_keys": [
+            "count",
+            "first",
+            "last",
+            "checksum"
+          ]
+        }
+      },
+      {
+        "id": "verify-result",
+        "name": "Verify stress test result",
+        "step_type": "reasoning",
+        "depends_on": [
+          "compute-primes"
+        ]
+      }
+    ],
+    "tags": [
+      "testing",
+      "stress",
+      "test"
+    ],
+    "parents": [
+      "testing"
+    ]
+  },
+  "tasks/task-triage": {
+    "kind": "workflow",
+    "name": "Task Triage",
+    "description": "Interactive inbox review: surface tasks that need decisions, collect user input, apply state changes.",
+    "workflow_name": "task-triage",
+    "execution": "main",
+    "steps": [
+      {
+        "id": "gather",
+        "name": "Gather task data",
+        "step_type": "code",
+        "depends_on": [],
+        "visibility": {
+          "mode": "summary",
+          "include_keys": [
+            "inbox",
+            "stale",
+            "counts"
+          ]
+        }
+      },
+      {
+        "id": "present",
+        "name": "Present and collect decisions",
+        "step_type": "reasoning",
+        "depends_on": [
+          "gather"
+        ]
+      },
+      {
+        "id": "apply",
+        "name": "Apply mutations",
+        "step_type": "code",
+        "depends_on": [
+          "present"
+        ],
+        "visibility": {
+          "mode": "none"
+        }
+      },
+      {
+        "id": "summary",
+        "name": "Report changes",
+        "step_type": "reasoning",
+        "depends_on": [
+          "apply"
+        ]
+      }
+    ],
+    "tags": [
+      "tasks",
+      "task",
+      "triage"
+    ],
+    "parents": [
+      "tasks"
+    ],
+    "allow_override": false,
+    "step_instructions": {
+      "gather": "Gather task data via the gateway:\n\n```\ninbox_review = mcp__work-buddy__wb_run(\"task_review_inbox\")\nstale = mcp__work-buddy__wb_run(\"task_stale_check\")\ncounts = mcp__work-buddy__wb_run(\"task_briefing\")\nprojects = mcp__work-buddy__wb_run(\"project_list\")\n```\n\nReturn the combined results as the step output.",
+      "present": "Agentic step. The agent presents tasks and collects user decisions. Behavioral instructions (batch size, presentation format, action options) are in the slash command, not here.\n\nCollect decisions as structured output:\n```json\n[\n  {\"description_match\": \"...\", \"action\": \"focus|snooze|done|skip\"},\n  ...\n]\n```",
+      "apply": "For each decision from the present step, apply mutations via the gateway:\n\n```\nfor each decision:\n    if action == \"focus\":\n        mcp__work-buddy__wb_run(\"task_change_state\", {\"task_id\": \"<id>\", \"state\": \"focused\"})\n    elif action == \"snooze\":\n        mcp__work-buddy__wb_run(\"task_change_state\", {\"task_id\": \"<id>\", \"state\": \"snoozed\"})\n    elif action == \"done\":\n        mcp__work-buddy__wb_run(\"task_toggle\", {\"task_id\": \"<id>\"})\n    // \"skip\" = no-op\n```\n\nAlso run `mcp__work-buddy__wb_run(\"task_archive\")` if the gather step showed >10 completed tasks.",
+      "summary": "Agentic step. The agent reports what changed. Behavioral instructions (what to include, format) are in the slash command, not here."
+    }
+  },
+  "daily-journal/update-journal": {
+    "kind": "workflow",
+    "name": "Update Journal",
+    "description": "Append activity-detected Log entries to an Obsidian journal file.",
+    "workflow_name": "update-journal",
+    "execution": "main",
+    "steps": [
+      {
+        "id": "read-journal",
+        "name": "Read today's journal and determine activity window",
+        "step_type": "code",
+        "depends_on": [],
+        "visibility": {
+          "mode": "summary",
+          "include_keys": [
+            "activity_window",
+            "existing_entries",
+            "journal_path"
+          ]
+        }
+      },
+      {
+        "id": "collect",
+        "name": "Collect fresh context (scoped to activity window)",
+        "step_type": "code",
+        "depends_on": [
+          "read-journal"
+        ],
+        "execution": "subagent",
+        "workflow_ref": "collect-and-orient",
+        "visibility": {
+          "mode": "summary",
+          "include_keys": [
+            "sources_collected",
+            "activity_window",
+            "bundle_id"
+          ]
+        }
+      },
+      {
+        "id": "synthesize",
+        "name": "Synthesize activity into journal-style Log entry",
+        "step_type": "reasoning",
+        "depends_on": [
+          "collect"
+        ]
+      },
+      {
+        "id": "write",
+        "name": "Present summary, get consent, append to journal",
+        "step_type": "reasoning",
+        "depends_on": [
+          "synthesize"
+        ]
+      }
+    ],
+    "tags": [
+      "daily-journal",
+      "update",
+      "journal"
+    ],
+    "parents": [
+      "daily-journal"
+    ]
+  },
+  "tasks/weekly-review": {
+    "kind": "workflow",
+    "name": "Weekly Review",
+    "description": "Agentic weekly planning session. The agent assembles the strategic picture,",
+    "workflow_name": "weekly-review",
+    "execution": "main",
+    "steps": [
+      {
+        "id": "gather",
+        "name": "Gather strategic state",
+        "step_type": "code",
+        "depends_on": [],
+        "visibility": {
+          "mode": "summary",
+          "include_keys": [
+            "contracts",
+            "wip_status",
+            "overdue",
+            "inbox_count",
+            "stale_count"
+          ]
+        }
+      },
+      {
+        "id": "draft",
+        "name": "Draft weekly plan",
+        "step_type": "reasoning",
+        "depends_on": [
+          "gather"
+        ]
+      },
+      {
+        "id": "validate",
+        "name": "Validate with user",
+        "step_type": "reasoning",
+        "depends_on": [
+          "draft"
+        ]
+      },
+      {
+        "id": "apply",
+        "name": "Apply decisions",
+        "step_type": "code",
+        "depends_on": [
+          "validate"
+        ],
+        "visibility": {
+          "mode": "none"
+        }
+      },
+      {
+        "id": "record",
+        "name": "Record the plan",
+        "step_type": "reasoning",
+        "depends_on": [
+          "apply"
+        ]
+      }
+    ],
+    "tags": [
+      "tasks",
+      "weekly",
+      "review"
+    ],
+    "parents": [
+      "tasks"
+    ],
+    "allow_override": false,
+    "step_instructions": {
+      "gather": "Gather the strategic state via the gateway:\n\n```\ndata = mcp__work-buddy__wb_run(\"weekly_review_data\")\n```\n\nReturns:\n- Active contracts with their current constraints\n- WIP limit status\n- Current MITs (from last week â€” did they get done?)\n- Task counts and distribution\n- Staleness report\n- Inbox tasks with suggested actions\n- Overdue tasks\n- Constraint-informed focus suggestions\n\nAlso fetch the project landscape:\n```\nprojects = mcp__work-buddy__wb_run(\"project_list\")\n```\n\nThis provides the project list (name, status, observation counts) for the draft step to reference alongside contracts â€” ensuring the review can identify active projects without contracts, and projects with no recent activity.\n\nAlso check git log for the past week:\n```bash\ngit log --oneline --since=\"7 days ago\" --all\n```\n\nReturn all gathered data as the step output.",
+      "draft": "Agentic step. The agent drafts a weekly plan from the gathered data. Behavioral instructions (MIT format, constraint checking, issue flagging, state change proposals) are in the slash command, not here.",
+      "validate": "Agentic step. The agent presents the draft plan to the user for confirmation or adjustment. Behavioral instructions (WIP enforcement, renegotiation protocol, validation rules) are in the slash command, not here.\n\nCollect all validated decisions as structured output.",
+      "apply": "Execute the validated decisions via the gateway:\n\n```\n// Promote tasks to MIT\nfor each new_mit:\n    mcp__work-buddy__wb_run(\"task_change_state\", {\"task_id\": \"<id>\", \"state\": \"mit\", \"due_date\": \"<date>\"})\n\n// Complete done tasks\nfor each completed:\n    mcp__work-buddy__wb_run(\"task_toggle\", {\"task_id\": \"<id>\"})\n\n// Demote carried-over MITs back to inbox\nfor each demoted:\n    mcp__work-buddy__wb_run(\"task_change_state\", {\"task_id\": \"<id>\", \"state\": \"inbox\"})\n```\n\nIf constraint updates were agreed, update the contract files' `current_constraint` frontmatter field.",
+      "record": "Agentic step. The agent records the weekly plan. Behavioral instructions (what to include, brevity guidance) are in the slash command, not here."
+    }
+  }
+}

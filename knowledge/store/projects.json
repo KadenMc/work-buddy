@@ -1,0 +1,93 @@
+{
+  "projects": {
+    "kind": "system",
+    "name": "Projects",
+    "description": "Project registry — identity, observations, memory, discovery, and lifecycle",
+    "tags": ["projects", "registry", "hindsight", "observations"],
+    "children": ["projects/project-list-directions", "projects/project-new-directions", "projects/project-delete-directions", "projects/project-observe-directions", "projects/project-discover-directions"],
+    "content": {
+      "summary": "Projects are registered entities tracked by slug. Each project has identity (name, status, description), observations (strategic notes retained into Hindsight), and memory (semantic recall via project_memory). Use project_list to browse, project_get for detail, project_observe to record decisions/pivots.",
+      "full": "Projects are any bounded area of work or life the user tracks: research papers, coding repos, a book, a business, admin workflows. The project system captures understanding (what a project is, its current state, where it's heading) rather than substance (commit counts, task lists, dirty trees).\n\nThree-layer architecture:\n- Layer 1: Collector (signal scan) — vault dirs, STATE.md, task tags, git, contracts. Produces projects_summary.md in context bundles.\n- Layer 2: Identity Registry (SQLite, projects/projects.db) — slug, name, status, description. Fast queries, no LLM cost.\n- Layer 3: Project Memory (Hindsight bank: project-memory) — LLM-extracted facts from observations, embedding-based semantic recall, mental models (project-landscape, active-risks, recent-decisions, inter-project-deps).\n\nKey principle: Cheap identity, deep memory on demand. Always inject the project list (free SQLite query), let agents explore memory when they need it.\n\nLifecycle: active -> paused -> past. 'inferred' means discovered from signals but not yet confirmed.\n\nTag taxonomy (Hindsight): project:{slug}, source:chat|collector|state-file|user, session:{id}.\n\nIntegration points — project list is injected into: context collection (collect-and-orient), morning routine (context-snapshot), chrome triage (build_triage_context), task triage (gather step), task briefing (daily_briefing), blindspot detection (gather-signals), journal backlog routing, weekly review (gather step).\n\nFile layout: work_buddy/projects/ (store.py for SQLite identity), work_buddy/collectors/project_collector.py (signal scanner), work_buddy/memory/ (ingest.py, query.py for Hindsight), work_buddy/ir/sources/projects.py (IR source adapter)."
+    }
+  },
+  "projects/project-list-directions": {
+    "kind": "directions",
+    "name": "Listing Projects",
+    "description": "How to list and present projects — grouping by status, detail drill-down via project_get",
+    "aliases": ["project_list", "show projects", "list projects", "project status"],
+    "tags": ["projects", "project_list", "project_get", "presentation"],
+    "parents": ["projects"],
+    "trigger": "user asks to see their projects or wants a project overview",
+    "command": "wb-project-list",
+    "workflow": null,
+    "capabilities": ["projects/project_list", "projects/project_get"],
+    "content": {
+      "summary": "Call project_list, then present results grouped by status (active, inferred, paused, future, past). Show slug, name, and description per project. For detail on a specific project, use project_get which includes Hindsight memory recall.",
+      "full": "Call: mcp__work-buddy__wb_run(\"project_list\")\n\nPresentation rules:\n- Group results by status in this order: active, inferred, paused, future, past\n- For each project show: slug, name, description (if set)\n\nFor details on a specific project:\nmcp__work-buddy__wb_run(\"project_get\", {\"slug\": \"...\"})\nThis includes identity + state + trajectory + Hindsight memory recall."
+    }
+  },
+  "projects/project-delete-directions": {
+    "kind": "directions",
+    "name": "Deleting a Project",
+    "description": "Pre-flight steps before deleting a project — confirm slug, explain impact, then call",
+    "aliases": ["project_delete", "delete project", "remove project"],
+    "tags": ["projects", "project_delete", "consent", "destructive"],
+    "parents": ["projects"],
+    "trigger": "user wants to remove a project from the registry",
+    "command": "wb-project-delete",
+    "workflow": null,
+    "capabilities": ["projects/project_delete"],
+    "content": {
+      "summary": "Before calling project_delete: (1) confirm the slug with the user, (2) explain that registry identity is removed but Hindsight memories are preserved. Then call — the consent system handles approval. If user wants to clear memories too, use memory_prune separately afterward.",
+      "full": "Pre-flight sequence (do not skip):\n1. Confirm the slug with the user.\n2. Show what will happen: the project identity is removed from the registry, but Hindsight memories are preserved.\n3. Call: mcp__work-buddy__wb_run(\"project_delete\", {\"slug\": \"...\"})\n   The consent system will handle approval automatically.\n\nDon'ts:\n- Do not call project_delete without confirming the slug first\n- Do not assume Hindsight memories are deleted — they are not\n\nIf the user also wants to clear Hindsight memories:\nmcp__work-buddy__wb_run(\"memory_prune\", {...})\nThis is a separate consent-gated operation."
+    }
+  },
+  "projects/project-new-directions": {
+    "kind": "directions",
+    "name": "Creating a Project",
+    "description": "Parameter defaults, slug rules, when to ask vs infer, and post-creation ritual for project_create",
+    "aliases": ["project_create", "new project", "create project", "add project"],
+    "tags": ["projects", "project_create", "project_observe", "slug"],
+    "parents": ["projects"],
+    "trigger": "user wants to register a new project",
+    "command": "wb-project-new",
+    "workflow": null,
+    "capabilities": ["projects/project_create", "projects/project_observe"],
+    "content": {
+      "summary": "Required: slug (lowercase-hyphens, infer from name if given) and name. Status defaults to 'active' — only ask if ambiguous. Ask for description if not provided (it powers semantic search). After creation, confirm slug and suggest an initial project_observe to seed memory.",
+      "full": "Call: mcp__work-buddy__wb_run(\"project_create\", params)\n\nParameters:\n- slug (required): lowercase, hyphens. If the user gave a name, slugify it. Don't ask.\n- name (required): human-readable project name.\n- status: default \"active\". Only ask if ambiguous.\n- description: a sentence or two about what this project is. Ask if not provided — descriptions power semantic search.\n\nDon'ts:\n- Do not over-prompt — infer slug from name, default status to active\n- Do not skip asking for description — it is used for semantic search\n\nPost-creation ritual:\n1. Confirm with the slug.\n2. Suggest adding an initial observation:\n   mcp__work-buddy__wb_run(\"project_observe\", {\"project\": \"<slug>\", \"content\": \"...\"})\n   This seeds Hindsight memory for the project."
+    }
+  },
+  "projects/project-observe-directions": {
+    "kind": "directions",
+    "name": "Recording Project Observations",
+    "description": "What makes a good observation, slug disambiguation, and existence prerequisite for project_observe",
+    "aliases": ["project_observe", "record observation", "project memory", "project note", "strategic pivot"],
+    "tags": ["projects", "project_observe", "hindsight", "memory", "observation"],
+    "parents": ["projects"],
+    "trigger": "user wants to log a decision, pivot, blocker, feedback, or insight about a project",
+    "command": "wb-project-observe",
+    "workflow": null,
+    "capabilities": ["projects/project_observe"],
+    "content": {
+      "summary": "Use project_observe for things that wouldn't appear in code or task lists: supervisor feedback, strategic pivots, abandoned approaches, scope changes, deadlines, risk signals. If slug is ambiguous, call project_list first. Project must already exist — use /wb-project-new first if needed.",
+      "full": "Call: mcp__work-buddy__wb_run(\"project_observe\", params)\n\nParameters:\n- project (required): project slug. If ambiguous, call project_list to show options first.\n- content (required): the observation.\n\nWhat counts as a good observation (capture things that wouldn't appear in code or task lists):\n- Supervisor feedback\n- Strategic pivots or direction changes\n- Abandoned approaches (what you tried and why it failed)\n- Scope changes\n- Deadlines or milestones\n- Risk signals\n\nConstraints:\n- The project must already exist in the registry\n- If it doesn't exist: use project_create first (wb-project-new)\n\nObservations are retained into Hindsight for LLM-powered extraction and semantic search."
+    }
+  },
+  "projects/project-discover-directions": {
+    "kind": "directions",
+    "name": "Discovering Project Candidates",
+    "description": "How to evaluate and triage project_discover candidates — create, alias, or ignore",
+    "aliases": ["project_discover", "find projects", "unregistered projects", "project candidates"],
+    "tags": ["projects", "project_discover", "discovery", "triage"],
+    "parents": ["projects"],
+    "trigger": "agent or user wants to find unregistered project candidates from vault signals",
+    "command": "wb-project-discover",
+    "workflow": null,
+    "capabilities": ["projects/project_discover", "projects/project_create"],
+    "content": {
+      "summary": "project_discover scans task tags (#projects/<slug>) and git repos for signals not matching any confirmed project. For each candidate: decide create / alias in config.yaml / ignore. Watch for artifact candidates (e.g., #projects/open-source is a tag, not a real project). Present candidates with your assessment and let the user decide.",
+      "full": "Call: mcp__work-buddy__wb_run(\"project_discover\")\n\nWhat is scanned:\n- Task tags (#projects/<slug>)\n- Git repos\n\nFor each candidate, evaluate and triage with one of three actions:\n1. Create as a new project → mcp__work-buddy__wb_run(\"project_create\", {...}) (or /wb-project-new)\n2. Alias to an existing project → add to config.yaml under projects.aliases\n3. Ignore → no action needed\n\nHeuristics:\n- Is this a real, distinct project? Or an artifact?\n  - Example: #projects/open-source is likely a tag category, not a standalone project\n- Does it have ongoing tasks or git activity that warrant tracking?\n\nPresentation:\n- Present all candidates to the user with your assessment (proposed action + reasoning)\n- Let the user make the final call on each"
+    }
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "work-buddy": {
+      "type": "http",
+      "url": "http://localhost:5126/mcp"
+    }
+  }
+}

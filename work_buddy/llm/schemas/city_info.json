@@ -1,0 +1,14 @@
+{
+  "type": "object",
+  "properties": {
+    "city": {"type": "string"},
+    "country": {"type": "string"},
+    "population_millions": {"type": "number"},
+    "notable_landmarks": {
+      "type": "array",
+      "items": {"type": "string"}
+    }
+  },
+  "required": ["city", "country", "population_millions", "notable_landmarks"],
+  "additionalProperties": false
+}

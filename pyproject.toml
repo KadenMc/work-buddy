@@ -1,0 +1,81 @@
+[tool.poetry]
+name = "work-buddy"
+version = "0.1.0"
+description = "Personal agent framework built on Claude Code and MCP"
+authors = ["Kaden McKeen"]
+license = "MIT"
+readme = "README.md"
+packages = [{include = "work_buddy"}]
+classifiers = ["Development Status :: 4 - Beta"]
+
+[tool.poetry.scripts]
+collect = "work_buddy.collect:main"
+work-buddy-mcp = "work_buddy.mcp_server:main"
+
+# --- Core dependencies (always installed) ---
+[tool.poetry.dependencies]
+python = ">=3.11,<3.12"
+pyyaml = "^6.0"
+networkx = ">=3.0,<4.0"
+omegaconf = "^2.3.0"
+flask = "^3.1.3"
+mcp = {extras = ["cli"], version = "^1.27.0"}
+anthropic = "^0.89.0"
+jinja2 = "^3.1.6"
+cron-descriptor = "^2.0.8"
+simhash = "^2.1.2"
+rank-bm25 = "^0.2.2"
+
+# Embedding & search (core — powers wb_search, IR, chrome clustering)
+torch = "^2.11.0"
+sentence-transformers = "^5.3.0"
+
+# Platform-specific PTY libraries (auto-selected by OS)
+pywinpty = {version = "^3.0.3", markers = "sys_platform == 'win32'"}
+ptyprocess = {version = "^0.7.0", markers = "sys_platform != 'win32'"}
+
+# Optional feature dependencies (installed via extras)
+hindsight-api-slim = {version = "^0.4.22", optional = true}
+hindsight-client = {version = "^0.4.22", optional = true}
+python-telegram-bot = {version = "^22.7", optional = true}
+
+# --- Optional feature groups ---
+# Install with: pip install work-buddy[memory,telegram]
+# Or all at once: pip install work-buddy[all]
+[tool.poetry.extras]
+memory = ["hindsight-api-slim", "hindsight-client"]
+telegram = ["python-telegram-bot"]
+all = ["hindsight-api-slim", "hindsight-client", "python-telegram-bot"]
+
+# For CUDA/GPU support, install the CUDA torch wheel after install.
+# See README.md "Optional: GPU Acceleration" for platform-specific instructions.
+
+[[tool.poetry.source]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+priority = "supplemental"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[dependency-groups]
+dev = [
+    "pytest (>=9.0.3,<10.0.0)",
+    "pytest-cov (>=7.1.0,<8.0.0)",
+    "freezegun (>=1.5.5,<2.0.0)"
+]
+docs = [
+    "mkdocs (>=1.6.0,<2.0.0)",
+    "mkdocs-material (>=9.6.0,<10.0.0)",
+    "mkdocstrings[python] (>=0.29.0,<1.0.0)"
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "unit: Pure logic tests — no filesystem, no network",
+    "component: Tests with temp dirs, temp DBs, or service boundaries",
+    "integration: CLI smoke tests and HTTP endpoint tests",
+]
+addopts = "-q --tb=short"

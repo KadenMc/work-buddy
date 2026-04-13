@@ -1,0 +1,7 @@
+# Machine-specific overrides (copy to config.local.yaml)
+# Merged on top of config.yaml — only include keys you want to override.
+# This file is gitignored once renamed.
+
+dashboard:
+  external_url: "https://your-machine.your-tailnet.ts.net"  # from `tailscale serve status`
+  # read_only: true                                          # view-only on mobile

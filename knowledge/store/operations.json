@@ -1,0 +1,83 @@
+{
+  "operations": {
+    "kind": "system",
+    "name": "Operations",
+    "description": "How to operate work-buddy — MCP gateway, sessions, Python environment",
+    "tags": [
+      "operations",
+      "mcp",
+      "sessions",
+      "python",
+      "conda"
+    ],
+    "children": [
+      "operations/mcp-gateway",
+      "operations/agent-sessions"
+    ],
+    "content": {
+      "summary": "Core operational knowledge: how to discover and call MCP capabilities, how agent sessions work, and how to run Python in the conda environment.",
+      "full": "Core operational knowledge: how to discover and call MCP capabilities, how agent sessions work, and how to run Python in the conda environment. Start with the MCP gateway for any interaction with work-buddy systems."
+    }
+  },
+  "operations/mcp-gateway": {
+    "kind": "directions",
+    "name": "MCP Gateway",
+    "description": "How to discover and call MCP gateway capabilities — the primary interface for agents",
+    "aliases": [
+      "wb_search",
+      "wb_run",
+      "wb_init",
+      "wb_advance",
+      "wb_status",
+      "gateway tools",
+      "MCP tools"
+    ],
+    "tags": [
+      "mcp",
+      "gateway",
+      "wb_search",
+      "wb_run",
+      "wb_init"
+    ],
+    "parents": [
+      "operations"
+    ],
+    "trigger": "agent needs to interact with work-buddy systems or discover capabilities",
+    "command": null,
+    "workflow": null,
+    "capabilities": [],
+    "content": {
+      "summary": "Use wb_init first, wb_search to discover, wb_run to execute. Always prefer MCP tools over Python code. Do not guess at imports — search first.",
+      "full": "FastMCP server exposing work-buddy capabilities via 5 gateway tools with dynamic tool discovery. Runs as a persistent sidecar service on localhost:5126, shared across all Claude Code sessions in this project.\n\nBefore writing Python to interact with the vault, tasks, journal, contracts, or memory — check the gateway first. Many operations already exist as registered capabilities.\n\n| Tool | Purpose |\n|------|------|\n| wb_init(session_id) | REQUIRED first call. Registers your session. |\n| wb_search(query) | Discover OR inspect. Natural language → find capabilities. |\n| wb_run(capability, params) | Execute a discovered capability. |\n| wb_advance(run_id, result) | Step through multi-step workflows. |\n| wb_status() | Check system health and active workflows. |\n\nWorkflow: wb_init → wb_search to discover → read the parameter schema → wb_run to execute.\n\nInspect before calling: wb_search with an exact capability name returns just that one entry with its full parameter schema.\n\nTransport modes: streamable-http (default, persistent sidecar, .mcp.json type:http url:http://localhost:5126/mcp) or stdio (fallback, session-specific, python -m work_buddy.mcp_server without --http).\n\nSubprocess isolation for auto_run steps: Workflow steps marked auto_run execute in isolated subprocesses (not in-process). This prevents CPU-bound code from holding the GIL and blocking other sessions. Protocol: conductor spawns python -m work_buddy.mcp_server.subprocess_runner, sends JSON on stdin (callable, kwargs, session_id), reads JSON result from stdout. All logging goes to stderr. Timeout: 30s default.\n\nSearch architecture: BM25 + semantic embeddings computed server-side by embedding service (localhost:5124), fused into a single score. Falls back to substring matching if service offline. Each capability has name, description, and optional search_aliases as scoring surfaces.\n\nGateway pattern: Instead of one MCP tool per function, the server has a registry of capabilities and workflows. Agents discover via wb_search, execute via wb_run.\n\nWorkflow conductor: wb_run starts a WorkflowDAG, returns first step instructions + workflow_run_id. Agent calls wb_advance after each step. auto_run steps are executed transparently in subprocesses.\n\nConfiguration: sidecar.services.mcp_gateway in config.yaml (module, port 5126, args: [--http]). Claude Code connection: .mcp.json with type:http, url:http://localhost:5126/mcp.\n\nHealth check: GET /health on port 5126 returns {status: ok}.\n\nDo not:\n- Guess at work_buddy.* module paths or function signatures — search first\n- Write raw Python to read vault files when a gateway capability already exists\n- Write Python to call work-buddy functions when the same operation is available as an MCP tool\n- Skip wb_init — all other tools are gated behind it"
+    }
+  },
+  "operations/agent-sessions": {
+    "kind": "system",
+    "name": "Agent Sessions",
+    "description": "Session ID setup, agent directories, Python conda environment, and Poetry dependency management",
+    "aliases": [
+      "WORK_BUDDY_SESSION_ID",
+      "conda activate",
+      "poetry add",
+      "session directory"
+    ],
+    "tags": [
+      "session",
+      "conda",
+      "poetry",
+      "python",
+      "agent-directory"
+    ],
+    "parents": [
+      "operations"
+    ],
+    "ports": [],
+    "entry_points": [
+      "work_buddy.agent_session"
+    ],
+    "content": {
+      "summary": "Session ID is auto-set by SessionStart hook. Use powershell.exe wrapper for conda Python. Never pip install — use Poetry.",
+      "full": "WORK_BUDDY_SESSION_ID is set automatically by a SessionStart hook (.claude/hooks/session-init.sh). On Claude Code Desktop, the hook outputs it as context.\n\nAgent directories live under data/agents/<session>/. Created automatically when wb_init is called. Contains: manifest.json, consent.db (SQLite), activity ledger (JSONL), context bundles, logs, and workflow DAG state.\n\nTo run Python in the conda env:\npowershell.exe -Command \"cd <repo-root>; conda activate work-buddy; <command>\"\n\nNEVER use pip install. Always use Poetry:\n- Production deps: poetry add <package>\n- Temporary deps: poetry add --group temp <package>\n- Remove: poetry remove <package>"
+    }
+  }
+}

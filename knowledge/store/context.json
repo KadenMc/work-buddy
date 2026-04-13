@@ -1,0 +1,80 @@
+{
+  "context/collect-directions": {
+    "kind": "directions",
+    "name": "Context Collection Directions",
+    "description": "How to collect context and synthesize an orientation — priority order, flags, contract cross-reference",
+    "aliases": ["collect context", "orient", "context bundle", "current work state", "what am I working on"],
+    "tags": ["context", "collection", "orientation", "synthesis", "directions"],
+    "parents": ["context"],
+    "trigger": "user wants to know their current work state or collect context",
+    "command": "wb-context-collect",
+    "workflow": "context/collect-and-orient",
+    "capabilities": ["context/context_bundle", "context/context_git", "context/context_tasks", "contracts/active_contracts"],
+    "content": {
+      "summary": "Collect via context_bundle, read in priority order (git -> tasks -> projects -> obsidian -> chats), synthesize 10-15 line orientation. Cross-reference against active contracts. Suggest one next action.",
+      "full": "Use mcp__work-buddy__wb_run(\"context_bundle\") to collect. Scope options:\n- Default: config.yaml windows\n- Quick: {\"hours\": 24}\n- Last N days: {\"days\": 3}\n- Individual: context_git, context_chat, etc.\n\n## Synthesis instructions\n\nRead each context file in priority order (git -> tasks -> projects -> obsidian -> chats). Extract the signal -- don't dump raw contents.\n\nPresent a concise orientation covering:\n\nActive work (from git):\n- Which repos had recent commits? What kind of work?\n- Any dirty working trees? (uncommitted changes = in-progress work)\n\nProjects (from projects summary):\n- What projects are currently active? State?\n- Do active projects align with where time is spent?\n\nCurrent state (from Obsidian):\n- Journal entries today? Sign-in data?\n- Incomplete tasks? Any tagged as focused?\n\nRecent conversations (from chats):\n- Last few sessions about? Any unfinished work?\n\nFlags -- surface when data warrants:\n- No journal entry today -> user hasn't checked in\n- Running Notes growing without triage -> insight hoarding\n- Git activity in repos not related to any contract -> potential drift\n- Lots of infra commits, no paper artifacts -> infrastructure displacement\n- Projects with no recent activity -> stale or abandoned?\n\n## Contract cross-reference\n\nCross-reference against active_contracts:\n- Does git activity align with any active contract?\n- Is there work happening that doesn't map to any contract?\n\nIf no contracts exist: 'No active contracts -- all work is currently unanchored.'\n\n## Suggest one next action\n\nBased on orientation, suggest one concrete next step -- highest-leverage action given current state.\n\n## Output format\n\nKeep to 10-15 lines max. The user doesn't need a report -- they need a mirror.\n\n## Don'ts\n- Don't read every file verbatim\n- Don't generate a 50-line report\n- Don't invent concerns not in the data\n- Don't skip the contract cross-reference\n- Don't import work_buddy.* modules when a wb_run capability exists"
+    }
+  },
+  "context/context-review-directions": {
+    "kind": "directions",
+    "name": "Context Review Directions",
+    "description": "How to review an existing context bundle — freshness check, same synthesis rules as context-collect, no re-collection",
+    "aliases": ["review context", "review bundle", "check context", "latest bundle", "orient from existing bundle"],
+    "tags": ["context", "bundle", "review", "orientation", "synthesis", "directions"],
+    "parents": ["context"],
+    "trigger": "user wants to orient from an existing context bundle without re-collecting",
+    "command": "wb-context-review",
+    "workflow": "context/review-latest-bundle",
+    "capabilities": ["context/context_bundle", "contracts/active_contracts"],
+    "content": {
+      "summary": "Follow review-latest-bundle workflow to find and check freshness of the most recent bundle. Synthesize using same rules as context-collect: priority order, extract signal, cross-reference contracts, suggest one next action, max 10-15 lines.",
+      "full": "Follow the review-latest-bundle workflow to find the latest bundle and check freshness. Then synthesize using the same rules as /wb-context-collect -- the behavioral rules are identical; only the data source differs (existing bundle vs fresh collection).\n\nSynthesis instructions are identical to context/collect-directions -- load those via agent_docs if needed.\n\n## When to prefer this over collect-and-orient\n- The user just ran the collector manually and wants the results interpreted\n- You're mid-conversation and need a quick check -- re-collecting would break flow\n- The bundle is less than a few hours old and conditions haven't changed much"
+    }
+  },
+  "context/session-find-uncommitted": {
+    "kind": "directions",
+    "name": "Session Find Uncommitted",
+    "description": "How to invoke and present uncommitted session results — per-entry format and follow-up suggestion",
+    "aliases": ["find uncommitted", "uncommitted sessions", "sessions with dirty files", "who didn't commit"],
+    "tags": ["context", "session", "uncommitted", "git"],
+    "parents": ["context"],
+    "trigger": "user asks which sessions left uncommitted changes, or wants to audit agent writes",
+    "command": "wb-session-find-uncommitted",
+    "workflow": null,
+    "capabilities": ["context/session_uncommitted"],
+    "content": {
+      "summary": "Run session_uncommitted (optional days param, default 7). For each result: show 8-char session ID prefix, repo name, dirty files with git status codes. If other sessions have uncommitted changes, suggest resuming them.",
+      "full": "Find which agent sessions wrote files that are still uncommitted.\n\nRun mcp__work-buddy__wb_run(\"session_uncommitted\") with optional days parameter (default 7).\n\nFor each result entry, report:\n- The session ID (8-char prefix is enough for session_get / session_search lookups)\n- The repo name\n- The dirty files and their git status (M = modified, ?? = untracked)\n\nIf any sessions besides the current one have uncommitted changes, suggest the user resume those sessions to commit or discard the changes."
+    }
+  },
+  "context/sessions": {
+    "kind": "system",
+    "name": "Session Inspection",
+    "description": "Random-access into individual Claude Code conversation sessions — browsing, search, context expansion, git commit extraction",
+    "aliases": [
+      "session inspector",
+      "conversation browser",
+      "session_get",
+      "session_search",
+      "session_expand",
+      "session_locate",
+      "session_commits"
+    ],
+    "tags": [
+      "context",
+      "sessions",
+      "conversations",
+      "inspection"
+    ],
+    "parents": [
+      "context"
+    ],
+    "entry_points": [
+      "work_buddy.sessions.inspector"
+    ],
+    "content": {
+      "summary": "ConversationSession wraps JSONL session files with lazy-loaded indexing, span-to-turn mapping, and metadata extraction. Capabilities: session_get (browse), session_search (hybrid search within session), session_expand (full context around a message), session_locate (jump from search hit to conversation), session_commits (git commits made by agents).",
+      "full": "Random-access into individual Claude Code conversation sessions. Provides paginated browsing, context expansion, and bridging from IR search hits to message-level results.\n\nWhen to use what:\n- Find which sessions mention X: context_search (then drill in)\n- Browse a session's messages: session_get with session_id + optional limit/offset/query/roles/message_types\n- Find messages in a known session: session_get with query param (substring filter)\n- Read full text around a message: session_expand with session_id + message_index\n- Jump from search hit to conversation: session_locate with session_id + span_index\n- Semantic/keyword search within session: session_search with session_id + query\n- Git commits from agent sessions: session_commits with optional days param\n- Git context with session attribution: context_git with annotate=true\n\nSession ID resolution: All IDs are 36-char UUIDs. All session_* capabilities accept partial prefix IDs (8 chars is canonical short form). Two resolvers: resolve_session_id(partial) returns full UUID, resolve_session_path(partial) returns (Path, full_uuid). Both raise FileNotFoundError on zero or ambiguous matches. Convention: store full UUIDs in data, truncate to 8 chars only at display boundaries.\n\nArchitecture: ConversationSession wraps a JSONL session file with lazy-loaded in-memory indexed turn list (via iter_session_turns from chat_collector.py). Span-to-turn mapping replays the IR chunking algorithm for reliable session_locate. Metadata: message count, duration, timestamps, tool usage summary.\n\nGit commit extraction: session_commits parses raw JSONL entries (bypassing iter_session_turns which drops tool I/O) to find Bash tool calls containing git commit and their results. build_session_map(days) returns {short_hash: full_session_id} for joining with git_collector output. context_git with annotate=true uses this map to tag commit lines.\n\nFiles: inspector.py (ConversationSession class, session ID resolvers, commit extraction, 6 gateway handlers), __init__.py (empty package init)."
+    }
+  }
+}

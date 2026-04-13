@@ -1,0 +1,18 @@
+{
+  "browser/chrome-triage-directions": {
+    "kind": "directions",
+    "name": "Chrome Triage Directions",
+    "description": "How to run Chrome tab triage — pipeline overview, agent role (validate Sonnet's groups), available actions",
+    "aliases": ["triage tabs", "chrome triage", "tab cleanup", "browser triage", "close tabs"],
+    "tags": ["browser", "chrome", "tabs", "triage", "directions"],
+    "parents": ["browser"],
+    "trigger": "user wants to triage, organize, or close Chrome tabs",
+    "command": "wb-chrome-triage",
+    "workflow": "browser/chrome-triage",
+    "capabilities": ["context/chrome_activity", "context/chrome_cluster", "context/chrome_content", "context/chrome_infer", "context/triage_item_detail"],
+    "content": {
+      "summary": "Start chrome-triage workflow. 4-tier pipeline runs automatically. Your job: validate Sonnet's intent groups, resolve ambiguities, present groups to user by suggested action, collect decisions.",
+      "full": "Start via mcp__work-buddy__wb_run(\"chrome-triage\").\n\nThe system runs a 4-tier pipeline automatically:\n1. Collect -- currently-open tabs + engagement scores\n2. Extract & Cluster -- page content -> embeddings -> Louvain clusters\n3. Haiku Summarize -- structured per-tab summaries (~$0.001/tab, cached)\n4. Sonnet Intent Group -- cross-tab intent inference with context\n\nYour job: receive Sonnet's structured intent groups, validate them (resolve flagged ambiguities using your richer context), present to the user, collect decisions, and execute.\n\nFor each intent group, the user chooses:\n- close -- tabs served their purpose\n- group -- organize related tabs together\n- create task -- turn into a new task (then close)\n- record -- attach to an existing task (then close)\n- leave -- still actively useful\n\nPresent groups by suggested action. Be efficient -- don't explain the pipeline."
+    }
+  }
+}

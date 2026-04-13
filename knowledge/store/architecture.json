@@ -1,0 +1,191 @@
+{
+  "architecture": {
+    "kind": "system",
+    "name": "Architecture & Repo Structure",
+    "description": "Repository layout, subsystem organization, and development conventions",
+    "tags": [
+      "architecture",
+      "repo",
+      "structure",
+      "conventions"
+    ],
+    "children": [
+      "architecture/contracts",
+      "architecture/knowledge-system",
+      "architecture/mcp-import-discipline",
+      "architecture/repo-structure",
+      "architecture/retry-queue",
+      "architecture/workflows"
+    ],
+    "content": {
+      "summary": "work_buddy/ is the Python package. knowledge/store/ has workflow definitions and agent docs. Contracts live in the Obsidian vault (contracts.vault_path in config).",
+      "full": "The work-buddy repo is organized around a Python package (work_buddy/), a unified knowledge store (knowledge/store/ — workflow definitions, capability metadata, agent documentation), metacognition patterns (metacognition/), agent session data (data/agents/, gitignored), and slash commands (.claude/commands/). Contracts live in the Obsidian vault at the path configured by contracts.vault_path in config.yaml (default: work-buddy/contracts, resolved relative to vault_root). The knowledge store is the canonical documentation source for all subsystems."
+    }
+  },
+  "architecture/repo-structure": {
+    "kind": "system",
+    "name": "Repository Structure",
+    "description": "Directory layout — what lives where, with subsystem README pointers",
+    "aliases": [
+      "directory layout",
+      "where is",
+      "file location",
+      "project structure"
+    ],
+    "tags": [
+      "repo",
+      "structure",
+      "directories",
+      "layout"
+    ],
+    "parents": [
+      "architecture"
+    ],
+    "content": {
+      "summary": "work_buddy/ = Python package. knowledge/store/ = workflow definitions + agent docs. agents/ = per-session (gitignored). .claude/commands/ = slash commands.",
+      "full": "work_buddy/ = Python package. Key top-level modules: agent_session.py (identity), artifacts.py (centralized store), paths.py (path resolution), tools.py (feature toggles), config.py (config.yaml + config.local.yaml overlay), consent.py (SQLite-backed), workflow.py (DAG engine).\n\nKey packages: knowledge/ (agent docs: query, index, store, editor, vault adapter), dashboard/ (Flask + frontend/ package), health/ (diagnostics engine, checks, components), collectors/ (16 sources), mcp_server/ (gateway + activity_ledger.py), sessions/ (conversation inspector), notifications/ (surfaces: obsidian, telegram, dashboard), messaging/ (inter-agent), memory/ (Hindsight), telegram/ (bot), threads/ (chat system), projects/ (registry + Hindsight observations), triage/ (Chrome tab pipeline), llm/ (API wrappers), chrome_native_host/ (extension host), obsidian/ (bridge, vault_writer, tasks, tags, smart, datacore, ktr, day_planner, vault_events, commands), calendar/, journal_backlog/.\n\nknowledge/store/ = workflow definitions + agent docs (JSON). contracts/ = live data. sidecar_jobs/ = scheduled job definitions.\n\ndata/ = all generated data (gitignored): agents/ (per-session: consent.db, manifests, logs, ledgers), context/ (bundles), runtime/ (PID, state, tool status), cache/ (LLM, chrome tabs), chrome/ (ledger), db/ (SQLite: messages, tasks, projects), logs/ (debug logs), commit/ (90d TTL), export/, report/, scratch/ (artifact types with TTL lifecycle).\n\n.claude/commands/ = 34 slash commands (thin launchers loading from knowledge store)."
+    }
+  },
+  "architecture/workflows": {
+    "kind": "system",
+    "name": "Workflow System",
+    "description": "Workflow execution — DAG, execution policy, auto-run steps, conductor, step result visibility",
+    "aliases": [
+      "workflow DAG",
+      "execution policy",
+      "auto_run",
+      "conductor",
+      "workflow steps"
+    ],
+    "tags": [
+      "workflows",
+      "DAG",
+      "execution-policy",
+      "auto-run",
+      "conductor"
+    ],
+    "parents": [
+      "architecture"
+    ],
+    "content": {
+      "summary": "Workflow definitions live in knowledge/store/workflows.json as WorkflowUnit entries. DAG enforces dependency ordering. auto_run steps execute deterministic code automatically. Steps can declare a visibility spec (full/summary/none/auto) controlling what agents see inline vs on-demand via wb_step_result.",
+      "full": "Workflow definitions live in knowledge/store/workflows.json as WorkflowUnit entries. Each contains:\n- workflow_name: registry slug\n- execution: main | subagent (default policy)\n- steps: [{id, name, step_type, depends_on, auto_run, optional, execution, ...}]\n- step_instructions: {step_id: instruction text}\n- content.full: workflow-level context (philosophy, what-not-to-do)\n\nThe conductor reads these at runtime via _discover_workflows_from_store(). Workflows can chain into sub-workflows via workflow_ref. Steps with auto_run specs are executed by the conductor automatically.\n\n## Auto-Run Steps\n\nWorkflow steps can be marked `auto_run` in `workflows.json`. The conductor executes these transparently — the agent never sees them as \"current.\" Results are stored in the DAG and delivered to the agent in `step_results`.\n\n```yaml\nsteps:\n  - id: load-config\n    name: Load morning config\n    step_type: code\n    auto_run:\n      callable: work_buddy.morning.get_morning_config  # dotted import path\n      kwargs: {}         # optional static keyword args\n      input_map: {}      # optional: {kwarg_name: step_id} wires prior results into kwargs\n      timeout: 30        # seconds (default 30)\n```\n\n**When to use auto_run:** The step is deterministic, has no side effects, needs no agent reasoning, and produces data consumed by later steps. Examples: config loading, phase resolution, data formatting.\n\n**When NOT to use auto_run:** The step requires LLM reasoning, user interaction, consent, or calls external services that may fail and need agent-mediated recovery.\n\n**Safety:** Only `work_buddy.*` import paths are allowed. Failed auto_run steps are marked FAILED with the error surfaced to the agent. A 30s default timeout prevents runaway calls.\n\n**Data threading:** Every response from the conductor includes `step_results: {step_id: result}` — a map of all completed step results (auto_run and agent-completed). The `input_map` field lets auto_run steps consume upstream results declaratively: `input_map: {cfg: load-config}` passes the `load-config` result as the `cfg` kwarg.\n\n**Implementation:** `_execute_auto_run()` in `conductor.py`. The auto-run loop is in `_build_response()` — it chains consecutive auto_run steps before returning control to the agent.\n\n## Workflow-level blanket consent\n\nStarting a workflow grants blanket consent for all its steps (grant_workflow_consent). The blanket is revoked when the workflow completes (3h default TTL). Steps can opt out with requires_individual_consent: true.\n\n## DAG resilience\n\n- Step results over 50K chars are capped with a summary (_cap_step_results)\n- Timed-out auto_run steps produce timeout_recovery hints with re-poll instructions\n- Smart trimming: only relevant predecessor results are sent to each step (not all results)\n\n## Slash commands\n\nAll 34 slash commands (.claude/commands/wb-*.md) are thin launchers that load behavioral directions from the knowledge store via agent_docs. The slash command is the entry point; the knowledge store directions unit contains the behavioral content; the workflows.json WorkflowUnit contains the DAG structure."
+    }
+  },
+  "architecture/contracts": {
+    "kind": "system",
+    "name": "Contracts",
+    "description": "Explicit work commitments — schema, lifecycle, bounded deliverables",
+    "aliases": [
+      "work commitments",
+      "deliverables",
+      "WIP limit",
+      "contract schema"
+    ],
+    "tags": [
+      "contracts",
+      "commitments",
+      "deliverables",
+      "deadlines"
+    ],
+    "parents": [
+      "architecture"
+    ],
+    "content": {
+      "summary": "Contracts live in the Obsidian vault (contracts.vault_path in config) as markdown with YAML frontmatter. Any bounded deliverable qualifies.",
+      "full": "Contracts make work commitments explicit. They live in the Obsidian vault at the path configured by contracts.vault_path in config.yaml (default: work-buddy/contracts, resolved relative to vault_root). Each is a markdown file with YAML frontmatter. Any bounded deliverable qualifies (papers, deployments, grants, admin)."
+    }
+  },
+  "architecture/knowledge-system": {
+    "kind": "system",
+    "name": "Knowledge System",
+    "description": "Unified agent self-documentation — typed units, DAG hierarchy, full-content search index with BM25 + dense embeddings",
+    "aliases": [
+      "knowledge store",
+      "agent docs",
+      "knowledge index",
+      "knowledge search",
+      "self-documentation"
+    ],
+    "tags": [
+      "knowledge",
+      "documentation",
+      "search-index",
+      "BM25",
+      "embeddings",
+      "progressive-disclosure"
+    ],
+    "parents": [
+      "architecture"
+    ],
+    "entry_points": [
+      "work_buddy.knowledge"
+    ],
+    "content": {
+      "summary": "Two parallel stores (system JSON + personal vault markdown) with a shared search index. System docs: directions, system, capability, workflow units. Personal: VaultUnit. Search uses a dedicated in-memory index over full content with BM25 + dense vector RRF fusion.",
+      "full": "Two parallel knowledge stores share a common KnowledgeUnit base:\n\n- System docs (knowledge/store/*.json) — directions, system, capability, workflow units\n- Personal knowledge (Obsidian vault) — VaultUnit, user-authored patterns and feedback\n\nQueried via: knowledge (unified), knowledge_docs (system only), knowledge_personal (vault only), agent_docs (legacy alias).\n\n## Search index\n\nA dedicated in-memory index (work_buddy/knowledge/index.py) searches the FULL CONTENT of every unit — metadata, summary, and body text. Not just search_phrases() metadata.\n\nComponents:\n- BM25 (dual): content-weighted (0.7) + metadata-weighted (0.3) via rank_bm25\n- Dense vectors: full-content embeddings via embedding service (1024-dim)\n- RRF fusion when both are available, BM25-only fallback when embedding is down\n\nLifecycle:\n- Built eagerly on MCP registry init (BM25 inline ~50ms, dense in background ~3.5s)\n- Invalidated on invalidate_store() / invalidate_vault()\n- Generation guards prevent stale background threads from writing into a rebuilt index\n- MCP: knowledge_index_rebuild (force rebuild), knowledge_index_status (health check)\n\n## Progressive disclosure\n\nindex (name + children) → summary (+ content.summary) → full (+ content.full with context chain resolution).\n\n## Key files\n\n- knowledge/store/*.json — canonical data\n- work_buddy/knowledge/model.py — type hierarchy\n- work_buddy/knowledge/store.py — loader + cache + invalidation\n- work_buddy/knowledge/index.py — BM25 + dense search index\n- work_buddy/knowledge/search.py — federated search (delegates to index)\n- work_buddy/knowledge/query.py — MCP-facing callables"
+    }
+  },
+  "architecture/retry-queue": {
+    "kind": "system",
+    "name": "Retry Queue",
+    "description": "Background retry system for transient operation failures — sidecar sweep, error classification, adaptive backoff, workflow DAG integration",
+    "aliases": [
+      "retry queue",
+      "auto retry",
+      "transient failure",
+      "retry sweep",
+      "queued_for_retry",
+      "operation retry",
+      "background retry"
+    ],
+    "tags": [
+      "retry",
+      "queue",
+      "sidecar",
+      "transient",
+      "backoff",
+      "operations"
+    ],
+    "parents": [
+      "architecture"
+    ],
+    "entry_points": [
+      "work_buddy.errors",
+      "work_buddy.sidecar.retry_sweep"
+    ],
+    "content": {
+      "summary": "When a capability fails with a transient error (timeout, connection refused, bridge hiccup), the gateway auto-enqueues it for background retry. The sidecar's retry sweep picks it up and replays it with adaptive backoff. On success, the originating agent session is notified via messaging.",
+      "full": "## How it works\n\n1. **Error classification** (work_buddy/errors.py): classify_error(exc) → transient | permanent | unknown. is_transient_result(result) checks soft failures in return dicts.\n\n2. **Gateway auto-enqueue** (gateway.py): When wb_run catches a transient exception AND the capability's retry_policy is 'replay' or 'verify_first', _enqueue_for_retry() sets queued_for_retry=True on the operation record with a retry_at timestamp.\n\n3. **Sidecar sweep** (sidecar/retry_sweep.py): RetrySweep.sweep() runs every daemon tick (~30s). Scans operation records for queued retries where retry_at <= now, replays via entry.callable(**params), and handles success/failure/exhaustion.\n\n4. **Backoff strategies**: 'adaptive' (default: 10s, 20s, 45s, 90s, 120s — designed for Obsidian outages that may be seconds or minutes), 'fixed_10s', 'exponential' (10s * 2^n, capped 120s).\n\n5. **Notification**: On success → messaging.send_message() to originating session. On exhaustion → user notification via all surfaces (Obsidian, Telegram, Dashboard).\n\n6. **Workflow integration**: TaskStatus.RETRY_PENDING blocks dependents without killing the workflow. On retry success → conductor.resume_after_retry() completes the step and unblocks dependents. On exhaustion → conductor.fail_after_retry_exhaustion() fails the step.\n\n## Agent perspective\n\nWhen an agent calls wb_run and gets {queued_for_retry: true}, it should MOVE ON. The retry_hint says: 'This operation has been queued for automatic background retry. You will be notified when it succeeds. Move on to other work.'\n\n## Configuration\n\nconfig.yaml → sidecar.retry_queue: enabled, max_retries (default 5), default_backoff ('adaptive'), max_retry_age_minutes (30).\n\n## Key files\n\n- work_buddy/errors.py — error classification\n- work_buddy/sidecar/retry_sweep.py — RetrySweep class\n- work_buddy/mcp_server/tools/gateway.py — _enqueue_for_retry(), operation record extensions\n- work_buddy/sidecar/daemon.py — sweep wired into tick loop\n- work_buddy/workflow.py — TaskStatus.RETRY_PENDING\n- work_buddy/mcp_server/conductor.py — resume_after_retry(), fail_after_retry_exhaustion()\n\n## Observability\n\nwb_status() includes retry_queue summary (queued count, next_retry_at). _list_recent_operations() shows 'queued_retry' status with retry_at and max_retries."
+    }
+  },
+  "architecture/mcp-import-discipline": {
+    "kind": "system",
+    "name": "MCP Server Import Discipline",
+    "description": "Critical safety constraint: why heavy library imports in capability callables deadlock the MCP server, and the correct pattern to avoid it",
+    "content": {
+      "full": "## Rule\n\nThe MCP server process must **never** import heavy compute libraries in capability callables. This includes `numpy`, `rank_bm25`, `sentence-transformers`, and `sqlite3` (via `ir.store`).\n\nAll heavy compute goes through the embedding service HTTP API (`localhost:5124`).\n\n## Why: the deadlock mechanism\n\nThe MCP server uses `asyncio.to_thread()` to dispatch capability callables to a thread pool. If a callable does a deferred import of a heavy module (e.g., `from work_buddy.ir.engine import search`), the import triggers Python's per-module import lock. The main thread (running the asyncio event loop) may also need import locks for its own operations. Result: **permanent deadlock**.\n\n### Step-by-step\n\n```\n1. Claude calls wb_run(\"context_search\", ...)\n2. Gateway submits callable to thread pool via asyncio.to_thread()\n3. Worker thread starts executing the callable\n4. Callable hits: from work_buddy.ir.engine import search\n5. This triggers loading numpy, rank_bm25, sqlite3 — heavy C extensions\n6. Python import system acquires per-module locks for each module in the chain\n7. Main thread's event loop needs one of those locks (for internal lazy imports)\n8. DEADLOCK: worker holds locks, waits for event loop; event loop waits for worker\n```\n\nThis was discovered and fixed on April 6, 2026. The original symptom was `context_search` hanging for 30+ seconds on first request — debug checkpoints confirmed execution reached the function body but never completed the `ir.engine` import.\n\n## The correct pattern\n\nAll heavy compute runs in the **embedding service** (`work_buddy/embedding/service.py`), which runs in its own process and already imports numpy/rank_bm25/sentence-transformers:\n\n- **`/ir/search`** endpoint — runs BM25 scoring, dense retrieval, and RRF fusion\n- **`/ir/index`** endpoint — builds/checks the search index\n\nThe MCP server's `_ir_search_dispatch` and `_ir_index_dispatch` call `client.ir_search()` and `client.ir_index()` — lightweight HTTP requests via `urllib`, no heavy imports.\n\n## The `_IN_SERVICE` flag\n\nThe `_IN_SERVICE` flag in `ir/dense.py` lets the embedding service call models directly (avoiding HTTP self-calls) while external callers still use the HTTP API.\n\n## Safe vs unsafe imports in capability callables\n\n| Safe | Unsafe |\n|------|--------|\n| `urllib`, `json`, `pathlib` | `numpy`, `rank_bm25` |\n| `work_buddy.config`, `work_buddy.paths` | `work_buddy.ir.store`, `work_buddy.ir.engine` |\n| HTTP calls to embedding service | `sqlite3` (loaded by ir.store) |\n| `work_buddy.obsidian.bridge` | `sentence_transformers` |\n\n## Key files\n\n- `work_buddy/mcp_server/registry.py` — capability registration (deadlock warnings in `_build_registry()` and `_context_capabilities()`)\n- `work_buddy/embedding/service.py` — the correct home for heavy compute\n- `work_buddy/ir/dense.py` — `_IN_SERVICE` flag\n- `work_buddy/mcp_server/context_wrappers.py` — gateway-callable wrappers following the correct pattern",
+      "summary": "The MCP server process must never import heavy compute libraries (numpy, rank_bm25, sentence-transformers, sqlite3) in capability callables. They deadlock the asyncio event loop via Python's import lock. Route heavy compute through the embedding service HTTP API (localhost:5124)."
+    },
+    "tags": [
+      "architecture",
+      "mcp",
+      "import",
+      "deadlock",
+      "asyncio",
+      "embedding-service",
+      "safety"
+    ],
+    "aliases": [
+      "import deadlock",
+      "asyncio deadlock",
+      "heavy imports",
+      "embedding service",
+      "_IN_SERVICE flag",
+      "import lock"
+    ],
+    "parents": [
+      "architecture"
+    ]
+  }
+}

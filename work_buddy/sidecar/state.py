@@ -1,0 +1,120 @@
+"""Sidecar state persistence — writes ``sidecar_state.json``.
+
+The state file is the primary observability surface for the sidecar.
+MCP capabilities, statusline scripts, and dashboards can read this
+file to see what the sidecar is doing without querying it over HTTP.
+"""
+
+import json
+import os
+import tempfile
+import time
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+from typing import Any
+
+from work_buddy.logging_config import get_logger
+from work_buddy.paths import resolve
+
+logger = get_logger(__name__)
+
+STATE_FILE = resolve("runtime/sidecar-state")
+
+
+@dataclass
+class ServiceHealth:
+    """Health snapshot for a supervised child service."""
+
+    name: str
+    port: int
+    status: str = "stopped"  # stopped | starting | healthy | unhealthy | crashed
+    pid: int | None = None
+    last_check: float = 0.0  # epoch seconds
+    crash_count: int = 0
+    last_crash: float = 0.0
+
+
+@dataclass
+class JobState:
+    """Scheduling state for a single job."""
+
+    name: str
+    schedule: str
+    next_at: float = 0.0  # epoch seconds
+    last_run_at: float = 0.0
+    last_result: str = ""  # ok | error | skipped
+
+
+@dataclass
+class SidecarState:
+    """Top-level sidecar state written to ``sidecar_state.json``."""
+
+    started_at: float = 0.0
+    pid: int = 0
+    services: dict[str, ServiceHealth] = field(default_factory=dict)
+    jobs: list[JobState] = field(default_factory=list)
+    last_tick_at: float = 0.0
+    exclusion_active: bool = False
+    events: list[dict[str, Any]] = field(default_factory=list)
+
+    def update_service(self, name: str, **kwargs: Any) -> None:
+        if name in self.services:
+            for k, v in kwargs.items():
+                setattr(self.services[name], k, v)
+
+    def set_job_states(self, job_states: list[JobState]) -> None:
+        self.jobs = job_states
+
+
+def save_state(state: SidecarState) -> None:
+    """Atomically write the state to disk."""
+    data = asdict(state)
+
+    fd, tmp_path = tempfile.mkstemp(
+        dir=STATE_FILE.parent, prefix=".sidecar_state_", suffix=".tmp"
+    )
+    try:
+        os.write(fd, json.dumps(data, indent=2).encode())
+        os.close(fd)
+        os.replace(tmp_path, STATE_FILE)
+    except Exception:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def load_state() -> SidecarState | None:
+    """Load state from disk, or return None if not present."""
+    if not STATE_FILE.exists():
+        return None
+    try:
+        data = json.loads(STATE_FILE.read_text())
+        state = SidecarState(
+            started_at=data.get("started_at", 0),
+            pid=data.get("pid", 0),
+            last_tick_at=data.get("last_tick_at", 0),
+            exclusion_active=data.get("exclusion_active", False),
+        )
+        for name, svc in data.get("services", {}).items():
+            state.services[name] = ServiceHealth(**svc)
+        for j in data.get("jobs", []):
+            state.jobs.append(JobState(**j))
+        state.events = data.get("events", [])
+        return state
+    except Exception as exc:
+        logger.warning("Failed to load sidecar state: %s", exc)
+        return None
+
+
+def cleanup_state_file() -> None:
+    """Remove the state file on shutdown."""
+    try:
+        STATE_FILE.unlink(missing_ok=True)
+    except OSError:
+        pass

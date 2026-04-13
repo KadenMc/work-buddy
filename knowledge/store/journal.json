@@ -1,0 +1,34 @@
+{
+  "journal/update-directions": {
+    "kind": "directions",
+    "name": "Journal Update Directions",
+    "description": "How to detect activity and append journal Log entries — format, synthesis rules, approval flow",
+    "aliases": ["update journal", "journal log entries", "append journal", "detect activity journal"],
+    "tags": ["journal", "update", "log", "synthesis", "directions"],
+    "parents": ["journal"],
+    "trigger": "user wants to update their journal with recent activity",
+    "command": "wb-journal-update",
+    "workflow": "daily-journal/update-journal",
+    "capabilities": ["journal/journal_state", "journal/journal_write", "context/context_bundle"],
+    "content": {
+      "summary": "Format: '* <TIME> - <description>. #wb/journal/log'. One entry per distinct activity. Present to user for approval before writing. Near-real-time event log, not summaries.",
+      "full": "Start via mcp__work-buddy__wb_run(\"update-journal\"). Advance with wb_advance after each step.\n\nTarget date: Defaults to today. If past midnight (00:00-04:00) and no date specified, ask whether they mean today or yesterday.\n\n## Synthesis instructions\n\nThe Log is a near-real-time event log, not a high-level summary. Each entry anchors a thing that happened at a specific time.\n\nFormat: * <TIME> - <description>. #wb/journal/log\n- Bullet is '* ' (asterisk space), NOT '- '\n- Single line per entry -- no sub-bullets, no nesting\n- Terse, specific -- match the user's journal voice\n\nRules:\n1. One entry per distinct activity -- a commit, a completed task, a bug fix. If 6 things happened, produce ~4-6 entries.\n2. Timestamps from the data -- minute-level. 1:11 PM not 1:00 PM. Never round.\n3. Describe the work, not the tools -- 'Fixed vault path normalization' not '1 commit to work-buddy'\n4. Aggregate only when truly redundant -- 3 commits fixing same bug = one entry. But bug fix + feature + docs = three entries.\n5. Commits and task completions are primary evidence.\n6. Keep entries short -- one line, one topic.\n7. Cover the full window -- if last entry timestamp is well before collect_until, something was missed.\n\n## Before writing\n\nPresent entries to user and wait for explicit approval. User may edit, reword, add, or remove. Do NOT call journal_write until approved.\n\n## Don'ts\n- Don't fabricate activity not in the signals\n- Don't repeat information already in existing Log entries\n- Don't include raw git hashes or file paths unless they add meaning\n- Don't add entries to sections other than Log"
+    }
+  },
+  "daily-journal/backlog-directions": {
+    "kind": "directions",
+    "name": "Journal Backlog Processing Directions",
+    "description": "How to run Running Notes backlog pipeline — cluster review, routing proposals, rewrite presentation",
+    "aliases": ["process backlog", "running notes backlog", "segment and route notes", "clean up running notes"],
+    "tags": ["journal", "backlog", "routing", "clustering", "directions"],
+    "parents": ["daily-journal"],
+    "trigger": "user wants to process or clean up their Running Notes backlog",
+    "command": "wb-journal-backlog",
+    "workflow": "daily-journal/process-backlog",
+    "capabilities": ["journal/running_notes", "journal/vault_write_at_location"],
+    "content": {
+      "summary": "Default to today's journal unless a date is specified. Requires active user participation. Review clusters before routing (bad grouping cascades). Never auto-route without confirmation.",
+      "full": "Start via mcp__work-buddy__wb_run(\"process-backlog\"), then advance with wb_advance.\n\nDefault to today's journal unless a different date is specified.\n\n## Cluster review rules\n\n1. High confidence (cohesion >= 0.7): Accept unless obviously wrong\n2. Medium confidence (0.5-0.7): Check thread summaries -- do they belong together?\n3. Low confidence (< 0.5): Likely need splitting\n4. Uncertain edges with strength > 0.55: Seriously consider moving that thread\n5. Singletons: Should any join an existing cluster?\n\nPresent: \"I found N clusters. M look correct, K need your input.\"\n\n## Routing proposals\n\nFor each unit: use semantic_search to find relevant vault location, use context for type guesses, flag cryptic items as low confidence, note staleness for completed work.\n\n## Rewrite presentation\n\nBefore rewriting Running Notes, present before/after summary. Thread ID tags are removed (processing artifacts). This is a filesystem write -- consent required.\n\n## Don'ts\n- Don't run in the background -- requires active participation\n- Don't skip cluster review -- bad grouping cascades into bad routing\n- Don't auto-route without user confirmation\n- Don't pressure to process everything -- partial processing is fine\n- Don't restore carried-over banners\n- Don't create new organizational systems during this workflow\n\n## Related blindspots\n- Insight hoarding: this workflow directly addresses it. Start with easy items to build momentum\n- Infrastructure displacement: if user redesigns task system mid-triage, name it and redirect\n- Branch explosion: routing may reveal many live threads. Don't solve that here -- make it visible"
+    }
+  }
+}

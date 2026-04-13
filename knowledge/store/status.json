@@ -1,0 +1,34 @@
+{
+  "status/setup-help-directions": {
+    "kind": "directions",
+    "name": "Setup Help Directions",
+    "description": "How to present component health diagnostics — structured output format, lead with the fix",
+    "aliases": ["diagnose component", "troubleshoot", "setup help", "component health"],
+    "tags": ["status", "setup", "diagnostics", "health", "directions"],
+    "parents": ["status"],
+    "trigger": "user asks to diagnose a component or troubleshoot something not working",
+    "command": "wb-setup-help",
+    "workflow": null,
+    "capabilities": ["status/setup_help"],
+    "content": {
+      "summary": "Pass component name as argument (or 'all'). Present: 1) Summary counts, 2) Per-component issues with root cause and fix, 3) Dependency chain if upstream-caused. Lead with the fix, not the architecture.",
+      "full": "Run mcp__work-buddy__wb_run(\"setup_help\", {\"component\": \"$ARGUMENTS\"}). If no argument, pass \"all\".\n\nPresent:\n1. Summary -- N healthy, N unhealthy, N disabled\n2. Issues -- for each unhealthy component: name, status, root cause, fix suggestion\n3. Dependency chain -- if failure is caused by a dependency, show the chain\n\nKeep actionable. Lead with the fix, not the architecture."
+    }
+  },
+  "status/tailscale-status-directions": {
+    "kind": "directions",
+    "name": "Tailscale Status Directions",
+    "description": "Check Tailscale VPN status — daemon state, tailnet identity, online peers, Serve config",
+    "aliases": ["vpn status", "tailscale check", "tailnet status", "remote access check"],
+    "tags": ["status", "tailscale", "vpn", "directions"],
+    "parents": ["status"],
+    "trigger": "user asks about Tailscale, VPN status, or published ports",
+    "command": "wb-tailscale-status",
+    "workflow": null,
+    "capabilities": ["status/tailscale_status"],
+    "content": {
+      "summary": "Pure capability call -- no special presentation required.",
+      "full": "Run mcp__work-buddy__wb_run(\"tailscale_status\") to check Tailscale VPN status, including daemon state, tailnet identity, online peers, and Serve configuration (published ports)."
+    }
+  }
+}

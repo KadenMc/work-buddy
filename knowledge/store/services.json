@@ -1,0 +1,140 @@
+{
+  "services": {
+    "kind": "system",
+    "name": "Services & Infrastructure",
+    "description": "Sidecar-managed services — dashboard, messaging, embedding, and service pointers",
+    "tags": [
+      "services",
+      "sidecar",
+      "dashboard",
+      "messaging",
+      "embedding"
+    ],
+    "children": [
+      "services/dashboard",
+      "services/messaging",
+      "services/memory",
+      "services/sidecar"
+    ],
+    "content": {
+      "summary": "work-buddy runs several sidecar-managed services: dashboard (5127), messaging (5123), embedding (5124), telegram (5125). The sidecar daemon manages lifecycle and scheduling.",
+      "full": "Services are managed by the sidecar daemon. Each runs on a dedicated port. Use sidecar_status to check service health."
+    }
+  },
+  "services/dashboard": {
+    "kind": "system",
+    "name": "Dashboard",
+    "description": "Web dashboard for system observability — Flask service, dev mode, remote access, development rules",
+    "aliases": [
+      "flask dashboard",
+      "tailscale serve",
+      "frontend tabs",
+      "read-only mode"
+    ],
+    "tags": [
+      "dashboard",
+      "flask",
+      "port-5127",
+      "tailscale",
+      "frontend"
+    ],
+    "parents": [
+      "services"
+    ],
+    "ports": [
+      5127
+    ],
+    "entry_points": [
+      "work_buddy.dashboard"
+    ],
+    "content": {
+      "summary": "Flask on port 5127, sidecar-managed. No browser-side fetches to sibling ports. Gate POST routes with _reject_read_only().",
+      "full": "Web dashboard for system observability. Accessible remotely via Tailscale Serve.\n\nTabs: Overview, Tasks, Status, Chats, Contracts, Projects (static). Threads, Triage, and Notifications appear dynamically via workflow views, thread system, and notification log.\n\n- Dev mode: python -m work_buddy.dashboard --dev (auto-reloads). Not in sidecar config. Do not use with remote access — Werkzeug debugger exposes arbitrary code execution.\n- Frontend: Factorized package (frontend/) with html.py, styles.py, and per-tab script modules (script_main.py, script_notifications.py, script_palette.py, script_threads.py, script_triage.py, script_workflows.py).\n- Status tab: Component health tree with dependency nesting, live tool probes (60s refresh), expand/collapse state. Falls back to flat table if health API unavailable.\n- Chats tab: Full session browser with message search, commit navigation, repo filter.\n- Command palette: Ctrl+K shortcut. Discovery via /api/palette/commands, execution via /api/palette/execute. Gated by read-only mode.\n- Remote access: tailscale serve --bg 5127. Browser hits same-origin /api/... routes.\n- Read-only mode: dashboard.read_only: true in config.yaml gates mutating POST routes. Frontend hides mutation controls via _readOnly JS variable.\n- Telegram deep links: Set dashboard.external_url in config.yaml to Tailscale HTTPS URL. Expandable Telegram notifications include 'View full details' links.\n\nAPI: 40+ routes in service.py spanning /api/state, /api/tasks, /api/chats/*, /api/contracts, /api/projects/*, /api/threads/*, /api/workflow-views/*, /api/notification-log, /api/palette/*, /api/deeplink. See service.py for the full list.\n\nAdding a new tab: (1) Add tab button in frontend/html.py, (2) Add panel div, (3) Add fetch+render JS function in frontend/script_main.py and register in loaders map, (4) Optionally add API endpoint in service.py and data function in api.py.\n\nDevelopment rules (mandatory for all agents modifying dashboard code):\n1. Same-origin only — never fetch sibling localhost ports (5123, 5124, 5125, 27124, 27125) from browser JS. Add server-side aggregation in api.py instead.\n2. Gate mutating POST routes with _reject_read_only() at handler top.\n3. Gate frontend mutation controls with _readOnly JS variable.\n4. No obsidian:// links as primary navigation — they fail on mobile.\n5. No --dev in production sidecar config.\n6. Use config-driven values (load_config()) not hardcoded paths/ports.\n\nService management: Kill and let sidecar auto-restart via Get-NetTCPConnection -LocalPort 5127 | Stop-Process."
+    }
+  },
+  "services/messaging": {
+    "kind": "system",
+    "name": "Inter-Agent Messaging",
+    "description": "Inter-agent messaging service for cross-session communication",
+    "aliases": [
+      "send_message",
+      "query_messages",
+      "messaging service"
+    ],
+    "tags": [
+      "messaging",
+      "inter-agent",
+      "port-5123"
+    ],
+    "parents": [
+      "services"
+    ],
+    "ports": [
+      5123
+    ],
+    "entry_points": [
+      "work_buddy.messaging"
+    ],
+    "content": {
+      "summary": "Inter-agent messaging on port 5123. Messages checked automatically by global hooks on session start and every prompt.",
+      "full": "Flask HTTP API backed by SQLite for exchanging messages between Claude Code agents across different repos. Runs on localhost:5123.\n\nStarting: powershell.exe -Command \"cd <repo-root>; conda activate work-buddy; python -m work_buddy.messaging.service\"\n\nHooks (global, in ~/.claude/settings.json):\n- SessionStart (startup/resume/compact) — shows pending messages + send/reply instructions\n- UserPromptSubmit (every prompt) — shows pending messages only (no instructions, saves context)\n\nSending and replying: Agents in other repos send via curl POST localhost:5123/messages. Replies default to broadcast (recipient_session=NULL), visible to any session in the target project. Pass recipient_session explicitly only when targeting a specific session.\n\nKnown limitation (Claude Desktop): UserPromptSubmit hook output is injected into agent context but NOT visible in user UI. Agent sees messages; user does not. SessionStart hook output IS visible. This is a Claude Desktop behavior as of v2.1.87."
+    }
+  },
+  "services/memory": {
+    "kind": "system",
+    "name": "Hindsight Memory",
+    "description": "Persistent personal memory layer via Hindsight — semantic search, mental models, retention",
+    "aliases": [
+      "hindsight",
+      "memory_read",
+      "memory_write",
+      "memory_reflect",
+      "personal memory"
+    ],
+    "tags": [
+      "memory",
+      "hindsight",
+      "semantic-search",
+      "mental-models"
+    ],
+    "parents": [
+      "services"
+    ],
+    "entry_points": [
+      "work_buddy.memory"
+    ],
+    "content": {
+      "summary": "Hindsight provides persistent personal memory. Claude Code plugin handles ambient auto-recall/retain. Programmatic access via work_buddy/memory/.",
+      "full": "Persistent personal memory layer for building a digital twin. Captures soft personal context (preferences, habits, emotional state, recurring patterns) that artifacts systematically miss.\n\nTwo integration paths share one local Hindsight server:\n1. Claude Code plugin (hooks) — ambient auto-recall before every prompt, auto-retain after responses.\n2. Python adapter (work_buddy/memory/) — programmatic retain/recall/reflect for context collection, workflows, and MCP gateway capabilities.\n\nCost: Every retain call costs LLM tokens (Anthropic API key required). recall is cheap (embedding search). reflect also costs tokens.\n\nBank: One personal bank (user by default, configurable via hindsight.bank_id in config). Tag taxonomy: user:default, source:*, kind:*, domain:*, workflow:*, session:*. Observations (automatic pattern consolidation) and mental models (pre-computed reflect summaries) build up the digital twin.\n\nServer requirements: hindsight-api-slim (server, Poetry), hindsight-client (SDK, Poetry), external PostgreSQL with pgvector. Env vars: HINDSIGHT_API_LLM_PROVIDER, HINDSIGHT_API_LLM_API_KEY, HINDSIGHT_API_LLM_MODEL.\n\nStarting: HINDSIGHT_API_LLM_PROVIDER=anthropic HINDSIGHT_API_LLM_API_KEY=$ANTHROPIC_API_KEY HINDSIGHT_API_LLM_MODEL=claude-haiku-4-5-20251001 hindsight-api\n\nMCP capabilities: memory_read (semantic + keyword search), memory_write (store a fact/preference/constraint), memory_reflect (LLM-powered reasoning over memories, consent-gated), memory_prune (delete memories, consent-gated, irreversible).\n\nBank bootstrap: Call ensure_bank() from work_buddy.memory.setup to create the bank with missions, directives, and mental models. Idempotent."
+    }
+  },
+  "services/sidecar": {
+    "kind": "system",
+    "name": "Sidecar Daemon",
+    "description": "Unified process supervisor, cron scheduler, and message-driven job dispatcher",
+    "aliases": [
+      "sidecar daemon",
+      "process supervisor",
+      "job scheduler",
+      "sidecar_jobs",
+      "agent spawning"
+    ],
+    "tags": [
+      "sidecar",
+      "daemon",
+      "supervisor",
+      "scheduler",
+      "jobs"
+    ],
+    "parents": [
+      "services"
+    ],
+    "entry_points": [
+      "work_buddy.sidecar"
+    ],
+    "content": {
+      "summary": "Single long-lived Python process replacing multiple Windows Task Scheduler entries. Supervises child services (messaging :5123, embedding :5124, telegram :5125, mcp_gateway :5126, dashboard :5127), runs cron-scheduled jobs from sidecar_jobs/, and dispatches message-driven jobs.",
+      "full": "A single long-lived Python process that replaces multiple independent Windows Task Scheduler entries with a unified process supervisor, cron/heartbeat scheduler, and message-driven job dispatcher.\n\nStarting: powershell.exe -Command \"cd <repo-root>; conda activate work-buddy; python -m work_buddy.sidecar\"\n\nManages its own lifecycle via PID file (data/runtime/sidecar.pid) and state file (data/runtime/sidecar_state.json).\n\nThree subsystems:\n1. Process Supervisor — starts and monitors child services. Health-checks every 30s, restarts crashed services with exponential backoff, gives up after 5 crashes.\n2. Cron/Heartbeat Scheduler — loads job .md files from sidecar_jobs/ and fires them on their cron schedule. Supports exclusion windows (quiet hours) and hot-reloads config+jobs every 30s.\n3. Message-to-Job Dispatch — polls messaging service for pending messages addressed to work-buddy. Classifies each message and executes automatically.\n\nJob file format: .md files in sidecar_jobs/ with YAML frontmatter (schedule, recurring, type, capability/params, enabled, spawn_mode).\n\nJob types: capability (calls registered MCP gateway capability directly), workflow (triggers registered workflow), prompt (freeform text — spawns claude -p agent session, consent-gated).\n\nAgent spawn modes for prompt jobs: headless_ephemeral (default, --print --no-session-persistence), headless_persistent (--print only, registered in data/runtime/agent_registry.json), interactive_persistent (deferred).\n\nRemote sessions (work_buddy/remote_session.py): remote_session_begin launches a visible Claude Code terminal session with --remote-control. Consent-gated. Primary use case: Remote Control from phone.\n\nCron syntax: standard 5-field cron in the timezone set in config.yaml (default: America/New_York).\n\nConfig (sidecar: section in config.yaml): health_check_interval, max_service_crashes, restart_backoff_base, services (with module/port/enabled per service), jobs_dir, heartbeat, message_poll_interval.\n\nObservability: Writes data/runtime/sidecar_state.json on every tick. Query via sidecar_status or sidecar_jobs capabilities."
+    }
+  }
+}

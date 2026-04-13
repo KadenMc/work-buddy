@@ -1,0 +1,18 @@
+{
+  "threads/thread-directions": {
+    "kind": "directions",
+    "name": "Thread Management Directions",
+    "description": "When and how to use conversation threads — decision guide, response types, behavioral notes",
+    "aliases": ["thread usage", "manage threads", "start thread", "conversation thread", "dashboard sidebar"],
+    "tags": ["threads", "thread", "dashboard", "conversation", "directions"],
+    "parents": ["threads"],
+    "trigger": "user wants to start a conversation thread, or agent needs to explain a plan, ask multi-step questions, or send progress updates",
+    "command": "wb-thread",
+    "workflow": null,
+    "capabilities": ["threads/thread_create", "threads/thread_send", "threads/thread_ask", "threads/thread_poll", "threads/thread_close", "threads/thread_list"],
+    "content": {
+      "summary": "Use threads for: explaining plans before executing, multi-step decisions, progress updates, follow-up conversations. thread_create opens dashboard sidebar automatically. thread_ask blocks up to 110s.",
+      "full": "Start or manage a conversation thread with the user via the dashboard sidebar.\n\nArgument: $ARGUMENTS (optional -- thread_id to resume, or blank to create new)\n\n## Thread operations\n\nmcp__work-buddy__wb_run(\"thread_create\", {\"title\": \"...\", \"message\": \"...\"})\nmcp__work-buddy__wb_run(\"thread_send\", {\"thread_id\": \"...\", \"message\": \"...\"})\nmcp__work-buddy__wb_run(\"thread_ask\", {\"thread_id\": \"...\", \"question\": \"...\", \"response_type\": \"boolean\"})\nmcp__work-buddy__wb_run(\"thread_poll\", {\"thread_id\": \"...\"})\nmcp__work-buddy__wb_run(\"thread_close\", {\"thread_id\": \"...\"})\nmcp__work-buddy__wb_run(\"thread_list\")\n\n## When to use threads\n\n- Explaining plans before executing: create thread, describe plan, ask approval\n- Multi-step decisions: ask a sequence of questions in one conversation\n- Progress updates: send status messages during long tasks\n- Follow-up conversations: when a notification needs back-and-forth\n\n## Response types for thread_ask\n\n| Type | User sees | Response value |\n|------|-----------|---------------|\n| freeform (default) | Text input | User's text |\n| boolean | Yes/No buttons | \"true\" or \"false\" |\n| choice | Labeled buttons | The choice key |\n\n## Behavior\n\n- thread_create opens the chat sidebar on dashboard automatically\n- thread_ask with timeout_seconds blocks until response (max 110s)\n- thread_poll checks latest question without sending a new message\n- Sidebar auto-polls every 3s for new messages"
+    }
+  }
+}

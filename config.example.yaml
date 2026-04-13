@@ -1,0 +1,174 @@
+# work-buddy configuration
+# Copy this file to config.yaml and customize for your setup.
+
+# REQUIRED: paths to your Obsidian vault and repos directory
+vault_root: "/path/to/your/obsidian/vault"
+repos_root: "/path/to/your/repos"
+
+bundles_dir: "bundles"
+timezone: "America/New_York"   # IANA timezone for your location
+
+# Centralized data directory for artifacts, runtime state, caches, and databases.
+# Relative to repo root, or absolute path. Default: "data"
+paths:
+  data_root: "data"
+
+git:
+  active_days: 30
+  detail_days: 7
+  max_commits: 20
+
+obsidian:
+  journal_dir: "journal"
+  journal_days: 7
+  recent_modified_days: 3
+  tracked_folders:
+    - "tasks"
+  exclude_folders:
+    - ".obsidian"
+    - ".trash"
+    - ".git"
+    - "node_modules"
+  wellness_days: 14
+  api_port: 27124        # Obsidian Local REST API plugin port
+  bridge_port: 27125     # obsidian-work-buddy plugin port
+
+tasks:
+  db_path: "tasks/task_metadata.db"
+  event_lookback_hours: 48
+
+embedding:
+  service_port: 5124
+  device: "auto"           # "auto" (GPU if available, else CPU), "cpu", or "cuda"
+  default_model: "leaf-mt"
+  models:
+    leaf-mt:
+      name: "MongoDB/mdbr-leaf-mt"
+      dims: 1024
+      eager: true
+    leaf-ir-query:
+      name: "MongoDB/mdbr-leaf-ir"
+      dims: 768
+      eager: true
+    leaf-ir:
+      name: "MongoDB/mdbr-leaf-ir-asym"
+      dims: 768
+      eager: false
+
+messaging:
+  db_path: "messages/messages.db"
+  service_port: 5123
+  mirror_enabled: false
+  mirror_path: "messages/mirror"
+  ttl_days: 30
+  summary_ttl_days: 7
+
+# Hindsight personal memory server (optional — disable if not using)
+hindsight:
+  base_url: "http://localhost:8888"
+  bank_id: "my-memory"          # your personal memory bank identifier
+  user_tag: "user:me"           # tag applied to all memory entries
+  bank_mission: >-
+    Persistent personal memory for context-aware assistance.
+    Prioritize: preferences, habits, constraints, recurring patterns,
+    relationships, values, work patterns, and durable decisions.
+  retain_mission: >-
+    Extract facts about the user: preferences, habits, constraints,
+    relationships, emotional state, recurring patterns, values,
+    and decisions. Capture behavioral cues for future adaptation.
+  observations_mission: >-
+    Consolidate recurring patterns in behavior, work habits,
+    and decision-making. Track how constraints and priorities evolve.
+
+dashboard:
+  read_only: false          # disable mutating actions (investigate, palette execute, workflow respond)
+  external_url: ""          # Tailscale HTTPS URL (e.g. "https://machine.tailnet.ts.net")
+                            # enables "View in dashboard" links in Telegram notifications
+
+chrome:
+  snapshot_interval_minutes: 5
+  ledger_window_days: 7
+
+llm:
+  default_model: "claude-haiku-4-5-20251001"
+  models:
+    haiku: "claude-haiku-4-5-20251001"
+    sonnet: "claude-sonnet-4-6"
+    opus: "claude-opus-4-6"
+  default_tier: "haiku"
+  cache_ttl_minutes: 30
+  simhash_hamming_threshold: 3
+
+chats:
+  specstory_days: 7
+  claude_history_days: 7
+
+ir:
+  db_path: null
+  rrf_k: 60
+  dense_text_max_chars: 1500
+  recency:
+    enabled: true
+    half_life_days: 14
+    floor: 0.15
+
+# Telegram bot (optional — set enabled: false to disable)
+telegram:
+  bot_token_env: "TELEGRAM_BOT_TOKEN"
+  allowed_chat_ids: []
+  enabled: false
+  capture:
+    note: "latest_journal"
+    section: "Running Notes"
+    position: "top"
+
+sidecar:
+  health_check_interval: 30
+  max_service_crashes: 5
+  restart_backoff_base: 5
+  services:
+    messaging:
+      module: "work_buddy.messaging.service"
+      port: 5123
+      enabled: true
+    embedding:
+      module: "work_buddy.embedding"
+      port: 5124
+      enabled: true
+    telegram:
+      module: "work_buddy.telegram.service"
+      port: 5125
+      enabled: false   # enable after setting TELEGRAM_BOT_TOKEN
+    mcp_gateway:
+      module: "work_buddy.mcp_server"
+      port: 5126
+      args: ["--http"]
+      enabled: true
+    dashboard:
+      module: "work_buddy.dashboard"
+      port: 5127
+      enabled: true
+  jobs_dir: "sidecar_jobs"
+  exclusion_windows: []
+    # Quiet hours example:
+    # - start: "23:00"
+    #   end: "08:00"
+    #   days: [0, 1, 2, 3, 4, 5, 6]
+  message_poll_interval: 15
+  agent_spawn:
+    model: "sonnet"
+    timeout_seconds: 300
+    max_budget_usd: 0.50
+
+morning:
+  phases:
+    yesterday_close: true
+    context_snapshot: true
+    calendar: true
+    task_briefing: true
+    contract_check: true
+    blindspot_scan: true
+  context_hours: 24
+  blindspot_depth: "light"
+  max_mits: 3
+  persist_briefing: true
