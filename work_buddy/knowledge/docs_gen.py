@@ -202,10 +202,31 @@ _RENDERERS: dict[str, Any] = {
 }
 
 
+def _format_code_references(text: str) -> str:
+    """Post-process rendered markdown to wrap code patterns in backticks.
+
+    Catches MCP calls, capability names, and function-like references
+    that appear as plain text in knowledge store content.
+    """
+    # Wrap mcp__work-buddy__wb_* calls in backticks (if not already wrapped)
+    text = re.sub(
+        r'(?<!`)mcp__work-buddy__\w+\([^)]*\)(?!`)',
+        lambda m: f'`{m.group(0)}`',
+        text,
+    )
+    # Wrap wb_run/wb_search/wb_advance/wb_status calls
+    text = re.sub(
+        r'(?<!`)wb_(run|search|advance|status|step_result)\([^)]*\)(?!`)',
+        lambda m: f'`{m.group(0)}`',
+        text,
+    )
+    return text
+
+
 def _render_unit(unit: PromptUnit) -> str:
     """Render a unit to Markdown using its kind-specific renderer."""
     renderer = _RENDERERS.get(unit.kind, _render_system)
-    return renderer(unit)
+    return _format_code_references(renderer(unit))
 
 
 # ---------------------------------------------------------------------------

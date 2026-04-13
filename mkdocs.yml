@@ -4,7 +4,7 @@ repo_url: https://github.com/KadenMc/work-buddy
 
 theme:
   name: material
-  logo: logo.svg
+  logo: logo_white.svg
   favicon: logo.svg
   features:
     - navigation.instant
@@ -15,18 +15,20 @@ theme:
     - search.highlight
     - content.code.copy
   palette:
-    - scheme: default
-      primary: custom
-      accent: custom
-      toggle:
-        icon: material/brightness-7
-        name: Switch to dark mode
-    - scheme: slate
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
       primary: custom
       accent: custom
       toggle:
         icon: material/brightness-4
         name: Switch to light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
 
 extra_css:
   - stylesheets/extra.css
