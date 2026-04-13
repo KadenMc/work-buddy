@@ -287,6 +287,42 @@ def _render_index(store: dict[str, PromptUnit]) -> str:
 # Main generator
 # ---------------------------------------------------------------------------
 
+def _write_nav_to_mkdocs(nav: list[dict[str, Any]]) -> None:
+    """Write the generated nav into mkdocs.yml between sentinel markers.
+
+    Replaces everything between ``# AUTOGEN_NAV_START`` and
+    ``# AUTOGEN_NAV_END`` with the generated nav structure, flattening
+    handbook sections into the top-level navigation.
+    """
+    import yaml
+
+    mkdocs_path = _REPO_ROOT / "mkdocs.yml"
+    text = mkdocs_path.read_text(encoding="utf-8")
+
+    start_marker = "# AUTOGEN_NAV_START"
+    end_marker = "# AUTOGEN_NAV_END"
+
+    start_idx = text.find(start_marker)
+    end_idx = text.find(end_marker)
+    if start_idx == -1 or end_idx == -1:
+        logger.warning("Nav markers not found in mkdocs.yml — skipping nav update")
+        return
+
+    # Build top-level nav: Home + Handbook index + flattened sections
+    full_nav = [{"Home": "index.md"}, {"Handbook": "handbook/index.md"}] + nav
+    nav_yaml = yaml.dump({"nav": full_nav}, default_flow_style=False, sort_keys=False)
+
+    new_text = (
+        text[:start_idx]
+        + start_marker + "\n"
+        + nav_yaml
+        + end_marker
+    )
+
+    mkdocs_path.write_text(new_text, encoding="utf-8")
+    logger.info("Updated mkdocs.yml nav with %d sections", len(nav))
+
+
 def generate_docs(write: bool = False) -> dict[str, Any]:
     """Generate Markdown documentation from the knowledge store.
 
@@ -325,6 +361,9 @@ def generate_docs(write: bool = False) -> dict[str, Any]:
         for filename, content in pages.items():
             filepath = _DOCS_DIR / filename
             filepath.write_text(content, encoding="utf-8")
+
+        # Update mkdocs.yml nav
+        _write_nav_to_mkdocs(nav)
 
         result["output_dir"] = str(_DOCS_DIR)
         result["nav_sections"] = len(nav)
