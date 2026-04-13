@@ -4,7 +4,7 @@ from __future__ import annotations
 
 
 def _workflow_views_script() -> str:
-    return """
+    return r"""
 // ---- Workflow view polling ----
 const _knownViews = new Set();
 const _viewRenderers = {};  // viewType → function(container, viewId, payload)
