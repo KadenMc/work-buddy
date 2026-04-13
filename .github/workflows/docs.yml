@@ -35,7 +35,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .venv
-          key: venv-docs-${{ runner.os }}-py3.11-${{ hashFiles('pyproject.toml') }}
+          key: venv-docs-${{ runner.os }}-py3.11-${{ hashFiles('poetry.lock') }}
           restore-keys: |
             venv-docs-${{ runner.os }}-py3.11-
 
