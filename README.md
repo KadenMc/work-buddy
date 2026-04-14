@@ -17,6 +17,8 @@
     <a href="https://github.com/sponsors/KadenMc"><img src="https://img.shields.io/badge/sponsor-%E2%9D%A4-ea4aaa" alt="Sponsor"></a>
 </p>
 
+<h3 align="center"><a href="https://work-buddy.ai/">Website</a></h3>
+
 <p align="center">
     <a href="https://docs.work-buddy.ai">Docs</a> &bull;
     <a href="#quick-start">Quick Start</a> &bull;
