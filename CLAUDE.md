@@ -119,11 +119,18 @@ The obsidian-work-buddy plugin exposes an HTTP bridge on port 27125 (`work_buddy
 
 **Latency:** The bridge has intermittent latency spikes (up to ~4s observed, even on established connections). `is_available()` handles this with a 10s timeout and a 15s fallback on first contact. Typical response is <0.1s. **Do not reduce these timeouts** — lower values cause false "bridge unavailable" errors.
 
-**Critical — do not bypass the bridge on timeout.** A timeout does NOT mean Obsidian is down. The bridge has transient spikes but recovers immediately. If a bridge call times out:
-1. **Retry the same call** — it will almost certainly succeed on the next attempt
-2. **Do NOT fall back to the Local REST API** (port 27124) — it has the same latency behavior
-3. **Do NOT write directly to vault files** as a workaround — this causes sync conflicts, missing metadata, and unindexed content
-4. If 2-3 retries all fail, *then* Obsidian is genuinely not running — report the error, don't work around it
+**Critical — do not bypass the bridge on failure.** When a bridge-dependent operation fails (task_create, vault_write_at_location, any capability requiring obsidian):
+1. **Wait 60 seconds**, then retry the SAME call
+2. If it fails again, **wait 60 seconds**, then retry once more
+3. If it fails a third time, **admit failure to the user** — tell them the bridge is unavailable and the operation could not be completed
+
+**NEVER** work around a bridge failure by:
+- Writing directly to vault files (Write tool, echo, Python open()) — causes sync conflicts, missing metadata, unindexed content
+- Falling back to the Local REST API (port 27124) — same latency behavior, not a workaround
+- Constructing vault paths and creating files yourself — even if you know the correct path and format
+- Using Python to call bridge functions directly — bypasses session tracking and operation logging
+
+**Admitting failure is ALWAYS preferable to bypassing.** The user will help resolve the underlying issue (restart Obsidian, check the plugin, etc.).
 
 ## Messaging system
 

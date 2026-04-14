@@ -6,6 +6,7 @@
     "aliases": ["triage tasks", "review inbox tasks", "batch task decisions", "inbox review"],
     "tags": ["tasks", "triage", "inbox", "interactive", "directions"],
     "parents": ["tasks"],
+    "context_after": ["obsidian/bridge"],
     "trigger": "user wants to triage or review pending inbox tasks",
     "command": "wb-task-triage",
     "workflow": "tasks/task-triage",
@@ -22,6 +23,7 @@
     "aliases": ["process vault todos", "inline todos", "wb todo markers", "handle todos"],
     "tags": ["tasks", "inline", "todos", "triage", "directions"],
     "parents": ["tasks"],
+    "context_after": ["obsidian/bridge"],
     "trigger": "user wants to process #wb/TODO markers from across the vault",
     "command": "wb-inline-todos",
     "workflow": "tasks/inline-todos",
@@ -38,6 +40,7 @@
     "aliases": ["weekly review", "task review", "weekly planning", "strategic review"],
     "tags": ["tasks", "weekly", "review", "planning", "contracts", "directions"],
     "parents": ["tasks"],
+    "context_after": ["obsidian/bridge"],
     "trigger": "user wants to run their weekly task review and planning session",
     "command": "wb-task-review",
     "workflow": "tasks/weekly-review",
@@ -54,13 +57,14 @@
     "aliases": ["handoff task", "session handoff", "pass off work", "create handoff note"],
     "tags": ["tasks", "handoff", "session", "continuity", "directions"],
     "parents": ["tasks"],
+    "context_after": ["obsidian/bridge"],
     "trigger": "user wants to hand off in-progress work to a new agent session via a task note",
     "command": "wb-task-handoff",
     "workflow": null,
     "capabilities": ["tasks/task_create"],
     "content": {
-      "summary": "Write from what you already know -- don't search for additional information. Use the exact section structure: Task, Context, What I Already Know, Key Files, System Notes, Suggested Approach. Create via task_create with summary param.",
-      "full": "Create a task with a comprehensive handoff prompt as the task note.\n\n## Write the handoff prompt\n\nConsolidate into these exact sections:\n\n> This is a handoff prompt from session {WORK_BUDDY_SESSION_ID}.\n\n## Task -- What needs to be done. One concrete paragraph.\n## Context -- Why this exists. Motivation without needing to ask.\n## What I Already Know -- Decisions, approaches tried/abandoned, edge cases, constraints. Highest-value section.\n## Key Files -- Absolute paths with brief annotations.\n## System Notes -- Non-obvious environmental knowledge. Skip if nothing applies.\n## Suggested Approach -- If you have a clear idea. Omit if not.\n\nBe specific. File paths absolute. Decisions include rationale.\n\n## Create the task\n\nmcp__work-buddy__wb_run(\"task_create\", {\"task_text\": \"<concise summary>\", \"summary\": \"<full handoff prompt>\"})\n\nThe summary parameter triggers creation of a note file.\n\n## Confirm\n\nShow: task ID, brief summary, remind about /wb-task-assign <id>."
+      "summary": "Write from what you already know -- don't search for additional information. Use the exact section structure: Task, Context, What I Already Know, Key Files, System Notes, Suggested Approach. Create via task_create with summary param. On failure: retry with 60s waits, admit failure after 3 attempts. NEVER bypass the bridge.",
+      "full": "Create a task with a comprehensive handoff prompt as the task note.\n\n## Write the handoff prompt\n\nConsolidate into these exact sections:\n\n> This is a handoff prompt from session {WORK_BUDDY_SESSION_ID}.\n\n## Task -- What needs to be done. One concrete paragraph.\n## Context -- Why this exists. Motivation without needing to ask.\n## What I Already Know -- Decisions, approaches tried/abandoned, edge cases, constraints. Highest-value section.\n## Key Files -- Absolute paths with brief annotations.\n## System Notes -- Non-obvious environmental knowledge. Skip if nothing applies.\n## Suggested Approach -- If you have a clear idea. Omit if not.\n\nBe specific. File paths absolute. Decisions include rationale.\n\n## Create the task\n\nmcp__work-buddy__wb_run(\"task_create\", {\"task_text\": \"<concise summary>\", \"summary\": \"<full handoff prompt>\"})\n\nThe summary parameter triggers creation of a note file.\n\n## If task_create fails\n\nThe bridge to Obsidian may be temporarily unavailable. Follow the bridge failure protocol:\n\n1. **Wait 60 seconds**, then retry the exact same wb_run call\n2. If it fails again, **wait 60 seconds**, then retry once more\n3. If it fails a third time, **tell the user** the bridge is unavailable and the handoff task could not be created\n\n**NEVER** work around the failure by writing files to the vault directly, using the filesystem, or any other DIY approach. Admitting failure is always correct. The user will resolve the bridge issue and you can retry.\n\n## Confirm\n\nShow: task ID, brief summary, remind about /wb-task-assign <id>."
     }
   },
   "tasks/assign-directions": {
@@ -102,13 +106,14 @@
     "aliases": ["create task", "new task", "add task"],
     "tags": ["tasks", "create", "new", "directions"],
     "parents": ["tasks"],
+    "context_after": ["obsidian/bridge"],
     "trigger": "user asks to create a new task",
     "command": "wb-task-new",
     "workflow": null,
     "capabilities": ["tasks/task_create"],
     "content": {
-      "summary": "Infer defaults rather than over-prompting. After creation confirm with task ID and one-line summary only -- do NOT open the note or suggest follow-up steps unless asked.",
-      "full": "Create via mcp__work-buddy__wb_run(\"task_create\", params).\n\nInfer defaults -- don't over-prompt:\n- task_text (required): short single-line. If given as argument, use directly.\n- urgency: default \"medium\". Only ask if ambiguous.\n- project: infer from context or ask.\n- due_date: only if user mentioned a deadline.\n- contract: infer from active contracts if obvious, otherwise skip.\n- summary: if user provides multi-line detail or says \"with a note\", pass here. Triggers linked note file.\n\nAfter creation, confirm with task ID and one-line summary. Do NOT open the note or suggest follow-up steps unless asked."
+      "summary": "Infer defaults rather than over-prompting. After creation confirm with task ID and one-line summary only -- do NOT open the note or suggest follow-up steps unless asked. On failure: retry with 60s waits, admit failure after 3 attempts. NEVER bypass the bridge.",
+      "full": "Create via mcp__work-buddy__wb_run(\"task_create\", params).\n\nInfer defaults -- don't over-prompt:\n- task_text (required): short single-line. If given as argument, use directly.\n- urgency: default \"medium\". Only ask if ambiguous.\n- project: infer from context or ask.\n- due_date: only if user mentioned a deadline.\n- contract: infer from active contracts if obvious, otherwise skip.\n- summary: if user provides multi-line detail or says \"with a note\", pass here. Triggers linked note file.\n\nAfter creation, confirm with task ID and one-line summary. Do NOT open the note or suggest follow-up steps unless asked.\n\n## If task_create fails\n\nThe bridge to Obsidian may be temporarily unavailable. Follow the bridge failure protocol:\n\n1. **Wait 60 seconds**, then retry the exact same wb_run call\n2. If it fails again, **wait 60 seconds**, then retry once more\n3. If it fails a third time, **tell the user** the bridge is unavailable and the task could not be created\n\n**NEVER** work around the failure by writing files to the vault directly, using the filesystem, or any other DIY approach. Admitting failure is always correct. The user will resolve the bridge issue and you can retry."
     }
   },
   "tasks/task-scattered-directions": {

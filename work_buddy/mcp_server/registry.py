@@ -2312,6 +2312,8 @@ def _task_capabilities() -> list[Capability]:
             },
             callable=update_task,
             requires=["obsidian"],
+            mutates_state=True,
+            retry_policy="verify_first",
             consent_operations=["tasks.update_task"],
         ),
         Capability(
