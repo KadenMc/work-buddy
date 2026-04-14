@@ -291,27 +291,12 @@ def update_task(
             if found:
                 task_id = _extract_task_id(found[1])
 
-    # Update store metadata
-    if has_store_update and task_id:
-        store_kwargs: dict[str, Any] = {}
-        if state is not None:
-            store_kwargs["state"] = state
-        if urgency is not None:
-            store_kwargs["urgency"] = urgency
-        if complexity is not None:
-            store_kwargs["complexity"] = complexity
-        if contract is not None:
-            store_kwargs["contract"] = contract
-        if snooze_until is not None:
-            store_kwargs["snooze_until"] = snooze_until
-        if reason:
-            store_kwargs["reason"] = reason
-
-        store_result = store.update(task_id, **store_kwargs)
-        result["store_updated"] = store_result.get("changed", False)
-
-    # Update file if needed (due_date change or done state checkbox)
+    # --- File updates FIRST (source of truth) ---
+    # Update the file before the store so that if the file write fails,
+    # the store stays consistent and task_sync won't revert the change.
     fp = file_path or MASTER_TASK_FILE
+    file_update_failed = False
+
     if due_date is not None:
         def set_due(line: str) -> str:
             if DUE_DATE_RE.search(line):
@@ -320,6 +305,8 @@ def update_task(
 
         file_result = _find_and_replace_task_line(fp, task_id, description_match, set_due)
         result.update(file_result)
+        if not file_result.get("success"):
+            file_update_failed = True
 
     if state == "done":
         # Check the checkbox and add done date via plugin API or regex
@@ -340,6 +327,8 @@ def update_task(
             if found and not re.match(r"^- \[x\]", found[1]):
                 file_result = _find_and_replace_task_line(fp, task_id, description_match, mark_done)
                 result.update(file_result)
+                if not file_result.get("success"):
+                    file_update_failed = True
 
     elif state is not None and state != "done":
         # If transitioning FROM done, uncheck the checkbox
@@ -354,6 +343,42 @@ def update_task(
 
                 file_result = _find_and_replace_task_line(fp, task_id, description_match, uncheck)
                 result.update(file_result)
+                if not file_result.get("success"):
+                    file_update_failed = True
+
+    # --- Store update AFTER file (store follows file) ---
+    # If a checkbox toggle failed in the file, don't update the store state
+    # — otherwise task_sync will revert the store to match the file, making
+    # the completion appear to "not stick". Other store fields (urgency,
+    # complexity, contract) have no file counterpart and can be updated
+    # regardless.
+    if has_store_update and task_id:
+        store_kwargs: dict[str, Any] = {}
+        if state is not None:
+            if file_update_failed:
+                logger.error(
+                    "update_task: file write failed for state=%s on %s — "
+                    "skipping store state update to stay consistent with file",
+                    state, task_id,
+                )
+            else:
+                store_kwargs["state"] = state
+        if urgency is not None:
+            store_kwargs["urgency"] = urgency
+        if complexity is not None:
+            store_kwargs["complexity"] = complexity
+        if contract is not None:
+            store_kwargs["contract"] = contract
+        if snooze_until is not None:
+            store_kwargs["snooze_until"] = snooze_until
+        if reason:
+            store_kwargs["reason"] = reason
+
+        if store_kwargs:
+            store_result = store.update(task_id, **store_kwargs)
+            result["store_updated"] = store_result.get("changed", False)
+        else:
+            result["store_updated"] = False
 
     result["task_id"] = task_id
     return result
@@ -750,8 +775,11 @@ def delete_task(
         if result is not None:
             idx, _ = result
             del lines[idx]
-            bridge.write_file(MASTER_TASK_FILE, "\n".join(lines))
-            removed["task_line"] = True
+            if bridge.write_file(MASTER_TASK_FILE, "\n".join(lines)):
+                removed["task_line"] = True
+            else:
+                logger.error("delete_task: bridge.write_file failed for %s", task_id)
+                removed["task_line"] = False
         else:
             removed["task_line"] = False
     else:
@@ -776,12 +804,21 @@ def delete_task(
     else:
         removed["note"] = False
 
-    # 3. Delete store record
-    removed["store"] = store.delete(task_id)
+    # 3. Delete store record — only if the file line was actually removed,
+    #    otherwise task_sync will re-create the store record from the file.
+    if removed["task_line"]:
+        removed["store"] = store.delete(task_id)
+    else:
+        removed["store"] = False
+        logger.warning(
+            "delete_task: skipping store deletion for %s — file line not removed, "
+            "store.delete would be undone by task_sync",
+            task_id,
+        )
 
     logger.info("Task deleted: %s (removed=%s)", task_id, removed)
     return {
-        "success": any(removed.values()),
+        "success": removed["task_line"],
         "task_id": task_id,
         "removed": removed,
     }
