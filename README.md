@@ -1,5 +1,5 @@
 <p align="center">
-    <img src="docs/logo.svg" width="180" />
+    <img src="docs/logo.gif" width="180" />
 </p>
 
 <h1 align="center">work-buddy</h1>
