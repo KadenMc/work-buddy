@@ -275,7 +275,6 @@ def prune_memories(
         return "\n".join(lines)
 
     # Destructive operations require consent
-    import secrets
     if not consent_cache.is_granted("memory_prune"):
         from work_buddy.agent_session import get_session_audit_path
         raise ConsentRequired(
@@ -283,7 +282,6 @@ def prune_memories(
             reason="Permanently deletes memories from the Hindsight bank. "
                    "This cannot be undone.",
             risk="high",
-            token=secrets.token_hex(4),
             default_ttl=5,
         )
 
