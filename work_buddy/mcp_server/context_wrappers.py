@@ -921,12 +921,10 @@ def project_create(
     from work_buddy.projects import store
 
     if not consent_cache.is_granted("project_create"):
-        import secrets
         raise ConsentRequired(
             operation="project_create",
             reason=f"Create project '{slug}' ({name}) with status={status}.",
             risk="low",
-            token=secrets.token_hex(4),
             default_ttl=30,
         )
 
@@ -1043,12 +1041,10 @@ def project_delete(*, slug: str) -> str:
 
     # Require consent
     if not consent_cache.is_granted("project_delete"):
-        import secrets
         raise ConsentRequired(
             operation="project_delete",
             reason=f"Permanently delete project '{slug}' ({existing.get('name', slug)}) from the identity registry.",
             risk="moderate",
-            token=secrets.token_hex(4),
             default_ttl=5,
         )
 
