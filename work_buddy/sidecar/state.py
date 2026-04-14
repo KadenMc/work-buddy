@@ -67,8 +67,14 @@ class SidecarState:
         self.jobs = job_states
 
 
-def save_state(state: SidecarState) -> None:
-    """Atomically write the state to disk."""
+def save_state(state: SidecarState, *, _retries: int = 4) -> None:
+    """Atomically write the state to disk.
+
+    On Windows, ``os.replace`` can fail with ``PermissionError`` when
+    another process (antivirus, file indexer, dashboard reader) holds a
+    handle on the target file.  We retry with a short back-off before
+    giving up.
+    """
     data = asdict(state)
 
     fd, tmp_path = tempfile.mkstemp(
@@ -77,12 +83,45 @@ def save_state(state: SidecarState) -> None:
     try:
         os.write(fd, json.dumps(data, indent=2).encode())
         os.close(fd)
-        os.replace(tmp_path, STATE_FILE)
-    except Exception:
+        fd = -1  # mark closed so the except branch doesn't double-close
+
+        last_exc: Exception | None = None
+        for attempt in range(_retries + 1):
+            try:
+                os.replace(tmp_path, STATE_FILE)
+                return  # success
+            except PermissionError as exc:
+                last_exc = exc
+                if attempt < _retries:
+                    time.sleep(min(3.0, 0.15 * 3**attempt))  # 0.15, 0.45, 1.35, 3.0s
+
+        # All retries exhausted — fall back to non-atomic overwrite so the
+        # sidecar doesn't crash on a transient file lock.
         try:
-            os.close(fd)
+            STATE_FILE.write_bytes(Path(tmp_path).read_bytes())
+            os.unlink(tmp_path)
+            logger.debug(
+                "save_state: os.replace failed after %d retries, "
+                "used non-atomic fallback",
+                _retries,
+            )
+            return
+        except Exception:
+            pass  # if even the fallback fails, raise the original error
+
+        # Clean up tmp and propagate
+        try:
+            os.unlink(tmp_path)
         except OSError:
             pass
+        raise last_exc  # type: ignore[misc]
+
+    except Exception:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
         try:
             os.unlink(tmp_path)
         except OSError:

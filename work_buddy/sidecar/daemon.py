@@ -31,6 +31,7 @@ from work_buddy.sidecar.pid import (
     write_pid_file,
 )
 from work_buddy.sidecar.state import (
+    STATE_FILE,
     SidecarState,
     ServiceHealth,
     cleanup_state_file,
@@ -402,7 +403,20 @@ def _shutdown(children: list[ChildService], state: SidecarState) -> None:
     # Write final state showing all services stopped
     for name in state.services:
         state.update_service(name, status="stopped", pid=None)
-    save_state(state)
+    try:
+        save_state(state)
+    except PermissionError as exc:
+        # On Windows, os.replace / write can fail with WinError 5 when
+        # another process holds a handle on the state file.  Not worth
+        # crashing the shutdown sequence for a stale status file.
+        state_path = str(STATE_FILE)
+        if (
+            (exc.filename and state_path in str(Path(exc.filename).resolve()))
+            or (exc.filename2 and state_path in str(Path(exc.filename2).resolve()))
+        ):
+            logger.warning("Failed to write final state (non-fatal): %s", exc)
+        else:
+            raise
 
     cleanup_pid_file()
     # Don't remove state file — leave it for observability (shows "stopped")
