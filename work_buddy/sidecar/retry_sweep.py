@@ -172,7 +172,10 @@ class RetrySweep:
             # Check for soft errors in the result
             from work_buddy.errors import is_transient_result
             if isinstance(result, dict):
+                # Detect both {"error": "..."} and {"success": False, "message": "..."}
                 err = result.get("error")
+                if not err and result.get("success") is False:
+                    err = result.get("message", "Operation returned success=false")
                 if err:
                     if is_transient_result(result):
                         return {"success": False, "error": str(err), "transient": True}
