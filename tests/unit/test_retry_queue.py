@@ -832,3 +832,101 @@ class TestRetryQueueSummary:
         result = _retry_queue_summary()
         assert result["queued"] == 0
         assert result.get("exhausted") == 1
+
+
+# ---------------------------------------------------------------------------
+# 8. _result_error detects {success: False} pattern (Bug fix)
+# ---------------------------------------------------------------------------
+
+class TestResultErrorSuccessFalse:
+    """Test that _result_error() catches {success: False} results."""
+
+    def test_error_key_still_works(self):
+        from work_buddy.mcp_server.tools.gateway import _result_error
+        assert _result_error({"error": "something broke"}) == "something broke"
+
+    def test_success_false_with_message(self):
+        from work_buddy.mcp_server.tools.gateway import _result_error
+        result = {"success": False, "message": "Failed to write note"}
+        assert _result_error(result) == "Failed to write note"
+
+    def test_success_false_without_message(self):
+        from work_buddy.mcp_server.tools.gateway import _result_error
+        result = {"success": False}
+        assert _result_error(result) == "Operation returned success=false"
+
+    def test_success_false_empty_message(self):
+        from work_buddy.mcp_server.tools.gateway import _result_error
+        result = {"success": False, "message": ""}
+        assert _result_error(result) == "Operation returned success=false"
+
+    def test_success_true_returns_none(self):
+        from work_buddy.mcp_server.tools.gateway import _result_error
+        assert _result_error({"success": True, "data": "ok"}) is None
+
+    def test_no_error_no_success_returns_none(self):
+        from work_buddy.mcp_server.tools.gateway import _result_error
+        assert _result_error({"data": [1, 2, 3]}) is None
+
+    def test_non_dict_returns_none(self):
+        from work_buddy.mcp_server.tools.gateway import _result_error
+        assert _result_error("just a string") is None
+        assert _result_error(42) is None
+        assert _result_error(None) is None
+
+    def test_error_key_takes_priority_over_success_false(self):
+        """When both 'error' and 'success: False' are present, 'error' wins."""
+        from work_buddy.mcp_server.tools.gateway import _result_error
+        result = {"error": "explicit error", "success": False, "message": "msg"}
+        assert _result_error(result) == "explicit error"
+
+
+# ---------------------------------------------------------------------------
+# 9. retry_sweep._replay detects {success: False} (Bug fix)
+# ---------------------------------------------------------------------------
+
+class TestRetrySweepReplaySuccessFalse:
+    """Test that retry_sweep detects {success: False, message: ...} results."""
+
+    def test_replay_success_false_transient(self, sweep_ops_dir):
+        """success=False with a transient message should be a transient failure."""
+        from work_buddy.sidecar.retry_sweep import RetrySweep
+        sweep = RetrySweep()
+        record, _ = _make_queued_op(sweep_ops_dir)
+
+        mock_entry = MagicMock()
+        mock_entry.callable = MagicMock(
+            return_value={"success": False, "message": "Failed to write note: bridge timed out"}
+        )
+
+        from work_buddy.mcp_server.registry import Capability
+        with patch("work_buddy.mcp_server.registry.get_registry", return_value={
+            "sidecar_status": mock_entry
+        }):
+            mock_entry.__class__ = Capability
+            result = sweep._replay(record)
+
+        assert result["success"] is False
+        assert result["transient"] is True
+        assert "bridge" in result["error"].lower()
+
+    def test_replay_success_false_permanent(self, sweep_ops_dir):
+        """success=False with a non-transient message should be a permanent failure."""
+        from work_buddy.sidecar.retry_sweep import RetrySweep
+        sweep = RetrySweep()
+        record, _ = _make_queued_op(sweep_ops_dir)
+
+        mock_entry = MagicMock()
+        mock_entry.callable = MagicMock(
+            return_value={"success": False, "message": "Invalid parameter: bad_key"}
+        )
+
+        from work_buddy.mcp_server.registry import Capability
+        with patch("work_buddy.mcp_server.registry.get_registry", return_value={
+            "sidecar_status": mock_entry
+        }):
+            mock_entry.__class__ = Capability
+            result = sweep._replay(record)
+
+        assert result["success"] is False
+        assert result["transient"] is False

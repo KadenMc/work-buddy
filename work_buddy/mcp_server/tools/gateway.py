@@ -122,13 +122,18 @@ def _result_error(result: Any) -> str | None:
     """Extract an error string from a result dict, if present.
 
     Capabilities that catch their own errors and return {"error": "..."}
-    instead of raising need to be recorded as failures so wb_retry can
-    replay them.  Returns None when the result is not a failure.
+    or {"success": False, "message": "..."} instead of raising need to be
+    recorded as failures so wb_retry can replay them.
+    Returns None when the result is not a failure.
     """
     if isinstance(result, dict):
         err = result.get("error")
         if err:  # non-None, non-empty
             return str(err)
+        # Also detect {"success": False, "message": "..."} pattern
+        if result.get("success") is False:
+            msg = result.get("message", "")
+            return str(msg) if msg else "Operation returned success=false"
     return None
 
 
@@ -998,13 +1003,64 @@ def register_tools(mcp: FastMCP) -> None:
                     "operation_id": operation_id,
                 })
             except Exception as exc:
-                _complete_operation(operation_id, error=f"{type(exc).__name__}: {exc}")
+                error_str = f"{type(exc).__name__}: {exc}"
+                _complete_operation(operation_id, error=error_str)
+
+                # Enqueue transient failures for sidecar retry
+                retry_policy = record.get("retry_policy", "replay")
+                from work_buddy.errors import classify_error as _classify
+                error_class = _classify(exc)
+                if (
+                    error_class == "transient"
+                    and retry_policy in ("replay", "verify_first")
+                ):
+                    _enqueue_for_retry(
+                        operation_id, error_str, error_class,
+                        originating_session_id=record.get("originating_session_id")
+                            or record.get("session_id"),
+                    )
+                    return _to_json({
+                        "error": f"Transient failure: {error_str}",
+                        "operation_id": operation_id,
+                        "queued_for_retry": True,
+                        "retry_hint": (
+                            "Retry failed due to a transient error "
+                            "and has been re-queued for automatic background retry."
+                        ),
+                    })
+
                 return _to_json({
-                    "error": f"Retry failed: {type(exc).__name__}: {exc}",
+                    "error": f"Retry failed: {error_str}",
                     "operation_id": operation_id,
                 })
 
-        _complete_operation(operation_id, result=result, error=_result_error(result))
+        # Check for soft transient failures in the result
+        result_err = _result_error(result)
+        if result_err:
+            retry_policy = record.get("retry_policy", "replay")
+            from work_buddy.errors import is_transient_result as _is_transient
+            if (
+                _is_transient(result)
+                and retry_policy in ("replay", "verify_first")
+            ):
+                _complete_operation(operation_id, result=result, error=result_err)
+                _enqueue_for_retry(
+                    operation_id, result_err, "transient",
+                    originating_session_id=record.get("originating_session_id")
+                        or record.get("session_id"),
+                )
+                return _to_json({
+                    "error": f"Transient failure: {result_err}",
+                    "operation_id": operation_id,
+                    "queued_for_retry": True,
+                    "attempt": record["attempt"],
+                    "retry_hint": (
+                        "Retry returned a transient error "
+                        "and has been re-queued for automatic background retry."
+                    ),
+                })
+
+        _complete_operation(operation_id, result=result, error=result_err)
         return _to_json({
             "type": "result",
             "capability": record["name"],
