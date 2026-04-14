@@ -177,11 +177,13 @@ class Scheduler:
             summary = _summarize_job_result(status, detail)
             job.last_run_at = time.time()
             job.last_result = status
+            job.last_error = result.get("error", "") if status == "error" else ""
             if self._event_log:
                 self._event_log.emit("job_completed", job.name, summary)
         except Exception as exc:
             job.last_run_at = time.time()
             job.last_result = "error"
+            job.last_error = str(exc)
             if self._event_log:
                 self._event_log.emit(
                     "job_failed", job.name, f"Failed: {exc}",
@@ -204,10 +206,10 @@ class Scheduler:
         if new_fps != self._job_fingerprints:
             old_count = len(self.jobs)
             # Carry forward runtime state from old jobs
-            old_state = {j.name: (j.last_run_at, j.last_result) for j in self.jobs}
+            old_state = {j.name: (j.last_run_at, j.last_result, j.last_error) for j in self.jobs}
             for job in new_jobs:
                 if job.name in old_state:
-                    job.last_run_at, job.last_result = old_state[job.name]
+                    job.last_run_at, job.last_result, job.last_error = old_state[job.name]
             self.jobs = new_jobs
             self._job_fingerprints = new_fps
             if self._event_log:
@@ -247,6 +249,7 @@ class Scheduler:
                 next_at=next_at,
                 last_run_at=job.last_run_at,
                 last_result=job.last_result,
+                last_error=job.last_error,
             ))
 
         state.set_job_states(job_states)

@@ -1449,7 +1449,8 @@ def _start_acknowledge_poller():
                     method="GET",
                 )
                 resp = _urlopen(req, timeout=5)
-                messages = json.loads(resp.read().decode("utf-8"))
+                data = json.loads(resp.read().decode("utf-8"))
+                messages = data.get("messages", []) if isinstance(data, dict) else data
 
                 for msg in messages:
                     if msg.get("subject") != "notification_acknowledge":
