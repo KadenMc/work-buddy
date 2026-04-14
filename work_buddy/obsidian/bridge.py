@@ -19,6 +19,12 @@ from work_buddy.logging_config import get_logger
 
 logger = get_logger(__name__)
 
+# Compatible obsidian-work-buddy plugin version range for this work-buddy release.
+# Lower bound (inclusive): bump when this work-buddy needs new plugin endpoints.
+# Upper bound (exclusive): bump when a future plugin drops deprecated endpoints.
+PLUGIN_VERSION_MIN = "0.1.0"  # inclusive — oldest plugin that has all needed endpoints
+PLUGIN_VERSION_MAX = "0.2.0"  # exclusive — first plugin version NOT tested/supported
+
 # ---------------------------------------------------------------------------
 # Lightweight latency tracking (module-level, no external dependencies)
 # ---------------------------------------------------------------------------
@@ -46,6 +52,27 @@ def get_latency_context() -> str:
     if _consecutive_failures > 0:
         parts.append(f"{_consecutive_failures} failures since ({_last_failure_reason})")
     return " | ".join(parts)
+
+
+def _compare_semver(a: str, b: str) -> int:
+    """Compare two semver strings. Returns -1 (a<b), 0 (equal), or 1 (a>b)."""
+    pa = [int(x) for x in a.split(".")[:3]]
+    pb = [int(x) for x in b.split(".")[:3]]
+    for av, bv in zip(pa + [0, 0, 0], pb + [0, 0, 0]):
+        if av < bv:
+            return -1
+        if av > bv:
+            return 1
+    return 0
+
+
+def _wb_version() -> str:
+    """Get the current work-buddy version from pyproject.toml metadata."""
+    try:
+        from importlib.metadata import version
+        return version("work-buddy")
+    except Exception:
+        return "0.0.0"
 
 
 def _base_url(cfg: dict[str, Any] | None = None) -> str:
@@ -184,36 +211,64 @@ def is_available() -> bool:
     if not is_obsidian_running():
         return False
 
-    # Bridge health check with retry for transient spikes
-    result = _request("GET", "/health", timeout=10)
+    # Send work-buddy version so the plugin can warn if outdated
+    health_path = f"/health?wb_version={_wb_version()}"
+    result = _request("GET", health_path, timeout=10)
     if result is None:
-        result = _request("GET", "/health", timeout=15)
+        result = _request("GET", health_path, timeout=15)
     return result is not None and result.get("status") == "ok"
 
 
+def _get_health() -> dict | None:
+    """Call /health and return the full response dict, or None on failure."""
+    health_path = f"/health?wb_version={_wb_version()}"
+    result = _request("GET", health_path, timeout=10)
+    if result is None:
+        result = _request("GET", health_path, timeout=15)
+    return result
+
+
 def require_available() -> None:
-    """Raise RuntimeError if the bridge is not reachable."""
+    """Raise RuntimeError if the bridge is not reachable or incompatible.
+
+    Checks:
+    1. Obsidian is running (fast process check)
+    2. Bridge responds to /health
+    3. Plugin version is within supported range (>= MIN, < MAX)
+    """
     global _bridge_confirmed
     if not is_obsidian_running():
         raise RuntimeError(
             "Obsidian is not running. Please open Obsidian."
         )
-    if not is_available():
+
+    health = _get_health()
+    if health is None or health.get("status") != "ok":
         raise RuntimeError(
             "Obsidian is running but the Work Buddy bridge is not responding. "
             "Check that the Work Buddy plugin is enabled in Obsidian settings."
         )
+
+    # Version compatibility check (range: >= PLUGIN_VERSION_MIN, < PLUGIN_VERSION_MAX)
+    plugin_version = health.get("version", "0.0.0")
+    if _compare_semver(plugin_version, PLUGIN_VERSION_MIN) < 0:
+        raise RuntimeError(
+            f"obsidian-work-buddy plugin is v{plugin_version}, but this version "
+            f"of work-buddy requires >= v{PLUGIN_VERSION_MIN}. "
+            f"Update the plugin in Obsidian: Settings → Community plugins."
+        )
+    if _compare_semver(plugin_version, PLUGIN_VERSION_MAX) >= 0:
+        raise RuntimeError(
+            f"obsidian-work-buddy plugin is v{plugin_version}, but this version "
+            f"of work-buddy supports < v{PLUGIN_VERSION_MAX}. "
+            f"Update work-buddy, or downgrade the plugin."
+        )
+
     if not _bridge_confirmed:
         _bridge_confirmed = True
         try:
             from work_buddy.obsidian.plugin_versions import confirm_working
-            from work_buddy.obsidian.plugins import installed_plugins
-            from pathlib import Path
-            from work_buddy.config import load_config
-            vault = Path(load_config()["vault_root"])
-            info = installed_plugins(vault).get("obsidian-local-rest-api", {})
-            if info.get("version"):
-                confirm_working("obsidian-local-rest-api", info["version"])
+            confirm_working("obsidian-work-buddy", plugin_version)
         except Exception:
             pass  # Best-effort — don't break bridge availability check
 
