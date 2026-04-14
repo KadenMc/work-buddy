@@ -49,7 +49,7 @@ updateClock();
 
 
 // ---- Helpers ----
-function statusBadge(status) {
+function statusBadge(status, tooltip) {
     const map = {
         healthy: 'badge-green', running: 'badge-green', active: 'badge-green', ok: 'badge-green',
         unhealthy: 'badge-yellow', stalled: 'badge-yellow', waiting: 'badge-yellow', degraded: 'badge-yellow',
@@ -59,7 +59,8 @@ function statusBadge(status) {
         inbox: 'badge-purple', someday: 'badge-muted',
         consent_required: 'badge-yellow',
     };
-    return `<span class="badge ${map[status] || 'badge-muted'}">${status}</span>`;
+    const tip = tooltip ? ` title="${escapeHtml(tooltip)}" style="cursor:help"` : '';
+    return `<span class="badge ${map[status] || 'badge-muted'}"${tip}>${status}</span>`;
 }
 
 function _healthDotClass(status) {
@@ -81,7 +82,7 @@ function _healthChips(c) {
 }
 
 function _reprobeBtn(c) {
-    return `<button class="health-reprobe-btn" onclick="event.stopPropagation(); reprobeComponent('${c.id}', this)" title="Refresh status">\\u21BB</button>`;
+    return `<button class="health-reprobe-btn" onclick="event.stopPropagation(); reprobeComponent('${c.id}', this)" title="Refresh status">\u21BB</button>`;
 }
 
 function _diagBtn(c) {
@@ -155,7 +156,7 @@ function _renderDiagPanel(diag) {
     if (diag.steps_run && diag.steps_run.length > 0) {
         html += '<div class="health-diag-steps">';
         for (const step of diag.steps_run) {
-            const icon = step.ok ? '\\u2713' : '\\u2717';
+            const icon = step.ok ? '\u2713' : '\u2717';
             const cls = step.ok ? '' : ' fail';
             html += `<div class="health-diag-step${cls}">
                 <span class="step-icon">${icon}</span>
@@ -374,7 +375,7 @@ function renderHealthTree(health) {
                 <div class="health-item collapsed" data-component="${c.id}">
                     <div class="health-row${issueCls}" onclick="toggleHealthItem(this)">
                         <div class="health-row-main">
-                            <span class="health-chevron">\\u25BE</span>
+                            <span class="health-chevron">\u25BE</span>
                             <span class="status-dot ${_healthDotClass(c.status)}"></span>
                             <span class="health-name">${c.display_name}</span>
                             ${statusBadge(c.status)}
@@ -493,7 +494,7 @@ async function loadOverview() {
         <tr>
             <td>${j.name}</td>
             <td title="${j.schedule}">${j.schedule_desc || j.schedule}</td>
-            <td>${j.last_result ? statusBadge(j.last_result) : '\u2014'}</td>
+            <td>${j.last_result ? statusBadge(j.last_result, j.last_error) : '\u2014'}</td>
             <td>${timeAgo(j.last_run_at)}</td>
             <td>${timeUntil(j.next_at)}</td>
         </tr>
@@ -604,14 +605,14 @@ async function loadStatus() {
             const pct = Math.max(8, (logMs / logMax) * 100);
             const cls = !h.ok ? 'bar-fail' : h.ms > 500 ? 'bar-slow' : 'bar-ok';
             const dt = new Date(h.ts * 1000);
-            const tip = dt.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'}) + ' \\u2014 ' + h.ms + 'ms';
+            const tip = dt.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'}) + ' \u2014 ' + h.ms + 'ms';
             return `<div class="bar ${cls}" style="height:${pct}%" title="${tip}"></div>`;
         }).join('');
 
         bridgeEl.innerHTML = `
             <div class="bridge-card">
                 <div class="bridge-header">
-                    <h3><span class="status-dot ${dotClass}"></span> Obsidian Bridge \\u2014 ${statusLabel}</h3>
+                    <h3><span class="status-dot ${dotClass}"></span> Obsidian Bridge \u2014 ${statusLabel}</h3>
                     <div class="bridge-stats">
                         <div>Latency <span class="bridge-stat-value" style="color:${latencyColor}">${b.latency_ms}ms</span></div>
                         <div>Trend <span class="bridge-stat-value">${b.ema_ms || 0}ms</span>${(() => {
@@ -726,7 +727,7 @@ async function loadStatus() {
                     ? '<span class="type-pill request1" style="font-size:9px;padding:1px 6px">REQUEST</span>'
                     : '<span class="type-pill note1" style="font-size:9px;padding:1px 6px">NOTE</span>';
                 const sid = e.short_id ? ' <code>#' + e.short_id + '</code>' : '';
-                const surfaces = (e.surfaces || []).join(', ') || '\\u2014';
+                const surfaces = (e.surfaces || []).join(', ') || '\u2014';
                 return '<tr>'
                     + '<td style="white-space:nowrap;color:var(--text-muted)">' + time + '</td>'
                     + '<td>' + pill + '</td>'
@@ -872,8 +873,8 @@ function renderChatHeader(meta) {
         + '</div>'
         + '<div class="chats-hdr-right">'
         + '<button class="chats-hdr-btn" onclick="chatsToggleInSearch()">Search</button>'
-        + '<button class="chats-hdr-btn' + (chatsState.roleFilter === 'user' ? ' active' : '') + '" onclick="chatsFilterRole(\\'user\\')">User</button>'
-        + '<button class="chats-hdr-btn' + (chatsState.roleFilter === 'assistant' ? ' active' : '') + '" onclick="chatsFilterRole(\\'assistant\\')">Assistant</button>'
+        + '<button class="chats-hdr-btn' + (chatsState.roleFilter === 'user' ? ' active' : '') + '" onclick="chatsFilterRole(&#39;user&#39;)">User</button>'
+        + '<button class="chats-hdr-btn' + (chatsState.roleFilter === 'assistant' ? ' active' : '') + '" onclick="chatsFilterRole(&#39;assistant&#39;)">Assistant</button>'
         + '<button class="chats-hdr-btn' + (!chatsState.roleFilter ? ' active' : '') + '" onclick="chatsFilterRole(null)">All</button>'
         + '</div>';
 }
@@ -1167,7 +1168,7 @@ async function chatsGlobalSearch() {
 
         // Session header — clicking opens the chat at the top
         html += '<div class="chats-search-session-group">'
-            + '<div class="chats-search-session-hdr" onclick="chatsOpenFromSearch(\\'' + sess.session_id + '\\')">'
+            + '<div class="chats-search-session-hdr" onclick="chatsOpenFromSearch(&#39;' + sess.session_id + '&#39;)">'
             + '<div style="display:flex;justify-content:space-between;align-items:center;">'
             + '<span>'
             + '<span class="chats-hit-score" style="margin-right:6px;">#' + (gi + 1) + '</span>'
@@ -1185,7 +1186,7 @@ async function chatsGlobalSearch() {
 
         // Individual chunk hits — clicking jumps to that exact location
         (sess.chunks || []).forEach(function(chunk) {
-            html += '<div class="chats-search-chunk" onclick="chatsJumpToHit(\\'' + sess.session_id + '\\',' + chunk.span_index + ')">'
+            html += '<div class="chats-search-chunk" onclick="chatsJumpToHit(&#39;' + sess.session_id + '&#39;,' + chunk.span_index + ')">'
                 + '<div style="font-size:12px;color:var(--text-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'
                 + escapeHtml(cleanMsgText(chunk.display_text)) + '</div>'
                 + '</div>';
@@ -1244,7 +1245,7 @@ async function chatsCommitSearch(q) {
         var msgCount = chatInfo ? (chatInfo.message_count || '') : '';
 
         html += '<div class="chats-search-session-group">'
-            + '<div class="chats-search-session-hdr" onclick="chatsOpenFromSearch(\\'' + sess.session_id + '\\')">'
+            + '<div class="chats-search-session-hdr" onclick="chatsOpenFromSearch(&#39;' + sess.session_id + '&#39;)">'
             + '<div style="display:flex;justify-content:space-between;align-items:center;">'
             + '<span>'
             + '<span class="chats-hit-score" style="margin-right:6px;">#' + (gi + 1) + '</span>'
@@ -1261,8 +1262,8 @@ async function chatsCommitSearch(q) {
         (sess.commits || []).forEach(function(commit) {
             var hasIdx = commit.message_index != null;
             var clickFn = hasIdx
-                ? 'chatsJumpToCommitSearch(\\'' + sess.session_id + '\\',' + commit.message_index + ')'
-                : 'chatsOpenFromSearch(\\'' + sess.session_id + '\\')';
+                ? 'chatsJumpToCommitSearch(&#39;' + sess.session_id + '&#39;,' + commit.message_index + ')'
+                : 'chatsOpenFromSearch(&#39;' + sess.session_id + '&#39;)';
             html += '<div class="chats-search-chunk" onclick="' + clickFn + '">'
                 + '<div class="chat-commit-marker" style="margin:0;">'
                 + '<code>' + (commit.hash || '') + '</code> '

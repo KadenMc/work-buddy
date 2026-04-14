@@ -34,12 +34,12 @@ def _thread_chat_script() -> str:
         if (msg.status === 'pending' && msg.message_type === 'question') {
             if (msg.response_type === 'boolean') {
                 bubble += '<div class="msg-choices">'
-                  + '<button onclick="threadRespond(\\'' + tid + '\\',\\'true\\')">Yes</button>'
-                  + '<button onclick="threadRespond(\\'' + tid + '\\',\\'false\\')">No</button></div>';
+                  + '<button onclick="threadRespond(&#39;' + tid + '&#39;,&#39;true&#39;)">Yes</button>'
+                  + '<button onclick="threadRespond(&#39;' + tid + '&#39;,&#39;false&#39;)">No</button></div>';
             } else if (msg.response_type === 'choice' && msg.choices) {
                 bubble += '<div class="msg-choices">';
                 for (const c of msg.choices) {
-                    bubble += '<button onclick="threadRespond(\\'' + tid + '\\',\\'' + _esc(c.key) + '\\')">'
+                    bubble += '<button onclick="threadRespond(&#39;' + tid + '&#39;,&#39;' + _esc(c.key) + '&#39;)">'
                        + _esc(c.label) + '</button>';
                 }
                 bubble += '</div>';
@@ -76,8 +76,8 @@ def _thread_chat_script() -> str:
             + (isOpen
                 ? '<div class="thread-input" id="tc-input-' + tid + '">'
                   + '<input type="text" placeholder="Type a message..." '
-                  + 'onkeydown="if(event.key===\\'Enter\\'&&!event.shiftKey){event.preventDefault();threadSendInput(\\'' + tid + '\\')}" />'
-                  + '<button onclick="threadSendInput(\\'' + tid + '\\')">Send</button></div>'
+                  + 'onkeydown="if(event.key===&#39;Enter&#39;&&!event.shiftKey){event.preventDefault();threadSendInput(&#39;' + tid + '&#39;)}" />'
+                  + '<button onclick="threadSendInput(&#39;' + tid + '&#39;)">Send</button></div>'
                 : '')
             + (status ? '<div class="thread-status-bar">' + _esc(status) + '</div>' : '')
             + '</div>';

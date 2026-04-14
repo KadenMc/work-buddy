@@ -67,7 +67,7 @@ window.showToast = function showToast(title, body, tabName, viewId, view, isRequ
                 ${pillHtml}
                 <span class="toast-title">${title}${shortId}</span>
             </div>
-            <button class="toast-close">\\u2715</button>
+            <button class="toast-close">\u2715</button>
         </div>
         <div class="toast-body">${body}</div>
         <div style="font-size:10px;color:var(--text-muted);margin-top:2px">${actionLabel}</div>
@@ -137,10 +137,10 @@ registerViewRenderer('capability_consent', async function(container, viewId, pay
 
     // Buttons
     html += '<div id="cc-btns-'+viewId+'" class="nb-btn-group">';
-    html += '<button class="nb-btn nb-btn-request" onclick="capConsentRespond(\\''+viewId+'\\',\\'always\\')">Allow always</button>';
-    html += '<button class="nb-btn nb-btn-neutral" onclick="capConsentRespond(\\''+viewId+'\\',\\'temporary\\')">Allow for '+ttl+' min</button>';
-    html += '<button class="nb-btn nb-btn-ghost" onclick="capConsentRespond(\\''+viewId+'\\',\\'once\\')">Allow once</button>';
-    html += '<button class="nb-btn nb-btn-deny" onclick="capConsentRespond(\\''+viewId+'\\',\\'deny\\')">Deny</button>';
+    html += '<button class="nb-btn nb-btn-request" onclick="capConsentRespond(&#39;'+viewId+'&#39;,&#39;always&#39;)">Allow always</button>';
+    html += '<button class="nb-btn nb-btn-neutral" onclick="capConsentRespond(&#39;'+viewId+'&#39;,&#39;temporary&#39;)">Allow for '+ttl+' min</button>';
+    html += '<button class="nb-btn nb-btn-ghost" onclick="capConsentRespond(&#39;'+viewId+'&#39;,&#39;once&#39;)">Allow once</button>';
+    html += '<button class="nb-btn nb-btn-deny" onclick="capConsentRespond(&#39;'+viewId+'&#39;,&#39;deny&#39;)">Deny</button>';
     html += '</div>';
 
     html += '</div></div></div>';
@@ -153,7 +153,7 @@ window.capConsentRespond = async function(viewId, value) {
         if (value === 'deny') {
             btns.innerHTML = '<span style="color:var(--text-muted)">Denied</span>';
         } else {
-            btns.innerHTML = '<span style="color:var(--green,#4caf50);font-weight:600">Granted \\u2014 re-executing...</span>';
+            btns.innerHTML = '<span style="color:var(--green,#4caf50);font-weight:600">Granted \u2014 re-executing...</span>';
         }
     }
     try {
@@ -183,7 +183,7 @@ registerViewRenderer('workflow_consent', async function(container, viewId, paylo
     html += '<div class="wv-group-header-left">';
     html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">';
     html += '<span class="type-pill request3" style="font-size:11px;padding:3px 10px">WORKFLOW</span>';
-    html += '<span style="color:var(--orange, #e5a045);font-size:13px;font-weight:600">\\u2699 Agent Session</span>';
+    html += '<span style="color:var(--orange, #e5a045);font-size:13px;font-weight:600">\u2699 Agent Session</span>';
     html += '</div>';
     html += '<div class="wv-group-intent" style="font-size:17px">' + escapeHtml(title) + '</div>';
     html += '<div style="display:flex;align-items:center;gap:8px;margin-top:4px">';
@@ -219,8 +219,8 @@ registerViewRenderer('workflow_consent', async function(container, viewId, paylo
 
     // Buttons
     html += '<div id="wfc-btns-'+viewId+'" class="nb-btn-group stretch">';
-    html += '<button class="nb-btn nb-btn-approve" onclick="wfConsentRespond(\\''+viewId+'\\',\\'launch\\')">Launch</button>';
-    html += '<button class="nb-btn nb-btn-deny" onclick="wfConsentRespond(\\''+viewId+'\\',\\'cancel\\')">Cancel</button>';
+    html += '<button class="nb-btn nb-btn-approve" onclick="wfConsentRespond(&#39;'+viewId+'&#39;,&#39;launch&#39;)">Launch</button>';
+    html += '<button class="nb-btn nb-btn-deny" onclick="wfConsentRespond(&#39;'+viewId+'&#39;,&#39;cancel&#39;)">Cancel</button>';
     html += '</div>';
 
     html += '</div></div></div>';

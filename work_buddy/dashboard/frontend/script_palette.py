@@ -48,7 +48,7 @@ def _command_palette_script() -> str:
                     for (const [k, v] of Object.entries(prov)) {
                         parts.push(k + ': ' + (v.count || 0));
                     }
-                    statusLeft.textContent = parts.join(' \\u00b7 ') || 'Ready';
+                    statusLeft.textContent = parts.join(' \u00b7 ') || 'Ready';
                 }
             } catch (e) {
                 results.innerHTML = '<div class="cp-empty">Failed to load commands</div>';
@@ -180,9 +180,9 @@ def _command_palette_script() -> str:
                 const typeIcon = document.createElement('span');
                 const ctype = cmd.command_type || 'inline';
                 typeIcon.className = 'cp-type-icon cp-type-' + ctype;
-                const typeSymbols = { inline: '\\u25B8', parameterized: '\\u25A3', workflow: '\\u2699' };
+                const typeSymbols = { inline: '\u25B8', parameterized: '\u25A3', workflow: '\u2699' };
                 const typeTitles = { inline: 'Runs instantly', parameterized: 'Opens parameter form', workflow: 'Launches agent session' };
-                typeIcon.textContent = typeSymbols[ctype] || '\\u25B8';
+                typeIcon.textContent = typeSymbols[ctype] || '\u25B8';
                 typeIcon.title = typeTitles[ctype] || '';
                 item.appendChild(typeIcon);
 
@@ -276,7 +276,7 @@ def _command_palette_script() -> str:
         toast.innerHTML = '<div class="toast-header">'
             + '<div style="display:flex;align-items:center;gap:6px">' + pill
             + '<span class="toast-title">' + _esc(title) + '</span></div>'
-            + '<button class="toast-close">\\u2715</button></div>'
+            + '<button class="toast-close">\u2715</button></div>'
             + '<div class="toast-body">' + _esc(body) + '</div>';
         toast.addEventListener('click', () => toast.remove());
         container.appendChild(toast);

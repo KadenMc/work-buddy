@@ -54,6 +54,7 @@ class Job:
     # Runtime state (not persisted in .md frontmatter — populated by scheduler)
     last_run_at: float = 0.0
     last_result: str = ""  # ok | error
+    last_error: str = ""  # human-readable error reason (set on failure)
 
 
 def _parse_bool(value: Any) -> bool:

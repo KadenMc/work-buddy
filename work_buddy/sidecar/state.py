@@ -43,6 +43,7 @@ class JobState:
     next_at: float = 0.0  # epoch seconds
     last_run_at: float = 0.0
     last_result: str = ""  # ok | error | skipped
+    last_error: str = ""  # human-readable error reason
 
 
 @dataclass
