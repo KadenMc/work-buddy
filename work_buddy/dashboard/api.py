@@ -249,6 +249,31 @@ def get_system_state() -> dict[str, Any]:
         logger.warning("Failed to build health view: %s", exc)
         result["health"] = None
 
+    # Feature preferences (what the user wants/doesn't want)
+    try:
+        from work_buddy.health.preferences import load_preferences
+        prefs = load_preferences()
+        result["preferences"] = {
+            cid: p.to_dict() for cid, p in prefs.items()
+        }
+    except Exception as exc:
+        logger.warning("Failed to load preferences: %s", exc)
+        result["preferences"] = {}
+
+    # Requirements summary (configuration-time validation)
+    try:
+        from work_buddy.health.requirements import RequirementChecker
+        checker = RequirementChecker()
+        bootstrap = checker.check_bootstrap()
+        all_reqs = checker.check_all(include_unwanted=False)
+        result["requirements"] = {
+            "bootstrap": checker.summarize(bootstrap),
+            "all": checker.summarize(all_reqs),
+        }
+    except Exception as exc:
+        logger.warning("Failed to check requirements: %s", exc)
+        result["requirements"] = None
+
     return result
 
 

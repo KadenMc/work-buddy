@@ -746,6 +746,9 @@ def _status_capabilities() -> list[Capability]:
     def _feature_status(verbose: bool = False) -> dict:
         """Show which tools, features, and capabilities are available or disabled."""
         from work_buddy.tools import get_tool_status
+        from work_buddy.health.preferences import load_preferences
+        from work_buddy.health.requirements import RequirementChecker
+
         result = get_tool_status()
         if not verbose:
             # Compact: just tool names and disabled capability names
@@ -753,7 +756,50 @@ def _status_capabilities() -> list[Capability]:
                 tid: {"available": s["available"], "reason": s.get("reason", "")}
                 for tid, s in result.get("tools", {}).items()
             }
+
+        # Include user preferences
+        prefs = load_preferences()
+        result["preferences"] = {
+            comp_id: pref.to_dict()
+            for comp_id, pref in prefs.items()
+        }
+
+        # Include requirement summary (lightweight)
+        try:
+            checker = RequirementChecker()
+            req_results = checker.check_bootstrap()
+            result["bootstrap_requirements"] = checker.summarize(req_results)
+        except Exception:
+            result["bootstrap_requirements"] = {"error": "Could not check requirements"}
+
         return result
+
+    def _setup_wizard(
+        mode: str = "status",
+        component: str = "",
+        updates: dict | None = None,
+    ) -> dict:
+        """Setup wizard — comprehensive setup, diagnostics, and preferences.
+
+        Modes:
+            status      — Quick health + requirements overview (default).
+            guided      — Interactive first-time setup with structured steps.
+            diagnose    — Deep diagnostic for a specific component.
+            preferences — View/edit feature preferences.
+        """
+        from work_buddy.health.wizard import SetupWizard
+        wizard = SetupWizard()
+
+        if mode == "guided":
+            return wizard.guided()
+        elif mode == "diagnose":
+            if not component:
+                return {"error": "diagnose mode requires a component parameter"}
+            return wizard.diagnose(component)
+        elif mode == "preferences":
+            return wizard.preferences(updates=updates)
+        else:
+            return wizard.status()
 
     def _setup_help(component: str = "all") -> dict:
         """Diagnose component health. Runs automated check sequences.
@@ -849,9 +895,48 @@ def _status_capabilities() -> list[Capability]:
             },
             callable=_setup_help,
             search_aliases=[
-                "setup", "help", "diagnose", "troubleshoot", "debug",
+                "diagnose", "troubleshoot", "debug",
                 "why not working", "fix", "health check", "what's wrong",
             ],
+        ),
+        Capability(
+            name="setup_wizard",
+            description=(
+                "Comprehensive setup wizard for work-buddy. Validates bootstrap "
+                "requirements, checks feature health, manages user preferences "
+                "(wanted/unwanted features), and provides guided first-time setup. "
+                "Modes: 'status' (quick overview), 'guided' (interactive walkthrough), "
+                "'diagnose' (deep diagnostic for one component), 'preferences' (view/edit)."
+            ),
+            category="status",
+            parameters={
+                "mode": {
+                    "type": "str",
+                    "description": (
+                        "Wizard mode: 'status' (default), 'guided', 'diagnose', 'preferences'"
+                    ),
+                    "required": False,
+                },
+                "component": {
+                    "type": "str",
+                    "description": "Component ID for 'diagnose' mode",
+                    "required": False,
+                },
+                "updates": {
+                    "type": "dict",
+                    "description": (
+                        "Preference updates for 'preferences' mode. "
+                        "Dict of component_id -> {wanted: bool, reason: str}"
+                    ),
+                    "required": False,
+                },
+            },
+            callable=_setup_wizard,
+            search_aliases=[
+                "setup", "wizard", "configure", "preferences", "onboarding",
+                "first time", "requirements", "bootstrap", "wanted", "unwanted",
+            ],
+            slash_command="wb-setup",
         ),
         Capability(
             name="service_health",

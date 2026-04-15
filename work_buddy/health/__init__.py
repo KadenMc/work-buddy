@@ -22,6 +22,13 @@ Usage::
 from work_buddy.health.components import COMPONENT_CATALOG, CheckStep, ComponentDef
 from work_buddy.health.diagnostics import DiagnosticResult, DiagnosticRunner, StepResult
 from work_buddy.health.engine import ComponentHealth, HealthEngine
+from work_buddy.health.preferences import FeaturePreference
+from work_buddy.health.requirements import (
+    REQUIREMENT_REGISTRY,
+    RequirementChecker,
+    RequirementDef,
+    RequirementResult,
+)
 
 __all__ = [
     "COMPONENT_CATALOG",
@@ -30,6 +37,11 @@ __all__ = [
     "ComponentHealth",
     "DiagnosticResult",
     "DiagnosticRunner",
+    "FeaturePreference",
     "HealthEngine",
+    "REQUIREMENT_REGISTRY",
+    "RequirementChecker",
+    "RequirementDef",
+    "RequirementResult",
     "StepResult",
 ]

@@ -15,6 +15,22 @@
       "full": "Run mcp__work-buddy__wb_run(\"setup_help\", {\"component\": \"$ARGUMENTS\"}). If no argument, pass \"all\".\n\nPresent:\n1. Summary -- N healthy, N unhealthy, N disabled\n2. Issues -- for each unhealthy component: name, status, root cause, fix suggestion\n3. Dependency chain -- if failure is caused by a dependency, show the chain\n\nKeep actionable. Lead with the fix, not the architecture."
     }
   },
+  "status/setup-wizard-directions": {
+    "kind": "directions",
+    "name": "Setup Wizard Directions",
+    "description": "How to run the setup wizard — modes, feature preferences, requirements, guided setup",
+    "aliases": ["setup wizard", "configure work-buddy", "feature preferences", "onboarding", "first-time setup"],
+    "tags": ["status", "setup", "wizard", "preferences", "requirements", "directions"],
+    "parents": ["status"],
+    "trigger": "user runs /wb-setup, asks to configure features, or wants to know what's set up",
+    "command": "wb-setup",
+    "workflow": null,
+    "capabilities": ["status/setup_wizard"],
+    "content": {
+      "summary": "Four modes: status (quick overview), guided (interactive walkthrough), diagnose (deep diagnostic for one component), preferences (view/edit wanted features). Default is status.",
+      "full": "Run mcp__work-buddy__wb_run(\"setup_wizard\", {\"mode\": \"<mode>\", ...}).\n\nModes:\n\n1. **status** (default, no args): Quick overview of bootstrap requirements, component health, and requirement validation for wanted components. Present: bootstrap pass/fail, then per-component health + any requirement failures with fix hints.\n\n2. **guided** (first-time setup): Returns structured steps. Walk the user through:\n   - Step 1: Bootstrap — fix any core/config failures first\n   - Step 2: Features — ask which components they want (present by category)\n   - Step 3: Requirements — show failures for wanted features with fix hints\n   - Step 4: Health — check running services\n   Save preferences with: wb_run(\"setup_wizard\", {\"mode\": \"preferences\", \"updates\": {\"hindsight\": {\"wanted\": false}}})\n\n3. **diagnose** (targeted): Requires component param. Deep diagnostic combining requirements + health + check sequences. Lead with the fix.\n   Example: wb_run(\"setup_wizard\", {\"mode\": \"diagnose\", \"component\": \"hindsight\"})\n\n4. **preferences** (view/edit): Show or update feature preferences.\n   View: wb_run(\"setup_wizard\", {\"mode\": \"preferences\"})\n   Update: wb_run(\"setup_wizard\", {\"mode\": \"preferences\", \"updates\": {\"telegram\": {\"wanted\": false, \"reason\": \"...\"}, \"hindsight\": {\"wanted\": true}}})\n\nKey principles:\n- If a feature is wanted:false, don't suggest it or show it as broken.\n- If a user asks 'why isn't X working?', check preferences first — they may have opted out.\n- Bootstrap failures block everything — fix those first.\n- Requirements are configuration issues (fix once). Health checks are runtime issues (may need restart)."
+    }
+  },
   "status/tailscale-status-directions": {
     "kind": "directions",
     "name": "Tailscale Status Directions",

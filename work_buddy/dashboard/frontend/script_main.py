@@ -158,24 +158,31 @@ function _renderDiagPanel(diag) {
         for (const step of diag.steps_run) {
             const icon = step.ok ? '\u2713' : '\u2717';
             const cls = step.ok ? '' : ' fail';
-            html += `<div class="health-diag-step${cls}">
-                <span class="step-icon">${icon}</span>
-                <span class="step-desc">${step.description}</span>
-                <span class="step-detail">${step.detail}</span>
-            </div>`;
+            html += '<div class="health-diag-step' + cls + '">'
+                + '<span class="step-icon">' + icon + '</span>'
+                + '<span class="step-desc">' + escapeHtml(step.description) + '</span>'
+                + '<span class="step-detail">' + escapeHtml(step.detail) + '</span>'
+                + '</div>';
         }
         html += '</div>';
     }
     if (diag.root_cause) {
-        html += `<div class="health-diag-cause">
-            <div class="cause-label">Root cause</div>
-            <div class="cause-text">${diag.root_cause}</div>
-        </div>`;
+        html += '<div class="health-diag-cause">'
+            + '<div class="cause-label">Root cause</div>'
+            + '<div class="cause-text">' + escapeHtml(diag.root_cause) + '</div>'
+            + '</div>';
     }
     if (diag.fix_suggestion) {
-        html += `<div class="health-diag-fix">
-            <div class="fix-label">How to fix</div>
-${diag.fix_suggestion}</div>`;
+        html += '<div class="health-diag-fix">'
+            + '<div class="fix-label">How to fix</div>'
+            + '<pre class="fix-text">' + escapeHtml(diag.fix_suggestion) + '</pre>'
+            + '</div>';
+    }
+    // Wizard hint — always shown when there's a failure
+    if (diag.status === 'failed' && diag.component_id) {
+        html += '<div class="health-diag-wizard">'
+            + '\ud83e\ude84 Run <code>/wb-setup ' + escapeHtml(diag.component_id) + '</code> in Claude Code for interactive diagnostics'
+            + '</div>';
     }
     if (diag.status === 'passed') {
         html += '<div style="color: var(--text-muted); padding: 4px 0;">All checks passed.</div>';
@@ -277,27 +284,43 @@ function _healthRow(c, indent) {
     `;
 }
 
-function renderHealthTree(health) {
+function renderHealthTree(health, requirements) {
     const comps = health.components || [];
     const summary = health.summary || {};
     const byId = {};
     comps.forEach(c => { byId[c.id] = c; });
 
-    // Summary bar
-    const total = summary.total || comps.length;
-    const pctHealthy = total > 0 ? Math.round((summary.healthy / total) * 100) : 0;
+    // Separate opted-out components from active ones
+    const activeComps = comps.filter(c => c.wanted !== false);
+    const optedOut = comps.filter(c => c.wanted === false);
+
+    // Summary bar — count only active components
+    const activeTotal = activeComps.length;
+    const activeHealthy = activeComps.filter(c => c.status === 'healthy').length;
+    const pctHealthy = activeTotal > 0 ? Math.round((activeHealthy / activeTotal) * 100) : 0;
     let html = `
         <div class="health-summary">
             <div class="health-bar">
                 <div class="health-bar-fill" style="width: ${pctHealthy}%"></div>
             </div>
             <div class="health-counts">
-                <span class="health-count healthy">${summary.healthy || 0} healthy</span>
-                <span class="health-count unhealthy">${summary.unhealthy || 0} issue${(summary.unhealthy || 0) !== 1 ? 's' : ''}</span>
-                ${summary.disabled ? `<span class="health-count disabled">${summary.disabled} disabled</span>` : ''}
+                <span class="health-count healthy">${activeHealthy} healthy</span>
+                <span class="health-count unhealthy">${activeTotal - activeHealthy} issue${(activeTotal - activeHealthy) !== 1 ? 's' : ''}</span>
+                ${optedOut.length ? `<span class="health-count disabled">${optedOut.length} opted out</span>` : ''}
             </div>
         </div>
     `;
+
+    // Requirements warning banner
+    if (requirements && requirements.all && !requirements.all.all_required_pass) {
+        const reqFails = requirements.all.failed_required || 0;
+        html += `
+            <div class="health-req-warn" style="margin:0.5rem 0;padding:0.5rem 0.75rem;background:var(--surface-2);border-left:3px solid var(--yellow);border-radius:4px;font-size:0.85rem;">
+                <strong>\u26a0\ufe0f ${reqFails} requirement${reqFails !== 1 ? 's' : ''} failing</strong>
+                <span style="opacity:0.7;margin-left:0.5rem;">Run <code>/wb-setup</code> to diagnose</span>
+            </div>
+        `;
+    }
 
     // Tree layout rules:
     //   - "external" components (e.g. postgresql) are NEVER top-level —
@@ -308,10 +331,12 @@ function renderHealthTree(health) {
     //   - Sub-items = depends_on (dependencies shown beneath, e.g. postgresql
     //     under hindsight) + dependents with plugin/external category
     //     (e.g. plugins under obsidian).
+    //   - Components with wanted=false are shown in a collapsed "Opted out"
+    //     section at the bottom, not mixed into the main tree.
 
     // Build reverse map: parent_id -> [components that depend on it]
     const dependents = {};
-    comps.forEach(c => {
+    activeComps.forEach(c => {
         (c.depends_on || []).forEach(depId => {
             if (!dependents[depId]) dependents[depId] = [];
             dependents[depId].push(c.id);
@@ -320,11 +345,11 @@ function renderHealthTree(health) {
 
     // Sub-items: depends_on (deps shown under me) + my dependents that are plugins
     const subItemMap = {};
-    comps.forEach(c => {
+    activeComps.forEach(c => {
         const subs = [];
         // My dependencies nest under me (e.g. postgresql under hindsight)
         (c.depends_on || []).forEach(depId => {
-            if (byId[depId]) subs.push(depId);
+            if (byId[depId] && byId[depId].wanted !== false) subs.push(depId);
         });
         // Components that depend on me AND are plugins/external nest under me
         (dependents[c.id] || []).forEach(depId => {
@@ -336,8 +361,8 @@ function renderHealthTree(health) {
         subItemMap[c.id] = subs;
     });
 
-    // Top-level = not external, not plugin
-    const topLevel = comps.filter(c => c.category !== 'external' && c.category !== 'plugin');
+    // Top-level = not external, not plugin, and not opted out
+    const topLevel = activeComps.filter(c => c.category !== 'external' && c.category !== 'plugin');
 
     // Render each top-level component as a collapsible item
     topLevel.forEach(c => {
@@ -388,6 +413,34 @@ function renderHealthTree(health) {
             `;
         }
     });
+
+    // Opted-out section (collapsed by default)
+    if (optedOut.length > 0) {
+        const optedNames = optedOut.map(c => c.display_name).join(', ');
+        html += `
+            <div class="health-item collapsed" data-component="_opted_out">
+                <div class="health-row" onclick="toggleHealthItem(this)" style="opacity:0.6;">
+                    <div class="health-row-main">
+                        <span class="health-chevron">\u25BE</span>
+                        <span class="status-dot stopped"></span>
+                        <span class="health-name">Opted out</span>
+                        <span class="health-sub-count">${optedOut.length}</span>
+                    </div>
+                </div>
+                <div class="health-sub">
+                    ${optedOut.map(c => `
+                        <div class="health-row" style="opacity:0.5;">
+                            <div class="health-row-main" style="padding-left:2rem;">
+                                <span class="status-dot stopped"></span>
+                                <span class="health-name">${c.display_name}</span>
+                                <span class="badge badge-muted">opted out</span>
+                            </div>
+                        </div>
+                    `).join('')}
+                </div>
+            </div>
+        `;
+    }
 
     return html;
 }
@@ -671,7 +724,7 @@ async function loadStatus() {
                 const id = el.dataset.component;
                 if (id) expanded.add(id);
             });
-            svcEl.innerHTML = renderHealthTree(health);
+            svcEl.innerHTML = renderHealthTree(health, data.requirements);
             // Restore: items start collapsed by default, expand the ones that were open
             if (expanded.size > 0) {
                 svcEl.querySelectorAll('.health-item.collapsed').forEach(el => {

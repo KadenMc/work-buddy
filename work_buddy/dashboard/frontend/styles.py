@@ -536,13 +536,12 @@ body {
     border-radius: 4px;
     background: var(--bg-tertiary);
     border-left: 3px solid var(--blue, #58a6ff);
-    white-space: pre-wrap;
-    font-family: var(--font-mono, monospace);
-    font-size: 11px;
     color: var(--text-secondary);
-    line-height: 1.5;
 }
 .health-diag-fix .fix-label { font-weight: 600; font-size: 11px; text-transform: uppercase; color: var(--text-muted); margin-bottom: 2px; font-family: var(--font-sans, system-ui); }
+.health-diag-fix .fix-text { margin: 0; white-space: pre-wrap; font-family: var(--font-mono, monospace); font-size: 11px; line-height: 1.5; }
+.health-diag-wizard { margin-top: 6px; padding: 6px 10px; border-radius: 4px; background: var(--surface-2); font-size: 12px; color: var(--text-secondary); }
+.health-diag-wizard code { background: var(--bg-tertiary); padding: 1px 5px; border-radius: 3px; font-size: 11px; }
 
 /* -- Event log --------------------------------------------------------- */
 

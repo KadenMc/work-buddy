@@ -150,6 +150,21 @@ Web dashboard for system observability, served as a sidecar-managed Flask servic
 - **Read-only mode**: `dashboard.read_only: true` in config.yaml gates mutating POST routes (403) and hides mutation controls in the frontend.
 - **CRITICAL for all agents modifying dashboard code**: Never add browser-side fetches to sibling localhost ports (5123, 5124, 27125, etc.) — these break on mobile. Gate new POST routes with `_reject_read_only()`. See `work_buddy/dashboard/README.md` "Development rules" for the full checklist.
 
+## Feature Preferences
+
+Users can opt in/out of components via `features:` in `config.local.yaml`. The setup wizard (`/wb-setup`) manages these preferences interactively.
+
+**Before recommending or using a feature, check preferences:**
+- If `wanted: false` — do **not** suggest, probe, or diagnose it. If the user asks "why isn't X working?", mention they opted out and point them to `/wb-setup preferences` to re-enable.
+- If `wanted: true` or `wanted: null` (undecided) — use normally.
+- Use `feature_status` to see preferences + tool availability in one call.
+
+**Requirements system:** Configuration-time checks (`work_buddy/health/requirements.py`) validate hidden assumptions — vault sections, plugin states, config keys. The wizard runs these and presents failures with fix instructions. Requirements are distinct from health checks (runtime) — requirements check "is it configured?" while health checks "is it running?"
+
+**Capabilities:**
+- `setup_wizard` — modes: `status` (overview), `guided` (interactive setup), `diagnose` (deep diagnostic), `preferences` (view/edit)
+- `feature_status` — includes `preferences` and `bootstrap_requirements` sections
+
 ## Consent system
 
 Some `work_buddy` functions are protected by a `@requires_consent` decorator. **The gateway handles consent transparently** — when you call `wb_run` on a consent-gated capability, the gateway automatically requests consent from the user, waits for approval, and retries the operation. You do not need to manually orchestrate consent.
@@ -645,8 +660,9 @@ All capabilities and workflows are invoked via `mcp__work-buddy__wb_run("name", 
 | `obsidian_retry` | function | Synchronous bridge-aware retry with health checks between attempts |
 | `llm_call` | function | Single LLM API call (Tier 2, cheaper than full agent) |
 | `llm_costs` | function | Token usage and cost breakdown |
-| `feature_status` | function | Tool probe results: available/disabled tools and affected capabilities |
-| `setup_help` | function | Interactive setup troubleshooting |
+| `feature_status` | function | Tool probe results, preferences, bootstrap requirements, disabled capabilities |
+| `setup_help` | function | Diagnose component health (legacy — prefer `setup_wizard`) |
+| `setup_wizard` | function | Comprehensive setup wizard: status, guided setup, diagnose, preferences |
 | `tailscale_status` | function | Tailscale network status |
 
 ### Knowledge (agent self-documentation)

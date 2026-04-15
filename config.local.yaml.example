@@ -1,0 +1,33 @@
+# Machine-specific overrides (gitignored)
+# Merged on top of config.yaml — only include keys you want to override.
+#
+# Copy this file to config.local.yaml and edit:
+#   cp config.local.yaml.example config.local.yaml
+
+# --- Dashboard remote access ---
+dashboard:
+  external_url: ""  # Your Tailscale HTTPS URL, e.g. "https://machine.tailnet.ts.net"
+
+# --- Hindsight personal memory ---
+# Only needed if you use the Hindsight memory system.
+# hindsight:
+#   bank_id: your-bank-name
+#   user_tag: user:yourname
+#   bank_mission: 'Your custom mission statement for the memory bank.'
+
+# --- Feature preferences ---
+# Control which components the setup wizard tracks.
+# wanted: true  — Probe, show in dashboard, agents will use it.
+# wanted: false — Skip probes, hide from dashboard, agents won't suggest it.
+# Omit a component to leave it undecided (treated as wanted by default).
+#
+# features:
+#   hindsight:
+#     wanted: false
+#     reason: "Not using personal memory system"
+#   telegram:
+#     wanted: false
+#   obsidian:
+#     wanted: true
+#   chrome_extension:
+#     wanted: true

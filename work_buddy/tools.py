@@ -178,6 +178,7 @@ def probe_all(force: bool = False) -> dict[str, dict[str, Any]]:
 
     from concurrent.futures import ThreadPoolExecutor, as_completed
     from work_buddy.config import load_config
+    from work_buddy.health.preferences import is_wanted
     cfg = load_config()
 
     # Topological order: probes with no dependencies first
@@ -192,6 +193,14 @@ def probe_all(force: bool = False) -> dict[str, dict[str, Any]]:
             "reason": "",
             "config_enabled": True,
         }
+        # Check user preference — if explicitly unwanted, skip probe
+        pref = is_wanted(probe.id)
+        if pref is False:
+            entry["config_enabled"] = False
+            entry["reason"] = "User opted out (features.{}.wanted: false)".format(probe.id)
+            entry["user_opted_out"] = True
+            return probe.id, entry
+
         # Check config toggle
         config_val = _get_config_enabled(cfg, probe.config_key)
         if config_val is False:

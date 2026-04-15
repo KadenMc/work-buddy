@@ -13,7 +13,12 @@ from tools.py.
 
 from __future__ import annotations
 
+import platform
 from dataclasses import dataclass, field
+
+# Detect once at import time — used to select platform-specific fix hints.
+_IS_WINDOWS = platform.system() == "Windows"
+_IS_MAC = platform.system() == "Darwin"
 
 
 @dataclass
@@ -56,6 +61,7 @@ class ComponentDef:
     health_source: str = "tool_probe"
     check_sequence: list[CheckStep] = field(default_factory=list)
     sidecar_service: str | None = None
+    requirements: list[str] = field(default_factory=list)  # Requirement IDs from REQUIREMENT_REGISTRY
 
 
 # ---------------------------------------------------------------------------
@@ -81,10 +87,10 @@ _register(ComponentDef(
             description="PostgreSQL accepting connections on port 5432",
             check_fn="work_buddy.health.checks.check_postgresql",
             on_fail=(
-                "PostgreSQL is not running. Start it with:\n"
-                "  - pg_ctl start -D <data_dir>\n"
-                "  - Windows: Start-ScheduledTask 'Hindsight-PostgreSQL'\n"
-                "  - Linux: systemctl --user start hindsight-postgres"
+                "PostgreSQL is not running on port 5432. Start it:\n"
+                + ("  Start-ScheduledTask 'Hindsight-PostgreSQL'" if _IS_WINDOWS
+                   else "  systemctl --user start hindsight-postgres")
+                + "\n  Or manually: pg_ctl -D <data_dir> -l <logfile> start"
             ),
         ),
     ],
@@ -97,6 +103,18 @@ _register(ComponentDef(
     display_name="Obsidian Bridge",
     category="integration",
     health_source="tool_probe",
+    requirements=[
+        "obsidian/vault/obsidian-dir",
+        "obsidian/daily-note/plugin-enabled",
+        "obsidian/daily-note/dir-exists",
+        "obsidian/daily-note/log-section",
+        "obsidian/daily-note/sign-in-section",
+        "obsidian/daily-note/running-notes-section",
+        "obsidian/tasks/master-list-exists",
+        "obsidian/plugins/tasks-plugin",
+        "obsidian/contracts/dir-exists",
+        "obsidian/knowledge/personal-path",
+    ],
     check_sequence=[
         CheckStep(
             description="Obsidian bridge HTTP health endpoint",
@@ -117,11 +135,17 @@ _register(ComponentDef(
     depends_on=["postgresql"],
     health_source="composite",
     sidecar_service=None,  # not sidecar-managed, but has tool probe
+    requirements=["integrations/hindsight/pg-scheduled-task"],
     check_sequence=[
         CheckStep(
             description="PostgreSQL is running (dependency)",
             check_fn="work_buddy.health.checks.check_postgresql",
-            on_fail="Hindsight requires PostgreSQL. Start PostgreSQL first.",
+            on_fail=(
+                "Hindsight requires PostgreSQL. Start it first:\n"
+                + ("  Start-ScheduledTask 'Hindsight-PostgreSQL'" if _IS_WINDOWS
+                   else "  systemctl --user start hindsight-postgres")
+                + "\n  Or manually: pg_ctl -D <data_dir> -l <logfile> start"
+            ),
         ),
         CheckStep(
             description="Hindsight API responding on port 8888",
@@ -130,8 +154,17 @@ _register(ComponentDef(
                 "Hindsight API is not responding. This can happen when:\n"
                 "  1. PostgreSQL was not running when Hindsight started\n"
                 "  2. The API crashed but the async worker survived (half-dead state)\n"
-                "Fix: Kill any remaining Hindsight processes, ensure PostgreSQL "
-                "is running, then restart Hindsight via scripts/start-hindsight.sh"
+                "  3. The terminal window was accidentally closed\n"
+                "Fix:\n"
+                + ("  1. Kill remaining processes: Get-Process *hindsight* | Stop-Process\n"
+                   "  2. Ensure PostgreSQL is running (check port 5432)\n"
+                   "  3. Restart: Start-ScheduledTask 'Hindsight-API'\n"
+                   "     Or manually: conda activate work-buddy && hindsight-api"
+                   if _IS_WINDOWS else
+                   "  1. Kill remaining processes: pkill -f hindsight\n"
+                   "  2. Ensure PostgreSQL is running (check port 5432)\n"
+                   "  3. Restart: conda activate work-buddy && hindsight-api &")
+                + "\nSee also: scripts/start-hindsight.sh, SETUP.md"
             ),
         ),
     ],
@@ -142,6 +175,7 @@ _register(ComponentDef(
     display_name="Chrome Tab Extension",
     category="integration",
     health_source="tool_probe",
+    requirements=["integrations/chrome/native-host"],
     check_sequence=[
         CheckStep(
             description="Chrome tab export file exists and is fresh (<120s)",
@@ -158,6 +192,13 @@ _register(ComponentDef(
 
 # --- Sidecar-managed services ---
 
+_SIDECAR_LOG_HINT = (
+    "Check sidecar logs: data/logs/sidecar.log\n"
+    "Restart sidecar: "
+    + ("Start-ScheduledTask 'WB-Sidecar'" if _IS_WINDOWS
+       else "python -m work_buddy.sidecar &")
+)
+
 _register(ComponentDef(
     id="messaging",
     display_name="Messaging Service",
@@ -168,7 +209,7 @@ _register(ComponentDef(
         CheckStep(
             description="Messaging service health endpoint (port 5123)",
             check_fn="work_buddy.health.checks.check_sidecar_service_messaging",
-            on_fail="Messaging service is not running. Check sidecar logs.",
+            on_fail=f"Messaging service is not running.\n{_SIDECAR_LOG_HINT}",
         ),
     ],
 ))
@@ -183,7 +224,7 @@ _register(ComponentDef(
         CheckStep(
             description="Embedding service health endpoint (port 5124)",
             check_fn="work_buddy.health.checks.check_sidecar_service_embedding",
-            on_fail="Embedding service is not running. Check sidecar logs.",
+            on_fail=f"Embedding service is not running.\n{_SIDECAR_LOG_HINT}",
         ),
     ],
 ))
@@ -194,6 +235,7 @@ _register(ComponentDef(
     category="service",
     health_source="composite",
     sidecar_service="telegram",
+    requirements=["services/telegram/bot-token"],
     check_sequence=[
         CheckStep(
             description="Telegram bot service health endpoint (port 5125)",
@@ -218,7 +260,7 @@ _register(ComponentDef(
         CheckStep(
             description="Dashboard service health endpoint (port 5127)",
             check_fn="work_buddy.health.checks.check_sidecar_service_dashboard",
-            on_fail="Dashboard service is not running. Check sidecar logs.",
+            on_fail=f"Dashboard service is not running.\n{_SIDECAR_LOG_HINT}",
         ),
     ],
 ))
