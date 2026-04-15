@@ -14,8 +14,91 @@ inclusion without duplication — use sparingly for genuine shared foundations.
 
 from __future__ import annotations
 
+import argparse
+import re
 from dataclasses import dataclass, field
 from typing import Any
+
+
+# ---------------------------------------------------------------------------
+# Inline placeholder resolution — <<wb:path --flags>>
+# ---------------------------------------------------------------------------
+
+_PLACEHOLDER_RE = re.compile(r'<<wb:(.*?)>>')
+"""Match ``<<wb:...>>`` placeholders in content strings.
+
+Uses non-greedy ``.*?`` so multiple placeholders on the same line are
+matched individually rather than swallowed into one span.
+"""
+
+
+class _PlaceholderParser(argparse.ArgumentParser):
+    """Argparse parser that raises instead of printing/exiting on error."""
+
+    def error(self, message: str) -> None:  # type: ignore[override]
+        raise ValueError(message)
+
+
+def _build_placeholder_parser() -> _PlaceholderParser:
+    """Build an argparse parser for placeholder flags.
+
+    Positional: unit path (required).
+    Flags: --recursive (opt-in transitive resolution).
+    Extensible: --depth, --section, etc. can be added later.
+    """
+    parser = _PlaceholderParser(prog="wb-placeholder", add_help=False)
+    parser.add_argument("path", type=str)
+    parser.add_argument("--recursive", action="store_true", default=False)
+    return parser
+
+
+def _resolve_placeholders(
+    text: str,
+    store: dict[str, KnowledgeUnit],
+) -> str:
+    """Replace ``<<wb:path>>`` / ``<<wb:path --recursive>>`` in *text*.
+
+    - Default: inserts the referenced unit's raw ``content["full"]``.
+    - ``--recursive``: calls ``_resolve_full_content()`` on the referenced
+      unit, which transitively resolves its own placeholders and context
+      chains.
+    - Missing refs: placeholder replaced with an HTML comment.
+    - Cycles are prevented at load time by ``validate_dag()``, so no
+      runtime tracking is needed.
+    """
+    if "<<wb:" not in text:
+        return text
+
+    def _replace(match: re.Match) -> str:
+        inner = match.group(1).strip()
+
+        # Parse with argparse
+        parser = _build_placeholder_parser()
+        try:
+            args, _unknown = parser.parse_known_args(inner.split())
+        except (ValueError, SystemExit, Exception):
+            # Malformed placeholder — treat entire inner text as path, no flags
+            args = argparse.Namespace(path=inner.split()[0] if inner else "", recursive=False)
+
+        path = args.path
+        if not path:
+            return match.group(0)  # leave as-is
+
+        ref = store.get(path)
+        if ref is None:
+            return f"<!-- wb: {path} not found -->"
+
+        if args.recursive:
+            content = ref._resolve_full_content(store)
+        else:
+            content = ref.content.get("full", ref.content.get("summary", ""))
+
+        if not content:
+            return f"<!-- wb: {path} empty -->"
+
+        return f"--- context from: {path} ---\n{content}"
+
+    return _PLACEHOLDER_RE.sub(_replace, text)
 
 
 # ---------------------------------------------------------------------------
@@ -104,15 +187,28 @@ class KnowledgeUnit:
         self,
         store: dict[str, KnowledgeUnit] | None,
     ) -> str:
-        """Build full content with context chain resolution.
+        """Build full content with context chain + placeholder resolution.
 
-        When *store* is provided, referenced units' ``content["full"]`` is
-        prepended/appended with separators.  When *store* is None, returns
-        the unit's own content only (chains listed as metadata in tier output).
+        Resolution order:
+        1. Prepend ``context_before`` references (non-recursive).
+        2. Own content with ``<<wb:...>>`` placeholders resolved inline.
+        3. Append ``context_after`` references (non-recursive).
+
+        When *store* is None, returns the unit's own content only (chains
+        and placeholders listed as metadata in tier output, not resolved).
+
+        Cycles are prevented at load time by ``validate_dag()`` — no
+        runtime tracking is needed here.
         """
         own = self.content.get("full", self.content.get("summary", ""))
 
-        if store is None or (not self.context_before and not self.context_after):
+        if store is None:
+            return own
+
+        # Resolve inline placeholders in own content
+        own = _resolve_placeholders(own, store)
+
+        if not self.context_before and not self.context_after:
             return own
 
         parts: list[str] = []
@@ -125,7 +221,7 @@ class KnowledgeUnit:
                 if ref_content:
                     parts.append(f"--- context from: {ref_path} ---\n{ref_content}")
 
-        # Own content
+        # Own content (placeholders already resolved)
         parts.append(own)
 
         # Append context_after
@@ -438,53 +534,73 @@ def unit_from_dict(path: str, data: dict[str, Any]) -> KnowledgeUnit:
     return cls(**base_kwargs)
 
 
+def _extract_placeholder_refs(content: dict[str, str]) -> list[str]:
+    """Extract unit paths referenced by ``<<wb:...>>`` placeholders in content."""
+    full = content.get("full", "")
+    if "<<wb:" not in full:
+        return []
+    return [m.split()[0] for m in _PLACEHOLDER_RE.findall(full) if m.strip()]
+
+
 def validate_dag(units: dict[str, KnowledgeUnit]) -> list[str]:
-    """Check for cycles in the parent/child DAG. Returns list of errors.
+    """Check for cycles across all reference types. Returns list of errors.
 
-    Also warns (non-fatal) about broken context chain references.
+    Builds a networkx DiGraph with edges from:
+    - parent → child relationships
+    - context_before / context_after references
+    - ``<<wb:path>>`` inline placeholder references in content
+
+    Also warns (non-fatal) about broken references.
     """
-    errors: list[str] = []
+    import networkx as nx
 
-    # Check referential integrity — parents/children
+    errors: list[str] = []
+    g = nx.DiGraph()
+
+    # Add all units as nodes
+    for path in units:
+        g.add_node(path)
+
     for path, unit in units.items():
-        for parent in unit.parents:
-            if parent not in units:
-                errors.append(f"{path}: parent '{parent}' not found in store")
+        # Parent → child edges
         for child in unit.children:
             if child not in units:
                 errors.append(f"{path}: child '{child}' not found in store")
+            else:
+                g.add_edge(path, child)
 
-    # Warn about broken context chains (non-fatal — cross-scope refs are expected)
-    for path, unit in units.items():
+        for parent in unit.parents:
+            if parent not in units:
+                errors.append(f"{path}: parent '{parent}' not found in store")
+            # parent→child edges are already added from the parent side
+
+        # Context chain edges
         for ref in unit.context_before:
             if ref not in units:
                 errors.append(f"{path}: context_before '{ref}' not found (may be cross-scope)")
+            else:
+                g.add_edge(path, ref)
+
         for ref in unit.context_after:
             if ref not in units:
                 errors.append(f"{path}: context_after '{ref}' not found (may be cross-scope)")
+            else:
+                g.add_edge(path, ref)
 
-    # Check for cycles via DFS
-    visited: set[str] = set()
-    in_stack: set[str] = set()
+        # Inline placeholder edges
+        for ref in _extract_placeholder_refs(unit.content):
+            if ref in units:
+                g.add_edge(path, ref)
+            # Don't warn about missing placeholder refs here — they're
+            # reported at resolution time with HTML comments.
 
-    def _dfs(node: str) -> bool:
-        if node in in_stack:
-            return True  # cycle
-        if node in visited:
-            return False
-        visited.add(node)
-        in_stack.add(node)
-        unit = units.get(node)
-        if unit:
-            for child in unit.children:
-                if _dfs(child):
-                    errors.append(f"Cycle detected involving: {node} → {child}")
-                    return True
-        in_stack.discard(node)
-        return False
-
-    for path in units:
-        if path not in visited:
-            _dfs(path)
+    # Check for cycles
+    if not nx.is_directed_acyclic_graph(g):
+        try:
+            cycle = nx.find_cycle(g, orientation="original")
+            cycle_str = " → ".join(f"{u}" for u, v, _ in cycle)
+            errors.append(f"Cycle detected: {cycle_str}")
+        except nx.NetworkXNoCycle:
+            pass  # race — DAG became acyclic between check and find
 
     return errors

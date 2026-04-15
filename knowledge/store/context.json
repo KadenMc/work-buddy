@@ -28,7 +28,7 @@
     "capabilities": ["context/context_bundle", "contracts/active_contracts"],
     "content": {
       "summary": "Follow review-latest-bundle workflow to find and check freshness of the most recent bundle. Synthesize using same rules as context-collect: priority order, extract signal, cross-reference contracts, suggest one next action, max 10-15 lines.",
-      "full": "Follow the review-latest-bundle workflow to find the latest bundle and check freshness. Then synthesize using the same rules as /wb-context-collect -- the behavioral rules are identical; only the data source differs (existing bundle vs fresh collection).\n\nSynthesis instructions are identical to context/collect-directions -- load those via agent_docs if needed.\n\n## When to prefer this over collect-and-orient\n- The user just ran the collector manually and wants the results interpreted\n- You're mid-conversation and need a quick check -- re-collecting would break flow\n- The bundle is less than a few hours old and conditions haven't changed much"
+      "full": "Follow the review-latest-bundle workflow to find the latest bundle and check freshness. Then synthesize using the same rules as /wb-context-collect -- the behavioral rules are identical; only the data source differs (existing bundle vs fresh collection).\n\n<<wb:context/collect-directions>>\n\n## When to prefer this over collect-and-orient\n- The user just ran the collector manually and wants the results interpreted\n- You're mid-conversation and need a quick check -- re-collecting would break flow\n- The bundle is less than a few hours old and conditions haven't changed much"
     }
   },
   "context/session-find-uncommitted": {

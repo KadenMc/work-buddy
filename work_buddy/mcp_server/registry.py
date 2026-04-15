@@ -679,6 +679,7 @@ def _contract_capabilities() -> list[Capability]:
 def _status_capabilities() -> list[Capability]:
     from work_buddy.messaging import client
     from work_buddy import agent_session
+    from work_buddy.mcp_server.tools.gateway import retry_operation as _retry_operation
 
     def _tailscale_status() -> dict:
         """Check Tailscale daemon status and Serve configuration."""
@@ -872,6 +873,28 @@ def _status_capabilities() -> list[Capability]:
             category="status",
             parameters={},
             callable=invalidate_registry,
+        ),
+        Capability(
+            name="retry",
+            description=(
+                "Retry a previously recorded operation by its ID. "
+                "Use wb_status() to discover recent/pending operations after a timeout. "
+                "Operations with retry_policy='manual' cannot be auto-retried. "
+                "Operations with an active execution lease will be refused to prevent "
+                "double-dispatch."
+            ),
+            category="operations",
+            parameters={
+                "operation_id": {
+                    "type": "str",
+                    "required": True,
+                    "description": "The operation ID from a wb_run response or wb_status output",
+                },
+            },
+            callable=_retry_operation,
+            mutates_state=True,
+            retry_policy="manual",
+            search_aliases=["retry", "replay", "re-run", "retry operation"],
         ),
         Capability(
             name="tailscale_status",
@@ -2080,6 +2103,46 @@ def _journal_capabilities() -> list[Capability]:
             callable=lambda **kw: __import__("work_buddy.obsidian.vault_writer", fromlist=["write_at_location"]).write_at_location(**kw),
             requires=["obsidian"],
             mutates_state=True,
+        ),
+        Capability(
+            name="obsidian_retry",
+            description=(
+                "Synchronous bridge-aware retry for Obsidian-dependent capabilities. "
+                "Checks bridge health before each attempt, waits between retries, and "
+                "returns a structured result. Use when you need the result before "
+                "proceeding (e.g., step 1 of a multi-step task). For fire-and-forget "
+                "retries, the gateway's automatic background retry handles it."
+            ),
+            category="obsidian",
+            search_aliases=[
+                "obsidian retry", "bridge retry", "retry with bridge",
+                "retry task create", "bridge failure", "obsidian unavailable",
+            ],
+            parameters={
+                "capability": {
+                    "type": "str",
+                    "required": True,
+                    "description": "Name of the registered capability to retry (e.g. 'task_create')",
+                },
+                "params": {
+                    "type": "dict",
+                    "required": True,
+                    "description": "Parameters to pass to the capability",
+                },
+                "max_retries": {
+                    "type": "int",
+                    "required": False,
+                    "description": "Maximum number of attempts including the first (default: 3)",
+                },
+                "wait_seconds": {
+                    "type": "int",
+                    "required": False,
+                    "description": "Seconds to wait between attempts (default: 60)",
+                },
+            },
+            callable=lambda **kw: __import__("work_buddy.obsidian.retry", fromlist=["obsidian_retry"]).obsidian_retry(**kw),
+            requires=["obsidian"],
+            retry_policy="manual",
         ),
     ]
 

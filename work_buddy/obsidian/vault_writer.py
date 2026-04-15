@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from work_buddy.config import load_config
+from work_buddy.obsidian.retry import bridge_retry
 from work_buddy.journal import user_now
 
 
@@ -135,6 +136,7 @@ def _find_section_bounds(
 # Public API
 # ---------------------------------------------------------------------------
 
+@bridge_retry()
 def write_at_location(
     content: str,
     note: str = "latest_journal",
