@@ -34,7 +34,7 @@
 
 It runs locally, uses your own API keys, and stores everything on your machine. No cloud dependencies. Your workflows, your data, your agent.
 
-> **90+ capabilities** &bull; **15+ structured workflows** &bull; **34 slash commands** &bull; **205 Python modules** &bull; **Most commits authored by agents**
+> **90+ capabilities** &bull; **15+ structured workflows** &bull; **35 slash commands** &bull; **205 Python modules** &bull; **Most commits authored by agents**
 
 <p align="center">
     <img src="docs/hero_dashboard.png" alt="work-buddy dashboard — browsing agent session conversations" width="700" />
@@ -273,9 +273,14 @@ poetry install --extras all       # Everything
 ```bash
 cp config.example.yaml config.yaml
 # Edit: vault path, timezone, enabled services
+
+cp config.local.yaml.example config.local.yaml
+# Edit: machine-specific overrides (Tailscale URL, Hindsight bank, feature preferences)
 ```
 
-Machine-specific overrides (e.g., `hindsight.bank_id`) go in `config.local.yaml` (gitignored). Copy `config.local.example.yaml` as a starting point.
+Machine-specific overrides (e.g., `hindsight.bank_id`) go in `config.local.yaml` (gitignored).
+
+**First-time setup:** After connecting to Claude Code, run `/wb-setup guided` for an interactive walkthrough that validates your configuration, lets you choose which features to enable, and checks that everything is wired correctly. The wizard will flag missing requirements with fix instructions.
 
 ### Connect to Claude Code
 
@@ -432,7 +437,7 @@ curl http://127.0.0.1:5124/health   # Embedding
 curl http://127.0.0.1:5127/health   # Dashboard
 ```
 
-Or from within Claude Code: `/wb-setup-help` runs automated diagnostics that walk dependency chains and stop at the first failure with a fix suggestion.
+Or from within Claude Code: `/wb-setup` runs the setup wizard with automated diagnostics, requirement validation, and feature preference management. Use `/wb-setup-help` for targeted component diagnostics.
 
 <details>
 <summary><strong>Auto-start on login</strong></summary>
@@ -575,7 +580,7 @@ Set `dashboard.external_url` in `config.yaml` to enable "View in dashboard" link
 
 ## Slash Commands
 
-All 33 commands are prefixed `wb-` for easy discovery. Highlights:
+All 35 commands are prefixed `wb-` for easy discovery. Highlights:
 
 | Command | What it does |
 |---------|-------------|
@@ -585,6 +590,7 @@ All 33 commands are prefixed `wb-` for easy discovery. Highlights:
 | `/wb-journal-update` | Detect recent activity, append to today's journal |
 | `/wb-meta-blindspots` | Check work against documented failure patterns |
 | `/wb-dev` | Enter development mode with architecture orientation |
+| `/wb-setup` | Setup wizard: validate config, choose features, diagnose issues |
 | `/wb-task-handoff` | Create a task with full handoff context for a new session |
 
 ---
@@ -602,12 +608,12 @@ work_buddy/              # Python package (205 modules, ~58k LOC)
   telegram/              # Telegram bot sidecar
   obsidian/              # Obsidian bridge + plugin integrations
   knowledge/             # Typed JSON documentation store
-  health/                # Feature toggles + diagnostics
+  health/                # Feature toggles, diagnostics, setup wizard, requirements
   sessions/              # Conversation inspection + search
 
 knowledge/               # Agent documentation + workflow DAGs (canonical store)
 contracts/               # Work commitment tracking
-.claude/commands/        # 34 slash commands (wb-* prefix)
+.claude/commands/        # 35 slash commands (wb-* prefix)
 tests/                   # pytest + freezegun test suite
 ```
 
@@ -620,8 +626,10 @@ Each subsystem has its own README.
 Layered config system:
 
 - `config.yaml` — project-wide settings (checked in)
-- `config.local.yaml` — machine-specific overrides (gitignored)
+- `config.local.yaml` — machine-specific overrides + feature preferences (gitignored)
 - `CLAUDE.local.md` — personal behavioral instructions for your agent (gitignored)
+
+Feature preferences live in `config.local.yaml` under a `features:` key. Set `wanted: false` on any component to opt out — agents won't suggest it, the dashboard hides it, and probes are skipped. Run `/wb-setup preferences` to manage these interactively.
 
 Features are modular. The dependency-aware toggle system lets you enable/disable subsystems based on what you have installed.
 

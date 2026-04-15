@@ -488,11 +488,34 @@ def register_tools(mcp: FastMCP) -> None:
         from work_buddy.mcp_server.activity_ledger import record_init
         record_init(session_id)
 
-        return _to_json({
+        # Quick bootstrap check — only fires when critical config is missing.
+        # Intentionally lightweight: filesystem checks only, no HTTP/bridge.
+        setup_hint = None
+        try:
+            from work_buddy.health.requirements import RequirementChecker
+            checker = RequirementChecker()
+            bootstrap = checker.check_bootstrap()
+            critical_failures = [
+                r for r in bootstrap
+                if not r.ok and r.severity == "required"
+            ]
+            if critical_failures:
+                names = [r.id.split("/")[-1] for r in critical_failures]
+                setup_hint = (
+                    f"Setup issues detected: {', '.join(names)}. "
+                    f"Run /wb-setup to diagnose and fix."
+                )
+        except Exception:
+            pass  # Don't block init on check failures
+
+        result = {
             "status": "initialized",
             "session_id": session_id,
             "message": "Session registered. All work-buddy tools are now available.",
-        })
+        }
+        if setup_hint:
+            result["setup_hint"] = setup_hint
+        return _to_json(result)
 
     @mcp.tool()
     async def wb_search(query: str, category: str | None = None, filter_n: int = 3, ctx: Context = None) -> str:
@@ -561,14 +584,32 @@ def register_tools(mcp: FastMCP) -> None:
         entry = registry.get_entry(capability)
 
         if entry is None:
-            from work_buddy.tools import DISABLED_CAPABILITIES
+            from work_buddy.tools import DISABLED_CAPABILITIES, get_tool_status
             missing_deps = DISABLED_CAPABILITIES.get(capability)
             if missing_deps:
+                # Check if any missing dep is opted-out vs genuinely unavailable
+                tool_status = get_tool_status().get("tools", {})
+                opted_out = [
+                    dep for dep in missing_deps
+                    if tool_status.get(dep, {}).get("user_opted_out")
+                ]
+                if opted_out:
+                    return _to_json({
+                        "error": (
+                            f"Capability {capability!r} is unavailable because "
+                            f"you opted out of: {', '.join(opted_out)}. "
+                            f"To re-enable, run: /wb-setup preferences"
+                        ),
+                        "disabled": True,
+                        "opted_out": opted_out,
+                        "requires": missing_deps,
+                    })
                 return _to_json({
                     "error": (
                         f"Capability {capability!r} is unavailable: "
                         f"requires {', '.join(missing_deps)}. "
-                        f"Start the missing dependencies and reload the registry."
+                        f"Run /wb-setup to diagnose, or start the missing "
+                        f"dependencies and reload the registry."
                     ),
                     "disabled": True,
                     "requires": missing_deps,

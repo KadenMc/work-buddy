@@ -43,6 +43,7 @@ class ComponentHealth:
     display_name: str
     category: str
     status: str  # healthy, degraded, unavailable, crashed, disabled, blocked, unknown
+    wanted: bool | None = None  # True/False/None from user preferences
     depends_on: list[str] = field(default_factory=list)
     details: dict[str, Any] = field(default_factory=dict)
     children: list[str] = field(default_factory=list)
@@ -157,12 +158,14 @@ class HealthEngine:
 
             {
                 "components": [ComponentHealth.to_dict(), ...],
-                "summary": {"healthy": N, "unhealthy": N, "disabled": N, "total": N},
+                "summary": {"healthy": N, "unhealthy": N, "disabled": N, "opted_out": N, "total": N},
             }
         """
         from work_buddy.health.components import COMPONENT_CATALOG
+        from work_buddy.health.preferences import load_preferences
 
         self._load()
+        prefs = load_preferences()
 
         components: list[ComponentHealth] = []
         status_counts: dict[str, int] = {}
@@ -176,9 +179,19 @@ class HealthEngine:
         # Resolve statuses
         resolved: dict[str, str] = {}
         for comp in COMPONENT_CATALOG.values():
+            pref = prefs.get(comp.id)
+            wanted = pref.wanted if pref else None
+
             status, details = self._merge_status(
                 comp.id, comp.health_source, comp.sidecar_service
             )
+
+            # If user opted out, mark as disabled regardless of probe state
+            if wanted is False and status != "disabled":
+                status = "disabled"
+                details["reason"] = details.get("reason", "User opted out")
+                if "user_opted_out" not in details:
+                    details["user_opted_out"] = True
 
             # If any parent is unhealthy, mark as blocked
             if status not in ("disabled", "blocked"):
@@ -196,6 +209,7 @@ class HealthEngine:
                 display_name=comp.display_name,
                 category=comp.category,
                 status=status,
+                wanted=wanted,
                 depends_on=comp.depends_on,
                 details=details,
                 children=child_map.get(comp.id, []),
@@ -205,6 +219,7 @@ class HealthEngine:
 
         healthy = status_counts.get("healthy", 0)
         disabled = status_counts.get("disabled", 0)
+        opted_out = sum(1 for c in components if c.wanted is False)
         total = len(components)
         unhealthy = total - healthy - disabled
 
@@ -214,6 +229,7 @@ class HealthEngine:
                 "healthy": healthy,
                 "unhealthy": unhealthy,
                 "disabled": disabled,
+                "opted_out": opted_out,
                 "total": total,
             },
         }
@@ -221,15 +237,21 @@ class HealthEngine:
     def get_component(self, component_id: str) -> ComponentHealth | None:
         """Get health for a single component."""
         from work_buddy.health.components import COMPONENT_CATALOG
+        from work_buddy.health.preferences import is_wanted
 
         self._load()
         comp = COMPONENT_CATALOG.get(component_id)
         if comp is None:
             return None
 
+        wanted = is_wanted(comp.id)
         status, details = self._merge_status(
             comp.id, comp.health_source, comp.sidecar_service
         )
+
+        if wanted is False and status != "disabled":
+            status = "disabled"
+            details["user_opted_out"] = True
 
         child_map: dict[str, list[str]] = {}
         for c in COMPONENT_CATALOG.values():
@@ -241,6 +263,7 @@ class HealthEngine:
             display_name=comp.display_name,
             category=comp.category,
             status=status,
+            wanted=wanted,
             depends_on=comp.depends_on,
             details=details,
             children=child_map.get(comp.id, []),

@@ -200,6 +200,44 @@ def api_reprobe(component_id: str):
         return jsonify({"error": str(exc)}), 500
 
 
+@app.get("/api/requirements")
+def api_requirements():
+    """Full requirements validation results."""
+    try:
+        from work_buddy.health.requirements import RequirementChecker
+        checker = RequirementChecker()
+        bootstrap = checker.check_bootstrap()
+        all_reqs = checker.check_all(include_unwanted=False)
+        return jsonify({
+            "bootstrap": {
+                "summary": checker.summarize(bootstrap),
+                "results": [r.to_dict() for r in bootstrap],
+            },
+            "all": {
+                "summary": checker.summarize(all_reqs),
+                "results": [r.to_dict() for r in all_reqs],
+            },
+        })
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.get("/api/requirements/<component_id>")
+def api_requirements_component(component_id: str):
+    """Requirements for a specific component."""
+    try:
+        from work_buddy.health.requirements import RequirementChecker
+        checker = RequirementChecker()
+        results = checker.check_component(component_id)
+        return jsonify({
+            "component": component_id,
+            "summary": checker.summarize(results),
+            "results": [r.to_dict() for r in results],
+        })
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
 @app.get("/api/tasks")
 def api_tasks():
     """Task summaries from Obsidian Tasks."""

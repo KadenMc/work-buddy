@@ -144,6 +144,37 @@ def load_config(config_path: Path | None = None) -> dict[str, Any]:
     return cfg
 
 
+def _repo_root() -> Path:
+    """Return the work-buddy repo root (parent of work_buddy/)."""
+    return Path(__file__).parent.parent
+
+
+def config_local_path() -> Path:
+    """Return the path to config.local.yaml."""
+    return _repo_root() / "config.local.yaml"
+
+
+def read_config_local() -> dict[str, Any]:
+    """Read config.local.yaml, returning empty dict if it doesn't exist."""
+    path = config_local_path()
+    if not path.exists():
+        return {}
+    with open(path, encoding="utf-8") as f:
+        return yaml.safe_load(f) or {}
+
+
+def write_config_local(section: str, data: Any) -> None:
+    """Write a top-level section in config.local.yaml, preserving other sections.
+
+    If config.local.yaml doesn't exist, creates it.
+    """
+    path = config_local_path()
+    existing = read_config_local()
+    existing[section] = data
+    with open(path, "w", encoding="utf-8") as f:
+        yaml.safe_dump(existing, f, default_flow_style=False, sort_keys=False)
+
+
 def _init_user_tz() -> ZoneInfo:
     """Compute the user timezone once at import time."""
     cfg = load_config()
