@@ -2,15 +2,37 @@
 
 Two mechanisms:
 
-1. ``@bridge_retry`` decorator — apply to functions that write to the
-   Obsidian vault.  Transparent to callers: the function either succeeds
-   or raises after retries are exhausted.
+1. ``@bridge_retry`` decorator — apply to functions that depend on the
+   Obsidian bridge.  Transparent to callers: the function either succeeds
+   or returns a failure result after retries are exhausted.  Never raises
+   on transient failures — safe for MCP gateway use.
 
 2. ``obsidian_retry`` capability — explicit MCP wrapper agents can call
    on any bridge-dependent capability with custom retry params.
 
 Both check bridge health before each attempt, wait between retries,
 and log latency context per attempt.
+
+Standard bridge failure protocol
+---------------------------------
+
+Functions decorated with ``@bridge_retry`` signal retriable failures by
+returning ``bridge_failure("reason")``.  This produces a dict with a
+``_bridge_transient`` marker that the decorator checks definitively —
+no string matching, no heuristics.
+
+::
+
+    @bridge_retry()
+    def my_function():
+        content = bridge.read_file(fp)
+        if content is None:
+            return bridge_failure(f"Could not read {fp}")
+        ...
+
+The decorator retries on ``bridge_failure`` returns and on transient
+exceptions (ConnectionError, TimeoutError, etc.).  On exhaustion it
+returns the last failure result — never raises for bridge issues.
 """
 
 from __future__ import annotations
@@ -25,6 +47,43 @@ logger = get_logger(__name__)
 
 F = TypeVar("F", bound=Callable[..., Any])
 
+# Marker key for standard bridge failure results.  Private — callers
+# should use bridge_failure() and is_bridge_failure(), not this key.
+_BRIDGE_TRANSIENT_KEY = "_bridge_transient"
+
+
+# ---------------------------------------------------------------------------
+# Standard bridge failure protocol
+# ---------------------------------------------------------------------------
+
+def bridge_failure(message: str) -> dict[str, Any]:
+    """Create a standard transient bridge failure result.
+
+    Use this in any ``@bridge_retry``-decorated function when a bridge
+    operation fails (e.g. ``bridge.read_file()`` returns None).  The
+    decorator detects the marker and retries automatically.
+
+    Args:
+        message: Human-readable description of what failed.
+
+    Returns:
+        ``{"success": False, "message": ..., "_bridge_transient": True}``
+    """
+    return {
+        "success": False,
+        "message": message,
+        _BRIDGE_TRANSIENT_KEY: True,
+    }
+
+
+def is_bridge_failure(result: Any) -> bool:
+    """Check if a result is a standard bridge failure.
+
+    Definitive check — looks for the ``_bridge_transient`` marker set by
+    ``bridge_failure()``.  No string matching, no heuristics.
+    """
+    return isinstance(result, dict) and result.get(_BRIDGE_TRANSIENT_KEY) is True
+
 
 # ---------------------------------------------------------------------------
 # @bridge_retry decorator
@@ -36,15 +95,24 @@ def bridge_retry(
 ) -> Callable[[F], F]:
     """Decorator: retry a function on transient bridge failures.
 
-    Apply to functions that write to the Obsidian vault.  The decorated
-    function is called normally; if it raises a transient error (timeout,
-    connection refused, bridge unavailable), the decorator waits, checks
-    bridge health, and retries.
+    Apply to any function that depends on the Obsidian bridge.  Handles
+    two failure modes transparently:
 
-    On success the result is returned transparently — no wrapper dict,
-    no extra metadata.  On exhaustion the last exception is re-raised so
-    the gateway's normal error handling (background retry queue, error
-    classification) still applies.
+    1. **Exceptions** — if the function raises a transient error (timeout,
+       connection refused), the decorator waits, health-checks, and retries.
+       Permanent errors are re-raised immediately.
+
+    2. **bridge_failure() returns** — if the function returns a result
+       created by ``bridge_failure()``, the decorator treats it the same
+       as a transient exception: wait, health-check, retry.
+
+    On success the result is returned transparently.  On exhaustion:
+
+    - Exception path → re-raises the last exception
+    - bridge_failure path → returns the last failure result (never raises)
+
+    This means decorated functions remain safe for MCP gateway use — a
+    transient bridge outage can never crash the gateway process.
 
     Works with the ``requires=["obsidian"]`` gateway check: that check
     catches "obsidian not running at all" at dispatch time, while this
@@ -54,6 +122,9 @@ def bridge_retry(
 
         @bridge_retry(max_retries=3, wait_seconds=60)
         def task_create(task_text, ...):
+            content = bridge.read_file(fp)
+            if content is None:
+                return bridge_failure(f"Could not read {fp}")
             ...
     """
     def decorator(fn: F) -> F:
@@ -63,6 +134,7 @@ def bridge_retry(
             from work_buddy.errors import classify_error
 
             last_exc: Exception | None = None
+            last_failure: dict[str, Any] | None = None
 
             for attempt in range(1, max_retries + 1):
                 # Check bridge health before each attempt (except the first
@@ -79,22 +151,23 @@ def bridge_retry(
                         time.sleep(wait_seconds)
                         continue
                     else:
-                        # Exhausted — re-raise last exception if we have one,
-                        # otherwise raise a RuntimeError
+                        # Exhausted waiting for bridge.
+                        if last_failure is not None:
+                            return last_failure
                         if last_exc is not None:
                             raise last_exc
-                        raise RuntimeError(
-                            f"Bridge unavailable after {max_retries} attempts "
-                            f"[{latency}]"
+                        return bridge_failure(
+                            f"Bridge unavailable after {max_retries} "
+                            f"attempts [{latency}]"
                         )
 
                 try:
-                    return fn(*args, **kwargs)
+                    result = fn(*args, **kwargs)
                 except Exception as exc:
                     error_class = classify_error(exc)
                     latency = get_latency_context()
                     logger.warning(
-                        "bridge_retry(%s): attempt %d/%d failed (%s): %s [%s]",
+                        "bridge_retry(%s): attempt %d/%d raised (%s): %s [%s]",
                         fn.__name__, attempt, max_retries,
                         error_class, exc, latency,
                     )
@@ -107,147 +180,147 @@ def bridge_retry(
                         time.sleep(wait_seconds)
                     else:
                         raise  # exhausted — let gateway handle it
+                    continue
 
-            # Should not reach here, but safety net
+                # Function returned — check for standard bridge failure
+                if is_bridge_failure(result):
+                    latency = get_latency_context()
+                    logger.warning(
+                        "bridge_retry(%s): attempt %d/%d returned "
+                        "bridge_failure: %s [%s]",
+                        fn.__name__, attempt, max_retries,
+                        result.get("message", ""), latency,
+                    )
+                    last_failure = result
+
+                    if attempt < max_retries:
+                        time.sleep(wait_seconds)
+                    else:
+                        return result  # exhausted — return failure (never raise)
+                    continue
+
+                # Success
+                return result
+
+            # Safety net
+            if last_failure is not None:
+                return last_failure
             if last_exc is not None:
                 raise last_exc
-            raise RuntimeError(f"bridge_retry({fn.__name__}): unexpected exhaustion")
+            return bridge_failure(
+                f"bridge_retry({fn.__name__}): unexpected exhaustion"
+            )
 
         return wrapper  # type: ignore[return-value]
     return decorator
 
 
+# ---------------------------------------------------------------------------
+# obsidian_retry capability
+# ---------------------------------------------------------------------------
+
 def obsidian_retry(
     capability: str,
-    params: dict[str, Any] | str | None = None,
+    params: dict[str, Any] | None = None,
     max_retries: int = 3,
     wait_seconds: int = 60,
 ) -> dict[str, Any]:
-    """Retry a bridge-dependent capability with health checks between attempts.
+    """Synchronous bridge-aware retry for any capability.
+
+    Unlike ``@bridge_retry`` (decorator, applied at definition time), this
+    is an explicit MCP capability agents can call on any bridge-dependent
+    capability.  Useful when the target capability isn't decorated, or when
+    the agent wants to override retry parameters.
+
+    Health-checks the bridge before each attempt, waits between retries,
+    and captures latency context per attempt.
 
     Args:
-        capability: Name of the registered capability (e.g. ``"task_create"``).
-        params: Parameters for the capability (dict or JSON string).
-        max_retries: Maximum number of attempts (including the first).
-        wait_seconds: Seconds to wait between attempts.
+        capability: Name of the capability to retry.
+        params: Parameters to pass to the capability (default: {}).
+        max_retries: Maximum number of attempts (default: 3).
+        wait_seconds: Seconds to wait between attempts (default: 60).
 
     Returns:
-        On success: ``{"success": True, "result": <result>, "attempts": N}``
-        On exhaustion: ``{"success": False, "attempts": N, "last_error": "...",
-                         "latency_context": "..."}``
+        The capability's result on success, or a bridge_failure dict on
+        exhaustion.
     """
-    from work_buddy.mcp_server import registry
+    from work_buddy.mcp_server.registry import get_registry
     from work_buddy.obsidian.bridge import is_available, get_latency_context
-    from work_buddy.errors import classify_error, is_transient_result
+    from work_buddy.errors import classify_error
 
-    # Parse params if JSON string
-    if isinstance(params, str):
-        import json
-        try:
-            params = json.loads(params)
-        except (json.JSONDecodeError, TypeError):
-            params = {}
-    if params is None:
-        params = {}
+    params = params or {}
+    registry = get_registry()
+    entry = registry.get(capability)
 
-    entry = registry.get_entry(capability)
     if entry is None:
-        return {"success": False, "error": f"Unknown capability: {capability!r}", "attempts": 0}
+        return {"success": False, "error": f"Capability '{capability}' not found"}
 
-    last_error = ""
+    last_failure: dict[str, Any] | None = None
+    last_exc: Exception | None = None
+
     for attempt in range(1, max_retries + 1):
-        # Check bridge health before each attempt
-        if not is_available():
+        if attempt > 1 and not is_available():
             latency = get_latency_context()
             logger.info(
-                "obsidian_retry: bridge unavailable before attempt %d/%d "
-                "(%s). Waiting %ds...",
-                attempt, max_retries, latency, wait_seconds,
+                "obsidian_retry(%s): bridge unavailable before attempt "
+                "%d/%d (%s). Waiting %ds...",
+                capability, attempt, max_retries, latency, wait_seconds,
             )
             if attempt < max_retries:
                 time.sleep(wait_seconds)
                 continue
             else:
-                return {
-                    "success": False,
-                    "attempts": attempt,
-                    "last_error": "Bridge unavailable after all retries",
-                    "latency_context": latency,
-                }
+                if last_failure is not None:
+                    return last_failure
+                return bridge_failure(
+                    f"Bridge unavailable after {max_retries} attempts "
+                    f"[{latency}]"
+                )
 
-        # Attempt the operation
         try:
             result = entry.callable(**params)
         except Exception as exc:
-            error_str = f"{type(exc).__name__}: {exc}"
             error_class = classify_error(exc)
             latency = get_latency_context()
             logger.warning(
-                "obsidian_retry: attempt %d/%d failed (%s): %s [%s]",
-                attempt, max_retries, error_class, error_str, latency,
+                "obsidian_retry(%s): attempt %d/%d raised (%s): %s [%s]",
+                capability, attempt, max_retries,
+                error_class, exc, latency,
             )
-            last_error = error_str
+            last_exc = exc
 
             if error_class != "transient":
-                # Permanent error — no point retrying
-                return {
-                    "success": False,
-                    "attempts": attempt,
-                    "last_error": error_str,
-                    "error_class": "permanent",
-                    "latency_context": latency,
-                }
+                return {"success": False, "error": str(exc)}
 
             if attempt < max_retries:
                 time.sleep(wait_seconds)
-                continue
             else:
-                return {
-                    "success": False,
-                    "attempts": attempt,
-                    "last_error": error_str,
-                    "latency_context": latency,
-                }
+                return {"success": False, "error": str(exc)}
+            continue
 
-        # Check for soft transient failures in the result
-        if is_transient_result(result):
-            result_err = ""
-            if isinstance(result, dict):
-                result_err = result.get("error", result.get("message", "transient failure"))
+        if is_bridge_failure(result):
             latency = get_latency_context()
             logger.warning(
-                "obsidian_retry: attempt %d/%d returned transient result: %s [%s]",
-                attempt, max_retries, result_err, latency,
+                "obsidian_retry(%s): attempt %d/%d returned "
+                "bridge_failure: %s [%s]",
+                capability, attempt, max_retries,
+                result.get("message", ""), latency,
             )
-            last_error = str(result_err)
+            last_failure = result
 
             if attempt < max_retries:
                 time.sleep(wait_seconds)
-                continue
             else:
-                return {
-                    "success": False,
-                    "attempts": attempt,
-                    "last_error": last_error,
-                    "result": result,
-                    "latency_context": latency,
-                }
+                return result
+            continue
 
         # Success
-        logger.info(
-            "obsidian_retry: attempt %d/%d succeeded [%s]",
-            attempt, max_retries, get_latency_context(),
-        )
-        return {
-            "success": True,
-            "result": result,
-            "attempts": attempt,
-        }
+        return result
 
-    # Should not reach here, but safety net
-    return {
-        "success": False,
-        "attempts": max_retries,
-        "last_error": last_error or "Unknown error",
-        "latency_context": get_latency_context(),
-    }
+    # Safety net
+    if last_failure is not None:
+        return last_failure
+    if last_exc is not None:
+        return {"success": False, "error": str(last_exc)}
+    return bridge_failure("Unexpected exhaustion")

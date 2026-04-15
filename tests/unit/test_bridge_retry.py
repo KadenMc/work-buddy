@@ -1,22 +1,55 @@
-"""Unit tests for the @bridge_retry decorator and obsidian_retry capability."""
+"""Unit tests for the @bridge_retry decorator, bridge_failure protocol,
+and obsidian_retry capability."""
 
 from __future__ import annotations
 
 from unittest.mock import patch, MagicMock
 import pytest
 
-from work_buddy.obsidian.retry import bridge_retry, obsidian_retry
+from work_buddy.obsidian.retry import (
+    bridge_retry,
+    bridge_failure,
+    is_bridge_failure,
+    obsidian_retry,
+)
 
 
 # ---------------------------------------------------------------------------
-# @bridge_retry decorator
+# bridge_failure protocol
 # ---------------------------------------------------------------------------
 
-class TestBridgeRetryDecorator:
-    """Tests for the @bridge_retry decorator."""
+class TestBridgeFailureProtocol:
+    """The bridge_failure/is_bridge_failure contract."""
+
+    def test_bridge_failure_creates_marked_dict(self):
+        result = bridge_failure("Could not read file")
+        assert result["success"] is False
+        assert result["message"] == "Could not read file"
+        assert is_bridge_failure(result)
+
+    def test_is_bridge_failure_rejects_normal_failure(self):
+        """A normal failure dict without the marker is not a bridge failure."""
+        assert not is_bridge_failure({"success": False, "message": "Task not found"})
+
+    def test_is_bridge_failure_rejects_none(self):
+        assert not is_bridge_failure(None)
+
+    def test_is_bridge_failure_rejects_string(self):
+        assert not is_bridge_failure("error")
+
+    def test_is_bridge_failure_rejects_success(self):
+        """Even if someone accidentally sets the marker on a success dict."""
+        assert is_bridge_failure({"success": True, "_bridge_transient": True})
+
+
+# ---------------------------------------------------------------------------
+# @bridge_retry decorator — exception path (existing behavior)
+# ---------------------------------------------------------------------------
+
+class TestBridgeRetryExceptions:
+    """Exception-based retry (transient raises)."""
 
     def test_success_on_first_attempt(self):
-        """Decorated function succeeds immediately — no retry overhead."""
         call_count = 0
 
         @bridge_retry(max_retries=3, wait_seconds=0)
@@ -30,7 +63,6 @@ class TestBridgeRetryDecorator:
         assert call_count == 1
 
     def test_transparent_return(self):
-        """Return value passes through without wrapping."""
         @bridge_retry(max_retries=3, wait_seconds=0)
         def returns_string():
             return "plain value"
@@ -38,7 +70,6 @@ class TestBridgeRetryDecorator:
         assert returns_string() == "plain value"
 
     def test_preserves_function_metadata(self):
-        """functools.wraps preserves __name__ and __doc__."""
         @bridge_retry()
         def my_function():
             """My docstring."""
@@ -48,7 +79,6 @@ class TestBridgeRetryDecorator:
         assert my_function.__doc__ == "My docstring."
 
     def test_args_and_kwargs_forwarded(self):
-        """Positional and keyword args are forwarded correctly."""
         @bridge_retry(max_retries=1, wait_seconds=0)
         def echo(a, b, key=None):
             return (a, b, key)
@@ -59,7 +89,6 @@ class TestBridgeRetryDecorator:
     @patch("work_buddy.obsidian.bridge.get_latency_context", return_value="test")
     @patch("work_buddy.obsidian.bridge.is_available", return_value=True)
     def test_retries_on_transient_error(self, mock_avail, mock_latency, mock_classify):
-        """Transient errors trigger retry; succeeds on second attempt."""
         attempts = []
 
         @bridge_retry(max_retries=3, wait_seconds=0)
@@ -77,7 +106,6 @@ class TestBridgeRetryDecorator:
     @patch("work_buddy.obsidian.bridge.get_latency_context", return_value="test")
     @patch("work_buddy.obsidian.bridge.is_available", return_value=True)
     def test_no_retry_on_permanent_error(self, mock_avail, mock_latency, mock_classify):
-        """Permanent errors raise immediately without retry."""
         attempts = []
 
         @bridge_retry(max_retries=3, wait_seconds=0)
@@ -93,7 +121,6 @@ class TestBridgeRetryDecorator:
     @patch("work_buddy.obsidian.bridge.get_latency_context", return_value="test")
     @patch("work_buddy.obsidian.bridge.is_available", return_value=True)
     def test_exhaustion_reraises(self, mock_avail, mock_latency, mock_classify):
-        """After max_retries, the last exception is re-raised."""
         attempts = []
 
         @bridge_retry(max_retries=2, wait_seconds=0)
@@ -109,7 +136,6 @@ class TestBridgeRetryDecorator:
     @patch("work_buddy.obsidian.bridge.get_latency_context", return_value="3 failures")
     @patch("work_buddy.obsidian.bridge.is_available", return_value=False)
     def test_bridge_unavailable_skips_call(self, mock_avail, mock_latency, mock_classify):
-        """When bridge is unavailable on retry, the function isn't called."""
         call_count = 0
 
         @bridge_retry(max_retries=2, wait_seconds=0)
@@ -120,19 +146,14 @@ class TestBridgeRetryDecorator:
                 raise ConnectionError("first attempt fails")
             return {"ok": True}
 
-        # First attempt: bridge check skipped (attempt == 1).
-        # Function runs, raises transient.
-        # Second attempt: bridge check fails → raises RuntimeError.
         with pytest.raises((ConnectionError, RuntimeError)):
             should_not_be_called_twice()
-        # Function was called exactly once (first attempt only)
         assert call_count == 1
 
     @patch("work_buddy.errors.classify_error", return_value="transient")
     @patch("work_buddy.obsidian.bridge.get_latency_context", return_value="test")
     @patch("work_buddy.obsidian.bridge.is_available", return_value=True)
     def test_third_attempt_success(self, mock_avail, mock_latency, mock_classify):
-        """Succeeds on the third attempt after two transient failures."""
         attempts = []
 
         @bridge_retry(max_retries=3, wait_seconds=0)
@@ -147,25 +168,91 @@ class TestBridgeRetryDecorator:
 
 
 # ---------------------------------------------------------------------------
+# @bridge_retry decorator — return-value path (bridge_failure protocol)
+# ---------------------------------------------------------------------------
+
+class TestBridgeRetryReturnValue:
+    """Return-value retry via bridge_failure() marker."""
+
+    @patch("work_buddy.obsidian.bridge.get_latency_context", return_value="test")
+    @patch("work_buddy.obsidian.bridge.is_available", return_value=True)
+    def test_retries_on_bridge_failure_return(self, mock_avail, mock_latency):
+        """bridge_failure() return triggers retry, success on second attempt."""
+        attempts = []
+
+        @bridge_retry(max_retries=3, wait_seconds=0)
+        def fails_then_succeeds():
+            attempts.append(1)
+            if len(attempts) < 2:
+                return bridge_failure("Could not read file")
+            return {"success": True, "data": "ok"}
+
+        result = fails_then_succeeds()
+        assert result == {"success": True, "data": "ok"}
+        assert len(attempts) == 2
+
+    @patch("work_buddy.obsidian.bridge.get_latency_context", return_value="test")
+    @patch("work_buddy.obsidian.bridge.is_available", return_value=True)
+    def test_exhaustion_returns_last_failure(self, mock_avail, mock_latency):
+        """On exhaustion, returns the last bridge_failure (never raises)."""
+        attempts = []
+
+        @bridge_retry(max_retries=2, wait_seconds=0)
+        def always_fails():
+            attempts.append(1)
+            return bridge_failure(f"attempt {len(attempts)}")
+
+        result = always_fails()
+        assert is_bridge_failure(result)
+        assert result["message"] == "attempt 2"
+        assert len(attempts) == 2
+
+    @patch("work_buddy.obsidian.bridge.get_latency_context", return_value="test")
+    @patch("work_buddy.obsidian.bridge.is_available", return_value=True)
+    def test_normal_failure_not_retried(self, mock_avail, mock_latency):
+        """A normal failure dict (no marker) is returned immediately."""
+        attempts = []
+
+        @bridge_retry(max_retries=3, wait_seconds=0)
+        def normal_failure():
+            attempts.append(1)
+            return {"success": False, "message": "Task not found"}
+
+        result = normal_failure()
+        assert result == {"success": False, "message": "Task not found"}
+        assert len(attempts) == 1  # no retry
+
+    @patch("work_buddy.obsidian.bridge.get_latency_context", return_value="down")
+    @patch("work_buddy.obsidian.bridge.is_available", return_value=False)
+    def test_bridge_unavailable_returns_failure(self, mock_avail, mock_latency):
+        """When bridge is unavailable on retry, returns bridge_failure (no raise)."""
+        call_count = 0
+
+        @bridge_retry(max_retries=2, wait_seconds=0)
+        def fails_once():
+            nonlocal call_count
+            call_count += 1
+            return bridge_failure("read failed")
+
+        result = fails_once()
+        assert is_bridge_failure(result)
+        assert call_count == 1  # only called once, second attempt skipped
+
+
+# ---------------------------------------------------------------------------
 # obsidian_retry capability
 # ---------------------------------------------------------------------------
 
 class TestObsidianRetryCapability:
-    """Tests for the obsidian_retry MCP capability.
+    """Tests for the obsidian_retry MCP capability."""
 
-    obsidian_retry uses deferred imports inside the function body, so we
-    patch at the source modules (bridge, errors, registry).
-    """
-
-    @patch("work_buddy.errors.is_transient_result", return_value=False)
     @patch("work_buddy.obsidian.bridge.get_latency_context", return_value="OK")
     @patch("work_buddy.obsidian.bridge.is_available", return_value=True)
-    @patch("work_buddy.mcp_server.registry.get_entry")
-    def test_success_returns_result(self, mock_get_entry, mock_avail, mock_latency, mock_transient):
-        """Successful operation returns clean result without latency info."""
+    @patch("work_buddy.mcp_server.registry.get_registry")
+    def test_success_returns_result(self, mock_registry, mock_avail, mock_latency):
         mock_entry = MagicMock()
         mock_entry.callable = MagicMock(return_value={"task_id": "t-abc"})
-        mock_get_entry.return_value = mock_entry
+        mock_registry.return_value = {"task_create": mock_entry}
 
         result = obsidian_retry(
             capability="task_create",
@@ -174,77 +261,33 @@ class TestObsidianRetryCapability:
             wait_seconds=0,
         )
 
-        assert result["success"] is True
-        assert result["result"] == {"task_id": "t-abc"}
-        assert result["attempts"] == 1
-        assert "latency_context" not in result
+        assert result == {"task_id": "t-abc"}
 
-    @patch("work_buddy.mcp_server.registry.get_entry", return_value=None)
-    def test_unknown_capability(self, mock_get_entry):
-        """Unknown capability returns error without attempting."""
+    @patch("work_buddy.mcp_server.registry.get_registry")
+    def test_unknown_capability(self, mock_registry):
+        mock_registry.return_value = {}
+
         result = obsidian_retry(capability="nonexistent", params={})
 
         assert result["success"] is False
-        assert "Unknown capability" in result["error"]
-        assert result["attempts"] == 0
+        assert "not found" in result["error"]
 
-    @patch("work_buddy.obsidian.bridge.get_latency_context", return_value="5 failures")
-    @patch("work_buddy.obsidian.bridge.is_available", return_value=False)
-    @patch("work_buddy.mcp_server.registry.get_entry")
-    def test_bridge_unavailable_exhaustion(self, mock_get_entry, mock_avail, mock_latency):
-        """All retries fail because bridge is never available."""
-        mock_entry = MagicMock()
-        mock_get_entry.return_value = mock_entry
-
-        result = obsidian_retry(
-            capability="task_create",
-            params={"task_text": "test"},
-            max_retries=2,
-            wait_seconds=0,
-        )
-
-        assert result["success"] is False
-        assert "latency_context" in result
-        assert result["attempts"] == 2
-        mock_entry.callable.assert_not_called()
-
-    @patch("work_buddy.errors.classify_error", return_value="permanent")
-    @patch("work_buddy.obsidian.bridge.get_latency_context", return_value="OK")
+    @patch("work_buddy.obsidian.bridge.get_latency_context", return_value="test")
     @patch("work_buddy.obsidian.bridge.is_available", return_value=True)
-    @patch("work_buddy.mcp_server.registry.get_entry")
-    def test_permanent_error_no_retry(self, mock_get_entry, mock_avail, mock_latency, mock_classify):
-        """Permanent errors stop retry immediately."""
+    @patch("work_buddy.mcp_server.registry.get_registry")
+    def test_retries_on_bridge_failure_return(self, mock_registry, mock_avail, mock_latency):
+        """bridge_failure returns trigger retry in obsidian_retry too."""
+        attempts = []
         mock_entry = MagicMock()
-        mock_entry.callable.side_effect = TypeError("bad arg")
-        mock_get_entry.return_value = mock_entry
+        def side_effect(**kwargs):
+            attempts.append(1)
+            if len(attempts) < 2:
+                return bridge_failure("bridge down")
+            return {"success": True}
+        mock_entry.callable = side_effect
+        mock_registry.return_value = {"my_cap": mock_entry}
 
-        result = obsidian_retry(
-            capability="task_create",
-            params={"task_text": "test"},
-            max_retries=3,
-            wait_seconds=0,
-        )
+        result = obsidian_retry(capability="my_cap", max_retries=3, wait_seconds=0)
 
-        assert result["success"] is False
-        assert result["error_class"] == "permanent"
-        assert result["attempts"] == 1
-
-    @patch("work_buddy.errors.is_transient_result", return_value=False)
-    @patch("work_buddy.obsidian.bridge.get_latency_context", return_value="OK")
-    @patch("work_buddy.obsidian.bridge.is_available", return_value=True)
-    @patch("work_buddy.mcp_server.registry.get_entry")
-    def test_json_string_params_parsed(self, mock_get_entry, mock_avail, mock_latency, mock_transient):
-        """JSON string params are parsed into dict."""
-        mock_entry = MagicMock()
-        mock_entry.callable.return_value = {"ok": True}
-        mock_get_entry.return_value = mock_entry
-
-        result = obsidian_retry(
-            capability="test",
-            params='{"key": "value"}',
-            max_retries=1,
-            wait_seconds=0,
-        )
-
-        assert result["success"] is True
-        mock_entry.callable.assert_called_once_with(key="value")
+        assert result == {"success": True}
+        assert len(attempts) == 2

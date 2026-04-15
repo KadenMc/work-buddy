@@ -19,7 +19,7 @@ from typing import Any, Callable
 from work_buddy.consent import requires_consent
 from work_buddy.logging_config import get_logger
 from work_buddy.obsidian import bridge
-from work_buddy.obsidian.retry import bridge_retry
+from work_buddy.obsidian.retry import bridge_failure, bridge_retry
 from work_buddy.obsidian.tasks.env import _escape_js, _run_js
 from work_buddy.obsidian.tasks import store
 
@@ -140,7 +140,7 @@ def _find_and_replace_task_line(
 
     content = bridge.read_file(file_path)
     if content is None:
-        return {"success": False, "message": f"Could not read {file_path}"}
+        return bridge_failure(f"Could not read {file_path}")
 
     lines = content.split("\n")
     result = _find_task_line(lines, task_id, description_match)
@@ -167,7 +167,7 @@ def _find_and_replace_task_line(
 
     success = bridge.write_file(file_path, new_content)
     if not success:
-        return {"success": False, "message": f"Failed to write {file_path}"}
+        return bridge_failure(f"Failed to write {file_path}")
 
     logger.info("Task line mutated in %s:%d", file_path, idx + 1)
     return {
@@ -376,7 +376,7 @@ def archive_completed(older_than_days: int = 0) -> dict[str, Any]:
     """
     content = bridge.read_file(MASTER_TASK_FILE)
     if content is None:
-        return {"success": False, "message": f"Could not read {MASTER_TASK_FILE}"}
+        return bridge_failure(f"Could not read {MASTER_TASK_FILE}")
 
     lines = content.split("\n")
     today = date.today()
@@ -421,7 +421,7 @@ def archive_completed(older_than_days: int = 0) -> dict[str, Any]:
         new_archive = f"# Task Archive\n{archive_content}"
 
     if not bridge.write_file(ARCHIVE_FILE, new_archive):
-        return {"success": False, "message": f"Failed to write {ARCHIVE_FILE}"}
+        return bridge_failure(f"Failed to write {ARCHIVE_FILE}")
 
     new_master = "\n".join(keep_lines)
     if not bridge.write_file(MASTER_TASK_FILE, new_master):
@@ -507,11 +507,7 @@ def create_task(
         )
 
         if not bridge.write_file(note_path, note_content):
-            return {
-                "success": False,
-                "message": f"Failed to write note: {note_path}",
-                "bridge": bridge.get_latency_context(),
-            }
+            return bridge_failure(f"Failed to write note: {note_path}")
 
     # --- Task line ---
     parts = [f"- [ ] #todo {task_text}"]
@@ -526,17 +522,13 @@ def create_task(
 
     content = bridge.read_file(MASTER_TASK_FILE)
     if content is None:
-        return {
-            "success": False,
-            "message": f"Could not read {MASTER_TASK_FILE}",
-            "bridge": bridge.get_latency_context(),
-        }
+        return bridge_failure(f"Could not read {MASTER_TASK_FILE}")
 
     # Idempotent: skip prepend if task_id already present (retry safety)
     if task_id not in content:
         content = _prepend_task(content, task_line)
         if not bridge.write_file(MASTER_TASK_FILE, content):
-            return {"success": False, "message": f"Failed to write {MASTER_TASK_FILE}"}
+            return bridge_failure(f"Failed to write {MASTER_TASK_FILE}")
 
     # --- Store record ---
     if store.get(task_id) is None:
@@ -616,7 +608,7 @@ def toggle_task(
     fp = file_path or MASTER_TASK_FILE
     content = bridge.read_file(fp)
     if content is None:
-        return {"success": False, "message": f"Could not read {fp}"}
+        return bridge_failure(f"Could not read {fp}")
 
     lines = content.split("\n")
     result = _find_task_line(lines, task_id, None)
@@ -660,7 +652,7 @@ def toggle_task(
 
     lines[idx] = toggled
     if not bridge.write_file(fp, "\n".join(lines)):
-        return {"success": False, "message": f"Failed to write {fp}"}
+        return bridge_failure(f"Failed to write {fp}")
 
     new_state = "done" if not is_done else "inbox"
     if store.get(task_id):

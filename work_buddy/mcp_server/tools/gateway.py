@@ -561,6 +561,18 @@ def register_tools(mcp: FastMCP) -> None:
         entry = registry.get_entry(capability)
 
         if entry is None:
+            from work_buddy.tools import DISABLED_CAPABILITIES
+            missing_deps = DISABLED_CAPABILITIES.get(capability)
+            if missing_deps:
+                return _to_json({
+                    "error": (
+                        f"Capability {capability!r} is unavailable: "
+                        f"requires {', '.join(missing_deps)}. "
+                        f"Start the missing dependencies and reload the registry."
+                    ),
+                    "disabled": True,
+                    "requires": missing_deps,
+                })
             return _to_json({"error": f"Unknown capability: {capability!r}. Use wb_search to find available capabilities."})
 
         # Determine operation type and retry policy
