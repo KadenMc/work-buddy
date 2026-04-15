@@ -86,7 +86,7 @@ def _execute_capability(name: str, params: dict[str, Any]) -> dict[str, Any]:
         entry = registry.get(name)
 
         if entry is None:
-            from work_buddy.mcp_server.registry import DISABLED_CAPABILITIES
+            from work_buddy.tools import DISABLED_CAPABILITIES
             missing = DISABLED_CAPABILITIES.get(name)
             if missing:
                 return {"status": "error", "error": f"Capability '{name}' unavailable: requires {', '.join(missing)}"}
