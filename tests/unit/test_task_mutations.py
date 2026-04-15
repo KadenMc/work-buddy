@@ -13,12 +13,16 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
+from work_buddy.obsidian.tasks import mutations
 
-# Patch consent + bridge_retry decorators before importing mutations
-# so they become no-ops during testing.
-with patch("work_buddy.consent.requires_consent", lambda **kw: lambda fn: fn), \
-     patch("work_buddy.obsidian.retry.bridge_retry", lambda **kw: lambda fn: fn):
-    from work_buddy.obsidian.tasks import mutations
+
+@pytest.fixture(autouse=True)
+def _bypass_consent_and_retry():
+    """Bypass consent checks and bridge_retry for all tests."""
+    with patch("work_buddy.consent._cache") as mock_cache:
+        mock_cache.is_granted.return_value = True
+        mock_cache.get_mode.return_value = "always"
+        yield
 
 
 @pytest.fixture(autouse=True)
