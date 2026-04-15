@@ -476,7 +476,7 @@ async def cmd_remote(
         from work_buddy.consent import grant_consent
         grant_consent("sidecar:remote_session_launch", mode="always")
 
-        from work_buddy.remote_session import begin_session
+        from work_buddy.session_launcher import begin_session
         result = begin_session(prompt=prompt)
 
         if result.get("status") == "ok":
@@ -526,7 +526,7 @@ async def cmd_resume(
         from work_buddy.consent import grant_consent
         grant_consent("sidecar:remote_session_launch", mode="always")
 
-        from work_buddy.remote_session import begin_session, list_resumable_sessions
+        from work_buddy.session_launcher import begin_session, list_resumable_sessions
 
         # 1. Exact or partial UUID match — route through begin_session
         #    which calls _find_session_id → resolve_session_id for prefix
@@ -1026,7 +1026,7 @@ async def on_button(
         try:
             from work_buddy.consent import grant_consent
             grant_consent("sidecar:remote_session_launch", mode="always")
-            from work_buddy.remote_session import begin_session
+            from work_buddy.session_launcher import begin_session
             result = begin_session(session_id=full_sid)
             if result.get("status") == "ok":
                 msg = result.get("message", "Session resumed.")

@@ -1370,7 +1370,7 @@ def _launch_workflow_session(name: str, entry, user_prompt: str = "") -> dict:
     """
     try:
         from work_buddy.consent import grant_consent
-        from work_buddy.remote_session import begin_session
+        from work_buddy.session_launcher import begin_session
 
         # Grant consent for remote launch (same pattern as Telegram /remote)
         grant_consent("sidecar:remote_session_launch", mode="always")
@@ -1448,7 +1448,7 @@ def api_investigate():
     prompt = "\n".join(lines)
 
     try:
-        from work_buddy.remote_session import begin_session
+        from work_buddy.session_launcher import begin_session
 
         result = begin_session(prompt=prompt)
         return jsonify({
@@ -1458,6 +1458,64 @@ def api_investigate():
         })
     except Exception as exc:
         logger.error("Failed to launch investigate session: %s", exc)
+        return jsonify({"success": False, "error": str(exc)}), 500
+
+
+# ---------------------------------------------------------------------------
+# Agent launch
+# ---------------------------------------------------------------------------
+
+@app.post("/api/launch-agent")
+def api_launch_agent():
+    """Launch an agent session — desktop (no remote) or mobile (remote control).
+
+    Accepts:
+        prompt (str, required): Initial prompt for the session.
+        mode (str): "desktop" (default, no --remote-control) or
+            "mobile" (with --remote-control for phone app connection).
+        context (dict, optional): Tracking metadata (source, component_id).
+    """
+    blocked = _reject_read_only()
+    if blocked:
+        return blocked
+    data = request.get_json(silent=True) or {}
+    prompt = data.get("prompt", "")
+    if not prompt:
+        return jsonify({"success": False, "error": "No prompt provided."}), 400
+
+    mode = data.get("mode", "desktop")
+    if mode not in ("desktop", "mobile"):
+        return jsonify({"success": False, "error": f"Unknown mode: {mode}"}), 400
+
+    # TODO: For desktop mode, try claude-cli:// deep link approach —
+    # would open terminal directly via URL scheme without server-side
+    # subprocess launch. See claude-cli://open?cwd=<path>&q=<prompt>.
+
+    remote_control = (mode == "mobile")
+
+    try:
+        from work_buddy.consent import grant_consent
+        from work_buddy.session_launcher import begin_session
+
+        # Clicking the dashboard button IS the user's consent.
+        # Same pattern as _launch_workflow_session and Telegram /remote.
+        grant_consent("sidecar:remote_session_launch", mode="always")
+
+        result = begin_session(prompt=prompt, remote_control=remote_control)
+        if result.get("status") != "ok":
+            return jsonify({
+                "success": False,
+                "error": result.get("error", "Launch failed."),
+            }), 500
+
+        return jsonify({
+            "success": True,
+            "mode": mode,
+            "pid": result.get("pid"),
+            "message": result.get("message", "Session launched."),
+        })
+    except Exception as exc:
+        logger.error("Failed to launch agent session: %s", exc)
         return jsonify({"success": False, "error": str(exc)}), 500
 
 

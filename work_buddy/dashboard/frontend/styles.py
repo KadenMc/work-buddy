@@ -540,8 +540,14 @@ body {
 }
 .health-diag-fix .fix-label { font-weight: 600; font-size: 11px; text-transform: uppercase; color: var(--text-muted); margin-bottom: 2px; font-family: var(--font-sans, system-ui); }
 .health-diag-fix .fix-text { margin: 0; white-space: pre-wrap; font-family: var(--font-mono, monospace); font-size: 11px; line-height: 1.5; }
-.health-diag-wizard { margin-top: 6px; padding: 6px 10px; border-radius: 4px; background: var(--surface-2); font-size: 12px; color: var(--text-secondary); }
+.health-diag-wizard { margin-top: 6px; padding: 6px 10px; border-radius: 4px; background: var(--surface-2); font-size: 12px; color: var(--text-secondary); display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
 .health-diag-wizard code { background: var(--bg-tertiary); padding: 1px 5px; border-radius: 3px; font-size: 11px; }
+.wizard-launch-btns { margin-left: auto; display: inline-flex; gap: 4px; }
+.wizard-launch-btn { padding: 2px 8px; border: 1px solid var(--accent); border-radius: 4px; background: transparent; color: var(--accent); font-size: 11px; cursor: pointer; transition: background 0.15s, color 0.15s; white-space: nowrap; }
+.wizard-launch-btn:hover { background: var(--accent); color: var(--bg-primary); }
+.wizard-launch-btn:disabled { opacity: 0.6; cursor: default; pointer-events: none; }
+.wizard-launch-btn.mobile { border-color: var(--text-muted); color: var(--text-muted); }
+.wizard-launch-btn.mobile:hover { background: var(--text-muted); color: var(--bg-primary); }
 
 /* -- Event log --------------------------------------------------------- */
 

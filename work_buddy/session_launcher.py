@@ -1,4 +1,4 @@
-"""Remote CLI session launcher — visible, persistent Claude Code sessions.
+"""Session launcher — visible, persistent Claude Code sessions.
 
 This is the fourth agent spawn pattern, distinct from the three sidecar
 spawn modes in ``sidecar/dispatch/executor.py``:
@@ -6,19 +6,21 @@ spawn modes in ``sidecar/dispatch/executor.py``:
 - ``headless_ephemeral``: fire-and-forget ``claude -p`` (hidden)
 - ``headless_persistent``: ``claude -p`` with session persistence (hidden)
 - ``interactive_persistent``: PTY-spawned, visible in picker (hidden terminal)
-- **remote_session** (this module): real visible terminal, stays alive
-  indefinitely — designed for Remote Control (phone app) connection.
+- **session_launcher** (this module): real visible terminal, stays alive
+  indefinitely. Supports two modes:
+  - **Desktop mode**: standalone terminal, no ``--remote-control``.
+  - **Mobile mode**: ``--remote-control`` enabled for phone app connection.
 
-The key use case: you're away from your computer and want to start a
-Claude Code session via Remote Control, but no ``claude`` process is
-running. This launcher starts one remotely (triggered via Telegram or
-any messaging-dispatched command).
+Use cases:
+    - Dashboard "Launch Agent" buttons (desktop mode — no remote).
+    - Telegram ``/remote`` command (mobile mode — with remote control).
+    - Any context that needs a visible, interactive Claude Code session.
 
 Design principles:
     - Fire-and-forget: launch, verify PID, return immediately.
     - Do NOT use the PTY adapter — that creates hidden terminals.
     - Do NOT capture output or wait for Claude to load.
-    - Do NOT kill the process — it stays alive for Remote Control.
+    - Do NOT kill the process — it stays alive for the user.
     - Consent-gated via ``sidecar:remote_session_launch``.
 """
 
@@ -333,11 +335,12 @@ def begin_session(
     session_id: str | None = None,
     session_name: str | None = None,
     bypass_permissions: bool = True,
+    remote_control: bool = True,
 ) -> dict[str, Any]:
     """Launch or resume a visible Claude Code session in a real terminal.
 
     If ``session_id`` or ``session_name`` is provided, resumes that session.
-    Otherwise, starts a new session with ``--remote-control`` enabled.
+    Otherwise, starts a new session.
 
     Consent-gated: requires grant for ``sidecar:remote_session_launch``.
 
@@ -351,6 +354,9 @@ def begin_session(
         bypass_permissions: If True (default), adds
             ``--dangerously-skip-permissions`` so the session can operate
             without interactive permission prompts.
+        remote_control: If True (default), adds ``--remote-control`` so
+            the session can be connected to from Claude Desktop / Remote
+            Control. Set to False for standalone terminal sessions.
 
     Returns:
         Dict with status, pid, and session details.
@@ -378,53 +384,68 @@ def begin_session(
             session_name=session_name,
             cwd=cwd,
             bypass_permissions=bypass_permissions,
+            remote_control=remote_control,
         )
 
     # --- New session path ---
-    return _do_start(cwd=cwd, prompt=prompt, bypass_permissions=bypass_permissions)
+    return _do_start(cwd=cwd, prompt=prompt, bypass_permissions=bypass_permissions,
+                     remote_control=remote_control)
 
 
 def _do_start(
     cwd: str,
     prompt: str | None,
     bypass_permissions: bool = True,
+    remote_control: bool = True,
 ) -> dict[str, Any]:
     """Launch a new visible session."""
     # IMPORTANT: bare `claude` opens the REPL but doesn't start a
     # conversation — Remote Control can't connect to it. We always
     # need a prompt (positional arg) to kick off an actual session.
     if not prompt:
-        prompt = "This session was launched remotely via work-buddy. Stand by for instructions."
+        prompt = "This session was launched via work-buddy. Stand by for instructions."
 
     # Prompt MUST be the positional arg (first after `claude`).
     # --remote-control takes an optional session name as its next arg,
     # so it must come AFTER the prompt to avoid eating it.
-    cmd = ["claude", prompt, "--remote-control"]
+    cmd = ["claude", prompt]
+
+    if remote_control:
+        cmd.append("--remote-control")
 
     if bypass_permissions:
         cmd.append("--dangerously-skip-permissions")
 
-    logger.info("Launching remote session: cwd='%s'", cwd)
+    rc_label = "remote" if remote_control else "local"
+    logger.info("Launching %s session: cwd='%s'", rc_label, cwd)
 
     pid = _launch_and_verify(cmd, cwd)
     if isinstance(pid, dict):
         return pid  # Error dict
 
-    logger.info("Remote session launched (pid=%d)", pid)
+    logger.info("Session launched (pid=%d, remote_control=%s)", pid, remote_control)
 
-    # TODO - Telegram integration: send confirmation message back to user
-    # with Remote Control connection instructions.
+    if remote_control:
+        message = (
+            f"New session launched in a visible terminal. "
+            f"PID: {pid}. Remote Control enabled.\n"
+            f"Connect: https://claude.ai/code"
+        )
+    else:
+        # TODO: Try claude-cli:// deep link approach — would open terminal
+        # directly via URL scheme without server-side subprocess launch.
+        message = (
+            f"New session launched in a visible terminal. "
+            f"PID: {pid}."
+        )
 
     return {
         "status": "ok",
         "mode": "new",
         "pid": pid,
         "cwd": cwd,
-        "message": (
-            f"New session launched in a visible terminal. "
-            f"PID: {pid}. Remote Control enabled.\n"
-            f"Connect: https://claude.ai/code"
-        ),
+        "remote_control": remote_control,
+        "message": message,
     }
 
 
@@ -433,6 +454,7 @@ def _do_resume(
     session_name: str | None,
     cwd: str,
     bypass_permissions: bool = True,
+    remote_control: bool = True,
 ) -> dict[str, Any]:
     """Resume an existing session in a visible terminal."""
     resolved_id = _find_session_id(
@@ -448,23 +470,35 @@ def _do_resume(
             "error": f"No matching session found ({hint}). Use remote_session_list to see available sessions.",
         }
 
-    # --resume doesn't have the same positional ambiguity, but keep
-    # --remote-control at the end for consistency.
-    cmd = ["claude", "--resume", resolved_id, "--remote-control"]
+    cmd = ["claude", "--resume", resolved_id]
+
+    if remote_control:
+        cmd.append("--remote-control")
 
     if bypass_permissions:
         cmd.append("--dangerously-skip-permissions")
 
+    rc_label = "remote" if remote_control else "local"
     logger.info(
-        "Resuming remote session: session_id='%s', cwd='%s'",
-        resolved_id, cwd,
+        "Resuming %s session: session_id='%s', cwd='%s'",
+        rc_label, resolved_id, cwd,
     )
 
     pid = _launch_and_verify(cmd, cwd)
     if isinstance(pid, dict):
         return pid  # Error dict
 
-    # TODO - Telegram integration: send confirmation message back.
+    if remote_control:
+        message = (
+            f"Resumed session '{resolved_id}' in a visible terminal. "
+            f"PID: {pid}.\n"
+            f"Connect: https://claude.ai/code"
+        )
+    else:
+        message = (
+            f"Resumed session '{resolved_id}' in a visible terminal. "
+            f"PID: {pid}."
+        )
 
     return {
         "status": "ok",
@@ -473,11 +507,8 @@ def _do_resume(
         "session_id": resolved_id,
         "session_name": session_name or "",
         "cwd": cwd,
-        "message": (
-            f"Resumed session '{resolved_id}' in a visible terminal. "
-            f"PID: {pid}.\n"
-            f"Connect: https://claude.ai/code"
-        ),
+        "remote_control": remote_control,
+        "message": message,
     }
 
 
