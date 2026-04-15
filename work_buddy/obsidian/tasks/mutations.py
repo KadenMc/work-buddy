@@ -260,12 +260,15 @@ def update_task(
 
     State, urgency, complexity, contract, snooze_until → stored in SQLite.
     Due date → written to the markdown file (plugin-owned emoji format).
-    Checkbox state → updated in markdown if state transitions to/from 'done'.
+
+    **Cannot set state='done'.** Use task_toggle for completion — it handles
+    the checkbox, done date, and store state atomically with clean failure
+    semantics when the bridge is down.
 
     Args:
         task_id: Task ID (e.g., 't-a3f8c1e2'). Preferred.
         description_match: Description substring. Fallback for tasks without IDs.
-        state: New state — 'inbox', 'mit', 'focused', 'snoozed', or 'done'.
+        state: New state — 'inbox', 'mit', 'focused', or 'snoozed'. NOT 'done'.
         urgency: New urgency — 'low', 'medium', or 'high'.
         complexity: New complexity — 'simple', 'moderate', 'complex', or None.
         contract: Contract slug this task serves, or None.
@@ -276,8 +279,18 @@ def update_task(
     """
     _resolve_task_identity(task_id, description_match)
 
+    # Completion state changes go through task_toggle, not here.
+    if state == "done":
+        return {
+            "success": False,
+            "message": (
+                "task_change_state cannot set state='done' — use task_toggle instead. "
+                "Example: wb_run(\"task_toggle\", {\"task_id\": \"<id>\", \"done\": true})"
+            ),
+        }
+
     has_store_update = any(v is not None for v in [state, urgency, complexity, contract, snooze_until])
-    has_file_update = due_date is not None or state in ("done", None)
+    has_file_update = due_date is not None
 
     if not has_store_update and due_date is None:
         return {"success": False, "message": "No fields to update"}
@@ -294,10 +307,7 @@ def update_task(
                 task_id = _extract_task_id(found[1])
 
     # --- File updates FIRST (source of truth) ---
-    # Update the file before the store so that if the file write fails,
-    # the store stays consistent and task_sync won't revert the change.
     fp = file_path or MASTER_TASK_FILE
-    file_update_failed = False
 
     if due_date is not None:
         def set_due(line: str) -> str:
@@ -307,64 +317,12 @@ def update_task(
 
         file_result = _find_and_replace_task_line(fp, task_id, description_match, set_due)
         result.update(file_result)
-        if not file_result.get("success"):
-            file_update_failed = True
-
-    if state == "done":
-        # Check the checkbox and add done date via plugin API or regex
-        def mark_done(line: str) -> str:
-            toggled = _toggle_via_plugin_api(line, fp)
-            if toggled and re.match(r"^- \[x\]", toggled):
-                return toggled
-            # Fallback: regex
-            line = CHECKBOX_RE.sub(r"\g<1>x\3", line)
-            if "✅" not in line:
-                line = line.rstrip() + f" ✅ {date.today().isoformat()}"
-            return line
-
-        # Only toggle if currently unchecked
-        content = bridge.read_file(fp)
-        if content:
-            found = _find_task_line(content.split("\n"), task_id, description_match)
-            if found and not re.match(r"^- \[x\]", found[1]):
-                file_result = _find_and_replace_task_line(fp, task_id, description_match, mark_done)
-                result.update(file_result)
-                if not file_result.get("success"):
-                    file_update_failed = True
-
-    elif state is not None and state != "done":
-        # If transitioning FROM done, uncheck the checkbox
-        content = bridge.read_file(fp)
-        if content:
-            found = _find_task_line(content.split("\n"), task_id, description_match)
-            if found and re.match(r"^- \[x\]", found[1]):
-                def uncheck(line: str) -> str:
-                    line = CHECKBOX_RE.sub(r"\g<1> \3", line)
-                    line = DONE_DATE_RE.sub("", line)
-                    return re.sub(r"  +", " ", line).rstrip()
-
-                file_result = _find_and_replace_task_line(fp, task_id, description_match, uncheck)
-                result.update(file_result)
-                if not file_result.get("success"):
-                    file_update_failed = True
 
     # --- Store update AFTER file (store follows file) ---
-    # If a checkbox toggle failed in the file, don't update the store state
-    # — otherwise task_sync will revert the store to match the file, making
-    # the completion appear to "not stick". Other store fields (urgency,
-    # complexity, contract) have no file counterpart and can be updated
-    # regardless.
     if has_store_update and task_id:
         store_kwargs: dict[str, Any] = {}
         if state is not None:
-            if file_update_failed:
-                logger.error(
-                    "update_task: file write failed for state=%s on %s — "
-                    "skipping store state update to stay consistent with file",
-                    state, task_id,
-                )
-            else:
-                store_kwargs["state"] = state
+            store_kwargs["state"] = state
         if urgency is not None:
             store_kwargs["urgency"] = urgency
         if complexity is not None:
@@ -385,77 +343,6 @@ def update_task(
     result["task_id"] = task_id
     return result
 
-
-@requires_consent(
-    operation="tasks.toggle_completion",
-    reason="Toggle task completion status.",
-    risk="moderate",
-    default_ttl=30,
-)
-def toggle_completion(
-    *,
-    task_id: str | None = None,
-    description_match: str | None = None,
-    file_path: str | None = None,
-) -> dict[str, Any]:
-    """Toggle a task between TODO and DONE.
-
-    Uses the Tasks plugin's apiV1.executeToggleTaskDoneCommand() for the
-    checkbox and done date. Updates the store state accordingly.
-    """
-    _resolve_task_identity(task_id, description_match)
-
-    fp = file_path or MASTER_TASK_FILE
-    content = bridge.read_file(fp)
-    if content is None:
-        return {"success": False, "message": f"Could not read {fp}"}
-
-    lines = content.split("\n")
-    result = _find_task_line(lines, task_id, description_match)
-    if result is None:
-        identifier = task_id or description_match
-        return {"success": False, "message": f"Task not found: {identifier}"}
-
-    idx, old_line = result
-    is_done = re.match(r"^- \[x\]", old_line) is not None
-
-    # Use plugin API for the toggle
-    toggled_line = _toggle_via_plugin_api(old_line, fp)
-    method = "apiV1"
-
-    if toggled_line is None:
-        # Fallback: regex
-        method = "regex_fallback"
-        if is_done:
-            toggled_line = CHECKBOX_RE.sub(r"\g<1> \3", old_line)
-            toggled_line = DONE_DATE_RE.sub("", toggled_line)
-            toggled_line = re.sub(r"  +", " ", toggled_line).rstrip()
-        else:
-            toggled_line = CHECKBOX_RE.sub(r"\g<1>x\3", old_line)
-            if "✅" not in toggled_line:
-                toggled_line = toggled_line.rstrip() + f" ✅ {date.today().isoformat()}"
-
-    lines[idx] = toggled_line
-    new_content = "\n".join(lines)
-    if not bridge.write_file(fp, new_content):
-        return {"success": False, "message": f"Failed to write {fp}"}
-
-    # Update store
-    resolved_id = task_id or _extract_task_id(old_line)
-    new_state = "done" if not is_done else "inbox"
-    if resolved_id and store.get(resolved_id):
-        store.update(resolved_id, state=new_state, reason="toggled")
-
-    logger.info("Task toggled (%s) in %s:%d", method, fp, idx + 1)
-    return {
-        "success": True,
-        "old_line": old_line.strip(),
-        "new_line": toggled_line.strip(),
-        "file": fp,
-        "line_number": idx + 1,
-        "method": method,
-        "new_state": new_state,
-    }
 
 
 def _toggle_via_plugin_api(task_line: str, file_path: str) -> str | None:
@@ -708,15 +595,28 @@ def _verify_task_creation(task_id: str, note_path: str | None) -> dict[str, bool
 @bridge_retry()
 def toggle_task(
     task_id: str,
+    done: bool | None = None,
+    file_path: str | None = None,
 ) -> dict[str, Any]:
-    """Toggle a task between TODO and DONE by task ID.
+    """Mark a task complete, incomplete, or toggle its current state.
 
-    Uses the Tasks plugin API for the toggle (checkbox + done date),
+    This is the single entry point for all completion state changes.
+    Handles the checkbox, done date, and store state atomically.
+    Returns clean failure when the bridge is down.
+
+    Args:
+        task_id: Task ID (e.g., 't-a3f8c1e2').
+        done: If True, mark complete. If False, mark incomplete.
+              If None (default), toggle the current state.
+        file_path: Vault-relative path. Default: tasks/master-task-list.md.
+
+    Uses the Tasks plugin API for the checkbox + done date,
     with regex fallback. Updates the store state accordingly.
     """
-    content = bridge.read_file(MASTER_TASK_FILE)
+    fp = file_path or MASTER_TASK_FILE
+    content = bridge.read_file(fp)
     if content is None:
-        return {"success": False, "message": f"Could not read {MASTER_TASK_FILE}"}
+        return {"success": False, "message": f"Could not read {fp}"}
 
     lines = content.split("\n")
     result = _find_task_line(lines, task_id, None)
@@ -726,8 +626,28 @@ def toggle_task(
     idx, old_line = result
     is_done = re.match(r"^- \[x\]", old_line) is not None
 
+    # If `done` is specified and already matches current state, no-op.
+    if done is True and is_done:
+        return {
+            "success": True,
+            "task_id": task_id,
+            "old_line": old_line.strip(),
+            "new_line": old_line.strip(),
+            "new_state": "done",
+            "message": "Task is already complete",
+        }
+    if done is False and not is_done:
+        return {
+            "success": True,
+            "task_id": task_id,
+            "old_line": old_line.strip(),
+            "new_line": old_line.strip(),
+            "new_state": "inbox",
+            "message": "Task is already incomplete",
+        }
+
     # Toggle via plugin API, fall back to regex
-    toggled = _toggle_via_plugin_api(old_line, MASTER_TASK_FILE)
+    toggled = _toggle_via_plugin_api(old_line, fp)
     if toggled is None:
         if is_done:
             toggled = CHECKBOX_RE.sub(r"\g<1> \3", old_line)
@@ -739,19 +659,21 @@ def toggle_task(
                 toggled = toggled.rstrip() + f" ✅ {date.today().isoformat()}"
 
     lines[idx] = toggled
-    if not bridge.write_file(MASTER_TASK_FILE, "\n".join(lines)):
-        return {"success": False, "message": f"Failed to write {MASTER_TASK_FILE}"}
+    if not bridge.write_file(fp, "\n".join(lines)):
+        return {"success": False, "message": f"Failed to write {fp}"}
 
     new_state = "done" if not is_done else "inbox"
     if store.get(task_id):
         store.update(task_id, state=new_state, reason="toggled")
 
-    logger.info("Task toggled: %s → %s", task_id, new_state)
+    logger.info("Task toggled: %s → %s in %s:%d", task_id, new_state, fp, idx + 1)
     return {
         "success": True,
         "task_id": task_id,
         "old_line": old_line.strip(),
         "new_line": toggled.strip(),
+        "file": fp,
+        "line_number": idx + 1,
         "new_state": new_state,
     }
 

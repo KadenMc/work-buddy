@@ -32,7 +32,6 @@ from work_buddy.obsidian.tasks.mutations import (  # noqa: F401
     delete_task,
     toggle_task,
     strip_legacy_tags_from_line,
-    toggle_completion,
     update_task,
     verify_task,
 )

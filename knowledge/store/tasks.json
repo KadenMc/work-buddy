@@ -73,10 +73,10 @@
     "trigger": "user runs /wb-task-assign or asks to assign a task to the current session",
     "command": "wb-task-assign",
     "workflow": null,
-    "capabilities": ["tasks/task_assign", "tasks/task_change_state"],
+    "capabilities": ["tasks/task_assign", "tasks/task_toggle"],
     "content": {
       "summary": "Use MCP tool directly, never Python. Present: task text/state/urgency, contract, note preview with path, session count. State NOT changed by assignment. After completing deliverable, proactively ask to mark done — always confirm first.",
-      "full": "Assign via mcp__work-buddy__wb_run(\"task_assign\", {\"task_id\": \"<id>\"}). Do NOT use Python code.\n\nIf no argument provided, ask for the task ID.\n\n## Presentation after assignment\n\n1. Task: text and current state/urgency\n2. Contract: which contract it serves (if any)\n3. Note: preview of note content (if exists) + file path\n4. Sessions: how many sessions have worked on this task\n\n## State\n\nTask state is NOT changed by assignment. To mark focused, use task_change_state separately.\n\n## Completion tracking\n\nAfter committing code (or completing the deliverable), proactively ask: \"Task <id> looks complete -- should I mark it done?\"\n\nOn approval: mcp__work-buddy__wb_run(\"task_change_state\", {\"task_id\": \"<id>\", \"state\": \"done\"})\n\nDo not silently mark the task done -- always confirm first."
+      "full": "Assign via mcp__work-buddy__wb_run(\"task_assign\", {\"task_id\": \"<id>\"}). Do NOT use Python code.\n\nIf no argument provided, ask for the task ID.\n\n## Presentation after assignment\n\n1. Task: text and current state/urgency\n2. Contract: which contract it serves (if any)\n3. Note: preview of note content (if exists) + file path\n4. Sessions: how many sessions have worked on this task\n\n## State\n\nTask state is NOT changed by assignment. To mark focused, use task_change_state separately.\n\n## Completion tracking\n\nAfter committing code (or completing the deliverable), proactively ask: \"Task <id> looks complete -- should I mark it done?\"\n\nOn approval: mcp__work-buddy__wb_run(\"task_toggle\", {\"task_id\": \"<id>\", \"done\": true})\n\nDo not silently mark the task done -- always confirm first."
     }
   },
   "tasks/briefing-directions": {

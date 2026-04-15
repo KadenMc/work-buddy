@@ -460,8 +460,8 @@ All capabilities and workflows are invoked via `mcp__work-buddy__wb_run("name", 
 | `task_briefing` | function | Daily status: constraints, MITs, focused, overdue, stale, suggestions |
 | `task_create` | function | Create a new task. Params: `task_text` (required), `urgency`, `project`, `due_date`, `contract`, `summary` (triggers note file) |
 | `task_assign` | function | Claim a task for the current session. Params: `task_id` (required) |
-| `task_change_state` | function | Update state, urgency, or due date. Params: `task_id` (required), `state`, `urgency`, `due_date` |
-| `task_toggle` | function | Toggle TODO/DONE (consent-gated) |
+| `task_change_state` | function | Update task metadata (not completion): state, urgency, due date. Cannot set state='done' — use task_toggle. Params: `task_id`, `state`, `urgency`, `due_date` |
+| `task_toggle` | function | Mark task complete/incomplete/toggle. Params: `task_id` (required), `done` (true/false/omit). Consent-gated |
 | `task_delete` | function | Permanently delete a task (consent-gated) |
 | `task_review_inbox` | function | Inbox tasks with suggested actions (mit, snooze, kill) |
 | `task_stale_check` | function | Find forgotten/stale tasks across all states |

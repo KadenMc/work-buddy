@@ -2336,10 +2336,11 @@ def _task_capabilities() -> list[Capability]:
         ),
         Capability(
             name="task_toggle",
-            description="Toggle a task between TODO and DONE (checkbox, done date, store state). Consent-gated.",
+            description="Mark a task complete, incomplete, or toggle. Handles checkbox, done date, and store state atomically. Use done=true to complete, done=false to reopen, omit to toggle. Consent-gated.",
             category="tasks",
             parameters={
                 "task_id": {"type": "str", "description": "Task ID (e.g., 't-a3f8c1e2')", "required": True},
+                "done": {"type": "bool", "description": "True=complete, False=incomplete, omit=toggle", "required": False},
             },
             callable=toggle_task,
             search_aliases=["finish task", "done task", "complete todo", "mark done", "uncomplete task", "reopen task"],
@@ -2364,12 +2365,12 @@ def _task_capabilities() -> list[Capability]:
         ),
         Capability(
             name="task_change_state",
-            description="Update task metadata: state, urgency, due date (any combo)",
+            description="Update task metadata: state (not completion), urgency, due date. Cannot set state='done' — use task_toggle for completion.",
             category="tasks",
             parameters={
                 "task_id": {"type": "str", "description": "Task ID (e.g., 't-a3f8c1e2')", "required": False},
                 "description_match": {"type": "str", "description": "Description substring (fallback)", "required": False},
-                "state": {"type": "str", "description": "New state: inbox, mit, focused, snoozed, done", "required": False},
+                "state": {"type": "str", "description": "New state: inbox, mit, focused, snoozed. NOT done — use task_toggle.", "required": False},
                 "urgency": {"type": "str", "description": "New urgency: low, medium, high", "required": False},
                 "due_date": {"type": "str", "description": "Due date as YYYY-MM-DD", "required": False},
             },
