@@ -168,11 +168,14 @@ class TestToggleTaskDoneParam:
         assert result["new_state"] == "done"
         mock_bridge.write_file.assert_called_once()
 
-    def test_bridge_down_returns_failure(self, _patch_bridge_and_store):
-        """Bridge down should return clean failure, not silent success."""
+    def test_bridge_down_returns_bridge_failure(self, _patch_bridge_and_store):
+        """Bridge down should return a bridge_failure result (with marker)."""
+        from work_buddy.obsidian.retry import is_bridge_failure
+
         mock_bridge, _ = _patch_bridge_and_store
         mock_bridge.read_file.return_value = None
 
         result = mutations.toggle_task(task_id="t-abc123", done=True)
 
         assert result["success"] is False
+        assert is_bridge_failure(result)
