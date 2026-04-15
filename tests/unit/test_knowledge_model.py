@@ -1,4 +1,4 @@
-"""Unit tests for the KnowledgeUnit type hierarchy and context chaining."""
+"""Unit tests for the KnowledgeUnit type hierarchy, context chaining, and placeholders."""
 
 import pytest
 
@@ -12,6 +12,8 @@ from work_buddy.knowledge.model import (
     VaultUnit,
     unit_from_dict,
     validate_dag,
+    _resolve_placeholders,
+    _extract_placeholder_refs,
 )
 
 
@@ -304,3 +306,184 @@ class TestValidateDag:
         errors = validate_dag({"a": a, "b": b})
         chain_errors = [e for e in errors if "context_before" in e or "context_after" in e]
         assert chain_errors == []
+
+    def test_cycle_via_children_detected(self):
+        a = DirectionsUnit(
+            path="a", name="A", description="a",
+            children=["b"],
+        )
+        b = DirectionsUnit(
+            path="b", name="B", description="b",
+            children=["a"],
+        )
+        errors = validate_dag({"a": a, "b": b})
+        assert any("Cycle" in e for e in errors)
+
+    def test_cycle_via_context_after_detected(self):
+        a = DirectionsUnit(
+            path="a", name="A", description="a",
+            context_after=["b"],
+        )
+        b = DirectionsUnit(
+            path="b", name="B", description="b",
+            context_after=["a"],
+        )
+        errors = validate_dag({"a": a, "b": b})
+        assert any("Cycle" in e for e in errors)
+
+    def test_cycle_via_placeholder_detected(self):
+        a = DirectionsUnit(
+            path="a", name="A", description="a",
+            content={"full": "See: <<wb:b>>"},
+        )
+        b = DirectionsUnit(
+            path="b", name="B", description="b",
+            content={"full": "See: <<wb:a>>"},
+        )
+        errors = validate_dag({"a": a, "b": b})
+        assert any("Cycle" in e for e in errors)
+
+    def test_no_cycle_on_acyclic_placeholders(self):
+        a = DirectionsUnit(
+            path="a", name="A", description="a",
+            content={"full": "Ref: <<wb:b>>"},
+        )
+        b = DirectionsUnit(
+            path="b", name="B", description="b",
+            content={"full": "Just B."},
+        )
+        errors = validate_dag({"a": a, "b": b})
+        assert not any("Cycle" in e for e in errors)
+
+
+class TestExtractPlaceholderRefs:
+    def test_no_placeholders(self):
+        assert _extract_placeholder_refs({"full": "Plain text."}) == []
+
+    def test_single_placeholder(self):
+        assert _extract_placeholder_refs({"full": "<<wb:obsidian/bridge>>"}) == ["obsidian/bridge"]
+
+    def test_placeholder_with_flags(self):
+        refs = _extract_placeholder_refs({"full": "<<wb:tasks/new --recursive>>"})
+        assert refs == ["tasks/new"]
+
+    def test_multiple_placeholders(self):
+        content = {"full": "<<wb:a>> text <<wb:b --recursive>>"}
+        refs = _extract_placeholder_refs(content)
+        assert refs == ["a", "b"]
+
+    def test_empty_content(self):
+        assert _extract_placeholder_refs({}) == []
+
+
+class TestResolvePlaceholders:
+    def _make_store(self):
+        bridge = DirectionsUnit(
+            path="obsidian/bridge", name="Bridge", description="bridge",
+            content={"full": "Bridge failure protocol content."},
+        )
+        task_new = DirectionsUnit(
+            path="tasks/task-new", name="Task New", description="new task",
+            content={"full": "Create a task.\n\n<<wb:obsidian/bridge>>"},
+            context_after=["obsidian/bridge"],
+        )
+        handoff = DirectionsUnit(
+            path="tasks/handoff", name="Handoff", description="handoff",
+            content={"full": "Write handoff.\n\n<<wb:tasks/task-new --recursive>>\n\nConfirm."},
+        )
+        standalone = DirectionsUnit(
+            path="other", name="Other", description="other",
+            content={"full": "No placeholders here."},
+        )
+        return {u.path: u for u in [bridge, task_new, handoff, standalone]}
+
+    def test_basic_resolution(self):
+        store = self._make_store()
+        text = "Before.\n<<wb:obsidian/bridge>>\nAfter."
+        result = _resolve_placeholders(text, store)
+        assert "Bridge failure protocol content." in result
+        assert "--- context from: obsidian/bridge ---" in result
+        assert "Before." in result
+        assert "After." in result
+
+    def test_no_placeholders_passthrough(self):
+        store = self._make_store()
+        text = "Just normal text."
+        assert _resolve_placeholders(text, store) == text
+
+    def test_missing_ref_comment(self):
+        store = self._make_store()
+        text = "<<wb:nonexistent/path>>"
+        result = _resolve_placeholders(text, store)
+        assert "<!-- wb: nonexistent/path not found -->" in result
+
+    def test_recursive_resolves_chains(self):
+        """<<wb:task-new --recursive>> should resolve task-new's own content
+        including its inline <<wb:obsidian/bridge>> AND its context_after."""
+        store = self._make_store()
+        text = "<<wb:tasks/task-new --recursive>>"
+        result = _resolve_placeholders(text, store)
+        # task-new's own content should be there
+        assert "Create a task." in result
+        # task-new's inline placeholder (obsidian/bridge) should be resolved
+        assert "Bridge failure protocol content." in result
+
+    def test_non_recursive_does_not_resolve_inner_placeholders(self):
+        """Without --recursive, inner placeholders stay unresolved."""
+        store = self._make_store()
+        text = "<<wb:tasks/task-new>>"
+        result = _resolve_placeholders(text, store)
+        assert "Create a task." in result
+        # Inner placeholder should NOT be resolved (raw text)
+        assert "<<wb:obsidian/bridge>>" in result
+
+    def test_full_chain_handoff_to_bridge(self):
+        """The motivating example: handoff → task-new → bridge."""
+        store = self._make_store()
+        handoff = store["tasks/handoff"]
+        result = handoff.tier("full", store=store)
+        content = result["content"]
+        # Own content
+        assert "Write handoff." in content
+        assert "Confirm." in content
+        # Recursive resolution should include task-new's content
+        assert "Create a task." in content
+        # And transitively, bridge content
+        assert "Bridge failure protocol content." in content
+
+    def test_multiple_placeholders_on_separate_lines(self):
+        store = self._make_store()
+        text = "<<wb:obsidian/bridge>>\n\n<<wb:other>>"
+        result = _resolve_placeholders(text, store)
+        assert "Bridge failure protocol" in result
+        assert "No placeholders here." in result
+
+    def test_malformed_placeholder_treated_as_path(self):
+        store = self._make_store()
+        text = "<<wb:obsidian/bridge --unknownflag>>"
+        result = _resolve_placeholders(text, store)
+        # Should still resolve — unknown flags ignored gracefully
+        assert "Bridge failure protocol content." in result
+
+    def test_empty_placeholder_left_as_is(self):
+        store = self._make_store()
+        text = "<<wb:>>"
+        result = _resolve_placeholders(text, store)
+        assert "<<wb:>>" in result
+
+    def test_backward_compat_context_after_still_works(self):
+        """Units with only context_after (no placeholders) should work unchanged."""
+        bridge = DirectionsUnit(
+            path="obsidian/bridge", name="Bridge", description="bridge",
+            content={"full": "Bridge info."},
+        )
+        unit = DirectionsUnit(
+            path="x", name="X", description="x",
+            content={"full": "Main content."},
+            context_after=["obsidian/bridge"],
+        )
+        store = {"obsidian/bridge": bridge, "x": unit}
+        result = unit.tier("full", store=store)
+        assert "Main content." in result["content"]
+        assert "Bridge info." in result["content"]
+        assert "--- context from: obsidian/bridge ---" in result["content"]

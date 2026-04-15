@@ -24,7 +24,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from work_buddy.knowledge.model import KnowledgeUnit
+from work_buddy.knowledge.model import KnowledgeUnit, _resolve_placeholders
 from work_buddy.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -56,10 +56,17 @@ class IndexDoc:
     meta_tokens: list[str] = field(default_factory=list)
 
 
-def _build_doc(path: str, unit: KnowledgeUnit) -> IndexDoc:
+def _build_doc(
+    path: str,
+    unit: KnowledgeUnit,
+    store: dict[str, KnowledgeUnit] | None = None,
+) -> IndexDoc:
     """Build an IndexDoc from a knowledge unit.
 
     Includes the unit's OWN content (not chained context_before/after).
+    When *store* is provided, inline ``<<wb:...>>`` placeholders in the
+    content are resolved before indexing — so referenced content is
+    searchable from the referencing unit.
     """
     meta_text = " ".join(unit.search_phrases())
 
@@ -67,6 +74,11 @@ def _build_doc(path: str, unit: KnowledgeUnit) -> IndexDoc:
     content_parts = [meta_text]
     summary = unit.content.get("summary", "")
     full = unit.content.get("full", "")
+
+    # Resolve placeholders so referenced content is indexed
+    if store is not None and full and "<<wb:" in full:
+        full = _resolve_placeholders(full, store)
+
     if summary:
         content_parts.append(summary)
     if full and full != summary:
@@ -140,7 +152,7 @@ class KnowledgeIndex:
         path_to_idx: dict[str, int] = {}
 
         for path, unit in store.items():
-            doc = _build_doc(path, unit)
+            doc = _build_doc(path, unit, store=store)
             path_to_idx[path] = len(docs)
             docs.append(doc)
 

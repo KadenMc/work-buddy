@@ -67,6 +67,44 @@ tasks/                          <- browse this
 
 Typical pattern: search at index depth → browse children → load summary for 2-3 → load full for the one being acted on.
 
+## Inline placeholders
+
+Content strings can reference other units inline using `<<wb:path>>` syntax.
+At `depth="full"`, placeholders are resolved to the referenced unit's content.
+
+**Syntax:** `<<wb:unit-path --flags>>`
+
+| Placeholder | Behavior |
+|-------------|----------|
+| `<<wb:obsidian/bridge>>` | Inserts the bridge unit's raw content at this position |
+| `<<wb:tasks/task-new --recursive>>` | Inserts task-new's content WITH its own placeholders and context chains resolved |
+
+Parsed with Python `argparse` — the first positional arg is the unit path, flags are CLI-style:
+- `--recursive` — resolve the referenced unit's own chains transitively
+- Future: `--depth=summary`, `--section=Definition`, etc.
+
+**Missing refs** produce `<!-- wb: path not found -->`. Works in both JSON content strings and vault markdown files.
+
+**Context chaining** (`context_before` / `context_after`) still works — use inline placeholders when you need precise mid-document placement or recursive resolution.
+
+**Cycle detection** runs at store load time via networkx, covering parent/child edges, context chains, AND placeholder references. No runtime cycle tracking needed.
+
+**Search index** resolves placeholders before indexing, so searching for content in a referenced unit also surfaces the referencing unit.
+
+### Example: handoff → task-new → bridge
+
+```
+handoff-directions content:
+  "Create the task... <<wb:tasks/task-new-directions --recursive>>"
+
+task-new-directions content:
+  "Create via task_create... <<wb:obsidian/bridge>>"
+
+Resolved at depth="full":
+  handoff gets task-new's content (which itself includes bridge content)
+  — single source of truth, no duplication
+```
+
 ## Store layout
 
 ```

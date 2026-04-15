@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from work_buddy.obsidian.retry import bridge_retry
+
 
 def _cfg_with_overrides(**overrides: Any) -> dict[str, Any]:
     """Load config and apply nested key overrides.
@@ -1403,6 +1405,7 @@ def _format_file_line(f: dict) -> str:
 # ---------------------------------------------------------------------------
 
 
+@bridge_retry()
 def journal_sign_in(
     *,
     target: str | None = None,
@@ -1458,6 +1461,7 @@ def journal_sign_in(
 # ---------------------------------------------------------------------------
 
 
+@bridge_retry()
 def journal_write(
     *,
     mode: str = "log_entries",
@@ -1517,6 +1521,7 @@ def journal_write(
 # ---------------------------------------------------------------------------
 
 
+@bridge_retry()
 def day_planner(
     *,
     action: str = "status",

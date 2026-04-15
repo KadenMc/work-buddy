@@ -169,6 +169,41 @@ class TestBuildDoc:
         assert "sqlite" in doc.full_tokens
         assert "consent" in doc.meta_tokens
 
+    def test_placeholder_resolved_when_store_provided(self):
+        """Placeholders in content should be resolved before indexing."""
+        bridge = DirectionsUnit(
+            path="bridge", name="Bridge", description="bridge",
+            content={"full": "UNIQUE_BRIDGE_KEYWORD content here."},
+        )
+        referrer = DirectionsUnit(
+            path="referrer", name="Referrer", description="refs bridge",
+            content={"full": "See bridge: <<wb:bridge>>"},
+        )
+        store = {"bridge": bridge, "referrer": referrer}
+        doc = _build_doc("referrer", referrer, store=store)
+        # The resolved content should include the bridge keyword
+        assert "UNIQUE_BRIDGE_KEYWORD" in doc.full_text
+        # The raw placeholder should NOT be in the indexed text
+        assert "<<wb:bridge>>" not in doc.full_text
+
+    def test_placeholder_not_resolved_without_store(self):
+        """Without store, placeholders are left as raw text."""
+        referrer = DirectionsUnit(
+            path="referrer", name="Referrer", description="refs bridge",
+            content={"full": "See bridge: <<wb:bridge>>"},
+        )
+        doc = _build_doc("referrer", referrer)
+        # Raw placeholder should be in the text
+        assert "<<wb:bridge>>" in doc.full_text
+
+    def test_no_placeholder_content_unchanged(self):
+        """Units without placeholders should not be affected."""
+        unit = _make_store()["consent/system"]
+        store = _make_store()
+        doc_without = _build_doc("consent/system", unit)
+        doc_with = _build_doc("consent/system", unit, store=store)
+        assert doc_without.full_text == doc_with.full_text
+
 
 # ---------------------------------------------------------------------------
 # KnowledgeIndex — build and search
@@ -261,6 +296,40 @@ class TestKnowledgeIndexSearch:
         if len(results) > 1:
             for i in range(len(results) - 1):
                 assert results[i]["score"] >= results[i + 1]["score"]
+
+
+class TestPlaceholderIndexSearch:
+    """Searching for content from a referenced unit should surface the referrer."""
+
+    def test_search_finds_referenced_content(self):
+        """Build a store where 'referrer' includes bridge content via placeholder.
+
+        Use a 3+ unit store for meaningful BM25 scoring, and search for
+        a term that only exists in the bridge unit's content.
+        """
+        bridge = DirectionsUnit(
+            path="bridge", name="Bridge", description="bridge info",
+            content={"full": "The xylophone connectivity protocol handles retries."},
+        )
+        referrer = DirectionsUnit(
+            path="referrer", name="Referrer", description="references bridge",
+            content={"full": "Main content about tasks.\n\n<<wb:bridge>>"},
+        )
+        filler = DirectionsUnit(
+            path="filler", name="Filler", description="unrelated unit",
+            content={"full": "Completely unrelated content about calendars and scheduling."},
+        )
+        store = {"bridge": bridge, "referrer": referrer, "filler": filler}
+        idx = KnowledgeIndex()
+        idx.build(store, skip_dense=True)
+
+        # "xylophone" only appears in bridge's content (and in referrer
+        # via resolved placeholder). Filler should not match.
+        results = idx.search("xylophone connectivity")
+        paths = [r["path"] for r in results]
+        assert "bridge" in paths
+        assert "referrer" in paths
+        assert "filler" not in paths
 
 
 # ---------------------------------------------------------------------------

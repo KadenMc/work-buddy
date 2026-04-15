@@ -1,4 +1,4 @@
-"""The gateway tools: wb_init, wb_search, wb_run, wb_advance, wb_status, wb_retry.
+"""The gateway tools: wb_init, wb_search, wb_run, wb_advance, wb_status.
 
 These are registered on the FastMCP server instance by ``register_tools()``.
 All blocking calls are wrapped in ``asyncio.to_thread()`` to avoid stalling
@@ -123,7 +123,7 @@ def _result_error(result: Any) -> str | None:
 
     Capabilities that catch their own errors and return {"error": "..."}
     or {"success": False, "message": "..."} instead of raising need to be
-    recorded as failures so wb_retry can replay them.
+    recorded as failures so retry_operation() can replay them.
     Returns None when the result is not a failure.
     """
     if isinstance(result, dict):
@@ -286,7 +286,7 @@ def _auto_consent_request(
             "message": (
                 f"Consent request timed out, but still pending — "
                 f"the user can approve on any surface. Once approved, retry with: "
-                f"mcp__work-buddy__wb_retry(operation_id=\"{op_id}\")"
+                f"mcp__work-buddy__wb_run(\"retry\", {{\"operation_id\": \"{op_id}\"}})"
             ),
         }
 
@@ -886,188 +886,9 @@ def register_tools(mcp: FastMCP) -> None:
         )
         return _to_json(result)
 
-    @mcp.tool()
-    async def wb_retry(operation_id: str, ctx: Context = None) -> str:
-        """Retry a previously recorded operation by its ID.
-
-        Use wb_status() to discover recent/pending operations after a timeout.
-        Operations with retry_policy="manual" cannot be auto-retried.
-        Operations with an active execution lease will be refused to prevent
-        double-dispatch.
-
-        Args:
-            operation_id: The operation ID from wb_run response or wb_status output
-        """
-        gate = _require_init(ctx)
-        if gate:
-            return gate
-        record = _load_operation(operation_id)
-        if record is None:
-            return _to_json({"error": f"Unknown operation: {operation_id!r}"})
-
-        if record["retry_policy"] == "manual":
-            return _to_json({
-                "error": "This operation requires manual retry. Params are preserved in the record.",
-                "operation": record,
-            })
-
-        if record["status"] == "completed" and not record.get("error"):
-            return _to_json({
-                "already_completed": True,
-                "result": record["result"],
-                "operation_id": operation_id,
-            })
-
-        # Check execution lease — prevent double-dispatch
-        locked = record.get("locked_until")
-        if locked:
-            try:
-                lock_dt = datetime.fromisoformat(locked)
-                if lock_dt > datetime.now(timezone.utc):
-                    return _to_json({
-                        "status": "still_running",
-                        "locked_until": locked,
-                        "hint": "The previous attempt may still be executing. Wait or check wb_status.",
-                    })
-            except (ValueError, TypeError):
-                pass
-
-        # Replay the operation
-        record["attempt"] = record.get("attempt", 1) + 1
-        record["status"] = "running"
-        record["locked_until"] = (
-            datetime.now(timezone.utc) + timedelta(seconds=90)
-        ).isoformat()
-        record["error"] = None
-        _update_operation(record)
-
-        entry = registry.get_entry(record["name"])
-        if entry is None:
-            _complete_operation(operation_id, error=f"Capability {record['name']!r} no longer exists")
-            return _to_json({"error": f"Capability {record['name']!r} no longer exists"})
-
-        # Pre-flight consent for capabilities with declared operations
-        cap_name = record["name"]
-        if record["type"] != "workflow" and isinstance(entry, registry.Capability) and entry.consent_operations:
-            missing = await asyncio.to_thread(
-                _check_missing_consent, entry.consent_operations,
-            )
-            if missing:
-                consent_result = await asyncio.to_thread(
-                    _auto_consent_request, missing, cap_name, operation_id,
-                )
-                if consent_result["status"] != "granted":
-                    _complete_operation(
-                        operation_id,
-                        error=f"Consent {consent_result['status']}: {cap_name}",
-                    )
-                    consent_result["operation_id"] = operation_id
-                    return _to_json(consent_result)
-
-        _consent_retries = 0
-        while True:
-            try:
-                if record["type"] == "workflow":
-                    result = await asyncio.to_thread(
-                        conductor.start_workflow, record["name"], record["params"],
-                    )
-                else:
-                    result = await asyncio.to_thread(entry.callable, **record["params"])
-                break
-            except ConsentRequired as exc:
-                _consent_retries += 1
-                if _consent_retries > _MAX_CONSENT_RETRIES:
-                    _complete_operation(operation_id, error=f"ConsentRequired: {exc.operation} (max retries)")
-                    return _to_json({
-                        "error": f"Too many consent gates for {cap_name}. Last: {exc.operation}",
-                        "operation_id": operation_id,
-                    })
-                consent_result = await asyncio.to_thread(
-                    _auto_consent_request, [exc.operation], cap_name, operation_id,
-                )
-                if consent_result["status"] != "granted":
-                    _complete_operation(
-                        operation_id,
-                        error=f"Consent {consent_result['status']}: {exc.operation}",
-                    )
-                    consent_result["operation_id"] = operation_id
-                    return _to_json(consent_result)
-                continue
-            except ToolUnavailable as exc:
-                _complete_operation(operation_id, error=f"ToolUnavailable: {exc.tool_id}")
-                return _to_json({
-                    "tool_unavailable": True,
-                    "tool_id": exc.tool_id,
-                    "tool_name": exc.display_name,
-                    "reason": exc.reason,
-                    "operation_id": operation_id,
-                })
-            except Exception as exc:
-                error_str = f"{type(exc).__name__}: {exc}"
-                _complete_operation(operation_id, error=error_str)
-
-                # Enqueue transient failures for sidecar retry
-                retry_policy = record.get("retry_policy", "replay")
-                from work_buddy.errors import classify_error as _classify
-                error_class = _classify(exc)
-                if (
-                    error_class == "transient"
-                    and retry_policy in ("replay", "verify_first")
-                ):
-                    _enqueue_for_retry(
-                        operation_id, error_str, error_class,
-                        originating_session_id=record.get("originating_session_id")
-                            or record.get("session_id"),
-                    )
-                    return _to_json({
-                        "error": f"Transient failure: {error_str}",
-                        "operation_id": operation_id,
-                        "queued_for_retry": True,
-                        "retry_hint": (
-                            "Retry failed due to a transient error "
-                            "and has been re-queued for automatic background retry."
-                        ),
-                    })
-
-                return _to_json({
-                    "error": f"Retry failed: {error_str}",
-                    "operation_id": operation_id,
-                })
-
-        # Check for soft transient failures in the result
-        result_err = _result_error(result)
-        if result_err:
-            retry_policy = record.get("retry_policy", "replay")
-            from work_buddy.errors import is_transient_result as _is_transient
-            if (
-                _is_transient(result)
-                and retry_policy in ("replay", "verify_first")
-            ):
-                _complete_operation(operation_id, result=result, error=result_err)
-                _enqueue_for_retry(
-                    operation_id, result_err, "transient",
-                    originating_session_id=record.get("originating_session_id")
-                        or record.get("session_id"),
-                )
-                return _to_json({
-                    "error": f"Transient failure: {result_err}",
-                    "operation_id": operation_id,
-                    "queued_for_retry": True,
-                    "attempt": record["attempt"],
-                    "retry_hint": (
-                        "Retry returned a transient error "
-                        "and has been re-queued for automatic background retry."
-                    ),
-                })
-
-        _complete_operation(operation_id, result=result, error=result_err)
-        return _to_json({
-            "type": "result",
-            "capability": record["name"],
-            "result": result,
-            "operation_id": operation_id,
-            "attempt": record["attempt"],
-        })
+    # NOTE: wb_retry was removed as a tool. Retry is now a registered
+    # capability invoked via: wb_run("retry", {"operation_id": "op_xxx"})
+    # See retry_operation() below for the implementation.
 
 
 # ---------------------------------------------------------------------------
@@ -1171,3 +992,183 @@ def _retry_queue_summary() -> dict[str, Any]:
     if oldest_retry:
         result["next_retry_at"] = oldest_retry
     return result
+
+
+# ---------------------------------------------------------------------------
+# retry capability — registered via registry.py
+# ---------------------------------------------------------------------------
+
+def retry_operation(operation_id: str) -> dict[str, Any]:
+    """Retry a previously recorded operation by its ID.
+
+    This is a synchronous callable registered as the ``retry`` capability.
+    Agents invoke it via ``wb_run("retry", {"operation_id": "op_xxx"})``.
+
+    Handles:
+    - Operation record lookup and validation
+    - Retry policy checks (manual → rejected)
+    - Execution lease (double-dispatch prevention)
+    - Consent pre-flight for capabilities with declared operations
+    - Runtime ConsentRequired retry loop
+    - Transient error → enqueue for sidecar background retry
+    - Soft transient result detection
+    """
+    record = _load_operation(operation_id)
+    if record is None:
+        return {"error": f"Unknown operation: {operation_id!r}"}
+
+    if record["retry_policy"] == "manual":
+        return {
+            "error": "This operation requires manual retry. Params are preserved in the record.",
+            "operation": record,
+        }
+
+    if record["status"] == "completed" and not record.get("error"):
+        return {
+            "already_completed": True,
+            "result": record["result"],
+            "operation_id": operation_id,
+        }
+
+    # Check execution lease — prevent double-dispatch
+    locked = record.get("locked_until")
+    if locked:
+        try:
+            lock_dt = datetime.fromisoformat(locked)
+            if lock_dt > datetime.now(timezone.utc):
+                return {
+                    "status": "still_running",
+                    "locked_until": locked,
+                    "hint": "The previous attempt may still be executing. Wait or check wb_status.",
+                }
+        except (ValueError, TypeError):
+            pass
+
+    # Replay the operation
+    record["attempt"] = record.get("attempt", 1) + 1
+    record["status"] = "running"
+    record["locked_until"] = (
+        datetime.now(timezone.utc) + timedelta(seconds=90)
+    ).isoformat()
+    record["error"] = None
+    _update_operation(record)
+
+    entry = registry.get_entry(record["name"])
+    if entry is None:
+        _complete_operation(operation_id, error=f"Capability {record['name']!r} no longer exists")
+        return {"error": f"Capability {record['name']!r} no longer exists"}
+
+    # Pre-flight consent for capabilities with declared operations
+    cap_name = record["name"]
+    if record["type"] != "workflow" and isinstance(entry, registry.Capability) and entry.consent_operations:
+        missing = _check_missing_consent(entry.consent_operations)
+        if missing:
+            consent_result = _auto_consent_request(missing, cap_name, operation_id)
+            if consent_result["status"] != "granted":
+                _complete_operation(
+                    operation_id,
+                    error=f"Consent {consent_result['status']}: {cap_name}",
+                )
+                consent_result["operation_id"] = operation_id
+                return consent_result
+
+    consent_retries = 0
+    while True:
+        try:
+            if record["type"] == "workflow":
+                result = conductor.start_workflow(record["name"], record["params"])
+            else:
+                result = entry.callable(**record["params"])
+            break
+        except ConsentRequired as exc:
+            consent_retries += 1
+            if consent_retries > _MAX_CONSENT_RETRIES:
+                _complete_operation(operation_id, error=f"ConsentRequired: {exc.operation} (max retries)")
+                return {
+                    "error": f"Too many consent gates for {cap_name}. Last: {exc.operation}",
+                    "operation_id": operation_id,
+                }
+            consent_result = _auto_consent_request([exc.operation], cap_name, operation_id)
+            if consent_result["status"] != "granted":
+                _complete_operation(
+                    operation_id,
+                    error=f"Consent {consent_result['status']}: {exc.operation}",
+                )
+                consent_result["operation_id"] = operation_id
+                return consent_result
+            continue
+        except ToolUnavailable as exc:
+            _complete_operation(operation_id, error=f"ToolUnavailable: {exc.tool_id}")
+            return {
+                "tool_unavailable": True,
+                "tool_id": exc.tool_id,
+                "tool_name": exc.display_name,
+                "reason": exc.reason,
+                "operation_id": operation_id,
+            }
+        except Exception as exc:
+            error_str = f"{type(exc).__name__}: {exc}"
+            _complete_operation(operation_id, error=error_str)
+
+            # Enqueue transient failures for sidecar retry
+            retry_policy = record.get("retry_policy", "replay")
+            from work_buddy.errors import classify_error as _classify
+            error_class = _classify(exc)
+            if (
+                error_class == "transient"
+                and retry_policy in ("replay", "verify_first")
+            ):
+                _enqueue_for_retry(
+                    operation_id, error_str, error_class,
+                    originating_session_id=record.get("originating_session_id")
+                        or record.get("session_id"),
+                )
+                return {
+                    "error": f"Transient failure: {error_str}",
+                    "operation_id": operation_id,
+                    "queued_for_retry": True,
+                    "retry_hint": (
+                        "Retry failed due to a transient error "
+                        "and has been re-queued for automatic background retry."
+                    ),
+                }
+
+            return {
+                "error": f"Retry failed: {error_str}",
+                "operation_id": operation_id,
+            }
+
+    # Check for soft transient failures in the result
+    result_err = _result_error(result)
+    if result_err:
+        retry_policy = record.get("retry_policy", "replay")
+        from work_buddy.errors import is_transient_result as _is_transient
+        if (
+            _is_transient(result)
+            and retry_policy in ("replay", "verify_first")
+        ):
+            _complete_operation(operation_id, result=result, error=result_err)
+            _enqueue_for_retry(
+                operation_id, result_err, "transient",
+                originating_session_id=record.get("originating_session_id")
+                    or record.get("session_id"),
+            )
+            return {
+                "error": f"Transient failure: {result_err}",
+                "operation_id": operation_id,
+                "queued_for_retry": True,
+                "attempt": record["attempt"],
+                "retry_hint": (
+                    "Retry returned a transient error "
+                    "and has been re-queued for automatic background retry."
+                ),
+            }
+
+    _complete_operation(operation_id, result=result, error=result_err)
+    return {
+        "type": "result",
+        "capability": record["name"],
+        "result": result,
+        "operation_id": operation_id,
+        "attempt": record["attempt"],
+    }

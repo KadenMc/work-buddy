@@ -158,7 +158,7 @@ Some `work_buddy` functions are protected by a `@requires_consent` decorator. **
 1. **Pre-flight check** — capabilities declare `consent_operations` listing which operations they may trigger. The gateway checks all upfront and bundles missing grants into ONE notification.
 2. **Fallback** — if a `ConsentRequired` fires at runtime (unannotated gate), the gateway auto-requests and retries (max 2 retries).
 3. **You see**: success (normal result), denied (`{status: "denied"}`), or timeout (`{status: "timeout", operation_id: "op_xxx"}`).
-4. **On timeout** — the request stays pending on all surfaces. Once the user approves, retry with `mcp__work-buddy__wb_retry(operation_id="op_xxx")` to replay the original call without re-sending parameters.
+4. **On timeout** — the request stays pending on all surfaces. Once the user approves, retry with `mcp__work-buddy__wb_run("retry", {"operation_id": "op_xxx"})` to replay the original call without re-sending parameters.
 
 **Do NOT manually call `consent_request`** for `wb_run` operations — the gateway does it for you. You still need manual `consent_request` for sidecar operations not routed through `wb_run` (e.g., `agent_spawn` consent) or custom flows.
 
@@ -351,7 +351,9 @@ Two parallel stores share a common `KnowledgeUnit` base class:
 
 **Context chaining:** Units can declare `context_before` / `context_after` paths. At `depth="full"`, referenced units' content is automatically prepended/appended. Non-recursive. Use sparingly for genuine shared foundations (e.g., `dev/retro` chains `dev/dev-mode` so it gets dev-mode orientation without duplicating the content).
 
-**Search index:** A persistent BM25 + dense vector index over full unit content is warmed eagerly on MCP server startup. This powers `knowledge` and `agent_docs` search with hybrid ranking (keyword + semantic).
+**Inline placeholders:** Content can reference other units inline with `<<wb:path>>` or `<<wb:path --recursive>>`. At `depth="full"`, placeholders are resolved to the referenced unit's content. `--recursive` resolves the referenced unit's own chains transitively. Use for precise mid-document placement. Parsed with argparse (extensible to `--depth`, `--section`, etc.). Works in both JSON content strings and vault markdown files.
+
+**Search index:** A persistent BM25 + dense vector index over full unit content is warmed eagerly on MCP server startup. Inline placeholders are resolved before indexing so referenced content is searchable. This powers `knowledge` and `agent_docs` search with hybrid ranking (keyword + semantic).
 
 **MCP capabilities:**
 - `knowledge` — unified search across **both** system docs and personal knowledge
@@ -639,6 +641,8 @@ All capabilities and workflows are invoked via `mcp__work-buddy__wb_run("name", 
 | `remote_session_begin` | function | Launch/resume a visible Claude Code terminal session |
 | `remote_session_list` | function | List resumable sessions |
 | `mcp_registry_reload` | function | Rebuild capability registry without restart |
+| `retry` | function | Retry a previously recorded operation by its ID |
+| `obsidian_retry` | function | Synchronous bridge-aware retry with health checks between attempts |
 | `llm_call` | function | Single LLM API call (Tier 2, cheaper than full agent) |
 | `llm_costs` | function | Token usage and cost breakdown |
 | `feature_status` | function | Tool probe results: available/disabled tools and affected capabilities |

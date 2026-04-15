@@ -19,6 +19,7 @@ from typing import Any, Callable
 from work_buddy.consent import requires_consent
 from work_buddy.logging_config import get_logger
 from work_buddy.obsidian import bridge
+from work_buddy.obsidian.retry import bridge_retry
 from work_buddy.obsidian.tasks.env import _escape_js, _run_js
 from work_buddy.obsidian.tasks import store
 
@@ -241,6 +242,7 @@ def verify_task(
     risk="moderate",
     default_ttl=30,
 )
+@bridge_retry()
 def update_task(
     *,
     task_id: str | None = None,
@@ -479,6 +481,7 @@ def _toggle_via_plugin_api(task_line: str, file_path: str) -> str | None:
     risk="moderate",
     default_ttl=15,
 )
+@bridge_retry()
 def archive_completed(older_than_days: int = 0) -> dict[str, Any]:
     """Archive completed tasks from the master list to tasks/archive.md.
 
@@ -563,6 +566,7 @@ def archive_completed(older_than_days: int = 0) -> dict[str, Any]:
     risk="moderate",
     default_ttl=30,
 )
+@bridge_retry()
 def create_task(
     task_text: str,
     urgency: str = "medium",
@@ -578,7 +582,7 @@ def create_task(
     The task line has only: #todo, text, note link, #projects/*, 🆔, plugin emojis.
 
     This function is idempotent on retry: it checks for existing note files
-    and task lines before writing, so wb_retry can safely replay it.
+    and task lines before writing, so the retry capability can safely replay it.
     """
     task_text = _validate_task_text(task_text)
     if urgency not in store.VALID_URGENCIES:
@@ -701,6 +705,7 @@ def _verify_task_creation(task_id: str, note_path: str | None) -> dict[str, bool
     risk="moderate",
     default_ttl=30,
 )
+@bridge_retry()
 def toggle_task(
     task_id: str,
 ) -> dict[str, Any]:
@@ -757,6 +762,7 @@ def toggle_task(
     risk="high",
     default_ttl=5,
 )
+@bridge_retry()
 def delete_task(
     task_id: str,
 ) -> dict[str, Any]:
@@ -830,6 +836,7 @@ def strip_legacy_tags_from_line(line: str) -> str:
     return _strip_legacy_tags(line)
 
 
+@bridge_retry()
 def assign_task(task_id: str) -> dict[str, Any]:
     """Claim a task for the current agent session and return full context.
 
