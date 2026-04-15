@@ -2761,7 +2761,7 @@ def _remote_session_capabilities() -> list[Capability]:
     Launch visible, persistent Claude Code sessions in real terminal
     windows — for Remote Control (phone app) connection.
     """
-    from work_buddy.remote_session import (
+    from work_buddy.session_launcher import (
         begin_session,
         list_resumable_sessions,
     )

@@ -178,10 +178,17 @@ function _renderDiagPanel(diag) {
             + '<pre class="fix-text">' + escapeHtml(diag.fix_suggestion) + '</pre>'
             + '</div>';
     }
-    // Wizard hint — always shown when there's a failure
+    // Wizard hint + launch buttons — shown when there's a failure
     if (diag.status === 'failed' && diag.component_id) {
+        const cid = escapeHtml(diag.component_id);
         html += '<div class="health-diag-wizard">'
-            + '\ud83e\ude84 Run <code>/wb-setup ' + escapeHtml(diag.component_id) + '</code> in Claude Code for interactive diagnostics'
+            + '\ud83e\ude84 Run <code>/wb-setup diagnose ' + cid + '</code> in Claude Code'
+            + '<span class="wizard-launch-btns">'
+            + ' <button class="wizard-launch-btn" onclick="launchSetupAgent(\'' + cid + '\', \'desktop\', this)"'
+            + ' title="Open terminal session on this machine">\ud83d\udda5 Desktop</button>'
+            + ' <button class="wizard-launch-btn mobile" onclick="launchSetupAgent(\'' + cid + '\', \'mobile\', this)"'
+            + ' title="Launch remote-control session for mobile access">\ud83d\udcf1 Mobile</button>'
+            + '</span>'
             + '</div>';
     }
     if (diag.status === 'passed') {
@@ -2036,6 +2043,42 @@ async function investigateEvent(idx) {
         btn.textContent = 'Error';
         btn.disabled = false;
         console.error('Investigate failed:', err);
+    }
+}
+
+
+async function launchSetupAgent(componentId, mode, btn) {
+    if (_readOnly) return;
+    const origText = btn.textContent;
+    btn.textContent = 'Launching...';
+    btn.disabled = true;
+
+    const prompt = '/wb-setup diagnose ' + componentId;
+
+    try {
+        const r = await fetch('/api/launch-agent', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                prompt: prompt,
+                mode: mode,
+                context: {source: 'setup_wizard', component_id: componentId}
+            }),
+        });
+        const data = await r.json();
+        if (data.success) {
+            btn.textContent = 'Launched \u2713';
+            btn.style.background = 'var(--green-subtle)';
+            btn.style.borderColor = 'var(--green)';
+            btn.style.color = 'var(--green)';
+        } else {
+            btn.textContent = data.error || 'Failed';
+            btn.disabled = false;
+        }
+    } catch (err) {
+        btn.textContent = 'Error';
+        btn.disabled = false;
+        console.error('Setup agent launch failed:', err);
     }
 }
 
