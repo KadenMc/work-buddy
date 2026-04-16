@@ -182,6 +182,9 @@ def test_real_capabilities_have_consent_operations():
     if task_create is not None:
         assert isinstance(task_create, Capability)
         assert "tasks.create_task" in task_create.consent_operations
+        # obsidian.write_file is listed for UX (rich bundled notification).
+        # Correctness no longer depends on it — the consent context handles
+        # nesting automatically. But it enriches the notification body.
         assert "obsidian.write_file" in task_create.consent_operations
 
     task_toggle = reg.get("task_toggle")
@@ -219,3 +222,214 @@ def test_consent_registry_populated_by_real_decorators():
     meta = _CONSENT_REGISTRY["obsidian.write_file"]
     assert meta["risk"] == "moderate"
     assert "reason" in meta
+
+
+def test_consent_context_nesting():
+    """Nested @requires_consent calls pass through when inside a consent context.
+
+    Core regression test for the consent bundling bug: when toggle_task
+    (consent-gated) calls write_file (also consent-gated), the inner call
+    should pass through automatically — no second ConsentRequired raised.
+    """
+    td = _setup_temp_session()
+    from work_buddy.consent import (
+        requires_consent, ConsentRequired, grant_consent,
+        _consent_ctx, _cache,
+    )
+
+    call_log = []
+
+    @requires_consent("test.outer_op", reason="Outer operation", risk="moderate")
+    def outer_fn():
+        call_log.append("outer_start")
+        inner_fn()  # This should pass through, not raise
+        call_log.append("outer_end")
+        return "outer_done"
+
+    @requires_consent("test.inner_op", reason="Inner infrastructure", risk="moderate")
+    def inner_fn():
+        call_log.append("inner_executed")
+        return "inner_done"
+
+    # Without any consent, outer should raise
+    try:
+        outer_fn()
+        assert False, "Should have raised ConsentRequired"
+    except ConsentRequired as e:
+        assert e.operation == "test.outer_op"
+
+    # Grant ONLY the outer operation
+    grant_consent("test.outer_op", mode="always")
+
+    # Now outer should succeed, and inner should pass through via context
+    # — no ConsentRequired for test.inner_op even though it's not granted
+    assert not _cache.is_granted("test.inner_op"), "inner_op should NOT be granted"
+    result = outer_fn()
+    assert result == "outer_done"
+    assert call_log == ["outer_start", "inner_executed", "outer_end"]
+
+    # Verify context is clean after execution
+    assert _consent_ctx.depth == 0
+    assert _consent_ctx.outer_operation is None
+
+
+def test_consent_context_covered_operations_tracked():
+    """The consent context tracks which inner operations were covered."""
+    td = _setup_temp_session()
+    from work_buddy.consent import (
+        requires_consent, grant_consent, _consent_ctx,
+    )
+
+    @requires_consent("test.track_outer", reason="Outer", risk="low")
+    def tracked_outer():
+        tracked_inner_a()
+        tracked_inner_b()
+        return _consent_ctx.covered_operations.copy()
+
+    @requires_consent("test.track_inner_a", reason="Inner A", risk="low")
+    def tracked_inner_a():
+        pass
+
+    @requires_consent("test.track_inner_b", reason="Inner B", risk="moderate")
+    def tracked_inner_b():
+        pass
+
+    grant_consent("test.track_outer", mode="always")
+    covered = tracked_outer()
+    assert "test.track_inner_a" in covered
+    assert "test.track_inner_b" in covered
+
+
+def test_once_mode_revokes_covered_inner_operations():
+    """When outer 'once' grant is consumed, covered inner 'once' grants are also revoked.
+
+    This ensures the next call triggers a full bundled notification (showing
+    all operations) rather than a partial one (only the outer operation).
+    """
+    td = _setup_temp_session()
+    from work_buddy.consent import (
+        requires_consent, grant_consent, _cache,
+    )
+
+    @requires_consent("test.once_outer", reason="Outer", risk="low")
+    def once_outer():
+        once_inner()
+
+    @requires_consent("test.once_inner", reason="Inner", risk="low")
+    def once_inner():
+        pass
+
+    # Grant both with "once" mode (simulating bundled consent approval)
+    grant_consent("test.once_outer", mode="once")
+    grant_consent("test.once_inner", mode="once")
+    assert _cache.is_granted("test.once_outer")
+    assert _cache.is_granted("test.once_inner")
+
+    # Execute — outer consumed, inner passes through via context
+    once_outer()
+
+    # Both should be revoked: outer was consumed, inner was cascade-revoked
+    assert not _cache.is_granted("test.once_outer"), "outer should be revoked"
+    assert not _cache.is_granted("test.once_inner"), "inner should be cascade-revoked"
+
+
+def test_once_mode_does_not_revoke_always_inner():
+    """Cascade revocation only applies to 'once' inner grants, not 'always'."""
+    td = _setup_temp_session()
+    from work_buddy.consent import (
+        requires_consent, grant_consent, _cache,
+    )
+
+    @requires_consent("test.once_outer2", reason="Outer", risk="low")
+    def outer():
+        inner()
+
+    @requires_consent("test.always_inner", reason="Inner", risk="low")
+    def inner():
+        pass
+
+    grant_consent("test.once_outer2", mode="once")
+    grant_consent("test.always_inner", mode="always")
+
+    outer()
+
+    assert not _cache.is_granted("test.once_outer2"), "outer should be revoked"
+    assert _cache.is_granted("test.always_inner"), "always inner should survive"
+
+
+def test_consent_context_does_not_leak_on_exception():
+    """Consent context is properly cleaned up even if the function raises."""
+    td = _setup_temp_session()
+    from work_buddy.consent import (
+        requires_consent, grant_consent, _consent_ctx,
+    )
+
+    @requires_consent("test.exc_outer", reason="Outer", risk="low")
+    def failing_outer():
+        raise ValueError("intentional failure")
+
+    grant_consent("test.exc_outer", mode="always")
+
+    try:
+        failing_outer()
+    except ValueError:
+        pass
+
+    # Context must be clean
+    assert _consent_ctx.depth == 0
+    assert _consent_ctx.outer_operation is None
+
+
+def test_consent_context_inner_called_directly_still_requires_consent():
+    """Inner functions still require consent when called directly (not nested)."""
+    td = _setup_temp_session()
+    from work_buddy.consent import requires_consent, ConsentRequired
+
+    @requires_consent("test.direct_inner", reason="Direct call", risk="moderate")
+    def standalone_fn():
+        return "executed"
+
+    # Called directly (not nested) — should require its own consent
+    try:
+        standalone_fn()
+        assert False, "Should have raised ConsentRequired"
+    except ConsentRequired as e:
+        assert e.operation == "test.direct_inner"
+
+
+def test_consent_context_reentrant():
+    """Consent contexts nest correctly (depth > 1)."""
+    td = _setup_temp_session()
+    from work_buddy.consent import (
+        requires_consent, grant_consent, _consent_ctx,
+    )
+
+    depths_seen = []
+
+    @requires_consent("test.reentrant_a", reason="A", risk="low")
+    def level_a():
+        depths_seen.append(_consent_ctx.depth)
+        level_b()
+        return "a_done"
+
+    @requires_consent("test.reentrant_b", reason="B", risk="low")
+    def level_b():
+        depths_seen.append(_consent_ctx.depth)
+        level_c()
+
+    @requires_consent("test.reentrant_c", reason="C", risk="low")
+    def level_c():
+        depths_seen.append(_consent_ctx.depth)
+
+    grant_consent("test.reentrant_a", mode="always")
+    level_a()
+
+    # Only depth=1 for level_a (it's the context owner); B and C pass through
+    # at the same depth because they don't increment — they're nested calls
+    assert depths_seen[0] == 1, f"level_a should see depth=1, got {depths_seen[0]}"
+    # B and C see depth=1 (they're inside the context but don't own it)
+    assert depths_seen[1] == 1
+    assert depths_seen[2] == 1
+
+    # Clean after
+    assert _consent_ctx.depth == 0

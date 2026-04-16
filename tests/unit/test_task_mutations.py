@@ -32,6 +32,7 @@ def _patch_bridge_and_store():
          patch.object(mutations, "store") as mock_store:
         mock_bridge.read_file.return_value = None
         mock_bridge.write_file.return_value = True
+        mock_bridge.write_file.return_value = True
         mock_store.update.return_value = {"changed": True}
         mock_store.get.return_value = {
             "task_id": "t-abc123",

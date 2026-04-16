@@ -15,17 +15,31 @@ Three consent modes:
     - "temporary": time-limited via caller-specified TTL
     - "once": single-use, auto-revoked after successful execution
 
+Consent context (nested call handling):
+    When a consent-gated function is executing (consent was granted), it
+    establishes a thread-local "consent context". Any inner @requires_consent
+    calls see this context and pass through automatically — the outer consent
+    subsumes the inner ones. This eliminates double-prompting for nested
+    operations (e.g., toggle_task → write_file) without requiring manual
+    bookkeeping like consent_operations lists or parallel *_raw functions.
+
+    The context also collects which inner operations were covered (for
+    audit trail and observability).
+
 Flow:
     1. Decorated function is called
-    2. Decorator checks session DB for valid consent
-    3. If found and valid: function proceeds (once grants auto-revoke after success)
-    4. If not found: raises ConsentRequired with operation details
-    5. Caller grants consent via grant_consent() or wb_run("consent_grant", ...)
-    6. Caller retries the function (DB now has valid entry)
+    2. If inside an active consent context → PASS THROUGH (nested call)
+    3. Decorator checks session DB for valid consent
+    4. If found and valid: establish consent context, execute, cleanup
+       (once grants auto-revoke after success)
+    5. If not found: raises ConsentRequired with operation details
+    6. Caller grants consent via grant_consent() or wb_run("consent_grant", ...)
+    7. Caller retries the function (DB now has valid entry)
 """
 
 import functools
 import sqlite3
+import threading
 from datetime import datetime, timezone, timedelta
 from enum import Enum
 from pathlib import Path
@@ -35,6 +49,55 @@ from work_buddy.agent_session import (
     get_session_consent_db_path,
     get_session_audit_path,
 )
+
+
+# ---------------------------------------------------------------------------
+# Consent context — thread-local nesting support
+# ---------------------------------------------------------------------------
+# When a consent-gated function is executing, it establishes a context.
+# Inner @requires_consent calls see this context and pass through — the
+# outer consent subsumes the inner ones.  This is analogous to reentrant
+# locks or nested database transactions.
+#
+# The context also collects which inner operations were covered, for
+# audit trail and the gateway's bundled notification.
+
+class _ConsentContext(threading.local):
+    """Thread-local consent execution context.
+
+    Attributes:
+        depth: Nesting depth. 0 = not inside a consented operation.
+        outer_operation: The operation ID that established the context.
+        covered_operations: Inner operations that passed through.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.depth: int = 0
+        self.outer_operation: str | None = None
+        self.covered_operations: list[str] = []
+
+
+_consent_ctx = _ConsentContext()
+
+
+def in_consent_context() -> bool:
+    """Check if the current thread is inside a consented operation."""
+    return _consent_ctx.depth > 0
+
+
+def get_consent_context_info() -> dict[str, Any] | None:
+    """Return info about the active consent context, or None if not in one.
+
+    Useful for observability and the gateway's notification enrichment.
+    """
+    if _consent_ctx.depth == 0:
+        return None
+    return {
+        "depth": _consent_ctx.depth,
+        "outer_operation": _consent_ctx.outer_operation,
+        "covered_operations": list(_consent_ctx.covered_operations),
+    }
 
 
 class Risk(str, Enum):
@@ -299,8 +362,15 @@ def requires_consent(
 ):
     """Decorator that gates a function on user consent.
 
-    The function body will NEVER execute without a valid consent entry
-    in the cache. If no consent exists, ConsentRequired is raised.
+    Consent context (nesting):
+        If this function is called from within an already-consented operation,
+        the check is skipped and the call passes through automatically. The
+        outer consent subsumes the inner one. The pass-through is recorded in
+        the audit trail and the context's covered_operations list.
+
+    For top-level calls:
+        The function body will NEVER execute without a valid consent entry
+        in the cache. If no consent exists, ConsentRequired is raised.
 
     For mode="once" grants, the grant is auto-revoked after the function
     executes successfully. If the function raises, the grant is preserved
@@ -329,11 +399,20 @@ def requires_consent(
     def decorator(fn: Callable) -> Callable:
         @functools.wraps(fn)
         def wrapper(*args, **kwargs):
+            # ── Nested call: pass through if inside a consent context ──
+            if _consent_ctx.depth > 0:
+                _consent_ctx.covered_operations.append(operation)
+                _audit_log(
+                    "PASS_THROUGH", operation,
+                    f"nested_in:{_consent_ctx.outer_operation}",
+                )
+                return fn(*args, **kwargs)
+
+            # ── Top-level: check consent cache ──
             if _cache.is_granted(operation):
                 # Determine consent source for audit
                 op_mode = _cache.get_mode(operation)
                 if op_mode is not None:
-                    # Direct per-operation grant
                     is_once = op_mode == "once"
                     _audit_log("EXECUTED", operation, "consent_valid")
                 else:
@@ -341,12 +420,46 @@ def requires_consent(
                     is_once = False
                     _audit_log("EXECUTED", operation, "workflow_blanket")
 
-                result = fn(*args, **kwargs)
+                # Enter consent context — inner @requires_consent will
+                # pass through for the duration of this execution.
+                prev_depth = _consent_ctx.depth
+                prev_outer = _consent_ctx.outer_operation
+                prev_covered = _consent_ctx.covered_operations
 
-                # Auto-revoke "once" grants after successful execution
+                _consent_ctx.depth = prev_depth + 1
+                _consent_ctx.outer_operation = operation
+                _consent_ctx.covered_operations = []
+                try:
+                    result = fn(*args, **kwargs)
+                finally:
+                    # Capture covered ops before restoring context
+                    covered = list(_consent_ctx.covered_operations)
+                    if covered:
+                        _audit_log(
+                            "CONTEXT_COVERED", operation,
+                            f"inner_ops={','.join(covered)}",
+                        )
+                    # Restore previous context (supports re-entrant nesting)
+                    _consent_ctx.depth = prev_depth
+                    _consent_ctx.outer_operation = prev_outer
+                    _consent_ctx.covered_operations = prev_covered
+
+                # Auto-revoke "once" grants after successful execution.
+                # Also revoke any inner operations that passed through —
+                # they were granted as part of the same bundled consent,
+                # so they should be revoked together.  This ensures the
+                # next call triggers a full bundled notification again.
                 if is_once:
                     _cache.revoke(operation)
                     _audit_log("AUTO_REVOKED", operation, "once_grant_consumed")
+                    for inner_op in covered:
+                        inner_mode = _cache.get_mode(inner_op)
+                        if inner_mode == "once":
+                            _cache.revoke(inner_op)
+                            _audit_log(
+                                "AUTO_REVOKED", inner_op,
+                                f"covered_by_once:{operation}",
+                            )
 
                 return result
 
