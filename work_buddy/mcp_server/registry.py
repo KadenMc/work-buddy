@@ -2534,8 +2534,9 @@ def _llm_capabilities() -> list[Capability]:
     """General-purpose LLM call capability.
 
     Uses ``work_buddy.llm.call.llm_call`` which wraps ``run_task()``.
-    The ``anthropic`` package is pure Python (no C extensions) so it is
-    safe in asyncio.to_thread() — no import deadlock risk.
+    Both the ``anthropic`` SDK and ``httpx`` (used by the openai_compat
+    backend) are pure Python — no C extensions — so they're safe in
+    ``asyncio.to_thread()`` with no import-deadlock risk.
     """
     from work_buddy.llm.call import llm_call
 
@@ -2546,8 +2547,10 @@ def _llm_capabilities() -> list[Capability]:
                 "Make a single LLM API call (Tier 2 execution). Cheaper than "
                 "spawning a full agent session. Supports freeform text or "
                 "structured JSON output via output_schema (inline dict or "
-                "named schema from work_buddy/llm/schemas/). Handles caching, "
-                "cost tracking, and model tier selection automatically."
+                "named schema from work_buddy/llm/schemas/). Routes to Claude "
+                "via 'tier' or to a local/remote OpenAI-compatible server "
+                "(LM Studio, vLLM, Ollama) via 'profile'. Handles caching "
+                "and cost tracking automatically."
             ),
             category="llm",
             search_aliases=[
@@ -2560,6 +2563,9 @@ def _llm_capabilities() -> list[Capability]:
                 "cheap llm",
                 "classify",
                 "analyze",
+                "local llm",
+                "lm studio",
+                "qwen",
             ],
             parameters={
                 "system": {
@@ -2583,7 +2589,20 @@ def _llm_capabilities() -> list[Capability]:
                 },
                 "tier": {
                     "type": "str",
-                    "description": "Model tier: 'haiku' (default, cheapest), 'sonnet', or 'opus'",
+                    "description": (
+                        "Cloud model tier: 'haiku' (default if no profile given), "
+                        "'sonnet', or 'opus'. Mutually exclusive with 'profile'."
+                    ),
+                    "required": False,
+                },
+                "profile": {
+                    "type": "str",
+                    "description": (
+                        "Named local/remote profile (e.g. 'local_general') "
+                        "declared under llm.profiles in config. Routes through "
+                        "the profile's backend instead of Anthropic. Mutually "
+                        "exclusive with 'tier'."
+                    ),
                     "required": False,
                 },
                 "max_tokens": {

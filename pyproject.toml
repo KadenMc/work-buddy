@@ -42,6 +42,7 @@ python-telegram-bot = {version = "^22.7", optional = true}
 # --- Optional feature groups ---
 # Install with: pip install work-buddy[memory,telegram]
 # Or all at once: pip install work-buddy[all]
+httpx = "^0.28.1"
 [tool.poetry.extras]
 memory = ["hindsight-api-slim", "hindsight-client"]
 telegram = ["python-telegram-bot"]

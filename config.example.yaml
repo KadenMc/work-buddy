@@ -99,6 +99,38 @@ llm:
   cache_ttl_minutes: 30
   simhash_hamming_threshold: 3
 
+  # Optional: OpenAI-compatible inference backends (LM Studio, vLLM, Ollama, llama.cpp).
+  # With LM Link, the main machine runs LM Studio at localhost:1234 as the API surface;
+  # actual inference is routed to whichever linked device has the requested model loaded.
+  # backends:
+  #   lmstudio_local:
+  #     provider: openai_compat
+  #     base_url: "http://localhost:1234/v1"       # LM Studio on main machine; LM Link routes to remote device
+  #     api_key_env: ""                            # LM Studio default: unauth. Set to the env var name if you enable auth.
+
+  # Named profiles bind a friendly name (e.g. 'local_general') to a
+  # concrete backend + model + limits. Reference via:
+  #     mcp__work-buddy__wb_run("llm_call", {"profile": "local_general", ...})
+  # profiles:
+  #   local_general:                               # Active test target — fits fully on 8GB GPU
+  #     backend: lmstudio_local
+  #     model: "qwen/qwen3-4b"                     # Use the exact id from GET /v1/models
+  #     max_output_tokens: 1024
+  #     context_length: 8192
+  #     execution_mode: local
+  #   local_general_14b:                           # Aspirational — needs higher-VRAM device for full offload
+  #     backend: lmstudio_local
+  #     model: "qwen/qwen3-14b"
+  #     max_output_tokens: 1536
+  #     context_length: 8192
+  #     execution_mode: local
+  #   local_coding:                                # Aspirational — Qwen2.5-Coder-14B; higher-VRAM device recommended
+  #     backend: lmstudio_local
+  #     model: "qwen/qwen2.5-coder-14b"
+  #     max_output_tokens: 2048
+  #     context_length: 8192
+  #     execution_mode: local
+
 chats:
   specstory_days: 7
   claude_history_days: 7
