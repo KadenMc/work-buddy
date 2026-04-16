@@ -33,7 +33,7 @@ _PHASE_MAP: dict[str, str] = {
 _STEP_TO_CONFIG: dict[str, str] = {v: k for k, v in _PHASE_MAP.items()}
 
 # These phases cannot be disabled via config
-_ALWAYS_ON: set[str] = {"synthesize", "plan-today", "sign-in"}
+_ALWAYS_ON: set[str] = {"synthesize", "propose-mits", "persist-briefing", "day-planner", "sign-in"}
 
 
 # ---------------------------------------------------------------------------
@@ -60,7 +60,7 @@ def get_morning_config(overrides: list[str] | None = None) -> dict[str, Any]:
 def is_phase_enabled(step_id: str, cfg: dict[str, Any]) -> bool:
     """Check whether a morning phase is enabled in the current config.
 
-    ``synthesize`` and ``plan-today`` always return True.
+    ``synthesize``, ``propose-mits``, ``persist-briefing``, ``day-planner``, and ``sign-in`` always return True.
 
     Accepts both DAG step IDs (kebab-case, e.g. ``"yesterday-close"``) and
     config keys (snake_case, e.g. ``"yesterday_close"``).
@@ -87,7 +87,7 @@ def is_phase_enabled(step_id: str, cfg: dict[str, Any]) -> bool:
 
 
 def resolve_phases(cfg: dict[str, Any]) -> dict[str, bool]:
-    """Return ``{step_id: enabled}`` for all 9 morning phases.
+    """Return ``{step_id: enabled}`` for all 11 morning phases.
 
     Useful for logging/displaying the phase plan before the DAG starts.
     """
