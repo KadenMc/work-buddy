@@ -3878,6 +3878,16 @@ def _discover_workflows_from_store() -> list[WorkflowDefinition]:
     return workflows
 
 
+def _dev_mode_toggle(enabled: bool | None = None) -> dict[str, Any]:
+    """Toggle dev mode for the current session."""
+    from work_buddy.agent_session import get_dev_mode, set_dev_mode
+
+    previous = get_dev_mode()
+    new_value = (not previous) if enabled is None else bool(enabled)
+    set_dev_mode(new_value)
+    return {"dev_mode": new_value, "previous": previous}
+
+
 def _knowledge_capabilities() -> list[Capability]:
     """Unified agent self-documentation — search, navigate, rebuild, and validate."""
     from work_buddy.knowledge.query import (
@@ -3944,6 +3954,14 @@ def _knowledge_capabilities() -> list[Capability]:
                 "top_n": {
                     "type": "int",
                     "description": "Max search results (default 8)",
+                    "required": False,
+                },
+                "dev": {
+                    "type": "bool",
+                    "description": (
+                        "Include dev_notes in full-depth results. "
+                        "Auto-set when session dev mode is active."
+                    ),
                     "required": False,
                 },
             },
@@ -4172,6 +4190,14 @@ def _knowledge_capabilities() -> list[Capability]:
                     "description": "Max search results (default 8).",
                     "required": False,
                 },
+                "dev": {
+                    "type": "bool",
+                    "description": (
+                        "Include dev_notes in full-depth results. "
+                        "Auto-set when session dev mode is active."
+                    ),
+                    "required": False,
+                },
             },
             callable=knowledge,
             search_aliases=[
@@ -4194,6 +4220,8 @@ def _knowledge_capabilities() -> list[Capability]:
                 "kind": {"type": "str", "required": False},
                 "depth": {"type": "str", "required": False},
                 "top_n": {"type": "int", "required": False},
+                "dev": {"type": "bool", "required": False,
+                        "description": "Include dev_notes. Auto-set in dev mode."},
             },
             callable=knowledge_docs,
             search_aliases=[
@@ -4248,12 +4276,42 @@ def _knowledge_capabilities() -> list[Capability]:
                     "description": "Max search results (default 8).",
                     "required": False,
                 },
+                "dev": {
+                    "type": "bool",
+                    "description": "Include dev_notes. Auto-set in dev mode.",
+                    "required": False,
+                },
             },
             callable=knowledge_personal,
             search_aliases=[
                 "personal knowledge", "my patterns", "calibration",
                 "metacognition patterns", "blindspot patterns",
                 "feedback", "preferences", "vault knowledge",
+            ],
+        ),
+        Capability(
+            name="dev_mode_toggle",
+            description=(
+                "Toggle dev mode for the current session. When active, "
+                "all knowledge queries automatically include dev_notes — "
+                "development-facing documentation that operational agents "
+                "don't need. Use True to enable, False to disable, or "
+                "omit to toggle."
+            ),
+            category="context",
+            parameters={
+                "enabled": {
+                    "type": "bool",
+                    "description": (
+                        "True=on, False=off, omit=toggle current state."
+                    ),
+                    "required": False,
+                },
+            },
+            callable=_dev_mode_toggle,
+            search_aliases=[
+                "dev mode", "developer mode", "development mode",
+                "toggle dev", "enable dev notes",
             ],
         ),
         Capability(

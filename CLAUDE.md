@@ -369,6 +369,8 @@ Two parallel stores share a common `KnowledgeUnit` base class:
 
 **Inline placeholders:** Content can reference other units inline with `<<wb:path>>` or `<<wb:path --recursive>>`. At `depth="full"`, placeholders are resolved to the referenced unit's content. `--recursive` resolves the referenced unit's own chains transitively. Use for precise mid-document placement. Parsed with argparse (extensible to `--depth`, `--section`, etc.). Works in both JSON content strings and vault markdown files.
 
+**Dev notes:** Units can carry a `dev_notes` string — development-facing guidance that only surfaces when the agent is in dev mode or explicitly requests `dev=True`. Use for architectural constraints, non-obvious dependencies, and hard-won lessons that future agents could easily clobber. Activate dev mode with `dev_mode_toggle`; all subsequent knowledge queries auto-include dev_notes for that session.
+
 **Search index:** A persistent BM25 + dense vector index over full unit content is warmed eagerly on MCP server startup. Inline placeholders are resolved before indexing so referenced content is searchable. This powers `knowledge` and `agent_docs` search with hybrid ranking (keyword + semantic).
 
 **MCP capabilities:**
@@ -378,6 +380,7 @@ Two parallel stores share a common `KnowledgeUnit` base class:
 - `knowledge_mint` — create or update a personal knowledge unit in the vault
 - `agent_docs` — original system docs search (unchanged, still works)
 - `agent_docs_rebuild` — reload both stores from disk
+- `dev_mode_toggle` — toggle dev mode for session; when active, knowledge queries auto-include `dev_notes`
 - `knowledge_index_rebuild` — force rebuild knowledge search index with full embeddings
 - `knowledge_index_status` — check knowledge search index health
 
@@ -676,6 +679,7 @@ All capabilities and workflows are invoked via `mcp__work-buddy__wb_run("name", 
 | `knowledge_mint` | function | Create or update a personal knowledge unit in the Obsidian vault |
 | `agent_docs` | function | System docs search (unchanged, still works) |
 | `agent_docs_rebuild` | function | Reload both knowledge stores from disk |
+| `dev_mode_toggle` | function | Toggle dev mode for current session. When active, knowledge queries auto-include `dev_notes` |
 | `docs_create` | function | Create a new unit in the knowledge store |
 | `docs_update` | function | Update fields on an existing knowledge unit |
 | `docs_delete` | function | Delete a unit from the knowledge store |

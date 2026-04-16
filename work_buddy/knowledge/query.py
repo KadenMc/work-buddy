@@ -28,6 +28,7 @@ def knowledge(
     severity: str | None = None,
     depth: str = "summary",
     top_n: int = 8,
+    dev: bool = False,
 ) -> dict[str, Any]:
     """Search across both system docs and personal knowledge.
 
@@ -43,11 +44,12 @@ def knowledge(
         severity: Filter personal units by severity (HIGH, MODERATE, LOW).
         depth: Content depth: "index", "summary", or "full".
         top_n: Max results for search mode.
+        dev: Include dev_notes in full-depth results.
     """
     from work_buddy.knowledge.search import search
 
     if not query and path is None and scope is None:
-        return _full_index(kind, depth, knowledge_scope="all")
+        return _full_index(kind, depth, knowledge_scope="all", dev=dev)
 
     return search(
         query=query,
@@ -59,6 +61,7 @@ def knowledge(
         knowledge_scope="all",
         category=category,
         severity=severity,
+        dev=dev,
     )
 
 
@@ -70,11 +73,12 @@ def knowledge_docs(
     kind: str | None = None,
     depth: str = "summary",
     top_n: int = 8,
+    dev: bool = False,
 ) -> dict[str, Any]:
     """Search system documentation only. Alias for agent_docs."""
     return agent_docs(
         query=query, path=path, scope=scope,
-        kind=kind, depth=depth, top_n=top_n,
+        kind=kind, depth=depth, top_n=top_n, dev=dev,
     )
 
 
@@ -87,6 +91,7 @@ def knowledge_personal(
     severity: str | None = None,
     depth: str = "summary",
     top_n: int = 8,
+    dev: bool = False,
 ) -> dict[str, Any]:
     """Search personal knowledge from the Obsidian vault only.
 
@@ -98,11 +103,12 @@ def knowledge_personal(
         severity: Filter by severity (HIGH, MODERATE, LOW).
         depth: Content depth: "index", "summary", or "full".
         top_n: Max results.
+        dev: Include dev_notes in full-depth results.
     """
     from work_buddy.knowledge.search import search
 
     if not query and path is None and scope is None and not category and not severity:
-        return _full_index(None, depth, knowledge_scope="personal")
+        return _full_index(None, depth, knowledge_scope="personal", dev=dev)
 
     return search(
         query=query or "",
@@ -114,6 +120,7 @@ def knowledge_personal(
         knowledge_scope="personal",
         category=category,
         severity=severity,
+        dev=dev,
     )
 
 
@@ -129,6 +136,7 @@ def agent_docs(
     kind: str | None = None,
     depth: str = "summary",
     top_n: int = 8,
+    dev: bool = False,
 ) -> dict[str, Any]:
     """Unified search and navigation over all agent documentation.
 
@@ -146,12 +154,13 @@ def agent_docs(
         kind: Filter: "directions", "system", "capability", "workflow".
         depth: Content depth: "index" (navigation), "summary" (default), "full".
         top_n: Max results for search mode.
+        dev: Include dev_notes in full-depth results.
     """
     from work_buddy.knowledge.search import search
 
     # Empty everything = return full index
     if not query and path is None and scope is None:
-        return _full_index(kind, depth)
+        return _full_index(kind, depth, dev=dev)
 
     return search(
         query=query,
@@ -160,6 +169,7 @@ def agent_docs(
         kind=kind,
         depth=depth,
         top_n=top_n,
+        dev=dev,
     )
 
 
@@ -217,6 +227,7 @@ def _full_index(
     kind: str | None,
     depth: str,
     knowledge_scope: str = "system",
+    dev: bool = False,
 ) -> dict[str, Any]:
     """Return the complete Tier 1 index for browsing."""
     from work_buddy.knowledge.store import load_store
@@ -231,7 +242,7 @@ def _full_index(
     effective_depth = depth if depth != "summary" else "index"
 
     results = [
-        {"path": u.path, **u.tier(effective_depth)}
+        {"path": u.path, **u.tier(effective_depth, dev=dev)}
         for u in sorted(units, key=lambda u: u.path)
     ]
 
