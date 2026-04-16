@@ -1,6 +1,6 @@
 """Obsidian notification channel.
 
-Delivers notifications and requests to the user via the obsidian-work-buddy
+Delivers notifications and requests to the user via the work-buddy
 plugin's bridge server. Uses fire-and-forget + poll pattern:
 
     1. POST /notifications/show → shows modal, returns immediately

@@ -31,7 +31,7 @@ obsidian:
     - "node_modules"
   wellness_days: 14
   api_port: 27124        # Obsidian Local REST API plugin port
-  bridge_port: 27125     # obsidian-work-buddy plugin port
+  bridge_port: 27125     # work-buddy plugin port
 
 tasks:
   db_path: "tasks/task_metadata.db"

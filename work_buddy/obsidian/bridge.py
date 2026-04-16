@@ -1,4 +1,4 @@
-"""Python client for the obsidian-work-buddy plugin bridge.
+"""Python client for the work-buddy Obsidian plugin bridge.
 
 Talks to the HTTP server running inside Obsidian via the Work Buddy plugin.
 Follows the same pattern as work_buddy.messaging.client.
@@ -19,7 +19,7 @@ from work_buddy.logging_config import get_logger
 
 logger = get_logger(__name__)
 
-# Compatible obsidian-work-buddy plugin version range for this work-buddy release.
+# Compatible work-buddy plugin version range for this work-buddy release.
 # Lower bound (inclusive): bump when this work-buddy needs new plugin endpoints.
 # Upper bound (exclusive): bump when a future plugin drops deprecated endpoints.
 PLUGIN_VERSION_MIN = "0.1.0"  # inclusive — oldest plugin that has all needed endpoints
@@ -253,13 +253,13 @@ def require_available() -> None:
     plugin_version = health.get("version", "0.0.0")
     if _compare_semver(plugin_version, PLUGIN_VERSION_MIN) < 0:
         raise RuntimeError(
-            f"obsidian-work-buddy plugin is v{plugin_version}, but this version "
+            f"work-buddy plugin is v{plugin_version}, but this version "
             f"of work-buddy requires >= v{PLUGIN_VERSION_MIN}. "
             f"Update the plugin in Obsidian: Settings → Community plugins."
         )
     if _compare_semver(plugin_version, PLUGIN_VERSION_MAX) >= 0:
         raise RuntimeError(
-            f"obsidian-work-buddy plugin is v{plugin_version}, but this version "
+            f"work-buddy plugin is v{plugin_version}, but this version "
             f"of work-buddy supports < v{PLUGIN_VERSION_MAX}. "
             f"Update work-buddy, or downgrade the plugin."
         )
@@ -268,7 +268,7 @@ def require_available() -> None:
         _bridge_confirmed = True
         try:
             from work_buddy.obsidian.plugin_versions import confirm_working
-            confirm_working("obsidian-work-buddy", plugin_version)
+            confirm_working("work-buddy", plugin_version)
         except Exception:
             pass  # Best-effort — don't break bridge availability check
 
