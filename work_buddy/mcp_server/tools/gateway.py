@@ -19,7 +19,7 @@ import os
 import time as _time
 import uuid
 from datetime import date, datetime, timedelta, timezone
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Any
 
 from mcp.server.fastmcp import Context, FastMCP
@@ -49,14 +49,14 @@ def _resolve_session(ctx: Context) -> str | None:
     return _SESSION_REGISTRY.get(id(ctx.session))
 
 
-def _require_init(ctx: Context) -> str | None:
+def _require_init(ctx: Context) -> dict | None:
     """Check if this MCP session has been initialized.
 
-    Returns an error JSON string if not initialized, None if OK.
+    Returns an error dict if not initialized, None if OK.
     """
     if _resolve_session(ctx) is not None:
         return None
-    return _to_json({
+    return _prepare({
         "error": "Session not initialized. Call wb_init(session_id) first.",
         "hint": (
             "Every agent session must call wb_init with its WORK_BUDDY_SESSION_ID "
@@ -471,7 +471,7 @@ def register_tools(mcp: FastMCP) -> None:
     """Register the gateway tools on the given FastMCP server."""
 
     @mcp.tool()
-    async def wb_init(session_id: str, ctx: Context = None) -> str:
+    async def wb_init(session_id: str, ctx: Context = None) -> dict:
         """Initialize this connection for work-buddy. MUST be called once
         at the start of every agent session before any other wb_* tool.
 
@@ -482,7 +482,7 @@ def register_tools(mcp: FastMCP) -> None:
             session_id: Your WORK_BUDDY_SESSION_ID (from the SessionStart hook)
         """
         if not session_id or not session_id.strip():
-            return _to_json({
+            return _prepare({
                 "error": "session_id is required. Pass your WORK_BUDDY_SESSION_ID.",
             })
         session_id = session_id.strip()
@@ -519,10 +519,10 @@ def register_tools(mcp: FastMCP) -> None:
         }
         if setup_hint:
             result["setup_hint"] = setup_hint
-        return _to_json(result)
+        return _prepare(result)
 
     @mcp.tool()
-    async def wb_search(query: str, category: str | None = None, filter_n: int = 3, ctx: Context = None) -> str:
+    async def wb_search(query: str, category: str | None = None, filter_n: int = 3, ctx: Context = None) -> list | dict:
         """Dynamic tool discovery for work-buddy capabilities and workflows.
 
         Returns full details for each match including name, description,
@@ -545,10 +545,10 @@ def register_tools(mcp: FastMCP) -> None:
         # Activity ledger: record search
         from work_buddy.mcp_server.activity_ledger import record_search
         record_search(query, category, len(results), _resolve_session(ctx))
-        return _to_json(results)
+        return _prepare(results)
 
     @mcp.tool()
-    async def wb_run(capability: str, params: str | dict | None = None, ctx: Context = None) -> str:
+    async def wb_run(capability: str, params: str | dict | None = None, ctx: Context = None) -> dict:
         """Execute a function or start a workflow.
 
         For functions: executes immediately and returns the result.
@@ -570,12 +570,12 @@ def register_tools(mcp: FastMCP) -> None:
         if capability == "wb_init":
             sid = parsed_params.get("session_id", "")
             if not sid or not str(sid).strip():
-                return _to_json({"error": "session_id is required. Pass your WORK_BUDDY_SESSION_ID."})
+                return _prepare({"error": "session_id is required. Pass your WORK_BUDDY_SESSION_ID."})
             sid = str(sid).strip()
             _register_session(ctx, sid)
             from work_buddy.mcp_server.activity_ledger import record_init
             record_init(sid)
-            return _to_json({
+            return _prepare({
                 "status": "initialized",
                 "session_id": sid,
                 "message": "Session registered. All work-buddy tools are now available.",
@@ -598,7 +598,7 @@ def register_tools(mcp: FastMCP) -> None:
                     if tool_status.get(dep, {}).get("user_opted_out")
                 ]
                 if opted_out:
-                    return _to_json({
+                    return _prepare({
                         "error": (
                             f"Capability {capability!r} is unavailable because "
                             f"you opted out of: {', '.join(opted_out)}. "
@@ -608,7 +608,7 @@ def register_tools(mcp: FastMCP) -> None:
                         "opted_out": opted_out,
                         "requires": missing_deps,
                     })
-                return _to_json({
+                return _prepare({
                     "error": (
                         f"Capability {capability!r} is unavailable: "
                         f"requires {', '.join(missing_deps)}. "
@@ -618,7 +618,7 @@ def register_tools(mcp: FastMCP) -> None:
                     "disabled": True,
                     "requires": missing_deps,
                 })
-            return _to_json({"error": f"Unknown capability: {capability!r}. Use wb_search to find available capabilities."})
+            return _prepare({"error": f"Unknown capability: {capability!r}. Use wb_search to find available capabilities."})
 
         # Determine operation type and retry policy
         if isinstance(entry, registry.WorkflowDefinition):
@@ -639,7 +639,7 @@ def register_tools(mcp: FastMCP) -> None:
                 )
             except Exception as exc:
                 _complete_operation(op_id, error=f"{type(exc).__name__}: {exc}")
-                return _to_json({"error": f"Workflow start failed: {exc}", "operation_id": op_id})
+                return _prepare({"error": f"Workflow start failed: {exc}", "operation_id": op_id})
             _complete_operation(
                 op_id, result=result,
                 error=_result_error(result),
@@ -655,7 +655,7 @@ def register_tools(mcp: FastMCP) -> None:
                 agent_session_id=_agent_sid,
             )
             result["operation_id"] = op_id
-            return _to_json(result)
+            return _prepare(result)
 
         # It's a Capability — remap aliases and validate params, then call
         if parsed_params and entry.param_aliases:
@@ -672,7 +672,7 @@ def register_tools(mcp: FastMCP) -> None:
                     f"Accepted: {', '.join(sorted(known))}."
                 )
                 _complete_operation(op_id, error=f"Parameter error: {msg}")
-                return _to_json({
+                return _prepare({
                     "error": f"Parameter error: {msg}",
                     "help": f"Use wb_search('{capability}') to see accepted parameters.",
                     "parameters": param_help,
@@ -685,6 +685,19 @@ def register_tools(mcp: FastMCP) -> None:
             "artifact_save",
         ) and _agent_sid:
             parsed_params.setdefault("agent_session_id", _agent_sid)
+
+        # Auto-inject dev=True for knowledge capabilities when session
+        # dev mode is active (set via dev_mode_toggle).
+        _KNOWLEDGE_CAPS = {
+            "agent_docs", "knowledge_docs", "knowledge", "knowledge_personal",
+        }
+        if capability in _KNOWLEDGE_CAPS and "dev" not in parsed_params:
+            try:
+                from work_buddy.agent_session import get_dev_mode
+                if get_dev_mode():
+                    parsed_params["dev"] = True
+            except Exception:
+                pass  # Don't break queries if manifest read fails
 
         from work_buddy.mcp_server.activity_ledger import record_capability
         _t0 = _time.monotonic()
@@ -712,7 +725,7 @@ def register_tools(mcp: FastMCP) -> None:
                         ",".join(missing), **_ledger_kw,
                     )
                     consent_result["operation_id"] = op_id
-                    return _to_json(consent_result)
+                    return _prepare(consent_result)
 
         # --- Execute the callable (with fallback retry on ConsentRequired) ---
         _consent_retries = 0
@@ -726,7 +739,7 @@ def register_tools(mcp: FastMCP) -> None:
                 record_capability(capability, entry.category, op_id, parsed_params,
                                   entry.mutates_state, _t0, None,
                                   f"Parameter error: {exc}", False, **_ledger_kw)
-                return _to_json({
+                return _prepare({
                     "error": f"Parameter error: {exc}",
                     "help": f"Use wb_search('{capability}') to see accepted parameters.",
                     "parameters": param_help,
@@ -741,7 +754,7 @@ def register_tools(mcp: FastMCP) -> None:
                                       entry.mutates_state, _t0, None,
                                       f"ConsentRequired: {exc.operation}", True, exc.operation,
                                       **_ledger_kw)
-                    return _to_json({
+                    return _prepare({
                         "error": f"Too many consent gates for {capability}. Last: {exc.operation}",
                         "operation_id": op_id,
                     })
@@ -760,7 +773,7 @@ def register_tools(mcp: FastMCP) -> None:
                         exc.operation, **_ledger_kw,
                     )
                     consent_result["operation_id"] = op_id
-                    return _to_json(consent_result)
+                    return _prepare(consent_result)
                 # Consent granted — retry the callable
                 continue
             except ToolUnavailable as exc:
@@ -768,7 +781,7 @@ def register_tools(mcp: FastMCP) -> None:
                 record_capability(capability, entry.category, op_id, parsed_params,
                                   entry.mutates_state, _t0, None,
                                   f"ToolUnavailable: {exc.tool_id}", False, **_ledger_kw)
-                return _to_json({
+                return _prepare({
                     "tool_unavailable": True,
                     "tool_id": exc.tool_id,
                     "tool_name": exc.display_name,
@@ -797,7 +810,7 @@ def register_tools(mcp: FastMCP) -> None:
                         op_id, error_str, error_class,
                         originating_session_id=_agent_sid,
                     )
-                    return _to_json({
+                    return _prepare({
                         "error": f"Transient failure: {error_str}",
                         "operation_id": op_id,
                         "queued_for_retry": True,
@@ -809,7 +822,7 @@ def register_tools(mcp: FastMCP) -> None:
                         ),
                     })
 
-                return _to_json({
+                return _prepare({
                     "error": f"Execution failed: {error_str}",
                     "operation_id": op_id,
                 })
@@ -830,7 +843,7 @@ def register_tools(mcp: FastMCP) -> None:
                     op_id, result_err, "transient",
                     originating_session_id=_agent_sid,
                 )
-                return _to_json({
+                return _prepare({
                     "error": f"Transient failure: {result_err}",
                     "operation_id": op_id,
                     "queued_for_retry": True,
@@ -846,7 +859,7 @@ def register_tools(mcp: FastMCP) -> None:
         record_capability(capability, entry.category, op_id, parsed_params,
                           entry.mutates_state, _t0, result,
                           result_err, False, **_ledger_kw)
-        return _to_json({
+        return _prepare({
             "type": "result",
             "capability": capability,
             "result": result,
@@ -854,7 +867,7 @@ def register_tools(mcp: FastMCP) -> None:
         })
 
     @mcp.tool()
-    async def wb_advance(workflow_run_id: str, step_result: str | dict | None = None, ctx: Context = None) -> str:
+    async def wb_advance(workflow_run_id: str, step_result: str | dict | None = None, ctx: Context = None) -> dict:
         """Advance a running workflow to its next step.
 
         Call this after completing the current step. Pass the step's output
@@ -877,14 +890,14 @@ def register_tools(mcp: FastMCP) -> None:
         from work_buddy.mcp_server.activity_ledger import record_workflow_step
         record_workflow_step(workflow_run_id, result, _t0,
                             agent_session_id=_resolve_session(ctx))
-        return _to_json(result)
+        return _prepare(result)
 
     @mcp.tool()
     async def wb_status(
         workflow_run_id: str | None = None,
         operation_id: str | None = None,
         ctx: Context = None,
-    ) -> str:
+    ) -> dict:
         """Check workflow progress or system health.
 
         With a workflow_run_id: returns DAG progress for that workflow.
@@ -902,19 +915,19 @@ def register_tools(mcp: FastMCP) -> None:
         if operation_id:
             record = _load_operation(operation_id)
             if record is None:
-                return _to_json({"error": f"Unknown operation: {operation_id!r}"})
-            return _to_json(record)
+                return _prepare({"error": f"Unknown operation: {operation_id!r}"})
+            return _prepare(record)
 
         if workflow_run_id:
             result = await asyncio.to_thread(
                 conductor.get_workflow_status, workflow_run_id,
             )
-            return _to_json(result)
+            return _prepare(result)
 
         # System overview
         overview = await asyncio.to_thread(_system_overview)
         overview["recent_operations"] = _list_recent_operations(limit=10)
-        return _to_json(overview)
+        return _prepare(overview)
 
     @mcp.tool()
     async def wb_step_result(
@@ -922,7 +935,7 @@ def register_tools(mcp: FastMCP) -> None:
         step_id: str,
         key: str | None = None,
         ctx: Context = None,
-    ) -> str:
+    ) -> dict:
         """Retrieve the full result for a specific workflow step.
 
         Use this when the conductor returned a manifest (``_manifest: true``)
@@ -941,7 +954,7 @@ def register_tools(mcp: FastMCP) -> None:
         result = await asyncio.to_thread(
             conductor.get_step_result, workflow_run_id, step_id, key,
         )
-        return _to_json(result)
+        return _prepare(result)
 
     # NOTE: wb_retry was removed as a tool. Retry is now a registered
     # capability invoked via: wb_run("retry", {"operation_id": "op_xxx"})
@@ -967,13 +980,34 @@ def _parse_params(params: str | dict | None) -> dict[str, Any]:
         return {"value": params}
 
 
-def _to_json(obj: Any) -> str:
-    """Serialize to JSON with custom handling for Path/date objects."""
-    return json.dumps(obj, default=_json_default, indent=2)
+def _prepare(obj: Any) -> Any:
+    """Recursively convert non-serializable objects to JSON-safe types.
+
+    Returns a dict/list/scalar — NOT a JSON string.  The MCP transport
+    handles final serialization via ``pydantic_core.to_json``.
+    """
+    if obj is None or isinstance(obj, (bool, int, float, str)):
+        return obj
+    if isinstance(obj, (date, datetime)):
+        return obj.isoformat()
+    if isinstance(obj, PurePath):
+        return obj.as_posix()
+    if isinstance(obj, dict):
+        return {k: _prepare(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_prepare(v) for v in obj]
+    if isinstance(obj, set):
+        return [_prepare(v) for v in sorted(obj, key=str)]
+    if hasattr(obj, "__dict__"):
+        return _prepare(obj.__dict__)
+    return str(obj)
 
 
 def _json_default(obj: Any) -> Any:
-    """JSON serializer for objects not handled by default."""
+    """JSON serializer for objects not handled by default.
+
+    Used ONLY for writing operation records to disk (not for MCP responses).
+    """
     if isinstance(obj, (date, datetime)):
         return obj.isoformat()
     if isinstance(obj, Path):

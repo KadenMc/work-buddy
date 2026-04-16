@@ -36,6 +36,7 @@ def search(
     knowledge_scope: str = "system",
     category: str | None = None,
     severity: str | None = None,
+    dev: bool = False,
 ) -> dict[str, Any]:
     """Unified search and navigation over the knowledge store.
 
@@ -58,17 +59,17 @@ def search(
 
     # Mode 1: Exact path lookup
     if path is not None:
-        return _lookup(path, depth, knowledge_scope)
+        return _lookup(path, depth, knowledge_scope, dev=dev)
 
     # Mode 2: Browse subtree (no query) or filter-only (category/severity without query)
     if not query and (scope is not None or category or severity):
-        return _browse(scope or "", kind, depth, knowledge_scope, category, severity)
+        return _browse(scope or "", kind, depth, knowledge_scope, category, severity, dev=dev)
 
     # Mode 3/4: Search (optionally scoped)
-    return _search(query, scope, kind, depth, top_n, knowledge_scope, category, severity)
+    return _search(query, scope, kind, depth, top_n, knowledge_scope, category, severity, dev=dev)
 
 
-def _lookup(path: str, depth: str, knowledge_scope: str) -> dict[str, Any]:
+def _lookup(path: str, depth: str, knowledge_scope: str, dev: bool = False) -> dict[str, Any]:
     """Direct lookup by exact path."""
     # For path lookup, search across all scopes if not found in requested scope
     store = load_store(scope=knowledge_scope)
@@ -87,7 +88,7 @@ def _lookup(path: str, depth: str, knowledge_scope: str) -> dict[str, Any]:
     return {
         "mode": "lookup",
         "path": path,
-        "unit": unit.tier(depth, store=full_store),
+        "unit": unit.tier(depth, store=full_store, dev=dev),
     }
 
 
@@ -98,6 +99,7 @@ def _browse(
     knowledge_scope: str,
     category: str | None,
     severity: str | None,
+    dev: bool = False,
 ) -> dict[str, Any]:
     """Browse all units under a path prefix, or all units if scope is empty."""
     store = load_store(scope=knowledge_scope)
@@ -121,7 +123,7 @@ def _browse(
     full_store = load_store(scope="all") if depth == "full" else None
 
     results = [
-        {"path": p, **u.tier(depth, store=full_store)}
+        {"path": p, **u.tier(depth, store=full_store, dev=dev)}
         for p, u in sorted(units.items())
     ]
 
@@ -142,6 +144,7 @@ def _search(
     knowledge_scope: str,
     category: str | None,
     severity: str | None,
+    dev: bool = False,
 ) -> dict[str, Any]:
     """Hybrid search over the store using the persistent knowledge index.
 
@@ -180,7 +183,7 @@ def _search(
             "mode": "search",
             "query": query,
             "count": 1,
-            "results": [{"path": exact.path, "score": 1.0, **exact.tier(depth, store=full_store)}],
+            "results": [{"path": exact.path, "score": 1.0, **exact.tier(depth, store=full_store, dev=dev)}],
         }
 
     # Pass full store for chain resolution
@@ -205,7 +208,7 @@ def _search(
             results.append({
                 "path": unit.path,
                 "score": item["score"],
-                **unit.tier(depth, store=full_store),
+                **unit.tier(depth, store=full_store, dev=dev),
             })
 
         return {
@@ -220,7 +223,7 @@ def _search(
     candidates_texts: dict[str, list[str]] = {
         p: u.search_phrases() for p, u in candidates_units.items()
     }
-    return _keyword_search(query, candidates_units, candidates_texts, depth, top_n, full_store)
+    return _keyword_search(query, candidates_units, candidates_texts, depth, top_n, full_store, dev=dev)
 
 
 def _keyword_search(
@@ -230,6 +233,7 @@ def _keyword_search(
     depth: str,
     top_n: int,
     full_store: dict[str, KnowledgeUnit] | None = None,
+    dev: bool = False,
 ) -> dict[str, Any]:
     """Keyword fallback when embedding service is unavailable."""
     query_lower = query.lower()
@@ -250,7 +254,7 @@ def _keyword_search(
         results.append({
             "path": path,
             "score": round(score, 4),
-            **unit.tier(depth, store=full_store),
+            **unit.tier(depth, store=full_store, dev=dev),
         })
 
     return {

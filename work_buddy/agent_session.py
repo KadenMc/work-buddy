@@ -106,6 +106,40 @@ def get_session_dir(session_id: str | None = None) -> Path:
     return session_dir
 
 
+def update_manifest(**updates: Any) -> dict[str, Any]:
+    """Update the current session's manifest with additional fields.
+
+    Reads the existing manifest, merges updates, and writes back.
+    Returns the updated manifest dict.
+    """
+    session_dir = get_session_dir()
+    manifest_path = session_dir / "manifest.json"
+    manifest: dict[str, Any] = {}
+    if manifest_path.exists():
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.update(updates)
+    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    return manifest
+
+
+def get_dev_mode() -> bool:
+    """Check if the current session is in dev mode."""
+    session_dir = get_session_dir()
+    manifest_path = session_dir / "manifest.json"
+    if not manifest_path.exists():
+        return False
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        return bool(manifest.get("dev_mode", False))
+    except (json.JSONDecodeError, OSError):
+        return False
+
+
+def set_dev_mode(enabled: bool) -> None:
+    """Set the dev mode flag on the current session's manifest."""
+    update_manifest(dev_mode=enabled)
+
+
 def get_session_consent_db_path(session_dir: Path | None = None) -> Path:
     """Return the path to the session-scoped consent SQLite DB."""
     if session_dir is None:

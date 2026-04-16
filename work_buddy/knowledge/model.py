@@ -129,6 +129,10 @@ class KnowledgeUnit:
     context_before: list[str] = field(default_factory=list)
     context_after: list[str] = field(default_factory=list)
 
+    # Dev notes — development-facing documentation that only surfaces when
+    # the agent is in dev mode or explicitly requests dev=True.
+    dev_notes: str = ""
+
     # Scope — populated by the loader, not serialized to JSON.
     scope: str = "system"              # "system" | "personal"
 
@@ -136,6 +140,7 @@ class KnowledgeUnit:
         self,
         depth: str = "summary",
         store: dict[str, KnowledgeUnit] | None = None,
+        dev: bool = False,
     ) -> dict[str, Any]:
         """Return unit data at the requested depth.
 
@@ -147,6 +152,7 @@ class KnowledgeUnit:
             depth: One of "index", "summary", "full".
             store: Unit store dict for resolving context chains at depth="full".
                    When None, chains are returned as path lists without resolution.
+            dev: When True, include dev_notes in full-depth output.
         """
         base: dict[str, Any] = {
             "path": self.path,
@@ -178,8 +184,12 @@ class KnowledgeUnit:
 
         if depth == "summary":
             base["content"] = self.content.get("summary", "")
+            if self.dev_notes:
+                base["has_dev_notes"] = True
         else:  # full
             base["content"] = self._resolve_full_content(store)
+            if dev and self.dev_notes:
+                base["dev_notes"] = self.dev_notes
 
         return base
 
@@ -273,6 +283,8 @@ class KnowledgeUnit:
             d["context_before"] = self.context_before
         if self.context_after:
             d["context_after"] = self.context_after
+        if self.dev_notes:
+            d["dev_notes"] = self.dev_notes
         # Add kind-specific fields
         d.update(self._kind_dict())
         return d
@@ -499,6 +511,7 @@ def unit_from_dict(path: str, data: dict[str, Any]) -> KnowledgeUnit:
         "children": data.get("children", []),
         "context_before": data.get("context_before", []),
         "context_after": data.get("context_after", []),
+        "dev_notes": data.get("dev_notes", ""),
     }
 
     # Extract kind-specific fields based on class
