@@ -26,9 +26,20 @@ _COST_PER_M_TOKENS: dict[str, dict[str, float]] = {
 
 
 def _cost_log_path() -> Path:
-    from work_buddy.agent_session import get_session_dir
+    """Resolve the cost log path, routing to the originating session if set.
 
-    session_dir = get_session_dir()
+    When the sidecar's retry sweep replays a queued llm_submit op, it sets
+    an originating-session context var so this log entry lands in the
+    agent's directory rather than the sidecar's. Falls back to the normal
+    session when no override is active.
+    """
+    from work_buddy.agent_session import (
+        get_session_dir,
+        get_originating_session,
+    )
+
+    override = get_originating_session()
+    session_dir = get_session_dir(override) if override else get_session_dir()
     return session_dir / "llm_costs.jsonl"
 
 

@@ -364,9 +364,14 @@ def _list_recent_operations(limit: int = 10) -> list[dict[str, Any]]:
                 "created_at": raw.get("created_at"),
                 "completed_at": raw.get("completed_at"),
             }
-            # Surface retry queue state
-            if raw.get("queued_for_retry"):
-                entry_dict["status"] = "queued_retry"
+            # Surface queue state (retries + deferred submits + scheduled jobs)
+            if _is_queued(raw):
+                reason = raw.get("queue_reason", "retry")
+                entry_dict["status"] = (
+                    "queued_retry" if reason == "retry" else f"queued_{reason}"
+                )
+                entry_dict["queued"] = True
+                entry_dict["queue_reason"] = reason
                 entry_dict["retry_at"] = raw.get("retry_at")
                 entry_dict["max_retries"] = raw.get("max_retries")
                 entry_dict["error_class"] = raw.get("error_class")
@@ -420,8 +425,12 @@ def _enqueue_for_retry(
     record["completed_at"] = now.isoformat()
     record["locked_until"] = None
 
-    # Retry queue fields
-    record["queued_for_retry"] = True
+    # Queue fields — canonical: queued + queue_reason. queued_for_retry
+    # is kept as a legacy alias on-disk for one release so any in-flight
+    # records written by older code can still be read by the sweep.
+    record["queued"] = True
+    record["queue_reason"] = "retry"
+    record["queued_for_retry"] = True  # deprecated alias; removed in a later cleanup
     record["retry_at"] = (now + timedelta(seconds=delay_seconds)).isoformat()
     record["max_retries"] = max_retries
     record["backoff_strategy"] = backoff_strategy
@@ -439,19 +448,29 @@ def _enqueue_for_retry(
     _update_operation(record)
 
 
+def _is_queued(record: dict[str, Any]) -> bool:
+    """Canonical read for 'is this op sitting in the sweep queue?'.
+
+    Accepts the new ``queued`` field or the deprecated ``queued_for_retry``
+    alias. Centralizing avoids forgetting a call site during the rename.
+    """
+    return bool(record.get("queued") or record.get("queued_for_retry"))
+
+
 def _prune_old_operations() -> None:
     """Remove completed operation records older than 1 hour.
 
-    Preserves operations that are queued for retry (they need to survive
-    until the sidecar processes them or they exhaust retries).
+    Preserves operations that are queued (retry, deferred submit, or
+    scheduled job) — they need to survive until the sidecar processes
+    them or they exhaust retries.
     """
     ops_dir = _get_operations_dir()
     cutoff = datetime.now(timezone.utc) - timedelta(hours=1)
     for p in ops_dir.glob("op_*.json"):
         try:
             raw = json.loads(p.read_text(encoding="utf-8"))
-            # Never prune operations queued for retry
-            if raw.get("queued_for_retry"):
+            # Never prune operations still in the queue
+            if _is_queued(raw):
                 continue
             if raw.get("status") in ("completed", "failed"):
                 completed = raw.get("completed_at")
@@ -1066,7 +1085,7 @@ def _retry_queue_summary() -> dict[str, Any]:
     for p in ops_dir.glob("op_*.json"):
         try:
             raw = json.loads(p.read_text(encoding="utf-8"))
-            if raw.get("queued_for_retry"):
+            if _is_queued(raw):
                 if raw.get("attempt", 1) >= raw.get("max_retries", 5):
                     exhausted += 1
                 else:

@@ -2539,6 +2539,7 @@ def _llm_capabilities() -> list[Capability]:
     ``asyncio.to_thread()`` with no import-deadlock risk.
     """
     from work_buddy.llm.call import llm_call
+    from work_buddy.llm.submit import llm_submit
 
     return [
         Capability(
@@ -2622,6 +2623,75 @@ def _llm_capabilities() -> list[Capability]:
                 },
             },
             callable=llm_call,
+        ),
+        Capability(
+            name="llm_submit",
+            description=(
+                "Asynchronously submit an llm_call for background execution. "
+                "Returns immediately with an operation_id; the sidecar's "
+                "retry sweep invokes llm_call with your params and messages "
+                "the originating session on completion. Use when local "
+                "inference latency (tens of seconds) would block the caller "
+                "unnecessarily. For synchronous bounded calls use llm_call. "
+                "Cloud tier calls are already fast — no point submitting them; "
+                "profile is therefore required."
+            ),
+            category="llm",
+            search_aliases=[
+                "async llm",
+                "background llm",
+                "queue llm call",
+                "submit llm",
+                "defer llm",
+                "fire and forget",
+                "autodream",
+                "background inference",
+            ],
+            parameters={
+                "system": {
+                    "type": "str",
+                    "description": "System prompt",
+                    "required": True,
+                },
+                "user": {
+                    "type": "str",
+                    "description": "User message content",
+                    "required": True,
+                },
+                "profile": {
+                    "type": "str",
+                    "description": (
+                        "Named local/remote profile (e.g. 'local_general'). "
+                        "Required — submits are for local profiles only."
+                    ),
+                    "required": True,
+                },
+                "output_schema": {
+                    "type": "dict|str",
+                    "description": (
+                        "JSON Schema for structured output. Pass a dict for "
+                        "inline schemas, or a string name to load from "
+                        "work_buddy/llm/schemas/<name>.json. Omit for freeform."
+                    ),
+                    "required": False,
+                },
+                "max_tokens": {
+                    "type": "int",
+                    "description": "Max response tokens (default: 1024)",
+                    "required": False,
+                },
+                "temperature": {
+                    "type": "float",
+                    "description": "Sampling temperature (default: 0.0)",
+                    "required": False,
+                },
+                "cache_ttl_minutes": {
+                    "type": "int",
+                    "description": "Cache TTL in minutes. None=config default, 0=no cache.",
+                    "required": False,
+                },
+            },
+            callable=llm_submit,
         ),
     ]
 

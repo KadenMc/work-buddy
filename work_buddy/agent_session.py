@@ -12,6 +12,7 @@ The full session ID is stored in manifest.json for complete traceability.
 
 import json
 import os
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,39 @@ from work_buddy.paths import data_dir, repo_root
 
 # Cache the resolved session dir within a single Python process
 _cached_session_dir: Path | None = None
+
+
+# ---------------------------------------------------------------------------
+# Originating-session context var
+# ---------------------------------------------------------------------------
+# When a capability is executed asynchronously by the sidecar (e.g. the
+# retry sweep replaying a queued llm_submit job), the thread running the
+# callable is not the originating agent's thread. To route per-session
+# artifacts like the LLM cost log back to the agent who requested the
+# work, the caller sets this context var before invoking the callable;
+# cost/ledger code reads it to pick the right session directory.
+_originating_session: ContextVar[str | None] = ContextVar(
+    "wb_originating_session", default=None,
+)
+
+
+def set_originating_session(session_id: str | None) -> Any:
+    """Set the originating session for the current context.
+
+    Returns an opaque token that must be passed to
+    ``reset_originating_session`` to restore the previous value.
+    """
+    return _originating_session.set(session_id)
+
+
+def reset_originating_session(token: Any) -> None:
+    """Restore a previous originating-session value from its token."""
+    _originating_session.reset(token)
+
+
+def get_originating_session() -> str | None:
+    """Return the current originating session id, or None when unset."""
+    return _originating_session.get()
 
 
 def _get_session_id() -> str:

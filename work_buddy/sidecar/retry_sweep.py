@@ -28,10 +28,16 @@ logger = get_logger(__name__)
 
 
 class RetrySweep:
-    """Scans operation records for queued retries and replays them.
+    """Scans operation records for queued work and replays them.
+
+    Handles three queue reasons:
+    - ``retry`` — transient failure; back off + retry up to max_retries
+    - ``deferred_submit`` — caller intentionally submitted for async
+      execution (e.g. ``llm_submit``); failures are quiet
+    - ``scheduled_job`` — fired by the sidecar cron scheduler
 
     Only processes operations where:
-    - queued_for_retry == True
+    - ``queued`` (or legacy ``queued_for_retry``) is True
     - status == "failed"
     - retry_at <= now
     - attempt < max_retries
@@ -70,9 +76,14 @@ class RetrySweep:
             if not self._is_ready(record, now):
                 continue
 
-            # Acquire lease (prevent concurrent execution)
+            # Acquire lease (prevent concurrent execution). LLM submissions
+            # set ``lease_seconds`` higher because local inference can take
+            # several minutes; default 90s remains for everything else.
+            lease_seconds = int(record.get("lease_seconds") or 90)
             record["status"] = "running"
-            record["locked_until"] = (now + timedelta(seconds=90)).isoformat()
+            record["locked_until"] = (
+                now + timedelta(seconds=lease_seconds)
+            ).isoformat()
             record["attempt"] = record.get("attempt", 1) + 1
             _write_record(record)
 
@@ -115,8 +126,10 @@ class RetrySweep:
         return results
 
     def _is_ready(self, record: dict[str, Any], now: datetime) -> bool:
-        """Check whether this operation should be retried now."""
-        if not record.get("queued_for_retry"):
+        """Check whether this operation should be dispatched now."""
+        # Accept both the new ``queued`` field and the deprecated
+        # ``queued_for_retry`` alias for transitional compatibility.
+        if not (record.get("queued") or record.get("queued_for_retry")):
             return False
         if record.get("status") not in ("failed",):
             return False
@@ -155,9 +168,18 @@ class RetrySweep:
         return True
 
     def _replay(self, record: dict[str, Any]) -> dict[str, Any]:
-        """Replay a capability using the registry (direct call, not MCP)."""
+        """Replay a capability using the registry (direct call, not MCP).
+
+        Sets an originating-session context var so artifacts written by
+        the callable (e.g. the LLM cost log) land in the requesting
+        agent's session directory rather than the sidecar's.
+        """
         try:
             from work_buddy.mcp_server.registry import get_registry, Capability
+            from work_buddy.agent_session import (
+                set_originating_session,
+                reset_originating_session,
+            )
 
             reg = get_registry()
             entry = reg.get(record["name"])
@@ -167,7 +189,13 @@ class RetrySweep:
             if not isinstance(entry, Capability):
                 return {"success": False, "error": f"'{record['name']}' is a workflow, not a capability"}
 
-            result = entry.callable(**record.get("params", {}))
+            originating = record.get("originating_session_id")
+            token = set_originating_session(originating) if originating else None
+            try:
+                result = entry.callable(**record.get("params", {}))
+            finally:
+                if token is not None:
+                    reset_originating_session(token)
 
             # Check for soft errors in the result
             from work_buddy.errors import is_transient_result
@@ -188,7 +216,8 @@ class RetrySweep:
             record["error"] = None
             record["completed_at"] = datetime.now(timezone.utc).isoformat()
             record["locked_until"] = None
-            record["queued_for_retry"] = False
+            record["queued"] = False
+            record["queued_for_retry"] = False  # legacy alias
             _write_record(record)
 
             return {"success": True, "result": result}
@@ -245,12 +274,18 @@ class RetrySweep:
             self._resume_workflow(wf_ctx, replay_result.get("result"))
 
     def _on_exhausted(self, record: dict[str, Any], replay_result: dict[str, Any]) -> None:
-        """All retries exhausted — notify the user directly."""
+        """Attempts exhausted — notify the agent session always; alert the
+        user via surfaces only for retry-reason ops (background submits and
+        scheduled jobs fail quietly — the agent session gets the ping and
+        decides whether to escalate)."""
         # Mark as permanently failed
-        record["queued_for_retry"] = False
+        record["queued"] = False
+        record["queued_for_retry"] = False  # legacy alias
         record["status"] = "failed"
         record["locked_until"] = None
         _write_record(record)
+
+        queue_reason = record.get("queue_reason", "retry")
 
         # 1. Notify the agent session
         session_id = record.get("originating_session_id")
@@ -277,32 +312,41 @@ class RetrySweep:
             except Exception as exc:
                 logger.warning("Failed to notify agent session: %s", exc)
 
-        # 2. Notify the user via notification surfaces
-        try:
-            from work_buddy.notifications.models import Notification
-            from work_buddy.notifications.store import create_notification
-            from work_buddy.notifications.dispatcher import SurfaceDispatcher
-            from work_buddy.notifications.store import mark_delivered
+        # 2. Notify the user via notification surfaces — but ONLY for
+        # retry-reason failures. Deferred submits and scheduled jobs are
+        # intentionally quiet: the originating agent session received the
+        # messaging ping above and can surface the failure if it matters.
+        if queue_reason == "retry":
+            try:
+                from work_buddy.notifications.models import Notification
+                from work_buddy.notifications.store import create_notification
+                from work_buddy.notifications.dispatcher import SurfaceDispatcher
+                from work_buddy.notifications.store import mark_delivered
 
-            notif = Notification(
-                title=f"Retry exhausted: {record['name']}",
-                body=(
-                    f"Operation `{record['name']}` failed after "
-                    f"{record.get('attempt', 1)} attempts.\n\n"
-                    f"Last error: {replay_result.get('error', 'unknown')}\n\n"
-                    f"Operation ID: {record['operation_id']}"
-                ),
-                source="sidecar:retry_queue",
-                source_type="programmatic",
-                priority="high",
-                response_type="none",
-                tags=["retry", "exhausted"],
+                notif = Notification(
+                    title=f"Retry exhausted: {record['name']}",
+                    body=(
+                        f"Operation `{record['name']}` failed after "
+                        f"{record.get('attempt', 1)} attempts.\n\n"
+                        f"Last error: {replay_result.get('error', 'unknown')}\n\n"
+                        f"Operation ID: {record['operation_id']}"
+                    ),
+                    source="sidecar:retry_queue",
+                    source_type="programmatic",
+                    priority="high",
+                    response_type="none",
+                    tags=["retry", "exhausted"],
+                )
+                notif = create_notification(notif)
+                dispatcher = SurfaceDispatcher.from_config()
+                dispatcher.deliver(notif, mark_delivered_fn=mark_delivered)
+            except Exception as exc:
+                logger.warning("Failed to send user notification: %s", exc)
+        else:
+            logger.info(
+                "Skipping user notification for queue_reason=%s op %s",
+                queue_reason, record.get("operation_id"),
             )
-            notif = create_notification(notif)
-            dispatcher = SurfaceDispatcher.from_config()
-            dispatcher.deliver(notif, mark_delivered_fn=mark_delivered)
-        except Exception as exc:
-            logger.warning("Failed to send user notification: %s", exc)
 
         # 3. If part of a workflow, fail the step
         wf_ctx = record.get("workflow_context")

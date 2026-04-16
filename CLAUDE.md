@@ -335,11 +335,21 @@ Centralized storage for all agent-produced output: context bundles, exports, rep
 
 **Python module:** `work_buddy/artifacts.py` — `ArtifactStore` class + module-level convenience functions. `work_buddy/paths.py` — centralized path resolution.
 
-## Retry queue
+## Async execution queue
 
-Background retry system for transient operation failures. When a capability fails with a transient error (timeout, connection refused, bridge hiccup), the gateway auto-enqueues it for background retry by the sidecar.
+Background execution queue for three kinds of work:
 
-**How agents should handle it:** When `wb_run` returns `{queued_for_retry: true}`, move on to other work. The sidecar will retry in the background and notify you via messaging when it succeeds.
+- **`retry`** — transient failures auto-enqueued by the gateway (timeout, connection refused, bridge hiccup) to be replayed with backoff
+- **`deferred_submit`** — deliberate async submissions from callers who don't want to wait for long-running work (e.g. local-LLM inference via `llm_submit`). One attempt, no backoff, quiet on failure.
+- **`scheduled_job`** — fired by the sidecar cron scheduler
+
+All three share the same on-disk op record store and the same sweep loop in `work_buddy/sidecar/retry_sweep.py`. The `queue_reason` field on each record drives policy differences (backoff vs not, loud vs quiet failure, dashboard bucketing).
+
+**On-disk fields:** `queued: true` and `queue_reason: "retry"|"deferred_submit"|"scheduled_job"` are canonical. The older `queued_for_retry: true` alias is still written and read for transitional compatibility.
+
+**How agents should handle retry enqueues:** When `wb_run` returns `{queued_for_retry: true}`, move on to other work. The sidecar will retry in the background and notify you via messaging when it succeeds.
+
+**How agents should handle `llm_submit`:** The return payload includes `operation_id` and a `hint` explaining how to retrieve the result via `wb_run("wb_status", {operation_id})`. The originating session also receives a messaging ping on completion.
 
 **Error classification:** `work_buddy/errors.py` — `classify_error()` returns `transient` (timeout, connection issues), `permanent` (type errors, missing args), or `unknown`. Only transient failures with `retry_policy: replay` are auto-enqueued.
 
@@ -662,7 +672,8 @@ All capabilities and workflows are invoked via `mcp__work-buddy__wb_run("name", 
 | `mcp_registry_reload` | function | Rebuild capability registry without restart |
 | `retry` | function | Retry a previously recorded operation by its ID |
 | `obsidian_retry` | function | Synchronous bridge-aware retry with health checks between attempts |
-| `llm_call` | function | Single LLM API call (Tier 2, cheaper than full agent) |
+| `llm_call` | function | Single LLM API call (Tier 2, cheaper than full agent). Cloud via `tier` or local via `profile` |
+| `llm_submit` | function | Async queue an `llm_call` for background execution. Returns `operation_id`; result via `wb_status` or messaging ping |
 | `llm_costs` | function | Token usage and cost breakdown |
 | `feature_status` | function | Tool probe results, preferences, bootstrap requirements, disabled capabilities |
 | `setup_help` | function | Diagnose component health (legacy — prefer `setup_wizard`) |
