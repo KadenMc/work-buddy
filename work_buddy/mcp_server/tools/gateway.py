@@ -319,8 +319,12 @@ def _auto_consent_request(
     try:
         resolve_consent_request(nid, approved=True, mode=mode, ttl_minutes=ttl)
     except ValueError:
-        # Already resolved by surface handler — write grants manually
-        grant_consent_batch(operations, mode=mode, ttl_minutes=ttl)
+        pass  # Already resolved by surface handler — that's fine
+
+    # Always grant the individual operations.  resolve_consent_request
+    # only grants the bundle name (e.g., "bundle:task_toggle"), not the
+    # individual operations the decorators actually check.
+    grant_consent_batch(operations, mode=mode, ttl_minutes=ttl)
 
     return {
         "status": "granted",

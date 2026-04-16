@@ -2432,7 +2432,7 @@ def _task_capabilities() -> list[Capability]:
             requires=["obsidian"],
             mutates_state=True,
             retry_policy="verify_first",
-            consent_operations=["tasks.toggle_task"],
+            consent_operations=["tasks.toggle_task", "obsidian.write_file"],
         ),
         Capability(
             name="task_delete",
@@ -2446,7 +2446,7 @@ def _task_capabilities() -> list[Capability]:
             requires=["obsidian"],
             mutates_state=True,
             retry_policy="manual",
-            consent_operations=["tasks.delete_task"],
+            consent_operations=["tasks.delete_task", "obsidian.write_file", "obsidian.eval_js"],
         ),
         Capability(
             name="task_change_state",
@@ -2463,7 +2463,7 @@ def _task_capabilities() -> list[Capability]:
             requires=["obsidian"],
             mutates_state=True,
             retry_policy="verify_first",
-            consent_operations=["tasks.update_task"],
+            consent_operations=["tasks.update_task", "obsidian.write_file"],
         ),
         Capability(
             name="task_archive",
@@ -2474,7 +2474,7 @@ def _task_capabilities() -> list[Capability]:
             },
             callable=archive_completed,
             requires=["obsidian"],
-            consent_operations=["tasks.archive"],
+            consent_operations=["tasks.archive", "obsidian.write_file"],
         ),
         Capability(
             name="weekly_review_data",

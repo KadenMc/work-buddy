@@ -115,7 +115,7 @@ powershell.exe -Command "cd <repo-root>; conda activate work-buddy; <your comman
 
 ## Obsidian bridge
 
-The obsidian-work-buddy plugin exposes an HTTP bridge on port 27125 (`work_buddy/obsidian/bridge.py`). Key functions: `bridge.eval_js(code)` executes JavaScript inside Obsidian with access to the `app` object, `bridge.require_available()` checks connectivity.
+The work-buddy Obsidian plugin exposes an HTTP bridge on port 27125 (`work_buddy/obsidian/bridge.py`). Key functions: `bridge.eval_js(code)` executes JavaScript inside Obsidian with access to the `app` object, `bridge.require_available()` checks connectivity.
 
 **Latency:** The bridge has intermittent latency spikes (up to ~4s observed, even on established connections). `is_available()` handles this with a 10s timeout and a 15s fallback on first contact. Typical response is <0.1s. **Do not reduce these timeouts** — lower values cause false "bridge unavailable" errors.
 
@@ -170,10 +170,11 @@ Users can opt in/out of components via `features:` in `config.local.yaml`. The s
 Some `work_buddy` functions are protected by a `@requires_consent` decorator. **The gateway handles consent transparently** — when you call `wb_run` on a consent-gated capability, the gateway automatically requests consent from the user, waits for approval, and retries the operation. You do not need to manually orchestrate consent.
 
 **How it works:**
-1. **Pre-flight check** — capabilities declare `consent_operations` listing which operations they may trigger. The gateway checks all upfront and bundles missing grants into ONE notification.
-2. **Fallback** — if a `ConsentRequired` fires at runtime (unannotated gate), the gateway auto-requests and retries (max 2 retries).
-3. **You see**: success (normal result), denied (`{status: "denied"}`), or timeout (`{status: "timeout", operation_id: "op_xxx"}`).
-4. **On timeout** — the request stays pending on all surfaces. Once the user approves, retry with `mcp__work-buddy__wb_run("retry", {"operation_id": "op_xxx"})` to replay the original call without re-sending parameters.
+1. **Pre-flight check** — capabilities declare `consent_operations` listing operations they may trigger. The gateway checks all upfront and bundles missing grants into ONE notification. This list enriches the notification body (UX) but is not required for correctness.
+2. **Consent context** — when a consent-gated function executes, it establishes a thread-local context. Nested `@requires_consent` calls (e.g., `toggle_task` → `bridge.write_file`) pass through automatically — the outer consent subsumes inner ones. No manual bookkeeping or `*_raw` function variants needed.
+3. **Fallback** — if a `ConsentRequired` fires at runtime (unanticipated gate not covered by pre-flight or context), the gateway auto-requests and retries (max 2 retries).
+4. **You see**: success (normal result), denied (`{status: "denied"}`), or timeout (`{status: "timeout", operation_id: "op_xxx"}`).
+5. **On timeout** — the request stays pending on all surfaces. Once the user approves, retry with `mcp__work-buddy__wb_run("retry", {"operation_id": "op_xxx"})` to replay the original call without re-sending parameters.
 
 **Do NOT manually call `consent_request`** for `wb_run` operations — the gateway does it for you. You still need manual `consent_request` for sidecar operations not routed through `wb_run` (e.g., `agent_spawn` consent) or custom flows.
 
@@ -432,7 +433,7 @@ work_buddy/                            # Python package (Poetry, conda env: work
   calendar/                            # Google Calendar integration (via Obsidian plugin)
   journal_backlog/                     # Running Notes backlog processing
   obsidian/                            # Obsidian integration
-    bridge.py                          # HTTP client for obsidian-work-buddy plugin
+    bridge.py                          # HTTP client for work-buddy Obsidian plugin
     vault_writer.py                    # Configurable section-aware vault writing
     tasks/                             # Obsidian Tasks plugin (read + write + intelligence)
     tags/                              # Tag Wrangler plugin integration
