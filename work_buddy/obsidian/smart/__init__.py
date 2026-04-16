@@ -1,7 +1,7 @@
 """Integration with the Smart Connections ecosystem (Brian Petro).
 
 This package provides programmatic access to Smart Environment runtime
-objects and data structures via the obsidian-work-buddy bridge (eval_js).
+objects and data structures via the work-buddy plugin bridge (eval_js).
 
 Located under work_buddy.obsidian because the entire Smart ecosystem
 is Obsidian-native — all access flows through the Obsidian runtime.

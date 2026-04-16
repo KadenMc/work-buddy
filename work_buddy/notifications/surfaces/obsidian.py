@@ -1,6 +1,6 @@
 """Obsidian notification surface.
 
-Delivers notifications and requests to the user via the obsidian-work-buddy
+Delivers notifications and requests to the user via the work-buddy
 plugin's bridge server. Uses fire-and-forget + poll pattern:
 
     1. POST /notifications/show → shows modal, returns immediately
@@ -138,7 +138,7 @@ class ObsidianSurface(NotificationSurface):
     def dismiss(self, notification_id: str, responded_via: str = "") -> bool:
         """Close the modal in Obsidian if it's still open.
 
-        Requires the obsidian-work-buddy plugin to implement
+        Requires the work-buddy plugin to implement
         POST /notifications/dismiss. Gracefully returns False if the
         endpoint doesn't exist yet.
         """

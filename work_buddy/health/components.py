@@ -120,7 +120,7 @@ _register(ComponentDef(
             description="Obsidian bridge HTTP health endpoint",
             check_fn="work_buddy.health.checks.check_obsidian_bridge",
             on_fail=(
-                "Obsidian is not running, or the obsidian-work-buddy bridge "
+                "Obsidian is not running, or the work-buddy bridge "
                 "plugin is not active. Open Obsidian and verify the plugin "
                 "is enabled in Settings > Community Plugins."
             ),
