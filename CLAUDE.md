@@ -335,6 +335,28 @@ Centralized storage for all agent-produced output: context bundles, exports, rep
 
 **Python module:** `work_buddy/artifacts.py` — `ArtifactStore` class + module-level convenience functions. `work_buddy/paths.py` — centralized path resolution.
 
+## Local models with tool access (`llm_with_tools`)
+
+Local LM Studio-served models can invoke a **restricted whitelist** of work-buddy MCP tools while answering a query. This addresses the "local model needs to look something up" use case (e.g., "what's the state of project X?") without treating local models as fully agentic Claude replacements.
+
+Uses LM Studio's native `/api/v1/chat` endpoint (which supports server-side MCP tool-call loops) rather than the OpenAI-compatible `/v1/chat/completions`. LM Studio handles the tool-call round-trips automatically; our code sees only the final answer plus an audit list of the calls the model made.
+
+**Security model — whitelists are the boundary:**
+
+- Presets live in **code** at `work_buddy/llm/tool_presets.py`, not config. Adding or expanding a preset is a reviewed PR.
+- The capability signature takes `tool_preset: str` (a named preset); there is no way to pass an arbitrary `allowed_tools` list at call time.
+- Read-only presets must contain zero mutating capabilities (`validate_presets()` enforces this at test time).
+- Every preset includes `wb_init` because the model has to register its MCP session before calling anything else.
+
+**Current presets:**
+
+- `readonly_safe` — tasks/contracts/projects/journal reads, sidecar status, messaging reads. Minimum-footprint reads.
+- `readonly_context` — `readonly_safe` plus context collectors (git, Obsidian, Chrome, calendar, smart search, Datacore, session reads, memory reads).
+
+No mutating presets exist in v1. Adding one requires per-use-case PR review.
+
+**Known v1 limitation — session registration:** the gateway's `wb_init` gate is keyed on the MCP connection; LM Studio's MCP client opens a distinct connection, so the model must call `wb_init` itself as its first tool call. `llm_with_tools` injects an instruction into the system prompt telling it to. Brittle but simple. Follow-up: have the gateway auto-register from an `X-Work-Buddy-Session` header so this instruction can go away.
+
 ## Async execution queue
 
 Background execution queue for three kinds of work:
@@ -674,6 +696,7 @@ All capabilities and workflows are invoked via `mcp__work-buddy__wb_run("name", 
 | `obsidian_retry` | function | Synchronous bridge-aware retry with health checks between attempts |
 | `llm_call` | function | Single LLM API call (Tier 2, cheaper than full agent). Cloud via `tier` or local via `profile` |
 | `llm_submit` | function | Async queue an `llm_call` for background execution. Returns `operation_id`; result via `wb_status` or messaging ping |
+| `llm_with_tools` | function | Local model call with restricted work-buddy MCP tool access (via LM Studio's `/api/v1/chat`). Tools gated by a named preset (`readonly_safe`, `readonly_context`) defined in code, not config |
 | `llm_costs` | function | Token usage and cost breakdown |
 | `feature_status` | function | Tool probe results, preferences, bootstrap requirements, disabled capabilities |
 | `setup_help` | function | Diagnose component health (legacy — prefer `setup_wizard`) |

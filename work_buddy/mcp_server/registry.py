@@ -2540,6 +2540,7 @@ def _llm_capabilities() -> list[Capability]:
     """
     from work_buddy.llm.call import llm_call
     from work_buddy.llm.submit import llm_submit
+    from work_buddy.llm.with_tools import llm_with_tools
 
     return [
         Capability(
@@ -2692,6 +2693,77 @@ def _llm_capabilities() -> list[Capability]:
                 },
             },
             callable=llm_submit,
+        ),
+        Capability(
+            name="llm_with_tools",
+            description=(
+                "Invoke a local model with restricted work-buddy MCP tool "
+                "access, so it can look things up (projects, tasks, journal, "
+                "context) while answering. Tool access is limited to a "
+                "named preset defined in work_buddy/llm/tool_presets.py "
+                "(currently: 'readonly_safe', 'readonly_context'). No "
+                "arbitrary tool list accepted at call time — presets are "
+                "the security boundary. Requires 'profile' and 'tool_preset'."
+            ),
+            category="llm",
+            search_aliases=[
+                "local llm with tools",
+                "llm tool access",
+                "mcp tools local",
+                "contextualize local",
+                "local model tools",
+                "lm studio mcp",
+                "qwen with tools",
+                "tool use local",
+            ],
+            parameters={
+                "system": {
+                    "type": "str",
+                    "description": "System prompt (becomes 'instructions' on the native chat request)",
+                    "required": True,
+                },
+                "user": {
+                    "type": "str",
+                    "description": "User query (becomes 'input')",
+                    "required": True,
+                },
+                "profile": {
+                    "type": "str",
+                    "description": "Named local profile (e.g., 'local_general') — must be LM Studio-backed",
+                    "required": True,
+                },
+                "tool_preset": {
+                    "type": "str",
+                    "description": (
+                        "Named whitelist of allowed work-buddy tools. "
+                        "Currently: 'readonly_safe', 'readonly_context'. "
+                        "Presets are code, not config — defined in "
+                        "work_buddy/llm/tool_presets.py."
+                    ),
+                    "required": True,
+                },
+                "previous_response_id": {
+                    "type": "str",
+                    "description": "Continue a prior LM Studio stateful-chat turn",
+                    "required": False,
+                },
+                "max_tokens": {
+                    "type": "int",
+                    "description": "Output budget. Default 4096 (tool-calling eats tokens).",
+                    "required": False,
+                },
+                "temperature": {
+                    "type": "float",
+                    "description": "Sampling temperature (default 0.0)",
+                    "required": False,
+                },
+                "store": {
+                    "type": "bool",
+                    "description": "Let LM Studio retain this turn server-side (default False)",
+                    "required": False,
+                },
+            },
+            callable=llm_with_tools,
         ),
     ]
 
