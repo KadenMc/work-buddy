@@ -47,11 +47,45 @@ def _parse_iso_to_minutes(iso_str: str) -> int | None:
     return _minutes(int(m.group(1)), int(m.group(2)))
 
 
+def _parse_time_string(s: Any) -> int | None:
+    """Parse a time-ish value to minutes-since-midnight.
+
+    Accepts:
+    - "HH:MM" or "H:MM" 24h strings (e.g. "09:00", "13:30")
+    - ISO datetime strings (e.g. "2026-04-05T14:00:00-04:00") via _parse_iso_to_minutes
+    - int/float minutes-since-midnight (passed through)
+
+    Returns None for unparseable input.
+    """
+    if s is None:
+        return None
+    if isinstance(s, (int, float)):
+        return int(s)
+    if not isinstance(s, str):
+        return None
+    m = re.fullmatch(r"(\d{1,2}):(\d{2})", s.strip())
+    if m:
+        return _minutes(int(m.group(1)), int(m.group(2)))
+    return _parse_iso_to_minutes(s)
+
+
 def _extract_calendar_slots(
     events: list[dict],
     calendar_prefix: str = "[Cal]",
 ) -> tuple[list[tuple[int, int]], list[dict]]:
     """Extract occupied time slots and plan entries from calendar events.
+
+    Accepts two event shapes:
+
+    1. Google Calendar API shape (from `context_calendar` raw events):
+       ``{start: {dateTime: "2026-04-05T14:00:00-04:00"}, end: {dateTime: ...},
+           summary: "...", timeStatus: "future"|"past"|...}``
+       All-day events (``start.date`` without ``start.dateTime``) are skipped.
+       Events with ``timeStatus == "past"`` are skipped.
+
+    2. Flat caller-friendly shape:
+       ``{start: "HH:MM"|ISO, end: "HH:MM"|ISO,
+           summary|description|text: "...", past?: bool}``
 
     Returns:
         slots: list of (start_min, end_min) tuples
@@ -61,27 +95,35 @@ def _extract_calendar_slots(
     entries = []
 
     for ev in events:
-        start = ev.get("start", {})
-        end = ev.get("end", {})
+        start = ev.get("start")
+        end = ev.get("end")
 
-        # Skip all-day events (they have 'date' not 'dateTime')
-        if start.get("date") and not start.get("dateTime"):
-            continue
-
-        start_dt = start.get("dateTime", "")
-        end_dt = end.get("dateTime", "")
-        start_min = _parse_iso_to_minutes(start_dt)
-        end_min = _parse_iso_to_minutes(end_dt)
+        if isinstance(start, dict):
+            # --- Google Calendar API shape ---
+            # Skip all-day events (they have 'date' not 'dateTime')
+            if start.get("date") and not start.get("dateTime"):
+                continue
+            start_min = _parse_iso_to_minutes(start.get("dateTime", ""))
+            end_min = _parse_iso_to_minutes((end or {}).get("dateTime", ""))
+            if ev.get("timeStatus", "") == "past":
+                continue
+            summary = ev.get("summary", "Event")
+        else:
+            # --- Flat shape ---
+            start_min = _parse_time_string(start)
+            end_min = _parse_time_string(end)
+            if ev.get("past") is True:
+                continue
+            summary = (
+                ev.get("summary")
+                or ev.get("description")
+                or ev.get("text")
+                or "Event"
+            )
 
         if start_min is None or end_min is None:
             continue
 
-        # Skip past events
-        time_status = ev.get("timeStatus", "")
-        if time_status == "past":
-            continue
-
-        summary = ev.get("summary", "Event")
         slots.append((start_min, end_min))
         entries.append({
             "time_start": _fmt(start_min),
@@ -150,6 +192,12 @@ def _clean_task_text(text: str) -> str:
     return cleaned.strip()
 
 
+def _current_local_minutes() -> int:
+    """Current local time as minutes-since-midnight."""
+    now = datetime.now()
+    return now.hour * 60 + now.minute
+
+
 def generate_plan(
     calendar_events: list[dict],
     focused_tasks: list[dict],
@@ -158,9 +206,13 @@ def generate_plan(
     """Generate a time-blocked daily plan from calendar events and focused tasks.
 
     Args:
-        calendar_events: Events from get_today_schedule()["events"].
-        focused_tasks: Tasks with state="focused". Each should have at minimum
-            a "text" or "description" key.
+        calendar_events: Events. See `_extract_calendar_slots` for accepted shapes
+            (Google Calendar API shape and flat `{start: "HH:MM", end: ..., summary/description/text: ...}`).
+        focused_tasks: Tasks with state="focused". Each is a dict with keys:
+            - description or text (required): task label
+            - duration (optional, int minutes): per-task length; falls back to cfg.default_task_duration
+            - time_start (optional, "HH:MM"): pin the task to this start time if it fits
+              (skips gap-filling for this task; falls to unscheduled on conflict)
         cfg: Config dict from morning.day_planner. Keys:
             work_hours: [start_hour, end_hour] (default [9, 17])
             default_task_duration: minutes per task block (default 60)
@@ -168,6 +220,9 @@ def generate_plan(
             break_duration: break length minutes (default 15)
             include_calendar_events: bool (default True)
             calendar_prefix: str (default "[Cal]")
+            clamp_to_now: bool (default True) — when True, effective work start
+                is max(work_hours[0], current local time), preventing tasks from
+                being scheduled in the past. Set False for deterministic tests.
 
     Returns:
         List of plan entry dicts, sorted chronologically. Each has:
@@ -184,27 +239,82 @@ def generate_plan(
     break_duration = cfg.get("break_duration", 15)
     include_cal = cfg.get("include_calendar_events", True)
     cal_prefix = cfg.get("calendar_prefix", "[Cal]")
+    clamp_to_now = cfg.get("clamp_to_now", True)
     snap = 10  # matches plugin's snapStepMinutes
 
     work_start = _minutes(work_hours[0])
     work_end = _minutes(work_hours[1])
 
+    # Clamp effective work start to "now" so tasks aren't placed in the past
+    effective_work_start = work_start
+    if clamp_to_now:
+        effective_work_start = max(work_start, _current_local_minutes())
+        # If we're already past the end of the work window, nothing can be placed
+        if effective_work_start >= work_end:
+            effective_work_start = work_end
+
     # 1. Extract calendar slots and entries
     cal_slots, cal_entries = _extract_calendar_slots(calendar_events, cal_prefix)
 
-    # 2. Find gaps
-    gaps = _find_gaps(cal_slots, work_start, work_end)
+    # 2. Partition tasks: pinned (time_start) first, then unpinned
+    pinned_tasks = []
+    unpinned_tasks = []
+    for task in focused_tasks:
+        if _parse_time_string(task.get("time_start")) is not None:
+            pinned_tasks.append(task)
+        else:
+            unpinned_tasks.append(task)
 
-    # 3. Place tasks into gaps
     scheduled = []
     unscheduled = []
-    used_gaps: list[tuple[int, int]] = []  # track consumed portions
+    used_gaps: list[tuple[int, int]] = []  # pinned task slots, also consumed by gap-filling
 
-    for task in focused_tasks:
+    def _task_text(task: dict) -> str:
         text = task.get("description") or task.get("text", "Task")
         clean_text = _clean_task_text(text)
-        if not clean_text:
-            clean_text = text
+        return clean_text or text
+
+    def _conflicts(t_start: int, t_end: int) -> bool:
+        """Check if [t_start, t_end) overlaps any calendar slot or already-used block."""
+        for s, e in cal_slots:
+            if t_start < e and s < t_end:
+                return True
+        for s, e in used_gaps:
+            if t_start < e and s < t_end:
+                return True
+        return False
+
+    # 3. Place pinned tasks first — honor their requested time_start
+    for task in pinned_tasks:
+        clean_text = _task_text(task)
+        pin_start = _parse_time_string(task.get("time_start"))
+        duration = task.get("duration") or task_duration
+        t_start = _snap(pin_start, snap, "up")
+        t_end = _snap(t_start + duration, snap, "up")
+        t_end = min(t_end, work_end)
+
+        if t_end - t_start < 10 or _conflicts(t_start, t_end):
+            unscheduled.append({
+                "text": clean_text,
+                "checked": False,
+            })
+            continue
+
+        scheduled.append({
+            "time_start": _fmt(t_start),
+            "time_end": _fmt(t_end),
+            "text": clean_text,
+            "checked": False,
+        })
+        used_gaps.append((t_start, t_end))
+
+    # 4. Find gaps AFTER pinned placement so unpinned tasks don't collide with them
+    gaps = _find_gaps(cal_slots + used_gaps, effective_work_start, work_end)
+
+    # 5. Place unpinned tasks by gap-filling
+    for task in unpinned_tasks:
+        clean_text = _task_text(task)
+        requested_duration = task.get("duration") or task_duration
 
         placed = False
         for i, (gap_start, gap_end) in enumerate(gaps):
@@ -221,7 +331,7 @@ def generate_plan(
             if available < 15:  # too small
                 continue
 
-            duration = min(task_duration, available)
+            duration = min(requested_duration, available)
             t_start = _snap(effective_start, snap, "up")
             t_end = _snap(t_start + duration, snap, "up")
             t_end = min(t_end, gap_end)

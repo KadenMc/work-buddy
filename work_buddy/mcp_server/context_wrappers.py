@@ -1537,11 +1537,32 @@ def day_planner(
             ``generate`` (create schedule from events+tasks), ``write`` (write
             generated entries to journal), or ``generate_and_write`` (both).
         target: Date target for read/write — ``today`` or ``YYYY-MM-DD``.
-        calendar_events: For generate: JSON list of calendar event dicts
-            (from ``context_calendar``).
-        focused_tasks: For generate: JSON list of task dicts with ``description`` key.
+        calendar_events: For generate — JSON list of event dicts. Accepted shapes:
+
+            Flat (recommended for manual construction):
+                ``[{"start": "HH:MM", "end": "HH:MM", "summary": "..."},
+                   {"start": "HH:MM", "end": "HH:MM", "description": "...", "past": false}]``
+                ``start``/``end`` accept ``"HH:MM"``, ISO datetime, or minute-int.
+                Label key: ``summary`` | ``description`` | ``text``. Set ``past: true`` to skip.
+
+            Google Calendar API shape (raw events from the Calendar API):
+                ``[{"start": {"dateTime": "2026-04-16T13:00:00-04:00"},
+                    "end":   {"dateTime": "2026-04-16T13:30:00-04:00"},
+                    "summary": "...", "timeStatus": "future"}]``
+                All-day events (``start.date`` without ``start.dateTime``) and
+                events with ``timeStatus == "past"`` are skipped.
+
+        focused_tasks: For generate — JSON list of task dicts. Keys per task:
+
+            - ``description`` or ``text`` (required): task label
+            - ``duration`` (optional, int minutes): overrides config default
+            - ``time_start`` (optional, ``"HH:MM"``): pin task to this start time;
+              goes to unscheduled if it conflicts with a calendar slot or another
+              pinned task.
+
         config_overrides: JSON dict of day_planner config overrides
-            (work_hours, default_task_duration, break_interval, etc.).
+            (``work_hours``, ``default_task_duration``, ``break_interval``,
+            ``clamp_to_now`` — default True, prevents placement in the past).
     """
     import json as _json
 
