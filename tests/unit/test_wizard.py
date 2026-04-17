@@ -156,18 +156,23 @@ class TestWizardPreferences:
     def test_preferences_update_flag(self, mock_preferences, monkeypatch):
         # Mock set_preference at the source module to avoid writing config
         import work_buddy.health.preferences as pmod
+        from work_buddy.consent import grant_consent
         called = []
         monkeypatch.setattr(pmod, "set_preference",
                             lambda *a, **kw: called.append((a, kw)))
+        # apply_preference_updates is consent-gated — grant it for the test
+        grant_consent("setup.write_preferences", mode="once")
         wizard = SetupWizard()
         result = wizard.preferences(updates={"hindsight": {"wanted": False}})
         assert result["updated"] is True
 
     def test_preferences_ignores_unknown_components(self, mock_preferences, monkeypatch):
         import work_buddy.health.preferences as pmod
+        from work_buddy.consent import grant_consent
         called = []
         monkeypatch.setattr(pmod, "set_preference",
                             lambda *a, **kw: called.append((a, kw)))
+        grant_consent("setup.write_preferences", mode="once")
         wizard = SetupWizard()
         result = wizard.preferences(updates={"totally_fake": {"wanted": False}})
         # Should not have called set_preference for unknown component

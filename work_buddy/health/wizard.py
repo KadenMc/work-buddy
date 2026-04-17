@@ -208,24 +208,14 @@ class SetupWizard:
         ``{"hindsight": {"wanted": false, "reason": "..."}, ...}``
         """
         from work_buddy.health.preferences import (
+            apply_preference_updates,
             load_preferences,
-            set_preference,
         )
         from work_buddy.health.components import COMPONENT_CATALOG
 
-        # Apply updates if provided
+        # Apply updates if provided (consent-gated)
         if updates:
-            for comp_id, data in updates.items():
-                if comp_id not in COMPONENT_CATALOG:
-                    continue
-                if isinstance(data, dict):
-                    set_preference(
-                        comp_id,
-                        wanted=data.get("wanted"),
-                        reason=data.get("reason"),
-                    )
-                elif isinstance(data, bool) or data is None:
-                    set_preference(comp_id, wanted=data)
+            apply_preference_updates(updates)
 
         # Return current state
         prefs = load_preferences()

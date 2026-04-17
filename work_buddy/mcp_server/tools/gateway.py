@@ -305,17 +305,53 @@ def _auto_consent_request(
             response = None
 
         if response is not None:
+            # Persist the response on the notification record so it doesn't
+            # sit forever in 'delivered' state and get lazily expired later.
+            from work_buddy.notifications.store import respond_to_notification
+            try:
+                respond_to_notification(nid, response)
+            except ValueError:
+                # Already responded by a surface handler — that's fine.
+                pass
             # First-response-wins: dismiss on other surfaces
             notif_fresh = _get_notif(nid)
             if notif_fresh and notif_fresh.delivered_surfaces:
                 try:
-                    dispatcher.dismiss(notif_fresh)
+                    dispatcher.dismiss_others(
+                        nid,
+                        responding_surface=response.surface,
+                        delivered_surfaces=notif_fresh.delivered_surfaces,
+                    )
                 except Exception:
                     pass
     else:
         response = None
 
     if response is None:
+        # Pick the right retry capability based on whether the underlying
+        # operation depends on the Obsidian bridge.  obsidian_retry is
+        # bridge-aware (probes health, waits, retries), so it recovers
+        # cleanly when the bridge was the reason the original call timed
+        # out — which is the common case for any *obsidian.* operation.
+        from work_buddy.mcp_server import registry as _registry
+        cap_entry = _registry.get_entry(capability_name)
+        is_obsidian_op = bool(
+            any(op.startswith("obsidian.") for op in operations)
+            or (cap_entry and "obsidian" in (getattr(cap_entry, "requires", []) or []))
+        )
+        if is_obsidian_op:
+            retry_hint = (
+                f"mcp__work-buddy__wb_run(\"obsidian_retry\", "
+                f"{{\"operation_id\": \"{op_id}\"}}) "
+                f"— this capability depends on the Obsidian bridge, so use "
+                f"obsidian_retry (bridge-aware) instead of plain retry. "
+                f"It loads the original capability + params from the record."
+            )
+        else:
+            retry_hint = (
+                f"mcp__work-buddy__wb_run(\"retry\", "
+                f"{{\"operation_id\": \"{op_id}\"}})"
+            )
         return {
             "status": "timeout",
             "request_id": nid,
@@ -323,7 +359,7 @@ def _auto_consent_request(
             "message": (
                 f"Consent request timed out, but still pending — "
                 f"the user can approve on any surface. Once approved, retry with: "
-                f"mcp__work-buddy__wb_run(\"retry\", {{\"operation_id\": \"{op_id}\"}})"
+                f"{retry_hint}"
             ),
         }
 

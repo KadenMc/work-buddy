@@ -294,6 +294,27 @@ def main() -> None:
         )
         raise SystemExit(1)
 
+    # Single-instance guard: if another telegram service is already serving
+    # the Flask port, exit immediately.  Two PTB processes against the same
+    # bot token cause getUpdates to alternate between them, stranding button
+    # responses in whichever in-memory PendingResponseStore didn't deliver.
+    sidecar_cfg = cfg.get("sidecar", {}).get("services", {}).get("telegram", {})
+    flask_port = sidecar_cfg.get("port", 5125)
+    try:
+        from urllib.request import Request, urlopen
+        probe = Request(f"http://127.0.0.1:{flask_port}/health", method="GET")
+        resp = urlopen(probe, timeout=2)
+        if resp.status == 200:
+            logger.error(
+                "Another telegram service is already running on port %d. "
+                "Refusing to start a second instance.", flask_port,
+            )
+            raise SystemExit(1)
+    except SystemExit:
+        raise
+    except Exception:
+        pass  # No existing instance — proceed.
+
     # Build bot state
     from work_buddy.telegram.bot import BotState, build_app
 
@@ -317,10 +338,28 @@ def main() -> None:
 
     _bot_app = build_app(token, _bot_state)
 
-    # Start Flask health/delivery API in background thread
-    sidecar_cfg = cfg.get("sidecar", {}).get("services", {}).get("telegram", {})
-    flask_port = sidecar_cfg.get("port", 5125)
+    # Rebuild pending-response prefix mappings from the on-disk store.
+    # PendingResponseStore is in-memory, so a clean restart would otherwise
+    # strand any consent buttons sent by the previous instance.
+    try:
+        from work_buddy.notifications.store import list_pending
+        rebuilt = 0
+        for n in list_pending():
+            if "telegram" in (n.delivered_surfaces or []):
+                _bot_state.pending_responses.add(n.notification_id)
+                if n.short_id:
+                    _bot_state.pending_responses.add_short_id(
+                        n.short_id, n.notification_id,
+                    )
+                rebuilt += 1
+        if rebuilt:
+            logger.info(
+                "Rebuilt %d pending-response mapping(s) from store", rebuilt,
+            )
+    except Exception as exc:
+        logger.warning("Failed to rebuild pending responses: %s", exc)
 
+    # Start Flask health/delivery API in background thread
     flask_thread = threading.Thread(
         target=_run_flask,
         args=(flask_port,),
