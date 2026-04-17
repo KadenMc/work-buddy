@@ -137,6 +137,117 @@ def test_llm_with_tools_rejects_unknown_preset(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# required_capabilities pre-flight guard (goal-preset mismatch catch)
+# ---------------------------------------------------------------------------
+# Regression: during a retro (2026-04-17) an agent called
+# ``llm_with_tools`` to drive /wb-journal-update but passed
+# ``tool_preset="readonly_context"`` — a preset that doesn't include
+# the update-journal workflow or journal_write. The call would have
+# failed halfway through (and did, by accident, succeed via a
+# separate ACL bug that's now fixed). The pre-flight check catches
+# the mismatch before any compute is burned.
+
+def test_llm_with_tools_rejects_when_required_capability_not_in_preset():
+    from work_buddy.llm.with_tools import llm_with_tools
+    # readonly_safe explicitly has no mutating capabilities
+    result = llm_with_tools(
+        system="s", user="u",
+        profile="local_general", tool_preset="readonly_safe",
+        required_capabilities=["journal_write", "update-journal"],
+    )
+    assert result["error"]
+    assert "required_capabilities" in result["error"]
+    # The error must name the specific missing capabilities so the
+    # agent can pick a different preset or add a new one
+    assert "journal_write" in result["error"]
+    assert "update-journal" in result["error"]
+    assert "readonly_safe" in result["error"]
+
+
+def test_llm_with_tools_allows_when_required_capability_is_in_preset(
+    profile_cfg, monkeypatch, tmp_path,
+):
+    """Guard passes → the call proceeds to the backend as normal."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={
+            "model_instance_id": "qwen/qwen3-4b",
+            "response_id": "r",
+            "output": [{"type": "message", "content": "ok"}],
+            "stats": {"input_tokens": 1, "total_output_tokens": 1},
+        })
+
+    transport = httpx.MockTransport(handler)
+    orig_client = httpx.Client
+    monkeypatch.setattr(
+        httpx, "Client",
+        lambda *a, **kw: orig_client(*a, **{**kw, "transport": transport}),
+    )
+    monkeypatch.setattr(
+        "work_buddy.llm.cost._cost_log_path",
+        lambda: tmp_path / "llm_costs.jsonl",
+    )
+
+    from work_buddy.llm.with_tools import llm_with_tools
+    # task_briefing is in readonly_safe
+    result = llm_with_tools(
+        system="s", user="u",
+        profile="local_general", tool_preset="readonly_safe",
+        required_capabilities=["task_briefing"],
+    )
+    assert result["error"] is None
+
+
+def test_llm_with_tools_no_required_capabilities_is_the_default(
+    profile_cfg, monkeypatch, tmp_path,
+):
+    """Omitting ``required_capabilities`` skips the guard entirely —
+    preserves existing behavior for callers that haven't opted in."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={
+            "model_instance_id": "qwen/qwen3-4b",
+            "response_id": "r",
+            "output": [{"type": "message", "content": "ok"}],
+            "stats": {"input_tokens": 1, "total_output_tokens": 1},
+        })
+
+    transport = httpx.MockTransport(handler)
+    orig_client = httpx.Client
+    monkeypatch.setattr(
+        httpx, "Client",
+        lambda *a, **kw: orig_client(*a, **{**kw, "transport": transport}),
+    )
+    monkeypatch.setattr(
+        "work_buddy.llm.cost._cost_log_path",
+        lambda: tmp_path / "llm_costs.jsonl",
+    )
+
+    from work_buddy.llm.with_tools import llm_with_tools
+    result = llm_with_tools(
+        system="s", user="u",
+        profile="local_general", tool_preset="readonly_safe",
+        # Intentionally no required_capabilities
+    )
+    assert result["error"] is None
+
+
+def test_llm_with_tools_empty_required_capabilities_list_is_noop():
+    from work_buddy.llm.with_tools import llm_with_tools
+    # Empty list — nothing to check, pass the guard but still fail
+    # on other validation since we don't pass profile_cfg. We just
+    # want to verify the guard itself doesn't trigger on [].
+    result = llm_with_tools(
+        system="s", user="u",
+        profile="local_general", tool_preset="readonly_safe",
+        required_capabilities=[],
+    )
+    # Either succeeds (if profile loads from real config) or fails for
+    # a NON-guard reason — crucially, the error should NOT mention
+    # ``required_capabilities``
+    if result["error"]:
+        assert "required_capabilities" not in result["error"]
+
+
+# ---------------------------------------------------------------------------
 # llm_with_tools — request construction
 # ---------------------------------------------------------------------------
 

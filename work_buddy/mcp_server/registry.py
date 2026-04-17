@@ -164,6 +164,25 @@ def invalidate_registry() -> None:
         del sys.modules[k]
 
 
+def _disabled_reason(capability_name: str) -> str:
+    """Human-readable reason a capability is disabled in the live registry.
+
+    Returns a string like "Dependency unavailable: obsidian" so an agent
+    consuming `wb_search` results can distinguish "backing service is
+    down" from "your session's ACL doesn't allow this" — two very
+    different problems that used to share a single ``unavailable: true``
+    flag and mislead reasoning models into the wrong conclusion.
+    """
+    try:
+        from work_buddy.tools import DISABLED_CAPABILITIES
+        deps = DISABLED_CAPABILITIES.get(capability_name)
+        if deps:
+            return f"Dependency unavailable: {', '.join(deps)}"
+    except Exception:
+        pass
+    return "Not registered in the live capability set"
+
+
 def search_registry(
     query: str,
     category: str | None = None,
@@ -203,16 +222,26 @@ def search_registry(
                     "type": "function",
                     "parameters": unit.parameters,
                     "search_score": 1.0,
+                    "disabled": True,
+                    "disabled_reason": _disabled_reason(unit.capability_name),
+                    # Back-compat alias — remove after 2026-Q3
                     "unavailable": True,
                 }
                 return [result]
             if isinstance(unit, WorkflowUnit) and unit.workflow_name == query:
+                # Exact-name hit in the store only means the registry
+                # didn't have it — same "tool deps unmet" condition
+                # as the CapabilityUnit branch above. Flag it.
                 result = {
                     "name": unit.workflow_name,
                     "description": unit.description,
                     "category": "workflow",
                     "type": "workflow",
                     "search_score": 1.0,
+                    "disabled": True,
+                    "disabled_reason": _disabled_reason(unit.workflow_name),
+                    # Back-compat alias — remove after 2026-Q3
+                    "unavailable": True,
                 }
                 return [result]
     except Exception:
@@ -311,6 +340,9 @@ def _search_via_store(
                 "type": "function",
                 "parameters": hit.get("parameters", {}),
                 "search_score": score,
+                "disabled": True,
+                "disabled_reason": _disabled_reason(cap_name),
+                # Back-compat alias — remove after 2026-Q3
                 "unavailable": True,
             }
             if category and result["category"] != category:
@@ -326,12 +358,20 @@ def _search_via_store(
                 result["search_score"] = score
                 results.append(result)
                 continue
+            # Workflow in the store but not registered live — mirror
+            # the CapabilityUnit branch above and flag it clearly so
+            # agents don't try to call a workflow whose dependencies
+            # aren't met.
             result = {
                 "name": wf_name,
                 "description": hit.get("description", ""),
                 "category": "workflow",
                 "type": "workflow",
                 "search_score": score,
+                "disabled": True,
+                "disabled_reason": _disabled_reason(wf_name),
+                # Back-compat alias — remove after 2026-Q3
+                "unavailable": True,
             }
             results.append(result)
 
@@ -2788,6 +2828,20 @@ def _llm_capabilities() -> list[Capability]:
                         "work_buddy/llm/tool_presets.py."
                     ),
                     "required": True,
+                },
+                "required_capabilities": {
+                    "type": "list[str]",
+                    "description": (
+                        "Optional list of capability names the model "
+                        "MUST be able to call (e.g. ['update-journal', "
+                        "'journal_write']). Pre-flight checked against "
+                        "the preset; if any are missing, the call "
+                        "fails fast with an explicit error. Use this "
+                        "to catch goal-preset mismatches — e.g. "
+                        "running a workflow from a read-only preset "
+                        "that doesn't include the workflow's name."
+                    ),
+                    "required": False,
                 },
                 "previous_response_id": {
                     "type": "str",

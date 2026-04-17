@@ -31,7 +31,7 @@ Design notes:
 
 from __future__ import annotations
 
-from typing import Iterable
+from typing import Any, Iterable
 
 
 _SESSION_ACL: dict[str, frozenset[str]] = {}
@@ -63,14 +63,88 @@ def get_session_acl(session_id: str | None) -> frozenset[str] | None:
     return _SESSION_ACL.get(session_id)
 
 
+def any_acl_registered() -> bool:
+    """True if *any* session in this process currently has an ACL.
+
+    Used to fail-closed when a call arrives with an unresolved session
+    id but an ACL-scoped llm_with_tools run is active in the same
+    process — the safe bet is "this is probably the ACL-scoped caller
+    whose session we failed to resolve", so we reject rather than
+    silently default-open.
+    """
+    return bool(_SESSION_ACL)
+
+
 def is_capability_allowed(session_id: str | None, capability: str) -> bool:
     """Check whether ``capability`` is allowed for ``session_id``.
 
-    Returns True when no ACL is registered for the session (the
-    default-open path). Returns True/False per membership when an ACL
-    is present.
+    Semantics:
+    - ``session_id`` resolves to a registered ACL → membership check.
+    - ``session_id`` has no ACL registered AND no ACL exists anywhere
+      in the process → default-open (normal agents, the common path).
+    - ``session_id`` is None/unresolved AND an ACL is registered
+      somewhere → **fail-closed**. This is the defense against
+      session-resolution races where a local-model call can't be
+      tied back to its llm_with_tools ACL via ctx; treating those
+      as unconstrained would let the model call anything in the
+      registry. Genuinely unrelated default-open callers should
+      always be able to resolve their session via wb_init or the
+      X-Work-Buddy-Session header — if they can't, something is
+      wrong and silently permitting the call is the wrong bet.
     """
     acl = get_session_acl(session_id)
-    if acl is None:
-        return True
-    return capability in acl
+    if acl is not None:
+        return capability in acl
+    # No ACL for this (possibly None) session id.
+    if session_id is None and any_acl_registered():
+        return False
+    return True
+
+
+def filter_search_results(
+    results: list[dict[str, Any]],
+    session_id: str | None,
+) -> list[dict[str, Any]] | dict[str, Any]:
+    """Apply the session's ACL filter to ``wb_search`` results.
+
+    Returns:
+        - the raw list unchanged when there's no ACL in effect
+        - the filtered list (still a bare list) when an ACL is in
+          effect but nothing got hidden
+        - a ``dict`` of ``{results, _acl_filtered, _acl_hidden_count,
+          _acl_notice}`` when the ACL trimmed at least one result,
+          so the caller knows the empty-or-short list reflects
+          authorization, not query mismatch
+
+    Fail-closed bookend: when ``session_id`` is None AND an ACL is
+    active anywhere in the process, we treat the ACL as empty and
+    surface the trim. This mirrors ``is_capability_allowed``'s
+    refuse-by-default stance for unresolved sessions.
+
+    Extracted from the gateway's ``wb_search`` handler so the response
+    shape is unit-testable without a live MCP context.
+    """
+    acl = get_session_acl(session_id)
+    acl_active = acl is not None
+    if not acl_active and session_id is None and any_acl_registered():
+        acl = frozenset()
+        acl_active = True
+    if not acl_active:
+        return results
+
+    before = len(results)
+    filtered = [r for r in results if r.get("name") in acl]
+    hidden = before - len(filtered)
+    if hidden == 0:
+        return filtered
+    return {
+        "results": filtered,
+        "_acl_filtered": True,
+        "_acl_hidden_count": hidden,
+        "_acl_notice": (
+            f"{hidden} result(s) matched the query but were hidden by "
+            f"your session ACL (the caller restricted this session to "
+            f"a named preset). Further searches with reworded queries "
+            f"will not reveal them — stick to capabilities you can see."
+        ),
+    }
