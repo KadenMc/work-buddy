@@ -346,7 +346,7 @@ Uses LM Studio's native `/api/v1/chat` endpoint (which supports server-side MCP 
 - Presets live in **code** at `work_buddy/llm/tool_presets.py`, not config. Adding or expanding a preset is a reviewed PR.
 - The capability signature takes `tool_preset: str` (a named preset); there is no way to pass an arbitrary `allowed_tools` list at call time.
 - Read-only presets must contain zero mutating capabilities (`validate_presets()` enforces this at test time).
-- Every preset includes `wb_init` because the model has to register its MCP session before calling anything else.
+- **No preset includes `wb_init`.** It is deliberately excluded as an ACL-escape vector (confirmed 2026-04-17 live test): a model with access to `wb_init` inside an ACL-scoped session could re-register under a different session id and drop the ACL. Session registration happens automatically via the `X-Work-Buddy-Session` header that `llm_with_tools` sets on the LM Studio MCP connection — the model never needs to (and cannot) call `wb_init` itself.
 
 **Current presets:**
 
@@ -354,8 +354,6 @@ Uses LM Studio's native `/api/v1/chat` endpoint (which supports server-side MCP 
 - `readonly_context` — `readonly_safe` plus context collectors (git, Obsidian, Chrome, calendar, smart search, Datacore, session reads, memory reads).
 
 No mutating presets exist in v1. Adding one requires per-use-case PR review.
-
-**Known v1 limitation — session registration:** the gateway's `wb_init` gate is keyed on the MCP connection; LM Studio's MCP client opens a distinct connection, so the model must call `wb_init` itself as its first tool call. `llm_with_tools` injects an instruction into the system prompt telling it to. Brittle but simple. Follow-up: have the gateway auto-register from an `X-Work-Buddy-Session` header so this instruction can go away.
 
 ## Async execution queue
 
