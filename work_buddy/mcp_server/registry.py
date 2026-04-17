@@ -750,11 +750,21 @@ def _status_capabilities() -> list[Capability]:
 
         return result
 
-    def _feature_status(verbose: bool = False) -> dict:
-        """Show which tools, features, and capabilities are available or disabled."""
-        from work_buddy.tools import get_tool_status
+    def _feature_status(verbose: bool = False, force: bool = False) -> dict:
+        """Show which tools, features, and capabilities are available or disabled.
+
+        When ``force=True``, re-runs every tool probe fresh rather than
+        reading the cached result from the last probe sweep. Use this
+        when you suspect a cached "unavailable" is stale — e.g., the
+        user just started Obsidian and wants to confirm the bridge is
+        now up.
+        """
+        from work_buddy.tools import get_tool_status, probe_all
         from work_buddy.health.preferences import load_preferences
         from work_buddy.health.requirements import RequirementChecker
+
+        if force:
+            probe_all(force=True)
 
         result = get_tool_status()
         if not verbose:
@@ -869,6 +879,15 @@ def _status_capabilities() -> list[Capability]:
                 "verbose": {
                     "type": "bool",
                     "description": "Include probe timing and config details",
+                    "required": False,
+                },
+                "force": {
+                    "type": "bool",
+                    "description": (
+                        "Re-run all tool probes fresh instead of reading "
+                        "the cached result. Use when a previously-failed "
+                        "tool (e.g. Obsidian) may now be available."
+                    ),
                     "required": False,
                 },
             },
@@ -2221,31 +2240,17 @@ def _journal_capabilities() -> list[Capability]:
             parameters={
                 "operation_id": {
                     "type": "str",
-                    "required": False,
+                    "required": True,
                     "description": (
-                        "Operation ID from a previously failed call. "
-                        "Capability name and params are loaded from the "
-                        "record, so the agent doesn't re-supply them. "
-                        "This is the canonical shape for retrying after a "
-                        "consent timeout (the timeout return includes "
-                        "operation_id). One of 'operation_id' or "
-                        "'capability' is required."
+                        "Operation ID from a previously failed or timed-out "
+                        "call (included in wb_run/consent_request timeout "
+                        "returns; visible via wb_status). Capability name "
+                        "and params are loaded from the record, so the "
+                        "agent does not re-supply them. If you don't have "
+                        "an operation_id you don't need retry — just call "
+                        "the capability directly; the gateway's automatic "
+                        "background retry handles transient bridge hiccups."
                     ),
-                },
-                "capability": {
-                    "type": "str",
-                    "required": False,
-                    "description": (
-                        "Name of the registered capability to retry "
-                        "(e.g. 'task_create'). Use this only when you don't "
-                        "have an operation_id to look up — otherwise pass "
-                        "operation_id."
-                    ),
-                },
-                "params": {
-                    "type": "dict",
-                    "required": False,
-                    "description": "Parameters to pass to the capability. Required when 'capability' is used without 'operation_id'.",
                 },
                 "max_retries": {
                     "type": "int",
@@ -2259,7 +2264,13 @@ def _journal_capabilities() -> list[Capability]:
                 },
             },
             callable=lambda **kw: __import__("work_buddy.obsidian.retry", fromlist=["obsidian_retry"]).obsidian_retry(**kw),
-            requires=["obsidian"],
+            # INTENTIONALLY no ``requires=["obsidian"]``: this is the
+            # one capability whose job is to ride out bridge outages.
+            # Gating it on the bridge being up would short-circuit the
+            # very recovery path it was built for — agents hitting a
+            # bridge failure would then also hit "obsidian_retry is
+            # unavailable" and have no escape hatch. The inner retry
+            # loop health-checks the bridge between attempts itself.
             retry_policy="manual",
         ),
     ]
