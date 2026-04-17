@@ -49,8 +49,11 @@ class ToolProbe:
     Attributes:
         id: Short identifier, e.g. "obsidian", "hindsight".
         display_name: Human-readable name, e.g. "Obsidian Bridge".
-        probe_fn: Callable returning True if the tool is reachable.
-            Must complete within ``probe_timeout`` seconds.
+        probe_fn: Callable returning ``True`` (or ``(True, reason)``) when
+            the tool is reachable. May return a ``(bool, str)`` tuple;
+            the string overrides the default reason and can carry
+            latency context or specific failure modes. Must complete
+            within ``probe_timeout`` seconds.
         config_key: Dot-separated config path for enabled toggle,
             e.g. "tools.obsidian.enabled". If the config value is
             explicitly ``false``, the probe is skipped and the tool
@@ -64,7 +67,7 @@ class ToolProbe:
 
     id: str
     display_name: str
-    probe_fn: Callable[[], bool]
+    probe_fn: Callable[[], bool | tuple[bool, str]]
     config_key: str | None = None
     depends_on: list[str] = field(default_factory=list)
     reason_when_missing: str = ""
@@ -210,11 +213,21 @@ def probe_all(force: bool = False) -> dict[str, dict[str, Any]]:
 
         t0 = time.time()
         try:
-            available = probe.probe_fn()
+            probe_result = probe.probe_fn()
+            # Probes may return ``bool`` OR ``(bool, str)``. The string form
+            # is an authoritative reason override — useful for probes that
+            # want to include latency history, specific failure modes, or
+            # confirm healthy-state narrative on success.
+            if isinstance(probe_result, tuple) and len(probe_result) == 2:
+                available, custom_reason = probe_result
+            else:
+                available, custom_reason = probe_result, None
             elapsed_ms = (time.time() - t0) * 1000
             entry["available"] = bool(available)
             entry["probe_ms"] = round(elapsed_ms, 1)
-            if not available:
+            if custom_reason:
+                entry["reason"] = custom_reason
+            elif not available:
                 entry["reason"] = probe.reason_when_missing or f"{probe.display_name} not reachable"
         except Exception as exc:
             elapsed_ms = (time.time() - t0) * 1000
@@ -289,11 +302,21 @@ def reprobe_one(tool_id: str) -> dict[str, Any] | None:
     else:
         t0 = time.time()
         try:
-            available = probe.probe_fn()
+            probe_result = probe.probe_fn()
+            # Probes may return ``bool`` OR ``(bool, str)``. The string form
+            # is an authoritative reason override — useful for probes that
+            # want to include latency history, specific failure modes, or
+            # confirm healthy-state narrative on success.
+            if isinstance(probe_result, tuple) and len(probe_result) == 2:
+                available, custom_reason = probe_result
+            else:
+                available, custom_reason = probe_result, None
             elapsed_ms = (time.time() - t0) * 1000
             entry["available"] = bool(available)
             entry["probe_ms"] = round(elapsed_ms, 1)
-            if not available:
+            if custom_reason:
+                entry["reason"] = custom_reason
+            elif not available:
                 entry["reason"] = probe.reason_when_missing or f"{probe.display_name} not reachable"
         except Exception as exc:
             elapsed_ms = (time.time() - t0) * 1000
@@ -472,7 +495,7 @@ def _bridge_plugin_available(plugin_id: str) -> bool:
     return _OBSIDIAN_PLUGINS.get(plugin_id, False)
 
 
-def _probe_obsidian() -> bool:
+def _probe_obsidian() -> tuple[bool, str]:
     """Check if Obsidian bridge is reachable and batch-probe plugins.
 
     Uses http.client (not urllib) to avoid issues with urllib inside
@@ -482,13 +505,27 @@ def _probe_obsidian() -> bool:
 
     Note: The bridge has documented latency spikes up to ~4s. We use a
     generous timeout to avoid false negatives.
+
+    Returns a ``(available, reason)`` tuple so callers see why the
+    probe failed (or succeeded) with latency context. This lets
+    reasoning agents distinguish "Obsidian is closed" from "bridge is
+    slow but up" — which was previously impossible with a bare bool.
     """
     import http.client
     from work_buddy.config import load_config
+    from work_buddy.obsidian.bridge import (
+        get_latency_context, _record_probe_success, _record_probe_failure,
+    )
     cfg = load_config()
     port = cfg.get("obsidian", {}).get("bridge_port", 27125)
+
     if not _port_open(port):
-        return False
+        _record_probe_failure("port_closed")
+        return False, (
+            f"Port {port} closed — Obsidian not running or the bridge "
+            f"plugin is not active. | {get_latency_context()}"
+        )
+    t0 = time.time()
     try:
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
         conn.request("GET", "/health")
@@ -496,12 +533,28 @@ def _probe_obsidian() -> bool:
         resp.read()
         conn.close()
         if resp.status != 200:
-            return False
-    except Exception:
-        return False
+            _record_probe_failure(f"HTTP_{resp.status}")
+            return False, (
+                f"Bridge responded with HTTP {resp.status} (not 200). "
+                f"| {get_latency_context()}"
+            )
+        elapsed_ms = (time.time() - t0) * 1000
+        _record_probe_success(elapsed_ms)
+    except TimeoutError as exc:
+        _record_probe_failure("TimeoutError")
+        return False, (
+            f"Bridge health check timed out at 10s ({type(exc).__name__}). "
+            f"| {get_latency_context()}"
+        )
+    except Exception as exc:
+        _record_probe_failure(type(exc).__name__)
+        return False, (
+            f"Bridge health check failed ({type(exc).__name__}: {exc}). "
+            f"| {get_latency_context()}"
+        )
     # Bridge is up — batch-check plugins while we have a warm connection
     _probe_obsidian_plugins()
-    return True
+    return True, f"Bridge reachable. | {get_latency_context()}"
 
 
 def _probe_chrome_extension() -> bool:

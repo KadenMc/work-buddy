@@ -164,6 +164,25 @@ def invalidate_registry() -> None:
         del sys.modules[k]
 
 
+def _disabled_reason(capability_name: str) -> str:
+    """Human-readable reason a capability is disabled in the live registry.
+
+    Returns a string like "Dependency unavailable: obsidian" so an agent
+    consuming `wb_search` results can distinguish "backing service is
+    down" from "your session's ACL doesn't allow this" — two very
+    different problems that used to share a single ``unavailable: true``
+    flag and mislead reasoning models into the wrong conclusion.
+    """
+    try:
+        from work_buddy.tools import DISABLED_CAPABILITIES
+        deps = DISABLED_CAPABILITIES.get(capability_name)
+        if deps:
+            return f"Dependency unavailable: {', '.join(deps)}"
+    except Exception:
+        pass
+    return "Not registered in the live capability set"
+
+
 def search_registry(
     query: str,
     category: str | None = None,
@@ -203,16 +222,26 @@ def search_registry(
                     "type": "function",
                     "parameters": unit.parameters,
                     "search_score": 1.0,
+                    "disabled": True,
+                    "disabled_reason": _disabled_reason(unit.capability_name),
+                    # Back-compat alias — remove after 2026-Q3
                     "unavailable": True,
                 }
                 return [result]
             if isinstance(unit, WorkflowUnit) and unit.workflow_name == query:
+                # Exact-name hit in the store only means the registry
+                # didn't have it — same "tool deps unmet" condition
+                # as the CapabilityUnit branch above. Flag it.
                 result = {
                     "name": unit.workflow_name,
                     "description": unit.description,
                     "category": "workflow",
                     "type": "workflow",
                     "search_score": 1.0,
+                    "disabled": True,
+                    "disabled_reason": _disabled_reason(unit.workflow_name),
+                    # Back-compat alias — remove after 2026-Q3
+                    "unavailable": True,
                 }
                 return [result]
     except Exception:
@@ -311,6 +340,9 @@ def _search_via_store(
                 "type": "function",
                 "parameters": hit.get("parameters", {}),
                 "search_score": score,
+                "disabled": True,
+                "disabled_reason": _disabled_reason(cap_name),
+                # Back-compat alias — remove after 2026-Q3
                 "unavailable": True,
             }
             if category and result["category"] != category:
@@ -326,12 +358,20 @@ def _search_via_store(
                 result["search_score"] = score
                 results.append(result)
                 continue
+            # Workflow in the store but not registered live — mirror
+            # the CapabilityUnit branch above and flag it clearly so
+            # agents don't try to call a workflow whose dependencies
+            # aren't met.
             result = {
                 "name": wf_name,
                 "description": hit.get("description", ""),
                 "category": "workflow",
                 "type": "workflow",
                 "search_score": score,
+                "disabled": True,
+                "disabled_reason": _disabled_reason(wf_name),
+                # Back-compat alias — remove after 2026-Q3
+                "unavailable": True,
             }
             results.append(result)
 
@@ -750,11 +790,21 @@ def _status_capabilities() -> list[Capability]:
 
         return result
 
-    def _feature_status(verbose: bool = False) -> dict:
-        """Show which tools, features, and capabilities are available or disabled."""
-        from work_buddy.tools import get_tool_status
+    def _feature_status(verbose: bool = False, force: bool = False) -> dict:
+        """Show which tools, features, and capabilities are available or disabled.
+
+        When ``force=True``, re-runs every tool probe fresh rather than
+        reading the cached result from the last probe sweep. Use this
+        when you suspect a cached "unavailable" is stale — e.g., the
+        user just started Obsidian and wants to confirm the bridge is
+        now up.
+        """
+        from work_buddy.tools import get_tool_status, probe_all
         from work_buddy.health.preferences import load_preferences
         from work_buddy.health.requirements import RequirementChecker
+
+        if force:
+            probe_all(force=True)
 
         result = get_tool_status()
         if not verbose:
@@ -869,6 +919,15 @@ def _status_capabilities() -> list[Capability]:
                 "verbose": {
                     "type": "bool",
                     "description": "Include probe timing and config details",
+                    "required": False,
+                },
+                "force": {
+                    "type": "bool",
+                    "description": (
+                        "Re-run all tool probes fresh instead of reading "
+                        "the cached result. Use when a previously-failed "
+                        "tool (e.g. Obsidian) may now be available."
+                    ),
                     "required": False,
                 },
             },
@@ -2221,31 +2280,17 @@ def _journal_capabilities() -> list[Capability]:
             parameters={
                 "operation_id": {
                     "type": "str",
-                    "required": False,
+                    "required": True,
                     "description": (
-                        "Operation ID from a previously failed call. "
-                        "Capability name and params are loaded from the "
-                        "record, so the agent doesn't re-supply them. "
-                        "This is the canonical shape for retrying after a "
-                        "consent timeout (the timeout return includes "
-                        "operation_id). One of 'operation_id' or "
-                        "'capability' is required."
+                        "Operation ID from a previously failed or timed-out "
+                        "call (included in wb_run/consent_request timeout "
+                        "returns; visible via wb_status). Capability name "
+                        "and params are loaded from the record, so the "
+                        "agent does not re-supply them. If you don't have "
+                        "an operation_id you don't need retry — just call "
+                        "the capability directly; the gateway's automatic "
+                        "background retry handles transient bridge hiccups."
                     ),
-                },
-                "capability": {
-                    "type": "str",
-                    "required": False,
-                    "description": (
-                        "Name of the registered capability to retry "
-                        "(e.g. 'task_create'). Use this only when you don't "
-                        "have an operation_id to look up — otherwise pass "
-                        "operation_id."
-                    ),
-                },
-                "params": {
-                    "type": "dict",
-                    "required": False,
-                    "description": "Parameters to pass to the capability. Required when 'capability' is used without 'operation_id'.",
                 },
                 "max_retries": {
                     "type": "int",
@@ -2259,7 +2304,13 @@ def _journal_capabilities() -> list[Capability]:
                 },
             },
             callable=lambda **kw: __import__("work_buddy.obsidian.retry", fromlist=["obsidian_retry"]).obsidian_retry(**kw),
-            requires=["obsidian"],
+            # INTENTIONALLY no ``requires=["obsidian"]``: this is the
+            # one capability whose job is to ride out bridge outages.
+            # Gating it on the bridge being up would short-circuit the
+            # very recovery path it was built for — agents hitting a
+            # bridge failure would then also hit "obsidian_retry is
+            # unavailable" and have no escape hatch. The inner retry
+            # loop health-checks the bridge between attempts itself.
             retry_policy="manual",
         ),
     ]
@@ -2777,6 +2828,20 @@ def _llm_capabilities() -> list[Capability]:
                         "work_buddy/llm/tool_presets.py."
                     ),
                     "required": True,
+                },
+                "required_capabilities": {
+                    "type": "list[str]",
+                    "description": (
+                        "Optional list of capability names the model "
+                        "MUST be able to call (e.g. ['update-journal', "
+                        "'journal_write']). Pre-flight checked against "
+                        "the preset; if any are missing, the call "
+                        "fails fast with an explicit error. Use this "
+                        "to catch goal-preset mismatches — e.g. "
+                        "running a workflow from a read-only preset "
+                        "that doesn't include the workflow's name."
+                    ),
+                    "required": False,
                 },
                 "previous_response_id": {
                     "type": "str",

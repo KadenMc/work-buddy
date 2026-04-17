@@ -64,6 +64,7 @@ def llm_with_tools(
     user: str,
     profile: str,
     tool_preset: str,
+    required_capabilities: list[str] | None = None,
     previous_response_id: str | None = None,
     max_tokens: int = 4096,
     temperature: float = 0.0,
@@ -85,6 +86,16 @@ def llm_with_tools(
             ``work_buddy/llm/tool_presets.py`` (e.g. ``"readonly_safe"``,
             ``"readonly_context"``). Required; no arbitrary tool list
             accepted at call time.
+        required_capabilities: Optional list of capability names the
+            model MUST be able to call to complete its task (e.g.
+            ``["update-journal", "journal_write"]``). Pre-flight
+            checked against ``resolve_preset(tool_preset)``; if any
+            required name isn't in the preset, the call fails fast
+            with an explicit error instead of silently launching a
+            doomed run. This is the sanctioned guard against the
+            goal-preset mismatch where a caller reuses a preset
+            from a prior call without checking whether it covers
+            the new task.
         previous_response_id: Continue a prior stateful-chat turn.
         max_tokens: Output budget. Default 4096 — tool-using models
             burn budget on reasoning and tool args.
@@ -128,6 +139,23 @@ def llm_with_tools(
         # so extract the raw message instead for a clean error string.
         msg = exc.args[0] if exc.args else str(exc)
         return _error(str(msg))
+
+    # Pre-flight goal-preset mismatch check. Catches the "I reused the
+    # preset from last call without checking whether it covers this
+    # task" failure mode — explicit required_capabilities forces the
+    # caller to name what the model must reach, and we verify every
+    # one is in the preset before firing.
+    if required_capabilities:
+        missing = [c for c in required_capabilities if c not in allowed_tools]
+        if missing:
+            return _error(
+                f"required_capabilities not in preset {tool_preset!r}: "
+                f"{missing}. Either pick a preset that covers them, "
+                f"or add a new preset in work_buddy/llm/tool_presets.py "
+                f"(reviewed PR).",
+                tool_preset=tool_preset,
+                allowed_tools=allowed_tools,
+            )
 
     try:
         profile_info = resolve_profile(profile)

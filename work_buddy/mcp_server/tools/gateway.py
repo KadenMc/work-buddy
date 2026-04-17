@@ -636,19 +636,24 @@ def register_tools(mcp: FastMCP) -> None:
         results = registry.search_registry(query, category, top_n=filter_n)
 
         # If this session has a capability ACL (set by ``llm_with_tools``
-        # before a local-model tool call), filter results to only the
-        # allowed names. This keeps the model from discovering tools it
-        # can't actually invoke and making wasted wb_run attempts.
-        from work_buddy.mcp_server.session_acl import get_session_acl
+        # before a local-model tool call), filter results. The helper
+        # returns a bare list when no filtering occurred, or a dict
+        # with ``_acl_notice`` when results were trimmed — so the
+        # caller (typically a small local model) stops re-searching
+        # with different wordings. See session_acl.filter_search_results
+        # for the full semantics (including the fail-closed bookend
+        # when the session can't be resolved but an ACL is active).
+        from work_buddy.mcp_server.session_acl import filter_search_results
         session_id = _resolve_session(ctx)
-        acl = get_session_acl(session_id)
-        if acl is not None:
-            results = [r for r in results if r.get("name") in acl]
-
+        filtered = filter_search_results(results, session_id)
+        result_count = (
+            len(filtered) if isinstance(filtered, list)
+            else len(filtered.get("results", []))
+        )
         # Activity ledger: record search
         from work_buddy.mcp_server.activity_ledger import record_search
-        record_search(query, category, len(results), session_id)
-        return _prepare(results)
+        record_search(query, category, result_count, session_id)
+        return _prepare(filtered)
 
     @mcp.tool()
     async def wb_run(capability: str, params: str | dict | None = None, ctx: Context = None) -> dict:
@@ -727,25 +732,52 @@ def register_tools(mcp: FastMCP) -> None:
 
         # Per-session capability ACL — applied when ``llm_with_tools``
         # has registered a whitelist for this session. Sessions without
-        # an ACL (every normal agent) pass through unchanged.
+        # an ACL (every normal agent) pass through unchanged, EXCEPT
+        # when the session id couldn't be resolved at all AND at least
+        # one ACL is active in the process: that's the session-None
+        # bypass vector and we fail closed on it.
         from work_buddy.mcp_server.session_acl import (
-            get_session_acl, is_capability_allowed,
+            any_acl_registered, get_session_acl, is_capability_allowed,
         )
         if not is_capability_allowed(_agent_sid, capability):
             acl = get_session_acl(_agent_sid)
-            allowed_preview = sorted(acl)[:12] if acl else []
+            if acl is not None:
+                # Resolved session, explicit ACL — normal preset denial.
+                allowed_preview = sorted(acl)[:12]
+                return _prepare({
+                    "error": (
+                        f"Capability {capability!r} is not permitted for this "
+                        f"session. The caller restricted this session to a "
+                        f"named preset."
+                    ),
+                    "denied_by": "session_acl",
+                    "allowed_sample": allowed_preview,
+                    "hint": (
+                        "Use wb_search to discover the capabilities this "
+                        "session is allowed to invoke — search results are "
+                        "filtered to the ACL automatically."
+                    ),
+                })
+            # Unresolved session + an ACL exists somewhere in-process:
+            # fail-closed path. This is almost always the ACL-scoped
+            # caller whose session we failed to tie back via the MCP
+            # request context. Treating it as default-open would let
+            # a local model invoke anything in the registry.
             return _prepare({
                 "error": (
-                    f"Capability {capability!r} is not permitted for this "
-                    f"session. The caller restricted this session to a "
-                    f"named preset."
+                    f"Capability {capability!r} refused: session could not "
+                    f"be resolved while an ACL-scoped run is active in "
+                    f"this process. This is a fail-closed guard against "
+                    f"session-resolution races."
                 ),
-                "denied_by": "session_acl",
-                "allowed_sample": allowed_preview,
+                "denied_by": "session_acl_unresolved",
                 "hint": (
-                    "Use wb_search to discover the capabilities this "
-                    "session is allowed to invoke — search results are "
-                    "filtered to the ACL automatically."
+                    "If you are a normal agent, call wb_init(session_id) "
+                    "explicitly or ensure the X-Work-Buddy-Session header "
+                    "is present on your MCP connection. If you are a "
+                    "local model invoked through llm_with_tools, this "
+                    "means your MCP transport is not forwarding the "
+                    "session header on tool-call requests."
                 ),
             })
 

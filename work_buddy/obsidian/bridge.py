@@ -35,6 +35,29 @@ _consecutive_failures: int = 0     # reset on success
 _last_failure_reason: str = ""     # e.g. "TimeoutError", "ConnectionRefusedError"
 
 
+def _record_probe_success(elapsed_ms: float) -> None:
+    """Record a successful out-of-band probe (e.g. ``_probe_obsidian``).
+
+    The main ``_request()`` path updates ``_last_success_*`` for real
+    bridge calls. Probes use ``http.client`` directly and skip that
+    path, so without this helper the probe's own round-trip is
+    invisible to ``get_latency_context()``. Call this on probe
+    success so the very first status check after startup reflects
+    real data instead of "No successful bridge calls recorded."
+    """
+    global _last_success_ts, _last_success_ms, _consecutive_failures
+    _last_success_ts = time.time()
+    _last_success_ms = elapsed_ms
+    _consecutive_failures = 0
+
+
+def _record_probe_failure(reason: str) -> None:
+    """Record a probe failure for inclusion in ``get_latency_context()``."""
+    global _consecutive_failures, _last_failure_reason
+    _consecutive_failures += 1
+    _last_failure_reason = reason
+
+
 def get_latency_context() -> str:
     """One-line latency summary for error messages."""
     if _last_success_ts == 0:

@@ -244,30 +244,52 @@ class TestBridgeRetryReturnValue:
 # ---------------------------------------------------------------------------
 
 class TestObsidianRetryCapability:
-    """Tests for the obsidian_retry MCP capability."""
+    """Tests for the obsidian_retry MCP capability.
+
+    ``obsidian_retry`` requires an ``operation_id`` and loads the
+    capability name + params from the operation record. There is no
+    override path — callers without an op_id should call the
+    capability directly (the gateway's background retry handles
+    transient bridge hiccups on fresh calls).
+    """
 
     @patch("work_buddy.obsidian.bridge.get_latency_context", return_value="OK")
     @patch("work_buddy.obsidian.bridge.is_available", return_value=True)
     @patch("work_buddy.mcp_server.registry.get_registry")
-    def test_success_returns_result(self, mock_registry, mock_avail, mock_latency):
+    @patch("work_buddy.mcp_server.tools.gateway._load_operation")
+    def test_success_returns_result(self, mock_load, mock_registry, mock_avail, mock_latency):
+        mock_load.return_value = {"name": "task_create", "params": {"task_text": "test"}}
         mock_entry = MagicMock()
         mock_entry.callable = MagicMock(return_value={"task_id": "t-abc"})
         mock_registry.return_value = {"task_create": mock_entry}
 
-        result = obsidian_retry(
-            capability="task_create",
-            params={"task_text": "test"},
-            max_retries=3,
-            wait_seconds=0,
-        )
+        result = obsidian_retry(operation_id="op_abc", max_retries=3, wait_seconds=0)
 
         assert result == {"task_id": "t-abc"}
+        mock_load.assert_called_once_with("op_abc")
+
+    def test_missing_operation_id_errors(self):
+        result = obsidian_retry(operation_id="")
+
+        assert result["success"] is False
+        assert "operation_id" in result["error"]
+
+    @patch("work_buddy.mcp_server.tools.gateway._load_operation")
+    def test_unknown_operation_id(self, mock_load):
+        mock_load.return_value = None
+
+        result = obsidian_retry(operation_id="op_missing")
+
+        assert result["success"] is False
+        assert "not found" in result["error"]
 
     @patch("work_buddy.mcp_server.registry.get_registry")
-    def test_unknown_capability(self, mock_registry):
+    @patch("work_buddy.mcp_server.tools.gateway._load_operation")
+    def test_unknown_capability(self, mock_load, mock_registry):
+        mock_load.return_value = {"name": "nonexistent", "params": {}}
         mock_registry.return_value = {}
 
-        result = obsidian_retry(capability="nonexistent", params={})
+        result = obsidian_retry(operation_id="op_abc")
 
         assert result["success"] is False
         assert "not found" in result["error"]
@@ -275,8 +297,10 @@ class TestObsidianRetryCapability:
     @patch("work_buddy.obsidian.bridge.get_latency_context", return_value="test")
     @patch("work_buddy.obsidian.bridge.is_available", return_value=True)
     @patch("work_buddy.mcp_server.registry.get_registry")
-    def test_retries_on_bridge_failure_return(self, mock_registry, mock_avail, mock_latency):
+    @patch("work_buddy.mcp_server.tools.gateway._load_operation")
+    def test_retries_on_bridge_failure_return(self, mock_load, mock_registry, mock_avail, mock_latency):
         """bridge_failure returns trigger retry in obsidian_retry too."""
+        mock_load.return_value = {"name": "my_cap", "params": {}}
         attempts = []
         mock_entry = MagicMock()
         def side_effect(**kwargs):
@@ -287,7 +311,7 @@ class TestObsidianRetryCapability:
         mock_entry.callable = side_effect
         mock_registry.return_value = {"my_cap": mock_entry}
 
-        result = obsidian_retry(capability="my_cap", max_retries=3, wait_seconds=0)
+        result = obsidian_retry(operation_id="op_abc", max_retries=3, wait_seconds=0)
 
         assert result == {"success": True}
         assert len(attempts) == 2
