@@ -54,13 +54,18 @@ class SurfaceDispatcher:
         except Exception as exc:
             logger.debug("Dashboard surface not available: %s", exc)
 
-        # Register Telegram if configured + enabled
+        # Register Telegram if configured + enabled + user hasn't opted out
         try:
             from work_buddy.config import load_config
             cfg = load_config()
-            if cfg.get("telegram", {}).get("enabled", False):
+            telegram_enabled = cfg.get("telegram", {}).get("enabled", False)
+            # Honor user preference: features.telegram.wanted=false means skip
+            wanted = cfg.get("features", {}).get("telegram", {}).get("wanted", True)
+            if telegram_enabled and wanted is not False:
                 from work_buddy.notifications.surfaces.telegram import TelegramSurface
                 dispatcher.register(TelegramSurface())
+            elif telegram_enabled and wanted is False:
+                logger.debug("Telegram surface skipped: features.telegram.wanted=false")
         except Exception as exc:
             logger.debug("Telegram surface not available: %s", exc)
 

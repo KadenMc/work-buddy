@@ -220,8 +220,9 @@ def bridge_retry(
 # ---------------------------------------------------------------------------
 
 def obsidian_retry(
-    capability: str,
+    capability: str | None = None,
     params: dict[str, Any] | None = None,
+    operation_id: str | None = None,
     max_retries: int = 3,
     wait_seconds: int = 60,
 ) -> dict[str, Any]:
@@ -236,8 +237,16 @@ def obsidian_retry(
     and captures latency context per attempt.
 
     Args:
-        capability: Name of the capability to retry.
-        params: Parameters to pass to the capability (default: {}).
+        capability: Name of the capability to retry. Optional if
+            ``operation_id`` is provided (will be loaded from the record).
+        params: Parameters to pass to the capability (default: {}). Same:
+            optional if ``operation_id`` is provided. If both are given,
+            the explicit values take precedence over the record's.
+        operation_id: An operation_id from a previous failed call. The
+            capability name and params are loaded from the record, so the
+            agent doesn't have to re-pass them. This is the canonical
+            way to retry after a consent timeout: the timeout return
+            includes the operation_id, and the agent forwards it here.
         max_retries: Maximum number of attempts (default: 3).
         wait_seconds: Seconds to wait between attempts (default: 60).
 
@@ -248,6 +257,30 @@ def obsidian_retry(
     from work_buddy.mcp_server.registry import get_registry
     from work_buddy.obsidian.bridge import is_available, get_latency_context
     from work_buddy.errors import classify_error
+
+    # Resolve capability/params from the operation record if requested.
+    if operation_id is not None:
+        from work_buddy.mcp_server.tools.gateway import _load_operation
+        record = _load_operation(operation_id)
+        if record is None:
+            return {
+                "success": False,
+                "error": f"Operation '{operation_id}' not found",
+            }
+        # Explicit args win, but normally agents pass only operation_id.
+        if capability is None:
+            capability = record.get("name")
+        if params is None:
+            params = record.get("params") or {}
+
+    if not capability:
+        return {
+            "success": False,
+            "error": (
+                "obsidian_retry requires either 'capability' (with optional "
+                "'params') or 'operation_id'."
+            ),
+        }
 
     params = params or {}
     registry = get_registry()

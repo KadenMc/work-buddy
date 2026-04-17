@@ -52,7 +52,7 @@
     ],
     "content": {
       "summary": "The gateway handles consent transparently. Capabilities declare consent_operations for pre-flight bundling. On ConsentRequired, the gateway auto-requests + retries. Agents never see raw consent errors. On timeout, wb_run(\"retry\", ...) replays without re-sending params.",
-      "full": "The gateway handles consent transparently. Capabilities declare consent_operations for pre-flight bundling (UX enrichment — shows all covered operations in the notification). The consent context mechanism handles correctness: when a consent-gated function executes, nested @requires_consent calls pass through automatically via a thread-local context. This eliminates double-prompting for operations like toggle_task → write_file without manual bookkeeping. On ConsentRequired (unanticipated gate), the gateway auto-requests + retries. Agents never see raw consent errors. On timeout, wb_run(\"retry\", ...) replays without re-sending params."
+      "full": "The gateway handles consent transparently. Capabilities declare consent_operations for pre-flight bundling. On ConsentRequired, the gateway auto-requests + retries. Agents never see raw consent errors. On timeout, wb_run(\"retry\", {\"operation_id\": \"op_xxx\"}) replays the original call without re-sending params. For Obsidian-bridge operations, use obsidian_retry instead — same {\"operation_id\": \"op_xxx\"} shape, adds bridge health-checks between attempts. The gateway's timeout return includes the right hint."
     }
   },
   "notifications/surfaces": {

@@ -939,6 +939,14 @@ def _status_capabilities() -> list[Capability]:
                 },
             },
             callable=_setup_wizard,
+            # `preferences` mode with `updates` is the only mutating path;
+            # other modes are read-only. Marked mutating because a single name
+            # covers both. The consent gate (setup.write_preferences on
+            # apply_preference_updates) fires only when `updates` is passed,
+            # so read-only calls don't prompt. Not listed in
+            # consent_operations because pre-flight would prompt on every
+            # call — gateway's runtime ConsentRequired fallback handles it.
+            mutates_state=True,
             search_aliases=[
                 "setup", "wizard", "configure", "preferences", "onboarding",
                 "first time", "requirements", "bootstrap", "wanted", "unwanted",
@@ -2211,15 +2219,33 @@ def _journal_capabilities() -> list[Capability]:
                 "retry task create", "bridge failure", "obsidian unavailable",
             ],
             parameters={
+                "operation_id": {
+                    "type": "str",
+                    "required": False,
+                    "description": (
+                        "Operation ID from a previously failed call. "
+                        "Capability name and params are loaded from the "
+                        "record, so the agent doesn't re-supply them. "
+                        "This is the canonical shape for retrying after a "
+                        "consent timeout (the timeout return includes "
+                        "operation_id). One of 'operation_id' or "
+                        "'capability' is required."
+                    ),
+                },
                 "capability": {
                     "type": "str",
-                    "required": True,
-                    "description": "Name of the registered capability to retry (e.g. 'task_create')",
+                    "required": False,
+                    "description": (
+                        "Name of the registered capability to retry "
+                        "(e.g. 'task_create'). Use this only when you don't "
+                        "have an operation_id to look up — otherwise pass "
+                        "operation_id."
+                    ),
                 },
                 "params": {
                     "type": "dict",
-                    "required": True,
-                    "description": "Parameters to pass to the capability",
+                    "required": False,
+                    "description": "Parameters to pass to the capability. Required when 'capability' is used without 'operation_id'.",
                 },
                 "max_retries": {
                     "type": "int",

@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from work_buddy.config import read_config_local, write_config_local
+from work_buddy.consent import requires_consent
 
 
 @dataclass
@@ -109,6 +110,36 @@ def set_preference(
         reason=reason,
     )
     save_preferences(prefs)
+
+
+@requires_consent(
+    operation="setup.write_preferences",
+    reason="Modify feature preferences (features.* in config.local.yaml)",
+    risk="moderate",
+)
+def apply_preference_updates(updates: dict[str, Any]) -> list[str]:
+    """Apply a batch of feature-preference updates. Consent-gated.
+
+    ``updates`` maps component_id -> {"wanted": bool|None, "reason": str} or bool/None.
+    Returns the list of component_ids that were written.
+    """
+    from work_buddy.health.components import COMPONENT_CATALOG
+
+    written: list[str] = []
+    for comp_id, data in updates.items():
+        if comp_id not in COMPONENT_CATALOG:
+            continue
+        if isinstance(data, dict):
+            set_preference(
+                comp_id,
+                wanted=data.get("wanted"),
+                reason=data.get("reason"),
+            )
+            written.append(comp_id)
+        elif isinstance(data, bool) or data is None:
+            set_preference(comp_id, wanted=data)
+            written.append(comp_id)
+    return written
 
 
 def is_wanted(component_id: str) -> bool | None:

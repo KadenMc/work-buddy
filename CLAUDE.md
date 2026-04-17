@@ -174,7 +174,7 @@ Some `work_buddy` functions are protected by a `@requires_consent` decorator. **
 2. **Consent context** — when a consent-gated function executes, it establishes a thread-local context. Nested `@requires_consent` calls (e.g., `toggle_task` → `bridge.write_file`) pass through automatically — the outer consent subsumes inner ones. No manual bookkeeping or `*_raw` function variants needed.
 3. **Fallback** — if a `ConsentRequired` fires at runtime (unanticipated gate not covered by pre-flight or context), the gateway auto-requests and retries (max 2 retries).
 4. **You see**: success (normal result), denied (`{status: "denied"}`), or timeout (`{status: "timeout", operation_id: "op_xxx"}`).
-5. **On timeout** — the request stays pending on all surfaces. Once the user approves, retry with `mcp__work-buddy__wb_run("retry", {"operation_id": "op_xxx"})` to replay the original call without re-sending parameters.
+5. **On timeout** — the request stays pending on all surfaces. Once the user approves, retry with `mcp__work-buddy__wb_run("retry", {"operation_id": "op_xxx"})` to replay the original call without re-sending parameters. **For Obsidian-bridge operations, use `obsidian_retry` instead** — it accepts the same `{"operation_id": "op_xxx"}` shape and adds bridge health-checks between attempts. The gateway's timeout return tells you which to use.
 
 **Do NOT manually call `consent_request`** for `wb_run` operations — the gateway does it for you. You still need manual `consent_request` for sidecar operations not routed through `wb_run` (e.g., `agent_spawn` consent) or custom flows.
 
