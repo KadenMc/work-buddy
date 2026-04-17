@@ -41,22 +41,94 @@ def detached_process_kwargs() -> dict:
     return {"start_new_session": True}
 
 
-def kill_process_on_port(port: int) -> None:
-    """Kill any process listening on the given port (best-effort cleanup).
+def kill_process_on_port(port: int, *, wait_seconds: float = 5.0) -> bool:
+    """Kill any process listening on the given port, then verify.
 
-    Uses platform-appropriate commands to find and kill the process.
+    Returns True when the port is confirmed free at the end of the
+    wait window, False otherwise. Callers can use the return value to
+    decide whether to proceed with binding their own listener.
+
+    Windows gotcha: ``os.kill(pid, SIGTERM)`` is unreliable
+    cross-process on Windows (works within the same console only, or
+    not at all). This implementation tries SIGTERM first, then
+    escalates to ``taskkill /F /PID`` on Windows — that one actually
+    works on orphaned children from a previous sidecar run. Unix uses
+    SIGTERM followed by SIGKILL.
+
+    Real-world failure (2026-04-17): a sidecar restart left an old
+    mcp_gateway (PID 22636) holding port 5126. ``os.kill`` reported
+    success but did nothing. The newly-spawned child failed to bind
+    and died. The sidecar logs said "Started mcp_gateway (pid=...)"
+    so nothing looked wrong — except the wrong bytecode was live.
+    This function's new verify-the-port-is-actually-free contract
+    prevents that silent-failure mode.
     """
     import signal
+    import time as _time
 
     try:
         pids = _find_pids_on_port(port)
-        for pid in pids:
-            try:
-                os.kill(pid, signal.SIGTERM)
-            except (OSError, ProcessLookupError):
-                pass
     except Exception:
-        pass  # Best-effort cleanup
+        pids = set()
+
+    if not pids:
+        return True
+
+    # First pass: polite SIGTERM
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except (OSError, ProcessLookupError):
+            pass
+
+    # Poll until the port is free OR we time out
+    deadline = _time.monotonic() + wait_seconds
+    escalated = False
+    while _time.monotonic() < deadline:
+        _time.sleep(0.2)
+        try:
+            still_held = _find_pids_on_port(port)
+        except Exception:
+            still_held = set()
+        if not still_held:
+            return True
+        # Halfway through the window, escalate to force-kill
+        if not escalated and _time.monotonic() > (deadline - wait_seconds / 2):
+            escalated = True
+            for pid in still_held:
+                _force_kill_pid(pid)
+
+    # Final check after escalation completed
+    try:
+        remaining = _find_pids_on_port(port)
+    except Exception:
+        remaining = set()
+    return not remaining
+
+
+def _force_kill_pid(pid: int) -> None:
+    """Force-terminate a process using the most reliable method per OS."""
+    if IS_WINDOWS:
+        try:
+            # taskkill /F works cross-process on Windows where os.kill
+            # often silently fails. /T kills the process tree so any
+            # children spawned by the orphan also go.
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(pid)],
+                capture_output=True, timeout=5, check=False,
+            )
+        except Exception:
+            pass
+    else:
+        import signal
+        # SIGKILL doesn't exist on Windows; on Unix it does. Use
+        # getattr so this module imports cleanly on either platform
+        # — the IS_WINDOWS branch above already handles Windows.
+        sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
+        try:
+            os.kill(pid, sigkill)
+        except (OSError, ProcessLookupError):
+            pass
 
 
 def _find_pids_on_port(port: int) -> set[int]:

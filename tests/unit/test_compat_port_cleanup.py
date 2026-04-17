@@ -1,0 +1,169 @@
+"""Regression: sidecar port-cleanup must actually verify the port is free.
+
+Background: on 2026-04-17 a sidecar restart silently failed to kill
+an orphaned mcp_gateway process on Windows. The root cause was
+``os.kill(pid, SIGTERM)``, which is unreliable cross-process on
+Windows. The cleanup helper reported success, the new Popen died,
+and the sidecar happily logged ``"Started mcp_gateway (pid=...)"``
+even though the child was already dead. The orphan kept serving
+pre-fix code against port 5126 for hours.
+
+These tests pin the new contract:
+
+1. ``kill_process_on_port`` now escalates to a platform-appropriate
+   force-kill (``taskkill /F`` on Windows, SIGKILL on Unix) when
+   SIGTERM doesn't free the port.
+2. It polls until the port is confirmed free OR the wait window
+   expires.
+3. The return value truthfully reflects whether the port is free —
+   so ``_start_child`` can refuse to start when cleanup failed.
+"""
+
+from __future__ import annotations
+
+import signal
+from unittest.mock import patch
+
+import pytest
+
+from work_buddy import compat
+
+
+def test_kill_returns_true_when_no_pids_on_port(monkeypatch):
+    """Happy path: nothing holds the port, cleanup is a no-op True."""
+    monkeypatch.setattr(compat, "_find_pids_on_port", lambda p: set())
+    assert compat.kill_process_on_port(5126) is True
+
+
+def test_kill_sends_sigterm_then_verifies_empty(monkeypatch):
+    """SIGTERM actually cleared the port → return True without
+    needing the escalation path."""
+    calls = {"found": [{1234}, set()]}  # first call has PID; second is empty
+    killed = []
+
+    def fake_find(p):
+        return calls["found"].pop(0) if calls["found"] else set()
+
+    def fake_kill(pid, sig):
+        killed.append((pid, sig))
+
+    monkeypatch.setattr(compat, "_find_pids_on_port", fake_find)
+    monkeypatch.setattr(compat.os, "kill", fake_kill)
+
+    assert compat.kill_process_on_port(5126, wait_seconds=0.5) is True
+    assert killed == [(1234, signal.SIGTERM)]
+
+
+def test_kill_escalates_to_force_kill_when_sigterm_ignored(monkeypatch):
+    """The real-world failure mode: SIGTERM does nothing on Windows.
+    We must escalate and verify."""
+    # PID sticks around until _force_kill_pid is called, then goes away.
+    state = {"alive": {9999}}
+
+    def fake_find(p):
+        return set(state["alive"])
+
+    def fake_kill(pid, sig):
+        pass  # SIGTERM silently ignored (the Windows bug)
+
+    force_killed = []
+
+    def fake_force(pid):
+        force_killed.append(pid)
+        state["alive"].discard(pid)
+
+    monkeypatch.setattr(compat, "_find_pids_on_port", fake_find)
+    monkeypatch.setattr(compat.os, "kill", fake_kill)
+    monkeypatch.setattr(compat, "_force_kill_pid", fake_force)
+
+    result = compat.kill_process_on_port(5126, wait_seconds=1.0)
+    assert result is True
+    assert force_killed == [9999], "force-kill must run when SIGTERM is ignored"
+
+
+def test_kill_returns_false_when_orphan_cannot_be_killed(monkeypatch):
+    """Port still held after escalation → return False so the caller
+    doesn't try to bind and produce a silently-dead child."""
+    state = {"alive": {9999}}
+
+    def fake_find(p):
+        return set(state["alive"])
+
+    def fake_kill(pid, sig):
+        pass
+
+    def fake_force(pid):
+        pass  # pretend even force-kill failed (orphan is stubborn)
+
+    monkeypatch.setattr(compat, "_find_pids_on_port", fake_find)
+    monkeypatch.setattr(compat.os, "kill", fake_kill)
+    monkeypatch.setattr(compat, "_force_kill_pid", fake_force)
+
+    result = compat.kill_process_on_port(5126, wait_seconds=0.8)
+    assert result is False, (
+        "Must return False when the port is still held so the sidecar "
+        "refuses to spawn a doomed child."
+    )
+
+
+def test_kill_exceptions_during_find_do_not_crash(monkeypatch):
+    """Best-effort: an exception in the pid-scan shouldn't propagate."""
+    def fake_find(p):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(compat, "_find_pids_on_port", fake_find)
+    # Shouldn't raise. True because no pids were seen.
+    assert compat.kill_process_on_port(5126, wait_seconds=0.1) is True
+
+
+# ---------------------------------------------------------------------------
+# _force_kill_pid platform-specific behavior
+# ---------------------------------------------------------------------------
+
+def test_force_kill_windows_uses_taskkill_slash_F(monkeypatch):
+    """Windows path must use taskkill /F /PID — os.kill is unreliable."""
+    monkeypatch.setattr(compat, "IS_WINDOWS", True)
+    recorded = []
+
+    def fake_run(cmd, **kw):
+        recorded.append(cmd)
+        class _R: returncode = 0
+        return _R()
+
+    monkeypatch.setattr(compat.subprocess, "run", fake_run)
+    compat._force_kill_pid(12345)
+
+    assert len(recorded) == 1
+    cmd = recorded[0]
+    assert cmd[0] == "taskkill"
+    assert "/F" in cmd
+    assert "12345" in cmd
+
+
+def test_force_kill_unix_uses_sigkill(monkeypatch):
+    """Unix path should use SIGKILL (or SIGTERM fallback on Windows
+    test runners where SIGKILL isn't defined — the IS_WINDOWS branch
+    handles real Windows and never reaches this path)."""
+    monkeypatch.setattr(compat, "IS_WINDOWS", False)
+    killed = []
+
+    def fake_kill(pid, sig):
+        killed.append((pid, sig))
+
+    monkeypatch.setattr(compat.os, "kill", fake_kill)
+    compat._force_kill_pid(12345)
+
+    expected_sig = getattr(signal, "SIGKILL", signal.SIGTERM)
+    assert killed == [(12345, expected_sig)]
+
+
+def test_force_kill_tolerates_dead_process(monkeypatch):
+    """If the process is already gone, don't crash."""
+    monkeypatch.setattr(compat, "IS_WINDOWS", False)
+
+    def fake_kill(pid, sig):
+        raise ProcessLookupError
+
+    monkeypatch.setattr(compat.os, "kill", fake_kill)
+    # Should not raise
+    compat._force_kill_pid(12345)

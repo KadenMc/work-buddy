@@ -19,6 +19,10 @@ from typing import Any
 
 import httpx
 
+from work_buddy.llm.backends._errors import (
+    LocalInferenceError,
+    interpret_httpx_exception,
+)
 from work_buddy.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -93,16 +97,29 @@ def call_openai_compat(
 
     url = base_url.rstrip("/") + "/chat/completions"
 
-    with httpx.Client(timeout=timeout) as client:
-        response = client.post(url, headers=headers, json=payload)
-        response.raise_for_status()
-        body = response.json()
+    try:
+        with httpx.Client(timeout=timeout) as client:
+            response = client.post(url, headers=headers, json=payload)
+            response.raise_for_status()
+            body = response.json()
+    except httpx.HTTPError as exc:
+        raise interpret_httpx_exception(
+            exc, model=model, endpoint="/v1/chat/completions",
+        ) from exc
 
     try:
         choice = body["choices"][0]
         content = choice["message"]["content"] or ""
     except (KeyError, IndexError, TypeError) as exc:
-        raise ValueError(f"Unexpected response shape from {url}: {body!r}") from exc
+        raise LocalInferenceError(
+            f"Unexpected response shape from {url}: {body!r}",
+            kind="malformed_response",
+            hint=(
+                "LM Studio returned HTTP 200 but the response body did not "
+                "match the expected OpenAI chat-completions shape."
+            ),
+            raw=body,
+        ) from exc
 
     usage = body.get("usage") or {}
     return {

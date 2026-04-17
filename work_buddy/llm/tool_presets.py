@@ -38,10 +38,17 @@ can silently relax.
 
 from __future__ import annotations
 
-# ``wb_init`` is the mandatory session-registration call. Every preset
-# must include it so the model can initialize its MCP session before
-# making any other tool call.
-_INIT = frozenset({"wb_init"})
+# Note on wb_init: it is DELIBERATELY EXCLUDED from every preset.
+# Header-based auto-init in the gateway (`_auto_init_from_header`)
+# registers the local model's MCP session from the
+# ``X-Work-Buddy-Session`` header on first contact — the model never
+# needs to call wb_init itself. Allowing wb_init inside an ACL-scoped
+# session was confirmed (2026-04-17 live test) to be an ACL-escape
+# vector: a small model could call wb_run(capability="wb_init",
+# session_id="other") to swap its session and drop the ACL. The
+# gateway now hard-rejects wb_init from ACL-scoped sessions at the
+# `wb_run` dispatch path (belt), and the preset omission is the
+# suspenders.
 
 
 # ---------------------------------------------------------------------------
@@ -51,7 +58,7 @@ _INIT = frozenset({"wb_init"})
 # tasks, contracts, projects, journal reads, day planner, sidecar
 # status. Zero vault/task/messaging/memory writes. Zero execution of
 # long-running context-bundle collectors.
-_READONLY_SAFE = _INIT | frozenset({
+_READONLY_SAFE = frozenset({
     # Tasks (reads only — no toggle/delete/create/assign)
     "task_briefing",
     "task_stale_check",
@@ -217,7 +224,8 @@ def validate_presets(registry_names: set[str] | None = None) -> list[str]:
     """Structural validation for every preset.
 
     Checks:
-    - Each preset includes ``wb_init``.
+    - No preset contains ``wb_init`` (security: would allow ACL escape
+      via session re-init; header-based auto-init makes it unnecessary).
     - Each ``readonly_*`` preset contains zero mutating capabilities.
     - When ``registry_names`` is provided, every preset entry is a
       real registered capability (no typos, no drift from deletions).
@@ -227,10 +235,11 @@ def validate_presets(registry_names: set[str] | None = None) -> list[str]:
     problems: list[str] = []
 
     for preset_name, tools in PRESETS.items():
-        if "wb_init" not in tools:
+        if "wb_init" in tools:
             problems.append(
-                f"Preset {preset_name!r} is missing 'wb_init' — every preset "
-                f"needs it so the model can register its MCP session."
+                f"Preset {preset_name!r} contains 'wb_init' — this is an "
+                f"ACL-escape vector and must be excluded. Header-based "
+                f"auto-init handles session registration for local models."
             )
         if preset_name.startswith("readonly_"):
             mutating = tools & _MUTATING_CAPABILITIES
@@ -240,9 +249,7 @@ def validate_presets(registry_names: set[str] | None = None) -> list[str]:
                     f"but its name claims readonly: {sorted(mutating)}"
                 )
         if registry_names is not None:
-            unknown = tools - registry_names - {"wb_init"}
-            # wb_init is registered as a top-level MCP tool, not as a
-            # Capability in the registry, so exclude it from the check.
+            unknown = tools - registry_names
             if unknown:
                 problems.append(
                     f"Preset {preset_name!r} references names not in the "

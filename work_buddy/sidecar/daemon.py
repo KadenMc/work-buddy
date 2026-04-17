@@ -75,10 +75,25 @@ def _health_check(port: int, timeout: float = 2.0) -> bool:
         return False
 
 
-def _kill_process_on_port(port: int) -> None:
-    """Kill any process listening on the given port (cleanup from prior crash)."""
+def _kill_process_on_port(port: int, *, service_name: str = "") -> bool:
+    """Kill any process listening on the given port (cleanup from prior crash).
+
+    Returns True when the port is confirmed free, False when an
+    orphan survived our kill attempts — in which case the caller
+    should NOT try to bind because the Popen will silently die.
+    """
     from work_buddy.compat import kill_process_on_port
-    kill_process_on_port(port)
+    freed = kill_process_on_port(port, wait_seconds=5.0)
+    if not freed:
+        logger.error(
+            "Port %d still held after kill attempts — cannot safely "
+            "start %s. An orphaned process from a prior sidecar run "
+            "is likely holding the port. Check with: "
+            "Get-NetTCPConnection -LocalPort %d (Windows) or "
+            "lsof -i:%d (Unix), then kill the owner manually.",
+            port, service_name or "service", port, port,
+        )
+    return freed
 
 
 def _get_conda_python() -> str:
@@ -97,9 +112,17 @@ def _start_child(svc: ChildService) -> None:
     so that ``svc.process.pid`` is the actual Python process, not a
     wrapper. This ensures ``terminate()`` actually stops the service.
     """
-    # Kill any orphan from a prior sidecar crash
-    _kill_process_on_port(svc.port)
-    time.sleep(0.5)
+    # Kill any orphan from a prior sidecar crash and verify the port
+    # is actually free before we try to bind our fresh child. Without
+    # this verify step the Popen silently dies when an orphan still
+    # holds the port, and the sidecar logs "Started %s (pid=...)"
+    # even though the child is already dead.
+    if not _kill_process_on_port(svc.port, service_name=svc.name):
+        logger.error(
+            "Refusing to start %s — port %d not freed. Fix the orphan "
+            "and retry the restart.", svc.name, svc.port,
+        )
+        return
 
     python = _get_conda_python()
     cmd = [python, "-m", svc.module] + svc.args

@@ -368,7 +368,13 @@ def _run_profile(
                 model=resolved_model,
             )
     except Exception as exc:
+        from work_buddy.llm.backends._errors import LocalInferenceError
         logger.exception("Profile %s backend call failed", backend_id)
+        if isinstance(exc, LocalInferenceError):
+            # Embed the hint in the error string so callers who only
+            # check .error still see the remedy without schema changes.
+            msg = str(exc) + (f" Hint: {exc.hint}" if exc.hint else "")
+            return TaskResult(content="", error=msg, model=resolved_model)
         return TaskResult(
             content="",
             error=f"{type(exc).__name__}: {exc}",

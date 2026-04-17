@@ -40,6 +40,13 @@ class Capability:
     requires: list[str] = field(default_factory=list)  # tool IDs, e.g. ["obsidian", "hindsight"]
     mutates_state: bool = False  # whether this capability modifies state
     retry_policy: str = "manual"  # "replay" | "verify_first" | "manual"
+    # When True (default), the gateway auto-enqueues transient failures
+    # of non-mutating capabilities for background retry. Capabilities
+    # that represent real work with non-recoverable failure modes (e.g.
+    # local-LLM calls where a timeout means the model is hung and
+    # retrying wastes tokens and spams consent prompts) should set this
+    # to False to keep the failure in the caller's face.
+    auto_retry: bool = True
     slash_command: str | None = None  # e.g. "wb-journal-update"
     consent_operations: list[str] = field(default_factory=list)  # @requires_consent op IDs this capability may trigger
 
@@ -2693,6 +2700,9 @@ def _llm_capabilities() -> list[Capability]:
                 },
             },
             callable=llm_submit,
+            # Submit is already the async mechanism. Gateway-level retry
+            # would double-queue and cause loops.
+            auto_retry=False,
         ),
         Capability(
             name="llm_with_tools",
@@ -2762,8 +2772,26 @@ def _llm_capabilities() -> list[Capability]:
                     "description": "Let LM Studio retain this turn server-side (default False)",
                     "required": False,
                 },
+                "persist_tool_results": {
+                    "type": "bool",
+                    "description": (
+                        "When True, raw MCP tool outputs are saved to "
+                        "the artifact store and the artifact id is "
+                        "embedded in each tool_calls entry "
+                        "(output_artifact_id). Default False — responses "
+                        "contain only tool-call metadata, not raw "
+                        "output. Errors auto-escalate to persist "
+                        "regardless of this flag."
+                    ),
+                    "required": False,
+                },
             },
             callable=llm_with_tools,
+            # Retrying a failed local-LLM tool call wastes tokens, spams
+            # consent prompts (the model re-invokes tools on each replay),
+            # and is unlikely to succeed (model hang ≠ network hiccup).
+            # Failures should surface to the caller, not go to the queue.
+            auto_retry=False,
         ),
     ]
 
@@ -4233,6 +4261,24 @@ def _knowledge_capabilities() -> list[Capability]:
                 "children": {"type": "str", "description": "Comma-separated child paths", "required": False},
                 "tags": {"type": "str", "description": "Comma-separated search tags", "required": False},
                 "aliases": {"type": "str", "description": "Comma-separated search aliases", "required": False},
+                "dev_notes": {
+                    "type": "str",
+                    "description": (
+                        "Development-facing notes surfaced only in dev mode "
+                        "(set via dev_mode_toggle). Use for architectural "
+                        "constraints, non-obvious dependencies, and "
+                        "hard-won lessons future dev agents could clobber."
+                    ),
+                    "required": False,
+                },
+                "entry_points": {
+                    "type": "str",
+                    "description": (
+                        "(system kind) Comma-separated dotted module paths "
+                        "that implement this system, for navigation."
+                    ),
+                    "required": False,
+                },
             },
             callable=docs_create,
             mutates_state=True,
@@ -4258,6 +4304,22 @@ def _knowledge_capabilities() -> list[Capability]:
                 "children": {"type": "str", "description": "New comma-separated children (replaces)", "required": False},
                 "tags": {"type": "str", "description": "New comma-separated tags (replaces)", "required": False},
                 "aliases": {"type": "str", "description": "New comma-separated aliases (replaces)", "required": False},
+                "dev_notes": {
+                    "type": "str",
+                    "description": (
+                        "New development-facing notes (surfaced only in "
+                        "dev mode). Pass an empty string to clear."
+                    ),
+                    "required": False,
+                },
+                "entry_points": {
+                    "type": "str",
+                    "description": (
+                        "New comma-separated dotted module paths "
+                        "(replaces existing)."
+                    ),
+                    "required": False,
+                },
             },
             callable=docs_update,
             mutates_state=True,

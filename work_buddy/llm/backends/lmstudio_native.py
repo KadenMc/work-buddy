@@ -24,6 +24,10 @@ from typing import Any
 
 import httpx
 
+from work_buddy.llm.backends._errors import (
+    LocalInferenceError,
+    interpret_httpx_exception,
+)
 from work_buddy.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -95,15 +99,24 @@ def call_lmstudio_native(
         if token:
             headers["Authorization"] = f"Bearer {token}"
 
+    # LM Studio's /api/v1/chat accepts ``input`` as the user turn but
+    # does NOT expose a separate system-prompt field. Prepend the
+    # system text to the input so the model's chat template picks it
+    # up as the leading context. Observed-valid fields (from probing
+    # the live endpoint): model, input, integrations, previous_response_id,
+    # store, temperature, max_output_tokens, context_length. The OpenAI
+    # field name ``max_tokens`` is rejected.
+    combined_input = user
+    if system:
+        combined_input = f"{system}\n\n---\n\n{user}"
+
     payload: dict[str, Any] = {
         "model": model,
-        "input": user,
-        "max_tokens": max_tokens,
+        "input": combined_input,
+        "max_output_tokens": max_tokens,
         "temperature": temperature,
         "store": store,
     }
-    if system:
-        payload["instructions"] = system
     if integrations:
         payload["integrations"] = integrations
     if previous_response_id:
@@ -111,42 +124,81 @@ def call_lmstudio_native(
 
     url = base_url.rstrip("/") + "/api/v1/chat"
 
-    with httpx.Client(timeout=timeout) as client:
-        response = client.post(url, headers=headers, json=payload)
-        response.raise_for_status()
-        body = response.json()
+    try:
+        with httpx.Client(timeout=timeout) as client:
+            response = client.post(url, headers=headers, json=payload)
+            response.raise_for_status()
+            body = response.json()
+    except httpx.HTTPError as exc:
+        raise interpret_httpx_exception(
+            exc, model=model, endpoint="/api/v1/chat",
+        ) from exc
 
-    # The native /api/v1/chat response shape isn't fully pinned in
-    # public docs — extract defensively and fall back to plausible
-    # alternatives if top-level keys aren't there.
+    # Observed response shape from LM Studio /api/v1/chat:
+    #   {
+    #     "model_instance_id": "...",
+    #     "output": [
+    #       {"type": "reasoning", "content": "..."},   # thinking models
+    #       {"type": "message", "content": "final answer"},
+    #       {"type": "mcp_call", ...},                  # tool invocations
+    #     ],
+    #     "stats": {"input_tokens": N, "total_output_tokens": N,
+    #               "reasoning_output_tokens": N, ...},
+    #     "response_id": "resp_..."
+    #   }
     content = _extract_content(body)
     tool_calls = _extract_tool_calls(body)
-    usage = body.get("usage") or {}
+    reasoning = _extract_reasoning(body)
+    stats = body.get("stats") or {}
 
     return {
         "content": content,
+        "reasoning": reasoning,
         "tool_calls": tool_calls,
         "response_id": body.get("response_id") or body.get("id"),
-        "model": body.get("model") or model,
-        "input_tokens": int(usage.get("prompt_tokens", 0) or usage.get("input_tokens", 0) or 0),
-        "output_tokens": int(
-            usage.get("completion_tokens", 0) or usage.get("output_tokens", 0) or 0,
-        ),
+        "model": body.get("model_instance_id") or body.get("model") or model,
+        "input_tokens": int(stats.get("input_tokens", 0) or 0),
+        "output_tokens": int(stats.get("total_output_tokens", 0) or 0),
+        "reasoning_tokens": int(stats.get("reasoning_output_tokens", 0) or 0),
         "raw": body,
     }
 
 
 def _extract_content(body: dict[str, Any]) -> str:
-    """Extract the model's final text content from a native-chat response.
+    """Extract the model's final text answer from a native-chat response.
 
-    Handles a few plausible response shapes since the public docs are
-    sparse. Preference order: top-level ``output``, OpenAI-style
-    ``choices[0].message.content``, first text block in an ``output``
-    list of content-items.
+    LM Studio's /api/v1/chat returns ``output`` as an ordered array of
+    typed blocks — ``reasoning`` (thinking), ``message`` (user-facing
+    answer), ``mcp_call`` (tool invocations). We want the LAST
+    ``message`` block's content; earlier message blocks may be
+    intermediate reasoning-visible text.
     """
-    if isinstance(body.get("output"), str):
-        return body["output"]
+    out = body.get("output")
+    if isinstance(out, str):  # legacy/simple shape fallback
+        return out
 
+    if isinstance(out, list):
+        # Walk backwards to find the last message block — this is the
+        # post-tool-call final answer when tools were invoked.
+        for item in reversed(out):
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") != "message":
+                continue
+            content = item.get("content")
+            if isinstance(content, str):
+                return content
+            if isinstance(content, list):
+                # Some shapes nest content items inside a message block
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") in (
+                        "output_text", "text",
+                    ):
+                        return block.get("text", "") or ""
+        # No message block at all — fall through
+
+    # OpenAI-compat fallback (shouldn't happen for /api/v1/chat but
+    # costs nothing to tolerate)
     choices = body.get("choices")
     if isinstance(choices, list) and choices:
         msg = choices[0].get("message") if isinstance(choices[0], dict) else None
@@ -155,41 +207,39 @@ def _extract_content(body: dict[str, Any]) -> str:
             if isinstance(c, str):
                 return c
 
-    # /v1/responses-style: output is an array of content items
+    return ""
+
+
+def _extract_reasoning(body: dict[str, Any]) -> str:
+    """Extract the model's reasoning/thinking text when present.
+
+    Thinking-enabled models (Qwen3.5, etc.) emit their internal chain
+    of thought as a separate ``reasoning`` block before the final
+    message. Surfacing it (separately from ``content``) lets agents
+    decide whether to use it for audit or discard it.
+    """
     out = body.get("output")
     if isinstance(out, list):
+        chunks: list[str] = []
         for item in out:
-            if not isinstance(item, dict):
-                continue
-            if item.get("type") == "message":
-                content = item.get("content")
-                if isinstance(content, list):
-                    for block in content:
-                        if isinstance(block, dict) and block.get("type") in (
-                            "output_text", "text",
-                        ):
-                            return block.get("text", "") or ""
-                elif isinstance(content, str):
-                    return content
-
+            if isinstance(item, dict) and item.get("type") == "reasoning":
+                c = item.get("content")
+                if isinstance(c, str):
+                    chunks.append(c)
+        return "\n\n".join(chunks)
     return ""
 
 
 def _extract_tool_calls(body: dict[str, Any]) -> list[dict[str, Any]]:
     """Extract any MCP tool calls the model invoked.
 
-    Each returned dict preserves ``tool``, ``arguments``, ``output``,
-    and any ``provider_info`` the server included. Returns an empty
-    list when no tools were called.
+    LM Studio surfaces tool invocations as ``output`` items with
+    ``type: "mcp_call"`` (or ``"tool_call"`` in older versions).
+    Each entry preserves the call's tool name, arguments, output,
+    and provider_info. Returns an empty list when no tools fired.
     """
     calls: list[dict[str, Any]] = []
 
-    # Pattern 1: top-level "tool_calls" array
-    tc = body.get("tool_calls")
-    if isinstance(tc, list):
-        calls.extend(x for x in tc if isinstance(x, dict))
-
-    # Pattern 2: output items list with type="tool_call"
     out = body.get("output")
     if isinstance(out, list):
         for item in out:
@@ -197,5 +247,11 @@ def _extract_tool_calls(body: dict[str, Any]) -> list[dict[str, Any]]:
                 "tool_call", "mcp_call",
             ):
                 calls.append(item)
+
+    # Belt-and-suspenders: some response variants bubble tool_calls
+    # as a sibling key — include them too
+    tc = body.get("tool_calls")
+    if isinstance(tc, list):
+        calls.extend(x for x in tc if isinstance(x, dict))
 
     return calls

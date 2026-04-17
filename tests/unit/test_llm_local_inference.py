@@ -176,6 +176,8 @@ def test_openai_compat_no_schema_omits_response_format(monkeypatch):
 
 
 def test_openai_compat_http_error(monkeypatch):
+    from work_buddy.llm.backends._errors import LocalInferenceError
+
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(500, json={"error": "boom"})
 
@@ -186,16 +188,20 @@ def test_openai_compat_http_error(monkeypatch):
         lambda *a, **kw: orig_client(*a, **{**kw, "transport": transport}),
     )
 
-    with pytest.raises(httpx.HTTPStatusError):
+    # openai_compat now wraps httpx errors in LocalInferenceError so
+    # callers get a structured kind + hint instead of a raw stack trace.
+    with pytest.raises(LocalInferenceError) as excinfo:
         call_openai_compat(
             base_url="http://localhost:1234/v1",
             model="qwen/qwen3-4b",
             system="s",
             user="u",
         )
+    assert excinfo.value.kind == "server_error"
 
 
 def test_openai_compat_malformed_response(monkeypatch):
+    from work_buddy.llm.backends._errors import LocalInferenceError
     transport, _ = _mock_response({"unexpected": "shape"})
     orig_client = httpx.Client
     monkeypatch.setattr(
@@ -203,13 +209,17 @@ def test_openai_compat_malformed_response(monkeypatch):
         lambda *a, **kw: orig_client(*a, **{**kw, "transport": transport}),
     )
 
-    with pytest.raises(ValueError):
+    # Malformed 2xx bodies are now wrapped in LocalInferenceError
+    # (kind="malformed_response") so callers get a uniform error shape
+    # rather than a bare ValueError.
+    with pytest.raises(LocalInferenceError) as excinfo:
         call_openai_compat(
             base_url="http://localhost:1234/v1",
             model="qwen/qwen3-4b",
             system="s",
             user="u",
         )
+    assert excinfo.value.kind == "malformed_response"
 
 
 # ---------------------------------------------------------------------------

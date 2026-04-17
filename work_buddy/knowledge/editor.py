@@ -141,6 +141,8 @@ def create_unit(
     children: list[str] | None = None,
     tags: list[str] | None = None,
     aliases: list[str] | None = None,
+    dev_notes: str | None = None,
+    entry_points: list[str] | None = None,
     extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Create a new unit in the knowledge store.
@@ -177,6 +179,13 @@ def create_unit(
         unit_data["parents"] = parents
     if children:
         unit_data["children"] = children
+    # Universal: dev_notes surfaces in dev mode regardless of kind.
+    # entry_points is system-kind metadata but we accept it here as a
+    # first-class param so callers don't need to use the generic ``extra``.
+    if dev_notes:
+        unit_data["dev_notes"] = dev_notes
+    if entry_points:
+        unit_data["entry_points"] = entry_points
 
     # Kind-specific fields
     if kind == "directions":
@@ -464,6 +473,8 @@ def docs_create(
     children: str | None = None,
     tags: str | None = None,
     aliases: str | None = None,
+    dev_notes: str | None = None,
+    entry_points: str | None = None,
 ) -> dict[str, Any]:
     """Create a new unit in the knowledge store.
 
@@ -498,6 +509,8 @@ def docs_create(
         children=_split_csv(children),
         tags=_split_csv(tags),
         aliases=_split_csv(aliases),
+        dev_notes=dev_notes if dev_notes else None,
+        entry_points=_split_csv(entry_points),
     )
 
 
@@ -514,6 +527,8 @@ def docs_update(
     children: str | None = None,
     tags: str | None = None,
     aliases: str | None = None,
+    dev_notes: str | None = None,
+    entry_points: str | None = None,
 ) -> dict[str, Any]:
     """Update fields on an existing knowledge unit.
 
@@ -553,6 +568,10 @@ def docs_update(
         updates["tags"] = _split_csv(tags)
     if aliases is not None:
         updates["aliases"] = _split_csv(aliases)
+    if dev_notes is not None:
+        updates["dev_notes"] = dev_notes
+    if entry_points is not None:
+        updates["entry_points"] = _split_csv(entry_points)
 
     if not updates:
         return {"error": "No fields to update."}
