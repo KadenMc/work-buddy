@@ -49,19 +49,56 @@ def _resolve_session(ctx: Context) -> str | None:
     return _SESSION_REGISTRY.get(id(ctx.session))
 
 
+def _auto_init_from_header(ctx: Context) -> str | None:
+    """Register this MCP connection automatically when the incoming
+    HTTP request carries an ``X-Work-Buddy-Session`` header.
+
+    Programmatic clients (e.g. LM Studio acting as an MCP client for a
+    local model during ``llm_with_tools``) can't call ``wb_init``
+    themselves reliably, so we accept a header-based registration
+    instead. Returns the registered session id, or None when no header
+    was present (in which case the caller must call ``wb_init`` the
+    normal way).
+    """
+    request_ctx = getattr(ctx, "request_context", None)
+    if request_ctx is None:
+        return None
+    request = getattr(request_ctx, "request", None)
+    if request is None:
+        return None
+    headers = getattr(request, "headers", None)
+    if headers is None:
+        return None
+    # Starlette's headers are case-insensitive when accessed via .get
+    session_id = headers.get("X-Work-Buddy-Session") or headers.get(
+        "x-work-buddy-session",
+    )
+    if not session_id or not session_id.strip():
+        return None
+    session_id = session_id.strip()
+    _register_session(ctx, session_id)
+    return session_id
+
+
 def _require_init(ctx: Context) -> dict | None:
     """Check if this MCP session has been initialized.
 
-    Returns an error dict if not initialized, None if OK.
+    If not, attempt header-based auto-init before failing. Returns an
+    error dict when the session still isn't registered after that,
+    None when everything's in order.
     """
     if _resolve_session(ctx) is not None:
+        return None
+    if _auto_init_from_header(ctx) is not None:
         return None
     return _prepare({
         "error": "Session not initialized. Call wb_init(session_id) first.",
         "hint": (
             "Every agent session must call wb_init with its WORK_BUDDY_SESSION_ID "
             "before using any other work-buddy tools. Your SessionStart hook "
-            "should have set this environment variable."
+            "should have set this environment variable. Programmatic clients "
+            "can register automatically by sending the X-Work-Buddy-Session "
+            "HTTP header on any request."
         ),
     })
 
@@ -364,9 +401,14 @@ def _list_recent_operations(limit: int = 10) -> list[dict[str, Any]]:
                 "created_at": raw.get("created_at"),
                 "completed_at": raw.get("completed_at"),
             }
-            # Surface retry queue state
-            if raw.get("queued_for_retry"):
-                entry_dict["status"] = "queued_retry"
+            # Surface queue state (retries + deferred submits + scheduled jobs)
+            if _is_queued(raw):
+                reason = raw.get("queue_reason", "retry")
+                entry_dict["status"] = (
+                    "queued_retry" if reason == "retry" else f"queued_{reason}"
+                )
+                entry_dict["queued"] = True
+                entry_dict["queue_reason"] = reason
                 entry_dict["retry_at"] = raw.get("retry_at")
                 entry_dict["max_retries"] = raw.get("max_retries")
                 entry_dict["error_class"] = raw.get("error_class")
@@ -420,8 +462,12 @@ def _enqueue_for_retry(
     record["completed_at"] = now.isoformat()
     record["locked_until"] = None
 
-    # Retry queue fields
-    record["queued_for_retry"] = True
+    # Queue fields — canonical: queued + queue_reason. queued_for_retry
+    # is kept as a legacy alias on-disk for one release so any in-flight
+    # records written by older code can still be read by the sweep.
+    record["queued"] = True
+    record["queue_reason"] = "retry"
+    record["queued_for_retry"] = True  # deprecated alias; removed in a later cleanup
     record["retry_at"] = (now + timedelta(seconds=delay_seconds)).isoformat()
     record["max_retries"] = max_retries
     record["backoff_strategy"] = backoff_strategy
@@ -439,19 +485,29 @@ def _enqueue_for_retry(
     _update_operation(record)
 
 
+def _is_queued(record: dict[str, Any]) -> bool:
+    """Canonical read for 'is this op sitting in the sweep queue?'.
+
+    Accepts the new ``queued`` field or the deprecated ``queued_for_retry``
+    alias. Centralizing avoids forgetting a call site during the rename.
+    """
+    return bool(record.get("queued") or record.get("queued_for_retry"))
+
+
 def _prune_old_operations() -> None:
     """Remove completed operation records older than 1 hour.
 
-    Preserves operations that are queued for retry (they need to survive
-    until the sidecar processes them or they exhaust retries).
+    Preserves operations that are queued (retry, deferred submit, or
+    scheduled job) — they need to survive until the sidecar processes
+    them or they exhaust retries.
     """
     ops_dir = _get_operations_dir()
     cutoff = datetime.now(timezone.utc) - timedelta(hours=1)
     for p in ops_dir.glob("op_*.json"):
         try:
             raw = json.loads(p.read_text(encoding="utf-8"))
-            # Never prune operations queued for retry
-            if raw.get("queued_for_retry"):
+            # Never prune operations still in the queue
+            if _is_queued(raw):
                 continue
             if raw.get("status") in ("completed", "failed"):
                 completed = raw.get("completed_at")
@@ -542,9 +598,20 @@ def register_tools(mcp: FastMCP) -> None:
         if gate:
             return gate
         results = registry.search_registry(query, category, top_n=filter_n)
+
+        # If this session has a capability ACL (set by ``llm_with_tools``
+        # before a local-model tool call), filter results to only the
+        # allowed names. This keeps the model from discovering tools it
+        # can't actually invoke and making wasted wb_run attempts.
+        from work_buddy.mcp_server.session_acl import get_session_acl
+        session_id = _resolve_session(ctx)
+        acl = get_session_acl(session_id)
+        if acl is not None:
+            results = [r for r in results if r.get("name") in acl]
+
         # Activity ledger: record search
         from work_buddy.mcp_server.activity_ledger import record_search
-        record_search(query, category, len(results), _resolve_session(ctx))
+        record_search(query, category, len(results), session_id)
         return _prepare(results)
 
     @mcp.tool()
@@ -567,7 +634,43 @@ def register_tools(mcp: FastMCP) -> None:
 
         # Handle wb_init through wb_run (exempt from gate) — this allows
         # sessions that haven't discovered the wb_init tool to still init.
+        #
+        # Security: this path would otherwise be an ACL-escape vector.
+        # A small local model with access to wb_run could call
+        # wb_run(capability="wb_init", session_id="...") to swap its MCP
+        # connection to a different agent session id, after which the
+        # ACL registered for its original (synthesized) id no longer
+        # applies. Reject wb_init re-registration when the current
+        # connection is already bound to an ACL-scoped session.
+        #
+        # We auto-init from the X-Work-Buddy-Session header FIRST so
+        # the session is resolvable before we inspect its ACL — without
+        # this, the first wb_run call from an LM Studio-driven local
+        # model would see current_sid=None and bypass the check.
         if capability == "wb_init":
+            from work_buddy.mcp_server.session_acl import get_session_acl
+            # Auto-init from the X-Work-Buddy-Session header FIRST so
+            # the session is resolvable before we inspect its ACL.
+            # Without this, the first wb_run call from an LM Studio-
+            # driven local model would see current_sid=None and the
+            # ACL check would be silently bypassed.
+            _auto_init_from_header(ctx)
+            current_sid = _resolve_session(ctx)
+            if current_sid is not None and get_session_acl(current_sid) is not None:
+                return _prepare({
+                    "error": (
+                        "wb_init is not permitted for ACL-scoped sessions. "
+                        "The caller set a capability whitelist on this "
+                        "session; re-initialization would escape the ACL."
+                    ),
+                    "denied_by": "session_acl",
+                    "hint": (
+                        "This is a hard-block for local models invoked "
+                        "through llm_with_tools. Normal agents shouldn't "
+                        "hit this error — if you are, the session was "
+                        "opened inside an llm_with_tools run by mistake."
+                    ),
+                })
             sid = parsed_params.get("session_id", "")
             if not sid or not str(sid).strip():
                 return _prepare({"error": "session_id is required. Pass your WORK_BUDDY_SESSION_ID."})
@@ -585,6 +688,31 @@ def register_tools(mcp: FastMCP) -> None:
         if gate:
             return gate
         _agent_sid = _resolve_session(ctx)
+
+        # Per-session capability ACL — applied when ``llm_with_tools``
+        # has registered a whitelist for this session. Sessions without
+        # an ACL (every normal agent) pass through unchanged.
+        from work_buddy.mcp_server.session_acl import (
+            get_session_acl, is_capability_allowed,
+        )
+        if not is_capability_allowed(_agent_sid, capability):
+            acl = get_session_acl(_agent_sid)
+            allowed_preview = sorted(acl)[:12] if acl else []
+            return _prepare({
+                "error": (
+                    f"Capability {capability!r} is not permitted for this "
+                    f"session. The caller restricted this session to a "
+                    f"named preset."
+                ),
+                "denied_by": "session_acl",
+                "allowed_sample": allowed_preview,
+                "hint": (
+                    "Use wb_search to discover the capabilities this "
+                    "session is allowed to invoke — search results are "
+                    "filtered to the ACL automatically."
+                ),
+            })
+
         entry = registry.get_entry(capability)
 
         if entry is None:
@@ -626,7 +754,15 @@ def register_tools(mcp: FastMCP) -> None:
             retry_policy = "manual"
         else:
             op_type = "capability"
-            retry_policy = entry.retry_policy if entry.mutates_state else "replay"
+            if not entry.auto_retry:
+                # Explicit opt-out — e.g. llm_with_tools, llm_submit.
+                # Retrying these on transient failure wastes tokens and
+                # spams consent prompts.
+                retry_policy = "manual"
+            elif entry.mutates_state:
+                retry_policy = entry.retry_policy
+            else:
+                retry_policy = "replay"
 
         # Save operation record before dispatch
         op_id = _save_operation(capability, parsed_params, retry_policy, op_type=op_type)
@@ -1066,7 +1202,7 @@ def _retry_queue_summary() -> dict[str, Any]:
     for p in ops_dir.glob("op_*.json"):
         try:
             raw = json.loads(p.read_text(encoding="utf-8"))
-            if raw.get("queued_for_retry"):
+            if _is_queued(raw):
                 if raw.get("attempt", 1) >= raw.get("max_retries", 5):
                     exhausted += 1
                 else:

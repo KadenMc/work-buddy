@@ -245,6 +245,10 @@ class TestEnqueueForRetry:
 
             assert mock_update.called
             updated = mock_update.call_args[0][0]
+            # Canonical fields
+            assert updated["queued"] is True
+            assert updated["queue_reason"] == "retry"
+            # Legacy alias kept for transitional compatibility
             assert updated["queued_for_retry"] is True
             assert updated["status"] == "failed"
             assert updated["error"] == "TimeoutError: timed out"

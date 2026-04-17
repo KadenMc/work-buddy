@@ -26,9 +26,20 @@ _COST_PER_M_TOKENS: dict[str, dict[str, float]] = {
 
 
 def _cost_log_path() -> Path:
-    from work_buddy.agent_session import get_session_dir
+    """Resolve the cost log path, routing to the originating session if set.
 
-    session_dir = get_session_dir()
+    When the sidecar's retry sweep replays a queued llm_submit op, it sets
+    an originating-session context var so this log entry lands in the
+    agent's directory rather than the sidecar's. Falls back to the normal
+    session when no override is active.
+    """
+    from work_buddy.agent_session import (
+        get_session_dir,
+        get_originating_session,
+    )
+
+    override = get_originating_session()
+    session_dir = get_session_dir(override) if override else get_session_dir()
     return session_dir / "llm_costs.jsonl"
 
 
@@ -85,6 +96,8 @@ def log_call(
     *,
     trace_id: str | None = None,
     cached: bool = False,
+    execution_mode: str = "cloud",
+    backend: str | None = None,
 ) -> None:
     """Append a cost entry to the session log.
 
@@ -95,19 +108,30 @@ def log_call(
         task_id: Identifier for the task (e.g., "chrome_infer:batch").
         trace_id: Optional UUID linking related calls in a single invocation.
         cached: If True, this was a cache hit (no API call, zero cost).
+        execution_mode: ``"cloud"`` (default) or ``"local"``. Local calls
+            log ``estimated_cost_usd: 0.0`` rather than falling back to
+            the unknown-model price heuristic.
+        backend: Optional backend id (e.g., ``"anthropic_default"``,
+            ``"lmstudio_local"``) for per-backend cost breakdowns.
     """
+    if cached or execution_mode == "local":
+        est_cost = 0.0
+    else:
+        est_cost = round(_estimate_cost(model, input_tokens, output_tokens), 6)
+
     entry: dict[str, Any] = {
         "timestamp": datetime.now().isoformat(),
         "model": model,
         "task_id": task_id,
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
-        "estimated_cost_usd": 0.0 if cached else round(
-            _estimate_cost(model, input_tokens, output_tokens), 6,
-        ),
+        "estimated_cost_usd": est_cost,
         "cached": cached,
+        "execution_mode": execution_mode,
         "caller": _get_caller_chain(),
     }
+    if backend:
+        entry["backend"] = backend
     if trace_id:
         entry["trace_id"] = trace_id
 

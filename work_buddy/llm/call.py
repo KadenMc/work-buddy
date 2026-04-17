@@ -71,7 +71,8 @@ def llm_call(
     system: str,
     user: str,
     output_schema: dict | str | None = None,
-    tier: str = "haiku",
+    tier: str | None = None,
+    profile: str | None = None,
     max_tokens: int = 1024,
     temperature: float = 0.0,
     cache_ttl_minutes: int | None = None,
@@ -87,7 +88,13 @@ def llm_call(
         output_schema: JSON Schema for constrained output. Pass a dict for
             inline schemas, or a string name to load from
             ``work_buddy/llm/schemas/<name>.json``.  Omit for freeform text.
-        tier: Model tier — ``"haiku"`` (default), ``"sonnet"``, or ``"opus"``.
+        tier: Cloud model tier — ``"haiku"``, ``"sonnet"``, or ``"opus"``.
+            Mutually exclusive with ``profile``. Defaults to ``"haiku"``
+            when neither ``tier`` nor ``profile`` is set.
+        profile: Named local/remote profile (e.g. ``"local_general"``)
+            declared under ``llm.profiles`` in config. Mutually exclusive
+            with ``tier``. Routes the call to the profile's backend
+            (e.g. LM Studio) instead of Anthropic.
         max_tokens: Max response tokens.
         temperature: Sampling temperature.
         cache_ttl_minutes: Cache TTL. ``None`` = config default, ``0`` = skip.
@@ -98,16 +105,7 @@ def llm_call(
     """
     from work_buddy.llm.runner import ModelTier, run_task
 
-    # Resolve schema
-    resolved_schema = _resolve_schema(output_schema)
-
-    # Auto-generate task_id for caching / cost tracking
-    task_id = _make_task_id(system, user, resolved_schema)
-
-    # Map tier string to enum
-    try:
-        model_tier = ModelTier(tier.lower())
-    except ValueError:
+    if tier is not None and profile is not None:
         return {
             "content": "",
             "parsed": None,
@@ -115,19 +113,54 @@ def llm_call(
             "input_tokens": 0,
             "output_tokens": 0,
             "cached": False,
-            "error": f"Invalid tier '{tier}'. Must be one of: haiku, sonnet, opus",
+            "error": "'tier' and 'profile' are mutually exclusive",
         }
 
-    result = run_task(
-        task_id=task_id,
-        system=system,
-        user=user,
-        output_schema=resolved_schema,
-        tier=model_tier,
-        max_tokens=max_tokens,
-        temperature=temperature,
-        cache_ttl_minutes=cache_ttl_minutes,
-    )
+    # Resolve schema
+    resolved_schema = _resolve_schema(output_schema)
+
+    # Auto-generate task_id for caching / cost tracking. Backend+model
+    # scoping is applied inside run_task so local and cloud caches never
+    # collide on identical (system, user, schema) inputs.
+    task_id = _make_task_id(system, user, resolved_schema)
+
+    # Default to haiku when neither is specified (backwards compatibility
+    # with all existing callers).
+    if profile is None:
+        effective_tier = tier if tier is not None else "haiku"
+        try:
+            model_tier = ModelTier(effective_tier.lower())
+        except ValueError:
+            return {
+                "content": "",
+                "parsed": None,
+                "model": "",
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cached": False,
+                "error": f"Invalid tier '{effective_tier}'. Must be one of: haiku, sonnet, opus",
+            }
+        result = run_task(
+            task_id=task_id,
+            system=system,
+            user=user,
+            output_schema=resolved_schema,
+            tier=model_tier,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            cache_ttl_minutes=cache_ttl_minutes,
+        )
+    else:
+        result = run_task(
+            task_id=task_id,
+            system=system,
+            user=user,
+            output_schema=resolved_schema,
+            profile=profile,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            cache_ttl_minutes=cache_ttl_minutes,
+        )
 
     return {
         "content": result.content,

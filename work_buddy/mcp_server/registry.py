@@ -40,6 +40,13 @@ class Capability:
     requires: list[str] = field(default_factory=list)  # tool IDs, e.g. ["obsidian", "hindsight"]
     mutates_state: bool = False  # whether this capability modifies state
     retry_policy: str = "manual"  # "replay" | "verify_first" | "manual"
+    # When True (default), the gateway auto-enqueues transient failures
+    # of non-mutating capabilities for background retry. Capabilities
+    # that represent real work with non-recoverable failure modes (e.g.
+    # local-LLM calls where a timeout means the model is hung and
+    # retrying wastes tokens and spams consent prompts) should set this
+    # to False to keep the failure in the caller's face.
+    auto_retry: bool = True
     slash_command: str | None = None  # e.g. "wb-journal-update"
     consent_operations: list[str] = field(default_factory=list)  # @requires_consent op IDs this capability may trigger
 
@@ -2534,10 +2541,13 @@ def _llm_capabilities() -> list[Capability]:
     """General-purpose LLM call capability.
 
     Uses ``work_buddy.llm.call.llm_call`` which wraps ``run_task()``.
-    The ``anthropic`` package is pure Python (no C extensions) so it is
-    safe in asyncio.to_thread() — no import deadlock risk.
+    Both the ``anthropic`` SDK and ``httpx`` (used by the openai_compat
+    backend) are pure Python — no C extensions — so they're safe in
+    ``asyncio.to_thread()`` with no import-deadlock risk.
     """
     from work_buddy.llm.call import llm_call
+    from work_buddy.llm.submit import llm_submit
+    from work_buddy.llm.with_tools import llm_with_tools
 
     return [
         Capability(
@@ -2546,8 +2556,10 @@ def _llm_capabilities() -> list[Capability]:
                 "Make a single LLM API call (Tier 2 execution). Cheaper than "
                 "spawning a full agent session. Supports freeform text or "
                 "structured JSON output via output_schema (inline dict or "
-                "named schema from work_buddy/llm/schemas/). Handles caching, "
-                "cost tracking, and model tier selection automatically."
+                "named schema from work_buddy/llm/schemas/). Routes to Claude "
+                "via 'tier' or to a local/remote OpenAI-compatible server "
+                "(LM Studio, vLLM, Ollama) via 'profile'. Handles caching "
+                "and cost tracking automatically."
             ),
             category="llm",
             search_aliases=[
@@ -2560,6 +2572,9 @@ def _llm_capabilities() -> list[Capability]:
                 "cheap llm",
                 "classify",
                 "analyze",
+                "local llm",
+                "lm studio",
+                "qwen",
             ],
             parameters={
                 "system": {
@@ -2583,7 +2598,20 @@ def _llm_capabilities() -> list[Capability]:
                 },
                 "tier": {
                     "type": "str",
-                    "description": "Model tier: 'haiku' (default, cheapest), 'sonnet', or 'opus'",
+                    "description": (
+                        "Cloud model tier: 'haiku' (default if no profile given), "
+                        "'sonnet', or 'opus'. Mutually exclusive with 'profile'."
+                    ),
+                    "required": False,
+                },
+                "profile": {
+                    "type": "str",
+                    "description": (
+                        "Named local/remote profile (e.g. 'local_general') "
+                        "declared under llm.profiles in config. Routes through "
+                        "the profile's backend instead of Anthropic. Mutually "
+                        "exclusive with 'tier'."
+                    ),
                     "required": False,
                 },
                 "max_tokens": {
@@ -2603,6 +2631,167 @@ def _llm_capabilities() -> list[Capability]:
                 },
             },
             callable=llm_call,
+        ),
+        Capability(
+            name="llm_submit",
+            description=(
+                "Asynchronously submit an llm_call for background execution. "
+                "Returns immediately with an operation_id; the sidecar's "
+                "retry sweep invokes llm_call with your params and messages "
+                "the originating session on completion. Use when local "
+                "inference latency (tens of seconds) would block the caller "
+                "unnecessarily. For synchronous bounded calls use llm_call. "
+                "Cloud tier calls are already fast — no point submitting them; "
+                "profile is therefore required."
+            ),
+            category="llm",
+            search_aliases=[
+                "async llm",
+                "background llm",
+                "queue llm call",
+                "submit llm",
+                "defer llm",
+                "fire and forget",
+                "autodream",
+                "background inference",
+            ],
+            parameters={
+                "system": {
+                    "type": "str",
+                    "description": "System prompt",
+                    "required": True,
+                },
+                "user": {
+                    "type": "str",
+                    "description": "User message content",
+                    "required": True,
+                },
+                "profile": {
+                    "type": "str",
+                    "description": (
+                        "Named local/remote profile (e.g. 'local_general'). "
+                        "Required — submits are for local profiles only."
+                    ),
+                    "required": True,
+                },
+                "output_schema": {
+                    "type": "dict|str",
+                    "description": (
+                        "JSON Schema for structured output. Pass a dict for "
+                        "inline schemas, or a string name to load from "
+                        "work_buddy/llm/schemas/<name>.json. Omit for freeform."
+                    ),
+                    "required": False,
+                },
+                "max_tokens": {
+                    "type": "int",
+                    "description": "Max response tokens (default: 1024)",
+                    "required": False,
+                },
+                "temperature": {
+                    "type": "float",
+                    "description": "Sampling temperature (default: 0.0)",
+                    "required": False,
+                },
+                "cache_ttl_minutes": {
+                    "type": "int",
+                    "description": "Cache TTL in minutes. None=config default, 0=no cache.",
+                    "required": False,
+                },
+            },
+            callable=llm_submit,
+            # Submit is already the async mechanism. Gateway-level retry
+            # would double-queue and cause loops.
+            auto_retry=False,
+        ),
+        Capability(
+            name="llm_with_tools",
+            description=(
+                "Invoke a local model with restricted work-buddy MCP tool "
+                "access, so it can look things up (projects, tasks, journal, "
+                "context) while answering. Tool access is limited to a "
+                "named preset defined in work_buddy/llm/tool_presets.py "
+                "(currently: 'readonly_safe', 'readonly_context'). No "
+                "arbitrary tool list accepted at call time — presets are "
+                "the security boundary. Requires 'profile' and 'tool_preset'."
+            ),
+            category="llm",
+            search_aliases=[
+                "local llm with tools",
+                "llm tool access",
+                "mcp tools local",
+                "contextualize local",
+                "local model tools",
+                "lm studio mcp",
+                "qwen with tools",
+                "tool use local",
+            ],
+            parameters={
+                "system": {
+                    "type": "str",
+                    "description": "System prompt (becomes 'instructions' on the native chat request)",
+                    "required": True,
+                },
+                "user": {
+                    "type": "str",
+                    "description": "User query (becomes 'input')",
+                    "required": True,
+                },
+                "profile": {
+                    "type": "str",
+                    "description": "Named local profile (e.g., 'local_general') — must be LM Studio-backed",
+                    "required": True,
+                },
+                "tool_preset": {
+                    "type": "str",
+                    "description": (
+                        "Named whitelist of allowed work-buddy tools. "
+                        "Currently: 'readonly_safe', 'readonly_context'. "
+                        "Presets are code, not config — defined in "
+                        "work_buddy/llm/tool_presets.py."
+                    ),
+                    "required": True,
+                },
+                "previous_response_id": {
+                    "type": "str",
+                    "description": "Continue a prior LM Studio stateful-chat turn",
+                    "required": False,
+                },
+                "max_tokens": {
+                    "type": "int",
+                    "description": "Output budget. Default 4096 (tool-calling eats tokens).",
+                    "required": False,
+                },
+                "temperature": {
+                    "type": "float",
+                    "description": "Sampling temperature (default 0.0)",
+                    "required": False,
+                },
+                "store": {
+                    "type": "bool",
+                    "description": "Let LM Studio retain this turn server-side (default False)",
+                    "required": False,
+                },
+                "persist_tool_results": {
+                    "type": "bool",
+                    "description": (
+                        "When True, raw MCP tool outputs are saved to "
+                        "the artifact store and the artifact id is "
+                        "embedded in each tool_calls entry "
+                        "(output_artifact_id). Default False — responses "
+                        "contain only tool-call metadata, not raw "
+                        "output. Errors auto-escalate to persist "
+                        "regardless of this flag."
+                    ),
+                    "required": False,
+                },
+            },
+            callable=llm_with_tools,
+            # Retrying a failed local-LLM tool call wastes tokens, spams
+            # consent prompts (the model re-invokes tools on each replay),
+            # and is unlikely to succeed (model hang ≠ network hiccup).
+            # Failures should surface to the caller, not go to the queue.
+            auto_retry=False,
         ),
     ]
 
@@ -4072,6 +4261,24 @@ def _knowledge_capabilities() -> list[Capability]:
                 "children": {"type": "str", "description": "Comma-separated child paths", "required": False},
                 "tags": {"type": "str", "description": "Comma-separated search tags", "required": False},
                 "aliases": {"type": "str", "description": "Comma-separated search aliases", "required": False},
+                "dev_notes": {
+                    "type": "str",
+                    "description": (
+                        "Development-facing notes surfaced only in dev mode "
+                        "(set via dev_mode_toggle). Use for architectural "
+                        "constraints, non-obvious dependencies, and "
+                        "hard-won lessons future dev agents could clobber."
+                    ),
+                    "required": False,
+                },
+                "entry_points": {
+                    "type": "str",
+                    "description": (
+                        "(system kind) Comma-separated dotted module paths "
+                        "that implement this system, for navigation."
+                    ),
+                    "required": False,
+                },
             },
             callable=docs_create,
             mutates_state=True,
@@ -4097,6 +4304,22 @@ def _knowledge_capabilities() -> list[Capability]:
                 "children": {"type": "str", "description": "New comma-separated children (replaces)", "required": False},
                 "tags": {"type": "str", "description": "New comma-separated tags (replaces)", "required": False},
                 "aliases": {"type": "str", "description": "New comma-separated aliases (replaces)", "required": False},
+                "dev_notes": {
+                    "type": "str",
+                    "description": (
+                        "New development-facing notes (surfaced only in "
+                        "dev mode). Pass an empty string to clear."
+                    ),
+                    "required": False,
+                },
+                "entry_points": {
+                    "type": "str",
+                    "description": (
+                        "New comma-separated dotted module paths "
+                        "(replaces existing)."
+                    ),
+                    "required": False,
+                },
             },
             callable=docs_update,
             mutates_state=True,

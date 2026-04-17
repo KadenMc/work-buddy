@@ -335,11 +335,43 @@ Centralized storage for all agent-produced output: context bundles, exports, rep
 
 **Python module:** `work_buddy/artifacts.py` — `ArtifactStore` class + module-level convenience functions. `work_buddy/paths.py` — centralized path resolution.
 
-## Retry queue
+## Local models with tool access (`llm_with_tools`)
 
-Background retry system for transient operation failures. When a capability fails with a transient error (timeout, connection refused, bridge hiccup), the gateway auto-enqueues it for background retry by the sidecar.
+Local LM Studio-served models can invoke a **restricted whitelist** of work-buddy MCP tools while answering a query. This addresses the "local model needs to look something up" use case (e.g., "what's the state of project X?") without treating local models as fully agentic Claude replacements.
 
-**How agents should handle it:** When `wb_run` returns `{queued_for_retry: true}`, move on to other work. The sidecar will retry in the background and notify you via messaging when it succeeds.
+Uses LM Studio's native `/api/v1/chat` endpoint (which supports server-side MCP tool-call loops) rather than the OpenAI-compatible `/v1/chat/completions`. LM Studio handles the tool-call round-trips automatically; our code sees only the final answer plus an audit list of the calls the model made.
+
+**Security model — whitelists are the boundary:**
+
+- Presets live in **code** at `work_buddy/llm/tool_presets.py`, not config. Adding or expanding a preset is a reviewed PR.
+- The capability signature takes `tool_preset: str` (a named preset); there is no way to pass an arbitrary `allowed_tools` list at call time.
+- Read-only presets must contain zero mutating capabilities (`validate_presets()` enforces this at test time).
+- Every preset includes `wb_init` because the model has to register its MCP session before calling anything else.
+
+**Current presets:**
+
+- `readonly_safe` — tasks/contracts/projects/journal reads, sidecar status, messaging reads. Minimum-footprint reads.
+- `readonly_context` — `readonly_safe` plus context collectors (git, Obsidian, Chrome, calendar, smart search, Datacore, session reads, memory reads).
+
+No mutating presets exist in v1. Adding one requires per-use-case PR review.
+
+**Known v1 limitation — session registration:** the gateway's `wb_init` gate is keyed on the MCP connection; LM Studio's MCP client opens a distinct connection, so the model must call `wb_init` itself as its first tool call. `llm_with_tools` injects an instruction into the system prompt telling it to. Brittle but simple. Follow-up: have the gateway auto-register from an `X-Work-Buddy-Session` header so this instruction can go away.
+
+## Async execution queue
+
+Background execution queue for three kinds of work:
+
+- **`retry`** — transient failures auto-enqueued by the gateway (timeout, connection refused, bridge hiccup) to be replayed with backoff
+- **`deferred_submit`** — deliberate async submissions from callers who don't want to wait for long-running work (e.g. local-LLM inference via `llm_submit`). One attempt, no backoff, quiet on failure.
+- **`scheduled_job`** — fired by the sidecar cron scheduler
+
+All three share the same on-disk op record store and the same sweep loop in `work_buddy/sidecar/retry_sweep.py`. The `queue_reason` field on each record drives policy differences (backoff vs not, loud vs quiet failure, dashboard bucketing).
+
+**On-disk fields:** `queued: true` and `queue_reason: "retry"|"deferred_submit"|"scheduled_job"` are canonical. The older `queued_for_retry: true` alias is still written and read for transitional compatibility.
+
+**How agents should handle retry enqueues:** When `wb_run` returns `{queued_for_retry: true}`, move on to other work. The sidecar will retry in the background and notify you via messaging when it succeeds.
+
+**How agents should handle `llm_submit`:** The return payload includes `operation_id` and a `hint` explaining how to retrieve the result via `wb_run("wb_status", {operation_id})`. The originating session also receives a messaging ping on completion.
 
 **Error classification:** `work_buddy/errors.py` — `classify_error()` returns `transient` (timeout, connection issues), `permanent` (type errors, missing args), or `unknown`. Only transient failures with `retry_policy: replay` are auto-enqueued.
 
@@ -662,7 +694,9 @@ All capabilities and workflows are invoked via `mcp__work-buddy__wb_run("name", 
 | `mcp_registry_reload` | function | Rebuild capability registry without restart |
 | `retry` | function | Retry a previously recorded operation by its ID |
 | `obsidian_retry` | function | Synchronous bridge-aware retry with health checks between attempts |
-| `llm_call` | function | Single LLM API call (Tier 2, cheaper than full agent) |
+| `llm_call` | function | Single LLM API call (Tier 2, cheaper than full agent). Cloud via `tier` or local via `profile` |
+| `llm_submit` | function | Async queue an `llm_call` for background execution. Returns `operation_id`; result via `wb_status` or messaging ping |
+| `llm_with_tools` | function | Local model call with restricted work-buddy MCP tool access (via LM Studio's `/api/v1/chat`). Tools gated by a named preset (`readonly_safe`, `readonly_context`) defined in code, not config |
 | `llm_costs` | function | Token usage and cost breakdown |
 | `feature_status` | function | Tool probe results, preferences, bootstrap requirements, disabled capabilities |
 | `setup_help` | function | Diagnose component health (legacy — prefer `setup_wizard`) |

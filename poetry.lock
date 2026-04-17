@@ -8768,4 +8768,4 @@ telegram = ["python-telegram-bot"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11,<3.12"
-content-hash = "fc956d3b7fcd5400c0e443c3ad09856f1a8ea5f3cc0686e5b021d9e18d258385"
+content-hash = "7dd1d9ec2a09e400cd9d1c5df9e3622945e78bd66b8dfc15c45999a1ba7dd6dc"
