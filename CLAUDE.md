@@ -11,9 +11,9 @@ Before writing Python to interact with the vault, tasks, journal, contracts, or 
 | `mcp__work-buddy__wb_init(session_id)` | **REQUIRED first call.** Registers your session with the gateway. Pass your `WORK_BUDDY_SESSION_ID`. |
 | `mcp__work-buddy__wb_search(query)` | **Discover OR inspect.** Natural language → find capabilities. Exact name → get its full parameter schema. |
 | `mcp__work-buddy__wb_run(capability, params)` | Execute a discovered capability. Params: JSON string or dict. |
-| `mcp__work-buddy__wb_advance(run_id, result)` | Step through multi-step workflows. |
+| `mcp__work-buddy__wb_advance(workflow_run_id, result)` | Step through multi-step workflows. |
 | `mcp__work-buddy__wb_status()` | Check system health and active workflows. |
-| `mcp__work-buddy__wb_step_result(run_id, step_id, key?)` | Retrieve full step result data elided by the visibility system. |
+| `mcp__work-buddy__wb_step_result(workflow_run_id, step_id, key?)` | Retrieve full step result data elided by the visibility system. |
 
 These are **MCP tools**, not Python functions. They appear in the tool list as `mcp__work-buddy__wb_run`, `mcp__work-buddy__wb_search`, etc. **Always prefer these MCP tools over Python code** for work-buddy capabilities and workflows.
 
@@ -184,9 +184,13 @@ Some `work_buddy` functions are protected by a `@requires_consent` decorator. **
 
 **All grants are session-scoped.** Consent is stored in a SQLite database at `data/agents/<session>/consent.db`. New sessions start with a clean slate — no grants carry over. "Always" means "always within this session" (max 24h TTL).
 
-**Workflow-level blanket consent:** Starting a workflow grants blanket consent for all its steps. The blanket is revoked when the workflow completes (3-hour default TTL). Individual steps can opt out via `requires_individual_consent: true` in the workflow definition, which temporarily suspends the blanket and requires per-step consent. Agents don't need to manage this — the conductor handles it automatically.
+**Workflow-level blanket consent:** Starting a workflow grants blanket consent for all its steps. The blanket is revoked when the workflow completes (3-hour default TTL). Individual steps can opt out via `requires_individual_consent: true` in the workflow definition, which temporarily suspends the blanket and requires per-step consent. Agents don't need to manage this — the conductor handles it automatically (both auto-run and main-execution steps).
 
 **Risk levels** must be one of: `"low"`, `"moderate"`, `"high"` (validated by the `Risk` enum).
+
+**Call-stack-aware risk reduction (`@reduces_risk_for`):** A function decorated with `@reduces_risk_for("some.op", "low")` declares itself a safe invoker of `some.op`. While it is on the call stack, inner `@requires_consent("some.op", ...)` checks auto-pass (for `"low"`) or prompt at the reduced risk (for `"moderate"`). Direct agent calls to the primitive — outside any safe-caller scope — still gate at the original risk.
+
+This is the mechanism that lets read-only capabilities (e.g. `daily_briefing`) internally call `obsidian.eval_js` (registered at `risk=high`) without spamming prompts, while preserving high-risk gating for direct `eval_js` invocations from agents or the local-model tool preset. Declarations are module-level code (not config) and inspectable via `list_risk_reducers()` — adding or expanding one is a reviewed PR, not a runtime grant.
 
 ## Notification system (human-in-the-loop)
 
