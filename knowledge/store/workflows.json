@@ -1061,12 +1061,20 @@
         "name": "Read today's journal and determine activity window",
         "step_type": "code",
         "depends_on": [],
+        "auto_run": {
+          "callable": "work_buddy.journal.read_journal_state",
+          "kwargs": {},
+          "timeout": 30
+        },
         "visibility": {
           "mode": "summary",
           "include_keys": [
-            "activity_window",
-            "existing_entries",
-            "journal_path"
+            "target_date",
+            "ambiguous",
+            "hint",
+            "collect_since",
+            "collect_until",
+            "last_log_ts"
           ]
         }
       },
@@ -1077,14 +1085,19 @@
         "depends_on": [
           "read-journal"
         ],
-        "execution": "subagent",
-        "workflow_ref": "collect-and-orient",
+        "auto_run": {
+          "callable": "work_buddy.journal.collect_scoped_context",
+          "input_map": {
+            "journal_state": "read-journal"
+          },
+          "timeout": 180
+        },
         "visibility": {
           "mode": "summary",
           "include_keys": [
-            "sources_collected",
-            "activity_window",
-            "bundle_id"
+            "bundle_path",
+            "collect_since",
+            "collect_until"
           ]
         }
       },
@@ -1102,7 +1115,8 @@
         "step_type": "reasoning",
         "depends_on": [
           "synthesize"
-        ]
+        ],
+        "requires_individual_consent": true
       }
     ],
     "tags": [

@@ -286,6 +286,46 @@ def get_activity_window(journal_content: str, journal_date: str | None = None) -
     return extract_frontmatter_time(journal_content)
 
 
+def collect_scoped_context(journal_state: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Auto-run helper for the ``update-journal`` workflow's ``collect`` step.
+
+    Takes the result of ``read_journal_state`` and runs ``context_bundle``
+    scoped to the activity window. If the state is ambiguous (e.g. early-AM
+    run without an explicit target), returns the ambiguity so the agent can
+    surface it to the user instead of collecting against a guess.
+    """
+    from work_buddy.mcp_server.context_wrappers import collect_bundle
+
+    state = journal_state or {}
+    if state.get("ambiguous"):
+        return {
+            "collected": False,
+            "ambiguous": True,
+            "hint": state.get("hint", ""),
+        }
+
+    since_str = state.get("collect_since")
+    until_str = state.get("collect_until")
+    hours = 16  # conservative default covering a full active day
+    if since_str and until_str:
+        try:
+            since_dt = datetime.fromisoformat(since_str)
+            until_dt = datetime.fromisoformat(until_str)
+            delta = until_dt - since_dt
+            hours = max(1, int(delta.total_seconds() // 3600) + 1)
+        except (TypeError, ValueError):
+            pass
+
+    bundle_result = collect_bundle(hours=hours)
+    return {
+        "collected": True,
+        "bundle_path": bundle_result.get("bundle_path"),
+        "collect_since": since_str,
+        "collect_until": until_str,
+        "hours": hours,
+    }
+
+
 def read_journal_state(target: str | None = None) -> dict[str, Any]:
     """Read the journal for a target date and return everything needed for the DAG.
 
@@ -425,6 +465,24 @@ def _parse_time_for_sort(time_str: str) -> float:
         return -1  # unparseable → sort to the top
 
 
+# Times between midnight and this cutoff are treated as post-midnight
+# continuation of the previous day and sort AFTER all same-day PM entries.
+_POST_MIDNIGHT_CUTOFF_MIN = 5 * 60
+
+
+def _effective_minutes(time_str: str) -> float:
+    """Like ``_parse_time_for_sort``, but shifts post-midnight times past the end
+    of the day so same-day chronological sorts place them last.
+
+    Example: ``12:08 AM`` → ``24*60 + 8`` = 1448, which sorts after ``10:29 PM``
+    (22*60 + 29 = 1349) instead of before ``2:15 PM`` (855).
+    """
+    minutes = _parse_time_for_sort(time_str)
+    if 0 <= minutes < _POST_MIDNIGHT_CUTOFF_MIN:
+        return minutes + 24 * 60
+    return minutes
+
+
 def _get_log_section_bounds(content: str) -> tuple[int, int] | None:
     """Return (start, end) byte offsets of the Log section body.
 
@@ -460,12 +518,7 @@ def _find_chronological_insertion_point(
 
     log_start, log_end = bounds
     log_body = content[log_start:log_end]
-    new_minutes = _parse_time_for_sort(new_time_str)
-
-    # Sleep-boundary rule: times between midnight and 5 AM are post-midnight
-    # continuation — they are always the latest activity in the day and should
-    # be appended to the end, never inserted chronologically by clock time.
-    is_post_midnight = 0 <= new_minutes < 5 * 60
+    new_minutes = _effective_minutes(new_time_str)
 
     # Parse each line's position and timestamp
     lines = log_body.split("\n")
@@ -482,8 +535,8 @@ def _find_chronological_insertion_point(
 
         # Try to extract timestamp from this line
         ts_match = _LOG_TIMESTAMP_RE.match(stripped)
-        if ts_match and not is_post_midnight:
-            existing_minutes = _parse_time_for_sort(ts_match.group(1))
+        if ts_match:
+            existing_minutes = _effective_minutes(ts_match.group(1))
             if new_minutes >= 0 and existing_minutes > new_minutes:
                 # This existing entry is later than our new one — insert before it
                 return line_abs_start
@@ -584,8 +637,10 @@ def _append_to_journal_locked(
             "message": "Could not find a Log section in the journal file.",
         }
 
-    # Sort new entries by time so we insert earliest first
-    sorted_entries = sorted(entries, key=lambda e: _parse_time_for_sort(e[0]))
+    # Sort new entries by time so we insert earliest first. Use effective
+    # minutes so post-midnight entries (e.g. 12:08 AM next-day) sort AFTER
+    # same-day PM entries instead of before them.
+    sorted_entries = sorted(entries, key=lambda e: _effective_minutes(e[0]))
 
     # Insert each entry chronologically — re-read content after each insert
     # because offsets shift

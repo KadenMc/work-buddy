@@ -178,6 +178,17 @@ def advance_workflow(
 
     dag.complete_task(current_id, result=serialized_result)
 
+    # If the completed step opted into individual consent, re-grant the
+    # workflow blanket so subsequent (non-opted-out) steps resume their
+    # covered-by-blanket behavior.
+    if current_meta.get("requires_individual_consent", False):
+        from work_buddy.consent import grant_workflow_consent
+        grant_workflow_consent(workflow_run_id)
+        logger.info(
+            "Main-execution step '%s' complete — workflow blanket re-granted",
+            current_id,
+        )
+
     # Check if workflow is now complete
     if dag.is_complete():
         result = _build_complete_response(workflow_run_id, dag)
@@ -475,7 +486,18 @@ def _build_response(
         auto_run_spec = meta.get("auto_run")
 
         if not auto_run_spec:
-            # Normal step — hand to the agent
+            # Normal step — hand to the agent.
+            # If this step opted into individual consent, suspend the workflow
+            # blanket so the agent's @requires_consent-gated calls actually
+            # surface a prompt. The blanket is re-granted in advance_workflow
+            # once the agent completes this step.
+            if meta.get("requires_individual_consent", False):
+                from work_buddy.consent import revoke_workflow_consent
+                revoke_workflow_consent(run_id)
+                logger.info(
+                    "Main-execution step '%s' requires explicit consent — "
+                    "workflow blanket temporarily suspended", task_id,
+                )
             break
 
         # --- Auto-execute this step ---

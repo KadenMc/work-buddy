@@ -11,9 +11,9 @@ Before writing Python to interact with the vault, tasks, journal, contracts, or 
 | `mcp__work-buddy__wb_init(session_id)` | **REQUIRED first call.** Registers your session with the gateway. Pass your `WORK_BUDDY_SESSION_ID`. |
 | `mcp__work-buddy__wb_search(query)` | **Discover OR inspect.** Natural language → find capabilities. Exact name → get its full parameter schema. |
 | `mcp__work-buddy__wb_run(capability, params)` | Execute a discovered capability. Params: JSON string or dict. |
-| `mcp__work-buddy__wb_advance(run_id, result)` | Step through multi-step workflows. |
+| `mcp__work-buddy__wb_advance(workflow_run_id, result)` | Step through multi-step workflows. |
 | `mcp__work-buddy__wb_status()` | Check system health and active workflows. |
-| `mcp__work-buddy__wb_step_result(run_id, step_id, key?)` | Retrieve full step result data elided by the visibility system. |
+| `mcp__work-buddy__wb_step_result(workflow_run_id, step_id, key?)` | Retrieve full step result data elided by the visibility system. |
 
 These are **MCP tools**, not Python functions. They appear in the tool list as `mcp__work-buddy__wb_run`, `mcp__work-buddy__wb_search`, etc. **Always prefer these MCP tools over Python code** for work-buddy capabilities and workflows.
 
