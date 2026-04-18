@@ -20,6 +20,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 from typing import Any
 
+from work_buddy.consent import reduces_risk_for
 from work_buddy.logging_config import get_logger
 from work_buddy.obsidian.tasks.env import (
     get_overdue_tasks,
@@ -95,6 +96,7 @@ def weekly_review_data() -> dict[str, Any]:
 # ── Intelligence functions ──────────────────────────────────────
 
 
+@reduces_risk_for("obsidian.eval_js", "low")
 def daily_briefing() -> dict[str, Any]:
     """Produce a structured task status summary for daily consumption.
 

@@ -184,9 +184,13 @@ Some `work_buddy` functions are protected by a `@requires_consent` decorator. **
 
 **All grants are session-scoped.** Consent is stored in a SQLite database at `data/agents/<session>/consent.db`. New sessions start with a clean slate — no grants carry over. "Always" means "always within this session" (max 24h TTL).
 
-**Workflow-level blanket consent:** Starting a workflow grants blanket consent for all its steps. The blanket is revoked when the workflow completes (3-hour default TTL). Individual steps can opt out via `requires_individual_consent: true` in the workflow definition, which temporarily suspends the blanket and requires per-step consent. Agents don't need to manage this — the conductor handles it automatically.
+**Workflow-level blanket consent:** Starting a workflow grants blanket consent for all its steps. The blanket is revoked when the workflow completes (3-hour default TTL). Individual steps can opt out via `requires_individual_consent: true` in the workflow definition, which temporarily suspends the blanket and requires per-step consent. Agents don't need to manage this — the conductor handles it automatically (both auto-run and main-execution steps).
 
 **Risk levels** must be one of: `"low"`, `"moderate"`, `"high"` (validated by the `Risk` enum).
+
+**Call-stack-aware risk reduction (`@reduces_risk_for`):** A function decorated with `@reduces_risk_for("some.op", "low")` declares itself a safe invoker of `some.op`. While it is on the call stack, inner `@requires_consent("some.op", ...)` checks auto-pass (for `"low"`) or prompt at the reduced risk (for `"moderate"`). Direct agent calls to the primitive — outside any safe-caller scope — still gate at the original risk.
+
+This is the mechanism that lets read-only capabilities (e.g. `daily_briefing`) internally call `obsidian.eval_js` (registered at `risk=high`) without spamming prompts, while preserving high-risk gating for direct `eval_js` invocations from agents or the local-model tool preset. Declarations are module-level code (not config) and inspectable via `list_risk_reducers()` — adding or expanding one is a reviewed PR, not a runtime grant.
 
 ## Notification system (human-in-the-loop)
 

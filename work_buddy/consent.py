@@ -81,6 +81,119 @@ class _ConsentContext(threading.local):
 _consent_ctx = _ConsentContext()
 
 
+# ---------------------------------------------------------------------------
+# Safe-caller context — call-stack-aware consent risk reduction
+# ---------------------------------------------------------------------------
+# A capability decorated with ``@reduces_risk_for("some.op", "low")`` declares
+# that, while IT is executing, calls to ``some.op`` should be treated as
+# low-risk (and auto-pass the consent gate) even if ``some.op`` itself is
+# registered as high-risk. This is the mechanism that lets read-only
+# capabilities like ``task_briefing`` call ``obsidian.eval_js`` internally
+# without triggering a high-risk prompt for every invocation, while DIRECT
+# agent calls to ``eval_js`` still prompt as high-risk.
+#
+# Scope: only reductions to "low" auto-pass in this revision. A reduction
+# to "moderate" falls through to the normal consent check (the user still
+# sees a prompt, but at moderate instead of high). Reductions can only lower
+# risk, never raise it.
+
+class _SafeCallerContext(threading.local):
+    """Thread-local stack of active safe-caller declarations.
+
+    Each stack entry is a dict ``{operation: effective_risk}`` contributed by
+    one active ``@reduces_risk_for``-decorated frame. The innermost entry for
+    a given operation wins on lookup.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.stack: list[dict[str, str]] = []
+
+
+_safe_caller_ctx = _SafeCallerContext()
+
+
+# Registry of declared safe invocations for inspection / audit.
+# Shape: {inner_operation: {caller_qualname: effective_risk}}
+_RISK_REDUCERS: dict[str, dict[str, str]] = {}
+
+
+def _active_reduced_risk(operation: str) -> str | None:
+    """Return the effective risk active for ``operation`` via the safe-caller
+    stack, or ``None`` if no reduction is active.
+
+    Innermost matching entry wins.
+    """
+    for layer in reversed(_safe_caller_ctx.stack):
+        if operation in layer:
+            return layer[operation]
+    return None
+
+
+def list_risk_reducers() -> dict[str, dict[str, str]]:
+    """Return a snapshot of all declared risk-reducing callers.
+
+    Shape: ``{inner_operation: {caller_qualname: effective_risk}}``.
+    Useful for audit / PR review of the security boundary.
+    """
+    return {
+        op: dict(callers) for op, callers in _RISK_REDUCERS.items()
+    }
+
+
+def reduces_risk_for(operation: str, effective_risk: str = "low"):
+    """Decorator: mark the wrapped function as a safe invoker of ``operation``.
+
+    While the decorated function is on the call stack, any
+    ``@requires_consent`` check for ``operation`` will use ``effective_risk``
+    instead of the operation's original risk. When ``effective_risk == "low"``,
+    the check auto-passes (no user prompt). The outer consent context is
+    established so any further nested ``@requires_consent`` calls inside
+    ``operation`` pass through as normal covered operations.
+
+    This does NOT disable consent for direct calls to the primitive from
+    code that is NOT wrapped by this decorator — only calls that happen
+    while this function is on the stack.
+
+    Example::
+
+        @reduces_risk_for("obsidian.eval_js", "low")
+        def daily_briefing():
+            # Internal eval_js calls here are low-risk (auto-pass).
+            ...
+
+    Args:
+        operation: The inner operation identifier this function declares
+            itself a safe invoker of (e.g. ``"obsidian.eval_js"``).
+        effective_risk: ``"low"``, ``"moderate"``, or ``"high"``. Only
+            ``"low"`` auto-passes; higher values let the usual consent gate
+            fire but with the reduced risk for prompt styling.
+    """
+    if effective_risk not in (r.value for r in Risk):
+        raise ValueError(
+            f"Invalid effective_risk: {effective_risk!r}. "
+            f"Must be one of: {', '.join(r.value for r in Risk)}"
+        )
+
+    def decorator(fn: Callable) -> Callable:
+        # Register for inspection (at decoration time, so it's visible
+        # even before the first call).
+        _RISK_REDUCERS.setdefault(operation, {})[fn.__qualname__] = effective_risk
+
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            entry = {operation: effective_risk}
+            _safe_caller_ctx.stack.append(entry)
+            try:
+                return fn(*args, **kwargs)
+            finally:
+                _safe_caller_ctx.stack.pop()
+
+        return wrapper
+
+    return decorator
+
+
 def in_consent_context() -> bool:
     """Check if the current thread is inside a consented operation."""
     return _consent_ctx.depth > 0
@@ -408,6 +521,30 @@ def requires_consent(
                 )
                 return fn(*args, **kwargs)
 
+            # ── Call-stack-aware risk reduction ──
+            # If a declared-safe caller is active for this operation and the
+            # reduced risk is "low", auto-pass the gate. The outer frame
+            # becomes an implicit consent context so deeper @requires_consent
+            # calls nested inside this operation pass through normally.
+            reduced_risk = _active_reduced_risk(operation)
+            if reduced_risk == Risk.LOW.value:
+                _audit_log(
+                    "RISK_REDUCED_PASS", operation,
+                    f"safe_caller:{reduced_risk}",
+                )
+                prev_depth = _consent_ctx.depth
+                prev_outer = _consent_ctx.outer_operation
+                prev_covered = _consent_ctx.covered_operations
+                _consent_ctx.depth = prev_depth + 1
+                _consent_ctx.outer_operation = operation
+                _consent_ctx.covered_operations = []
+                try:
+                    return fn(*args, **kwargs)
+                finally:
+                    _consent_ctx.depth = prev_depth
+                    _consent_ctx.outer_operation = prev_outer
+                    _consent_ctx.covered_operations = prev_covered
+
             # ── Top-level: check consent cache ──
             if _cache.is_granted(operation):
                 # Determine consent source for audit
@@ -463,12 +600,16 @@ def requires_consent(
 
                 return result
 
-            # No valid consent — raise
-            _audit_log("BLOCKED", operation, "no_consent")
+            # No valid consent — raise. If a safe caller declared a
+            # reduced risk (not "low" — that would have auto-passed above),
+            # propagate that risk to the prompt so the user sees the
+            # caller-contextualized severity.
+            effective_risk = reduced_risk if reduced_risk is not None else risk
+            _audit_log("BLOCKED", operation, f"no_consent risk={effective_risk}")
             raise ConsentRequired(
                 operation=operation,
                 reason=reason,
-                risk=risk,
+                risk=effective_risk,
                 default_ttl=default_ttl,
             )
         return wrapper
