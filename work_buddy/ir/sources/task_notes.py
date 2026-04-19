@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from work_buddy.ir.sources.base import Document
+from work_buddy.ir.sources.base import Document, Projection, ProjectionSpec
 from work_buddy.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -38,9 +38,25 @@ class TaskNoteSource:
         return "task_note"
 
     def default_field_weights(self) -> dict[str, float]:
-        # Titles in task notes tend to restate the task line — useful anchor
-        # for short-query matches. Body carries the real semantic content.
-        return {"title": 2.0, "body": 1.0}
+        # `line` is the authoritative task-line text (from the master list,
+        # not the note's H1). `title` is the note's H1 — usually restates
+        # the task but drifts if the task is renamed after the note was
+        # created. `body` is the bulk of the note. BM25 over all three so
+        # a keyword hit in any signal still lands.
+        return {"line": 2.0, "title": 1.5, "body": 1.0}
+
+    def projection_schema(self) -> dict[str, ProjectionSpec]:
+        # Two dense signals, mirroring the knowledge system's content+alias
+        # split. They share no vector space and are RRF-fused alongside BM25:
+        #
+        # - ``line``  — short label-shaped canonical task text. Symmetric
+        #   encoder (``leaf-mt``) because the query is also short/label-shaped.
+        # - ``body``  — the note's full body. Asymmetric document encoder
+        #   (``leaf-ir``) paired with ``leaf-ir-query`` at query time.
+        return {
+            "line": ProjectionSpec(kind="label"),
+            "body": ProjectionSpec(kind="passage"),
+        }
 
     # ------------------------------------------------------------------ discover
 
@@ -124,9 +140,9 @@ class TaskNoteSource:
         cfg = load_config()
         max_dense = cfg.get("ir", {}).get("dense_text_max_chars", 1500)
 
-        # Map note_uuid → task_id so hits can link back to the task.
-        # Schema guarantees note_uuid is unique per task (1:1 via task_create / sync),
-        # but query defensively: take the first match if multiple ever appear.
+        # Map note_uuid → task_id + canonical task-line text so hits can
+        # link back to the task AND so the ``line`` projection uses the
+        # authoritative text (not the note's H1, which can drift).
         note_uuid = path.stem
         task_id: str | None = None
         task_state: str | None = None
@@ -142,12 +158,17 @@ class TaskNoteSource:
         finally:
             conn.close()
 
-        # dense_text: title anchors the passage; body supplies the rest.
-        # embed_for_ir(role="document") will handle the passage-side encoding.
-        dense_parts = [title]
-        if body.strip():
-            dense_parts.append(body.strip()[:max_dense])
-        dense_text = "\n".join(dense_parts)[:max_dense]
+        # Authoritative task-line text, if available, for both the ``line``
+        # BM25 field and the ``line`` projection. Falls back to the note's
+        # H1 if the task store or master list doesn't resolve — keeps the
+        # indexer resilient to partial data.
+        task_line = _lookup_task_line_text(task_id) if task_id else None
+        line_text = task_line or title
+
+        # body projection text: the note body, capped. Dense encoder
+        # gets a bounded passage; BM25 can still match anywhere in the
+        # fuller ``body`` field.
+        body_text = body.strip()[:max_dense] if body.strip() else ""
 
         # display_text: first non-empty body line (skipping the H1), capped
         display = ""
@@ -158,14 +179,21 @@ class TaskNoteSource:
             display = stripped[:200]
             break
         if not display:
-            display = title[:200]
+            display = line_text[:200]
+
+        # dense_text is kept populated for back-compat / diagnostic reads,
+        # but it's no longer the primary encoding input — projections take
+        # over. Building both means no regression for any tool that reads
+        # the legacy column.
+        dense_text = f"{line_text}\n{body_text}"[:max_dense]
 
         doc = Document(
             doc_id=f"task_note:{note_uuid}",
             source="task_note",
             fields={
+                "line": line_text,
                 "title": title,
-                "body": body[:20000],  # generous cap; dense_text already bounded
+                "body": body[:20000],
             },
             dense_text=dense_text,
             display_text=display,
@@ -176,5 +204,55 @@ class TaskNoteSource:
                 "file_path": str(path),
                 "indexed_at": time.time(),
             },
+            projections={
+                "line": Projection(text=line_text),
+                "body": Projection(text=body_text) if body_text else Projection(text=line_text),
+            },
         )
         return [doc]
+
+
+def _lookup_task_line_text(task_id: str) -> str | None:
+    """Return the canonical task-line description for a task_id.
+
+    Pulls from the Obsidian Tasks plugin cache when available, falling back
+    to a direct scan of the master task list. Returns None if the task
+    isn't resolvable — the caller should default to the note's H1.
+    """
+    try:
+        from work_buddy.obsidian.tasks.env import verify_task
+        info = verify_task(task_id=task_id)
+        if info.get("found"):
+            desc = (info.get("description") or "").strip()
+            if desc:
+                return desc
+    except Exception:
+        pass  # Plugin or bridge unavailable — fall through
+
+    # Fallback: scan the master list directly
+    try:
+        from work_buddy.config import load_config
+        from work_buddy.obsidian.tasks.mutations import (
+            MASTER_TASK_FILE, _find_task_line,
+        )
+        vault_root = load_config().get("vault_root")
+        if not vault_root:
+            return None
+        master = Path(vault_root) / MASTER_TASK_FILE
+        if not master.exists():
+            return None
+        lines = master.read_text(encoding="utf-8").split("\n")
+        found = _find_task_line(lines, task_id=task_id)
+        if not found:
+            return None
+        _, line = found
+        # Strip checkbox + tags + wikilinks + plugin emojis, matching the
+        # cleanup that assign_task does inline.
+        desc = re.sub(r"^- \[.\]\s*", "", line)
+        desc = re.sub(r"#\S+", "", desc)
+        desc = re.sub(r"\[\[[^\]]+\]\]", "", desc)
+        desc = re.sub(r"[🆔📅✅🔼⏫]\s*\S*", "", desc)
+        desc = re.sub(r"\s+", " ", desc).strip()
+        return desc or None
+    except Exception:
+        return None
