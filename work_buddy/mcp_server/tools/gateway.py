@@ -26,7 +26,17 @@ from mcp.server.fastmcp import Context, FastMCP
 
 from work_buddy.consent import ConsentRequired
 from work_buddy.tools import ToolUnavailable
-from work_buddy.mcp_server import conductor, registry
+from work_buddy.mcp_server import registry
+
+
+def _conductor():
+    # Lazy import: conductor pulls in workflow → networkx (~770ms at import
+    # time). Deferring keeps it off the mcp_gateway boot path, so FastMCP
+    # binds to port 5126 sooner and Claude's initialize handshake lands
+    # faster. Python caches the import in sys.modules, so repeat calls are
+    # a dict lookup.
+    from work_buddy.mcp_server import conductor
+    return conductor
 
 # ---------------------------------------------------------------------------
 # Session registry — maps MCP session → agent session ID
@@ -633,7 +643,13 @@ def register_tools(mcp: FastMCP) -> None:
         gate = _require_init(ctx)
         if gate:
             return gate
-        results = registry.search_registry(query, category, top_n=filter_n)
+        # Offload to a thread: first call materializes the registry
+        # (probe_all + workflow loading, ~19s). Running it on the asyncio
+        # event loop blocks /health and every other request, which makes
+        # the sidecar supervisor mark mcp_gateway unhealthy and restart it.
+        results = await asyncio.to_thread(
+            registry.search_registry, query, category, filter_n,
+        )
 
         # If this session has a capability ACL (set by ``llm_with_tools``
         # before a local-model tool call), filter results. The helper
@@ -781,7 +797,9 @@ def register_tools(mcp: FastMCP) -> None:
                 ),
             })
 
-        entry = registry.get_entry(capability)
+        # Offload: first call materializes the registry (~19s of tool
+        # probes + workflow loading). See wb_search for the full rationale.
+        entry = await asyncio.to_thread(registry.get_entry, capability)
 
         if entry is None:
             from work_buddy.tools import DISABLED_CAPABILITIES, get_tool_status
@@ -839,7 +857,7 @@ def register_tools(mcp: FastMCP) -> None:
             _t0 = _time.monotonic()
             try:
                 result = await asyncio.to_thread(
-                    conductor.start_workflow, capability, parsed_params,
+                    _conductor().start_workflow, capability, parsed_params,
                 )
             except Exception as exc:
                 _complete_operation(op_id, error=f"{type(exc).__name__}: {exc}")
@@ -1088,7 +1106,7 @@ def register_tools(mcp: FastMCP) -> None:
         parsed_result = _parse_params(step_result)
         _t0 = _time.monotonic()
         result = await asyncio.to_thread(
-            conductor.advance_workflow, workflow_run_id, parsed_result,
+            _conductor().advance_workflow, workflow_run_id, parsed_result,
         )
         # Activity ledger: record workflow step
         from work_buddy.mcp_server.activity_ledger import record_workflow_step
@@ -1124,7 +1142,7 @@ def register_tools(mcp: FastMCP) -> None:
 
         if workflow_run_id:
             result = await asyncio.to_thread(
-                conductor.get_workflow_status, workflow_run_id,
+                _conductor().get_workflow_status, workflow_run_id,
             )
             return _prepare(result)
 
@@ -1156,7 +1174,7 @@ def register_tools(mcp: FastMCP) -> None:
         if gate:
             return gate
         result = await asyncio.to_thread(
-            conductor.get_step_result, workflow_run_id, step_id, key,
+            _conductor().get_step_result, workflow_run_id, step_id, key,
         )
         return _prepare(result)
 
@@ -1249,7 +1267,7 @@ def _system_overview() -> dict[str, Any]:
         overview["contracts"] = {"error": "Could not load contracts"}
 
     # Active workflow runs
-    overview["active_workflows"] = conductor.list_active_runs()
+    overview["active_workflows"] = _conductor().list_active_runs()
 
     # Retry queue summary
     try:
@@ -1371,7 +1389,7 @@ def retry_operation(operation_id: str) -> dict[str, Any]:
     while True:
         try:
             if record["type"] == "workflow":
-                result = conductor.start_workflow(record["name"], record["params"])
+                result = _conductor().start_workflow(record["name"], record["params"])
             else:
                 result = entry.callable(**record["params"])
             break

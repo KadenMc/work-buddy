@@ -91,6 +91,37 @@ def main() -> None:
     server.run(transport="stdio")
 
 
+def _warm_registry_in_background() -> None:
+    """Materialize the registry in a daemon thread so the first real tool
+    call finds it already built.
+
+    Rationale: registry build takes several seconds (tool probes, workflow
+    loading, knowledge index warm). Historically the first ``wb_search``
+    or ``wb_run`` after a cold gateway boot paid that whole cost
+    synchronously. Even with ``asyncio.to_thread`` protecting the event
+    loop, the user still waits. Building eagerly removes that latency.
+
+    This is belt-and-suspenders: if a future handler regresses on
+    async-thread hygiene (see architecture/mcp-import-discipline), the
+    registry will already be built, so nothing blocks the event loop
+    anyway. Safe under all failure modes — if the build fails, the next
+    ``get_registry()`` call rebuilds exactly as before.
+    """
+    import threading
+    from work_buddy.mcp_server.registry import get_registry
+
+    logger = logging.getLogger("work_buddy.mcp_server")
+
+    def _build():
+        try:
+            get_registry()
+        except Exception as exc:
+            logger.warning("Background registry warm-up failed: %s", exc)
+
+    t = threading.Thread(target=_build, name="registry-warm", daemon=True)
+    t.start()
+
+
 def main_http() -> None:
     """Entry point — run as a persistent streamable-http service."""
     port = _get_port()
@@ -99,4 +130,5 @@ def main_http() -> None:
     logger.info("Starting MCP gateway (streamable-http) on port %d", port)
 
     server = _create_server(transport="streamable-http")
+    _warm_registry_in_background()
     server.run(transport="streamable-http")

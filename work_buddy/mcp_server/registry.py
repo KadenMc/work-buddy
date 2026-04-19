@@ -12,11 +12,14 @@ entries. The conductor reads these at runtime via
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
 from work_buddy.frontmatter import parse_frontmatter
+
+logger = logging.getLogger(__name__)
 
 _REPO_ROOT = Path(__file__).parent.parent.parent
 _SLASH_CMD_DIR = _REPO_ROOT / ".claude" / "commands"
@@ -510,13 +513,17 @@ def _build_registry() -> dict[str, Capability | WorkflowDefinition]:
     _lf = _get_search_log()
     _log_to_file(_lf, "Registry build starting...")
 
+    _build_start = time.time()
+    _section_times: dict[str, float] = {}
+
     # --- Tool probes ---
     t = time.time()
     _register_default_probes()
     tool_status = probe_all(force=True)
     available = [tid for tid, s in tool_status.items() if s["available"]]
     unavailable = [tid for tid, s in tool_status.items() if not s["available"]]
-    _log_to_file(_lf, f"  tool_probes: {time.time()-t:.2f}s — "
+    _section_times["tool_probes"] = time.time() - t
+    _log_to_file(_lf, f"  tool_probes: {_section_times['tool_probes']:.2f}s — "
                        f"available={available}, unavailable={unavailable}")
 
     registry: dict[str, Capability | WorkflowDefinition] = {}
@@ -544,8 +551,10 @@ def _build_registry() -> dict[str, Capability | WorkflowDefinition]:
         try:
             for cap in fn():
                 registry[cap.name] = cap
+            _section_times[f"cap:{label}"] = time.time() - t
             _log_to_file(_lf, f"  {label}: {time.time()-t:.2f}s")
         except Exception as e:
+            _section_times[f"cap:{label}"] = time.time() - t
             _log_to_file(_lf, f"  {label}: FAILED in {time.time()-t:.2f}s — {e}")
 
     # --- Filter capabilities with unmet tool requirements ---
@@ -594,9 +603,32 @@ def _build_registry() -> dict[str, Capability | WorkflowDefinition]:
     t = time.time()
     try:
         _warm_knowledge_index()
-        _log_to_file(_lf, f"  knowledge_index: {time.time()-t:.2f}s (BM25 inline, dense in background)")
+        _section_times["knowledge_index"] = time.time() - t
+        _log_to_file(_lf, f"  knowledge_index: {_section_times['knowledge_index']:.2f}s (BM25 inline, dense in background)")
     except Exception as e:
-        _log_to_file(_lf, f"  knowledge_index: FAILED in {time.time()-t:.2f}s — {e}")
+        _section_times["knowledge_index"] = time.time() - t
+        _log_to_file(_lf, f"  knowledge_index: FAILED in {_section_times['knowledge_index']:.2f}s — {e}")
+
+    # --- Slow-rebuild warning ---
+    # The registry rebuild blocks whoever triggered it. If it happens on
+    # the MCP event loop (a missing asyncio.to_thread around a registry
+    # call), /health will also block — which historically made the sidecar
+    # supervisor mark mcp_gateway unhealthy and auto-restart it, dropping
+    # every Claude Code SSE stream in the process. Surface the duration
+    # with a WARNING + per-section breakdown so that regression is
+    # visible in sidecar logs rather than silent.
+    total = time.time() - _build_start
+    if total > 5.0:
+        slowest = sorted(_section_times.items(), key=lambda kv: -kv[1])[:5]
+        breakdown = ", ".join(f"{k}={v:.1f}s" for k, v in slowest)
+        logger.warning(
+            "Registry build slow: %.1fs total (%s). If this ran on the "
+            "asyncio event loop, /health is blocked for the duration. "
+            "Check architecture/mcp-import-discipline for async hygiene.",
+            total, breakdown,
+        )
+    else:
+        logger.debug("Registry build: %.2fs total", total)
 
     return registry
 
