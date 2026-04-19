@@ -15,7 +15,9 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -76,6 +78,107 @@ def _health_check(port: int, timeout: float = 2.0) -> bool:
         return False
 
 
+class HealthMonitor:
+    """Background thread probing service /health in parallel.
+
+    Decouples probing from the main daemon loop so scheduler ticks,
+    message polling, and retry sweeps cannot delay health checks. A
+    single slow probe no longer holds up the rest: every service is
+    probed concurrently in a ThreadPoolExecutor.
+
+    The main loop reads cached state via ``snapshot(name)``. Restart
+    decisions use ``consecutive_failures`` rather than a single probe
+    result, so one late response does not trigger a false restart.
+    """
+
+    def __init__(self, children: list[ChildService], interval: float = 5.0,
+                 probe_timeout: float = 2.0) -> None:
+        self._children = children
+        self._interval = interval
+        self._probe_timeout = probe_timeout
+        self._state: dict[str, dict[str, Any]] = {
+            c.name: {"healthy": False, "consecutive_failures": 0, "last_check": 0.0}
+            for c in children
+        }
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        self._thread = threading.Thread(
+            target=self._run, name="health-monitor", daemon=True,
+        )
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            # Short timeout — the thread is a daemon, so if a probe is
+            # genuinely wedged we exit the process anyway.
+            self._thread.join(timeout=2)
+
+    def snapshot(self, name: str) -> dict[str, Any]:
+        with self._lock:
+            return dict(self._state[name])
+
+    def reset(self, name: str) -> None:
+        """Clear failure count — call after a deliberate restart so the
+        service gets a fresh grace period before the next restart fires."""
+        with self._lock:
+            s = self._state.get(name)
+            if s is not None:
+                s["healthy"] = False
+                s["consecutive_failures"] = 0
+                s["last_check"] = time.time()
+
+    def _run(self) -> None:
+        workers = max(1, len(self._children))
+        # Don't use ``with ThreadPoolExecutor(...)`` — its context-exit
+        # waits for all pending tasks, which hangs shutdown if a probe
+        # is blocked on a dead socket. We manage lifecycle explicitly
+        # and cancel futures on stop.
+        pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="hm-probe")
+        try:
+            while not self._stop.is_set():
+                futures = {
+                    pool.submit(_health_check, c.port, self._probe_timeout): c.name
+                    for c in self._children if c.enabled
+                }
+                # Bound the whole round. Even if every probe sits on its
+                # 2s timeout, we won't wait longer than this.
+                round_deadline = self._probe_timeout + 2.0
+                results: dict[str, bool] = {}
+                try:
+                    for fut in as_completed(futures, timeout=round_deadline):
+                        results[futures[fut]] = bool(fut.result())
+                except TimeoutError:
+                    # Any probe that didn't finish is implicitly a failure
+                    pass
+                except Exception as exc:  # pragma: no cover - defensive
+                    logger.error("Health probe round error: %s", exc, exc_info=True)
+
+                now = time.time()
+                with self._lock:
+                    for name in (futures[f] for f in futures):
+                        s = self._state[name]
+                        s["last_check"] = now
+                        if results.get(name, False):
+                            s["healthy"] = True
+                            s["consecutive_failures"] = 0
+                        else:
+                            s["healthy"] = False
+                            s["consecutive_failures"] += 1
+                self._stop.wait(self._interval)
+        finally:
+            # Best-effort shutdown. ``cancel_futures=True`` (py3.9+)
+            # drops queued work; running probes are left to time out
+            # on their own urlopen deadline (~2s).
+            try:
+                pool.shutdown(wait=False, cancel_futures=True)
+            except TypeError:  # pragma: no cover - py<3.9
+                pool.shutdown(wait=False)
+
+
 def _kill_process_on_port(port: int, *, service_name: str = "") -> bool:
     """Kill any process listening on the given port (cleanup from prior crash).
 
@@ -126,21 +229,41 @@ def _start_child(svc: ChildService) -> None:
         return
 
     python = _get_conda_python()
-    cmd = [python, "-m", svc.module] + svc.args
+    # ``-u`` forces unbuffered stdio so child output lands in the log
+    # file immediately — critical for debugging slow/silent startups.
+    cmd = [python, "-u", "-m", svc.module] + svc.args
+
+    # Redirect child stdout/stderr to a per-service log file. Previously
+    # we relied on Popen's default (inherit from parent), but with
+    # CREATE_NO_WINDOW on Windows that inheritance can silently drop
+    # output — leaving us blind when a service fails to start.
+    log_dir = _REPO_ROOT / "data" / "runtime" / "service_logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / f"{svc.name}.log"
+    try:
+        log_fh = open(log_path, "a", encoding="utf-8", buffering=1)
+        log_fh.write(f"\n--- {svc.name} starting at {time.strftime('%Y-%m-%d %H:%M:%S')} ---\n")
+        log_fh.flush()
+    except OSError as exc:
+        logger.error("Could not open %s for child stdout: %s", log_path, exc)
+        log_fh = None
+
     try:
         svc.process = subprocess.Popen(
             cmd,
-            # Inherit parent's stdout/stderr so child log lines appear in the
-            # sidecar's live console output. CREATE_NO_WINDOW still suppresses
-            # a separate console window on Windows.
             cwd=str(_REPO_ROOT),
+            stdout=log_fh if log_fh else subprocess.DEVNULL,
+            stderr=subprocess.STDOUT if log_fh else subprocess.DEVNULL,
             creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
         )
         logger.info(
-            "Started %s (pid=%d, port=%d)", svc.name, svc.process.pid, svc.port
+            "Started %s (pid=%d, port=%d, log=%s)",
+            svc.name, svc.process.pid, svc.port, log_path.name,
         )
     except OSError as exc:
         logger.error("Failed to start %s: %s", svc.name, exc)
+        if log_fh:
+            log_fh.close()
 
 
 def _stop_child(svc: ChildService) -> None:
@@ -167,15 +290,19 @@ _STARTUP_GRACE_SECONDS = 45  # give slow services time to load models
 
 def _check_and_restart(
     svc: ChildService,
+    monitor: HealthMonitor,
     state: SidecarState,
     max_crashes: int,
     backoff_base: float,
+    failure_threshold: int,
     event_log: Any | None = None,
 ) -> None:
-    """Health-check a child service, restart if needed."""
+    """Consume cached health state, restart if the service has failed
+    ``failure_threshold`` consecutive probes."""
     now = time.time()
-
-    healthy = _health_check(svc.port)
+    snap = monitor.snapshot(svc.name)
+    healthy = snap["healthy"]
+    failures = snap["consecutive_failures"]
 
     if healthy:
         svc.last_healthy = now
@@ -200,7 +327,13 @@ def _check_and_restart(
             state.update_service(svc.name, status="starting", last_check=now)
             return  # Still booting — don't restart yet
 
-    # Not healthy
+    # Require N consecutive failed probes before restarting. One late
+    # probe (or a brief event-loop stall in the service) should not
+    # trigger a restart cascade.
+    if failures < failure_threshold:
+        state.update_service(svc.name, status="unhealthy", last_check=now)
+        return
+
     if svc.crash_count >= max_crashes:
         state.update_service(svc.name, status="crashed", last_check=now)
         if event_log:
@@ -222,8 +355,9 @@ def _check_and_restart(
     svc.backoff_until = now + min(backoff_base * (2 ** (svc.crash_count - 1)), 300)
 
     logger.warning(
-        "%s unhealthy — restarting (crash #%d, backoff %.0fs).",
-        svc.name, svc.crash_count, svc.backoff_until - now,
+        "%s unhealthy (%d consecutive failed probes) — restarting "
+        "(crash #%d, backoff %.0fs).",
+        svc.name, failures, svc.crash_count, svc.backoff_until - now,
     )
     if event_log:
         event_log.emit(
@@ -233,6 +367,9 @@ def _check_and_restart(
         )
     _stop_child(svc)
     _start_child(svc)
+    # Clear the monitor's cached state so the fresh process gets a
+    # clean slate for the next restart-threshold evaluation.
+    monitor.reset(svc.name)
     state.update_service(
         svc.name, status="starting",
         pid=svc.process.pid if svc.process else None,
@@ -245,12 +382,74 @@ def _check_and_restart(
 # ---------------------------------------------------------------------------
 
 _shutdown_requested = False
+_shutdown_signal_count = 0
+_shutdown_requested_at: float = 0.0  # set when _shutdown_requested flips to True
+_force_kill_children: list[Any] = []  # populated in run() so the signal handler can reach them
+_SHUTDOWN_WATCHDOG_TIMEOUT = 15.0  # seconds: if graceful shutdown exceeds this, force-exit
+
+
+def _shutdown_watchdog() -> None:
+    """Background thread: force-exit if graceful shutdown stalls.
+
+    Python on Windows only delivers SIGINT to the main thread at
+    bytecode boundaries. If the main thread is blocked in a C call
+    (urllib, socket ops, subprocess.wait), Ctrl+C is queued until
+    the call returns — which can feel like Ctrl+C is ignored.
+    This watchdog runs in its own thread, not blocked by any of
+    that, and hard-exits the process once a shutdown has been
+    requested for longer than the timeout.
+    """
+    while True:
+        time.sleep(0.5)
+        if _shutdown_requested and _shutdown_requested_at > 0:
+            elapsed = time.time() - _shutdown_requested_at
+            if elapsed >= _SHUTDOWN_WATCHDOG_TIMEOUT:
+                logger.warning(
+                    "Graceful shutdown exceeded %.0fs — watchdog forcing exit.",
+                    _SHUTDOWN_WATCHDOG_TIMEOUT,
+                )
+                for svc in _force_kill_children:
+                    proc = getattr(svc, "process", None)
+                    if proc is not None and proc.poll() is None:
+                        try:
+                            proc.kill()
+                        except OSError:
+                            pass
+                os._exit(130)
 
 
 def _signal_handler(signum: int, _frame: Any) -> None:
-    global _shutdown_requested
-    logger.info("Received signal %d — shutting down.", signum)
+    """First signal: request graceful shutdown. Second signal: force-kill
+    children immediately, then exit.
+
+    Critical: a second Ctrl+C must NOT call ``os._exit`` without first
+    reaping children — on Windows that leaves orphaned Flask processes
+    holding ports 5123-5127, and Windows TIME_WAIT can block the next
+    sidecar from re-binding for 1-2 minutes.
+    """
+    global _shutdown_requested, _shutdown_signal_count, _shutdown_requested_at
+    _shutdown_signal_count += 1
+    if _shutdown_signal_count >= 2:
+        logger.warning(
+            "Received signal %d twice — force-killing children and exiting.",
+            signum,
+        )
+        for svc in _force_kill_children:
+            proc = getattr(svc, "process", None)
+            if proc is not None and proc.poll() is None:
+                try:
+                    proc.kill()  # SIGKILL-equivalent — no graceful wait
+                except OSError:
+                    pass
+        os._exit(130)
+    logger.info(
+        "Received signal %d — shutting down (press Ctrl+C again to force, "
+        "or wait %.0fs for watchdog).",
+        signum, _SHUTDOWN_WATCHDOG_TIMEOUT,
+    )
     _shutdown_requested = True
+    if _shutdown_requested_at == 0.0:
+        _shutdown_requested_at = time.time()
 
 
 def run(foreground: bool = True) -> None:
@@ -282,6 +481,13 @@ def run(foreground: bool = True) -> None:
     signal.signal(signal.SIGTERM, _signal_handler)
     signal.signal(signal.SIGINT, _signal_handler)
 
+    # Watchdog ensures Ctrl+C always wins within a bounded time, even
+    # if the main thread is stuck in a blocking syscall when the
+    # signal arrives.
+    threading.Thread(
+        target=_shutdown_watchdog, name="shutdown-watchdog", daemon=True,
+    ).start()
+
     # --- Build child service list ---
     services_cfg = sidecar_cfg.get("services", {})
     children: list[ChildService] = []
@@ -304,6 +510,12 @@ def run(foreground: bool = True) -> None:
         state.services[child.name] = ServiceHealth(
             name=child.name, port=child.port, status="starting",
         )
+
+    # Make children reachable from the signal handler so a force-kill
+    # path can reap them synchronously (prevents orphan Flask processes
+    # holding ports, which would block the next sidecar run on Windows).
+    _force_kill_children.clear()
+    _force_kill_children.extend(children)
 
     # --- Start all children in parallel ---
     for child in children:
@@ -360,6 +572,17 @@ def run(foreground: bool = True) -> None:
     health_interval = sidecar_cfg.get("health_check_interval", 30)
     max_crashes = sidecar_cfg.get("max_service_crashes", 5)
     backoff_base = sidecar_cfg.get("restart_backoff_base", 5)
+    failure_threshold = sidecar_cfg.get("health_failure_threshold", 2)
+    probe_interval = sidecar_cfg.get("health_probe_interval", 5)
+    probe_timeout = sidecar_cfg.get("health_probe_timeout", 2)
+
+    # Parallel background prober. Probes run off-loop so scheduler
+    # ticks, message polling, and retry sweeps can never delay a
+    # health check. The main loop consumes cached results only.
+    monitor = HealthMonitor(
+        children, interval=probe_interval, probe_timeout=probe_timeout,
+    )
+    monitor.start()
 
     logger.info(
         "Sidecar daemon started (pid=%d, services=%d, jobs=%d).",
@@ -376,10 +599,13 @@ def run(foreground: bool = True) -> None:
             tick_start = time.time()
 
             try:
-                # 1. Health-check children
+                # 1. Evaluate cached health state and restart if warranted
                 for child in children:
                     if child.enabled:
-                        _check_and_restart(child, state, max_crashes, backoff_base, event_log)
+                        _check_and_restart(
+                            child, monitor, state, max_crashes, backoff_base,
+                            failure_threshold, event_log,
+                        )
 
                 # 2. Scheduler tick (cron + heartbeat + hot-reload)
                 scheduler.tick()
@@ -412,6 +638,7 @@ def run(foreground: bool = True) -> None:
     except KeyboardInterrupt:
         logger.info("Keyboard interrupt — shutting down.")
     finally:
+        monitor.stop()
         event_log.emit("daemon_stop", "daemon", "Sidecar shutting down")
         state.events = event_log.recent(50)
         _shutdown(children, state)

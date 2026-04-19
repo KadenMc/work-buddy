@@ -559,29 +559,43 @@ def ir_index_endpoint():
 
 
 def main():
-    """Entry point — init registry, load eager models, then serve."""
+    """Entry point — init registry, start serving, load models in background.
+
+    Flask comes up first so ``/health`` is reachable during the (slow)
+    model-load phase; it returns ``{"status": "loading"}`` until at
+    least one model finishes loading. The sidecar's health-checker
+    accepts ``loading`` as healthy, so the service is not falsely
+    declared dead while models warm up.
+    """
+    import threading
+
     from work_buddy.config import load_config
 
     cfg = load_config()
     port = cfg.get("embedding", {}).get("service_port", 5124)
 
-    # Build model registry from config
+    # Build model registry from config (cheap — just metadata)
     _init_registry(cfg)
 
-    # Load eager models at startup
-    for key, entry in _registry.items():
-        if entry.eager:
-            _load_model(entry)
-
     # Enable in-service mode for dense retrieval so it calls models
-    # directly instead of HTTP round-tripping to itself.
+    # directly instead of HTTP round-tripping to itself. Set before
+    # the warmup thread runs so any early-arriving call sees it.
     import work_buddy.ir.dense
     work_buddy.ir.dense._IN_SERVICE = True
 
-    # Pre-warm the /search candidate cache with MCP registry entries.
-    # The registry is static within a session (~61 entries, ~200 texts).
-    # Encoding at startup means the first wb_search call is instant.
-    _prewarm_search_cache()
+    def _warmup() -> None:
+        try:
+            for _key, entry in _registry.items():
+                if entry.eager:
+                    _load_model(entry)
+            _prewarm_search_cache()
+        except Exception:
+            # Warmup failures are logged inside _load_model /
+            # _prewarm_search_cache; don't kill the thread silently.
+            import traceback
+            traceback.print_exc()
+
+    threading.Thread(target=_warmup, name="embedding-warmup", daemon=True).start()
 
     print(f"Embedding service running on http://127.0.0.1:{port}", file=sys.stderr)
     app.run(host="127.0.0.1", port=port, debug=False)
