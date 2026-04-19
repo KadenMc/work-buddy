@@ -1,0 +1,57 @@
+{
+  "features": {
+    "kind": "system",
+    "name": "Features",
+    "description": "User-facing component opt-in/out system and configuration-time requirements.",
+    "parents": [],
+    "children": [
+      "features/preferences"
+    ],
+    "tags": [
+      "features",
+      "preferences",
+      "opt-in",
+      "setup"
+    ],
+    "aliases": [
+      "features",
+      "feature system"
+    ],
+    "content": {
+      "summary": "Parent node for feature preferences and configuration-time requirements.",
+      "full": "Parent node for feature preferences and configuration-time requirements. See `features/preferences`."
+    }
+  },
+  "features/preferences": {
+    "kind": "directions",
+    "name": "Feature Preferences",
+    "description": "How to check feature preferences before recommending or using a component, and how the requirements system differs from runtime health checks.",
+    "parents": [
+      "features"
+    ],
+    "tags": [
+      "features",
+      "preferences",
+      "opt-in",
+      "setup-wizard",
+      "requirements"
+    ],
+    "aliases": [
+      "feature preferences",
+      "opt-in features",
+      "wanted feature",
+      "user opted out",
+      "feature disabled",
+      "setup preferences"
+    ],
+    "trigger": "Before recommending, probing, or diagnosing a feature; whenever a user asks 'why isn't X working?'",
+    "capabilities": [
+      "setup_wizard",
+      "feature_status"
+    ],
+    "content": {
+      "summary": "Check features.<name>.wanted in config.local.yaml before recommending or diagnosing a feature. wanted:false means don't probe; point at /wb-setup preferences.",
+      "full": "Users can opt in or out of components via `features:` in `config.local.yaml`. The setup wizard (`/wb-setup`) manages these preferences interactively.\n\n## Check preferences before acting\n\n**Before recommending or using a feature, check preferences:**\n\n- If `wanted: false` — do **not** suggest, probe, or diagnose it. If the user asks \"why isn't X working?\", mention they opted out and point them at `/wb-setup preferences` to re-enable.\n- If `wanted: true` or `wanted: null` (undecided) — use normally.\n- `feature_status` returns preferences + tool availability in one call. Prefer it over probing components individually.\n\n## Requirements system vs health checks\n\nTwo adjacent systems, distinct purposes:\n\n- **Requirements** (`work_buddy/health/requirements.py`) — configuration-time checks that validate hidden assumptions: vault sections exist, required plugins are enabled, config keys are set. Run by the setup wizard; failures come with fix instructions.\n- **Health checks** — runtime checks that a service is actually up and responding.\n\nRule of thumb: \"is it configured?\" → requirements. \"is it running?\" → health.\n\n## Capabilities\n\n- `setup_wizard` — modes: `status` (overview), `guided` (interactive setup), `diagnose` (deep diagnostic), `preferences` (view/edit).\n- `feature_status` — includes `preferences` and `bootstrap_requirements` sections alongside tool-probe results."
+    }
+  }
+}

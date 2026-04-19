@@ -10,7 +10,7 @@ Two parallel hierarchies share a common base:
   preferences — markdown-backed in the Obsidian vault. Queryable through
   the same search infrastructure.
 
-Agents query via ``knowledge`` (both stores), ``knowledge_docs`` (system
+Agents query via ``knowledge`` (both stores), ``agent_docs`` (system
 only), or ``knowledge_personal`` (personal only).
 """
 

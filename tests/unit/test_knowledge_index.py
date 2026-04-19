@@ -218,7 +218,8 @@ class TestKnowledgeIndexBuild:
         assert idx.is_built
         assert idx.size == 5
         assert stats["units_indexed"] == 5
-        assert stats["has_dense_vectors"] is False
+        assert stats["has_content_vectors"] is False
+        assert stats["has_alias_vectors"] is False
 
     def test_build_increments_generation(self):
         store = _make_store()
@@ -381,25 +382,152 @@ class TestGenerationGuard:
         idx.invalidate()
         idx.build(_make_store(), skip_dense=True)
 
-        # This should abort silently (old_gen doesn't match current)
-        idx._build_dense_vectors(expected_generation=old_gen)
-        assert not idx._has_dense
+        # Both builders should abort silently (old_gen doesn't match current)
+        idx._build_content_vectors(expected_generation=old_gen)
+        idx._build_alias_vectors(expected_generation=old_gen)
+        assert not idx._has_content
+        assert not idx._has_aliases
 
     def test_dense_build_succeeds_with_current_generation(self):
         """Dense build with matching generation should proceed.
 
-        This test calls _build_dense_vectors which tries to reach the
-        embedding service. Since the service isn't running in tests,
-        it should fail gracefully (has_dense stays False), but the
-        generation check itself should pass (no abort log).
+        The builders try to reach the embedding service. Since the service
+        isn't running in tests, they should fail gracefully (has_* stays
+        False), but the generation check itself should pass (no abort log).
         """
         idx = KnowledgeIndex()
         idx.build(_make_store(), skip_dense=True)
 
-        # With no embedding service, this will fail gracefully
-        idx._build_dense_vectors(expected_generation=idx._generation)
-        # Dense won't be built (no service), but it shouldn't have aborted
-        # due to generation mismatch — the generation was correct
+        # With no embedding service, these will fail gracefully
+        idx._build_content_vectors(expected_generation=idx._generation)
+        idx._build_alias_vectors(expected_generation=idx._generation)
+        # Vectors won't be built (no service), but neither should have
+        # aborted due to generation mismatch — the generation was correct.
+
+
+# ---------------------------------------------------------------------------
+# Cache integration — proves the persistence layer actually saves embed calls
+# ---------------------------------------------------------------------------
+
+class TestCacheIntegration:
+    """Verifies that a second build with unchanged docs does NOT call the
+    embedder a second time — proving the cache is wired through end-to-end.
+
+    Uses a tmp_path-scoped cache dir (via monkeypatch) to keep test runs
+    isolated from each other and from the real on-disk cache.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolated_cache(self, tmp_path, monkeypatch):
+        from work_buddy.knowledge import persistence as persist
+        monkeypatch.setattr(
+            persist, "_content_cache_path", lambda: tmp_path / "content.npz",
+        )
+        monkeypatch.setattr(
+            persist, "_alias_cache_path", lambda: tmp_path / "aliases.npz",
+        )
+
+    def test_content_vectors_reused_from_cache_on_second_build(self, monkeypatch):
+        """First build embeds, second build hits cache with 0 embed calls."""
+        import numpy as np
+        from work_buddy.embedding import client as embed_client
+
+        calls: list[int] = []  # number of texts embedded per call
+
+        def fake_embed_for_ir(texts, role="query"):
+            calls.append(len(texts))
+            return [np.random.default_rng(hash(t) & 0xFFFF).normal(size=768).tolist()
+                    for t in texts]
+
+        monkeypatch.setattr(embed_client, "embed_for_ir", fake_embed_for_ir)
+
+        # First build — should embed every unit.
+        idx1 = KnowledgeIndex()
+        idx1.build(_make_store(), skip_dense=True)
+        idx1._build_content_vectors()
+        first_total = sum(calls)
+        assert first_total > 0, "First build should have embedded"
+        assert idx1._has_content is True
+
+        # Second build (fresh index instance, same docs, SAME cache dir) —
+        # should find everything in cache and embed nothing.
+        calls.clear()
+        idx2 = KnowledgeIndex()
+        idx2.build(_make_store(), skip_dense=True)
+        idx2._build_content_vectors()
+        assert sum(calls) == 0, (
+            f"Second build should have zero embed calls (cache hit), "
+            f"but embedded {sum(calls)} texts"
+        )
+        assert idx2._has_content is True
+        # Vectors must be identical — same cache source
+        assert np.allclose(idx1._content_vectors, idx2._content_vectors, atol=1e-3)
+
+    def test_alias_vectors_reused_from_cache_on_second_build(self, monkeypatch):
+        """Same contract for aliases: second build hits cache."""
+        import numpy as np
+        from work_buddy.embedding import client as embed_client
+
+        calls: list[int] = []
+
+        def fake_embed(texts, **kwargs):
+            calls.append(len(texts))
+            return [np.random.default_rng(hash(t) & 0xFFFF).normal(size=1024).tolist()
+                    for t in texts]
+
+        monkeypatch.setattr(embed_client, "embed", fake_embed)
+
+        idx1 = KnowledgeIndex()
+        idx1.build(_make_store(), skip_dense=True)
+        idx1._build_alias_vectors()
+        first_total = sum(calls)
+        # _make_store has some units with aliases — ensure at least one was embedded
+        assert first_total > 0, "First build should have embedded some aliases"
+
+        calls.clear()
+        idx2 = KnowledgeIndex()
+        idx2.build(_make_store(), skip_dense=True)
+        idx2._build_alias_vectors()
+        assert sum(calls) == 0, (
+            f"Second build should have zero alias embed calls, got {sum(calls)}"
+        )
+
+    def test_content_hash_change_triggers_re_embed(self, monkeypatch):
+        """Editing a unit's content_text invalidates ONLY that unit's cache entry."""
+        import numpy as np
+        from work_buddy.embedding import client as embed_client
+
+        calls: list[list[str]] = []  # remember the actual texts embedded
+
+        def fake_embed_for_ir(texts, role="query"):
+            calls.append(list(texts))
+            return [np.random.default_rng(hash(t) & 0xFFFF).normal(size=768).tolist()
+                    for t in texts]
+
+        monkeypatch.setattr(embed_client, "embed_for_ir", fake_embed_for_ir)
+
+        # First build — embed all.
+        store1 = _make_store()
+        idx1 = KnowledgeIndex()
+        idx1.build(store1, skip_dense=True)
+        idx1._build_content_vectors()
+        n_initial = sum(len(c) for c in calls)
+        assert n_initial == len(store1)
+
+        # Second build with ONE unit's content edited.
+        calls.clear()
+        store2 = _make_store()
+        # Mutate consent/system's summary so content_text changes
+        store2["consent/system"].content["summary"] = "EDITED summary text"
+        idx2 = KnowledgeIndex()
+        idx2.build(store2, skip_dense=True)
+        idx2._build_content_vectors()
+
+        embedded_texts = [t for call in calls for t in call]
+        assert len(embedded_texts) == 1, (
+            f"Only the edited unit should re-embed; got {len(embedded_texts)} texts"
+        )
+        assert "EDITED summary text" in embedded_texts[0]
 
 
 # ---------------------------------------------------------------------------
@@ -426,5 +554,6 @@ class TestModuleHelpers:
         status = idx.status()
         assert status["built"] is True
         assert status["unit_count"] == 5
-        assert status["has_dense_vectors"] is False
+        assert status["has_content_vectors"] is False
+        assert status["has_alias_vectors"] is False
         assert "built_at" in status

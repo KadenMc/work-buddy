@@ -1,0 +1,95 @@
+# CLAUDE.local.md — example
+
+Copy this file to `CLAUDE.local.md` and edit for your environment. `CLAUDE.local.md` is auto-gitignored by Claude Code; canonical/shared instructions belong in `CLAUDE.md` instead.
+
+Everything below is user-, platform-, or preference-specific and does **not** generalize across users.
+
+---
+
+## Environment
+
+<!-- YOUR local Python / shell setup. The example below is one author's Windows + conda configuration — replace with yours. -->
+
+### Running Python
+
+The `Bash` tool uses bash, not PowerShell, so conda activation doesn't work directly. To run Python scripts inside the `work-buddy` conda env on Windows:
+
+```
+powershell.exe -Command "cd <repo-root>; conda activate work-buddy; <your command here>"
+```
+
+If you use a different shell / env manager (venv, pyenv, direnv, etc.), document your activation pattern here so any dev agent working in your environment uses the right Python.
+
+### Dependency management
+
+`work-buddy` uses **Poetry** — that part is canonical and lives in `CLAUDE.md`. What's local to you is which Poetry workflow you actually use:
+
+- Production deps: `poetry add <package>`
+- Temporary / testing deps: `poetry add --group temp <package>` (cleanly removable later)
+- Remove: `poetry remove <package>` or `poetry remove --group temp <package>`
+
+---
+
+## Work philosophy and personal operating rules
+
+<!-- Your research focus, publication goals, metacognition patterns, success criteria. The example below is a PhD-researcher template — replace with what applies to you. -->
+
+You are a **[role]** — [one-line identity]. Your primary goal is **[goal metric]**.
+
+### Core rule
+
+> [The one rule that shapes every interaction.]
+
+### What I want you to do
+
+1. [Behavior 1 — e.g. "Protect active contracts"]
+2. [Behavior 2 — e.g. "Externalize metacognition"]
+3. [Behavior 3 — e.g. "Lower organizational burden"]
+4. [Behavior 4 — e.g. "Tell the truth about progress"]
+
+### What I want you NOT to do
+
+- Do **not** [anti-behavior 1]
+- Do **not** [anti-behavior 2]
+- Do **not** moralize — use operational language. Query `knowledge_personal` with category filters for the user's documented patterns instead of guessing.
+
+### Output defaults
+
+- Current mode: [categories]
+- Detected risk: [with specific evidence]
+- One next action
+- One thing to defer or park
+
+### Success / failure criteria
+
+You are working well if:
+- [measurable signal 1]
+- [measurable signal 2]
+
+You are failing if:
+- [anti-signal 1]
+- [anti-signal 2]
+
+---
+
+## Personal knowledge
+
+Documented patterns, feedback, preferences, and calibration notes live in personal knowledge units (not CLAUDE.local.md). Query via:
+
+```
+mcp__work-buddy__wb_run("knowledge_personal", {"category": "work_pattern"})
+mcp__work-buddy__wb_run("knowledge_personal", {"category": "self_regulation"})
+mcp__work-buddy__wb_run("knowledge_personal", {"category": "skill_gap"})
+```
+
+When you detect a pattern, name it explicitly and apply the minimal intervention. Use `knowledge_mint` to add new personal knowledge as it emerges.
+
+---
+
+## Custom default phrases
+
+<!-- Optional: language you want the agent to reach for when a pattern triggers. -->
+
+- "[phrase 1]"
+- "[phrase 2]"
+- "[phrase 3]"

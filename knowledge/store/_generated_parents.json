@@ -8,17 +8,15 @@
     ],
     "children": [
       "contracts/active_contracts",
-      "contracts/analyze-contracts",
       "contracts/contract_constraints",
       "contracts/contract_health",
       "contracts/contract_wip_check",
       "contracts/contracts_summary",
-      "contracts/create-contract",
       "contracts/overdue_contracts",
       "contracts/stale_contracts"
     ],
     "content": {
-      "summary": "Container for 9 capabilities and workflows."
+      "summary": "Container for 7 capabilities and workflows."
     }
   },
   "journal": {
@@ -50,6 +48,8 @@
       "context"
     ],
     "children": [
+      "context/agent_docs",
+      "context/agent_docs_rebuild",
       "context/chrome_activity",
       "context/chrome_cluster",
       "context/chrome_content",
@@ -57,7 +57,6 @@
       "context/chrome_tab_close",
       "context/chrome_tab_group",
       "context/chrome_tab_move",
-      "context/collect-and-orient",
       "context/context_bundle",
       "context/context_calendar",
       "context/context_chat",
@@ -79,8 +78,21 @@
       "context/datacore_schema",
       "context/datacore_status",
       "context/datacore_validate",
+      "context/dev_mode_toggle",
+      "context/docs_create",
+      "context/docs_delete",
+      "context/docs_get",
+      "context/docs_index",
+      "context/docs_move",
+      "context/docs_query",
+      "context/docs_update",
+      "context/docs_validate",
       "context/ir_index",
-      "context/review-latest-bundle",
+      "context/knowledge",
+      "context/knowledge_index_rebuild",
+      "context/knowledge_index_status",
+      "context/knowledge_mint",
+      "context/knowledge_personal",
       "context/session_commits",
       "context/session_expand",
       "context/session_get",
@@ -92,7 +104,26 @@
       "context/triage_item_detail"
     ],
     "content": {
-      "summary": "Container for 40 capabilities and workflows."
+      "summary": "Container for 54 capabilities and workflows."
+    }
+  },
+  "artifacts": {
+    "kind": "system",
+    "name": "Artifacts",
+    "description": "Artifacts capabilities and workflows",
+    "tags": [
+      "artifacts"
+    ],
+    "children": [
+      "artifacts/artifact_cleanup",
+      "artifacts/artifact_delete",
+      "artifacts/artifact_get",
+      "artifacts/artifact_list",
+      "artifacts/artifact_save",
+      "artifacts/commit_record"
+    ],
+    "content": {
+      "summary": "Container for 6 capabilities and workflows."
     }
   },
   "status": {
@@ -107,6 +138,8 @@
       "status/list_sessions",
       "status/llm_call",
       "status/llm_costs",
+      "status/llm_submit",
+      "status/llm_with_tools",
       "status/mcp_registry_reload",
       "status/remote_session_begin",
       "status/remote_session_list",
@@ -114,12 +147,13 @@
       "status/session_activity",
       "status/session_summary",
       "status/setup_help",
+      "status/setup_wizard",
       "status/sidecar_jobs",
       "status/sidecar_status",
       "status/tailscale_status"
     ],
     "content": {
-      "summary": "Container for 14 capabilities and workflows."
+      "summary": "Container for 17 capabilities and workflows."
     }
   },
   "messaging": {
@@ -166,8 +200,6 @@
       "tasks"
     ],
     "children": [
-      "tasks/inline-todos",
-      "tasks/task-triage",
       "tasks/task_archive",
       "tasks/task_assign",
       "tasks/task_briefing",
@@ -179,11 +211,10 @@
       "tasks/task_stale_check",
       "tasks/task_sync",
       "tasks/task_toggle",
-      "tasks/weekly-review",
       "tasks/weekly_review_data"
     ],
     "content": {
-      "summary": "Container for 15 capabilities and workflows."
+      "summary": "Container for 12 capabilities and workflows."
     }
   },
   "threads": {
@@ -203,78 +234,6 @@
     ],
     "content": {
       "summary": "Container for 6 capabilities and workflows."
-    }
-  },
-  "browser": {
-    "kind": "system",
-    "name": "Browser",
-    "description": "Browser capabilities and workflows",
-    "tags": [
-      "browser"
-    ],
-    "children": [
-      "browser/chrome-triage"
-    ],
-    "content": {
-      "summary": "Container for 1 capabilities and workflows."
-    }
-  },
-  "metacognition": {
-    "kind": "system",
-    "name": "Metacognition",
-    "description": "Metacognition capabilities and workflows",
-    "tags": [
-      "metacognition"
-    ],
-    "children": [
-      "metacognition/blindspot-directions"
-    ],
-    "content": {
-      "summary": "Container for blindspot detection and metacognitive pattern scanning."
-    }
-  },
-  "daily-journal": {
-    "kind": "system",
-    "name": "Daily Journal",
-    "description": "Daily Journal capabilities and workflows",
-    "tags": [
-      "daily-journal"
-    ],
-    "children": [
-      "daily-journal/process-backlog",
-      "daily-journal/segment-notes",
-      "daily-journal/update-journal"
-    ],
-    "content": {
-      "summary": "Container for 3 capabilities and workflows."
-    }
-  },
-  "routing": {
-    "kind": "system",
-    "name": "Routing",
-    "description": "Routing capabilities and workflows",
-    "tags": [
-      "routing"
-    ],
-    "children": [
-      "routing/route-information"
-    ],
-    "content": {
-      "summary": "Container for 1 capabilities and workflows."
-    }
-  },
-  "testing": {
-    "kind": "system",
-    "name": "Testing",
-    "description": "Testing capabilities and workflows",
-    "tags": [
-      "testing"
-    ],
-    "children": [
-      "testing/stress-test"
-    ],
-    "content": {
-      "summary": "Container for 1 capabilities and workflows."
     }
   }
 }
