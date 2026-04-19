@@ -126,7 +126,7 @@ Five of nine steps run as deterministic code — no tokens spent, no latency, no
 | **Task Management** | Full lifecycle: create, triage, assign, track, review. Weekly reviews, inbox triage, stale-task detection — all built-in workflows. |
 | **Contract System** | Explicit work commitments with claims, evidence plans, stop rules, and Theory of Constraints bottleneck tracking. |
 | **Context Collection** | Gather signals from git, Obsidian, conversations, Chrome, calendar into structured bundles. Agents orient on what you've been doing before deciding what to do next. |
-| **Metacognition** | Documented patterns for failure modes: scope drift, branch explosion, infrastructure displacement. The agent names patterns and applies minimal interventions. |
+| **Metacognition** | Framework for any kind of self-accountability: name the patterns you want help catching (work habits, focus, health signals, whatever you want to be held to), document them in personal knowledge, and the agent scans for them and responds with the matching intervention level. |
 
 ### Infrastructure
 

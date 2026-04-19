@@ -1,4 +1,15 @@
 {
+  "daily-journal": {
+    "kind": "system",
+    "name": "Daily Journal",
+    "description": "Daily journal lifecycle — segmentation, backlog processing, routing, update synthesis",
+    "tags": ["daily-journal", "journal", "notes", "segmentation", "backlog"],
+    "aliases": ["daily journal", "journal lifecycle", "journal processing"],
+    "children": ["daily-journal/backlog-directions", "daily-journal/process-backlog", "daily-journal/segment-notes", "daily-journal/update-journal"],
+    "content": {
+      "summary": "Workflows that process the daily journal file: segmenting Running Notes into sections, routing captured items, handling the unprocessed backlog, and synthesizing updates. Distinct from `journal/` (which currently holds the journal-update directions unit) — the `daily-journal/` namespace groups the multi-step workflows, `journal/` the plain directions. A future consolidation pass may merge these; for now they coexist."
+    }
+  },
   "journal/update-directions": {
     "kind": "directions",
     "name": "Journal Update Directions",

@@ -16,7 +16,8 @@
       "dev/documentation-architecture",
       "dev/mcp-reload",
       "dev/plugin-integration",
-      "dev/retro"
+      "dev/retro",
+      "dev/stress-test"
     ],
     "content": {
       "summary": "Dev commands switch the agent from operational to developmental mode. Hidden from operational searches via the 'developmental' tag.",

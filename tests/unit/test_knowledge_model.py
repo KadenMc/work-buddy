@@ -200,14 +200,14 @@ class TestPromptUnitHierarchy:
 class TestVaultUnit:
     def test_construction(self):
         v = VaultUnit(
-            path="personal/metacognition/branch-explosion",
-            name="Branch Explosion",
-            description="Too many branches",
+            path="personal/metacognition/example-pattern-a",
+            name="Example Pattern A",
+            description="Test fixture pattern",
             category="work_pattern",
             severity="HIGH",
             last_observed="2026-04-03",
             observation_count=12,
-            source_file="work_patterns/branch-explosion.md",
+            source_file="work_patterns/example-pattern-a.md",
         )
         assert v.kind == "personal"
         assert v.scope == "personal"

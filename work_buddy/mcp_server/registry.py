@@ -2594,9 +2594,9 @@ def _memory_capabilities() -> list[Capability]:
                     "type": "str",
                     "description": (
                         "Descriptive topic phrase for search mode. Use specific "
-                        "terminology and entity names for best results (e.g. "
-                        "'scope fusion and branch explosion patterns' rather than "
-                        "'blindspots'). Ignored for model/recent modes."
+                        "terminology and entity names (e.g. named work-pattern "
+                        "vocabulary) rather than generic labels like 'blindspots'. "
+                        "Ignored for model/recent modes."
                     ),
                     "required": False,
                 },

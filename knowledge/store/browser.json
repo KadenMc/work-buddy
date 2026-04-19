@@ -1,4 +1,15 @@
 {
+  "browser": {
+    "kind": "system",
+    "name": "Browser",
+    "description": "Chrome tab triage and browser-integrated workflows",
+    "tags": ["browser", "chrome", "tabs"],
+    "aliases": ["chrome", "tabs", "browser tabs"],
+    "children": ["browser/chrome-triage", "browser/chrome-triage-directions"],
+    "content": {
+      "summary": "Capabilities and workflows that read from a live Chrome session via the Claude-in-Chrome MCP bridge — tab triage, clustering, and batch routing of open pages to tasks, notes, or closure."
+    }
+  },
   "browser/chrome-triage-directions": {
     "kind": "directions",
     "name": "Chrome Triage Directions",
