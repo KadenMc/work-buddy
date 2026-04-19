@@ -160,10 +160,33 @@ def build_capability_units() -> dict[str, dict[str, Any]]:
 def build_parent_stubs(
     cap_units: dict[str, dict],
 ) -> dict[str, dict[str, Any]]:
-    """Generate parent container nodes for categories that don't have them yet."""
+    """Generate parent container nodes for categories that don't have them yet.
+
+    Computes the FULL set of parent stubs required by the generated
+    capability units — any parent not present in a HAND-AUTHORED store
+    file gets a stub. Does NOT treat the previously-written
+    ``_generated_parents.json`` as "already exists"; otherwise the
+    wholesale rewrite in ``build_all`` would silently drop any parent
+    not referenced by freshly-generated caps on this run. Without this
+    filter, running ``build --write`` while a new parent is being added
+    (e.g. ``artifacts``) would wipe all the other container stubs.
+    """
     from work_buddy.knowledge.store import load_store
 
     existing = load_store()
+
+    # Exclude paths that came from _generated_parents.json itself —
+    # we're about to overwrite that file, so its current contents
+    # must not be treated as "already exists in the hand-authored store."
+    gen_parents_path = _STORE_DIR / "_generated_parents.json"
+    if gen_parents_path.exists():
+        try:
+            prior_gen = json.loads(gen_parents_path.read_text(encoding="utf-8"))
+            for p in prior_gen:
+                existing.pop(p, None)
+        except Exception:
+            pass  # malformed file — treat as if absent
+
     all_units = {**cap_units}
 
     # Collect all parent paths referenced
@@ -232,11 +255,11 @@ def build_all(write: bool = False) -> dict[str, Any]:
         cap_path.write_text(json.dumps(caps, indent=2, ensure_ascii=False), encoding="utf-8")
         result["capabilities_file"] = str(cap_path)
 
-        # Write parent stubs (only new ones)
-        if stubs:
-            stub_path = _STORE_DIR / "_generated_parents.json"
-            stub_path.write_text(json.dumps(stubs, indent=2, ensure_ascii=False), encoding="utf-8")
-            result["parents_file"] = str(stub_path)
+        # Write parent stubs — always overwrite, since build_parent_stubs
+        # computes the complete required set (not just newly-needed ones).
+        stub_path = _STORE_DIR / "_generated_parents.json"
+        stub_path.write_text(json.dumps(stubs, indent=2, ensure_ascii=False), encoding="utf-8")
+        result["parents_file"] = str(stub_path)
 
         logger.info(
             "Generated store files: %d capabilities, %d parent stubs",

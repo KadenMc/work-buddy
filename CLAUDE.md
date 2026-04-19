@@ -405,7 +405,7 @@ Two parallel stores share a common `KnowledgeUnit` base class:
 
 **Dev notes:** Units can carry a `dev_notes` string — development-facing guidance that only surfaces when the agent is in dev mode or explicitly requests `dev=True`. Use for architectural constraints, non-obvious dependencies, and hard-won lessons that future agents could easily clobber. Activate dev mode with `dev_mode_toggle`; all subsequent knowledge queries auto-include dev_notes for that session.
 
-**Search index:** A persistent BM25 + dense vector index over full unit content is warmed eagerly on MCP server startup. Inline placeholders are resolved before indexing so referenced content is searchable. This powers `knowledge` and `agent_docs` search with hybrid ranking (keyword + semantic).
+**Search index:** An in-memory index fusing three ranking signals via Reciprocal Rank Fusion: BM25 (lexical), content-dense (768-d asymmetric `leaf-ir`, queries via `embed_for_ir(role="query")`), and alias-dense (1024-d symmetric `leaf-mt`, max-pooled per doc across authored `search_aliases`). Vectors are cached to `data/cache/knowledge_index/*.npz` with hash-keyed change detection — typical warm restart rebuilds in <1s (only changed units re-embed). Warmed eagerly on MCP server startup. Inline placeholders are resolved before indexing so referenced content is searchable. Three-signal fusion requires every capability to have authored `search_aliases` (aim for 5–8 each) or alias-less caps lose ground to aliased competitors. See `knowledge/README.md` for the full architecture.
 
 **MCP capabilities:**
 - `knowledge` — unified search across **both** system docs and personal knowledge
@@ -415,8 +415,8 @@ Two parallel stores share a common `KnowledgeUnit` base class:
 - `agent_docs` — original system docs search (unchanged, still works)
 - `agent_docs_rebuild` — reload both stores from disk
 - `dev_mode_toggle` — toggle dev mode for session; when active, knowledge queries auto-include `dev_notes`
-- `knowledge_index_rebuild` — force rebuild knowledge search index with full embeddings
-- `knowledge_index_status` — check knowledge search index health
+- `knowledge_index_rebuild(force=False)` — rebuild knowledge search index using the on-disk cache (fast: only changed units re-embed); pass `force=true` to purge the cache and re-embed every unit
+- `knowledge_index_status` — check knowledge search index health + cache file sizes
 
 **Build system:** `python -m work_buddy.knowledge.build --write` generates capability units from the live registry. Workflow definitions live in `knowledge/store/workflows.json` as hand-authored content (not generated).
 

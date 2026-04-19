@@ -1,4 +1,112 @@
 {
+  "contracts": {
+    "kind": "system",
+    "name": "Contracts",
+    "description": "Contracts capabilities and workflows",
+    "tags": [
+      "contracts"
+    ],
+    "children": [
+      "contracts/active_contracts",
+      "contracts/contract_constraints",
+      "contracts/contract_health",
+      "contracts/contract_wip_check",
+      "contracts/contracts_summary",
+      "contracts/overdue_contracts",
+      "contracts/stale_contracts"
+    ],
+    "content": {
+      "summary": "Container for 7 capabilities and workflows."
+    }
+  },
+  "journal": {
+    "kind": "system",
+    "name": "Journal",
+    "description": "Journal capabilities and workflows",
+    "tags": [
+      "journal"
+    ],
+    "children": [
+      "journal/activity_timeline",
+      "journal/day_planner",
+      "journal/hot_files",
+      "journal/journal_sign_in",
+      "journal/journal_state",
+      "journal/journal_write",
+      "journal/running_notes",
+      "journal/vault_write_at_location"
+    ],
+    "content": {
+      "summary": "Container for 8 capabilities and workflows."
+    }
+  },
+  "context": {
+    "kind": "system",
+    "name": "Context",
+    "description": "Context capabilities and workflows",
+    "tags": [
+      "context"
+    ],
+    "children": [
+      "context/agent_docs",
+      "context/agent_docs_rebuild",
+      "context/chrome_activity",
+      "context/chrome_cluster",
+      "context/chrome_content",
+      "context/chrome_infer",
+      "context/chrome_tab_close",
+      "context/chrome_tab_group",
+      "context/chrome_tab_move",
+      "context/context_bundle",
+      "context/context_calendar",
+      "context/context_chat",
+      "context/context_chrome",
+      "context/context_git",
+      "context/context_messages",
+      "context/context_obsidian",
+      "context/context_projects",
+      "context/context_search",
+      "context/context_smart",
+      "context/context_tasks",
+      "context/context_wellness",
+      "context/datacore_compile_plan",
+      "context/datacore_evaluate",
+      "context/datacore_fullquery",
+      "context/datacore_get_page",
+      "context/datacore_query",
+      "context/datacore_run_plan",
+      "context/datacore_schema",
+      "context/datacore_status",
+      "context/datacore_validate",
+      "context/dev_mode_toggle",
+      "context/docs_create",
+      "context/docs_delete",
+      "context/docs_get",
+      "context/docs_index",
+      "context/docs_move",
+      "context/docs_query",
+      "context/docs_update",
+      "context/docs_validate",
+      "context/ir_index",
+      "context/knowledge",
+      "context/knowledge_index_rebuild",
+      "context/knowledge_index_status",
+      "context/knowledge_mint",
+      "context/knowledge_personal",
+      "context/session_commits",
+      "context/session_expand",
+      "context/session_get",
+      "context/session_locate",
+      "context/session_search",
+      "context/session_uncommitted",
+      "context/session_wb_activity",
+      "context/triage_execute",
+      "context/triage_item_detail"
+    ],
+    "content": {
+      "summary": "Container for 54 capabilities and workflows."
+    }
+  },
   "artifacts": {
     "kind": "system",
     "name": "Artifacts",
@@ -13,6 +121,116 @@
       "artifacts/artifact_list",
       "artifacts/artifact_save",
       "artifacts/commit_record"
+    ],
+    "content": {
+      "summary": "Container for 6 capabilities and workflows."
+    }
+  },
+  "status": {
+    "kind": "system",
+    "name": "Status",
+    "description": "Status capabilities and workflows",
+    "tags": [
+      "status"
+    ],
+    "children": [
+      "status/feature_status",
+      "status/list_sessions",
+      "status/llm_call",
+      "status/llm_costs",
+      "status/llm_submit",
+      "status/llm_with_tools",
+      "status/mcp_registry_reload",
+      "status/remote_session_begin",
+      "status/remote_session_list",
+      "status/service_health",
+      "status/session_activity",
+      "status/session_summary",
+      "status/setup_help",
+      "status/setup_wizard",
+      "status/sidecar_jobs",
+      "status/sidecar_status",
+      "status/tailscale_status"
+    ],
+    "content": {
+      "summary": "Container for 17 capabilities and workflows."
+    }
+  },
+  "messaging": {
+    "kind": "system",
+    "name": "Messaging",
+    "description": "Messaging capabilities and workflows",
+    "tags": [
+      "messaging"
+    ],
+    "children": [
+      "messaging/get_thread",
+      "messaging/query_messages",
+      "messaging/read_message",
+      "messaging/reply_to_message",
+      "messaging/send_message",
+      "messaging/update_message_status"
+    ],
+    "content": {
+      "summary": "Container for 6 capabilities and workflows."
+    }
+  },
+  "memory": {
+    "kind": "system",
+    "name": "Memory",
+    "description": "Memory capabilities and workflows",
+    "tags": [
+      "memory"
+    ],
+    "children": [
+      "memory/memory_prune",
+      "memory/memory_read",
+      "memory/memory_reflect",
+      "memory/memory_write"
+    ],
+    "content": {
+      "summary": "Container for 4 capabilities and workflows."
+    }
+  },
+  "tasks": {
+    "kind": "system",
+    "name": "Tasks",
+    "description": "Tasks capabilities and workflows",
+    "tags": [
+      "tasks"
+    ],
+    "children": [
+      "tasks/task_archive",
+      "tasks/task_assign",
+      "tasks/task_briefing",
+      "tasks/task_change_state",
+      "tasks/task_create",
+      "tasks/task_delete",
+      "tasks/task_review_inbox",
+      "tasks/task_scattered",
+      "tasks/task_stale_check",
+      "tasks/task_sync",
+      "tasks/task_toggle",
+      "tasks/weekly_review_data"
+    ],
+    "content": {
+      "summary": "Container for 12 capabilities and workflows."
+    }
+  },
+  "threads": {
+    "kind": "system",
+    "name": "Threads",
+    "description": "Threads capabilities and workflows",
+    "tags": [
+      "threads"
+    ],
+    "children": [
+      "threads/thread_ask",
+      "threads/thread_close",
+      "threads/thread_create",
+      "threads/thread_list",
+      "threads/thread_poll",
+      "threads/thread_send"
     ],
     "content": {
       "summary": "Container for 6 capabilities and workflows."

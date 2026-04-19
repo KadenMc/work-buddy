@@ -164,27 +164,41 @@ python -m work_buddy.knowledge.build --write
 
 ## Search index
 
-Knowledge search uses a dedicated in-memory index that searches the **full content**
-of every unit (metadata + summary + body), not just metadata phrases.
+Knowledge search uses an in-memory index that fuses three independent ranking signals via Reciprocal Rank Fusion.
 
-| Component | What it does |
-|-----------|-------------|
-| BM25 (dual) | Two parallel BM25Okapi indices: content-weighted (0.7) + metadata-weighted (0.3) |
-| Dense vectors | Full-content embeddings via the embedding service (1024-dim, ~0.76 MB for 220 units) |
-| RRF fusion | Reciprocal Rank Fusion when both BM25 and dense are available |
+| Signal | Model | Purpose |
+|--------|-------|---------|
+| BM25 (dual) | — | Lexical match over full-text and metadata (weights 0.7 / 0.3) |
+| Content dense | `leaf-ir` 768-d, asymmetric | Passage-shaped semantic match; queries encoded via `embed_for_ir(role="query")`, content via `role="document"` |
+| Alias dense | `leaf-mt` 1024-d, symmetric | Query-shaped match against authored alias phrases; max-pooled per doc so one strong alias hit wins |
 
-**Lifecycle:**
-- Built eagerly on MCP server startup (BM25 inline ~50ms, dense in background thread ~3.5s)
+**Why three signals.** BM25 handles exact tokens. Content-dense catches queries that use different words than the docs. Alias-dense rescues queries that use different vocabulary than either — it's query-shaped on both sides (user query vs authored alias), which the symmetric model fits best.
+
+**RRF fusion** is rank-based, so fusing across the 768-d and 1024-d spaces is safe (no score normalization needed). If any signal is unavailable (embedding service down, no aliases on a unit), it's dropped from fusion and the remaining signals still rank. BM25 alone is always a working fallback.
+
+**Alias coverage matters.** Three-signal fusion is fair only when every capability has authored aliases. A cap with zero aliases gets two votes (BM25 + content) against aliased competitors' three — and loses. Keep `search_aliases` populated on every `Capability` in `registry.py`; aim for 5-8 natural phrasings each (noun-phrase + question-shaped).
+
+### Persistence
+
+Vectors are cached to disk at `data/cache/knowledge_index/`:
+- `content.npz` — one 768-d vector per unit, keyed by `path → (content_hash, vector)`
+- `aliases.npz` — one 1024-d vector per alias, keyed by `(path, alias_text) → vector`
+- Each file has a `model_key` + `CACHE_VERSION` header; mismatch → treated as empty (safe re-embed)
+- Atomic writes via temp-file rename
+
+On rebuild, only changed or new units re-embed. Typical warm restart is <1s. Cold first build is ~90-180s (the 526 MB `leaf-ir` document encoder lazy-loads once).
+
+### Lifecycle
+
+- Built eagerly on MCP server startup: BM25 inline (~100 ms), dense vectors in a background daemon thread (cache-hit rebuild ~0.4 s; cold first rebuild ~90-180 s)
 - Invalidated automatically when `invalidate_store()` or `invalidate_vault()` is called
-- Rebuilt on next search query or explicit `knowledge_index_rebuild`
-- Generation guards prevent stale background threads from corrupting a rebuilt index
+- Rebuilt on next search query or explicit `knowledge_index_rebuild(force=false)` (uses cache); pass `force=true` to purge the cache and re-embed from scratch
+- Generation guards at both start and commit prevent stale background threads from overwriting a rebuilt index
 
-**MCP capabilities:**
-- `knowledge_index_rebuild` — force rebuild with full embeddings
-- `knowledge_index_status` — check index health (built, unit count, dense available)
+### MCP capabilities
 
-**Fallback:** If embedding service is down at build time, index uses BM25 only.
-If down at query time, BM25 still works. Dense vectors are never required.
+- `knowledge_index_rebuild(force: bool = False)` — rebuild using cache (fast) or from scratch (`force=true`, slow)
+- `knowledge_index_status` — index health + cache file sizes
 
 ## Architecture
 
@@ -193,7 +207,8 @@ knowledge/store/                # Canonical JSON store
 work_buddy/knowledge/
   model.py                      # KnowledgeUnit type hierarchy (PromptUnit, VaultUnit)
   store.py                      # JSON + vault loader, caching, invalidation
-  index.py                      # In-memory BM25 + dense search index
+  index.py                      # In-memory BM25 + content-dense + alias-dense index (RRF)
+  persistence.py                # Disk cache for content + alias vectors (hash-keyed)
   search.py                     # Federated search (4 modes), delegates to index
   query.py                      # MCP-facing functions (knowledge, agent_docs)
   build.py                      # Registry → store generator
