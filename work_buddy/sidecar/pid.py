@@ -76,6 +76,51 @@ def check_existing_daemon() -> int | None:
     return None
 
 
+def takeover_existing_daemon(pid: int, *, wait_seconds: float = 10.0) -> bool:
+    """Terminate an existing sidecar process so a new one can take over.
+
+    Sends SIGTERM first (so the old daemon's signal handler runs and
+    its atexit cleanup fires), then escalates to ``taskkill /F /T`` on
+    Windows / SIGKILL on Unix if it's still alive after half the
+    window. Returns True once the PID is confirmed dead.
+    """
+    import time as _time
+
+    from work_buddy.compat import _force_kill_pid  # type: ignore[attr-defined]
+
+    logger.info("Taking over existing sidecar (pid=%d)...", pid)
+
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except (OSError, ProcessLookupError):
+        pass
+
+    deadline = _time.monotonic() + wait_seconds
+    escalated = False
+    while _time.monotonic() < deadline:
+        if not _is_process_alive(pid):
+            _remove_pid_file()
+            logger.info("Previous sidecar (pid=%d) terminated.", pid)
+            return True
+        _time.sleep(0.2)
+        if not escalated and _time.monotonic() > (deadline - wait_seconds / 2):
+            escalated = True
+            logger.warning(
+                "Previous sidecar (pid=%d) did not exit on SIGTERM — "
+                "escalating to force-kill.", pid,
+            )
+            _force_kill_pid(pid)
+
+    if _is_process_alive(pid):
+        logger.error(
+            "Could not terminate existing sidecar (pid=%d) within %.0fs.",
+            pid, wait_seconds,
+        )
+        return False
+    _remove_pid_file()
+    return True
+
+
 def write_pid_file() -> None:
     """Write the current process PID to the PID file (atomic on NTFS)."""
     pid = os.getpid()
