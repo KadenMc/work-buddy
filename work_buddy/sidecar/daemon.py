@@ -28,6 +28,7 @@ from work_buddy.sidecar.pid import (
     PID_FILE,
     check_existing_daemon,
     cleanup_pid_file,
+    takeover_existing_daemon,
     write_pid_file,
 )
 from work_buddy.sidecar.state import (
@@ -263,11 +264,18 @@ def run(foreground: bool = True) -> None:
     cfg = load_config()
     sidecar_cfg = cfg.get("sidecar", {})
 
-    # --- Check for existing daemon ---
+    # --- Check for existing daemon — if one's alive, take it over ---
+    # We enforce single-instance by replacement, not refusal: the user
+    # may be intentionally restarting in a visible terminal to regain
+    # control of a sidecar launched silently at login.
     existing = check_existing_daemon()
     if existing:
-        logger.error("Sidecar already running (pid=%d). Aborting.", existing)
-        sys.exit(1)
+        if not takeover_existing_daemon(existing):
+            logger.error(
+                "Sidecar already running (pid=%d) and could not be "
+                "terminated. Aborting.", existing,
+            )
+            sys.exit(1)
 
     # --- Write PID file + register signal handlers ---
     write_pid_file()
