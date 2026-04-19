@@ -1,0 +1,13 @@
+{
+  "routing": {
+    "kind": "system",
+    "name": "Routing",
+    "description": "Information routing workflows — moving captured items to their destinations with user confirmation",
+    "tags": ["routing", "capture", "destinations"],
+    "aliases": ["route information", "capture routing", "item routing"],
+    "children": ["routing/route-information"],
+    "content": {
+      "summary": "Workflows that move captured items (notes, tabs, tasks, links) from an inbox state to their correct destination (task list, project note, journal, or discard), one group at a time, with user confirmation for each routing decision."
+    }
+  }
+}

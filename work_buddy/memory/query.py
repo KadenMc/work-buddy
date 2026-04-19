@@ -53,8 +53,8 @@ def memory_read(
     ----------
     query : str
         Descriptive topic phrase for search mode. Use specific terminology
-        and entity names for best results (e.g. "scope fusion and branch
-        explosion patterns" rather than "blindspots"). Ignored for model/recent.
+        and entity names for best results (e.g. named work-pattern vocabulary
+        rather than a generic label like "blindspots"). Ignored for model/recent.
     mode : str
         "search" (default) — semantic + keyword recall, no LLM cost.
         "model" — fetch a pre-computed mental model by model_id.

@@ -83,20 +83,19 @@ def _make_store() -> dict[str, KnowledgeUnit]:
             },
             tags=["telegram", "notifications", "mobile"],
         ),
-        "personal/branch-explosion": VaultUnit(
-            path="personal/branch-explosion",
-            name="Branch Explosion",
-            description="Opening too many parallel lines of investigation",
+        "personal/example-pattern-a": VaultUnit(
+            path="personal/example-pattern-a",
+            name="Example Pattern A",
+            description="Test fixture pattern for index tests",
             category="work_pattern",
             severity="HIGH",
             content={
-                "summary": "Recognized when 3+ active branches exist simultaneously.",
+                "summary": "Test fixture summary for example pattern A.",
                 "full": (
-                    "Branch explosion occurs when the user opens multiple "
-                    "parallel investigation lines without closing any. "
-                    "Typical trigger: encountering an interesting tangent "
-                    "while working on the primary task. Intervention: "
-                    "name the pattern, force a pick-one decision."
+                    "Example Pattern A is a test fixture used to exercise "
+                    "indexing of personal knowledge units. It carries enough "
+                    "text to produce non-trivial BM25 and dense-embedding "
+                    "signals during search tests."
                 ),
             },
             tags=["metacognition", "work-pattern"],
@@ -263,10 +262,10 @@ class TestKnowledgeIndexSearch:
         assert results[0]["path"] == "notifications/telegram"
 
     def test_deep_content_match(self, idx):
-        """'parallel investigation lines' only appears in branch-explosion body."""
-        results = idx.search("parallel investigation lines tangent")
+        """'BM25 and dense-embedding signals' only appears in example-pattern-a body."""
+        results = idx.search("BM25 and dense-embedding signals during search")
         assert len(results) > 0
-        assert results[0]["path"] == "personal/branch-explosion"
+        assert results[0]["path"] == "personal/example-pattern-a"
 
     def test_candidate_filtering(self, idx):
         """When candidates restrict to a subset, only those paths are returned."""

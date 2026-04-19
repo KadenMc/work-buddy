@@ -937,53 +937,6 @@
       "return-results": "Return:\n1. The **tagged text** (original content with inserted thread tags)\n2. The **thread list** (extracted structured objects)\n3. The **validation result**\n\nThe caller (`process-backlog.md`) uses the thread list to feed into the routing workflow."
     }
   },
-  "testing/stress-test": {
-    "kind": "workflow",
-    "name": "Stress Test",
-    "description": "Subprocess isolation validation workflow. The `compute-primes` step runs",
-    "workflow_name": "stress-test",
-    "execution": "main",
-    "steps": [
-      {
-        "id": "compute-primes",
-        "name": "CPU stress test (primes sieve)",
-        "step_type": "code",
-        "depends_on": [],
-        "auto_run": {
-          "callable": "work_buddy.stress_test.compute_primes",
-          "kwargs": {
-            "limit": 1000000
-          },
-          "timeout": 60
-        },
-        "visibility": {
-          "mode": "summary",
-          "include_keys": [
-            "count",
-            "first",
-            "last",
-            "checksum"
-          ]
-        }
-      },
-      {
-        "id": "verify-result",
-        "name": "Verify stress test result",
-        "step_type": "reasoning",
-        "depends_on": [
-          "compute-primes"
-        ]
-      }
-    ],
-    "tags": [
-      "testing",
-      "stress",
-      "test"
-    ],
-    "parents": [
-      "testing"
-    ]
-  },
   "tasks/task-triage": {
     "kind": "workflow",
     "name": "Task Triage",
@@ -1248,5 +1201,52 @@
     "step_instructions": {
       "orient": "(main, reasoning)\n\nBefore touching code, orient on the subsystem you are about to modify. The default dev failure mode is acting on general knowledge without consulting the codebase — this workflow exists because agents (including the one that most recently created it) have skipped this step and written wrong code as a result.\n\n## Required actions\n\n1. **Activate dev mode** so `dev_notes` surface in subsequent knowledge queries:\n\n   ```\n   mcp__work-buddy__wb_run(\"dev_mode_toggle\", {\"enabled\": true})\n   ```\n\n2. **Identify the subsystem** you are about to modify in one short phrase (for your own framing; not submitted as output).\n\n3. **Issue at least one `agent_docs` call** targeting that subsystem at `depth=\"full\"`. Prefer scope browsing if you do not know the exact path:\n\n   - Exact:   `mcp__work-buddy__wb_run(\"agent_docs\", {\"path\": \"architecture/embedding-service\", \"depth\": \"full\"})`\n   - Browse:  `mcp__work-buddy__wb_run(\"agent_docs\", {\"scope\": \"architecture/\"})`\n   - Search:  `mcp__work-buddy__wb_run(\"agent_docs\", {\"query\": \"<natural-language question>\"})`\n\n4. **Open the relevant code files** — not just headers, read them. Identify existing wrappers, classes, or functions that already solve part of the problem. If the subsystem has tests, at least skim their shape.\n\n5. **Advance this step** via `wb_advance` with a dict in this exact shape. Empty or trivial lists are a signal you have not oriented — go deeper and try again:\n\n   ```\n   {\n     \"units_read\":     [\"<path/to/unit>\", ...],\n     \"files_read\":     [\"<repo-relative/or/absolute/path>\", ...],\n     \"wrappers_found\": [\"<existing function/class/capability>\", ...]\n   }\n   ```\n\n## If you are tempted to skip\n\nThat is the exact signal you need this step most. Your feeling of already-understanding is how previous dev agents have ended up writing wrong code. The cost of a minute of discovery is trivial against the cost of a wrong commit. Orient anyway.\n\n## What this step does NOT require\n\n- A long prose analysis — the three lists are enough.\n- Reading every file in the subsystem — just the ones load-bearing for the change.\n- Loading every related knowledge unit — one or two at `depth=\"full\"` is usually the right amount.\n\nOnly after advancing with a non-trivial declaration may you return to the user and proceed with the actual dev task."
     }
+  },
+  "dev/stress-test": {
+    "kind": "workflow",
+    "name": "Stress Test",
+    "description": "Subprocess isolation validation workflow (developer tool). The `compute-primes` step runs in a subprocess to exercise the gateway's subprocess execution path.",
+    "workflow_name": "stress-test",
+    "execution": "main",
+    "steps": [
+      {
+        "id": "compute-primes",
+        "name": "CPU stress test (primes sieve)",
+        "step_type": "code",
+        "depends_on": [],
+        "auto_run": {
+          "callable": "work_buddy.stress_test.compute_primes",
+          "kwargs": {
+            "limit": 1000000
+          },
+          "timeout": 60
+        },
+        "visibility": {
+          "mode": "summary",
+          "include_keys": [
+            "count",
+            "first",
+            "last",
+            "checksum"
+          ]
+        }
+      },
+      {
+        "id": "verify-result",
+        "name": "Verify stress test result",
+        "step_type": "reasoning",
+        "depends_on": [
+          "compute-primes"
+        ]
+      }
+    ],
+    "tags": [
+      "dev",
+      "stress",
+      "test"
+    ],
+    "parents": [
+      "dev"
+    ]
   }
 }

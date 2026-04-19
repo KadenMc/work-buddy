@@ -290,8 +290,8 @@ def contract_health_check(contracts_dir: Path | None = None) -> str:
         lines.append(
             f"\n**WIP VIOLATION:** {wip['active_count']} active contracts "
             f"(limit: {WIP_LIMIT}). "
-            f"This risks branch explosion -- pause or complete a contract before "
-            f"starting new work. Active: {', '.join(wip['active_titles'])}"
+            f"Pause or complete a contract before starting new work. "
+            f"Active: {', '.join(wip['active_titles'])}"
         )
     elif len(active) == 0:
         lines.append("\n**Note:** No active contracts.")

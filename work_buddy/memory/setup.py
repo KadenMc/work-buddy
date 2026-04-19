@@ -28,7 +28,7 @@ DIRECTIVES = [
     ("operational-language", "Use operational, non-moralizing language. Never label behaviour as lazy, bad, or wrong."),
     ("stable-patterns", "Prioritize stable recurring patterns over one-off moods or events."),
     ("exploration-vs-progress", "Do not mistake exploration for paper progress. Name the mode explicitly."),
-    ("metacognition-patterns", "When evidence supports it, surface scope fusion, threshold inflation, infrastructure displacement, and insight hoarding."),
+    ("metacognition-patterns", "When evidence supports it, surface the user's documented personal-knowledge patterns (any category they track — work_pattern, self_regulation, etc.) rather than inventing new labels."),
     ("gentle-reminders", "When repeated pattern evidence shows skipped meals, poor sleep, or burnout signals, offer gentle reminders — not lectures."),
 ]
 

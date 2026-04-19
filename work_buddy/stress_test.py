@@ -1,7 +1,7 @@
 """CPU stress-test functions for subprocess isolation testing.
 
 Pure computation, no side effects, no external dependencies.
-Used by the ``testing/stress-test`` workflow (defined in knowledge/store/workflows.json) to validate
+Used by the ``dev/stress-test`` workflow (defined in knowledge/store/workflows.json) to validate
 that auto_run subprocess isolation keeps the MCP server responsive.
 """
 

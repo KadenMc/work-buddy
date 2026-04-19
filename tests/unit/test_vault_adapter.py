@@ -40,12 +40,12 @@ class TestLoadVaultUnits:
     def test_subdirectory_path_generation(self, tmp_path):
         sub = tmp_path / "work_patterns"
         sub.mkdir()
-        f = sub / "scope-fusion.md"
+        f = sub / "example-pattern-b.md"
         f.write_text(
-            "---\nname: Scope Fusion\ncategory: work_pattern\n---\n\nBody.\n"
+            "---\nname: Example Pattern B\ncategory: work_pattern\n---\n\nBody.\n"
         )
         units = load_vault_units(tmp_path)
-        assert "personal/work_patterns/scope-fusion" in units
+        assert "personal/work_patterns/example-pattern-b" in units
 
     def test_missing_frontmatter_skipped(self, tmp_path):
         f = tmp_path / "no-fm.md"
