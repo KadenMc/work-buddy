@@ -1106,6 +1106,8 @@ def _validate_step_result(
           key_types:
             groups_by_action: dict
             total_groups: int
+          min_items:
+            units_read: 1       # list / dict / str at this key must have len >= 1
     """
     if not isinstance(result, dict):
         return (
@@ -1128,6 +1130,24 @@ def _validate_step_result(
             return (
                 f"Step '{step_id}' key '{key}' must be {expected_type_name}, "
                 f"got {type(result[key]).__name__}"
+            )
+
+    for key, min_count in schema.get("min_items", {}).items():
+        if key not in result:
+            continue
+        value = result[key]
+        try:
+            actual = len(value)
+        except TypeError:
+            return (
+                f"Step '{step_id}' key '{key}' has no length "
+                f"(got {type(value).__name__}), cannot check min_items"
+            )
+        if actual < min_count:
+            return (
+                f"Step '{step_id}' key '{key}' has {actual} item(s), "
+                f"schema requires at least {min_count}. "
+                f"Re-read the step instructions and try again with real content."
             )
 
     return None

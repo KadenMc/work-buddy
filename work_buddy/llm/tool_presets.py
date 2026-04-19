@@ -90,7 +90,6 @@ _READONLY_SAFE = frozenset({
     "tailscale_status",
     # Knowledge reads
     "knowledge",
-    "knowledge_docs",
     "knowledge_personal",
     "agent_docs",
     # Messaging / thread reads (no sends)

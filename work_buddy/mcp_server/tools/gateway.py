@@ -893,7 +893,7 @@ def register_tools(mcp: FastMCP) -> None:
         # Auto-inject dev=True for knowledge capabilities when session
         # dev mode is active (set via dev_mode_toggle).
         _KNOWLEDGE_CAPS = {
-            "agent_docs", "knowledge_docs", "knowledge", "knowledge_personal",
+            "agent_docs", "knowledge", "knowledge_personal",
         }
         if capability in _KNOWLEDGE_CAPS and "dev" not in parsed_params:
             try:
