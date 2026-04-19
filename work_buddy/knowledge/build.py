@@ -49,6 +49,7 @@ def _get_unfiltered_registry() -> dict:
         _context_capabilities, _project_capabilities, _sidecar_capabilities,
         _llm_capabilities, _consent_capabilities, _notification_capabilities,
         _thread_capabilities, _remote_session_capabilities, _ledger_capabilities,
+        _artifact_capabilities, _knowledge_capabilities,
     )
 
     registry: dict[str, Capability] = {}
@@ -69,6 +70,8 @@ def _get_unfiltered_registry() -> dict:
         ("threads", _thread_capabilities),
         ("remote_session", _remote_session_capabilities),
         ("ledger", _ledger_capabilities),
+        ("artifacts", _artifact_capabilities),
+        ("knowledge", _knowledge_capabilities),
     ]:
         try:
             for cap in fn():
@@ -96,6 +99,8 @@ _CATEGORY_PATH_MAP = {
     "status": "status",
     "sidecar": "status",
     "llm": "status",
+    "artifacts": "artifacts",
+    "operations": "operations",  # retry / obsidian_retry (category "operations")
 }
 
 
@@ -113,10 +118,6 @@ def build_capability_units() -> dict[str, dict[str, Any]]:
 
     for name, entry in sorted(reg.items()):
         if not isinstance(entry, Capability):
-            continue
-
-        # Skip the knowledge system's own capabilities (already in store manually)
-        if name in ("agent_docs", "agent_docs_rebuild", "docs_query", "docs_get", "docs_index"):
             continue
 
         category = entry.category

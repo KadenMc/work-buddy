@@ -3,8 +3,8 @@
 Three query surfaces:
 
 * ``knowledge`` — unified search across system docs + personal knowledge
-* ``knowledge_docs`` — system documentation only (alias for agent_docs)
 * ``knowledge_personal`` — personal vault knowledge only
+* ``agent_docs`` — system documentation only (canonical name)
 
 Plus the original ``agent_docs`` which is unchanged for backward compat.
 """
@@ -62,23 +62,6 @@ def knowledge(
         category=category,
         severity=severity,
         dev=dev,
-    )
-
-
-def knowledge_docs(
-    *,
-    query: str = "",
-    path: str | None = None,
-    scope: str | None = None,
-    kind: str | None = None,
-    depth: str = "summary",
-    top_n: int = 8,
-    dev: bool = False,
-) -> dict[str, Any]:
-    """Search system documentation only. Alias for agent_docs."""
-    return agent_docs(
-        query=query, path=path, scope=scope,
-        kind=kind, depth=depth, top_n=top_n, dev=dev,
     )
 
 
@@ -201,26 +184,37 @@ def agent_docs_rebuild(*, force: bool = False) -> dict[str, Any]:
     }
 
 
-def knowledge_index_rebuild() -> dict[str, Any]:
-    """Force rebuild the knowledge search index with full embeddings.
+def knowledge_index_rebuild(force: bool = False) -> dict[str, Any]:
+    """Force rebuild the knowledge search index.
 
-    Reloads both stores from disk and rebuilds BM25 + dense vector
-    indices over the full content of all knowledge units.
+    Reloads both stores from disk and rebuilds BM25 + dense vector indices
+    over all knowledge units. Uses the persistent on-disk cache by default —
+    unchanged units keep their cached vectors and only new/changed units
+    re-embed. Typical warm rebuild completes in <1s.
+
+    Args:
+        force: If True, wipe the dense-vector cache first and re-embed every
+            unit. Use when the cache seems corrupted, after a model change
+            that didn't bump the cache version, or to measure cold rebuild
+            performance. Normal rebuilds should leave this False.
     """
     from work_buddy.knowledge.index import rebuild_index
 
-    return rebuild_index(knowledge_scope="all")
+    return rebuild_index(knowledge_scope="all", force=force)
 
 
 def knowledge_index_status() -> dict[str, Any]:
     """Return the current knowledge index status.
 
     Shows whether the index is built, unit count, and whether
-    dense vectors are available.
+    dense vectors are available plus on-disk cache file sizes.
     """
     from work_buddy.knowledge.index import get_index
+    from work_buddy.knowledge.persistence import cache_status
 
-    return get_index().status()
+    result = get_index().status()
+    result["cache"] = cache_status()
+    return result
 
 
 def _full_index(

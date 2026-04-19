@@ -465,12 +465,18 @@ def _warm_knowledge_index() -> None:
     idx.build(store, skip_dense=True)
     gen = idx._generation  # snapshot for the background thread
 
-    # Build dense vectors in background (embedding service may be slow)
+    # Build dense vectors in background (embedding service may be slow).
+    # Two parallel signals: content (asymmetric 768-d) and aliases (symmetric
+    # 1024-d). Each is independent — if one fails, the other still lands.
     def _build_dense() -> None:
         try:
-            idx._build_dense_vectors(expected_generation=gen)
+            idx._build_content_vectors(expected_generation=gen)
         except Exception:
-            pass  # logged inside _build_dense_vectors
+            pass  # logged inside the builder
+        try:
+            idx._build_alias_vectors(expected_generation=gen)
+        except Exception:
+            pass  # logged inside the builder
 
     thread = threading.Thread(
         target=_build_dense,
@@ -617,6 +623,15 @@ def _messaging_capabilities() -> list[Capability]:
                 "priority": {"type": "str", "description": "Priority: low, normal, high, urgent", "required": False},
             },
             callable=client.send_message,
+            search_aliases=[
+                "send a message",
+                "message another agent",
+                "contact another session",
+                "ping another claude",
+                "notify another project",
+                "write to another session",
+                "inter-agent message",
+            ],
         ),
         Capability(
             name="query_messages",
@@ -629,6 +644,15 @@ def _messaging_capabilities() -> list[Capability]:
                 "limit": {"type": "int", "description": "Max messages to return (default 50)", "required": False},
             },
             callable=client.query_messages,
+            search_aliases=[
+                "list messages",
+                "find messages",
+                "show inter-agent messages",
+                "recent messages",
+                "what messages have arrived",
+                "search messaging log",
+                "filter messages",
+            ],
         ),
         Capability(
             name="read_message",
@@ -639,6 +663,14 @@ def _messaging_capabilities() -> list[Capability]:
                 "session": {"type": "str", "description": "Session ID for read-tracking", "required": False},
             },
             callable=client.read_message,
+            search_aliases=[
+                "open a message",
+                "read message contents",
+                "full message body",
+                "view specific message",
+                "fetch one message",
+                "show message body",
+            ],
         ),
         Capability(
             name="reply_to_message",
@@ -651,6 +683,14 @@ def _messaging_capabilities() -> list[Capability]:
                 "type": {"type": "str", "description": "Reply type (default: ack)", "required": False},
             },
             callable=client.reply,
+            search_aliases=[
+                "respond to message",
+                "answer a message",
+                "reply to another agent",
+                "continue conversation",
+                "message reply",
+                "acknowledge message",
+            ],
         ),
         Capability(
             name="update_message_status",
@@ -661,6 +701,14 @@ def _messaging_capabilities() -> list[Capability]:
                 "new_status": {"type": "str", "description": "New status value", "required": True},
             },
             callable=client.update_status,
+            search_aliases=[
+                "mark message read",
+                "change message status",
+                "resolve a message",
+                "update message state",
+                "close out a message",
+                "message status change",
+            ],
         ),
         Capability(
             name="get_thread",
@@ -670,6 +718,14 @@ def _messaging_capabilities() -> list[Capability]:
                 "thread_id": {"type": "str", "description": "Thread ID", "required": True},
             },
             callable=client.get_thread,
+            search_aliases=[
+                "view conversation thread",
+                "message thread history",
+                "all messages in thread",
+                "read threaded messages",
+                "conversation history",
+                "thread transcript",
+            ],
         ),
     ]
 
@@ -685,6 +741,15 @@ def _contract_capabilities() -> list[Capability]:
             parameters={},
             callable=contracts.contracts_summary,
             requires=["obsidian"],
+            search_aliases=[
+                "list contracts",
+                "show my commitments",
+                "all contracts overview",
+                "what am I working on",
+                "active work commitments",
+                "contract list",
+                "status of my deliverables",
+            ],
         ),
         Capability(
             name="contract_health",
@@ -693,6 +758,17 @@ def _contract_capabilities() -> list[Capability]:
             parameters={},
             callable=contracts.contract_health_check,
             requires=["obsidian"],
+            search_aliases=[
+                "are my commitments on track",
+                "check contract status",
+                "contract health check",
+                "deliverable health",
+                "are contracts healthy",
+                "check commitments",
+                "paper status",
+                "commitment health",
+                "check project health",
+            ],
         ),
         Capability(
             name="active_contracts",
@@ -701,6 +777,15 @@ def _contract_capabilities() -> list[Capability]:
             parameters={},
             callable=contracts.active_contracts,
             requires=["obsidian"],
+            search_aliases=[
+                "current commitments",
+                "what's active",
+                "active work",
+                "ongoing contracts",
+                "open deliverables",
+                "in-progress papers",
+                "live contracts",
+            ],
         ),
         Capability(
             name="overdue_contracts",
@@ -709,6 +794,15 @@ def _contract_capabilities() -> list[Capability]:
             parameters={},
             callable=contracts.overdue_contracts,
             requires=["obsidian"],
+            search_aliases=[
+                "late contracts",
+                "past due deliverables",
+                "missed deadlines",
+                "overdue work",
+                "what's late",
+                "past deadline",
+                "contracts over deadline",
+            ],
         ),
         Capability(
             name="stale_contracts",
@@ -719,6 +813,15 @@ def _contract_capabilities() -> list[Capability]:
             },
             callable=contracts.stale_contracts,
             requires=["obsidian"],
+            search_aliases=[
+                "forgotten contracts",
+                "not reviewed recently",
+                "stale commitments",
+                "unvisited contracts",
+                "dormant work",
+                "contracts needing review",
+                "neglected contracts",
+            ],
         ),
     ]
 
@@ -1018,6 +1121,14 @@ def _status_capabilities() -> list[Capability]:
             category="status",
             parameters={},
             callable=client.is_service_running,
+            search_aliases=[
+                "is messaging working",
+                "messaging service up",
+                "check messaging daemon",
+                "messaging alive",
+                "is messaging service healthy",
+                "messaging service status",
+            ],
         ),
         Capability(
             name="list_sessions",
@@ -1025,6 +1136,14 @@ def _status_capabilities() -> list[Capability]:
             category="status",
             parameters={},
             callable=agent_session.list_sessions,
+            search_aliases=[
+                "what sessions exist",
+                "all agent sessions",
+                "session directory",
+                "recent sessions",
+                "known agents",
+                "list agent sessions",
+            ],
         ),
         Capability(
             name="mcp_registry_reload",
@@ -1032,6 +1151,15 @@ def _status_capabilities() -> list[Capability]:
             category="status",
             parameters={},
             callable=invalidate_registry,
+            search_aliases=[
+                "reload capabilities",
+                "refresh tools",
+                "pick up new capabilities",
+                "reload registry",
+                "register new functions",
+                "hot reload MCP",
+                "rebuild capability registry",
+            ],
         ),
         Capability(
             name="retry",
@@ -1416,6 +1544,10 @@ def _context_capabilities() -> list[Capability]:
                 "expand message",
                 "message context",
                 "surrounding messages",
+                "zoom into a message",
+                "show context window",
+                "what came before this message",
+                "conversation context around message",
             ],
             parameters={
                 "session_id": {"type": "str", "description": "Full or partial (8-char) session UUID", "required": True},
@@ -1533,6 +1665,11 @@ def _context_capabilities() -> list[Capability]:
                 "open tabs",
                 "browser tabs",
                 "what's in chrome",
+                "tabs I have open",
+                "my browser state",
+                "chrome tabs right now",
+                "what am I looking at",
+                "currently open tabs",
             ],
             parameters={},
             callable=get_chrome_context,
@@ -1657,7 +1794,15 @@ def _context_capabilities() -> list[Capability]:
                 "presentation": {"type": "dict", "description": "The original presentation dict (for item metadata)", "required": True},
             },
             callable=triage_execute,
-            search_aliases=["execute triage", "apply triage", "triage actions"],
+            search_aliases=[
+                "execute triage",
+                "apply triage",
+                "triage actions",
+                "carry out triage decisions",
+                "apply cleanup decisions",
+                "commit triage plan",
+                "run triage executor",
+            ],
             requires=["chrome_extension"],
             mutates_state=True,
         ),
@@ -1671,7 +1816,15 @@ def _context_capabilities() -> list[Capability]:
                 "tab_ids": {"type": "list", "description": "List of Chrome tab IDs (integers) to close", "required": True},
             },
             callable=chrome_tab_close,
-            search_aliases=["close tab", "remove tab", "close chrome"],
+            search_aliases=[
+                "close tab",
+                "remove tab",
+                "close chrome",
+                "kill tabs",
+                "close browser tabs",
+                "dismiss tabs",
+                "close tab by id",
+            ],
             requires=["chrome_extension"],
             mutates_state=True,
         ),
@@ -1686,7 +1839,15 @@ def _context_capabilities() -> list[Capability]:
                 "group_id": {"type": "int", "description": "Existing group ID to add to (omit to create new group)", "required": False},
             },
             callable=chrome_tab_group,
-            search_aliases=["group tab", "tab group", "organize tabs"],
+            search_aliases=[
+                "group tab",
+                "tab group",
+                "organize tabs",
+                "bundle tabs together",
+                "create tab group",
+                "add to tab group",
+                "organize browser",
+            ],
             requires=["chrome_extension"],
             mutates_state=True,
         ),
@@ -1700,7 +1861,14 @@ def _context_capabilities() -> list[Capability]:
                 "window_id": {"type": "int", "description": "Target window ID (omit for current window)", "required": False},
             },
             callable=chrome_tab_move,
-            search_aliases=["move tab", "reorder tabs"],
+            search_aliases=[
+                "move tab",
+                "reorder tabs",
+                "rearrange tabs",
+                "shift chrome tabs",
+                "send tab to another window",
+                "reposition tab",
+            ],
             requires=["chrome_extension"],
             mutates_state=True,
         ),
@@ -1728,6 +1896,10 @@ def _context_capabilities() -> list[Capability]:
                 "pending messages",
                 "agent messages",
                 "inbox messages",
+                "unread messages",
+                "what messages are pending",
+                "incoming inter-agent mail",
+                "messaging state summary",
             ],
             parameters={},
             callable=get_messages_context,
@@ -1740,6 +1912,10 @@ def _context_capabilities() -> list[Capability]:
                 "related notes",
                 "semantic search vault",
                 "smart connections",
+                "find related vault notes",
+                "similar notes to contracts",
+                "semantically linked notes",
+                "what's related to my work",
             ],
             parameters={},
             callable=get_smart_context,
@@ -1772,6 +1948,10 @@ def _context_capabilities() -> list[Capability]:
                 "datacore ready",
                 "datacore check",
                 "vault index status",
+                "is datacore running",
+                "check vault index",
+                "datacore plugin status",
+                "datacore health",
             ],
             parameters={},
             callable=datacore_status,
@@ -1801,7 +1981,14 @@ def _context_capabilities() -> list[Capability]:
             name="datacore_fullquery",
             description="Execute a Datacore query with timing and revision metadata. Same as datacore_query but includes duration_s and revision.",
             category="context",
-            search_aliases=["datacore fullquery", "timed vault query"],
+            search_aliases=[
+                "datacore fullquery",
+                "timed vault query",
+                "detailed datacore query",
+                "vault query with timing",
+                "datacore query debug",
+                "query timing metadata",
+            ],
             parameters={
                 "query": {"type": "str", "description": "Datacore query string", "required": True},
                 "fields": {"type": "str", "description": "Comma-separated fields. Default: all.", "required": False},
@@ -1814,7 +2001,14 @@ def _context_capabilities() -> list[Capability]:
             name="datacore_validate",
             description="Validate a Datacore query string without executing it. Returns parse error details if invalid.",
             category="context",
-            search_aliases=["validate query", "check query syntax"],
+            search_aliases=[
+                "validate query",
+                "check query syntax",
+                "lint datacore query",
+                "verify query parses",
+                "parse check",
+                "query validator",
+            ],
             parameters={
                 "query": {"type": "str", "description": "Datacore query string to validate", "required": True},
             },
@@ -1829,6 +2023,11 @@ def _context_capabilities() -> list[Capability]:
                 "page metadata",
                 "vault page details",
                 "note structure",
+                "look up a note",
+                "fetch note metadata",
+                "get vault page",
+                "what's in this note",
+                "page frontmatter",
             ],
             parameters={
                 "path": {"type": "str", "description": "Vault-relative path (e.g. 'journal/2026-04-09.md')", "required": True},
@@ -1841,7 +2040,14 @@ def _context_capabilities() -> list[Capability]:
             name="datacore_evaluate",
             description="Evaluate a Datacore expression (e.g. arithmetic, field access).",
             category="context",
-            search_aliases=["datacore eval", "evaluate expression"],
+            search_aliases=[
+                "datacore eval",
+                "evaluate expression",
+                "compute datacore expression",
+                "datacore calculation",
+                "eval vault expression",
+                "datacore formula",
+            ],
             parameters={
                 "expression": {"type": "str", "description": "Datacore expression", "required": True},
                 "source_path": {"type": "str", "description": "Vault path for 'this' context", "required": False},
@@ -2024,6 +2230,10 @@ def _project_capabilities() -> list[Capability]:
                 "new project",
                 "create project",
                 "add project",
+                "manually create project",
+                "register new project",
+                "start tracking a project",
+                "project registry new entry",
             ],
             parameters={
                 "slug": {"type": "str", "description": "Unique identifier (lowercase, hyphens)", "required": True},
@@ -2077,6 +2287,10 @@ def _project_capabilities() -> list[Capability]:
                 "delete project",
                 "remove project",
                 "drop project",
+                "unregister project",
+                "remove project from registry",
+                "delete project slug",
+                "drop project identity",
             ],
             parameters={
                 "slug": {"type": "str", "description": "Project slug to delete", "required": True},
@@ -2109,6 +2323,15 @@ def _journal_capabilities() -> list[Capability]:
             param_aliases={"target_date": "target", "date": "target"},
             callable=journal.read_journal_state,
             requires=["obsidian"],
+            search_aliases=[
+                "journal status",
+                "today's journal state",
+                "journal target date",
+                "what's in today's journal",
+                "activity window",
+                "current journal entries",
+                "journal metadata",
+            ],
         ),
         Capability(
             name="activity_timeline",
@@ -2373,6 +2596,16 @@ def _memory_capabilities() -> list[Capability]:
             },
             callable=memory_read,
             requires=["hindsight"],
+            search_aliases=[
+                "what do I remember",
+                "recall memory",
+                "search hindsight",
+                "retrieve memories",
+                "personal memory search",
+                "remember what I told you",
+                "recall my preferences",
+                "search personal memory",
+            ],
         ),
         Capability(
             name="memory_write",
@@ -2385,6 +2618,15 @@ def _memory_capabilities() -> list[Capability]:
             },
             callable=retain_personal_note,
             requires=["hindsight"],
+            search_aliases=[
+                "remember this",
+                "save to memory",
+                "store a preference",
+                "add memory",
+                "record fact",
+                "save to hindsight",
+                "memorize this",
+            ],
         ),
         Capability(
             name="memory_reflect",
@@ -2401,6 +2643,14 @@ def _memory_capabilities() -> list[Capability]:
             callable=reflect_on_query,
             requires=["hindsight"],
             consent_operations=["memory_reflect"],
+            search_aliases=[
+                "reason about memories",
+                "analyze my memories",
+                "LLM reflection on memory",
+                "think about memories",
+                "memory synthesis",
+                "synthesize from memory",
+            ],
         ),
         Capability(
             name="memory_prune",
@@ -2425,6 +2675,14 @@ def _memory_capabilities() -> list[Capability]:
             },
             callable=prune_memories,
             requires=["hindsight"],
+            search_aliases=[
+                "forget memories",
+                "delete memory bank",
+                "clear memory",
+                "remove memories",
+                "prune hindsight",
+                "wipe memories",
+            ],
         ),
     ]
 
@@ -2456,6 +2714,16 @@ def _task_capabilities() -> list[Capability]:
             parameters={},
             callable=daily_briefing,
             requires=["obsidian"],
+            search_aliases=[
+                "what do I need to do today",
+                "daily task summary",
+                "my tasks overview",
+                "today's tasks",
+                "MITs and focused tasks",
+                "task dashboard",
+                "daily planning overview",
+                "my current work status",
+            ],
         ),
         Capability(
             name="task_review_inbox",
@@ -2464,6 +2732,15 @@ def _task_capabilities() -> list[Capability]:
             parameters={},
             callable=review_inbox,
             requires=["obsidian"],
+            search_aliases=[
+                "review new tasks",
+                "inbox triage",
+                "undecided tasks",
+                "new task review",
+                "inbox items",
+                "what's in my inbox",
+                "decide on new tasks",
+            ],
         ),
         Capability(
             name="task_stale_check",
@@ -2472,6 +2749,15 @@ def _task_capabilities() -> list[Capability]:
             parameters={},
             callable=stale_check,
             requires=["obsidian"],
+            search_aliases=[
+                "forgotten tasks",
+                "stale todos",
+                "neglected tasks",
+                "tasks I haven't touched",
+                "what tasks are rotting",
+                "dormant tasks",
+                "tasks going stale",
+            ],
         ),
         Capability(
             name="task_create",
@@ -2526,7 +2812,15 @@ def _task_capabilities() -> list[Capability]:
                 "task_id": {"type": "str", "description": "Task ID (e.g., 't-a3f8c1e2')", "required": True},
             },
             callable=delete_task,
-            search_aliases=["remove task", "delete todo", "destroy task"],
+            search_aliases=[
+                "remove task",
+                "delete todo",
+                "destroy task",
+                "permanently delete task",
+                "get rid of task",
+                "erase todo",
+                "drop task",
+            ],
             requires=["obsidian"],
             mutates_state=True,
             retry_policy="manual",
@@ -2548,6 +2842,16 @@ def _task_capabilities() -> list[Capability]:
             mutates_state=True,
             retry_policy="verify_first",
             consent_operations=["tasks.update_task", "obsidian.write_file"],
+            search_aliases=[
+                "change task state",
+                "mit this task",
+                "focus a task",
+                "snooze a task",
+                "update task urgency",
+                "change due date",
+                "promote task to MIT",
+                "move task to inbox",
+            ],
         ),
         Capability(
             name="task_archive",
@@ -2559,6 +2863,14 @@ def _task_capabilities() -> list[Capability]:
             callable=archive_completed,
             requires=["obsidian"],
             consent_operations=["tasks.archive", "obsidian.write_file"],
+            search_aliases=[
+                "archive done tasks",
+                "clean up completed tasks",
+                "move completed to archive",
+                "task cleanup",
+                "archive old tasks",
+                "tidy task list",
+            ],
         ),
         Capability(
             name="weekly_review_data",
@@ -2567,6 +2879,14 @@ def _task_capabilities() -> list[Capability]:
             parameters={},
             callable=weekly_review_data,
             requires=["obsidian"],
+            search_aliases=[
+                "weekly review data",
+                "weekly planning data",
+                "strategic review input",
+                "gather weekly state",
+                "weekly MIT data",
+                "prepare weekly review",
+            ],
         ),
         Capability(
             name="task_sync",
@@ -2602,6 +2922,14 @@ def _task_capabilities() -> list[Capability]:
             parameters={},
             callable=get_constraints,
             requires=["obsidian"],
+            search_aliases=[
+                "what's blocking contracts",
+                "contract bottlenecks",
+                "constraints on active work",
+                "contract blockers",
+                "where are contracts stuck",
+                "blocking issues per contract",
+            ],
         ),
         Capability(
             name="contract_wip_check",
@@ -2610,6 +2938,14 @@ def _task_capabilities() -> list[Capability]:
             parameters={},
             callable=check_wip_limit,
             requires=["obsidian"],
+            search_aliases=[
+                "am I overcommitted",
+                "work in progress limit",
+                "WIP check",
+                "too many contracts",
+                "how many active commitments",
+                "over WIP",
+            ],
         ),
     ]
 
@@ -3284,7 +3620,15 @@ def _consent_capabilities() -> list[Capability]:
             category="consent",
             parameters={},
             callable=list_consents,
-            search_aliases=["list consents", "show permissions", "consent status"],
+            search_aliases=[
+                "list consents",
+                "show permissions",
+                "consent status",
+                "what have I approved",
+                "current grants",
+                "session permissions",
+                "consent grants",
+            ],
         ),
         Capability(
             name="consent_request_resolve",
@@ -3316,7 +3660,15 @@ def _consent_capabilities() -> list[Capability]:
                 },
             },
             callable=resolve_consent_request,
-            search_aliases=["approve consent", "deny consent", "resolve request"],
+            search_aliases=[
+                "approve consent",
+                "deny consent",
+                "resolve request",
+                "handle pending consent",
+                "grant or deny operation",
+                "respond to consent request",
+                "decide on permission",
+            ],
             mutates_state=True,
             retry_policy="manual",
         ),
@@ -3326,7 +3678,14 @@ def _consent_capabilities() -> list[Capability]:
             category="consent",
             parameters={},
             callable=list_pending_requests,
-            search_aliases=["pending requests", "waiting for approval", "consent queue"],
+            search_aliases=[
+                "pending requests",
+                "waiting for approval",
+                "consent queue",
+                "what needs approval",
+                "unresolved consent",
+                "approval queue",
+            ],
         ),
     ]
 
@@ -3551,7 +3910,14 @@ def _thread_capabilities() -> list[Capability]:
                 "message": {"type": "string", "description": "Message content", "required": True},
             },
             callable=thread_send,
-            search_aliases=["chat message", "thread message"],
+            search_aliases=[
+                "chat message",
+                "thread message",
+                "send chat message",
+                "post in thread",
+                "speak in conversation",
+                "fire thread message",
+            ],
         ),
         Capability(
             name="thread_ask",
@@ -3576,7 +3942,15 @@ def _thread_capabilities() -> list[Capability]:
                 "timeout_seconds": {"type": "integer", "description": "Block and wait (max 110s)"},
             },
             callable=thread_poll,
-            search_aliases=["check thread", "thread response", "poll chat"],
+            search_aliases=[
+                "check thread",
+                "thread response",
+                "poll chat",
+                "has user answered",
+                "thread answered",
+                "check for reply",
+                "thread question status",
+            ],
         ),
         Capability(
             name="thread_close",
@@ -3586,7 +3960,14 @@ def _thread_capabilities() -> list[Capability]:
                 "thread_id": {"type": "string", "description": "Thread ID", "required": True},
             },
             callable=thread_close,
-            search_aliases=["end conversation", "close chat"],
+            search_aliases=[
+                "end conversation",
+                "close chat",
+                "finish thread",
+                "wrap up conversation",
+                "close dashboard chat",
+                "end thread",
+            ],
         ),
         Capability(
             name="thread_list",
@@ -3596,7 +3977,15 @@ def _thread_capabilities() -> list[Capability]:
                 "status": {"type": "string", "description": "Filter: 'open' (default), 'closed', or 'all'"},
             },
             callable=thread_list,
-            search_aliases=["list chats", "active threads", "conversations"],
+            search_aliases=[
+                "list chats",
+                "active threads",
+                "conversations",
+                "open threads",
+                "what threads are active",
+                "recent conversations",
+                "thread directory",
+            ],
         ),
     ]
 
@@ -4051,7 +4440,15 @@ def _notification_capabilities() -> list[Capability]:
             category="notifications",
             parameters={},
             callable=list_pending_notifications,
-            search_aliases=["pending notifications", "waiting requests", "notification queue"],
+            search_aliases=[
+                "pending notifications",
+                "waiting requests",
+                "notification queue",
+                "what needs response",
+                "awaiting user input",
+                "unresolved notifications",
+                "open requests",
+            ],
         ),
     ]
 
@@ -4172,7 +4569,7 @@ def _knowledge_capabilities() -> list[Capability]:
     """Unified agent self-documentation — search, navigate, rebuild, and validate."""
     from work_buddy.knowledge.query import (
         agent_docs, agent_docs_rebuild,
-        knowledge, knowledge_docs, knowledge_personal,
+        knowledge, knowledge_personal,
         knowledge_index_rebuild, knowledge_index_status,
         # Legacy wrappers for backward compat during migration
         docs_query, docs_get, docs_index_build,
@@ -4268,7 +4665,15 @@ def _knowledge_capabilities() -> list[Capability]:
                 },
             },
             callable=agent_docs_rebuild,
-            search_aliases=["reload docs", "rebuild knowledge", "refresh store"],
+            search_aliases=[
+                "reload docs",
+                "rebuild knowledge",
+                "refresh store",
+                "reload knowledge store",
+                "pick up knowledge edits",
+                "refresh agent docs",
+                "reindex documentation",
+            ],
         ),
         # Legacy compat — keep old names working during migration
         Capability(
@@ -4282,6 +4687,12 @@ def _knowledge_capabilities() -> list[Capability]:
                 "top_n": {"type": "int", "required": False},
             },
             callable=docs_query,
+            search_aliases=[
+                "legacy knowledge query",
+                "old docs query",
+                "legacy search knowledge",
+                "deprecated knowledge query",
+            ],
         ),
         Capability(
             name="docs_get",
@@ -4292,6 +4703,12 @@ def _knowledge_capabilities() -> list[Capability]:
                 "depth": {"type": "str", "required": False},
             },
             callable=docs_get,
+            search_aliases=[
+                "legacy knowledge get",
+                "old docs get",
+                "legacy unit lookup",
+                "deprecated docs fetch",
+            ],
         ),
         Capability(
             name="docs_index",
@@ -4301,6 +4718,13 @@ def _knowledge_capabilities() -> list[Capability]:
                 "force": {"type": "bool", "required": False},
             },
             callable=docs_index_build,
+            search_aliases=[
+                "legacy build index",
+                "old index rebuild",
+                "deprecated docs index",
+                "legacy docs indexing",
+                "old knowledge rebuild",
+            ],
         ),
         Capability(
             name="docs_validate",
@@ -4374,7 +4798,15 @@ def _knowledge_capabilities() -> list[Capability]:
             callable=docs_create,
             mutates_state=True,
             retry_policy="manual",
-            search_aliases=["create unit", "add knowledge", "new docs entry"],
+            search_aliases=[
+                "create unit",
+                "add knowledge",
+                "new docs entry",
+                "write new knowledge",
+                "author docs entry",
+                "add documentation unit",
+                "new knowledge unit",
+            ],
         ),
         Capability(
             name="docs_update",
@@ -4415,7 +4847,15 @@ def _knowledge_capabilities() -> list[Capability]:
             callable=docs_update,
             mutates_state=True,
             retry_policy="manual",
-            search_aliases=["update unit", "edit knowledge", "modify docs"],
+            search_aliases=[
+                "update unit",
+                "edit knowledge",
+                "modify docs",
+                "change knowledge unit",
+                "patch docs",
+                "edit documentation field",
+                "update docs entry",
+            ],
         ),
         Capability(
             name="docs_delete",
@@ -4430,7 +4870,14 @@ def _knowledge_capabilities() -> list[Capability]:
             callable=docs_delete,
             mutates_state=True,
             retry_policy="manual",
-            search_aliases=["delete unit", "remove knowledge"],
+            search_aliases=[
+                "delete unit",
+                "remove knowledge",
+                "drop knowledge entry",
+                "delete documentation",
+                "erase knowledge unit",
+                "remove docs unit",
+            ],
         ),
         Capability(
             name="docs_move",
@@ -4446,7 +4893,15 @@ def _knowledge_capabilities() -> list[Capability]:
             callable=docs_move,
             mutates_state=True,
             retry_policy="manual",
-            search_aliases=["move unit", "rename knowledge", "repath"],
+            search_aliases=[
+                "move unit",
+                "rename knowledge",
+                "repath",
+                "rename docs path",
+                "relocate knowledge",
+                "change unit path",
+                "move documentation",
+            ],
         ),
         # ----- Unified knowledge query surface -----
         Capability(
@@ -4518,29 +4973,6 @@ def _knowledge_capabilities() -> list[Capability]:
                 "knowledge", "search everything", "find",
                 "personal patterns", "blindspots", "metacognition",
                 "system docs", "unified search",
-            ],
-        ),
-        Capability(
-            name="knowledge_docs",
-            description=(
-                "Search system documentation only (same as agent_docs). "
-                "For looking up how work-buddy works, not personal knowledge."
-            ),
-            category="context",
-            parameters={
-                "query": {"type": "str", "required": False},
-                "path": {"type": "str", "required": False},
-                "scope": {"type": "str", "required": False},
-                "kind": {"type": "str", "required": False},
-                "depth": {"type": "str", "required": False},
-                "top_n": {"type": "int", "required": False},
-                "dev": {"type": "bool", "required": False,
-                        "description": "Include dev_notes. Auto-set in dev mode."},
-            },
-            callable=knowledge_docs,
-            search_aliases=[
-                "system docs", "documentation", "how does",
-                "what is", "reference", "knowledge docs",
             ],
         ),
         Capability(
@@ -4714,12 +5146,23 @@ def _knowledge_capabilities() -> list[Capability]:
         Capability(
             name="knowledge_index_rebuild",
             description=(
-                "Force rebuild the knowledge search index with full embeddings. "
-                "Reloads both stores from disk and rebuilds BM25 + dense vector "
-                "indices over the full content of all knowledge units."
+                "Rebuild the knowledge search index. Uses the persistent "
+                "on-disk cache by default — unchanged units keep their "
+                "cached vectors, so typical warm rebuilds are <1s. Pass "
+                "force=true to purge the cache and re-embed everything "
+                "(slow — 1-3 minutes for the full store)."
             ),
             category="context",
-            parameters={},
+            parameters={
+                "force": {
+                    "type": "bool",
+                    "description": (
+                        "Purge the dense-vector cache before rebuilding. "
+                        "Re-embeds every unit. Default: False."
+                    ),
+                    "required": False,
+                },
+            },
             callable=knowledge_index_rebuild,
             search_aliases=[
                 "rebuild index", "reindex knowledge", "embedding index",
@@ -4735,7 +5178,15 @@ def _knowledge_capabilities() -> list[Capability]:
             category="context",
             parameters={},
             callable=knowledge_index_status,
-            search_aliases=["index status", "knowledge index status"],
+            search_aliases=[
+                "index status",
+                "knowledge index status",
+                "is search index built",
+                "dense vector status",
+                "search index health",
+                "knowledge index health",
+                "cache hit rate",
+            ],
         ),
     ]
 
@@ -4944,7 +5395,15 @@ def _artifact_capabilities() -> list[Capability]:
                 "id": {"type": "str", "description": "Artifact ID (filename stem, e.g. '20260412-093000_weekly-review')", "required": True},
             },
             callable=artifact_get,
-            search_aliases=["get artifact", "read artifact", "fetch artifact"],
+            search_aliases=[
+                "get artifact",
+                "read artifact",
+                "fetch artifact",
+                "retrieve artifact",
+                "open artifact",
+                "load artifact",
+                "artifact contents",
+            ],
         ),
         Capability(
             name="artifact_delete",
@@ -4956,7 +5415,15 @@ def _artifact_capabilities() -> list[Capability]:
             callable=artifact_delete,
             mutates_state=True,
             retry_policy="manual",
-            search_aliases=["delete artifact", "remove artifact"],
+            search_aliases=[
+                "delete artifact",
+                "remove artifact",
+                "drop artifact",
+                "erase artifact",
+                "remove saved output",
+                "clean up artifact",
+                "delete report file",
+            ],
         ),
         Capability(
             name="artifact_cleanup",
