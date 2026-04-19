@@ -535,6 +535,24 @@ def ir_index_endpoint():
                 days=data.get("days", 30),
                 force=data.get("force", False),
             )
+            # Best-effort dense vector build so hybrid retrieval actually
+            # has vectors to score against. Runs in-service (no HTTP
+            # self-call) because _IN_SERVICE is set in main(). Failures
+            # here degrade the index to BM25-only rather than failing the
+            # whole build — callers can check result["dense"] for status.
+            if data.get("include_dense", True):
+                try:
+                    from work_buddy.ir.dense import build_vectors
+
+                    result["dense"] = build_vectors(
+                        source=source,
+                        force=data.get("force", False),
+                    )
+                except Exception as dense_exc:
+                    result["dense"] = {
+                        "status": "error",
+                        "error": f"{type(dense_exc).__name__}: {dense_exc}",
+                    }
         return jsonify({"result": result})
     except Exception as exc:
         return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500

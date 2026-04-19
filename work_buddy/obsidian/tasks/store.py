@@ -173,6 +173,7 @@ def update(
     complexity: str | None = _SENTINEL,
     contract: str | None = _SENTINEL,
     snooze_until: str | None = _SENTINEL,
+    note_uuid: str | None = _SENTINEL,
     reason: str | None = None,
 ) -> dict[str, Any]:
     """Update metadata fields for a task. Only provided fields change.
@@ -208,6 +209,10 @@ def update(
     if snooze_until is not _SENTINEL:
         sets.append("snooze_until = ?")
         params.append(snooze_until)
+
+    if note_uuid is not _SENTINEL:
+        sets.append("note_uuid = ?")
+        params.append(note_uuid)
 
     if not sets:
         return {"task_id": task_id, "changed": False}

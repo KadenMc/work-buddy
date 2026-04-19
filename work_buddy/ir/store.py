@@ -309,7 +309,13 @@ def _get_source(source_name: str) -> Source:
     if source_name == "docs":
         from work_buddy.ir.sources.docs import DocsSource
         return DocsSource()
-    raise ValueError(f"Unknown source: {source_name}. Available: conversation, chrome, projects, docs")
+    if source_name == "task_note":
+        from work_buddy.ir.sources.task_notes import TaskNoteSource
+        return TaskNoteSource()
+    raise ValueError(
+        f"Unknown source: {source_name}. "
+        "Available: conversation, chrome, projects, docs, task_note"
+    )
 
 
 def build_index(
