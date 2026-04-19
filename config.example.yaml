@@ -154,10 +154,34 @@ telegram:
     section: "Running Notes"
     position: "top"
 
+# Background-triage overrides.
+#
+# Defaults (and the full knob list) live in `work_buddy/triage/config.py`.
+# Only settings you want to change go here — everything else falls back
+# to the shipped defaults. Common overrides:
+#
+#   triage:
+#     agent_profile: local_general          # profile for per-item agent loop
+#     segment:
+#       max_tokens: 16384                   # bump for reasoning-heavy models
+#       profile: local_long                 # split segmenter from agent
+#     enrich:
+#       enabled: false                      # skip IR context pre-fetch
+#
+# triage: {}
+
 sidecar:
   health_check_interval: 30
   max_service_crashes: 5
   restart_backoff_base: 5
+  # A service must miss this many consecutive probes before the daemon
+  # restarts it. Guards against cascading false-positive restarts when
+  # a single probe is late (e.g. a service is briefly busy).
+  health_failure_threshold: 2
+  # Background health-prober cadence (seconds). Independent of the
+  # main loop — scheduler stalls cannot delay probes.
+  health_probe_interval: 5
+  health_probe_timeout: 2
   services:
     messaging:
       module: "work_buddy.messaging.service"
