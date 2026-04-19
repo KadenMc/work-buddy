@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS documents (
     dense_text   TEXT NOT NULL,
     display_text TEXT NOT NULL DEFAULT '',
     metadata     TEXT NOT NULL DEFAULT '{}',
+    projections  TEXT NOT NULL DEFAULT '{}',  -- JSON dict of projection_key -> {"text": str | list[str]}
     indexed_at   TEXT NOT NULL
 );
 
@@ -66,13 +67,25 @@ def _db_path(cfg: dict | None = None) -> Path:
     return Path.home() / ".claude" / "projects" / "work_buddy_ir.db"
 
 
-def _npz_path(cfg: dict | None = None, source: str | None = None) -> Path:
-    """Companion .npz file for vector storage, per-source.
+def _npz_path(
+    cfg: dict | None = None,
+    source: str | None = None,
+    projection: str | None = None,
+) -> Path:
+    """Companion .npz file for vector storage, per-source and per-projection.
 
-    Each source gets its own vector file (e.g., work_buddy_ir.conversation.npz).
-    If source is None, returns the base path (for backward compat / status checks).
+    - ``source=None``, ``projection=None``: base path (legacy status check).
+    - ``source="foo"``, ``projection=None``: ``work_buddy_ir.foo.npz`` — the
+      legacy single-projection file used by sources that haven't adopted a
+      projection schema. Back-compat matters here: existing conversation /
+      docs / chrome / projects vectors all live at this path.
+    - ``source="foo"``, ``projection="bar"``: ``work_buddy_ir.foo.bar.npz`` —
+      a named projection. Multi-projection sources (e.g. task_note)
+      write one such file per declared projection.
     """
     base = _db_path(cfg).with_suffix("")
+    if source and projection:
+        return base.parent / f"{base.name}.{source}.{projection}.npz"
     if source:
         return base.parent / f"{base.name}.{source}.npz"
     return base.with_suffix(".npz")
@@ -86,7 +99,26 @@ def get_connection(cfg: dict | None = None) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(_SCHEMA)
+    _migrate_schema(conn)
     return conn
+
+
+def _migrate_schema(conn: sqlite3.Connection) -> None:
+    """Forward-only schema migrations.
+
+    ``CREATE TABLE IF NOT EXISTS`` can only create; it doesn't add columns
+    to pre-existing tables. This runs ALTERs for columns added after the
+    original schema — currently just ``projections`` — so existing
+    production databases (with 14K+ legacy rows at time of writing) don't
+    get blown away on upgrade.
+    """
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(documents)")}
+    if "projections" not in cols:
+        conn.execute(
+            "ALTER TABLE documents ADD COLUMN projections TEXT NOT NULL DEFAULT '{}'"
+        )
+        conn.commit()
+        logger.info("Migrated documents table: added 'projections' column")
 
 
 # ---------------------------------------------------------------------------
@@ -100,6 +132,9 @@ def upsert_documents(
 ) -> int:
     """Insert or replace documents. Returns count inserted."""
     now = datetime.now(timezone.utc).isoformat()
+    # Serialize projections as {key: {"text": str | list[str]}} so the
+    # shape survives a round-trip without needing Projection objects in
+    # downstream callers that only read the SQLite store.
     rows = [
         (
             d.doc_id,
@@ -109,14 +144,19 @@ def upsert_documents(
             d.dense_text,
             d.display_text,
             json.dumps(d.metadata, ensure_ascii=False),
+            json.dumps(
+                {k: {"text": p.text} for k, p in d.projections.items()},
+                ensure_ascii=False,
+            ),
             now,
         )
         for d in docs
     ]
     conn.executemany(
         "INSERT OR REPLACE INTO documents "
-        "(doc_id, source, item_id, fields, dense_text, display_text, metadata, indexed_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "(doc_id, source, item_id, fields, dense_text, display_text, metadata, "
+        " projections, indexed_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         rows,
     )
     conn.commit()
@@ -167,6 +207,14 @@ def load_documents(
 
     results = []
     for row in rows:
+        # The ``projections`` column was added after the original schema —
+        # legacy rows inserted before the migration may have NULL here even
+        # though the column default is '{}'. Tolerate both.
+        try:
+            proj_raw = row["projections"]
+        except (IndexError, KeyError):
+            proj_raw = None
+        projections = json.loads(proj_raw) if proj_raw else {}
         results.append({
             "doc_id": row["doc_id"],
             "source": row["source"],
@@ -174,6 +222,7 @@ def load_documents(
             "dense_text": row["dense_text"],
             "display_text": row["display_text"],
             "metadata": json.loads(row["metadata"]),
+            "projections": projections,
             "indexed_at": row["indexed_at"],
         })
     return results
@@ -259,11 +308,17 @@ def save_vectors(
     doc_ids: list[str],
     cfg: dict | None = None,
     source: str | None = None,
+    projection: str | None = None,
 ) -> Path:
-    """Save vectors to companion .npz file (float16 for storage efficiency)."""
+    """Save vectors to companion .npz file (float16 for storage efficiency).
+
+    For pooled projections (spec.pool != "none"), ``doc_ids`` may contain
+    repeats — one entry per sub-vector of a doc, in the same order as
+    ``vectors``. Aggregation is a query-time concern; storage is flat.
+    """
     import numpy as np
 
-    path = _npz_path(cfg, source=source)
+    path = _npz_path(cfg, source=source, projection=projection)
     path.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
         path,
@@ -278,11 +333,12 @@ def save_vectors(
 def load_vectors(
     cfg: dict | None = None,
     source: str | None = None,
+    projection: str | None = None,
 ) -> tuple["np.ndarray", list[str]] | None:
     """Load vectors from companion .npz file. Returns None if not found."""
     import numpy as np
 
-    path = _npz_path(cfg, source=source)
+    path = _npz_path(cfg, source=source, projection=projection)
     if not path.exists():
         return None
     data = np.load(path, allow_pickle=True)
@@ -309,7 +365,13 @@ def _get_source(source_name: str) -> Source:
     if source_name == "docs":
         from work_buddy.ir.sources.docs import DocsSource
         return DocsSource()
-    raise ValueError(f"Unknown source: {source_name}. Available: conversation, chrome, projects, docs")
+    if source_name == "task_note":
+        from work_buddy.ir.sources.task_notes import TaskNoteSource
+        return TaskNoteSource()
+    raise ValueError(
+        f"Unknown source: {source_name}. "
+        "Available: conversation, chrome, projects, docs, task_note"
+    )
 
 
 def build_index(

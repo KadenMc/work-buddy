@@ -22,6 +22,7 @@ Obsidian bridge when available, falls back to direct filesystem reads.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,12 @@ from work_buddy.config import load_config
 from work_buddy.logging_config import get_logger
 from work_buddy.obsidian.tasks import store
 from work_buddy.obsidian.tasks.mutations import TASK_ID_RE, MASTER_TASK_FILE
+
+# Matches the task-note wikilink embedded in a task line, e.g. [[<uuid>|📓]].
+# The 📓 alias keeps this distinct from ordinary wikilinks on the same line.
+NOTE_WIKILINK_RE = re.compile(
+    r"\[\[([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\|📓\]\]"
+)
 
 logger = get_logger(__name__)
 
@@ -78,10 +85,14 @@ def _parse_file_tasks(content: str) -> dict[str, dict[str, Any]]:
         task_id = m.group(1)
         is_done = line_stripped.startswith("- [x]")
 
+        note_match = NOTE_WIKILINK_RE.search(line_stripped)
+        note_uuid = note_match.group(1) if note_match else None
+
         tasks[task_id] = {
             "line_number": i + 1,
             "is_done": is_done,
             "line": line_stripped,
+            "note_uuid": note_uuid,
         }
 
     return tasks
@@ -118,11 +129,16 @@ def task_sync() -> dict[str, Any]:
         info = file_tasks[task_id]
         initial_state = "done" if info["is_done"] else "inbox"
         try:
-            store.create(task_id=task_id, state=initial_state, urgency="medium")
+            store.create(
+                task_id=task_id,
+                state=initial_state,
+                urgency="medium",
+                note_uuid=info.get("note_uuid"),
+            )
             created.append(task_id)
             logger.info(
-                "task_sync: created store record for %s (state=%s, line=%d)",
-                task_id, initial_state, info["line_number"],
+                "task_sync: created store record for %s (state=%s, line=%d, note_uuid=%s)",
+                task_id, initial_state, info["line_number"], info.get("note_uuid"),
             )
         except Exception as exc:
             logger.warning("task_sync: failed to create store for %s: %s", task_id, exc)
@@ -175,8 +191,49 @@ def task_sync() -> dict[str, Any]:
                     "task_sync: failed to resolve mismatch %s: %s", task_id, exc,
                 )
 
+    # 4. note_uuid drift → file is source of truth; backfill or correct the store.
+    #    Only propagates a non-null file value. We deliberately do NOT clear the
+    #    store's note_uuid when the file lacks the wikilink: a line can lose its
+    #    emoji without the underlying note file being deleted, and we don't want
+    #    to strand orphan notes in the vault by clearing pointers on a whim.
+    resolved_note_uuids: list[dict[str, Any]] = []
+    for task_id in file_ids & store_ids:
+        file_info = file_tasks[task_id]
+        store_record = store_by_id[task_id]
+
+        file_note_uuid = file_info.get("note_uuid")
+        store_note_uuid = store_record.get("note_uuid")
+
+        if file_note_uuid and file_note_uuid != store_note_uuid:
+            try:
+                store.update(
+                    task_id,
+                    note_uuid=file_note_uuid,
+                    reason=f"task_sync: note_uuid backfilled from file",
+                )
+                resolved_note_uuids.append({
+                    "task_id": task_id,
+                    "old_note_uuid": store_note_uuid,
+                    "new_note_uuid": file_note_uuid,
+                    "line_number": file_info["line_number"],
+                })
+                logger.info(
+                    "task_sync: reconciled note_uuid %s -- store %s -> %s (line %d)",
+                    task_id, store_note_uuid, file_note_uuid,
+                    file_info["line_number"],
+                )
+            except Exception as exc:
+                logger.warning(
+                    "task_sync: failed to reconcile note_uuid %s: %s", task_id, exc,
+                )
+
     # --- Summary ---
-    total_actions = len(created) + len(deleted_from_store) + len(resolved_mismatches)
+    total_actions = (
+        len(created)
+        + len(deleted_from_store)
+        + len(resolved_mismatches)
+        + len(resolved_note_uuids)
+    )
     status = "ok" if total_actions == 0 else "synced"
 
     result: dict[str, Any] = {
@@ -186,6 +243,7 @@ def task_sync() -> dict[str, Any]:
         "created": len(created),
         "deleted": len(deleted_from_store),
         "resolved_mismatches": len(resolved_mismatches),
+        "resolved_note_uuids": len(resolved_note_uuids),
     }
 
     # Include details only if actions were taken (keeps log concise)
@@ -195,11 +253,15 @@ def task_sync() -> dict[str, Any]:
         result["deleted_details"] = deleted_from_store
     if resolved_mismatches:
         result["mismatch_details"] = resolved_mismatches
+    if resolved_note_uuids:
+        result["note_uuid_details"] = resolved_note_uuids
 
     if total_actions > 0:
         logger.info(
-            "task_sync: %d actions — %d created, %d deleted, %d mismatches resolved",
-            total_actions, len(created), len(deleted_from_store), len(resolved_mismatches),
+            "task_sync: %d actions — %d created, %d deleted, "
+            "%d mismatches resolved, %d note_uuids reconciled",
+            total_actions, len(created), len(deleted_from_store),
+            len(resolved_mismatches), len(resolved_note_uuids),
         )
     else:
         logger.debug("task_sync: all clean (%d file, %d store)", len(file_ids), len(store_ids))

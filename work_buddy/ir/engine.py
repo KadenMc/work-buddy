@@ -188,17 +188,42 @@ def search(
 
         bm25_ranking = bm25_score(query, docs, field_weights)
 
-    # --- Dense ---
-    dense_ranking: dict[str, float] = {}
+    # --- Dense: one ranking per declared projection, or one legacy ranking. ---
+    # Multi-projection sources (e.g. task_note) contribute one dense ranking
+    # per projection; the legacy single-projection path contributes one
+    # ranking from the unkeyed .npz. All dense rankings participate in RRF
+    # alongside BM25 as independent signals.
+    projection_rankings: dict[str, dict[str, float]] = {}
+    legacy_dense_ranking: dict[str, float] = {}
     if not bm25_only:
         try:
             from work_buddy.ir.dense import score_query
-            dense_ranking = score_query(query, cfg=cfg, source=source)
+            from work_buddy.ir.sources.base import get_projection_schema
+            from work_buddy.ir.store import _get_source
+
+            schema: dict[str, Any] = {}
+            if source:
+                try:
+                    schema = get_projection_schema(_get_source(source))
+                except Exception:
+                    schema = {}
+
+            if schema:
+                for proj_key, spec in schema.items():
+                    ranking = score_query(
+                        query, cfg=cfg, source=source,
+                        projection=proj_key, kind=spec.kind, pool=spec.pool,
+                    )
+                    if ranking:
+                        projection_rankings[proj_key] = ranking
+            else:
+                legacy_dense_ranking = score_query(query, cfg=cfg, source=source)
         except Exception as exc:
             logger.debug("Dense scoring unavailable: %s", exc)
 
-    # --- Fuse ---
-    rankings = [r for r in [bm25_ranking, dense_ranking] if r]
+    # --- Fuse BM25 + every dense ranking (legacy or per-projection). ---
+    rankings = [r for r in [bm25_ranking, legacy_dense_ranking] if r]
+    rankings.extend(projection_rankings.values())
     if not rankings:
         return []
 
@@ -212,20 +237,34 @@ def search(
     docs_by_id = {d["doc_id"]: d for d in docs}
     sorted_ids = sorted(fused, key=fused.get, reverse=True)[:top_k]
 
+    # Per-result diagnostics: keep the legacy ``dense_score`` meaning intact
+    # (best dense signal the doc received — max across all dense rankings)
+    # and surface per-projection scores when present.
+    def _best_dense(did: str) -> float:
+        scores = [legacy_dense_ranking.get(did, 0.0)]
+        scores.extend(r.get(did, 0.0) for r in projection_rankings.values())
+        return max(scores) if scores else 0.0
+
     results = []
     for doc_id in sorted_ids:
         doc = docs_by_id.get(doc_id)
         if not doc:
             continue
-        results.append({
+        entry = {
             "doc_id": doc_id,
             "score": round(fused[doc_id], 4),
             "bm25_score": round(bm25_ranking.get(doc_id, 0.0), 4),
-            "dense_score": round(dense_ranking.get(doc_id, 0.0), 4),
+            "dense_score": round(_best_dense(doc_id), 4),
             "source": doc["source"],
             "display_text": doc["display_text"],
             "metadata": doc["metadata"],
-        })
+        }
+        if projection_rankings:
+            entry["projection_scores"] = {
+                key: round(ranking.get(doc_id, 0.0), 4)
+                for key, ranking in projection_rankings.items()
+            }
+        results.append(entry)
 
     return results
 
