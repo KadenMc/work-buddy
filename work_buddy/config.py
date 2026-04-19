@@ -175,11 +175,25 @@ def write_config_local(section: str, data: Any) -> None:
         yaml.safe_dump(existing, f, default_flow_style=False, sort_keys=False)
 
 
-def _init_user_tz() -> ZoneInfo:
-    """Compute the user timezone once at import time."""
+_USER_TZ_CACHE: ZoneInfo | None = None
+
+
+def _compute_user_tz() -> ZoneInfo:
     cfg = load_config()
     return ZoneInfo(cfg.get("timezone", "America/New_York"))
 
 
-USER_TZ: ZoneInfo = _init_user_tz()
-"""User's timezone from config.yaml — computed once at import time."""
+def __getattr__(name: str):
+    """PEP 562 module-level getattr: compute USER_TZ lazily on first access.
+
+    Deferring config load from import time to first-use shaves ~100ms off
+    the mcp_gateway boot path. Consumers keep using
+    ``from work_buddy.config import USER_TZ`` — the attribute
+    materializes and caches on first read.
+    """
+    global _USER_TZ_CACHE
+    if name == "USER_TZ":
+        if _USER_TZ_CACHE is None:
+            _USER_TZ_CACHE = _compute_user_tz()
+        return _USER_TZ_CACHE
+    raise AttributeError(f"module 'work_buddy.config' has no attribute {name!r}")

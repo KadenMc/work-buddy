@@ -6,6 +6,7 @@ and process utilities.
 """
 
 import os
+import socket
 import subprocess
 import sys
 from pathlib import Path
@@ -131,8 +132,34 @@ def _force_kill_pid(pid: int) -> None:
             pass
 
 
+def _is_port_listening(port: int, *, timeout: float = 0.1) -> bool:
+    """Fast socket-based check: is anything listening on localhost:port?
+
+    Avoids spawning PowerShell (Windows) or lsof/ss (Unix) just to
+    discover the port is free — a 3–5s cost on Windows due to
+    PowerShell cold-start. Returns True iff a TCP connect to
+    127.0.0.1:port succeeds.
+    """
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(timeout)
+    try:
+        s.connect(("127.0.0.1", port))
+        return True
+    except (ConnectionRefusedError, OSError):
+        return False
+    finally:
+        s.close()
+
+
 def _find_pids_on_port(port: int) -> set[int]:
-    """Find PIDs of processes listening on a given port."""
+    """Find PIDs of processes listening on a given port.
+
+    Fast path: if nothing is listening, return empty set without
+    spawning a PID-enumeration subprocess. Only the kill-the-orphan
+    path needs actual PIDs.
+    """
+    if not _is_port_listening(port):
+        return set()
     if IS_WINDOWS:
         return _find_pids_on_port_windows(port)
     return _find_pids_on_port_unix(port)

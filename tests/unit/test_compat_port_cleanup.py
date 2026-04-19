@@ -167,3 +167,73 @@ def test_force_kill_tolerates_dead_process(monkeypatch):
     monkeypatch.setattr(compat.os, "kill", fake_kill)
     # Should not raise
     compat._force_kill_pid(12345)
+
+
+# ---------------------------------------------------------------------------
+# Socket-based fast path — regression guard for the PowerShell-cost fix
+# ---------------------------------------------------------------------------
+# Background: on 2026-04-18 sidecar restart took ~27s because ``_start_child``
+# called ``kill_process_on_port`` for every service, which shelled out to
+# ``powershell.exe Get-NetTCPConnection`` — a 3–5s cold-start cost per call,
+# paid even when the port is free. Fix: ``_find_pids_on_port`` now does a
+# fast socket connect and returns an empty set without ever invoking the
+# subprocess if nothing is listening. These tests lock in that contract so a
+# future refactor can't silently bring the 5s-per-service penalty back.
+
+
+def test_find_pids_fast_path_does_not_spawn_subprocess(monkeypatch):
+    """Free port → never invoke the PID-enumeration subprocess.
+
+    The socket pre-check must short-circuit before any subprocess runs.
+    If this test fails, sidecar restart silently regresses to ~5s per
+    service and Claude Code hits ConnectionRefused again during the gap.
+    """
+    # Pretend nothing is listening on the port.
+    monkeypatch.setattr(compat, "_is_port_listening", lambda p, **kw: False)
+
+    called = {"run": 0}
+
+    def forbidden_run(*args, **kwargs):
+        called["run"] += 1
+        raise AssertionError(
+            "subprocess.run must not be called on the free-port fast path"
+        )
+
+    monkeypatch.setattr(compat.subprocess, "run", forbidden_run)
+
+    assert compat._find_pids_on_port(5126) == set()
+    assert called["run"] == 0
+
+
+def test_find_pids_falls_through_when_port_is_held(monkeypatch):
+    """Port is listening → the expensive PID enumeration path must run.
+
+    Semantics unchanged when the port actually has a holder: we still
+    shell out to find the PID so we can kill it.
+    """
+    monkeypatch.setattr(compat, "_is_port_listening", lambda p, **kw: True)
+    monkeypatch.setattr(compat, "IS_WINDOWS", True)
+
+    called = {"run": 0}
+
+    def fake_run(cmd, **kw):
+        called["run"] += 1
+        class _R:
+            stdout = "4242\n"
+            returncode = 0
+        return _R()
+
+    monkeypatch.setattr(compat.subprocess, "run", fake_run)
+    pids = compat._find_pids_on_port(5126)
+    assert pids == {4242}
+    assert called["run"] == 1, "held port must fall through to PID enumeration"
+
+
+def test_is_port_listening_returns_false_for_closed_port():
+    """Live sanity check: a random high port should not be listening.
+
+    This test binds nothing; it only confirms the helper returns False
+    quickly when no one is on the port. Keeps the fast-path honest.
+    """
+    # Pick a port far from sidecar ports; extremely unlikely to be in use.
+    assert compat._is_port_listening(40127, timeout=0.2) is False
