@@ -44,7 +44,7 @@
     "capabilities": ["status/tailscale_status"],
     "content": {
       "summary": "Pure capability call -- no special presentation required.",
-      "full": "Run mcp__work-buddy__wb_run(\"tailscale_status\") to check Tailscale VPN status, including daemon state, tailnet identity, online peers, and Serve configuration (published ports)."
+      "full": "Run mcp__work-buddy__wb_run(\"tailscale_status\") to check Tailscale VPN status, including daemon state, tailnet identity, online peers, and Serve configuration (published ports).\n\n## Known issues\n\n- **2026-04-19 (Windows)** — Tailscale **v1.96.3** is broken on Windows: auth succeeds via `tailscale up`, but `tailscale status` stays stuck on `unexpected state: NoState` indefinitely and `tailscale serve` fails the same way. **Working version: v1.82.5** (downgrade resolves it). Known regression tracked at https://github.com/tailscale/tailscale/issues/15524. Installer: https://pkgs.tailscale.com/stable/?v=1.82.5#windows."
     }
   }
 }
