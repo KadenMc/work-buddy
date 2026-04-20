@@ -1114,6 +1114,82 @@ def api_notification_log_list():
 
 
 # ---------------------------------------------------------------------------
+# Inline commands (Obsidian right-click menu + #wb/cmd/* tag triggers)
+# ---------------------------------------------------------------------------
+
+@app.get("/inline/menu-manifest")
+def api_inline_menu_manifest():
+    """Manifest of inline commands that expose a right-click menu entry."""
+    try:
+        from work_buddy.inline import registry as _ireg
+        commands = []
+        for c in _ireg.list_for_surface("menu"):
+            commands.append({
+                "command": c.name,
+                "label": c.menu_label or c.name,
+                "description": c.description,
+                "icon": getattr(c, "icon", None),
+            })
+        logger.debug("inline menu-manifest: %d commands", len(commands))
+        return jsonify({"commands": commands})
+    except Exception as exc:
+        logger.exception("inline menu-manifest failed")
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.post("/inline/invoke")
+def api_inline_invoke():
+    """Dispatch an inline command from the Obsidian plugin.
+
+    Body: {command, surface, payload} where surface is 'menu' or 'tag'
+    and payload matches what inline.context.build_context expects.
+    """
+    data = request.get_json(silent=True) or {}
+    command = data.get("command", "")
+    surface = data.get("surface", "")
+    payload = data.get("payload") or {}
+    if not command or not surface:
+        return jsonify({"error": "command and surface are required"}), 400
+
+    try:
+        from work_buddy.inline import dispatcher as _disp
+        merged = {**payload, "command": command}
+        logger.info("inline invoke: %s via %s", command, surface)
+        result = _disp.dispatch_sync(surface, merged)
+        return jsonify(result)
+    except Exception as exc:
+        logger.exception("inline invoke failed (%s)", command)
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.post("/inline/tag-removed")
+def api_inline_tag_removed():
+    """Cancel persistent watchers whose tag was removed from a note.
+
+    Body: {file_path, tag}
+    """
+    data = request.get_json(silent=True) or {}
+    file_path = data.get("file_path", "")
+    tag = data.get("tag", "")
+    if not file_path or not tag:
+        return jsonify({"error": "file_path and tag are required"}), 400
+
+    try:
+        from work_buddy.inline import store as _istore
+        cleaned = tag.lstrip("#")
+        removed = []
+        for w in _istore.list_watchers(file_path=file_path):
+            if w.tag == cleaned or w.tag == tag:
+                if _istore.delete_watcher(w.watcher_id):
+                    removed.append(w.watcher_id)
+        logger.info("inline tag-removed: %s / %s — %d watcher(s)", file_path, tag, len(removed))
+        return jsonify({"removed": len(removed), "watcher_ids": removed})
+    except Exception as exc:
+        logger.exception("inline tag-removed failed")
+        return jsonify({"error": str(exc)}), 500
+
+
+# ---------------------------------------------------------------------------
 # Command palette
 # ---------------------------------------------------------------------------
 

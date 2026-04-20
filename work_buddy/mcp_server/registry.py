@@ -542,6 +542,7 @@ def _build_registry() -> dict[str, Capability | WorkflowDefinition]:
         ("consent", _consent_capabilities),
         ("notifications", _notification_capabilities),
         ("threads", _thread_capabilities),
+        ("inline", _inline_capabilities),
         ("remote_session", _remote_session_capabilities),
         ("ledger", _ledger_capabilities),
         ("knowledge", _knowledge_capabilities),
@@ -4061,6 +4062,159 @@ def _thread_capabilities() -> list[Capability]:
                 "what threads are active",
                 "recent conversations",
                 "thread directory",
+            ],
+        ),
+    ]
+
+
+def _inline_capabilities() -> list[Capability]:
+    """Inline Obsidian-command capabilities.
+
+    Exposes the :mod:`work_buddy.inline` dispatcher, watcher store, and
+    sync reconciler to MCP callers (sidecar jobs and the Obsidian plugin
+    bridge both use these).
+    """
+    from work_buddy.inline import dispatcher as _disp
+    from work_buddy.inline import registry as _ireg
+    from work_buddy.inline import store as _istore
+    from work_buddy.inline import sync as _isync
+
+    def inline_invoke(command: str, surface: str, payload: dict | None = None) -> dict:
+        merged = dict(payload or {})
+        merged["command"] = command
+        return _disp.dispatch_sync(surface, merged)
+
+    def inline_list_commands(surface: str | None = None) -> dict:
+        cmds = _ireg.list_for_surface(surface) if surface else _ireg.list_commands()
+        return {"commands": [c.to_dict() for c in cmds]}
+
+    def inline_menu_manifest() -> dict:
+        items = []
+        for c in _ireg.list_for_surface("menu"):
+            items.append(
+                {
+                    "command": c.name,
+                    "label": c.menu_label or c.name,
+                    "description": c.description,
+                }
+            )
+        return {"items": items}
+
+    def inline_tag_removed(file_path: str, tag: str) -> dict:
+        cleaned = tag.lstrip("#")
+        removed = []
+        for w in _istore.list_watchers(file_path=file_path):
+            if w.tag == cleaned or w.tag == tag:
+                if _istore.delete_watcher(w.watcher_id):
+                    removed.append(w.watcher_id)
+        return {"removed": removed, "count": len(removed)}
+
+    def inline_list_watchers() -> dict:
+        return {"watchers": [w.to_dict() for w in _istore.list_watchers()]}
+
+    def inline_cancel_watcher(watcher_id: str) -> dict:
+        ok = _istore.delete_watcher(watcher_id)
+        return {"cancelled": ok, "watcher_id": watcher_id}
+
+    def inline_sync() -> dict:
+        return _isync.inline_sync()
+
+    return [
+        Capability(
+            name="inline_invoke",
+            description="Execute an inline command (menu or #wb/cmd/* tag surface).",
+            category="inline",
+            parameters={
+                "command": {"type": "string", "description": "Registered command name (e.g. 'task/new')", "required": True},
+                "surface": {"type": "string", "description": "'menu' or 'tag'", "required": True},
+                "payload": {"type": "object", "description": "Surface-specific payload (file_path, selection, cursor_line, tag, tag_line, full_text, params)"},
+            },
+            callable=inline_invoke,
+            mutates_state=True,
+            search_aliases=[
+                "inline command",
+                "obsidian right-click",
+                "wb/cmd tag",
+                "run inline handler",
+                "invoke from note",
+            ],
+        ),
+        Capability(
+            name="inline_list_commands",
+            description="List registered inline commands, optionally filtered by surface.",
+            category="inline",
+            parameters={
+                "surface": {"type": "string", "description": "Filter: 'menu' or 'tag'"},
+            },
+            callable=inline_list_commands,
+            search_aliases=[
+                "list inline commands",
+                "inline handlers",
+                "available wb/cmd tags",
+            ],
+        ),
+        Capability(
+            name="inline_menu_manifest",
+            description="Manifest of inline commands that expose a right-click menu entry.",
+            category="inline",
+            parameters={},
+            callable=inline_menu_manifest,
+            search_aliases=[
+                "right-click menu",
+                "obsidian menu items",
+                "inline menu manifest",
+            ],
+        ),
+        Capability(
+            name="inline_tag_removed",
+            description="Cancel persistent watchers whose tag was removed from a note.",
+            category="inline",
+            parameters={
+                "file_path": {"type": "string", "description": "Vault-relative path", "required": True},
+                "tag": {"type": "string", "description": "Tag that was removed (with or without #)", "required": True},
+            },
+            callable=inline_tag_removed,
+            mutates_state=True,
+            search_aliases=[
+                "cancel watcher on tag delete",
+                "inline tag removed",
+                "wb/cmd removed",
+            ],
+        ),
+        Capability(
+            name="inline_list_watchers",
+            description="List all persistent inline watchers.",
+            category="inline",
+            parameters={},
+            callable=inline_list_watchers,
+            search_aliases=[
+                "persistent watchers",
+                "active inline watchers",
+                "wb/cmd watchers",
+            ],
+        ),
+        Capability(
+            name="inline_cancel_watcher",
+            description="Cancel a single persistent watcher by ID.",
+            category="inline",
+            parameters={
+                "watcher_id": {"type": "string", "description": "Watcher identifier", "required": True},
+            },
+            callable=inline_cancel_watcher,
+            mutates_state=True,
+            search_aliases=["cancel watcher", "delete watcher"],
+        ),
+        Capability(
+            name="inline_sync",
+            description="Reconcile vault #wb/cmd/* tags with the persistent watcher store.",
+            category="inline",
+            parameters={},
+            callable=inline_sync,
+            mutates_state=True,
+            search_aliases=[
+                "sync inline watchers",
+                "reconcile wb/cmd tags",
+                "inline watcher drift",
             ],
         ),
     ]
