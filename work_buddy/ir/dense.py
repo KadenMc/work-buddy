@@ -504,27 +504,68 @@ def _build_vectors_for_projection(
         "Encoding %d new rows for source=%s projection=%s kind=%s pool=%s (%d existing)",
         len(new_texts), source, projection, kind, pool, len(existing_ids),
     )
+
+    # Checkpoint the save every CHECKPOINT_ROWS encoded rows. This is
+    # critical for cold-start recovery on large sources: without it,
+    # a 7k-row initial encode takes longer than the 300s client timeout
+    # (see work_buddy/embedding/client.py::ir_index), the save never
+    # fires, and every subsequent run re-encodes from scratch — a
+    # perpetual stall. With checkpointing, even a client-side timeout
+    # leaves a partial .npz on disk; the next run's incremental gate
+    # (``existing_id_set``) shrinks the work to the remainder, which
+    # always converges.
+    #
+    # A single monolithic save at the end is still preserved for small
+    # incremental deltas (fewer rows than the checkpoint size).
+    CHECKPOINT_ROWS = 500
+
+    running_ids: list[str] = list(existing_ids)
+    running_vectors = existing_vectors  # np.ndarray | None
     t0 = time.time()
-    new_vectors = _encode_bulk_direct(new_texts, kind=kind)
-    encode_time = time.time() - t0
+    last_save_at = 0  # count of rows encoded since last checkpoint
+    path = None
 
-    if existing_vectors is not None and len(existing_ids) > 0:
-        merged_vectors = np.vstack([existing_vectors, new_vectors])
-        merged_ids = existing_ids + new_doc_ids
-    else:
-        merged_vectors = new_vectors
-        merged_ids = new_doc_ids
+    for chunk_start in range(0, len(new_texts), CHECKPOINT_ROWS):
+        chunk_texts = new_texts[chunk_start : chunk_start + CHECKPOINT_ROWS]
+        chunk_ids = new_doc_ids[chunk_start : chunk_start + CHECKPOINT_ROWS]
+        chunk_vectors = _encode_bulk_direct(chunk_texts, kind=kind)
 
+        if running_vectors is not None and len(running_ids) > 0:
+            running_vectors = np.vstack([running_vectors, chunk_vectors])
+        else:
+            running_vectors = chunk_vectors
+        running_ids = running_ids + chunk_ids
+        last_save_at = chunk_start + len(chunk_texts)
+
+        # Save after every chunk so partial progress survives a timeout
+        # or process restart. Only skip if this was the final chunk AND
+        # we've already saved in a prior iteration (the final save
+        # happens below unconditionally).
+        if last_save_at < len(new_texts):
+            path = save_vectors(
+                running_vectors, running_ids, cfg,
+                source=source, projection=projection,
+            )
+            logger.info(
+                "Checkpoint: %d/%d new rows persisted for source=%s "
+                "projection=%s (total rows on disk: %d)",
+                last_save_at, len(new_texts), source, projection,
+                len(running_ids),
+            )
+
+    # Final save covering the last partial chunk (or the whole thing,
+    # when the encode fit in a single chunk).
     path = save_vectors(
-        merged_vectors, merged_ids, cfg,
+        running_vectors, running_ids, cfg,
         source=source, projection=projection,
     )
+    encode_time = time.time() - t0
 
     return {
-        "doc_count": len(set(merged_ids)),
-        "rows_total": len(merged_ids),
+        "doc_count": len(set(running_ids)),
+        "rows_total": len(running_ids),
         "docs_new": len(set(new_doc_ids)),
-        "dims": int(merged_vectors.shape[1]),
+        "dims": int(running_vectors.shape[1]),
         "encode_time_s": round(encode_time, 1),
         "vector_file": path.as_posix(),
         "vector_file_mb": round(path.stat().st_size / 1024 / 1024, 1),

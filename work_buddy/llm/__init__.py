@@ -25,13 +25,29 @@ from work_buddy.llm.intent import (
     MulticlassClassification,
     MultilabelClassification,
 )
-from work_buddy.llm.runner import ModelTier, TaskResult, run_task
+from work_buddy.llm.response import ErrorKind, LLMResponse, TierAttempt, ToolCall
+from work_buddy.llm.runner import ModelTier as ModelTierLegacy
+from work_buddy.llm.runner import TaskResult, run_task
+from work_buddy.llm.runner_v2 import LLMRunner, llm_call
 from work_buddy.llm.summarize import PageSummary, summarize, summarize_batch
+from work_buddy.llm.tiers import ModelTier, TierBinding, resolve_tier
 
 __all__ = [
+    # Unified runner (phase 1 of LLM + Context refactor)
+    "LLMRunner",
+    "llm_call",
+    "LLMResponse",
+    "ErrorKind",
+    "ModelTier",
+    "TierBinding",
+    "resolve_tier",
+    "ToolCall",
+    "TierAttempt",
+    # Legacy runner (kept during phases 2–3 migration, removed in phase 8)
     "run_task",
     "TaskResult",
-    "ModelTier",
+    "ModelTierLegacy",
+    # Higher-level helpers (unchanged)
     "classify",
     "summarize",
     "summarize_batch",

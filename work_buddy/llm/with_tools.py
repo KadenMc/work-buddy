@@ -13,6 +13,15 @@ serve different jobs; this one addresses the "local model needs to
 look something up" use case without treating local models as fully
 agentic Claude replacements.
 
+.. deprecated::
+   Retained for the MCP-exposed ``llm_with_tools`` capability only.
+   All internal Python callers migrated to
+   :class:`work_buddy.llm.LLMRunner` in phase 3 of the LLM + Context
+   refactor. New code should NOT import from this module — use
+   ``LLMRunner.call(tier=..., tools=[...])`` instead (tool-call
+   support lands in a follow-up). A follow-up task will remove this
+   file once external MCP clients migrate off the legacy capability.
+
 ## How authentication + authorization work here
 
 1. **Authentication.** We synthesize a per-call session id

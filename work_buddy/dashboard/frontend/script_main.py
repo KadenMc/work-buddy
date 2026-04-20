@@ -9,6 +9,7 @@ def _script() -> str:
 const staticLoaders = {
     overview: () => loadOverview(),
     tasks: () => loadTasks(),
+    review: () => loadReview(),
     status: () => loadStatus(),
     chats: () => loadChats(),
     contracts: () => loadContracts(),
@@ -494,9 +495,13 @@ function timeUntil(epoch) {
     return 'in ' + Math.floor(diff / 86400) + 'd';
 }
 
-async function fetchJSON(url) {
+async function fetchJSON(url, options) {
+    // Accept either ``fetchJSON(url)`` (GET) or ``fetchJSON(url, {method, body, headers})``.
+    // Previously silently dropped the options argument, which meant POST
+    // callers sent plain GETs and Flask replied 405 — see the Review tab
+    // approve path that was a no-op until this fix landed (2026-04-20).
     try {
-        const r = await fetch(url);
+        const r = await fetch(url, options);
         return await r.json();
     } catch (e) {
         console.error('Fetch failed:', url, e);

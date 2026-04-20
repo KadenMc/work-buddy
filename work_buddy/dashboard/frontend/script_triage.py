@@ -17,8 +17,16 @@ registerViewRenderer('triage_clarify', function(container, viewId, payload) {
     const answers = {};
     let answeredCount = 0;
 
-    const sourceIcon = pres.source === 'chrome' ? '\u{1F310}' : '\u{1F4CB}';
-    const sourceLabel = pres.source === 'chrome' ? 'Chrome Tab' : 'Item';
+    // Source-to-UI mapping. Modal is source-agnostic: new sources
+    // add a row here and everything else (action columns, approval
+    // flow) just works. Fallback is the generic clipboard icon.
+    const sourceMap = {
+        chrome:  { icon: '\u{1F310}', label: 'Chrome Tab' },
+        journal: { icon: '\u{1F4D3}', label: 'Journal Thread' },
+    };
+    const srcInfo = sourceMap[pres.source] || { icon: '\u{1F4CB}', label: 'Item' };
+    const sourceIcon = srcInfo.icon;
+    const sourceLabel = srcInfo.label;
 
     const header = document.createElement('div');
     header.className = 'wv-header';
@@ -200,8 +208,28 @@ registerViewRenderer('triage_clarify', function(container, viewId, payload) {
 
 def _triage_review_script() -> str:
     return r"""
-registerViewRenderer('triage_review', function(container, viewId, payload) {
-    const pres = payload.presentation || {};
+// Mount-anywhere renderer for the triage-review UI. Originally only
+// used inside the workflow-view modal (via `registerViewRenderer` on
+// the dispatch_review path); now also mounted inline by the Review
+// tab so the same action-column layout, override flow, and submit
+// pipeline serve both use-cases. Keeps drag-and-drop reassignment,
+// override reasons, new-group creation — everything the Chrome
+// modal already does.
+//
+// Options:
+//   onSubmit(group_decisions, reassignments): called on submit. The
+//       caller is responsible for the actual HTTP request (modal
+//       path posts to /api/workflow-views/<viewId>/respond; Review
+//       tab posts to /api/review/execute with presentation attached).
+//       Must return a Promise.
+//   onComplete(): optional; called after a successful submit. Modal
+//       path uses it to remove the workflow tab; Review tab uses it
+//       to refresh the pool.
+function renderTriageReview(container, presentation, options) {
+    const pres = presentation || {};
+    options = options || {};
+    const onSubmit = options.onSubmit || (async () => {});
+    const onComplete = options.onComplete || (() => {});
     const ACTIONS = ['close', 'create_task', 'record_into_task', 'group', 'leave'];
     const ACTION_LABELS = {
         close: 'Close', create_task: 'Create Task', record_into_task: 'Record Into Task',
@@ -293,7 +321,7 @@ registerViewRenderer('triage_review', function(container, viewId, payload) {
         footer.className = 'wv-footer';
         const submitBtn = document.createElement('button');
         submitBtn.className = 'wv-submit';
-        submitBtn.textContent = 'Submit Decisions';
+        submitBtn.textContent = 'Submit All';
         submitBtn.addEventListener('click', () => submitDecisions(submitBtn));
         footer.appendChild(submitBtn);
         container.appendChild(footer);
@@ -401,7 +429,77 @@ registerViewRenderer('triage_review', function(container, viewId, payload) {
         body.appendChild(taskCol);
 
         card.appendChild(body);
+
+        // Per-group submit button — only when the caller opts in.
+        // The Review tab enables this so users can act on one group
+        // without committing the entire batch; the Chrome triage
+        // modal keeps bulk-only (opts.perGroupSubmit=false|unset).
+        // The bottom Submit All button is always there as a
+        // batch fallback.
+        if (options.perGroupSubmit) {
+            const footer = document.createElement('div');
+            footer.className = 'wv-group-footer';
+            const btn = document.createElement('button');
+            btn.className = 'wv-group-submit';
+            btn.type = 'button';
+            btn.textContent = 'Submit';
+            btn.addEventListener('click', async () => {
+                btn.disabled = true;
+                btn.textContent = 'Submitting\u2026';
+                try {
+                    await submitSingleGroup(group, btn);
+                } catch (e) {
+                    btn.disabled = false;
+                    btn.textContent = 'Error \u2014 try again';
+                    console.error('per-group submit failed', e);
+                }
+            });
+            footer.appendChild(btn);
+            card.appendChild(footer);
+        }
+
         parent.appendChild(card);
+    }
+
+    // Collect the single-group decision payload + send it via the
+    // shared onSubmit callback. Mirrors submitDecisions but for one
+    // group only. On success removes the card, marks the group as
+    // locally-done in `state`, and updates the header stats so the
+    // remaining batch submit won't re-send this entry.
+    async function submitSingleGroup(group, btnRef) {
+        const ov = [];
+        for (const item of (group._items || group.items)) {
+            if (state.itemOverrides[item.id]) {
+                ov.push({item_id: item.id, action: state.itemOverrides[item.id]});
+            }
+        }
+        const entry = {
+            group_index: group.index,
+            action: state.decisions[group.index] || group.suggested_action,
+            item_overrides: ov,
+        };
+        if (state.taskAssignments[group.index]) entry.target_task_id = state.taskAssignments[group.index];
+        if (state.newTaskTexts[group.index]) entry.new_task_text = state.newTaskTexts[group.index];
+        if (state.overrideReasons[group.index]) entry.override_reason = state.overrideReasons[group.index];
+
+        await onSubmit([entry], []);
+
+        // Drop this group from local state so the bottom batch
+        // submit doesn't re-send it.
+        state.groups = state.groups.filter(g => g.index !== group.index);
+        delete state.decisions[group.index];
+        delete state.taskAssignments[group.index];
+        delete state.newTaskTexts[group.index];
+        delete state.overrideReasons[group.index];
+
+        // Visually retire the card in place so the user sees the
+        // ack without the whole list flickering.
+        const card = btnRef.closest('.wv-group-card');
+        if (card) {
+            card.style.transition = 'opacity 0.25s';
+            card.style.opacity = '0.4';
+            btnRef.textContent = 'Submitted \u2713';
+        }
     }
 
     function renderItem(parent, item, group) {
@@ -429,6 +527,23 @@ registerViewRenderer('triage_review', function(container, viewId, payload) {
         if (item.url) { labelEl.innerHTML = '<a href="' + item.url + '" target="_blank" title="' + item.url + '">' + item.label + '</a>'; }
         else { labelEl.textContent = item.label; }
         row.appendChild(labelEl);
+
+        // Item-detail eye icon. Only rendered when the caller
+        // supplied an onItemClick handler (Review tab wires this to
+        // the right-side drawer). Modal callers (workflow-view
+        // dispatch) pass nothing — existing behaviour preserved.
+        if (options.onItemClick) {
+            const eye = document.createElement('button');
+            eye.className = 'wv-item-detail-btn';
+            eye.type = 'button';
+            eye.title = 'Show full text / rationale / context';
+            eye.textContent = '\u{1F441}';  // 👁
+            eye.addEventListener('click', (e) => {
+                e.stopPropagation();
+                options.onItemClick(item, group);
+            });
+            row.appendChild(eye);
+        }
 
         const overrideSelect = document.createElement('select');
         overrideSelect.className = 'wv-item-override';
@@ -709,16 +824,29 @@ registerViewRenderer('triage_review', function(container, viewId, payload) {
         }
         btn.textContent = 'Submitting...'; btn.disabled = true;
         try {
-            await fetch('/api/workflow-views/' + viewId + '/respond', {
-                method: 'POST', headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ phase: 'review', group_decisions: gd, reassignments: state.reassignments }),
-            });
+            await onSubmit(gd, state.reassignments);
             container.innerHTML = '<div class="empty-state">\u2705 Decisions submitted.</div>';
-            setTimeout(() => removeWorkflowTab(viewId), 2000);
+            setTimeout(() => onComplete(), 2000);
         } catch (e) { btn.textContent = 'Error \u2014 try again'; btn.disabled = false; }
     }
 
     render();
+}
+
+// Thin wrapper preserving the workflow-view modal's original
+// behaviour: post to /api/workflow-views/<viewId>/respond and
+// remove the tab on completion. The inline Review tab mounts
+// renderTriageReview directly with its own onSubmit.
+registerViewRenderer('triage_review', function(container, viewId, payload) {
+    renderTriageReview(container, payload.presentation || {}, {
+        onSubmit: async (gd, reassignments) => {
+            await fetch('/api/workflow-views/' + viewId + '/respond', {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ phase: 'review', group_decisions: gd, reassignments: reassignments }),
+            });
+        },
+        onComplete: () => removeWorkflowTab(viewId),
+    });
 });
 """
 

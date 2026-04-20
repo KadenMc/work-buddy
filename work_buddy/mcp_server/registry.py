@@ -542,6 +542,7 @@ def _build_registry() -> dict[str, Capability | WorkflowDefinition]:
         ("consent", _consent_capabilities),
         ("notifications", _notification_capabilities),
         ("threads", _thread_capabilities),
+        ("inline", _inline_capabilities),
         ("remote_session", _remote_session_capabilities),
         ("ledger", _ledger_capabilities),
         ("knowledge", _knowledge_capabilities),
@@ -1883,6 +1884,71 @@ def _context_capabilities() -> list[Capability]:
             mutates_state=True,
         ),
 
+        # ── Background triage (source-agnostic) ─────────────────
+        Capability(
+            name="triage_submit",
+            description=(
+                "Record a triage verdict for one item of an active background "
+                "triage run. Called by local agents in the triage_agent preset; "
+                "validates the run/item and writes a PoolEntry. Does not dispatch "
+                "a modal or mutate the vault. Safe to call from any context — "
+                "unknown run_ids return a structured error."
+            ),
+            category="context",
+            search_aliases=[
+                "submit triage verdict",
+                "record triage decision",
+                "emit triage recommendation",
+            ],
+            parameters={
+                "run_id": {"type": "str", "description": "The producer-assigned background-triage run id (from the agent's prompt).", "required": True},
+                "item_id": {"type": "str", "description": "The id of the item this verdict applies to.", "required": True},
+                "recommended_action": {"type": "str", "description": "One of: close, group, create_task, record_into_task, leave.", "required": True},
+                "rationale": {"type": "str", "description": "One-to-three-sentence justification.", "required": True},
+                "group_intent": {"type": "str", "description": "Short noun-phrase naming the underlying intent (≤8 words, distinct from the action name and the rationale). Used as the group title in the review UI.", "required": False},
+                "confidence": {"type": "float", "description": "Optional [0,1] confidence score.", "required": False},
+                "target_task_id": {"type": "str", "description": "For record_into_task: the existing task id.", "required": False},
+                "suggested_task_text": {"type": "str", "description": "For create_task: the proposed task body.", "required": False},
+                "related_item_ids": {"type": "list", "description": "Other item_ids from this run that belong to the same cluster.", "required": False},
+            },
+            callable=(lambda **kw: __import__(
+                "work_buddy.triage.capabilities.triage_submit",
+                fromlist=["triage_submit"],
+            ).triage_submit(**kw)),
+            mutates_state=True,
+            auto_retry=False,
+        ),
+        Capability(
+            name="triage_review_pool",
+            description=(
+                "Open the dashboard review modal over pending background-triage "
+                "proposals. Aggregates unreviewed PoolEntries, composes a "
+                "presentation, dispatches the modal, and (on response) executes "
+                "the user's decisions via the existing triage executor. "
+                "On-demand — nothing fires automatically."
+            ),
+            category="context",
+            search_aliases=[
+                "review triage proposals",
+                "open triage modal",
+                "drain triage pool",
+                "review pending triage",
+            ],
+            parameters={
+                "source": {"type": "str", "description": "Optional source filter (e.g. 'journal_thread', 'chrome_tab').", "required": False},
+                "adapter": {"type": "str", "description": "Optional adapter-name filter (e.g. 'journal_triage').", "required": False},
+                "since": {"type": "str", "description": "ISO timestamp; only entries created at-or-after are included.", "required": False},
+                "max_items": {"type": "int", "description": "Safety cap on pending entries loaded (default 100).", "required": False},
+                "dispatch": {"type": "bool", "description": "False to compose the presentation without opening the modal.", "required": False},
+            },
+            callable=(lambda **kw: __import__(
+                "work_buddy.triage.capabilities.triage_review_pool",
+                fromlist=["triage_review_pool"],
+            ).triage_review_pool(**kw)),
+            mutates_state=True,
+            auto_retry=False,
+        ),
+
         # ── Chrome tab mutations ────────────────────────────────
         Capability(
             name="chrome_tab_close",
@@ -2214,7 +2280,186 @@ def _context_capabilities() -> list[Capability]:
             },
             callable=collect_bundle,
         ),
+        # ── Unified context pipeline (phase 7 of the LLM+Context refactor) ──
+        # Two capabilities over the work_buddy.context stack:
+        #   - context_block     → collect + curate in one call, returns
+        #                         rendered markdown or JSON.
+        #   - context_drill_down → expand one item (task note, commit
+        #                         message, project description, …).
+        # Both are thin wrappers — the real API lives in
+        # work_buddy.context.{collector, curator, sources.*}.
+        Capability(
+            name="context_block",
+            description=(
+                "Collect + render a context block from registered sources "
+                "(git, tasks, projects, chrome, obsidian, obsidian_tasks, "
+                "obsidian_wellness, calendar, day_planner, session_activity, "
+                "chat, message, smart, datacore). Structured sources (git / "
+                "tasks / projects / chrome) emit curated prompt text; the "
+                "rest wrap legacy collectors. Supports per-source depth, "
+                "target_date windows, max_chars budget, markdown or JSON "
+                "output, and cache reuse via max_age_seconds."
+            ),
+            category="context",
+            search_aliases=[
+                "user context",
+                "what is the user working on",
+                "active tasks projects commits",
+                "context packet",
+                "assemble context",
+                "build context block",
+            ],
+            parameters={
+                "sources": {"type": "list", "description": "Source names to include. Default: all registered.", "required": False},
+                "exclude": {"type": "list", "description": "Source names to drop from the default set.", "required": False},
+                "depth": {"type": "str", "description": "brief | normal | deep (default normal).", "required": False},
+                "per_source_depth": {"type": "dict", "description": "{source: depth} overrides for individual sources.", "required": False},
+                "target_date": {"type": "str", "description": "YYYY-MM-DD. Default: today (no time window shift).", "required": False},
+                "window_days": {"type": "int", "description": "Window size around target_date (default 1).", "required": False},
+                "max_chars": {"type": "int", "description": "Rendering budget. Truncates respecting section boundaries when possible.", "required": False},
+                "max_age_seconds": {"type": "int", "description": "Use cached fetch if younger than this. None (default) = always fresh. 0 = use any cached.", "required": False},
+                "custom": {"type": "dict", "description": "Per-source ad-hoc params forwarded to each source's collect().", "required": False},
+                "format": {"type": "str", "description": "markdown (default) or json.", "required": False},
+            },
+            callable=_context_block,
+        ),
+        Capability(
+            name="context_drill_down",
+            description=(
+                "Expand one item from a context source. Works on structured "
+                "wave-1 sources that implement drill_down — tasks (field: "
+                "'note' / 'line'), git (field: 'full_message' / 'diff_stats'), "
+                "projects (field: 'description' / 'full'). Wave-2/3 markdown "
+                "wrappers don't implement drill-down — the prompt already "
+                "holds their full body at DEEP depth."
+            ),
+            category="context",
+            search_aliases=[
+                "show full commit message",
+                "show full task note",
+                "expand project description",
+                "drill down on item",
+                "get more detail",
+            ],
+            parameters={
+                "source": {"type": "str", "description": "Source name (tasks / git / projects).", "required": True},
+                "item_id": {"type": "str", "description": "Item identifier within the source (task_id / commit sha / project slug).", "required": True},
+                "field": {"type": "str", "description": "Which expansion to return. See source docs for valid fields.", "required": True},
+            },
+            callable=_context_drill_down,
+        ),
     ]
+
+
+def _context_block(
+    sources: list[str] | None = None,
+    exclude: list[str] | None = None,
+    depth: str = "normal",
+    per_source_depth: dict[str, str] | None = None,
+    target_date: str | None = None,
+    window_days: int = 1,
+    max_chars: int | None = None,
+    max_age_seconds: int | None = None,
+    custom: dict[str, dict] | None = None,
+    format: str = "markdown",
+) -> dict[str, Any]:
+    """MCP callable for the ``context_block`` capability.
+
+    Top-level so the capability's ``callable`` reference stays stable
+    across registry rebuilds. Returns a dict with ``rendered`` (the
+    block) and ``sources`` (per-source item counts + metadata) so MCP
+    clients can inspect what was included.
+    """
+    from datetime import date as _date
+
+    from work_buddy.context import (
+        ContextCollector,
+        ContextCurator,
+        ContextDepth,
+        ContextRequest,
+    )
+    from work_buddy.context import sources as _sources_pkg  # registers sources
+    _ = _sources_pkg  # silence unused-import warning
+
+    try:
+        depth_enum = ContextDepth[depth.upper()]
+    except KeyError:
+        return {"error": f"depth must be one of: brief, normal, deep; got {depth!r}"}
+
+    per_depth: dict[str, ContextDepth] | None = None
+    if per_source_depth:
+        try:
+            per_depth = {k: ContextDepth[v.upper()] for k, v in per_source_depth.items()}
+        except KeyError as exc:
+            return {"error": f"per_source_depth value invalid: {exc}"}
+
+    target: _date | None = None
+    if target_date:
+        try:
+            target = _date.fromisoformat(target_date)
+        except ValueError:
+            return {"error": f"target_date must be YYYY-MM-DD; got {target_date!r}"}
+
+    if format not in ("markdown", "json"):
+        return {"error": f"format must be 'markdown' or 'json'; got {format!r}"}
+
+    req = ContextRequest(
+        sources=sources,
+        exclude=exclude,
+        depth=depth_enum,
+        per_source_depth=per_depth,
+        target_date=target,
+        window_days=window_days,
+        max_chars=max_chars,
+        max_age_seconds=max_age_seconds,
+        custom=custom,
+    )
+
+    ctx = ContextCollector().collect(req)
+    rendered = ContextCurator().curate(
+        ctx,
+        depth=depth_enum,
+        per_source_depth=per_depth,
+        max_chars=max_chars,
+        format=format,
+    )
+
+    sources_manifest = {
+        name: {
+            "item_count": len(section.items),
+            "metadata": section.metadata,
+            "fetched_at": section.fetched_at.isoformat(),
+        }
+        for name, section in ctx.sections.items()
+    }
+
+    return {
+        "rendered": rendered,
+        "sources": sources_manifest,
+        "format": format,
+    }
+
+
+def _context_drill_down(source: str, item_id: str, field: str) -> dict[str, Any]:
+    """MCP callable for ``context_drill_down``."""
+    from work_buddy.context import registry as _ctx_registry
+    from work_buddy.context import sources as _sources_pkg  # registers sources
+    _ = _sources_pkg
+
+    src = _ctx_registry.get(source)
+    if src is None:
+        return {
+            "error": f"Unknown source {source!r}. Registered: {_ctx_registry.names()}",
+        }
+
+    try:
+        return src.drill_down(item_id, field)
+    except NotImplementedError as exc:
+        return {"error": str(exc), "error_kind": "not_implemented"}
+    except KeyError as exc:
+        return {"error": str(exc), "error_kind": "not_found"}
+    except Exception as exc:
+        return {"error": f"{type(exc).__name__}: {exc}", "error_kind": "unknown"}
 
 
 def _project_capabilities() -> list[Capability]:
@@ -2611,6 +2856,84 @@ def _journal_capabilities() -> list[Capability]:
             # unavailable" and have no escape hatch. The inner retry
             # loop health-checks the bridge between attempts itself.
             retry_policy="manual",
+        ),
+        # ── Background triage producer (journal) ────────────────
+        Capability(
+            name="journal_triage_scan",
+            description=(
+                "Run one background-triage pass over today's Running Notes "
+                "section. Segments the same-day content into threads via "
+                "the local LLM, enriches each with hybrid-IR context, and "
+                "asks Sonnet (escalating to Opus on failure) for a "
+                "constrained-JSON verdict per thread — written directly "
+                "into the Review pool. Never mutates the vault. Idempotent "
+                "on unchanged content. Cadence is a sidecar-job concern; "
+                "safe to call manually for testing."
+            ),
+            category="journal",
+            search_aliases=[
+                "journal triage scan",
+                "background running notes triage",
+                "process running notes proposals",
+                "triage running notes",
+            ],
+            parameters={
+                "journal_date": {"type": "str", "description": "YYYY-MM-DD. Default: today.", "required": False},
+                "force": {"type": "bool", "description": "Ignore the unchanged-content idempotence gate.", "required": False},
+                "profile": {"type": "str", "description": "Override the configured triage.segment_profile (segmentation LLM, not the agent).", "required": False},
+                "tier": {"type": "str", "description": "Override the starting ModelTier for the agent (default frontier_balanced).", "required": False},
+                "enrich": {"type": "bool", "description": "Pre-fetch hybrid-IR context per candidate (default True).", "required": False},
+                "dry_run": {"type": "bool", "description": "Collect + enrich candidates but skip the agent loop.", "required": False},
+            },
+            callable=(lambda **kw: __import__(
+                "work_buddy.triage.capabilities.journal_triage_scan",
+                fromlist=["journal_triage_scan"],
+            ).journal_triage_scan(**kw)),
+            requires=["obsidian"],
+            mutates_state=True,
+            # Producer uses LLMRunner's escalation internally — retries
+            # at the tier level on timeout / context-exceeded. No outer
+            # retry-on-timeout needed (would just stack queued passes).
+            auto_retry=False,
+        ),
+        # ── Inline-selection triage producer ────────────────────
+        Capability(
+            name="inline_triage_scan",
+            description=(
+                "Run one triage pass over a single user-sent Obsidian "
+                "selection (from the 'Send to agent' right-click command). "
+                "Builds one TriageItem with source='inline', collects the "
+                "user-context packet (active tasks / contracts / projects / "
+                "recent commits), and asks Sonnet for a constrained-JSON "
+                "verdict — parsed and written directly into the Review pool. "
+                "Escalates to Opus on timeout / context-exceeded / empty "
+                "content / rate-limited. User-initiated, so force=True by default."
+            ),
+            category="triage",
+            search_aliases=[
+                "send to agent",
+                "inline selection triage",
+                "triage selection",
+                "obsidian selection handoff",
+            ],
+            parameters={
+                "file_path": {"type": "str", "description": "Vault-relative source path.", "required": True},
+                "selection": {"type": "str", "description": "The user's literal selection.", "required": False},
+                "paragraph": {"type": "str", "description": "Surrounding paragraph (used when selection is empty).", "required": False},
+                "cursor_line": {"type": "int", "description": "0-indexed cursor line.", "required": False},
+                "hint": {"type": "str", "description": "Optional user-typed intent hint.", "required": False},
+                "force": {"type": "bool", "description": "Bypass idempotence gate (default True for user-initiated).", "required": False},
+                "tier": {"type": "str", "description": "Override the starting ModelTier (default frontier_balanced).", "required": False},
+                "enrich": {"type": "bool", "description": "Include the user-context packet (default True).", "required": False},
+                "dry_run": {"type": "bool", "description": "Collect the item, skip the LLM call.", "required": False},
+            },
+            callable=(lambda **kw: __import__(
+                "work_buddy.triage.capabilities.inline_triage_scan",
+                fromlist=["inline_triage_scan"],
+            ).inline_triage_scan(**kw)),
+            requires=["obsidian"],
+            mutates_state=True,
+            auto_retry=False,
         ),
     ]
 
@@ -4061,6 +4384,159 @@ def _thread_capabilities() -> list[Capability]:
                 "what threads are active",
                 "recent conversations",
                 "thread directory",
+            ],
+        ),
+    ]
+
+
+def _inline_capabilities() -> list[Capability]:
+    """Inline Obsidian-command capabilities.
+
+    Exposes the :mod:`work_buddy.inline` dispatcher, watcher store, and
+    sync reconciler to MCP callers (sidecar jobs and the Obsidian plugin
+    bridge both use these).
+    """
+    from work_buddy.inline import dispatcher as _disp
+    from work_buddy.inline import registry as _ireg
+    from work_buddy.inline import store as _istore
+    from work_buddy.inline import sync as _isync
+
+    def inline_invoke(command: str, surface: str, payload: dict | None = None) -> dict:
+        merged = dict(payload or {})
+        merged["command"] = command
+        return _disp.dispatch_sync(surface, merged)
+
+    def inline_list_commands(surface: str | None = None) -> dict:
+        cmds = _ireg.list_for_surface(surface) if surface else _ireg.list_commands()
+        return {"commands": [c.to_dict() for c in cmds]}
+
+    def inline_menu_manifest() -> dict:
+        items = []
+        for c in _ireg.list_for_surface("menu"):
+            items.append(
+                {
+                    "command": c.name,
+                    "label": c.menu_label or c.name,
+                    "description": c.description,
+                }
+            )
+        return {"items": items}
+
+    def inline_tag_removed(file_path: str, tag: str) -> dict:
+        cleaned = tag.lstrip("#")
+        removed = []
+        for w in _istore.list_watchers(file_path=file_path):
+            if w.tag == cleaned or w.tag == tag:
+                if _istore.delete_watcher(w.watcher_id):
+                    removed.append(w.watcher_id)
+        return {"removed": removed, "count": len(removed)}
+
+    def inline_list_watchers() -> dict:
+        return {"watchers": [w.to_dict() for w in _istore.list_watchers()]}
+
+    def inline_cancel_watcher(watcher_id: str) -> dict:
+        ok = _istore.delete_watcher(watcher_id)
+        return {"cancelled": ok, "watcher_id": watcher_id}
+
+    def inline_sync() -> dict:
+        return _isync.inline_sync()
+
+    return [
+        Capability(
+            name="inline_invoke",
+            description="Execute an inline command (menu or #wb/cmd/* tag surface).",
+            category="inline",
+            parameters={
+                "command": {"type": "string", "description": "Registered command name (e.g. 'task/new')", "required": True},
+                "surface": {"type": "string", "description": "'menu' or 'tag'", "required": True},
+                "payload": {"type": "object", "description": "Surface-specific payload (file_path, selection, cursor_line, tag, tag_line, full_text, params)"},
+            },
+            callable=inline_invoke,
+            mutates_state=True,
+            search_aliases=[
+                "inline command",
+                "obsidian right-click",
+                "wb/cmd tag",
+                "run inline handler",
+                "invoke from note",
+            ],
+        ),
+        Capability(
+            name="inline_list_commands",
+            description="List registered inline commands, optionally filtered by surface.",
+            category="inline",
+            parameters={
+                "surface": {"type": "string", "description": "Filter: 'menu' or 'tag'"},
+            },
+            callable=inline_list_commands,
+            search_aliases=[
+                "list inline commands",
+                "inline handlers",
+                "available wb/cmd tags",
+            ],
+        ),
+        Capability(
+            name="inline_menu_manifest",
+            description="Manifest of inline commands that expose a right-click menu entry.",
+            category="inline",
+            parameters={},
+            callable=inline_menu_manifest,
+            search_aliases=[
+                "right-click menu",
+                "obsidian menu items",
+                "inline menu manifest",
+            ],
+        ),
+        Capability(
+            name="inline_tag_removed",
+            description="Cancel persistent watchers whose tag was removed from a note.",
+            category="inline",
+            parameters={
+                "file_path": {"type": "string", "description": "Vault-relative path", "required": True},
+                "tag": {"type": "string", "description": "Tag that was removed (with or without #)", "required": True},
+            },
+            callable=inline_tag_removed,
+            mutates_state=True,
+            search_aliases=[
+                "cancel watcher on tag delete",
+                "inline tag removed",
+                "wb/cmd removed",
+            ],
+        ),
+        Capability(
+            name="inline_list_watchers",
+            description="List all persistent inline watchers.",
+            category="inline",
+            parameters={},
+            callable=inline_list_watchers,
+            search_aliases=[
+                "persistent watchers",
+                "active inline watchers",
+                "wb/cmd watchers",
+            ],
+        ),
+        Capability(
+            name="inline_cancel_watcher",
+            description="Cancel a single persistent watcher by ID.",
+            category="inline",
+            parameters={
+                "watcher_id": {"type": "string", "description": "Watcher identifier", "required": True},
+            },
+            callable=inline_cancel_watcher,
+            mutates_state=True,
+            search_aliases=["cancel watcher", "delete watcher"],
+        ),
+        Capability(
+            name="inline_sync",
+            description="Reconcile vault #wb/cmd/* tags with the persistent watcher store.",
+            category="inline",
+            parameters={},
+            callable=inline_sync,
+            mutates_state=True,
+            search_aliases=[
+                "sync inline watchers",
+                "reconcile wb/cmd tags",
+                "inline watcher drift",
             ],
         ),
     ]

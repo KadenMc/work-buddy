@@ -220,3 +220,79 @@ def test_with_tools_surfaces_model_not_loaded_hint(monkeypatch, tmp_path):
     # Agent should still see which model + preset it was trying to use
     assert result["model"] == "qwen/qwen3.5-9b"
     assert result["tool_preset"] == "readonly_safe"
+
+
+# ---------------------------------------------------------------------------
+# MCP-integrations failures — 500 from /api/v1/chat with telling body text
+# ---------------------------------------------------------------------------
+# These are the failures a local model produces when it uses LM Studio's
+# `integrations` tool-loop and that loop talks to the work-buddy gateway.
+# The raw error bodies are inscrutable ("-32001", "fetch failed",
+# "peer_keepalive_timeout") unless you know what they mean — the
+# interpreter should surface the real cause + first diagnostic step.
+
+
+def test_mcp_gateway_timeout_dash_32001_is_classified() -> None:
+    """JSON-RPC -32001 from the MCP round-trip means the gateway was
+    too slow. Must be distinct from a generic 500."""
+    body = {"error": {"message": "MCP error -32001: Request timed out"}}
+    err = interpret_httpx_exception(
+        _status_error(500, body),
+        model="qwen/qwen2.5-coder-14b",
+        endpoint="/api/v1/chat",
+    )
+    assert err.kind == "mcp_gateway_timeout"
+    assert "-32001" in str(err)
+    # Hint must point at a concrete first diagnostic
+    assert "localhost:5126" in err.hint
+    assert "health" in err.hint.lower()
+
+
+def test_mcp_fetch_failed_is_distinct_from_timeout() -> None:
+    """`fetch failed` is a transport-layer failure, not a JSON-RPC
+    timeout — the interpreter should classify it separately so the
+    caller can try the right remedy (retry vs debug gateway)."""
+    body = {"error": {"message": "fetch failed"}}
+    err = interpret_httpx_exception(
+        _status_error(500, body),
+        model="qwen/qwen2.5-coder-14b",
+        endpoint="/api/v1/chat",
+    )
+    assert err.kind == "mcp_fetch_failed"
+    assert "transport" in str(err).lower() or "tcp" in str(err).lower()
+    assert "retry" in err.hint.lower()
+
+
+def test_lm_link_peer_keepalive_timeout_is_classified() -> None:
+    """LM Link dropping mid-call is a distinct failure mode from a
+    gateway timeout — the remedy is restart LM Link, not debug the
+    gateway."""
+    body = {
+        "error": {
+            "message": (
+                "LM Link connection entered error state "
+                "peer_keepalive_timeout"
+            ),
+        },
+    }
+    err = interpret_httpx_exception(
+        _status_error(500, body),
+        model="qwen/qwen2.5-coder-14b",
+        endpoint="/api/v1/chat",
+    )
+    assert err.kind == "lm_link_dropped"
+    assert "LM Link" in str(err)
+    # Hint should point at the compute device, not the gateway
+    assert "compute device" in err.hint.lower() or "link" in err.hint.lower()
+
+
+def test_generic_500_still_falls_through_to_server_error() -> None:
+    """If the body doesn't match any of the three integration-specific
+    patterns, it stays classified as a plain server_error."""
+    body = {"error": {"message": "Something entirely unrelated exploded"}}
+    err = interpret_httpx_exception(
+        _status_error(500, body),
+        model="any-model",
+        endpoint="/api/v1/chat",
+    )
+    assert err.kind == "server_error"

@@ -42,8 +42,14 @@ def execute_triage_decisions(
     # Build item lookup: item_id → {label, url, tab_id, summary}
     item_lookup = _build_item_lookup(presentation)
 
-    # Take a fresh snapshot to detect stale tabs
-    current_tabs = _get_current_tabs()
+    # Chrome-only setup: a fresh tabs snapshot is needed to detect stale
+    # tabs before close/group calls. Sources that don't have tabs (journal,
+    # conversation, …) skip this — it pulls in the Chrome collector which
+    # may be unavailable, and the resulting ``current_tabs`` would be
+    # unused anyway.
+    source = presentation.get("source") or "unknown"
+    is_chrome = source == "chrome"
+    current_tabs = _get_current_tabs() if is_chrome else {}
 
     results = {
         "closed": [],
@@ -65,20 +71,38 @@ def execute_triage_decisions(
     record_ops = [op for op in ops if op["action"] == "record_into_task"]
     leave_ops = [op for op in ops if op["action"] == "leave"]
 
-    # 1. Close tabs (batch — one Chrome API call)
+    # 1. Close tabs (batch — one Chrome API call). Source-gated: only
+    #    Chrome has tabs to close. For other sources the action doesn't
+    #    make sense; any close ops that slip through here (e.g. a
+    #    mislabelled override) get recorded as an error rather than
+    #    silently dispatched to a no-op.
     if close_ops:
-        _execute_close_batch(close_ops, item_lookup, current_tabs, results)
-        time.sleep(_OP_DELAY)
+        if is_chrome:
+            _execute_close_batch(close_ops, item_lookup, current_tabs, results)
+            time.sleep(_OP_DELAY)
+        else:
+            for op in close_ops:
+                results["errors"].append({
+                    "op": op,
+                    "error": f"'close' action is Chrome-only; source={source!r}",
+                })
 
-    # 2. Group tabs (one call per group)
+    # 2. Group tabs (one call per group). Same source gate as close.
     if group_ops:
-        _execute_group_batch(group_ops, item_lookup, current_tabs, results, presentation)
-        time.sleep(_OP_DELAY)
+        if is_chrome:
+            _execute_group_batch(group_ops, item_lookup, current_tabs, results, presentation)
+            time.sleep(_OP_DELAY)
+        else:
+            for op in group_ops:
+                results["errors"].append({
+                    "op": op,
+                    "error": f"'group' action is Chrome-only; source={source!r}",
+                })
 
     # 3. Create tasks (Python only, no Chrome calls)
     for op in create_ops:
         try:
-            _execute_create_task(op, item_lookup, results)
+            _execute_create_task(op, item_lookup, results, source=source)
         except Exception as e:
             results["errors"].append({"op": op, "error": str(e)})
             logger.error("create_task failed for group %s: %s", op.get("group_index"), e)
@@ -86,7 +110,7 @@ def execute_triage_decisions(
     # 4. Record into tasks (Python only)
     for op in record_ops:
         try:
-            _execute_record_into_task(op, item_lookup, results)
+            _execute_record_into_task(op, item_lookup, results, source=source)
         except Exception as e:
             results["errors"].append({"op": op, "error": str(e)})
             logger.error("record_into_task failed for group %s: %s", op.get("group_index"), e)
@@ -330,8 +354,15 @@ def _execute_create_task(
     op: dict,
     item_lookup: dict,
     results: dict,
+    source: str = "chrome",
 ) -> None:
-    """Create a new task from a triage group."""
+    """Create a new task from a triage group.
+
+    ``source`` drives the note-header wording: Chrome items produce a
+    ``## Source Tabs`` section with URL links; journal items produce a
+    ``## Source Notes`` section with the thread's leading label. Other
+    sources fall back to a generic ``## Source Items``.
+    """
     gd = op.get("group_decision", {})
     task_text = gd.get("new_task_text", "")
     intent = gd.get("intent", "")
@@ -342,7 +373,8 @@ def _execute_create_task(
             item_lookup.get(iid, {}).get("label", iid) for iid in item_ids[:3]
         )
 
-    # Build note content with URLs
+    # Build note content. Chrome gets Markdown links to URLs; journal
+    # has no URLs, so we render the thread label only.
     url_lines = []
     for iid in item_ids:
         meta = item_lookup.get(iid, {})
@@ -353,7 +385,13 @@ def _execute_create_task(
         else:
             url_lines.append(f"- {label}")
 
-    note_content = "## Source Tabs\n\n" + "\n".join(url_lines) if url_lines else ""
+    header_by_source = {
+        "chrome": "## Source Tabs",
+        "journal": "## Source Notes",
+        "inline": "## Source Selection",
+    }
+    header = header_by_source.get(source, "## Source Items")
+    note_content = header + "\n\n" + "\n".join(url_lines) if url_lines else ""
 
     # Include override reason if provided
     reason = gd.get("override_reason", "")
@@ -385,8 +423,13 @@ def _execute_record_into_task(
     op: dict,
     item_lookup: dict,
     results: dict,
+    source: str = "chrome",
 ) -> None:
-    """Record items into an existing task's note."""
+    """Record items into an existing task's note.
+
+    ``source`` drives the appended-section header, matching the
+    Chrome/journal/other split used by ``_execute_create_task``.
+    """
     gd = op.get("group_decision", {})
     target_task_id = gd.get("target_task_id", "")
     item_ids = op.get("item_ids", [])
@@ -410,7 +453,13 @@ def _execute_record_into_task(
         else:
             url_lines.append(f"- {label}")
 
-    context = "\n## Related Tabs (from triage)\n\n" + "\n".join(url_lines)
+    header_by_source = {
+        "chrome": "\n## Related Tabs (from triage)\n\n",
+        "journal": "\n## Related Notes (from journal triage)\n\n",
+        "inline": "\n## Source Selection (from inline triage)\n\n",
+    }
+    header = header_by_source.get(source, "\n## Related Items (from triage)\n\n")
+    context = header + "\n".join(url_lines)
 
     results["tasks_recorded"].append({
         "target_task_id": target_task_id,

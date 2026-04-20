@@ -79,7 +79,7 @@ def group_intents(
     if not clusters:
         return {"intent_groups": [], "uncategorized_tabs": [], "overall_narrative": "No items to group."}
 
-    from work_buddy.llm.runner import ModelTier, run_task
+    from work_buddy.llm import LLMRunner, ModelTier
 
     if context is None:
         context = build_triage_context()
@@ -88,135 +88,160 @@ def group_intents(
     user_prompt = _build_user_prompt(clusters, summaries or {}, context)
     schema = _build_output_schema()
 
-    result = run_task(
-        task_id=f"triage_group_{lens}_{data_type}",
+    resp = LLMRunner().call(
+        tier=ModelTier.FRONTIER_BALANCED,
         system=system_prompt,
         user=user_prompt,
-        tier=ModelTier.SONNET,
         max_tokens=4096,
         temperature=0,
         output_schema=schema,
         cache_ttl_minutes=0,  # intent grouping should be fresh
+        trace_id=f"triage_group_{lens}_{data_type}",
     )
 
-    if result.error:
-        logger.warning("Intent grouping failed: %s", result.error)
+    if resp.is_error():
+        logger.warning("Intent grouping failed: %s", resp.error)
         return {
             "intent_groups": [],
             "uncategorized_tabs": [],
-            "overall_narrative": f"Intent grouping failed: {result.error}",
-            "error": result.error,
+            "overall_narrative": f"Intent grouping failed: {resp.error}",
+            "error": resp.error,
         }
 
-    parsed = result.parsed or {}
+    parsed = resp.structured_output or {}
     parsed["tokens"] = {
-        "input": result.input_tokens,
-        "output": result.output_tokens,
+        "input": resp.input_tokens,
+        "output": resp.output_tokens,
     }
 
     logger.info(
         "Intent grouping: %d groups, %d uncategorized (tokens: %d in / %d out)",
         len(parsed.get("intent_groups", [])),
         len(parsed.get("uncategorized_tabs", [])),
-        result.input_tokens,
-        result.output_tokens,
+        resp.input_tokens,
+        resp.output_tokens,
     )
 
     return parsed
 
 
-def build_triage_context() -> dict[str, Any]:
-    """Auto-extract context for the Sonnet intent grouping call.
+def build_triage_context(
+    task_states: list[str] | None = None,
+    max_tasks: int | None = None,
+) -> dict[str, Any]:
+    """Auto-extract context for a triage LLM call.
 
-    Gathers active tasks, contracts, and recent git commits — compact
-    format, just enough for Sonnet to match tabs to existing work.
+    Thin wrapper around :mod:`work_buddy.context` since the phase-5
+    refactor. Gathers active tasks, contracts, active projects, and
+    recent git commits from the unified :class:`ContextCollector`
+    (cache-aware) and reshapes into the pre-refactor dict for
+    backward compatibility with existing callers.
+
+    Args:
+        task_states: Which task states to include. Default
+            ``["inbox", "mit", "focused"]`` matches the Chrome
+            cluster-level call (sees the full active set). Pass a
+            narrower list (e.g. ``["focused", "mit"]``) for
+            per-item triage calls where small models get
+            overwhelmed by a large inbox dump.
+        max_tasks: Optional cap on total tasks after state
+            filtering. Earlier states (by list order) get priority.
+            ``None`` = no cap.
+
+    Backward-compat return shape (unchanged for callers):
+        ``{active_tasks, active_contracts, active_projects, recent_commits}``
     """
-    context: dict[str, Any] = {}
+    # Keep the legacy call path working by delegating to the
+    # ContextCollector with a request shaped to match the old defaults.
+    from work_buddy.context import (
+        ContextCollector,
+        ContextRequest,
+    )
 
-    # Active tasks
+    states = task_states or ["inbox", "mit", "focused"]
+    req = ContextRequest(
+        sources=["tasks", "projects", "git"],
+        window_days=1,  # matches the old "--since=24.hours.ago" behavior
+        custom={
+            "tasks": {"states": states},
+        },
+    )
     try:
-        from work_buddy.obsidian.tasks import store as task_store
-        from work_buddy.triage.task_match import _read_task_texts
+        ctx = ContextCollector().collect(req)
+    except Exception as exc:
+        logger.debug("build_triage_context: collector failed: %s", exc)
+        return {
+            "active_tasks": [],
+            "active_contracts": [],
+            "active_projects": [],
+            "recent_commits": [],
+        }
 
-        task_texts = _read_task_texts()
-        active_tasks = []
-        for state in ["inbox", "mit", "focused"]:
-            for task in task_store.query(state=state):
-                tid = task["task_id"]
-                text = task_texts.get(tid, "")
-                if text:
-                    active_tasks.append({
-                        "task_id": tid,
-                        "state": state,
-                        "text": text,
-                        "contract": task.get("contract", ""),
-                    })
-        context["active_tasks"] = active_tasks
-    except Exception as e:
-        logger.debug("Could not load tasks for triage context: %s", e)
-        context["active_tasks"] = []
+    active_tasks = []
+    tasks_section = ctx.section("tasks")
+    if tasks_section:
+        active_tasks = [dict(t) for t in (tasks_section.items or [])]
+        if max_tasks is not None and len(active_tasks) > max_tasks:
+            active_tasks = active_tasks[:max_tasks]
 
-    # Active contracts
-    try:
-        from work_buddy.contracts import active_contracts
-        contracts = active_contracts()
-        context["active_contracts"] = [
-            {
-                "title": c.get("title", ""),
-                "status": c.get("status", ""),
-                "deadline": c.get("deadline", ""),
-                "claim": c.get("claim", ""),
-            }
-            for c in contracts
-        ]
-    except Exception as e:
-        logger.debug("Could not load contracts for triage context: %s", e)
-        context["active_contracts"] = []
+    active_projects: list[dict[str, Any]] = []
+    active_contracts: list[dict[str, Any]] = []
+    projects_section = ctx.section("projects")
+    if projects_section:
+        for item in projects_section.items or []:
+            kind = item.get("type")
+            if kind == "project":
+                active_projects.append({
+                    "slug": item.get("slug", ""),
+                    "name": item.get("name", item.get("slug", "")),
+                    "status": item.get("status", ""),
+                    "description": item.get("description", "") or "",
+                })
+            elif kind == "contract":
+                active_contracts.append({
+                    "title": item.get("title", ""),
+                    "status": item.get("status", ""),
+                    "deadline": item.get("deadline", ""),
+                    "claim": item.get("claim", ""),
+                })
 
-    # Active projects
-    try:
-        from work_buddy.projects.store import list_projects
-        projects = list_projects(status="active")
-        context["active_projects"] = [
-            {
-                "slug": p["slug"],
-                "name": p["name"],
-                "status": p["status"],
-                "description": p.get("description") or "",
-            }
-            for p in projects
-        ]
-    except Exception as e:
-        logger.debug("Could not load projects for triage context: %s", e)
-        context["active_projects"] = []
+    recent_commits: list[str] = []
+    git_section = ctx.section("git")
+    if git_section:
+        # Legacy format was a list of "<short> <subject>" strings — one
+        # per line of `git log --oneline`. Rebuild that shape from the
+        # structured items so prompt renderers that don't use the new
+        # curator still work unchanged.
+        for commit in git_section.items or []:
+            short = commit.get("short") or ""
+            subject = commit.get("subject") or ""
+            if short or subject:
+                recent_commits.append(f"{short} {subject}".strip())
 
-    # Recent git commits
-    try:
-        result = subprocess.run(
-            ["git", "log", "--oneline", "-20", "--since=24.hours.ago"],
-            capture_output=True, text=True, timeout=5,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            context["recent_commits"] = result.stdout.strip().split("\n")
-        else:
-            context["recent_commits"] = []
-    except Exception as e:
-        logger.debug("Could not load git commits for triage context: %s", e)
-        context["recent_commits"] = []
-
-    return context
+    return {
+        "active_tasks": active_tasks,
+        "active_contracts": active_contracts,
+        "active_projects": active_projects,
+        "recent_commits": recent_commits,
+    }
 
 
-def _build_user_prompt(
-    clusters: list[TriageCluster],
-    summaries: dict[str, dict],
-    context: dict[str, Any],
-) -> str:
-    """Build the user prompt for Sonnet intent grouping."""
-    lines = []
+def render_triage_context_block(context: dict[str, Any]) -> str:
+    """Render the ``build_triage_context`` output as a prompt block.
 
-    # Context section
-    lines.append("## User's Current Context\n")
+    Reusable across the Chrome cluster-level intent-group prompt and
+    per-item triage prompts (e.g., ``journal_triage_scan``). Factored
+    out of ``_build_user_prompt`` so any triage pass that wants the
+    "here's what the user is actively working on" registry can get
+    it without rebuilding the rendering logic.
+
+    Returns a string starting with ``## User's Current Context`` and
+    sections for active tasks / contracts / projects / recent
+    commits. Empty sections are omitted. Returns an empty string
+    when nothing is active.
+    """
+    lines: list[str] = ["## User's Current Context\n"]
+    started_with = len(lines)
 
     tasks = context.get("active_tasks", [])
     if tasks:
@@ -249,6 +274,27 @@ def _build_user_prompt(
         for c in commits[:10]:
             lines.append(f"- {c}")
         lines.append("")
+
+    if len(lines) == started_with:
+        # Header line only; no sections populated. Return empty so
+        # the caller can cleanly skip the block.
+        return ""
+    return "\n".join(lines)
+
+
+def _build_user_prompt(
+    clusters: list[TriageCluster],
+    summaries: dict[str, dict],
+    context: dict[str, Any],
+) -> str:
+    """Build the user prompt for Sonnet intent grouping."""
+    lines = []
+
+    # Context section — delegated to the shared renderer so journal's
+    # per-item prompt gets the same shape.
+    ctx_block = render_triage_context_block(context)
+    if ctx_block:
+        lines.append(ctx_block)
 
     # Tab clusters section
     total_tabs = sum(c.size for c in clusters)

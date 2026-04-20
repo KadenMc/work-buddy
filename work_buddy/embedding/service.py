@@ -68,11 +68,26 @@ class ModelEntry:
     load_time_s: float | None = None
     status: str = "pending"  # "pending" | "loaded" | "error"
     error: str | None = None
+    last_used_at: float = 0.0  # monotonic timestamp of last _get_model hit
+    # Guards against the "loaded model never released" leak. Models
+    # like ``leaf-ir`` get lazy-loaded on first bulk encode (every 5
+    # minutes via ir-index-rebuild) and, without eviction, stay in
+    # RAM for the life of the service — hundreds of MB per model.
+    # The idle-evictor thread below drops models whose
+    # last_used_at is older than IDLE_EVICT_SECONDS.
 
 
 _registry: dict[str, ModelEntry] = {}
 _default_model_key: str = _DEFAULT_MODEL
 _device: str | None = None  # resolved device string ("cpu", "cuda", etc.)
+_registry_lock = __import__("threading").RLock()
+
+# Evict any non-eager model whose last use is older than this many seconds.
+# Eager models (leaf-mt, leaf-ir-query by default) are never evicted — they
+# serve hot paths where reload latency on every request would be worse than
+# the persistent RSS. Tuning: shorter = tighter RAM, longer = fewer reloads.
+IDLE_EVICT_SECONDS = 600  # 10 minutes
+IDLE_EVICT_CHECK_SECONDS = 60  # how often the evictor wakes up
 
 
 def _resolve_device(device_cfg: str = "auto") -> str:
@@ -136,11 +151,75 @@ def _get_model(key: str | None = None) -> Any:
     entry = _registry.get(key)
     if entry is None:
         raise ValueError(f"Unknown model '{key}'. Available: {list(_registry.keys())}")
-    if entry.model is None and entry.status != "error":
-        _load_model(entry)
+    with _registry_lock:
+        if entry.model is None and entry.status != "error":
+            _load_model(entry)
+        if entry.model is None:
+            raise RuntimeError(f"Model '{key}' failed to load: {entry.error}")
+        entry.last_used_at = time.monotonic()
+        return entry.model
+
+
+def _evict_model(entry: "ModelEntry") -> bool:
+    """Drop a loaded model from memory. Returns True if anything was freed.
+
+    Safe to call while other code may be about to read ``entry.model``
+    because the caller holds ``_registry_lock``.
+    """
     if entry.model is None:
-        raise RuntimeError(f"Model '{key}' failed to load: {entry.error}")
-    return entry.model
+        return False
+    print(
+        f"Evicting idle model '{entry.key}' "
+        f"(idle for {time.monotonic() - entry.last_used_at:.0f}s)",
+        file=sys.stderr,
+    )
+    entry.model = None
+    entry.status = "pending"
+    entry.load_time_s = None
+    # Torch holds its own allocator caches and Python's GC is often
+    # too lazy to return memory to the OS after a big object is
+    # released. Explicit collect + empty_cache maximize the chance
+    # that RSS actually drops.
+    import gc
+    gc.collect()
+    try:
+        import torch
+        if hasattr(torch, "cuda") and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+    return True
+
+
+def _idle_evictor_loop() -> None:
+    """Background thread: periodically evict idle non-eager models.
+
+    Eager models (typically ``leaf-mt``) are never evicted — they
+    serve hot paths (wb_search on every call) and the reload
+    latency on every request would hurt more than the RSS cost.
+    Non-eager models (typically ``leaf-ir`` used by the 5-minute
+    ir-index-rebuild cron) are released after ``IDLE_EVICT_SECONDS``
+    of non-use.
+    """
+    while True:
+        try:
+            time.sleep(IDLE_EVICT_CHECK_SECONDS)
+            now = time.monotonic()
+            with _registry_lock:
+                for entry in list(_registry.values()):
+                    if entry.eager:
+                        continue
+                    if entry.model is None:
+                        continue
+                    if entry.last_used_at == 0.0:
+                        # Loaded but never used? Mark it now and wait
+                        # another cycle.
+                        entry.last_used_at = now
+                        continue
+                    if now - entry.last_used_at >= IDLE_EVICT_SECONDS:
+                        _evict_model(entry)
+        except Exception as exc:
+            print(f"idle_evictor error (non-fatal): {exc}", file=sys.stderr)
 
 
 app = Flask(__name__)
@@ -596,6 +675,13 @@ def main():
             traceback.print_exc()
 
     threading.Thread(target=_warmup, name="embedding-warmup", daemon=True).start()
+    # Idle-evict non-eager models so a one-off bulk-encode doesn't
+    # permanently pin their RAM footprint.
+    threading.Thread(
+        target=_idle_evictor_loop,
+        name="embedding-idle-evictor",
+        daemon=True,
+    ).start()
 
     print(f"Embedding service running on http://127.0.0.1:{port}", file=sys.stderr)
     app.run(host="127.0.0.1", port=port, debug=False)

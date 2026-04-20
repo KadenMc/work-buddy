@@ -1,0 +1,116 @@
+{
+  "inline": {
+    "kind": "system",
+    "name": "Inline Commands",
+    "description": "Framework for triggering agent actions from inside Obsidian via right-click menu or #wb/cmd/* tags",
+    "aliases": [
+      "inline commands",
+      "obsidian commands",
+      "tag commands",
+      "right-click agent"
+    ],
+    "tags": [
+      "inline",
+      "obsidian",
+      "commands",
+      "activation"
+    ],
+    "children": [
+      "inline/overview",
+      "inline/directions",
+      "inline/consume-modes",
+      "inline/persistence"
+    ],
+    "content": {
+      "summary": "Two activation surfaces — right-click editor menu and #wb/cmd/* tags — funnel into one dispatcher. Handlers register via @inline_command decorator declaring surfaces, consume mode, persistence, and context scope."
+    }
+  },
+  "inline/overview": {
+    "kind": "system",
+    "name": "Inline Commands Overview",
+    "description": "Architecture of the inline command framework — surfaces, dispatcher, handler registration",
+    "aliases": [
+      "inline architecture",
+      "inline framework"
+    ],
+    "tags": [
+      "inline",
+      "architecture"
+    ],
+    "parents": [
+      "inline"
+    ],
+    "content": {
+      "summary": "Two surfaces: menu (ephemeral, right-click) and tag (#wb/cmd/*, can be persistent). The primary implemented command is `send-to-agent` — selection + optional hint → Sonnet verdict (via LLMRunner with Opus escalation) → Review pool. Both surfaces route through work_buddy.inline.dispatcher.dispatch. Handlers declare consume_mode and persistence.",
+      "full": "# Inline Commands\n\nLet the user trigger agent actions from inside Obsidian — either by right-clicking on a selection (ephemeral, one-shot) or by typing a `#wb/cmd/*` tag in a note (can be one-shot OR persistent).\n\n## Activation surfaces\n\n| Surface | Trigger | Persistence | Use cases |\n|---|---|---|---|\n| `menu` | Right-click in editor | None — one-shot | Send selection to agent, ask about this, summarize |\n| `tag` | `#wb/cmd/<name>` in a note, detected via `metadataCache.changed` | Per-handler (one-shot OR persistent watcher) | In-document triggers, recurring watchers |\n\n## Implemented commands\n\n- **`send-to-agent`** (primary) — the user's selection + optional hint is wrapped as a `TriageItem(source=\"inline\")`, context-enriched with `build_triage_context` (active tasks, contracts, projects, recent commits via the `architecture/context-pipeline`), and sent to Sonnet (via `architecture/llm-runner`) with a constrained verdict schema. The verdict lands in the Review pool; the user approves / rejects / edits in the dashboard's Review tab. Sonnet escalates to Opus on timeout / context-exceeded / empty-content / rate-limited.\n\nThe old `task/new` stub (pre-phase-2) is removed — `send-to-agent` absorbs the use case and adds real LLM-grounded verdict quality.\n\n## Pipeline\n\n1. Plugin detects activation (`editor-menu` event or `metadataCache.changed`).\n2. Plugin POSTs to `http://127.0.0.1:<dashboard_port>/inline/invoke` with `{command, surface, payload}` (the modal may have captured an optional hint string).\n3. Dashboard forwards to `work_buddy.inline.dispatcher.dispatch_sync`.\n4. Dispatcher looks up the command in the registry, builds an `InlineContext`, and either:\n   - Runs the handler and applies the declared consume mode (one-shot, strip/annotate/replace/leave), OR\n   - Registers a `PersistentWatcher` row in `inline.db` for a `persistent=True` handler.\n5. `send-to-agent` specifically kicks off `inline_triage_scan` in a background thread so the plugin POST returns immediately with `{\"status\": \"queued\"}`. The verdict populates the Review pool asynchronously (~5–15 s on Sonnet).\n6. Sidecar job `inline-sync.md` reconciles vault ↔ watcher store every 10 min.\n\n## Packages\n\n- `work_buddy/inline/` — Python framework (models, registry, dispatcher, consume, store, sync, handlers)\n- `work_buddy/inline/handlers/send_to_agent.py` — the currently-implemented primary command\n- `work_buddy/triage/capabilities/inline_triage_scan.py` — the producer path that Sonnet-classifies the selection and writes to the Review pool\n- `obsidian-work-buddy/src/inlineMenu.ts` + `tagWatcher.ts` — plugin-side detection\n- `sidecar_jobs/inline-sync.md` — reconciliation cron\n\n## Capabilities\n\n- `inline_invoke` — execute a command (called by dashboard endpoint)\n- `inline_list_commands` — list registered commands (optional surface filter)\n- `inline_menu_manifest` — menu-shaped list for plugin consumption\n- `inline_tag_removed` — cleanup when a persistent tag is deleted\n- `inline_list_watchers`, `inline_cancel_watcher` — watcher management\n- `inline_sync` — reconcile vault ↔ watcher store\n- `inline_triage_scan` — run the Sonnet verdict for one selection; called by `send_to_agent` in a background thread\n\n## Related\n\n- `architecture/llm-runner` — the tier-driven LLM layer `send-to-agent` uses for verdict generation.\n- `architecture/context-pipeline` — the context-enrichment layer that feeds Sonnet the user's active-work packet.\n- Review view on the dashboard (`/panel-review` or similar) — where verdicts land for approval."
+    }
+  },
+  "inline/directions": {
+    "kind": "directions",
+    "name": "Inline Commands Directions",
+    "description": "How to add a new inline command — decorator, context scope, consume mode, persistence",
+    "aliases": [
+      "add inline command",
+      "register inline",
+      "inline handler"
+    ],
+    "tags": [
+      "inline",
+      "directions",
+      "handler"
+    ],
+    "parents": [
+      "inline"
+    ],
+    "trigger": "user wants to add a new right-click menu item or #wb/cmd/* tag command",
+    "content": {
+      "summary": "Add a handler under work_buddy/inline/handlers/, decorate with @inline_command declaring name, surfaces, consume_mode, persistent, context_scope. Receives an InlineContext; returns a result dict.",
+      "full": "# Adding an inline command\n\n## 1. Write the handler\n\nDrop a new file in `work_buddy/inline/handlers/`:\n\n```python\nfrom work_buddy.inline.registry import inline_command\nfrom work_buddy.inline.models import InlineContext\n\n@inline_command(\n    name=\"mything/new\",\n    surfaces=[\"menu\", \"tag\"],\n    consume_mode=\"annotate\",    # strip | annotate | replace | leave\n    persistent=False,            # True → registers a PersistentWatcher instead of running\n    menu_label=\"Do my thing\",    # shown in right-click menu (prefixed with 'Work Buddy: ')\n    interactive=True,            # route through thread chat\n    context_scope=\"paragraph\",   # line | paragraph | section | file\n    description=\"One-sentence description for the menu.\",\n)\nasync def mything_new(ctx: InlineContext) -> dict:\n    # ctx.surface, ctx.file_path, ctx.selection, ctx.line_text, ctx.paragraph, ...\n    text = ctx.text_for_llm()\n    # ... do the work ...\n    return {\"ok\": True, \"thread_id\": ...}\n```\n\nImport the module in `work_buddy/inline/handlers/__init__.py` so registry auto-load picks it up.\n\n## 2. Choose consume mode\n\n| Mode | Effect | Use when |\n|---|---|---|\n| `strip` | Remove the tag from the note | Tag was a single-use trigger and you don't want an audit trail |\n| `annotate` | Leave tag; append a `> [!work-buddy]` callout below | Default for most one-shot commands |\n| `replace` | Rewrite `#wb/cmd/foo` → `#wb/cmd/foo/done` | Breadcrumb without callout clutter |\n| `leave` | No-op | Persistent watchers (the tag IS the watcher) |\n\n## 3. Persistence\n\nSet `persistent=True` to register a `PersistentWatcher` on first tag detection instead of running immediately. The `inline-sync` sidecar job wakes watchers on their schedule and cancels them when the tag is removed from the vault.\n\n## 4. Context scope\n\n| Scope | Text passed in |\n|---|---|\n| `line` | Just the cursor/tag line |\n| `paragraph` | Blank-line-separated block |\n| `section` | Enclosing markdown heading section |\n| `file` | Full note |\n\nAll scopes are pre-populated in `InlineContext`; the handler can use whichever fits.\n\n## 5. Tag syntax\n\nSingle namespace: `#wb/cmd/<handler-name>`. Example: `#wb/cmd/task/new`. The handler's declared `persistent` field decides whether the tag is consumed or registered.\n\n## Reuse\n\n- Thread chat for interactive confirmation: `thread_create`, `thread_ask`, `thread_poll`\n- Tag reads: `work_buddy.obsidian.tags.get_file_tags(path)` (returns positions)\n- Note I/O: `work_buddy.obsidian.bridge.read_file` / `write_file`\n- Consent: `work_buddy.consent` for destructive mutations"
+    }
+  },
+  "inline/consume-modes": {
+    "kind": "system",
+    "name": "Inline Consume Modes",
+    "description": "Post-execution note mutation behaviors — strip, annotate, replace, leave",
+    "aliases": [
+      "consume modes",
+      "inline mutation",
+      "post-exec"
+    ],
+    "tags": [
+      "inline",
+      "consume",
+      "mutation"
+    ],
+    "parents": [
+      "inline"
+    ],
+    "content": {
+      "summary": "Four modes applied after a handler returns: strip removes the tag; annotate leaves it and appends a callout; replace rewrites to `/done`; leave is a no-op. User preference can override the handler's declared default.",
+      "full": "# Consume modes\n\nImplemented in `work_buddy/inline/consume.py`. Invoked by the dispatcher after the handler returns (for one-shot commands) via `apply(mode, ctx, result)`.\n\n| Mode | Before | After |\n|---|---|---|\n| `strip` | `- [ ] task #wb/cmd/task/new` | `- [ ] task` |\n| `annotate` | `- [ ] task #wb/cmd/task/new` | unchanged, plus below: `> [!work-buddy] Processed at <ts>\\n> Result: <summary>` |\n| `replace` | `#wb/cmd/task/new` | `#wb/cmd/task/new/done` |\n| `leave` | (unchanged) | (unchanged) |\n\n## Override precedence\n\n1. User preference (`features.inline.consume_mode_override` if set)\n2. Handler's declared `consume_mode`\n3. Default: `annotate`\n\n## Safety\n\nNote mutations go through `work_buddy.obsidian.bridge.write_file` to preserve Obsidian's dirty-buffer handling — never direct filesystem writes. Destructive modes (`strip`, `replace`) should gate on `work_buddy.consent` for high-stakes operations."
+    }
+  },
+  "inline/persistence": {
+    "kind": "system",
+    "name": "Inline Persistent Watchers",
+    "description": "How #wb/cmd/* tags declared persistent install a PersistentWatcher that survives Obsidian restarts",
+    "aliases": [
+      "inline watcher",
+      "persistent tag",
+      "recurring tag"
+    ],
+    "tags": [
+      "inline",
+      "persistence",
+      "watcher",
+      "sync"
+    ],
+    "parents": [
+      "inline"
+    ],
+    "content": {
+      "summary": "Handlers with persistent=True register a PersistentWatcher row on first detection instead of running. The inline-sync sidecar job reconciles vault tags ↔ watcher store every 10 min, firing due watchers and cancelling orphans.",
+      "full": "# Persistent watchers\n\nWhen a handler declares `persistent=True`, a detected `#wb/cmd/<name>` tag does NOT invoke the handler immediately. Instead, the dispatcher registers a `PersistentWatcher` row in `data/agents/inline.db`.\n\n## Reconciliation (`sidecar_jobs/inline-sync.md`)\n\nRuns every 10 min via the sidecar, calls `inline_sync`:\n\n1. For each persistent command, scan the vault for files containing its tag via `work_buddy.obsidian.tags.search_by_tag(..., mode=\"prefix\")`.\n2. For each vault-present tag not in the store → create a watcher (heals drift if live detection missed one).\n3. For each stored watcher whose tag is no longer in its file → delete the watcher.\n4. For each enabled watcher that is due per its schedule → enqueue for execution.\n\nThis is the same vault-is-canonical discipline used by `sidecar_jobs/task-sync.md`.\n\n## Live cancellation\n\nThe Obsidian plugin POSTs to `/inline/tag-removed` when `metadataCache.changed` shows a previously-tracked tag is gone, so watchers are cancelled immediately (the sync job catches anything the live path misses).\n\n## Schema (`inline_watchers` table)\n\n- `watcher_id` (pk)\n- `command_name`\n- `file_path`, `tag`, `tag_line`\n- `params` (JSON)\n- `schedule` (cron str or null)\n- `created_at`, `last_run_at`\n- `enabled`"
+    }
+  }
+}
