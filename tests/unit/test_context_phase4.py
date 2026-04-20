@@ -249,11 +249,19 @@ class TestEvict:
 
 
 class TestRegistry:
+    # Snapshot + restore rather than just clear — the real wave-1 sources
+    # register at import time (git/tasks/projects/chrome), and dropping
+    # them permanently breaks tests further down the suite that depend
+    # on their registration.
+
     def setup_method(self):
+        self._snapshot = registry.all_sources()
         registry.clear()
 
     def teardown_method(self):
         registry.clear()
+        for name, src in self._snapshot.items():
+            registry.register(src)
 
     def test_register_and_get(self):
         src = _FakeSource()

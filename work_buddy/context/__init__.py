@@ -27,6 +27,8 @@ of the refactor — see plan
 
 from __future__ import annotations
 
+from work_buddy.context.collector import ContextCollector
+from work_buddy.context.curator import ContextCurator
 from work_buddy.context.types import (
     BaseContextSource,
     Context,
@@ -36,9 +38,17 @@ from work_buddy.context.types import (
     ContextSource,
 )
 
+# Side-effect import: registers wave-1 sources (git, tasks, projects,
+# chrome) with :mod:`work_buddy.context.registry`. Safe to import
+# multiple times — registration is idempotent. Callers that need the
+# sources alive in their process just need ``import work_buddy.context``.
+from work_buddy.context import sources as _sources  # noqa: F401
+
 __all__ = [
     "BaseContextSource",
     "Context",
+    "ContextCollector",
+    "ContextCurator",
     "ContextDepth",
     "ContextRequest",
     "ContextSection",

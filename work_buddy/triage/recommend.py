@@ -131,9 +131,11 @@ def build_triage_context(
 ) -> dict[str, Any]:
     """Auto-extract context for a triage LLM call.
 
-    Gathers active tasks, contracts, active projects, and recent git
-    commits — compact format, just enough for the LLM to match
-    candidates to existing work.
+    Thin wrapper around :mod:`work_buddy.context` since the phase-5
+    refactor. Gathers active tasks, contracts, active projects, and
+    recent git commits from the unified :class:`ContextCollector`
+    (cache-aware) and reshapes into the pre-refactor dict for
+    backward compatibility with existing callers.
 
     Args:
         task_states: Which task states to include. Default
@@ -145,84 +147,83 @@ def build_triage_context(
         max_tasks: Optional cap on total tasks after state
             filtering. Earlier states (by list order) get priority.
             ``None`` = no cap.
+
+    Backward-compat return shape (unchanged for callers):
+        ``{active_tasks, active_contracts, active_projects, recent_commits}``
     """
+    # Keep the legacy call path working by delegating to the
+    # ContextCollector with a request shaped to match the old defaults.
+    from work_buddy.context import (
+        ContextCollector,
+        ContextRequest,
+    )
+
     states = task_states or ["inbox", "mit", "focused"]
-    context: dict[str, Any] = {}
-
-    # Active tasks
+    req = ContextRequest(
+        sources=["tasks", "projects", "git"],
+        window_days=1,  # matches the old "--since=24.hours.ago" behavior
+        custom={
+            "tasks": {"states": states},
+        },
+    )
     try:
-        from work_buddy.obsidian.tasks import store as task_store
-        from work_buddy.triage.task_match import _read_task_texts
+        ctx = ContextCollector().collect(req)
+    except Exception as exc:
+        logger.debug("build_triage_context: collector failed: %s", exc)
+        return {
+            "active_tasks": [],
+            "active_contracts": [],
+            "active_projects": [],
+            "recent_commits": [],
+        }
 
-        task_texts = _read_task_texts()
-        active_tasks = []
-        for state in states:
-            for task in task_store.query(state=state):
-                tid = task["task_id"]
-                text = task_texts.get(tid, "")
-                if text:
-                    active_tasks.append({
-                        "task_id": tid,
-                        "state": state,
-                        "text": text,
-                        "contract": task.get("contract", ""),
-                    })
+    active_tasks = []
+    tasks_section = ctx.section("tasks")
+    if tasks_section:
+        active_tasks = [dict(t) for t in (tasks_section.items or [])]
         if max_tasks is not None and len(active_tasks) > max_tasks:
             active_tasks = active_tasks[:max_tasks]
-        context["active_tasks"] = active_tasks
-    except Exception as e:
-        logger.debug("Could not load tasks for triage context: %s", e)
-        context["active_tasks"] = []
 
-    # Active contracts
-    try:
-        from work_buddy.contracts import active_contracts
-        contracts = active_contracts()
-        context["active_contracts"] = [
-            {
-                "title": c.get("title", ""),
-                "status": c.get("status", ""),
-                "deadline": c.get("deadline", ""),
-                "claim": c.get("claim", ""),
-            }
-            for c in contracts
-        ]
-    except Exception as e:
-        logger.debug("Could not load contracts for triage context: %s", e)
-        context["active_contracts"] = []
+    active_projects: list[dict[str, Any]] = []
+    active_contracts: list[dict[str, Any]] = []
+    projects_section = ctx.section("projects")
+    if projects_section:
+        for item in projects_section.items or []:
+            kind = item.get("type")
+            if kind == "project":
+                active_projects.append({
+                    "slug": item.get("slug", ""),
+                    "name": item.get("name", item.get("slug", "")),
+                    "status": item.get("status", ""),
+                    "description": item.get("description", "") or "",
+                })
+            elif kind == "contract":
+                active_contracts.append({
+                    "title": item.get("title", ""),
+                    "status": item.get("status", ""),
+                    "deadline": item.get("deadline", ""),
+                    "claim": item.get("claim", ""),
+                })
 
-    # Active projects
-    try:
-        from work_buddy.projects.store import list_projects
-        projects = list_projects(status="active")
-        context["active_projects"] = [
-            {
-                "slug": p["slug"],
-                "name": p["name"],
-                "status": p["status"],
-                "description": p.get("description") or "",
-            }
-            for p in projects
-        ]
-    except Exception as e:
-        logger.debug("Could not load projects for triage context: %s", e)
-        context["active_projects"] = []
+    recent_commits: list[str] = []
+    git_section = ctx.section("git")
+    if git_section:
+        # Legacy format was a list of "<short> <subject>" strings — one
+        # per line of `git log --oneline`. Rebuild that shape from the
+        # structured items so prompt renderers that don't use the new
+        # curator still work unchanged.
+        for commit in git_section.items or []:
+            short = commit.get("short") or ""
+            subject = commit.get("subject") or ""
+            if short or subject:
+                recent_commits.append(f"{short} {subject}".strip())
 
-    # Recent git commits
-    try:
-        result = subprocess.run(
-            ["git", "log", "--oneline", "-20", "--since=24.hours.ago"],
-            capture_output=True, text=True, timeout=5,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            context["recent_commits"] = result.stdout.strip().split("\n")
-        else:
-            context["recent_commits"] = []
-    except Exception as e:
-        logger.debug("Could not load git commits for triage context: %s", e)
-        context["recent_commits"] = []
-
-    return context
+    return {
+        "active_tasks": active_tasks,
+        "active_contracts": active_contracts,
+        "active_projects": active_projects,
+        "recent_commits": recent_commits,
+    }
 
 
 def render_triage_context_block(context: dict[str, Any]) -> str:
