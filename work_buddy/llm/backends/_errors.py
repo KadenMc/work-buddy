@@ -29,8 +29,19 @@ class LocalInferenceError(Exception):
             * ``"model_not_loaded"`` — requested model not on any linked device
             * ``"model_unsupported"`` — server rejected the model for this endpoint
             * ``"bad_request"`` — 4xx with an otherwise unclassified body
-            * ``"server_error"`` — 5xx
-            * ``"timeout"`` — read or connect timeout
+            * ``"server_error"`` — 5xx with no matched sub-pattern
+            * ``"timeout"`` — read or connect timeout (our side gave up)
+            * ``"mcp_gateway_timeout"`` — LM Studio's MCP integration call to the
+              work-buddy gateway exceeded LM Studio's deadline (JSON-RPC -32001).
+              Means the gateway took too long to reply to a tool dispatch.
+            * ``"mcp_fetch_failed"`` — LM Studio's HTTP fetch to the work-buddy
+              gateway failed at the transport layer (TCP reset, refused, etc).
+            * ``"lm_link_dropped"`` — LM Studio lost its LM Link connection to
+              the compute device mid-call.
+            * ``"context_exceeded"`` — prompt (+ tool schema + reasoning tokens)
+              exceeded the model's configured context window. The effective
+              cap is the "Context Length" slider on the loaded model in
+              LM Studio, NOT the ``context_length`` in ``config.local.yaml``.
             * ``"malformed_response"`` — 2xx but body didn't parse
             * ``"unknown"`` — nothing else fit
         hint: Concrete next-step for the user to unblock themselves.
@@ -184,6 +195,117 @@ def _interpret_status_error(
             raw=body,
         )
 
+    # --- Context window exceeded -------------------------------------------
+    # LM Studio returns HTTP 500 with a body like:
+    #   {"error": "Context size has been exceeded."}
+    # or variants ("Prompt exceeds context", "Context length exceeded",
+    # "Input is too long for this model's context"). This is distinct from
+    # the server error family below — it's actionable by the user (resize
+    # context, shorten prompt, narrow tool preset) rather than a server bug.
+    if status >= 400 and (
+        "context size" in msg_lower
+        or ("context" in msg_lower and ("exceed" in msg_lower or "too long" in msg_lower))
+        or "prompt is too long" in msg_lower
+        or "input is too long" in msg_lower
+    ):
+        return LocalInferenceError(
+            (
+                f"{server_label} rejected the request because the prompt "
+                f"(plus tool schema and reasoning tokens) exceeds the "
+                f"loaded model's context window."
+                + (f" Server message: {message}" if message else "")
+            ),
+            kind="context_exceeded",
+            hint=(
+                "Three levers, in order of least-to-most disruptive: "
+                "(1) increase the 'Context Length' slider on the loaded "
+                "model in LM Studio and reload it — the effective cap is "
+                "LM Studio's setting, not config.local.yaml; "
+                "(2) narrow the tool preset so the wb_run schema carries "
+                "fewer capability params (see work_buddy/llm/tool_presets.py); "
+                "(3) shorten the system/user prompt, including pre-fetched "
+                "context blocks. For reasoning models, also consider "
+                "raising max_tokens — the model may be emitting a long "
+                "hidden thinking block before any visible output."
+            ),
+            raw=body,
+        )
+
+    # --- MCP integrations-path failures (5xx with telling body) ------------
+    # When a local model uses LM Studio's `integrations` tool-loop to hit
+    # the work-buddy MCP gateway, failures there surface as an HTTP 500
+    # from /api/v1/chat with a very specific body message. The raw text
+    # ("MCP error -32001") is inscrutable unless you know that -32001 is
+    # JSON-RPC's "server error / request timeout" code set by the client.
+    # Surface the real meaning inline so callers don't have to pattern-match.
+    if status >= 500:
+        if "-32001" in message or "request timed out" in msg_lower:
+            return LocalInferenceError(
+                (
+                    "LM Studio's MCP integration call to the work-buddy "
+                    "gateway timed out waiting for a response (JSON-RPC "
+                    "-32001). The gateway at localhost:5126/mcp did not "
+                    "reply before LM Studio's deadline — usually means a "
+                    "specific tool dispatch is slow or the gateway's event "
+                    "loop is blocked."
+                ),
+                kind="mcp_gateway_timeout",
+                hint=(
+                    "First: `curl -s http://localhost:5126/health` — if "
+                    "that's slow (>100ms), the gateway itself is blocked. "
+                    "Check sidecar logs for 'Registry build slow' warnings. "
+                    "If the gateway is fast but this still times out, the "
+                    "specific capability the model tried to call is slow "
+                    "(or hanging on a sync import — see "
+                    "architecture/mcp-import-discipline). Reproduce with "
+                    "`persist_tool_results=True` on llm_with_tools to see "
+                    "which tool dispatch stalled."
+                ),
+                raw=body,
+            )
+
+        if "fetch failed" in msg_lower:
+            return LocalInferenceError(
+                (
+                    "LM Studio's HTTP fetch to the work-buddy MCP gateway "
+                    "failed at the transport layer (not a JSON-RPC timeout "
+                    "— the TCP connection itself was refused or reset)."
+                ),
+                kind="mcp_fetch_failed",
+                hint=(
+                    "Check (1) the gateway is actually listening: "
+                    "`curl -sf http://localhost:5126/health`; (2) no "
+                    "firewall/AV is interfering with localhost:5126; "
+                    "(3) if /health responds, the failure was transient — "
+                    "a simple retry usually succeeds."
+                ),
+                raw=body,
+            )
+
+        if (
+            "lm link" in msg_lower
+            or "peer_keepalive_timeout" in msg_lower
+            or "peer keepalive timeout" in msg_lower
+        ):
+            return LocalInferenceError(
+                (
+                    "LM Studio's LM Link connection to the compute device "
+                    "dropped mid-call (peer keepalive timeout). Inference "
+                    "is routed through LM Link, so the main machine can "
+                    "serve a model loaded on a remote laptop — if that "
+                    "link drops, every call fails until it's re-established."
+                ),
+                kind="lm_link_dropped",
+                hint=(
+                    "On the compute device: confirm LM Studio is running, "
+                    "the model is loaded, and Tailscale (or whatever "
+                    "transport LM Link uses) is connected. On the main "
+                    "machine: restart LM Studio's server, then verify "
+                    "`curl <base_url>/v1/models` lists the remote model."
+                ),
+                raw=body,
+            )
+
     # --- Generic classification by status code -----------------------------
     if 400 <= status < 500:
         return LocalInferenceError(
@@ -234,7 +356,15 @@ def _extract_error_dict(body: Any) -> dict[str, Any]:
         err = body.get("error")
         if isinstance(err, dict):
             return err
+        # Some LM Studio versions return ``{"error": "<string>"}`` where
+        # the raw string IS the message. Lift it into a message dict so
+        # downstream matchers (e.g. context_exceeded) can pattern-match.
+        if isinstance(err, str) and err:
+            return {"message": err}
         # Sometimes the top-level is the error itself.
         if "message" in body or "code" in body:
             return body  # type: ignore[return-value]
+    # Plain-string body (rare, but seen on some proxies).
+    if isinstance(body, str) and body:
+        return {"message": body}
     return {}

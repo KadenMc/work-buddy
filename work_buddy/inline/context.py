@@ -87,6 +87,7 @@ def build_context(surface: str, payload: dict, scope: str) -> InlineContext:
             cursor_line=payload.get("cursor_line"),
             cursor_ch=payload.get("cursor_ch"),
             full_text=payload.get("full_text", "") or "",
+            hint=payload.get("hint", "") or "",
         )
     elif surface == "tag":
         tag_name = payload.get("tag", "")
@@ -97,6 +98,7 @@ def build_context(surface: str, payload: dict, scope: str) -> InlineContext:
             cursor_line=tag_line,
             full_text=payload.get("full_text", "") or "",
             tag={"name": tag_name, "line": tag_line} if tag_name else None,
+            hint=payload.get("hint", "") or "",
         )
     else:
         raise ValueError(f"Unknown inline surface: {surface!r}")

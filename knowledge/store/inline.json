@@ -16,7 +16,7 @@
     }
   },
   "inline/overview": {
-    "kind": "reference",
+    "kind": "system",
     "name": "Inline Commands Overview",
     "description": "Architecture of the inline command framework — surfaces, dispatcher, handler registration",
     "aliases": ["inline architecture", "inline framework"],
@@ -41,7 +41,7 @@
     }
   },
   "inline/consume-modes": {
-    "kind": "reference",
+    "kind": "system",
     "name": "Inline Consume Modes",
     "description": "Post-execution note mutation behaviors — strip, annotate, replace, leave",
     "aliases": ["consume modes", "inline mutation", "post-exec"],
@@ -53,7 +53,7 @@
     }
   },
   "inline/persistence": {
-    "kind": "reference",
+    "kind": "system",
     "name": "Inline Persistent Watchers",
     "description": "How #wb/cmd/* tags declared persistent install a PersistentWatcher that survives Obsidian restarts",
     "aliases": ["inline watcher", "persistent tag", "recurring tag"],

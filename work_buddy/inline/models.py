@@ -48,6 +48,7 @@ class InlineContext:
     full_text: str = ""
     tag: dict[str, Any] | None = None
     thread_id: str | None = None
+    hint: str = ""
 
     def text_for_llm(self) -> str:
         """Return the richest non-empty text candidate for LLM input."""
@@ -69,6 +70,7 @@ class InlineContext:
             "full_text": self.full_text,
             "tag": self.tag,
             "thread_id": self.thread_id,
+            "hint": self.hint,
         }
 
 
