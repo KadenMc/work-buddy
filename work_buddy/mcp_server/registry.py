@@ -2720,10 +2720,12 @@ def _journal_capabilities() -> list[Capability]:
             description=(
                 "Run one triage pass over a single user-sent Obsidian "
                 "selection (from the 'Send to agent' right-click command). "
-                "Builds one TriageItem with source='inline', enriches it "
-                "with hybrid-IR context, and asks the local agent to "
-                "submit a verdict into the pending-review pool. "
-                "User-initiated, so force=True by default."
+                "Builds one TriageItem with source='inline', collects the "
+                "user-context packet (active tasks / contracts / projects / "
+                "recent commits), and asks Sonnet for a constrained-JSON "
+                "verdict — parsed and written directly into the Review pool. "
+                "Escalates to Opus on timeout / context-exceeded / empty "
+                "content / rate-limited. User-initiated, so force=True by default."
             ),
             category="triage",
             search_aliases=[
@@ -2739,9 +2741,9 @@ def _journal_capabilities() -> list[Capability]:
                 "cursor_line": {"type": "int", "description": "0-indexed cursor line.", "required": False},
                 "hint": {"type": "str", "description": "Optional user-typed intent hint.", "required": False},
                 "force": {"type": "bool", "description": "Bypass idempotence gate (default True for user-initiated).", "required": False},
-                "profile": {"type": "str", "description": "Override the configured triage.agent_profile.", "required": False},
-                "enrich": {"type": "bool", "description": "Pre-fetch hybrid-IR context (default True).", "required": False},
-                "dry_run": {"type": "bool", "description": "Collect + enrich, skip the agent loop.", "required": False},
+                "tier": {"type": "str", "description": "Override the starting ModelTier (default frontier_balanced).", "required": False},
+                "enrich": {"type": "bool", "description": "Include the user-context packet (default True).", "required": False},
+                "dry_run": {"type": "bool", "description": "Collect the item, skip the LLM call.", "required": False},
             },
             callable=(lambda **kw: __import__(
                 "work_buddy.triage.capabilities.inline_triage_scan",
