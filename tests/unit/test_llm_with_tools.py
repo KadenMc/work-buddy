@@ -337,10 +337,12 @@ def test_llm_with_tools_posts_to_native_endpoint_with_integration(
 
     body = captured["body"]
     assert body["model"] == "qwen/qwen3-4b"
-    # LM Studio's /api/v1/chat has no separate system field; we
-    # prepend system text into ``input`` along with the user turn.
-    assert "what's happening today" in body["input"]
-    assert "You are a helper." in body["input"]    # caller's system text
+    # LM Studio's /api/v1/chat exposes a dedicated ``system_prompt``
+    # field. Using it (instead of concatenating into ``input``) is
+    # required for integrations/tool-use composition with default-tier
+    # models — see lmstudio_native.py for the full rationale.
+    assert body["input"] == "what's happening today"       # user turn only
+    assert body["system_prompt"] == "You are a helper."    # caller's system text
     # ``instructions`` is not a supported top-level field on this
     # endpoint — verify we're not sending it
     assert "instructions" not in body
