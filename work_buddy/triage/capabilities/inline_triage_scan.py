@@ -23,7 +23,8 @@ from typing import Any
 from work_buddy.llm import ErrorKind, LLMRunner, ModelTier
 from work_buddy.logging_config import get_logger
 from work_buddy.triage.background import BackgroundTriageProducer
-from work_buddy.triage.items import TRIAGE_ACTIONS, TriageItem
+from work_buddy.triage.items import TriageItem
+from work_buddy.triage.verdict_schema import VERDICT_SCHEMA, verdict_to_submit_kwargs
 
 logger = get_logger(__name__)
 
@@ -58,46 +59,8 @@ what to do with it — used as the card title in the Review view.
 """
 
 
-_VERDICT_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "recommended_action": {
-            "type": "string",
-            "enum": list(TRIAGE_ACTIONS),
-            "description": "One of: create_task, record_into_task, leave, close, group.",
-        },
-        "rationale": {
-            "type": "string",
-            "description": "One to three sentences explaining the decision.",
-        },
-        "group_intent": {
-            "type": "string",
-            "description": (
-                "Short noun phrase (≤8 words) naming the underlying intent. "
-                "Shown as the card title in the Review view."
-            ),
-        },
-        "confidence": {
-            "type": "number",
-            "description": "0.0–1.0 self-assessed confidence.",
-        },
-        "suggested_task_text": {
-            "type": "string",
-            "description": "Required when recommended_action == 'create_task'.",
-        },
-        "target_task_id": {
-            "type": "string",
-            "description": "Required when recommended_action == 'record_into_task'.",
-        },
-        "related_item_ids": {
-            "type": "array",
-            "items": {"type": "string"},
-            "description": "Required when recommended_action == 'group'.",
-        },
-    },
-    "required": ["recommended_action", "rationale", "group_intent"],
-    "additionalProperties": False,
-}
+# The verdict schema is shared with journal_triage_scan — see
+# :mod:`work_buddy.triage.verdict_schema`.
 
 
 # ---------------------------------------------------------------------------
@@ -225,7 +188,7 @@ def _invoke_agent(
         tier=tier,
         system=_AGENT_SYSTEM_PROMPT,
         user=user_prompt,
-        output_schema=_VERDICT_SCHEMA,
+        output_schema=VERDICT_SCHEMA,
         escalate_on=[
             ErrorKind.TIMEOUT,
             ErrorKind.CONTEXT_EXCEEDED,
@@ -261,7 +224,7 @@ def _invoke_agent(
 
     # Submit directly — no tool-call dance. triage_submit whitelists
     # fields and validates the run_id.
-    submit_kwargs = _verdict_to_submit_kwargs(verdict)
+    submit_kwargs = verdict_to_submit_kwargs(verdict)
     submit_result = triage_submit(
         run_id=run_id,
         item_id=item.id,
@@ -284,27 +247,6 @@ def _invoke_agent(
         "verdict": verdict,
         "tier_used": resp.tier_used,
     }
-
-
-def _verdict_to_submit_kwargs(verdict: dict[str, Any]) -> dict[str, Any]:
-    """Filter the parsed verdict down to ``triage_submit``'s named kwargs.
-
-    The schema allows a few optional fields that only make sense for
-    certain actions (``suggested_task_text`` for create_task,
-    ``target_task_id`` for record_into_task, ``related_item_ids`` for
-    group). ``triage_submit`` silently ignores unrecognized fields, but
-    filtering here keeps the pool entry tidy.
-    """
-    allowed = {
-        "recommended_action",
-        "rationale",
-        "group_intent",
-        "confidence",
-        "suggested_task_text",
-        "target_task_id",
-        "related_item_ids",
-    }
-    return {k: v for k, v in verdict.items() if k in allowed and v is not None}
 
 
 def _render_item_prompt(

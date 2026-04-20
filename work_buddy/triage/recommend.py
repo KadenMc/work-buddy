@@ -79,7 +79,7 @@ def group_intents(
     if not clusters:
         return {"intent_groups": [], "uncategorized_tabs": [], "overall_narrative": "No items to group."}
 
-    from work_buddy.llm.runner import ModelTier, run_task
+    from work_buddy.llm import LLMRunner, ModelTier
 
     if context is None:
         context = build_triage_context()
@@ -88,38 +88,38 @@ def group_intents(
     user_prompt = _build_user_prompt(clusters, summaries or {}, context)
     schema = _build_output_schema()
 
-    result = run_task(
-        task_id=f"triage_group_{lens}_{data_type}",
+    resp = LLMRunner().call(
+        tier=ModelTier.FRONTIER_BALANCED,
         system=system_prompt,
         user=user_prompt,
-        tier=ModelTier.SONNET,
         max_tokens=4096,
         temperature=0,
         output_schema=schema,
         cache_ttl_minutes=0,  # intent grouping should be fresh
+        trace_id=f"triage_group_{lens}_{data_type}",
     )
 
-    if result.error:
-        logger.warning("Intent grouping failed: %s", result.error)
+    if resp.is_error():
+        logger.warning("Intent grouping failed: %s", resp.error)
         return {
             "intent_groups": [],
             "uncategorized_tabs": [],
-            "overall_narrative": f"Intent grouping failed: {result.error}",
-            "error": result.error,
+            "overall_narrative": f"Intent grouping failed: {resp.error}",
+            "error": resp.error,
         }
 
-    parsed = result.parsed or {}
+    parsed = resp.structured_output or {}
     parsed["tokens"] = {
-        "input": result.input_tokens,
-        "output": result.output_tokens,
+        "input": resp.input_tokens,
+        "output": resp.output_tokens,
     }
 
     logger.info(
         "Intent grouping: %d groups, %d uncategorized (tokens: %d in / %d out)",
         len(parsed.get("intent_groups", [])),
         len(parsed.get("uncategorized_tabs", [])),
-        result.input_tokens,
-        result.output_tokens,
+        resp.input_tokens,
+        resp.output_tokens,
     )
 
     return parsed

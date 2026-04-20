@@ -13,7 +13,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from work_buddy.llm.runner import ModelTier, run_task
+from work_buddy.llm.runner_v2 import LLMRunner
+from work_buddy.llm.tiers import ModelTier
 from work_buddy.logging_config import get_logger
 from work_buddy.prompts import get_prompt
 
@@ -170,30 +171,31 @@ def summarize(
     """
     task_id = f"summarize:{label}" if label else "summarize:unknown"
 
-    result = run_task(
-        task_id=task_id,
+    # content_hash / content_sample parameters are ``run_task``-specific
+    # cache keys; LLMRunner doesn't plumb them through yet. Phase-1
+    # behavior regression: summaries rely on task_id + default cache key.
+    # Restoring explicit hash-keyed caching is a phase-3 follow-up.
+    resp = LLMRunner().call(
+        tier=ModelTier.FRONTIER_FAST,
         system=_SYSTEM_PROMPT,
         user=f"## Content: {label}\n\n{text[:5000]}",
         output_schema=_SUMMARY_SCHEMA,
         max_tokens=512,
         cache_ttl_minutes=cache_ttl_minutes,
-        content_hash=content_hash,
-        content_sample=content_sample,
-        tier=ModelTier.HAIKU,
-        allowed_tiers=[ModelTier.HAIKU],
+        trace_id=task_id,
     )
 
-    if result.error:
-        logger.error("Summarization failed for %s: %s", label, result.error)
+    if resp.is_error():
+        logger.error("Summarization failed for %s: %s", label, resp.error)
         return PageSummary(
-            content_summary=f"Summarization failed: {result.error}",
+            content_summary=f"Summarization failed: {resp.error}",
             entities=[], key_claims=[],
             user_intent_speculation="", user_posture="referencing",
             source_label=label,
             tokens={"input": 0, "output": 0},
         )
 
-    return _parse_single(result, label)
+    return _parse_single(resp, label)
 
 
 def summarize_batch(
@@ -229,22 +231,21 @@ def summarize_batch(
     # Empirically: single items produce ~270 tokens, but batch overhead is higher
     max_tokens = max(1024, len(items) * 500 + 200)
 
-    result = run_task(
-        task_id="summarize:batch",
+    resp = LLMRunner().call(
+        tier=ModelTier.FRONTIER_FAST,
         system=_SYSTEM_PROMPT,
         user="\n".join(lines),
         output_schema=_BATCH_SCHEMA,
         max_tokens=min(max_tokens, 4096),
         cache_ttl_minutes=cache_ttl_minutes,
-        tier=ModelTier.HAIKU,
-        allowed_tiers=[ModelTier.HAIKU],
+        trace_id="summarize:batch",
     )
 
-    if result.error:
-        logger.error("Batch summarization failed: %s", result.error)
+    if resp.is_error():
+        logger.error("Batch summarization failed: %s", resp.error)
         return [
             PageSummary(
-                content_summary=f"Summarization failed: {result.error}",
+                content_summary=f"Summarization failed: {resp.error}",
                 entities=[], key_claims=[],
                 user_intent_speculation="", user_posture="referencing",
                 source_label=item.get("label", ""),
@@ -253,7 +254,7 @@ def summarize_batch(
             for item in items
         ]
 
-    return _parse_batch(result, items)
+    return _parse_batch(resp, items)
 
 
 # ---------------------------------------------------------------------------
@@ -273,7 +274,7 @@ def _parse_entities(raw: list[dict]) -> list[TypedEntity]:
 
 
 def _parse_single(result: Any, label: str) -> PageSummary:
-    parsed = result.parsed or {}
+    parsed = result.structured_output or {}
     return PageSummary(
         content_summary=parsed.get("content_summary", ""),
         entities=_parse_entities(parsed.get("entities", [])),
@@ -287,7 +288,7 @@ def _parse_single(result: Any, label: str) -> PageSummary:
 
 
 def _parse_batch(result: Any, items: list[dict]) -> list[PageSummary]:
-    parsed = result.parsed or {}
+    parsed = result.structured_output or {}
     raw_summaries = parsed.get("summaries", [])
 
     # Index by item_index for safe lookup

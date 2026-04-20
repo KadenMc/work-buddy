@@ -123,7 +123,8 @@ def classify(
             activity_domains=[], confidence=0.0,
         )
 
-    from work_buddy.llm.runner import ModelTier, run_task
+    from work_buddy.llm.runner_v2 import LLMRunner
+    from work_buddy.llm.tiers import ModelTier
 
     prompt = _build_prompt(items, intents, context)
 
@@ -131,26 +132,25 @@ def classify(
     estimated_tokens = len(items) * len(intents) * 80 + 200
     max_tokens = max(512, min(4096, estimated_tokens))
 
-    result = run_task(
-        task_id="classify:multilabel",
+    resp = LLMRunner().call(
+        tier=ModelTier.FRONTIER_FAST,
         system=get_prompt("classify_system"),
         user=prompt,
         output_schema=_MULTILABEL_SCHEMA,
         max_tokens=max_tokens,
         cache_ttl_minutes=cache_ttl_minutes,
-        tier=ModelTier.HAIKU,
-        allowed_tiers=[ModelTier.HAIKU],
+        trace_id="classify:multilabel",
     )
 
-    if result.error:
-        logger.error("Classification failed: %s", result.error)
+    if resp.is_error():
+        logger.error("Classification failed: %s", resp.error)
         return MultilabelClassification(
-            items=[], overall_narrative=f"Classification failed: {result.error}",
+            items=[], overall_narrative=f"Classification failed: {resp.error}",
             activity_domains=[], confidence=0.0,
             tokens={"input": 0, "output": 0},
         )
 
-    return _parse_result(result, items)
+    return _parse_result(resp, items)
 
 
 def _build_prompt(
@@ -189,8 +189,8 @@ def _parse_result(
     result: Any,
     items: list[DataItem],
 ) -> MultilabelClassification:
-    """Parse run_task result into typed MultilabelClassification."""
-    parsed = result.parsed or {}
+    """Parse :class:`LLMResponse` into typed MultilabelClassification."""
+    parsed = result.structured_output or {}
 
     classified_items: list[ItemClassification] = []
     for raw_item in parsed.get("items", []):

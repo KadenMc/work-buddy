@@ -4,14 +4,16 @@ Thin adapter around :class:`BackgroundTriageProducer`. Cadence is a
 sidecar-job concern (see ``sidecar_jobs/journal-triage-scan.md``),
 not a property of the capability itself.
 
-- Uses :func:`work_buddy.triage.adapters.journal.collect_same_day_candidates`
-  to get today's thread candidates.
-- Runs each candidate through a local-LLM agent loop using the
-  ``triage_agent`` tool preset and the configured
-  ``triage.agent_profile``.
-- The agent's only submission path is the ``triage_submit`` tool.
-  No tool call → the run is recorded as ``unsubmitted`` and the
-  item is not added to the pool.
+Flow:
+- :func:`work_buddy.triage.adapters.journal.collect_same_day_candidates`
+  segments today's Running Notes into thread candidates.
+- Each candidate is IR-enriched and sent to Sonnet via
+  :class:`LLMRunner` with a constrained ``output_schema``
+  (:data:`work_buddy.triage.verdict_schema.VERDICT_SCHEMA`). The parsed
+  verdict is written directly to the Review pool via
+  :func:`triage_submit`.
+- Escalation: TIMEOUT / CONTEXT_EXCEEDED / EMPTY_CONTENT / RATE_LIMITED
+  → FRONTIER_BEST (Opus).
 
 Registered as a capability-type sidecar cron job. Safe to call
 manually via ``wb_run`` for smoke tests or ad-hoc runs.
@@ -21,109 +23,74 @@ from __future__ import annotations
 
 from typing import Any
 
+from work_buddy.llm import ErrorKind, LLMRunner, ModelTier
 from work_buddy.logging_config import get_logger
 from work_buddy.triage.background import BackgroundTriageProducer
 from work_buddy.triage.items import TriageItem
+from work_buddy.triage.verdict_schema import VERDICT_SCHEMA, verdict_to_submit_kwargs
 
 logger = get_logger(__name__)
 
 
 _AGENT_SYSTEM_PROMPT = """\
-You are triaging one thread from a daily running-notes journal.
+You are triaging one thread from a daily running-notes journal. Given
+the thread, the user's current-context block, and IR hits for related
+prior content, decide the single best next action and fill in the
+verdict schema.
 
-Your job: decide the single best next action and record it by
-calling the work-buddy gateway.
+## Action selection
 
-## How to call work-buddy tools
+  - create_task       — new actionable work. Include ``suggested_task_text``.
+                        DEFAULT to this for any actionable thread unless
+                        one of the Active Tasks is UNAMBIGUOUSLY about
+                        the same work.
+  - record_into_task  — add detail to an existing task. Include
+                        ``target_task_id`` (from the Active Tasks list —
+                        never invent an ID; copy it verbatim). Use only
+                        when the thread is about the same system, same
+                        subject, same intent. Loose keyword overlap is
+                        NOT enough. Quote the matching task title phrase
+                        in the rationale.
+  - leave             — keep in the note as-is. Observations, questions,
+                        or thoughts that don't map to a clear action.
+  - close             — safe to drop / already handled.
+  - group             — belongs with sibling items already in the pool.
+                        Include ``related_item_ids``.
 
-work-buddy exposes two top-level tools in this session: `wb_run` and
-`wb_search`. Every domain capability (triage_submit, task_briefing,
-context_search, …) is dispatched through `wb_run` — NOT as its own
-top-level tool.
+If you are uncertain, pick ``leave``.
 
-To submit your verdict, call `wb_run` with these exact params:
+## Context
 
-- `capability`: the string `"triage_submit"`
-- `params`: an object containing
-  - `run_id` — copy it verbatim from the "Triage run id:" line in
-    the user message below. Do NOT invent a value.
-  - `item_id` — copy it verbatim from the "Item id:" line. Do NOT
-    invent a value.
-  - `recommended_action` — one of: `close`, `group`, `create_task`,
-    `record_into_task`, `leave`
-  - `rationale` — one to three sentences in your own words
-  - `group_intent` — optional but strongly preferred; a short (3-8
-    word) noun-phrase naming the underlying intent of the thread.
-    Used as the card title in the review UI. See the
-    `group_intent` section below for examples. Do NOT call `triage_submit`
-as a top-level tool (it doesn't exist at that layer). Similarly,
-use `wb_search(query="…")` to discover other capabilities if you
-want to gather context before deciding.
+The user message includes a ``## User's Current Context`` block with
+active tasks, contracts, projects, and recent commits. READ IT BEFORE
+DECIDING. If the thread references an Active Contract or Project,
+say so in the rationale. IR hits below the thread are semantic
+neighbours — use them as supporting evidence.
 
-## Valid recommended_action values
+## group_intent (required)
 
-  - "create_task"        (new actionable work — include `suggested_task_text` in params)
-  - "record_into_task"   (add detail to an existing task — include `target_task_id` in params)
-  - "leave"              (keep in notes as-is; not actionable or already captured)
-  - "close"              (safe to drop / already handled)
-  - "group"              (belongs with sibling items — include `related_item_ids` in params)
+A short noun-phrase (3–8 words) naming the UNDERLYING INTENT behind
+the thread — NOT the action name, NOT a restatement of the thread's
+opening line. Shown as the card title in the review UI, so it should
+help the user recognize which of their own thoughts this is about at
+a glance.
 
-## Using the "User's Current Context" block
-
-The user message includes a `## User's Current Context` block listing
-the user's currently-active tasks (with IDs like `t-abc123`),
-contracts, projects, and recent commits. Read it BEFORE deciding.
-
-- DEFAULT TO `create_task` for any new actionable thread. Only
-  pick `record_into_task` when the thread is UNAMBIGUOUSLY about
-  the same specific work as one of the Active Tasks — same system,
-  same subject, same intent. A loose keyword overlap is NOT enough.
-  A thread about "ETFs" does NOT belong in a task about
-  "dashboard columns" just because both exist in the list.
-- If you choose `record_into_task`, quote the precise phrase from
-  the task title that matches the thread in your rationale. If you
-  can't, the match is too weak — switch to `create_task`.
-- Never invent task IDs. Copy the exact ID from the block.
-- If the thread references an Active Contract or Project, say so in
-  the rationale so the reviewer can see the linkage.
-
-## About `group_intent` (required!)
-
-`group_intent` is a short noun-phrase (3-8 words) naming the
-**underlying intent** behind the thread — NOT the action name and
-NOT a restatement of the thread's opening line. It's what shows up
-as the card title in the review UI, so it should help the human
-recognize which of their own thoughts this is about at a glance.
-
-Good examples:
-  thread: "- Background - weekly check of ETFs/stocks - prices and news?"
+Good:
+  thread: "Background — weekly check of ETFs/stocks — prices and news?"
     → group_intent: "ETF/stock weekly tracking habit"
-  thread: "- In our search tool, do we have some kind of optional `operation` param..."
+  thread: "In our search tool, do we have an optional operation param..."
     → group_intent: "search-tool filter API design"
-  thread: "- Need to migrate embedding service off CPU"
-    → group_intent: "migrate embedding service to GPU"
 
-Bad examples (do NOT do these):
-  - "Create task" ........ (that's the action, not the intent)
-  - "The thread asks about ETF prices" ........ (that's the rationale)
+Bad:
+  - "Create task"             (that's the action, not the intent)
+  - "Thread asks about ETFs"  (that's the rationale)
   - the full first line of the thread verbatim
   - leaving the field empty
 
-Always include `group_intent`. No exceptions.
+## Rationale
 
-## Rules
-
-1. You MUST call `wb_run` with `capability="triage_submit"` exactly
-   once before finishing.
-2. Read-only lookups via `wb_run` are allowed first (e.g.
-   `wb_run(capability="context_search", params={"query": "..."})`)
-   but keep it to one or two lookups max.
-3. If you are uncertain, pick `"leave"` — do not skip submission.
-4. Rationale must be one to three sentences.
-5. `group_intent` should be a short noun-phrase distinct from the
-   rationale (see "About group_intent" above).
-6. Use the pre-fetched IR context inlined below before paying for
-   more lookups.
+One to three sentences. Cite specific thread content so the reviewer
+can verify your reasoning.
 """
 
 
@@ -132,6 +99,7 @@ def journal_triage_scan(
     journal_date: str | None = None,
     force: bool = False,
     profile: str | None = None,
+    tier: ModelTier | str = ModelTier.FRONTIER_BALANCED,
     enrich: bool = True,
     dry_run: bool = False,
 ) -> dict[str, Any]:
@@ -140,8 +108,12 @@ def journal_triage_scan(
     Args:
         journal_date: ``YYYY-MM-DD`` or ``None`` for today.
         force: Ignore the unchanged-content idempotence gate.
-        profile: Override the configured ``triage.agent_profile``.
-            Primarily useful for tests.
+        profile: Override the configured ``triage.segment_profile``
+            (the segmentation call — agent LLM is now tier-driven).
+        tier: Starting LLM tier for the agent. Defaults to
+            FRONTIER_BALANCED (Sonnet); escalates to FRONTIER_BEST
+            (Opus) on TIMEOUT / CONTEXT_EXCEEDED / EMPTY_CONTENT /
+            RATE_LIMITED.
         enrich: Pre-fetch hybrid-IR context for each candidate.
             Default True.
         dry_run: Collect candidates and enrich, but skip the agent
@@ -152,11 +124,20 @@ def journal_triage_scan(
     """
     from work_buddy.triage.config import load_triage_config, resolve_profile
 
+    # Accept raw-string tier from MCP callers; enum callers pass through.
+    if isinstance(tier, str) and not isinstance(tier, ModelTier):
+        try:
+            tier = ModelTier(tier)
+        except ValueError as exc:
+            raise ValueError(
+                f"Unknown tier {tier!r}. Valid: {[t.value for t in ModelTier]}"
+            ) from exc
+
     cfg = load_triage_config()
-    agent_profile = resolve_profile(cfg, "agent", override=profile)
+    # Segmentation still runs on the local profile — it's a
+    # deterministic classification task the local model handles well.
     seg_profile = resolve_profile(cfg, "segment", override=profile)
     enrich_cfg = cfg.get("enrich", {}) or {}
-    agent_cfg = cfg.get("agent", {}) or {}
 
     # Build the "what the user is actively working on" registry once
     # per run. Injected into each per-item agent prompt so the agent
@@ -219,13 +200,14 @@ def journal_triage_scan(
             "items": [it.to_dict() for it in items],
         }
 
+    runner = LLMRunner()
+
     def _agent(item: TriageItem, run_id: str) -> dict[str, Any]:
         return _invoke_agent(
+            runner=runner,
             item=item,
             run_id=run_id,
-            profile=agent_profile,
-            max_tokens=agent_cfg.get("max_tokens", 1024),
-            temperature=agent_cfg.get("temperature", 0.0),
+            tier=tier,
             triage_context_block=triage_context_block,
         )
 
@@ -247,40 +229,93 @@ def journal_triage_scan(
 
 def _invoke_agent(
     *,
+    runner: LLMRunner,
     item: TriageItem,
     run_id: str,
-    profile: str,
-    max_tokens: int = 1024,
-    temperature: float = 0.0,
+    tier: ModelTier,
     triage_context_block: str = "",
 ) -> dict[str, Any]:
-    """Call ``llm_with_tools`` with the triage_agent preset.
+    """Call the unified runner with a constrained verdict schema.
 
-    The agent is expected to call ``triage_submit`` exactly once.
-    We do not inspect ``tool_calls`` to decide "submitted" —
-    ``triage_submit`` writes to the pool, and
-    :func:`BackgroundTriageProducer.run` checks the pool directly.
+    The verdict comes back as structured JSON (enforced on Anthropic's
+    side). We parse it, call :func:`triage_submit` directly to write
+    the pool entry, and return a result dict shaped the way
+    :class:`BackgroundTriageProducer` expects (``content`` / ``error``
+    / ``error_kind``) so its submission-check path works unchanged.
 
-    ``triage_context_block`` is the rendered "User's Current
-    Context" block (active tasks / contracts / projects / recent
-    commits) from ``recommend.build_triage_context``. Prepended to
-    the user prompt so the agent can pick real existing task IDs
-    for ``record_into_task`` — same shape Chrome's Sonnet call sees.
+    ``triage_context_block`` is the rendered "User's Current Context"
+    block (active tasks / contracts / projects) from
+    :func:`recommend.build_triage_context`. Prepended to the user
+    prompt so the agent can pick real existing task IDs for
+    ``record_into_task``.
     """
-    from work_buddy.llm.with_tools import llm_with_tools
+    from work_buddy.triage.capabilities.triage_submit import triage_submit
 
     user_prompt = _render_item_prompt(
         item=item, run_id=run_id, triage_context_block=triage_context_block,
     )
-    return llm_with_tools(
+
+    resp = runner.call(
+        tier=tier,
         system=_AGENT_SYSTEM_PROMPT,
         user=user_prompt,
-        profile=profile,
-        tool_preset="triage_agent",
-        required_capabilities=["triage_submit"],
-        max_tokens=max_tokens,
-        temperature=temperature,
+        output_schema=VERDICT_SCHEMA,
+        escalate_on=[
+            ErrorKind.TIMEOUT,
+            ErrorKind.CONTEXT_EXCEEDED,
+            ErrorKind.EMPTY_CONTENT,
+            ErrorKind.RATE_LIMITED,
+        ],
+        escalate_to=[ModelTier.FRONTIER_BEST],
     )
+
+    if resp.is_error():
+        logger.warning(
+            "journal_triage: LLM failed for item %s on tier %s (%s): %s",
+            item.id, resp.tier_used, resp.error_kind, resp.error,
+        )
+        return {
+            "content": resp.content,
+            "error": resp.error,
+            "error_kind": resp.error_kind.value if resp.error_kind else None,
+        }
+
+    verdict = resp.structured_output or {}
+    if not verdict.get("recommended_action"):
+        logger.warning(
+            "journal_triage: LLM returned no recommended_action for item %s "
+            "(tier=%s, content_len=%d)",
+            item.id, resp.tier_used, len(resp.content),
+        )
+        return {
+            "content": resp.content,
+            "error": "LLM returned no recommended_action",
+            "error_kind": ErrorKind.SCHEMA_VIOLATION.value,
+        }
+
+    submit_kwargs = verdict_to_submit_kwargs(verdict)
+    submit_result = triage_submit(
+        run_id=run_id,
+        item_id=item.id,
+        **submit_kwargs,
+    )
+
+    if submit_result.get("status") != "ok":
+        logger.warning(
+            "journal_triage: triage_submit rejected verdict for item %s: %s",
+            item.id, submit_result,
+        )
+        return {
+            "content": resp.content,
+            "error": f"triage_submit rejected: {submit_result.get('error', 'unknown')}",
+            "error_kind": ErrorKind.BAD_REQUEST.value,
+        }
+
+    return {
+        "content": resp.content or "",
+        "verdict": verdict,
+        "tier_used": resp.tier_used,
+    }
 
 
 def _render_item_prompt(
@@ -318,7 +353,6 @@ def _render_item_prompt(
     ctx_block = f"\n{triage_context_block}\n" if triage_context_block else ""
 
     return (
-        f"Triage run id: {run_id}\n"
         f"Item id: {item.id}\n"
         f"{date_line}"
         f"{ctx_block}"
@@ -326,7 +360,4 @@ def _render_item_prompt(
         f"{item.text.strip()}\n"
         f"--- End thread ---"
         f"{ir_block}"
-        f"\nDecide one action for this thread, then submit it by calling "
-        f"wb_run with capability='triage_submit' and params including "
-        f"run_id={run_id!r} and item_id={item.id!r}."
     )

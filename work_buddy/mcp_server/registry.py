@@ -2685,10 +2685,11 @@ def _journal_capabilities() -> list[Capability]:
                 "Run one background-triage pass over today's Running Notes "
                 "section. Segments the same-day content into threads via "
                 "the local LLM, enriches each with hybrid-IR context, and "
-                "asks a local agent to submit one verdict per thread into "
-                "the pending-review pool via triage_submit. Never mutates "
-                "the vault. Idempotent on unchanged content. Cadence is a "
-                "sidecar-job concern; safe to call manually for testing."
+                "asks Sonnet (escalating to Opus on failure) for a "
+                "constrained-JSON verdict per thread — written directly "
+                "into the Review pool. Never mutates the vault. Idempotent "
+                "on unchanged content. Cadence is a sidecar-job concern; "
+                "safe to call manually for testing."
             ),
             category="journal",
             search_aliases=[
@@ -2700,7 +2701,8 @@ def _journal_capabilities() -> list[Capability]:
             parameters={
                 "journal_date": {"type": "str", "description": "YYYY-MM-DD. Default: today.", "required": False},
                 "force": {"type": "bool", "description": "Ignore the unchanged-content idempotence gate.", "required": False},
-                "profile": {"type": "str", "description": "Override the configured triage.agent_profile.", "required": False},
+                "profile": {"type": "str", "description": "Override the configured triage.segment_profile (segmentation LLM, not the agent).", "required": False},
+                "tier": {"type": "str", "description": "Override the starting ModelTier for the agent (default frontier_balanced).", "required": False},
                 "enrich": {"type": "bool", "description": "Pre-fetch hybrid-IR context per candidate (default True).", "required": False},
                 "dry_run": {"type": "bool", "description": "Collect + enrich candidates but skip the agent loop.", "required": False},
             },
@@ -2710,8 +2712,9 @@ def _journal_capabilities() -> list[Capability]:
             ).journal_triage_scan(**kw)),
             requires=["obsidian"],
             mutates_state=True,
-            # Local-LLM calls can hang for minutes; a retry-on-timeout
-            # would stack hung calls and spam consent prompts.
+            # Producer uses LLMRunner's escalation internally — retries
+            # at the tier level on timeout / context-exceeded. No outer
+            # retry-on-timeout needed (would just stack queued passes).
             auto_retry=False,
         ),
         # ── Inline-selection triage producer ────────────────────
