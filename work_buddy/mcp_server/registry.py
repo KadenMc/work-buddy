@@ -2280,7 +2280,186 @@ def _context_capabilities() -> list[Capability]:
             },
             callable=collect_bundle,
         ),
+        # ── Unified context pipeline (phase 7 of the LLM+Context refactor) ──
+        # Two capabilities over the work_buddy.context stack:
+        #   - context_block     → collect + curate in one call, returns
+        #                         rendered markdown or JSON.
+        #   - context_drill_down → expand one item (task note, commit
+        #                         message, project description, …).
+        # Both are thin wrappers — the real API lives in
+        # work_buddy.context.{collector, curator, sources.*}.
+        Capability(
+            name="context_block",
+            description=(
+                "Collect + render a context block from registered sources "
+                "(git, tasks, projects, chrome, obsidian, obsidian_tasks, "
+                "obsidian_wellness, calendar, day_planner, session_activity, "
+                "chat, message, smart, datacore). Structured sources (git / "
+                "tasks / projects / chrome) emit curated prompt text; the "
+                "rest wrap legacy collectors. Supports per-source depth, "
+                "target_date windows, max_chars budget, markdown or JSON "
+                "output, and cache reuse via max_age_seconds."
+            ),
+            category="context",
+            search_aliases=[
+                "user context",
+                "what is the user working on",
+                "active tasks projects commits",
+                "context packet",
+                "assemble context",
+                "build context block",
+            ],
+            parameters={
+                "sources": {"type": "list", "description": "Source names to include. Default: all registered.", "required": False},
+                "exclude": {"type": "list", "description": "Source names to drop from the default set.", "required": False},
+                "depth": {"type": "str", "description": "brief | normal | deep (default normal).", "required": False},
+                "per_source_depth": {"type": "dict", "description": "{source: depth} overrides for individual sources.", "required": False},
+                "target_date": {"type": "str", "description": "YYYY-MM-DD. Default: today (no time window shift).", "required": False},
+                "window_days": {"type": "int", "description": "Window size around target_date (default 1).", "required": False},
+                "max_chars": {"type": "int", "description": "Rendering budget. Truncates respecting section boundaries when possible.", "required": False},
+                "max_age_seconds": {"type": "int", "description": "Use cached fetch if younger than this. None (default) = always fresh. 0 = use any cached.", "required": False},
+                "custom": {"type": "dict", "description": "Per-source ad-hoc params forwarded to each source's collect().", "required": False},
+                "format": {"type": "str", "description": "markdown (default) or json.", "required": False},
+            },
+            callable=_context_block,
+        ),
+        Capability(
+            name="context_drill_down",
+            description=(
+                "Expand one item from a context source. Works on structured "
+                "wave-1 sources that implement drill_down — tasks (field: "
+                "'note' / 'line'), git (field: 'full_message' / 'diff_stats'), "
+                "projects (field: 'description' / 'full'). Wave-2/3 markdown "
+                "wrappers don't implement drill-down — the prompt already "
+                "holds their full body at DEEP depth."
+            ),
+            category="context",
+            search_aliases=[
+                "show full commit message",
+                "show full task note",
+                "expand project description",
+                "drill down on item",
+                "get more detail",
+            ],
+            parameters={
+                "source": {"type": "str", "description": "Source name (tasks / git / projects).", "required": True},
+                "item_id": {"type": "str", "description": "Item identifier within the source (task_id / commit sha / project slug).", "required": True},
+                "field": {"type": "str", "description": "Which expansion to return. See source docs for valid fields.", "required": True},
+            },
+            callable=_context_drill_down,
+        ),
     ]
+
+
+def _context_block(
+    sources: list[str] | None = None,
+    exclude: list[str] | None = None,
+    depth: str = "normal",
+    per_source_depth: dict[str, str] | None = None,
+    target_date: str | None = None,
+    window_days: int = 1,
+    max_chars: int | None = None,
+    max_age_seconds: int | None = None,
+    custom: dict[str, dict] | None = None,
+    format: str = "markdown",
+) -> dict[str, Any]:
+    """MCP callable for the ``context_block`` capability.
+
+    Top-level so the capability's ``callable`` reference stays stable
+    across registry rebuilds. Returns a dict with ``rendered`` (the
+    block) and ``sources`` (per-source item counts + metadata) so MCP
+    clients can inspect what was included.
+    """
+    from datetime import date as _date
+
+    from work_buddy.context import (
+        ContextCollector,
+        ContextCurator,
+        ContextDepth,
+        ContextRequest,
+    )
+    from work_buddy.context import sources as _sources_pkg  # registers sources
+    _ = _sources_pkg  # silence unused-import warning
+
+    try:
+        depth_enum = ContextDepth[depth.upper()]
+    except KeyError:
+        return {"error": f"depth must be one of: brief, normal, deep; got {depth!r}"}
+
+    per_depth: dict[str, ContextDepth] | None = None
+    if per_source_depth:
+        try:
+            per_depth = {k: ContextDepth[v.upper()] for k, v in per_source_depth.items()}
+        except KeyError as exc:
+            return {"error": f"per_source_depth value invalid: {exc}"}
+
+    target: _date | None = None
+    if target_date:
+        try:
+            target = _date.fromisoformat(target_date)
+        except ValueError:
+            return {"error": f"target_date must be YYYY-MM-DD; got {target_date!r}"}
+
+    if format not in ("markdown", "json"):
+        return {"error": f"format must be 'markdown' or 'json'; got {format!r}"}
+
+    req = ContextRequest(
+        sources=sources,
+        exclude=exclude,
+        depth=depth_enum,
+        per_source_depth=per_depth,
+        target_date=target,
+        window_days=window_days,
+        max_chars=max_chars,
+        max_age_seconds=max_age_seconds,
+        custom=custom,
+    )
+
+    ctx = ContextCollector().collect(req)
+    rendered = ContextCurator().curate(
+        ctx,
+        depth=depth_enum,
+        per_source_depth=per_depth,
+        max_chars=max_chars,
+        format=format,
+    )
+
+    sources_manifest = {
+        name: {
+            "item_count": len(section.items),
+            "metadata": section.metadata,
+            "fetched_at": section.fetched_at.isoformat(),
+        }
+        for name, section in ctx.sections.items()
+    }
+
+    return {
+        "rendered": rendered,
+        "sources": sources_manifest,
+        "format": format,
+    }
+
+
+def _context_drill_down(source: str, item_id: str, field: str) -> dict[str, Any]:
+    """MCP callable for ``context_drill_down``."""
+    from work_buddy.context import registry as _ctx_registry
+    from work_buddy.context import sources as _sources_pkg  # registers sources
+    _ = _sources_pkg
+
+    src = _ctx_registry.get(source)
+    if src is None:
+        return {
+            "error": f"Unknown source {source!r}. Registered: {_ctx_registry.names()}",
+        }
+
+    try:
+        return src.drill_down(item_id, field)
+    except NotImplementedError as exc:
+        return {"error": str(exc), "error_kind": "not_implemented"}
+    except KeyError as exc:
+        return {"error": str(exc), "error_kind": "not_found"}
+    except Exception as exc:
+        return {"error": f"{type(exc).__name__}: {exc}", "error_kind": "unknown"}
 
 
 def _project_capabilities() -> list[Capability]:
