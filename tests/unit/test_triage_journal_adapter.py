@@ -151,10 +151,11 @@ def test_journal_adapter_empty_when_segmentation_fails(monkeypatch) -> None:
         "work_buddy.journal_backlog.read_running_notes",
         lambda **kw: notes,
     )
-    # llm_call returns neither a `parsed` dict nor valid JSON `content`
+    # LLMRunner returns content that doesn't parse as valid segmentation JSON.
+    from work_buddy.llm import LLMResponse
     monkeypatch.setattr(
-        "work_buddy.llm.call.llm_call",
-        lambda **kw: {"content": "nothing sensible", "parsed": None, "error": None},
+        "work_buddy.llm.runner_v2.LLMRunner.call",
+        lambda self, **kw: LLMResponse(content="nothing sensible"),
     )
     items, ch = adapter_mod.collect_same_day_candidates(
         journal_date="2026-04-18", profile="local_general",
@@ -195,9 +196,10 @@ def test_journal_adapter_builds_items_from_valid_segmentation(
             {"id": "t_bbbbbb", "lines": [2]},
         ],
     })
+    from work_buddy.llm import LLMResponse
     monkeypatch.setattr(
-        "work_buddy.llm.call.llm_call",
-        lambda **kw: {"content": payload, "parsed": None, "error": None},
+        "work_buddy.llm.runner_v2.LLMRunner.call",
+        lambda self, **kw: LLMResponse(content=payload),
     )
 
     items, ch = adapter_mod.collect_same_day_candidates(
@@ -245,10 +247,12 @@ def test_journal_adapter_repairs_then_succeeds(monkeypatch) -> None:
     })
     responses = iter([first, second])
 
-    def fake_llm_call(**kw):
-        return {"content": next(responses), "parsed": None, "error": None}
+    from work_buddy.llm import LLMResponse
 
-    monkeypatch.setattr("work_buddy.llm.call.llm_call", fake_llm_call)
+    def fake_llm_call(self, **kw):
+        return LLMResponse(content=next(responses))
+
+    monkeypatch.setattr("work_buddy.llm.runner_v2.LLMRunner.call", fake_llm_call)
 
     items, ch = adapter_mod.collect_same_day_candidates(
         journal_date="2026-04-18", profile="local_general",

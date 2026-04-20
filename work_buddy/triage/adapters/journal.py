@@ -318,25 +318,43 @@ def _call_segmenter(
     returns empty content despite nonzero output tokens. The prompt
     asks for JSON directly; :func:`validate_line_range_segmentation`
     is our real safety net against malformed output.
-    """
-    from work_buddy.llm.call import llm_call
 
-    result = llm_call(
+    Migrated to :class:`LLMRunner` in phase 8. The ``profile`` arg
+    still controls which local profile gets used — mapped to the
+    nearest :class:`ModelTier` (LOCAL_FAST for non-tool-calling
+    segmentation profiles). Callers passing a non-standard profile
+    should add a tier-binding override in ``config.local.yaml`` under
+    ``llm.tiers`` rather than relying on this mapping to change.
+    """
+    from work_buddy.llm import ErrorKind, LLMRunner, ModelTier
+
+    # The segmenter runs freeform JSON-emission, not tool calls. Map
+    # the profile arg onto LOCAL_FAST — its default binding is
+    # local_general which is what the segmenter expects. A future
+    # refactor can plumb profile-override through LLMRunner directly.
+    if profile and profile not in ("local_general",):
+        logger.debug(
+            "journal adapter: profile=%r override won't take effect — "
+            "LLMRunner uses the tier binding for LOCAL_FAST",
+            profile,
+        )
+
+    resp = LLMRunner().call(
+        tier=ModelTier.LOCAL_FAST,
         system=system,
         user=user,
-        profile=profile,
         max_tokens=max_tokens,
         temperature=temperature,
         cache_ttl_minutes=cache_ttl_minutes,
     )
-    if result.get("error"):
+    if resp.is_error():
         logger.warning(
             "journal adapter: segmentation llm_call error: %s",
-            result.get("error"),
+            resp.error,
         )
         return None
 
-    content = (result.get("content") or "").strip()
+    content = (resp.content or "").strip()
     if not content:
         return None
     if content.startswith("```"):

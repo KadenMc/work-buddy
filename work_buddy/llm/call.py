@@ -5,6 +5,15 @@ so callers never need to think about ``task_id`` or file paths.
 
 Schemas can be provided inline (dict) or by name (str) — named schemas
 resolve to JSON files in ``work_buddy/llm/schemas/``.
+
+.. deprecated::
+   This module exists for backward compatibility with the MCP-exposed
+   ``llm_call`` capability. New Python callers should use
+   :class:`work_buddy.llm.LLMRunner` (or the module-level
+   :func:`work_buddy.llm.llm_call` convenience) which returns a
+   normalized :class:`LLMResponse` and supports tier escalation.
+   Scheduled for removal once external MCP clients migrate — see
+   follow-up task for the deletion pass.
 """
 
 from __future__ import annotations
