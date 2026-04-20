@@ -99,24 +99,31 @@ def call_lmstudio_native(
         if token:
             headers["Authorization"] = f"Bearer {token}"
 
-    # LM Studio's /api/v1/chat accepts ``input`` as the user turn but
-    # does NOT expose a separate system-prompt field. Prepend the
-    # system text to the input so the model's chat template picks it
-    # up as the leading context. Observed-valid fields (from probing
-    # the live endpoint): model, input, integrations, previous_response_id,
-    # store, temperature, max_output_tokens, context_length. The OpenAI
-    # field name ``max_tokens`` is rejected.
-    combined_input = user
-    if system:
-        combined_input = f"{system}\n\n---\n\n{user}"
-
+    # LM Studio's /api/v1/chat DOES expose a dedicated ``system_prompt``
+    # field. Using it is required for integrations/tool-use to work
+    # correctly: LM Studio injects its own synthesized tool-use system
+    # prompt for default-tier models (those without native tool-call
+    # training — e.g. Gemma family), and that injection COMPOSES with
+    # the user's system_prompt. When our system prompt was concatenated
+    # into ``input`` with a ``---`` separator (prior behaviour), the
+    # tool-use injection was never composed correctly and the model
+    # emitted text matching neither native tool-call tokens nor
+    # LM Studio's [TOOL_REQUEST] parser grammar → empty content,
+    # zero tool_calls. See docs: https://lmstudio.ai/docs/developer/rest/chat
+    #
+    # Observed-valid fields: model, input, system_prompt, integrations,
+    # previous_response_id, store, temperature, max_output_tokens,
+    # context_length, reasoning. The OpenAI field name ``max_tokens``
+    # is rejected.
     payload: dict[str, Any] = {
         "model": model,
-        "input": combined_input,
+        "input": user,
         "max_output_tokens": max_tokens,
         "temperature": temperature,
         "store": store,
     }
+    if system:
+        payload["system_prompt"] = system
     if integrations:
         payload["integrations"] = integrations
     if previous_response_id:

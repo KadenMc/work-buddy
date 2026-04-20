@@ -1884,6 +1884,71 @@ def _context_capabilities() -> list[Capability]:
             mutates_state=True,
         ),
 
+        # ── Background triage (source-agnostic) ─────────────────
+        Capability(
+            name="triage_submit",
+            description=(
+                "Record a triage verdict for one item of an active background "
+                "triage run. Called by local agents in the triage_agent preset; "
+                "validates the run/item and writes a PoolEntry. Does not dispatch "
+                "a modal or mutate the vault. Safe to call from any context — "
+                "unknown run_ids return a structured error."
+            ),
+            category="context",
+            search_aliases=[
+                "submit triage verdict",
+                "record triage decision",
+                "emit triage recommendation",
+            ],
+            parameters={
+                "run_id": {"type": "str", "description": "The producer-assigned background-triage run id (from the agent's prompt).", "required": True},
+                "item_id": {"type": "str", "description": "The id of the item this verdict applies to.", "required": True},
+                "recommended_action": {"type": "str", "description": "One of: close, group, create_task, record_into_task, leave.", "required": True},
+                "rationale": {"type": "str", "description": "One-to-three-sentence justification.", "required": True},
+                "group_intent": {"type": "str", "description": "Short noun-phrase naming the underlying intent (≤8 words, distinct from the action name and the rationale). Used as the group title in the review UI.", "required": False},
+                "confidence": {"type": "float", "description": "Optional [0,1] confidence score.", "required": False},
+                "target_task_id": {"type": "str", "description": "For record_into_task: the existing task id.", "required": False},
+                "suggested_task_text": {"type": "str", "description": "For create_task: the proposed task body.", "required": False},
+                "related_item_ids": {"type": "list", "description": "Other item_ids from this run that belong to the same cluster.", "required": False},
+            },
+            callable=(lambda **kw: __import__(
+                "work_buddy.triage.capabilities.triage_submit",
+                fromlist=["triage_submit"],
+            ).triage_submit(**kw)),
+            mutates_state=True,
+            auto_retry=False,
+        ),
+        Capability(
+            name="triage_review_pool",
+            description=(
+                "Open the dashboard review modal over pending background-triage "
+                "proposals. Aggregates unreviewed PoolEntries, composes a "
+                "presentation, dispatches the modal, and (on response) executes "
+                "the user's decisions via the existing triage executor. "
+                "On-demand — nothing fires automatically."
+            ),
+            category="context",
+            search_aliases=[
+                "review triage proposals",
+                "open triage modal",
+                "drain triage pool",
+                "review pending triage",
+            ],
+            parameters={
+                "source": {"type": "str", "description": "Optional source filter (e.g. 'journal_thread', 'chrome_tab').", "required": False},
+                "adapter": {"type": "str", "description": "Optional adapter-name filter (e.g. 'journal_triage').", "required": False},
+                "since": {"type": "str", "description": "ISO timestamp; only entries created at-or-after are included.", "required": False},
+                "max_items": {"type": "int", "description": "Safety cap on pending entries loaded (default 100).", "required": False},
+                "dispatch": {"type": "bool", "description": "False to compose the presentation without opening the modal.", "required": False},
+            },
+            callable=(lambda **kw: __import__(
+                "work_buddy.triage.capabilities.triage_review_pool",
+                fromlist=["triage_review_pool"],
+            ).triage_review_pool(**kw)),
+            mutates_state=True,
+            auto_retry=False,
+        ),
+
         # ── Chrome tab mutations ────────────────────────────────
         Capability(
             name="chrome_tab_close",
@@ -2612,6 +2677,79 @@ def _journal_capabilities() -> list[Capability]:
             # unavailable" and have no escape hatch. The inner retry
             # loop health-checks the bridge between attempts itself.
             retry_policy="manual",
+        ),
+        # ── Background triage producer (journal) ────────────────
+        Capability(
+            name="journal_triage_scan",
+            description=(
+                "Run one background-triage pass over today's Running Notes "
+                "section. Segments the same-day content into threads via "
+                "the local LLM, enriches each with hybrid-IR context, and "
+                "asks a local agent to submit one verdict per thread into "
+                "the pending-review pool via triage_submit. Never mutates "
+                "the vault. Idempotent on unchanged content. Cadence is a "
+                "sidecar-job concern; safe to call manually for testing."
+            ),
+            category="journal",
+            search_aliases=[
+                "journal triage scan",
+                "background running notes triage",
+                "process running notes proposals",
+                "triage running notes",
+            ],
+            parameters={
+                "journal_date": {"type": "str", "description": "YYYY-MM-DD. Default: today.", "required": False},
+                "force": {"type": "bool", "description": "Ignore the unchanged-content idempotence gate.", "required": False},
+                "profile": {"type": "str", "description": "Override the configured triage.agent_profile.", "required": False},
+                "enrich": {"type": "bool", "description": "Pre-fetch hybrid-IR context per candidate (default True).", "required": False},
+                "dry_run": {"type": "bool", "description": "Collect + enrich candidates but skip the agent loop.", "required": False},
+            },
+            callable=(lambda **kw: __import__(
+                "work_buddy.triage.capabilities.journal_triage_scan",
+                fromlist=["journal_triage_scan"],
+            ).journal_triage_scan(**kw)),
+            requires=["obsidian"],
+            mutates_state=True,
+            # Local-LLM calls can hang for minutes; a retry-on-timeout
+            # would stack hung calls and spam consent prompts.
+            auto_retry=False,
+        ),
+        # ── Inline-selection triage producer ────────────────────
+        Capability(
+            name="inline_triage_scan",
+            description=(
+                "Run one triage pass over a single user-sent Obsidian "
+                "selection (from the 'Send to agent' right-click command). "
+                "Builds one TriageItem with source='inline', enriches it "
+                "with hybrid-IR context, and asks the local agent to "
+                "submit a verdict into the pending-review pool. "
+                "User-initiated, so force=True by default."
+            ),
+            category="triage",
+            search_aliases=[
+                "send to agent",
+                "inline selection triage",
+                "triage selection",
+                "obsidian selection handoff",
+            ],
+            parameters={
+                "file_path": {"type": "str", "description": "Vault-relative source path.", "required": True},
+                "selection": {"type": "str", "description": "The user's literal selection.", "required": False},
+                "paragraph": {"type": "str", "description": "Surrounding paragraph (used when selection is empty).", "required": False},
+                "cursor_line": {"type": "int", "description": "0-indexed cursor line.", "required": False},
+                "hint": {"type": "str", "description": "Optional user-typed intent hint.", "required": False},
+                "force": {"type": "bool", "description": "Bypass idempotence gate (default True for user-initiated).", "required": False},
+                "profile": {"type": "str", "description": "Override the configured triage.agent_profile.", "required": False},
+                "enrich": {"type": "bool", "description": "Pre-fetch hybrid-IR context (default True).", "required": False},
+                "dry_run": {"type": "bool", "description": "Collect + enrich, skip the agent loop.", "required": False},
+            },
+            callable=(lambda **kw: __import__(
+                "work_buddy.triage.capabilities.inline_triage_scan",
+                fromlist=["inline_triage_scan"],
+            ).inline_triage_scan(**kw)),
+            requires=["obsidian"],
+            mutates_state=True,
+            auto_retry=False,
         ),
     ]
 

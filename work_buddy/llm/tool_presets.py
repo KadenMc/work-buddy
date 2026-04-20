@@ -153,9 +153,47 @@ _READONLY_CONTEXT = _READONLY_SAFE | frozenset({
 })
 
 
+# ---------------------------------------------------------------------------
+# triage_agent — background-triage producer scope
+# ---------------------------------------------------------------------------
+# Narrow preset for the hourly background-triage agent loop
+# (``work_buddy.triage.capabilities.journal_triage_scan`` et al.). Includes
+# read-only context tools so the agent can investigate before deciding,
+# plus exactly ONE submission capability (``triage_submit``) whose
+# purpose is to record the verdict into the pending-review pool.
+#
+# ``triage_submit`` is a mutating capability by design — it writes a
+# PoolEntry — but it validates the run/item against an active
+# registered run, so an agent that calls it with a stale or bogus
+# run_id is rejected with a structured error. Exposing it here is
+# safe because any abuse path is caught by the pool itself.
+#
+# Name deliberately does NOT start with "readonly_" so the preset
+# validator does not flag ``triage_submit`` as a mutating outlier.
+_TRIAGE_AGENT = _READONLY_SAFE | frozenset({
+    # Context-for-reasoning tools (subset of readonly_context)
+    "context_search",
+    "ir_index",
+    "context_tasks",
+    "context_projects",
+    # Submission — the only mutating capability in this preset
+    "triage_submit",
+})
+
+# Minimal preset for on-demand triage passes over a single, already
+# context-enriched item (e.g., ``inline_triage_scan``). The prompt
+# includes pre-fetched IR context; the agent only needs to submit.
+# Narrowing the schema keeps the wb_run tool definition small enough
+# to fit in local-model context windows that otherwise 500 on the
+# wider ``triage_agent`` preset.
+_TRIAGE_SUBMIT_ONLY = frozenset({"triage_submit"})
+
+
 PRESETS: dict[str, frozenset[str]] = {
     "readonly_safe": _READONLY_SAFE,
     "readonly_context": _READONLY_CONTEXT,
+    "triage_agent": _TRIAGE_AGENT,
+    "triage_submit_only": _TRIAGE_SUBMIT_ONLY,
 }
 
 # Capability names that are considered mutating — any preset whose
@@ -181,6 +219,8 @@ _MUTATING_CAPABILITIES: frozenset[str] = frozenset({
     "thread_create", "thread_send", "thread_ask", "thread_close",
     # Chrome mutations
     "chrome_tab_close", "chrome_tab_group", "chrome_tab_move", "triage_execute",
+    # Triage submission (writes to the background-triage pool)
+    "triage_submit",
     # Workflow control
     "dev_mode_toggle",
     # Admin

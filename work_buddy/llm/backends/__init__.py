@@ -10,6 +10,7 @@ one non-Anthropic backend in v1, the protocol would be speculative.
 Introduce it when a third backend (Ollama, vLLM, etc.) lands.
 """
 
+from work_buddy.llm.backends.lmstudio_native import call_lmstudio_native
 from work_buddy.llm.backends.openai_compat import call_openai_compat
 
-__all__ = ["call_openai_compat"]
+__all__ = ["call_lmstudio_native", "call_openai_compat"]

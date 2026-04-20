@@ -28,6 +28,7 @@ from .html import _html
 from .script_main import _script
 from .script_notifications import _notification_script
 from .script_palette import _command_palette_script
+from .script_review import _review_script
 from .script_threads import _thread_chat_script
 from .script_triage import _triage_clarify_script, _triage_review_script
 from .script_workflows import _workflow_views_script
@@ -55,6 +56,7 @@ def render_page() -> str:
         _notification_script(),
         _triage_clarify_script(),
         _triage_review_script(),
+        _review_script(),
         _thread_chat_script(),
         _command_palette_script(),
     ])

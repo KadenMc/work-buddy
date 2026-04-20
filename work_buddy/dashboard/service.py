@@ -627,6 +627,119 @@ def api_contracts():
 
 
 # ---------------------------------------------------------------------------
+# Background-triage Review tab
+# ---------------------------------------------------------------------------
+#
+# The Review tab is the on-demand review surface for the
+# pending-review pool populated by background-triage producers
+# (journal hourly triage today; more sources later). It fetches the
+# composed presentation without opening the legacy modal, and posts
+# back approved decisions through the existing triage execute path.
+# Same action taxonomy as the Chrome triage modal; source-aware note
+# headers come for free via ``work_buddy.triage.execute``.
+
+
+@app.get("/api/review")
+def api_review_pool():
+    """Return the composed pending-review presentation.
+
+    Query params:
+        source: optional source filter (e.g. 'journal_thread').
+        adapter: optional adapter-name filter.
+        max_items: cap on pending entries (default 100).
+    """
+    from work_buddy.triage.capabilities.triage_review_pool import triage_review_pool
+
+    source = request.args.get("source") or None
+    adapter = request.args.get("adapter") or None
+    try:
+        max_items = int(request.args.get("max_items", "100"))
+    except ValueError:
+        max_items = 100
+
+    try:
+        result = triage_review_pool(
+            source=source, adapter=adapter,
+            max_items=max_items, dispatch=False,
+        )
+    except Exception as exc:
+        logger.exception("api_review: triage_review_pool failed")
+        return jsonify({"status": "error", "error": str(exc)}), 500
+
+    return jsonify(result)
+
+
+@app.post("/api/review/execute")
+def api_review_execute():
+    """Execute user decisions against a presentation + mark pool reviewed.
+
+    Request body: ``{presentation: {...}, decisions: {group_decisions: [...]}}``.
+    Mirrors what the legacy modal flow sends back; we reuse the same
+    ``triage_execute`` capability for side effects, then stamp the
+    pool entries as reviewed so they drop out of the next render.
+    """
+    rejected = _reject_read_only()
+    if rejected is not None:
+        return rejected
+
+    data = request.get_json(silent=True) or {}
+    presentation = data.get("presentation") or {}
+    decisions = data.get("decisions") or {}
+
+    if not presentation.get("groups_by_action"):
+        return jsonify({
+            "status": "error",
+            "error": "presentation.groups_by_action is required",
+        }), 400
+
+    from work_buddy.triage.execute import execute_triage_decisions
+    from work_buddy.triage.background import get_pool
+
+    try:
+        executed = execute_triage_decisions(decisions, presentation)
+    except Exception as exc:
+        logger.exception("api_review_execute: execute failed")
+        return jsonify({"status": "error", "error": str(exc)}), 500
+
+    # Stamp the affected pool entries reviewed. Identify them by the
+    # ``pool_run_id`` + item ids in the presentation's groups (the
+    # review-pool builder puts ``pool_run_id`` on every group for
+    # exactly this purpose).
+    keys: list[tuple[str, str]] = []
+    for action_groups in presentation.get("groups_by_action", {}).values():
+        for group in action_groups:
+            run_id = group.get("pool_run_id")
+            if not run_id:
+                continue
+            for item in group.get("items", []) or []:
+                iid = item.get("id")
+                if iid:
+                    keys.append((run_id, iid))
+
+    stamped = 0
+    if keys:
+        try:
+            stamped = get_pool().mark_reviewed(keys, outcome="reviewed")
+        except Exception as exc:
+            # Non-fatal: execution already succeeded; pool-cleanup
+            # failure just means the entries will re-appear on next
+            # load. Surface to the caller so they know.
+            logger.warning("api_review_execute: mark_reviewed failed: %s", exc)
+            return jsonify({
+                "status": "partial",
+                "executed": executed,
+                "pool_updates": 0,
+                "pool_error": str(exc),
+            })
+
+    return jsonify({
+        "status": "ok",
+        "executed": executed,
+        "pool_updates": stamped,
+    })
+
+
+# ---------------------------------------------------------------------------
 # Projects
 # ---------------------------------------------------------------------------
 

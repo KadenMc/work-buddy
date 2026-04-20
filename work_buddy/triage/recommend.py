@@ -125,12 +125,28 @@ def group_intents(
     return parsed
 
 
-def build_triage_context() -> dict[str, Any]:
-    """Auto-extract context for the Sonnet intent grouping call.
+def build_triage_context(
+    task_states: list[str] | None = None,
+    max_tasks: int | None = None,
+) -> dict[str, Any]:
+    """Auto-extract context for a triage LLM call.
 
-    Gathers active tasks, contracts, and recent git commits — compact
-    format, just enough for Sonnet to match tabs to existing work.
+    Gathers active tasks, contracts, active projects, and recent git
+    commits — compact format, just enough for the LLM to match
+    candidates to existing work.
+
+    Args:
+        task_states: Which task states to include. Default
+            ``["inbox", "mit", "focused"]`` matches the Chrome
+            cluster-level call (sees the full active set). Pass a
+            narrower list (e.g. ``["focused", "mit"]``) for
+            per-item triage calls where small models get
+            overwhelmed by a large inbox dump.
+        max_tasks: Optional cap on total tasks after state
+            filtering. Earlier states (by list order) get priority.
+            ``None`` = no cap.
     """
+    states = task_states or ["inbox", "mit", "focused"]
     context: dict[str, Any] = {}
 
     # Active tasks
@@ -140,7 +156,7 @@ def build_triage_context() -> dict[str, Any]:
 
         task_texts = _read_task_texts()
         active_tasks = []
-        for state in ["inbox", "mit", "focused"]:
+        for state in states:
             for task in task_store.query(state=state):
                 tid = task["task_id"]
                 text = task_texts.get(tid, "")
@@ -151,6 +167,8 @@ def build_triage_context() -> dict[str, Any]:
                         "text": text,
                         "contract": task.get("contract", ""),
                     })
+        if max_tasks is not None and len(active_tasks) > max_tasks:
+            active_tasks = active_tasks[:max_tasks]
         context["active_tasks"] = active_tasks
     except Exception as e:
         logger.debug("Could not load tasks for triage context: %s", e)
@@ -207,16 +225,22 @@ def build_triage_context() -> dict[str, Any]:
     return context
 
 
-def _build_user_prompt(
-    clusters: list[TriageCluster],
-    summaries: dict[str, dict],
-    context: dict[str, Any],
-) -> str:
-    """Build the user prompt for Sonnet intent grouping."""
-    lines = []
+def render_triage_context_block(context: dict[str, Any]) -> str:
+    """Render the ``build_triage_context`` output as a prompt block.
 
-    # Context section
-    lines.append("## User's Current Context\n")
+    Reusable across the Chrome cluster-level intent-group prompt and
+    per-item triage prompts (e.g., ``journal_triage_scan``). Factored
+    out of ``_build_user_prompt`` so any triage pass that wants the
+    "here's what the user is actively working on" registry can get
+    it without rebuilding the rendering logic.
+
+    Returns a string starting with ``## User's Current Context`` and
+    sections for active tasks / contracts / projects / recent
+    commits. Empty sections are omitted. Returns an empty string
+    when nothing is active.
+    """
+    lines: list[str] = ["## User's Current Context\n"]
+    started_with = len(lines)
 
     tasks = context.get("active_tasks", [])
     if tasks:
@@ -249,6 +273,27 @@ def _build_user_prompt(
         for c in commits[:10]:
             lines.append(f"- {c}")
         lines.append("")
+
+    if len(lines) == started_with:
+        # Header line only; no sections populated. Return empty so
+        # the caller can cleanly skip the block.
+        return ""
+    return "\n".join(lines)
+
+
+def _build_user_prompt(
+    clusters: list[TriageCluster],
+    summaries: dict[str, dict],
+    context: dict[str, Any],
+) -> str:
+    """Build the user prompt for Sonnet intent grouping."""
+    lines = []
+
+    # Context section — delegated to the shared renderer so journal's
+    # per-item prompt gets the same shape.
+    ctx_block = render_triage_context_block(context)
+    if ctx_block:
+        lines.append(ctx_block)
 
     # Tab clusters section
     total_tabs = sum(c.size for c in clusters)

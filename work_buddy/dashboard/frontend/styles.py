@@ -2041,6 +2041,181 @@ body {
     background: var(--bg-primary);
 }
 .chats-search-chunk:hover { background: var(--bg-tertiary); }
+
+/* ---- Review tab (background-triage pending pool) ---- */
+/* The Review tab reuses the Chrome triage renderer's wv-* styles
+ * for groups/cards. These review-* classes are only for the tab-
+ * level chrome (toolbar + narrative + drawer). */
+.review-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 12px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+}
+.review-toolbar .section-title { margin: 0; padding: 0; border: 0; margin-right: auto; }
+.review-narrative {
+    color: var(--text-secondary);
+    font-size: 13px;
+    margin-bottom: 12px;
+}
+
+/* Per-group submit footer — Review tab opts in so users can act on
+ * one group without committing the whole batch. Hidden in the
+ * Chrome modal path (opts.perGroupSubmit unset). */
+.wv-group-footer {
+    display: flex;
+    justify-content: flex-end;
+    padding: 8px 12px 10px;
+    border-top: 1px dashed var(--border);
+    margin-top: 6px;
+}
+.wv-group-submit {
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    padding: 6px 14px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: opacity 0.15s;
+}
+.wv-group-submit:hover { opacity: 0.9; }
+.wv-group-submit:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+
+/* Item-detail eye icon rendered by renderTriageReview when the
+ * caller supplies onItemClick. Kept small and subtle inside each
+ * item row. */
+.wv-item-detail-btn {
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-secondary);
+    padding: 2px 6px;
+    font-size: 12px;
+    cursor: pointer;
+    margin-left: 6px;
+    line-height: 1;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.wv-item-detail-btn:hover {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    border-color: var(--accent);
+}
+
+/* Right-side drawer. Persistent in the DOM; slides in/out via a
+ * CSS translate. Takes ~420px on wide screens, full-width on
+ * narrow. Overlays the page content rather than reflowing it — the
+ * user asked for this explicitly so vertical content isn't pushed
+ * around when the drawer opens. */
+.review-drawer {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(420px, 100vw);
+    background: var(--bg-secondary);
+    border-left: 1px solid var(--border);
+    box-shadow: -4px 0 12px rgba(0, 0, 0, 0.25);
+    transform: translateX(100%);
+    transition: transform 0.22s ease-out;
+    display: flex;
+    flex-direction: column;
+    z-index: 1000;
+}
+.review-drawer.open {
+    transform: translateX(0);
+}
+.review-drawer-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--border);
+}
+.review-drawer-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-primary);
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.review-drawer-close {
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 20px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0 4px;
+    margin-left: 12px;
+}
+.review-drawer-close:hover { color: var(--text-primary); }
+.review-drawer-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px;
+    font-size: 13px;
+    color: var(--text-primary);
+}
+.review-drawer-section {
+    margin-bottom: 18px;
+}
+.review-drawer-section-label {
+    display: block;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-secondary);
+    margin-bottom: 6px;
+}
+.review-drawer-text {
+    white-space: pre-wrap;
+    word-break: break-word;
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 12px;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 12px;
+    line-height: 1.45;
+}
+.review-drawer-rationale {
+    font-style: italic;
+    color: var(--text-secondary);
+    line-height: 1.5;
+}
+.review-drawer-ir-hit {
+    border-left: 3px solid var(--accent);
+    padding: 6px 10px;
+    margin-bottom: 8px;
+    background: var(--bg-primary);
+    border-radius: 0 4px 4px 0;
+}
+.review-drawer-ir-src {
+    font-size: 11px;
+    color: var(--text-secondary);
+    margin-bottom: 2px;
+}
+.review-drawer-ir-text {
+    font-size: 12px;
+    line-height: 1.45;
+    white-space: pre-wrap;
+}
+.review-drawer-empty {
+    color: var(--text-secondary);
+    font-style: italic;
+    padding: 8px 0;
+}
 """
 
 

@@ -135,8 +135,14 @@ def run_task(
         resolved_model = profile_info["model"]
         execution_mode = profile_info["execution_mode"]
         backend_id = profile_info["backend_id"]
-        # Profile may cap output tokens more tightly than the caller asked for
-        max_tokens = min(max_tokens, profile_info["max_output_tokens"])
+        # We used to silently clamp caller's max_tokens down to the profile's
+        # max_output_tokens. That masked real failures — a reasoning model given
+        # 32k by the caller but clamped to 3k here spent its entire budget inside
+        # <think> and returned empty content with no indication anything was
+        # truncated. The profile's max_output_tokens is still useful as a
+        # documented default (see profiles.py), but it is NOT a silent ceiling.
+        # If a caller requests more than the server can serve, the server errors
+        # loudly and that's what we want.
     elif tier is not None:
         if allowed_tiers and tier not in allowed_tiers:
             allowed_str = ", ".join(t.value for t in allowed_tiers)
@@ -339,8 +345,19 @@ def _run_profile(
 ) -> TaskResult:
     """Dispatch a profile-based request to the configured backend.
 
-    Currently only ``openai_compat`` is supported. Adding a new provider
-    means adding a branch here plus a new ``call_*`` backend function.
+    Supported providers:
+
+    - ``lmstudio_native`` — routes to LM Studio's /api/v1/chat endpoint
+      via ``call_lmstudio_native``. Handles reasoning models correctly
+      (separates thinking from final message); use this whenever the
+      backend is known to be LM Studio.
+    - ``openai_compat`` — routes to an OpenAI-compatible
+      /v1/chat/completions endpoint via ``call_openai_compat``. Use
+      for servers that don't support LM Studio's native protocol
+      (vLLM, Ollama, llama.cpp server). Note: on reasoning models,
+      the openai-compat endpoint may return empty content because
+      reasoning tokens count against max_tokens and the grammar of
+      structured outputs can collide with the thinking phase.
     """
     provider = profile_info["provider"]
     resolved_model = profile_info["model"]
@@ -348,7 +365,40 @@ def _run_profile(
     execution_mode = profile_info["execution_mode"]
 
     try:
-        if provider == "openai_compat":
+        if provider == "lmstudio_native":
+            from work_buddy.llm.backends import call_lmstudio_native
+
+            # Strip the ``/v1`` suffix (openai-compat convention) to
+            # build the native base. LM Studio serves both from the
+            # same host; the native path is /api/v1/chat.
+            native_base = profile_info["base_url"].rstrip("/")
+            if native_base.endswith("/v1"):
+                native_base = native_base[:-3]
+            native_base = native_base.rstrip("/")
+
+            native_result = call_lmstudio_native(
+                base_url=native_base,
+                model=resolved_model,
+                system=system,
+                user=user,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                api_key_env=profile_info["api_key_env"],
+            )
+            # Normalize to the {content, input_tokens, output_tokens,
+            # model} shape the rest of this function expects. The
+            # native backend additionally returns reasoning, tool_calls,
+            # reasoning_tokens, and response_id; we drop those here
+            # because llm_call is the plain-text entry point and the
+            # caller didn't opt into tools. A reasoning trace may be
+            # inspected via the lmstudio_native tool-call path.
+            backend_result = {
+                "content": native_result.get("content", ""),
+                "input_tokens": native_result.get("input_tokens", 0),
+                "output_tokens": native_result.get("output_tokens", 0),
+                "model": native_result.get("model", resolved_model),
+            }
+        elif provider == "openai_compat":
             from work_buddy.llm.backends import call_openai_compat
 
             backend_result = call_openai_compat(

@@ -18,6 +18,7 @@ def _html() -> str:
     <div class="tab-bar-left">
         <button class="tab-btn active" data-tab="overview">Overview</button>
         <button class="tab-btn" data-tab="tasks">Tasks</button>
+        <button class="tab-btn" data-tab="review">Review</button>
         <button class="tab-btn" data-tab="status">Status</button>
         <button class="tab-btn" data-tab="chats">Chats</button>
         <button class="tab-btn" data-tab="contracts">Contracts</button>
@@ -49,6 +50,39 @@ def _html() -> str:
     </div>
     <div id="task-list"><div class="loading">Loading tasks...</div></div>
 </div>
+
+<!-- REVIEW -->
+<!-- Background-triage pending-review pool. Populated by the hourly
+     journal-triage cron (and any future background-triage producer).
+     Inline, persistent view — uses the shared triage renderer from
+     script_triage.py (same layout as the Chrome triage modal). -->
+<div class="tab-panel" id="panel-review">
+    <div class="review-toolbar">
+        <div class="section-title">Triage Review</div>
+        <select id="review-source-filter" class="chats-select" onchange="loadReview()">
+            <option value="">All sources</option>
+            <option value="journal_thread">Journal</option>
+            <option value="chrome_tab">Chrome</option>
+            <option value="inline">Inline</option>
+        </select>
+        <button class="chats-accent-btn" onclick="loadReview()">Refresh</button>
+    </div>
+    <div id="review-narrative" class="review-narrative"></div>
+    <div id="review-groups"><div class="loading">Loading review items...</div></div>
+</div>
+
+<!-- Item-detail drawer. Persistent in the DOM, slides in/out from
+     the right. Populated by script_review.py when an item's eye
+     icon is clicked. Lives outside the tab panels so it overlays
+     the whole page regardless of which tab is active. -->
+<aside id="review-drawer" class="review-drawer" aria-hidden="true">
+    <div class="review-drawer-header">
+        <div class="review-drawer-title" id="review-drawer-title">Item detail</div>
+        <button class="review-drawer-close" type="button"
+                onclick="closeReviewDrawer()" title="Close">&times;</button>
+    </div>
+    <div class="review-drawer-body" id="review-drawer-body"></div>
+</aside>
 
 <!-- STATUS -->
 <div class="tab-panel" id="panel-status">
