@@ -23,6 +23,7 @@
     <a href="https://docs.work-buddy.ai">Docs</a> &bull;
     <a href="#quick-start">Quick Start</a> &bull;
     <a href="#how-it-works">How It Works</a> &bull;
+    <a href="#why-this-is-different">Why It's Different</a> &bull;
     <a href="#features">Features</a> &bull;
     <a href="#architecture">Architecture</a> &bull;
     <a href="CONTRIBUTING.md">Contributing</a>
@@ -32,9 +33,9 @@
 
 **work-buddy** is a personal agent framework built on [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and [Obsidian](https://obsidian.md/) which orchestrates tasks, manages workflows, coordinates across projects — so you can focus on your actual work. It gives your AI agent structured multi-step workflows, memory that survives across sessions, deep integration with external tooling, and a dashboard that empowers you directly!
 
-It runs locally, uses your own API keys, and stores everything on your machine. No cloud dependencies. Your workflows, your data, your agent.
+**Runs on your existing Claude Code subscription** — no separate service fees. The agent you're already paying for does the work; your data stays on your machine.
 
-> **90+ capabilities** &bull; **15+ structured workflows** &bull; **35 slash commands** &bull; **205 Python modules** &bull; **Most commits authored by agents**
+> **90+ capabilities** &bull; **15+ structured workflows** &bull; **36 slash commands** &bull; **277 Python modules**
 
 <p align="center">
     <img src="docs/hero_dashboard.png" alt="work-buddy dashboard — browsing agent session conversations" width="700" />
@@ -44,15 +45,32 @@ It runs locally, uses your own API keys, and stores everything on your machine. 
 
 <!-- Replace with demo video when ready -->
 
+### What this looks like in practice
+
+- Review today's work state across notes, tasks, git, browser, and calendar before planning
+- Triage 40 open Chrome tabs into close, task, group, or keep decisions
+- Empty your scratchpad — quick captures get routed into tasks, references, or kept as open questions
+- Run a morning routine that writes a briefing, picks your top priorities, and generates a day plan
+- Keep agent sessions coordinated through dashboard threads, notifications, and approvals
+
+### Principles that shape the framework
+
+- **Preserve user agency** — automate what's deterministic; review, approval, and steering for what's ambiguous
+- **Reduce coordination burden** — structure the work *around* your work so you don't have to
+- **Maximize cost efficiency** — only invoke the LLM when reasoning is actually required; run deterministic steps as code
+- **Build your own customized workflows** — the same gateway and conductor you use to work are used to extend the framework
+
 ---
 
 ## The Problem
 
-Claude Code is powerful, but every session starts from zero. Your agent doesn't know what you were working on yesterday. It can't check your calendar, manage your tasks, or coordinate with the agent session you ran an hour ago. You end up repeating context, re-explaining priorities, and manually stitching together work that should flow smoothly everytime.
+Modern knowledge work is fragmented across notes, tasks, projects, browser tabs, contracts, calendars, and ephemeral agent sessions. The problem is not just that AI forgets yesterday — that's getting solved. It's that neither the AI nor the user has a good runtime for coordinating all this state.
 
-work-buddy fixes this by giving your agent **structure** (workflows and capabilities), **memory** (persistent context across sessions), and **reach** (integrations with the tools where your work actually lives).
+Without that layer, you either do the coordination work manually or let the assistant act with too little grounding and too little oversight. You end up repeating context, re-explaining priorities, and manually stitching together work that should flow smoothly every time.
 
-**The design principle:** empower your agents without losing your agency.
+work-buddy exists to close that gap by giving your agent **structure** (workflows and capabilities), **continuity** (persistent context across sessions), and **reach** (integrations with the tools where your work actually lives).
+
+**The design principle:** automate what is deterministic, surface what is ambiguous, and preserve your agency.
 
 ## How It Works
 
@@ -98,6 +116,18 @@ Five of nine steps run as deterministic code — no tokens spent, no latency, no
 
 ---
 
+## Why This Is Different
+
+Most agent frameworks help developers build agents. work-buddy is narrower and more opinionated: it helps a person run **AI-assisted knowledge work locally**, against the tools and context where their work already lives.
+
+- **Unlike generic orchestration frameworks**, work-buddy ships with concrete workflows for planning, task triage, backlog handling, context collection, browser triage, and project coordination.
+- **Unlike autonomy-first agent systems**, work-buddy is built around review, approval, correction, and user steering.
+- **Unlike cloud-first control planes**, work-buddy keeps the runtime local with strong user-facing oversight surfaces.
+
+The dashboard is not just observability. It is part of the control loop: a place for live status, persistent threads, decision prompts, notifications, and reviewable workflow views, so you can steer the system without doing all the coordination work yourself.
+
+---
+
 ## Features
 
 ### Core Framework
@@ -107,7 +137,16 @@ Five of nine steps run as deterministic code — no tokens spent, no latency, no
 | **MCP Gateway** | Four tools, dynamic discovery. `wb_search("tasks")` finds every task capability with full parameter schemas. No guessing — search first, then execute. |
 | **Workflow Conductor** | Multi-step DAGs with dependency ordering, [auto-run steps](#agentic-programmatic-interleaving) for deterministic code, execution policy (main session vs. subagent), and persistent state. Workflows chain into sub-workflows. |
 | **Knowledge Store** | Typed JSON registry with hierarchical navigation. Agents query `agent_docs` at runtime — capabilities, workflows, and documentation are all discoverable in one call. |
-| **Human-in-the-Loop** | Consent-gated operations, multi-surface notifications, mobile access, and live observability. [More below.](#you-stay-in-control) |
+| **Human-in-the-Loop** | Consent-gated operations, multi-surface notifications, persistent threads, and live observability. [More below.](#you-stay-in-control) |
+
+### Flagship workflows
+
+| Workflow | What it does |
+|---|---|
+| **Morning Routine** | Collects fresh context, checks sign-in, reviews contracts/tasks/calendar, synthesizes a briefing, picks your top priorities, and generates a day plan. |
+| **Chrome Triage** | Clusters and summarizes open tabs, asks clarifying questions when needed, collects user decisions, and executes approved actions. |
+| **Process Backlog** | Walks through captured notes one thread at a time, routing each item into a task, a reference, or an open question — and leaves the unresolved rest behind as a cleaner backlog. |
+| **Task Triage / Weekly Review** | Reviews inbox, staleness, commitments, and active work with structured follow-through. |
 
 ### Integrations
 
@@ -159,9 +198,9 @@ Your agents work autonomously when they can, and check in when they should. You 
 
 ## Self-Developing
 
-This is the part that's hard to explain until you see it.
+Just wait until you see how this one works.
 
-work-buddy develops itself. The same gateway, conductor, and slash commands that manage your daily work are also used to build the framework. Most of the commits in this repo were authored by Claude Code agents using work-buddy's own tooling.
+work-buddy builds work-buddy. The same gateway, conductor, knowledge store, and slash commands that manage your daily work are also used to extend the framework itself — tell an agent what you want, and the foundation does the heavy lifting so your idea ships instead of stalling.
 
 **Want to add a workflow?** Tell your agent what you want, and it will:
 
@@ -243,6 +282,13 @@ A **sidecar supervisor** manages long-running services — starts them on demand
 ---
 
 ## Quick Start
+
+### Fastest path to first value
+
+1. Install and connect the MCP server
+2. Run `/wb-setup guided`
+3. Open the dashboard
+4. Try `/wb-morning` or `/wb-task-triage`
 
 ### Prerequisites
 
@@ -580,7 +626,7 @@ Set `dashboard.external_url` in `config.yaml` to enable "View in dashboard" link
 
 ## Slash Commands
 
-All 35 commands are prefixed `wb-` for easy discovery. Highlights:
+All 36 commands are prefixed `wb-` for easy discovery. Highlights:
 
 | Command | What it does |
 |---------|-------------|
@@ -598,7 +644,7 @@ All 35 commands are prefixed `wb-` for easy discovery. Highlights:
 ## Project Structure
 
 ```
-work_buddy/              # Python package (205 modules, ~58k LOC)
+work_buddy/              # Python package (277 modules, ~58k LOC)
   mcp_server/            # MCP gateway (4 tools, dynamic discovery)
   workflow.py            # DAG conductor with execution policy
   dashboard/             # Web dashboard (Flask, port 5127)
@@ -613,7 +659,7 @@ work_buddy/              # Python package (205 modules, ~58k LOC)
 
 knowledge/               # Agent documentation + workflow DAGs (canonical store)
 contracts/               # Work commitment tracking
-.claude/commands/        # 35 slash commands (wb-* prefix)
+.claude/commands/        # 36 slash commands (wb-* prefix)
 tests/                   # pytest + freezegun test suite
 ```
 
