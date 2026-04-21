@@ -937,6 +937,89 @@
       "return-results": "Return:\n1. The **tagged text** (original content with inserted thread tags)\n2. The **thread list** (extracted structured objects)\n3. The **validation result**\n\nThe caller (`process-backlog.md`) uses the thread list to feed into the routing workflow."
     }
   },
+  "tasks/task-new": {
+    "kind": "workflow",
+    "name": "Task New",
+    "description": "Interactive task creation with namespace-tag inference. Plans the task, enriches with tag-universe context, confirms with the user (especially for new namespaces), then applies via task_create.",
+    "workflow_name": "task-new",
+    "execution": "main",
+    "steps": [
+      {
+        "id": "plan",
+        "name": "Plan the task and propose tags",
+        "step_type": "reasoning",
+        "depends_on": [],
+        "result_schema": {
+          "required_keys": ["task_text"],
+          "key_types": {
+            "task_text": "str",
+            "urgency": "str",
+            "project": "str",
+            "due_date": "str",
+            "contract": "str",
+            "summary": "str",
+            "proposed_tags": "list"
+          }
+        }
+      },
+      {
+        "id": "enrich",
+        "name": "Enrich plan with tag-universe context",
+        "step_type": "code",
+        "depends_on": ["plan"],
+        "auto_run": {
+          "callable": "work_buddy.obsidian.tasks.namespace_suggest.enrich_plan",
+          "input_map": {
+            "plan": "plan"
+          },
+          "timeout": 30
+        },
+        "visibility": {
+          "mode": "summary",
+          "include_keys": ["suggestions", "tag_status", "universe_size"]
+        }
+      },
+      {
+        "id": "confirm",
+        "name": "Confirm plan with user (especially any new namespaces)",
+        "step_type": "reasoning",
+        "depends_on": ["enrich"],
+        "result_schema": {
+          "required_keys": ["final_plan", "confirmed"],
+          "key_types": {
+            "final_plan": "dict",
+            "confirmed": "bool"
+          }
+        }
+      },
+      {
+        "id": "apply",
+        "name": "Create the task (via task_create)",
+        "step_type": "code",
+        "depends_on": ["confirm"],
+        "visibility": {
+          "mode": "summary",
+          "include_keys": ["success", "task_id", "task_line", "skipped", "message"]
+        }
+      },
+      {
+        "id": "report",
+        "name": "Report the created task",
+        "step_type": "reasoning",
+        "depends_on": ["apply"]
+      }
+    ],
+    "tags": ["tasks", "task", "new", "create", "namespace"],
+    "parents": ["tasks"],
+    "allow_override": false,
+    "step_instructions": {
+      "plan": "Agentic step. Read the user's request (from the slash-command argument or the surrounding conversation) and emit a structured plan.\n\nAdvance with a dict of this exact shape (omit optional fields when unknown; do NOT invent):\n\n```json\n{\n  \"task_text\": \"short single-line description (required)\",\n  \"urgency\": \"low | medium | high\",\n  \"project\": \"slug, if obvious or explicit\",\n  \"contract\": \"contract slug the task serves, if known\",\n  \"due_date\": \"YYYY-MM-DD, only if the user mentioned a date\",\n  \"summary\": \"only if the user asked for a linked note\",\n  \"proposed_tags\": [\"paper/ecg-classifier\", \"experiment/augmentation\"]\n}\n```\n\nReason about namespace tags at this step using whatever context you have (session, active contract, recent git, recent conversation). Reserved prefixes (`projects/`, `todo`, `wb/`, `tasker/`) are not user namespaces — don't propose them as tags. The next step enriches your proposal with existence + near-match checks against the namespace universe.",
+      "enrich": "Auto-run. Calls namespace_suggest.enrich_plan on the plan from the prior step. Returns:\n- `suggestions`: ranked existing namespaces relevant to task_text\n- `tag_status`: per proposed_tag, whether it already exists, and if not, the closest near-matches\n- `universe_size`: total registered namespaces\nYou don't call this directly — the conductor does.",
+      "confirm": "Agentic step. Using the enriched output:\n\n1. If all proposed_tags have `tag_status[tag].exists == true`, and they look right given the suggestions, you can confirm without asking.\n2. If any proposed_tag has `exists: false`, you are about to mint a new namespace. Present the tag, its near-matches (from tag_status), and ask the user: keep as new / use an existing near-match / rename.\n3. If the suggestions include a strong match you hadn't proposed, consider it briefly and surface to the user only if it changes the answer.\n\nAdvance with:\n\n```json\n{\n  \"final_plan\": {\n    \"task_text\": \"...\",\n    \"tags\": [\"final\", \"list\", \"of\", \"tags\"],\n    \"urgency\": \"medium\",\n    \"project\": \"optional\",\n    \"contract\": \"optional\",\n    \"due_date\": \"optional\",\n    \"summary\": \"optional\"\n  },\n  \"confirmed\": true\n}\n```\n\nIf the user declines (e.g. changed their mind), advance with `{\"final_plan\": {}, \"confirmed\": false}`. The apply step will no-op.",
+      "apply": "If the confirm step's `confirmed` is false, skip the create call entirely and return `{\"success\": true, \"skipped\": true}`.\n\nOtherwise, read the confirm step's `final_plan` and call task_create via the gateway (which handles consent):\n\n```\nfinal_plan = <confirm.final_plan>\nparams = {\"task_text\": final_plan[\"task_text\"]}\nfor k in (\"urgency\", \"project\", \"due_date\", \"contract\", \"summary\", \"tags\"):\n    if final_plan.get(k) is not None:\n        params[k] = final_plan[k]\nresult = mcp__work-buddy__wb_run(\"task_create\", params)\n```\n\nReturn the task_create result as the step output. If task_create returns a consent timeout, the user can approve on any surface — do not retry inside this step; the report step will tell them what happened.",
+      "report": "Agentic step. One-line confirmation: task ID and a short paraphrase. Do NOT open the note, do NOT suggest follow-ups unless the user asked. If apply.skipped is true, say the task was not created."
+    }
+  },
   "tasks/task-triage": {
     "kind": "workflow",
     "name": "Task Triage",

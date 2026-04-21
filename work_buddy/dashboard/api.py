@@ -356,7 +356,8 @@ def get_tasks_summary() -> dict[str, Any]:
                     urgency = level
                     break
 
-            # Extract state tag
+            # Provisional state from legacy inline tags. SQLite enrichment
+            # below overrides this with the real store state when available.
             state = "inbox"
             for tag in ["#todo/focused", "#todo/next", "#todo/waiting", "#todo/someday", "#todo/blocked"]:
                 if tag in text:
@@ -385,13 +386,153 @@ def get_tasks_summary() -> dict[str, Any]:
         logger.warning("Failed to read tasks: %s", exc)
         return {"tasks": [], "counts": {}, "error": str(exc)}
 
-    # Count by state
+    # Enrich with real state from the SQLite store. The markdown line only
+    # tells us done-vs-not-done; the store carries the richer lifecycle
+    # (inbox / mit / focused / snoozed / done) that the dashboard's state
+    # filter relies on. Also attach is_recent so the namespace tree can
+    # compute its relevance score client-side without a separate endpoint.
+    try:
+        from datetime import datetime, timedelta, timezone
+        from work_buddy.obsidian.tasks import store as tasks_store
+
+        recent_days = int(
+            _cfg.get("tasks", {}).get("namespace_recent_days", 14)
+        )
+        cutoff_iso = (
+            datetime.now(timezone.utc) - timedelta(days=max(0, recent_days))
+        ).isoformat()
+
+        store_rows = {r["task_id"]: r for r in tasks_store.query(include_archived=False)}
+        for t in tasks:
+            row = store_rows.get(t.get("id"))
+            if row:
+                # Store state wins. Checkbox-derived done still forces "done"
+                # (covers the case where a user ticked the box but task_sync
+                # hasn't caught up — the UI shouldn't show a stale state).
+                t["state"] = "done" if t.get("done") else row["state"]
+                t["is_recent"] = bool(row.get("created_at", "") >= cutoff_iso)
+            else:
+                t["is_recent"] = False
+    except Exception as exc:
+        logger.debug("Task state enrichment skipped: %s", exc)
+
+    # Attach namespace tags per task (is_namespace=1 only) so the dashboard
+    # tree can be built + counted client-side from the same payload that
+    # drives the list. One bulk query, no N+1.
+    try:
+        from work_buddy.obsidian.tasks import store as tasks_store
+        conn = tasks_store.get_connection()
+        try:
+            rows = conn.execute(
+                "SELECT task_id, tag FROM task_tags WHERE is_namespace = 1"
+            ).fetchall()
+        finally:
+            conn.close()
+        tags_by_task: dict[str, list[str]] = {}
+        for r in rows:
+            tags_by_task.setdefault(r["task_id"], []).append(r["tag"])
+        for t in tasks:
+            t["tags"] = tags_by_task.get(t.get("id"), [])
+    except Exception as exc:
+        logger.debug("Task tag enrichment skipped: %s", exc)
+        for t in tasks:
+            t.setdefault("tags", [])
+
+    # Count by (enriched) state
     counts: dict[str, int] = {}
     for t in tasks:
         s = t["state"]
         counts[s] = counts.get(s, 0) + 1
 
     return {"tasks": tasks, "counts": counts}
+
+
+def list_namespaces(recent_days: int = 14) -> dict[str, Any]:
+    """Return every namespacey tag in the cache with its open-task count.
+
+    Backed by ``task_tags`` (populated by ``task_sync``). Returns a flat
+    list ordered by tag ascending; the frontend is responsible for
+    rendering the tree (split on ``/``).
+
+    Each row carries ``count`` (open tasks on that exact tag) and
+    ``recent_count`` (open tasks whose ``created_at`` falls in the last
+    ``recent_days`` days). The frontend builds a relevance score from
+    these for tree ordering.
+    """
+    try:
+        from work_buddy.obsidian.tasks import store as tasks_store
+        rows = tasks_store.distinct_namespace_tags(recent_days=recent_days)
+        return {
+            "namespaces": rows,
+            "count": len(rows),
+            "recent_days": int(recent_days),
+        }
+    except Exception as exc:
+        logger.warning("Failed to list namespaces: %s", exc)
+        return {"namespaces": [], "count": 0, "recent_days": int(recent_days), "error": str(exc)}
+
+
+def get_tasks_by_namespace(
+    namespace: str,
+    include_descendants: bool = True,
+) -> dict[str, Any]:
+    """Return the flat-task view filtered to a namespace tag.
+
+    With ``include_descendants=True`` (default), matches ``namespace`` and
+    any path starting with ``namespace + '/'``. The returned tasks carry
+    the same shape as ``get_tasks_summary``; additionally this response
+    includes a ``descendants`` list of child-tag counts for tree-UI hints.
+    """
+    namespace = (namespace or "").strip().strip("#").strip("/")
+    if not namespace:
+        return {"namespace": "", "count": 0, "tasks": [], "descendants": []}
+
+    try:
+        from work_buddy.obsidian.tasks import store as tasks_store
+        matched_ids = set(
+            tasks_store.tasks_with_tag(namespace, prefix_match=include_descendants)
+        )
+    except Exception as exc:
+        logger.warning("Failed to query task_tags for %r: %s", namespace, exc)
+        return {
+            "namespace": namespace,
+            "count": 0,
+            "tasks": [],
+            "descendants": [],
+            "error": str(exc),
+        }
+
+    # Reuse the full parsed task list; the id set is small relative to
+    # vault size, and this keeps a single display-text formatter.
+    summary = get_tasks_summary()
+    all_tasks = summary.get("tasks", []) if isinstance(summary, dict) else []
+    filtered = [t for t in all_tasks if t.get("id") in matched_ids]
+
+    # Descendant namespaces (one level below) for UI drill-down.
+    descendants: dict[str, int] = {}
+    try:
+        from work_buddy.obsidian.tasks import store as tasks_store
+        prefix = namespace + "/"
+        for row in tasks_store.distinct_namespace_tags():
+            tag = row["tag"]
+            if tag.startswith(prefix):
+                remainder = tag[len(prefix):]
+                # Collapse to the immediate child segment.
+                child = remainder.split("/", 1)[0]
+                child_tag = prefix + child
+                descendants[child_tag] = descendants.get(child_tag, 0) + int(row["count"])
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.warning("Failed to compute descendants for %r: %s", namespace, exc)
+
+    return {
+        "namespace": namespace,
+        "count": len(filtered),
+        "tasks": filtered,
+        "descendants": [
+            {"tag": tag, "count": count}
+            for tag, count in sorted(descendants.items())
+        ],
+    }
 
 
 def get_sessions_summary() -> dict[str, Any]:

@@ -3099,9 +3099,14 @@ def _task_capabilities() -> list[Capability]:
         assign_task,
         create_task,
         delete_task,
+        set_task_tags_on_line,
         toggle_task,
     )
     from work_buddy.obsidian.tasks.sync import task_sync
+    from work_buddy.obsidian.tasks.namespace_suggest import (
+        namespace_lookup,
+        task_namespace_suggest,
+    )
     from work_buddy.contracts import get_constraints, check_wip_limit
     from work_buddy.mcp_server.context_wrappers import task_scattered
 
@@ -3169,6 +3174,7 @@ def _task_capabilities() -> list[Capability]:
                 "due_date": {"type": "str", "description": "Due date as YYYY-MM-DD", "required": False},
                 "contract": {"type": "str", "description": "Contract slug this task serves", "required": False},
                 "summary": {"type": "str", "description": "If provided, creates a linked note file with this summary", "required": False},
+                "tags": {"type": "list[str]", "description": "Namespace tags (no leading '#'), e.g. ['paper/ecg-classifier', 'experiment/augmentation']. Appended to the task line; picked up into the tag cache on next task_sync.", "required": False},
             },
             callable=create_task,
             search_aliases=["new task", "add task", "create todo", "add todo"],
@@ -3176,6 +3182,63 @@ def _task_capabilities() -> list[Capability]:
             mutates_state=True,
             retry_policy="verify_first",
             consent_operations=["tasks.create_task", "obsidian.write_file"],
+        ),
+        Capability(
+            name="task_set_tags",
+            description="Replace the namespace tags on an existing task's master-list line. Preserves #todo, #projects/*, wikilinks, and plugin emojis.",
+            category="tasks",
+            parameters={
+                "task_id": {"type": "str", "description": "Task ID (e.g., 't-a3f8c1e2')", "required": True},
+                "namespace_tags": {"type": "list[str]", "description": "Replacement list of namespace tags (no leading '#'). An empty list strips all user namespace tags.", "required": True},
+            },
+            callable=set_task_tags_on_line,
+            search_aliases=[
+                "tag task",
+                "retag task",
+                "add namespace to task",
+                "remove tag from task",
+                "set task namespace",
+            ],
+            requires=["obsidian"],
+            mutates_state=True,
+            retry_policy="verify_first",
+            consent_operations=["tasks.update_task", "obsidian.write_file"],
+        ),
+        Capability(
+            name="task_namespace_suggest",
+            description="Rank existing namespace tags by relevance to a task text (hybrid BM25+embedding via the shared embedding service; falls back to token overlap). Returns ranked candidates from the existing universe only — it does not propose new namespaces. The calling agent decides whether to apply suggestions, add more, or mint a new namespace.",
+            category="tasks",
+            parameters={
+                "task_text": {"type": "str", "description": "The task description to score against", "required": True},
+                "contract": {"type": "str", "description": "Optional contract slug for boosting related namespaces", "required": False},
+                "project": {"type": "str", "description": "Optional project slug for boosting related namespaces", "required": False},
+                "limit": {"type": "int", "description": "Max suggestions (default 3)", "required": False},
+            },
+            callable=task_namespace_suggest,
+            search_aliases=[
+                "suggest task tags",
+                "propose namespace",
+                "which namespace fits this task",
+                "tag suggestion",
+            ],
+            requires=[],
+        ),
+        Capability(
+            name="namespace_lookup",
+            description="Return the closest existing namespace tags to a single query. Designed for the 'did you mean?' check before minting a brand-new namespace — the agent calls this to confirm a proposed namespace isn't a near-duplicate of something that already exists.",
+            category="tasks",
+            parameters={
+                "query": {"type": "str", "description": "Candidate namespace path or label (with or without leading '#')", "required": True},
+                "limit": {"type": "int", "description": "Max results (default 5)", "required": False},
+            },
+            callable=namespace_lookup,
+            search_aliases=[
+                "did you mean namespace",
+                "nearest namespace",
+                "check namespace exists",
+                "namespace duplicate check",
+            ],
+            requires=[],
         ),
         Capability(
             name="task_assign",

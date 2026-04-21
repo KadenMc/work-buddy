@@ -56,6 +56,14 @@ CREATE TABLE IF NOT EXISTS task_sessions (
     UNIQUE(task_id, session_id)
 );
 
+CREATE TABLE IF NOT EXISTS task_tags (
+    task_id       TEXT NOT NULL,
+    tag           TEXT NOT NULL,        -- normalized, no leading '#'
+    is_namespace  INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (task_id, tag),
+    FOREIGN KEY (task_id) REFERENCES task_metadata(task_id) ON DELETE CASCADE
+);
+
 CREATE INDEX IF NOT EXISTS idx_task_state
     ON task_metadata(state);
 CREATE INDEX IF NOT EXISTS idx_task_contract
@@ -66,6 +74,10 @@ CREATE INDEX IF NOT EXISTS idx_task_sessions_task
     ON task_sessions(task_id);
 CREATE INDEX IF NOT EXISTS idx_task_sessions_session
     ON task_sessions(session_id);
+CREATE INDEX IF NOT EXISTS idx_task_tags_tag
+    ON task_tags(tag);
+CREATE INDEX IF NOT EXISTS idx_task_tags_ns
+    ON task_tags(is_namespace, tag);
 """
 
 VALID_STATES = {"inbox", "mit", "focused", "snoozed", "done"}
@@ -427,5 +439,130 @@ def get_sessions(task_id: str) -> list[dict[str, Any]]:
             (task_id,),
         ).fetchall()
         return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+# ── Tag cache (mirrors markdown tags from task lines) ──────────
+#
+# The markdown task line is the source of truth for tags. This table is a
+# cache rebuilt by task_sync on each run. Do not treat it as authoritative —
+# if it disagrees with the line, the line wins.
+
+
+def set_task_tags(
+    task_id: str,
+    tags: list[tuple[str, bool]],
+) -> None:
+    """Replace all tag rows for a task with the given list.
+
+    Args:
+        task_id: The task this tag set applies to.
+        tags: Iterable of (tag, is_namespace) pairs. Tag strings must NOT
+              include the leading '#'.
+    """
+    conn = get_connection()
+    try:
+        conn.execute("DELETE FROM task_tags WHERE task_id = ?", (task_id,))
+        if tags:
+            conn.executemany(
+                """INSERT OR REPLACE INTO task_tags
+                   (task_id, tag, is_namespace) VALUES (?, ?, ?)""",
+                [(task_id, tag, 1 if is_ns else 0) for tag, is_ns in tags],
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_task_tags(task_id: str) -> list[dict[str, Any]]:
+    """Return all tag rows for a task."""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT task_id, tag, is_namespace FROM task_tags WHERE task_id = ? ORDER BY tag",
+            (task_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def tasks_with_tag(
+    tag: str,
+    *,
+    prefix_match: bool = False,
+    namespace_only: bool = False,
+) -> list[str]:
+    """Return task IDs whose tag cache contains ``tag``.
+
+    With ``prefix_match=True``, also matches descendant tags (e.g. a query
+    for ``"paper"`` returns tasks tagged ``paper``, ``paper/ecg``, and
+    ``paper/ecg/experiments``). Only non-archived tasks are returned.
+    """
+    clauses = ["t.archived_at IS NULL"]
+    params: list[Any] = []
+
+    if prefix_match:
+        clauses.append("(tt.tag = ? OR tt.tag LIKE ?)")
+        params.extend([tag, f"{tag}/%"])
+    else:
+        clauses.append("tt.tag = ?")
+        params.append(tag)
+
+    if namespace_only:
+        clauses.append("tt.is_namespace = 1")
+
+    where = " AND ".join(clauses)
+
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            f"""SELECT DISTINCT tt.task_id FROM task_tags tt
+                JOIN task_metadata t ON t.task_id = tt.task_id
+                WHERE {where}
+                ORDER BY tt.task_id""",
+            params,
+        ).fetchall()
+        return [r["task_id"] for r in rows]
+    finally:
+        conn.close()
+
+
+def distinct_namespace_tags(recent_days: int = 14) -> list[dict[str, Any]]:
+    """Return the full set of namespacey tags with open-task counts.
+
+    Result: ``[{"tag": "paper/ecg-classifier", "count": 4, "recent_count": 2}, ...]``
+    ordered by tag ascending. Only counts non-archived tasks.
+
+    ``recent_count`` counts tasks whose ``created_at`` falls within the
+    last ``recent_days`` days. Callers can use this to build a relevance
+    score (e.g. ``count + 2 * recent_count``) for UI ranking.
+    """
+    # Compute the cutoff in application code so the SQL stays portable.
+    from datetime import datetime, timedelta, timezone
+    days = max(0, int(recent_days or 0))
+    cutoff_iso = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """SELECT tt.tag AS tag,
+                      COUNT(DISTINCT tt.task_id) AS count,
+                      SUM(CASE WHEN t.created_at >= ? THEN 1 ELSE 0 END) AS recent_count
+               FROM task_tags tt
+               JOIN task_metadata t ON t.task_id = tt.task_id
+               WHERE tt.is_namespace = 1 AND t.archived_at IS NULL
+               GROUP BY tt.tag
+               ORDER BY tt.tag""",
+            (cutoff_iso,),
+        ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            # SUM(CASE ...) returns int, but guard against None on empty aggregates.
+            d["recent_count"] = int(d.get("recent_count") or 0)
+            out.append(d)
+        return out
     finally:
         conn.close()

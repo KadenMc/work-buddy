@@ -244,7 +244,19 @@ function renderTriageReview(container, presentation, options) {
         taskAssignments: {},  // {groupIndex: taskId} for record_into_task
         newTaskTexts: {},     // {groupIndex: text} for create_task
         overrideReasons: {},  // {groupIndex: reason} for non-obvious action changes
+        namespaceTags: {},    // {groupIndex: [tag, tag, ...]} applied to new/recorded tasks
     };
+
+    // Pre-fetched namespace universe for autocomplete. Populated once per
+    // Review-tab render; stays empty for modal callers that never use it.
+    let _nsUniverse = null;
+    function ensureNamespaceUniverse() {
+        if (_nsUniverse !== null) return Promise.resolve(_nsUniverse);
+        return fetch('/api/namespaces').then(r => r.json()).then(d => {
+            _nsUniverse = (d && Array.isArray(d.namespaces)) ? d.namespaces : [];
+            return _nsUniverse;
+        }).catch(() => { _nsUniverse = []; return _nsUniverse; });
+    }
 
     for (const action of ACTIONS) {
         for (const gi of (pres.groups_by_action || {})[action] || []) {
@@ -255,6 +267,9 @@ function renderTriageReview(container, presentation, options) {
             // Pre-populate task assignments from pipeline
             if (g.likely_task_id) state.taskAssignments[g.index] = g.likely_task_id;
             if (g.suggested_task_text) state.newTaskTexts[g.index] = g.suggested_task_text;
+            if (Array.isArray(g.suggested_namespace_tags)) {
+                state.namespaceTags[g.index] = [...g.suggested_namespace_tags];
+            }
         }
     }
 
@@ -398,6 +413,14 @@ function renderTriageReview(container, presentation, options) {
         }
         mainCol.appendChild(pills);
 
+        // Namespace tag chips — user can set tags that apply to the task
+        // produced/updated by this group (create_task or record_into_task).
+        // Only the Review tab opts in via options.showNamespaceTags; other
+        // callers (modal) ignore this surface.
+        if (options.showNamespaceTags) {
+            renderNamespaceTagsArea(mainCol, group);
+        }
+
         // Items in left column
         const items = group._items || group.items || [];
         const itemsArea = document.createElement('div');
@@ -481,6 +504,9 @@ function renderTriageReview(container, presentation, options) {
         if (state.taskAssignments[group.index]) entry.target_task_id = state.taskAssignments[group.index];
         if (state.newTaskTexts[group.index]) entry.new_task_text = state.newTaskTexts[group.index];
         if (state.overrideReasons[group.index]) entry.override_reason = state.overrideReasons[group.index];
+        if ((state.namespaceTags[group.index] || []).length > 0) {
+            entry.namespace_tags = [...state.namespaceTags[group.index]];
+        }
 
         await onSubmit([entry], []);
 
@@ -491,6 +517,7 @@ function renderTriageReview(container, presentation, options) {
         delete state.taskAssignments[group.index];
         delete state.newTaskTexts[group.index];
         delete state.overrideReasons[group.index];
+        delete state.namespaceTags[group.index];
 
         // Visually retire the card in place so the user sees the
         // ack without the whole list flickering.
@@ -579,6 +606,139 @@ function renderTriageReview(container, presentation, options) {
         // Insert after pills
         const pills = mainCol.querySelector('.wv-action-pills');
         if (pills && pills.nextSibling) mainCol.insertBefore(wrap, pills.nextSibling);
+        else mainCol.appendChild(wrap);
+    }
+
+    // ---- Namespace tag chips (applies to new/recorded tasks) ----
+
+    function _sanitizeTag(raw) {
+        const cleaned = String(raw || '').trim().replace(/^#+/, '').trim();
+        if (!cleaned) return '';
+        // Mirror mutations.NAMESPACE_TAG_RE: lowercase letters/digits, '-_/'.
+        if (!/^[a-z0-9][a-z0-9_/-]*$/i.test(cleaned)) return '';
+        return cleaned;
+    }
+
+    function renderNamespaceTagsArea(mainCol, group) {
+        // Only meaningful for actions that produce/touch a task. For the
+        // others we still render the container but keep it hidden via the
+        // body class, so toggling action pills doesn't rebuild layout.
+        const wrap = document.createElement('div');
+        wrap.className = 'wv-namespace-tags';
+
+        const label = document.createElement('div');
+        label.className = 'wv-namespace-tags-label';
+        label.textContent = 'Namespace tags';
+        wrap.appendChild(label);
+
+        const chipRow = document.createElement('div');
+        chipRow.className = 'wv-namespace-chip-row';
+        wrap.appendChild(chipRow);
+
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.className = 'wv-namespace-input';
+        input.placeholder = 'paper/ecg-classifier, admin/taxes, \u2026';
+        input.autocomplete = 'off';
+        wrap.appendChild(input);
+
+        const suggestions = document.createElement('div');
+        suggestions.className = 'wv-namespace-suggestions';
+        suggestions.style.display = 'none';
+        wrap.appendChild(suggestions);
+
+        function redrawChips() {
+            chipRow.innerHTML = '';
+            const tags = state.namespaceTags[group.index] || [];
+            if (tags.length === 0) {
+                const empty = document.createElement('span');
+                empty.className = 'wv-namespace-empty';
+                empty.textContent = '(none)';
+                chipRow.appendChild(empty);
+                return;
+            }
+            for (const t of tags) {
+                const chip = document.createElement('span');
+                chip.className = 'wv-namespace-chip';
+                chip.textContent = '#' + t;
+                const x = document.createElement('span');
+                x.className = 'wv-namespace-chip-x';
+                x.textContent = '\u2715';
+                x.title = 'Remove';
+                x.addEventListener('click', () => {
+                    state.namespaceTags[group.index] =
+                        (state.namespaceTags[group.index] || []).filter(v => v !== t);
+                    redrawChips();
+                });
+                chip.appendChild(x);
+                chipRow.appendChild(chip);
+            }
+        }
+
+        function addTag(raw) {
+            const tag = _sanitizeTag(raw);
+            if (!tag) return false;
+            const current = state.namespaceTags[group.index] || [];
+            if (current.includes(tag)) return false;
+            state.namespaceTags[group.index] = [...current, tag];
+            redrawChips();
+            return true;
+        }
+
+        function hideSuggestions() { suggestions.style.display = 'none'; suggestions.innerHTML = ''; }
+
+        function showSuggestions(prefix) {
+            if (!_nsUniverse || _nsUniverse.length === 0) { hideSuggestions(); return; }
+            const pl = (prefix || '').toLowerCase();
+            const current = new Set(state.namespaceTags[group.index] || []);
+            const matches = _nsUniverse
+                .filter(row => !current.has(row.tag))
+                .filter(row => !pl || row.tag.toLowerCase().includes(pl))
+                .slice(0, 8);
+            if (matches.length === 0) { hideSuggestions(); return; }
+            suggestions.innerHTML = '';
+            for (const row of matches) {
+                const opt = document.createElement('div');
+                opt.className = 'wv-namespace-suggestion';
+                opt.innerHTML = '<span>#' + row.tag + '</span>'
+                    + '<span class="wv-namespace-count">' + row.count + '</span>';
+                opt.addEventListener('mousedown', (e) => {
+                    e.preventDefault();  // keep focus on input
+                    if (addTag(row.tag)) { input.value = ''; hideSuggestions(); }
+                });
+                suggestions.appendChild(opt);
+            }
+            suggestions.style.display = 'block';
+        }
+
+        input.addEventListener('input', () => { showSuggestions(input.value); });
+        input.addEventListener('focus', () => {
+            ensureNamespaceUniverse().then(() => showSuggestions(input.value));
+        });
+        input.addEventListener('blur', () => setTimeout(hideSuggestions, 150));
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ',') {
+                e.preventDefault();
+                if (addTag(input.value)) { input.value = ''; hideSuggestions(); }
+            } else if (e.key === 'Backspace' && input.value === '') {
+                const current = state.namespaceTags[group.index] || [];
+                if (current.length > 0) {
+                    state.namespaceTags[group.index] = current.slice(0, -1);
+                    redrawChips();
+                }
+            }
+        });
+
+        redrawChips();
+        // Prime the universe in the background so the first focus is snappy.
+        ensureNamespaceUniverse();
+
+        // Insert after the action pills (and after any override-reason input
+        // that may appear there).
+        const pills = mainCol.querySelector('.wv-action-pills');
+        const reason = mainCol.querySelector('.wv-override-reason');
+        const anchor = reason || pills;
+        if (anchor && anchor.nextSibling) mainCol.insertBefore(wrap, anchor.nextSibling);
         else mainCol.appendChild(wrap);
     }
 
@@ -814,12 +974,18 @@ function renderTriageReview(container, presentation, options) {
             if (state.taskAssignments[g.index]) entry.target_task_id = state.taskAssignments[g.index];
             if (state.newTaskTexts[g.index]) entry.new_task_text = state.newTaskTexts[g.index];
             if (state.overrideReasons[g.index]) entry.override_reason = state.overrideReasons[g.index];
+            if ((state.namespaceTags[g.index] || []).length > 0) {
+                entry.namespace_tags = [...state.namespaceTags[g.index]];
+            }
             gd.push(entry);
         }
         for (const ng of state.newGroups) {
             const entry = { group_index: ng.tempIndex, intent: ng.intent, action: state.decisions[ng.tempIndex] || 'leave', items: ng.items.map(i => i.id), item_overrides: [] };
             if (state.taskAssignments[ng.tempIndex]) entry.target_task_id = state.taskAssignments[ng.tempIndex];
             if (state.newTaskTexts[ng.tempIndex]) entry.new_task_text = state.newTaskTexts[ng.tempIndex];
+            if ((state.namespaceTags[ng.tempIndex] || []).length > 0) {
+                entry.namespace_tags = [...state.namespaceTags[ng.tempIndex]];
+            }
             gd.push(entry);
         }
         btn.textContent = 'Submitting...'; btn.disabled = true;

@@ -46,6 +46,7 @@ _ACTIVE_RUNS: dict[str, WorkflowDAG] = {}
 def start_workflow(
     workflow_name: str,
     params: dict[str, Any] | None = None,
+    agent_session_id: str | None = None,
 ) -> dict[str, Any]:
     """Start a workflow and return its first available step.
 
@@ -103,11 +104,21 @@ def start_workflow(
     dag.save()
     _ACTIVE_RUNS[run_id] = dag
 
+    # Pin the caller's session to the DAG so every auto_run subprocess
+    # started from this workflow uses the agent's consent.db (not the
+    # MCP server's bootstrap sidecar session). Without this the
+    # subprocess reads WORK_BUDDY_SESSION_ID from its parent process,
+    # which is the MCP server's own session — and consent grants issued
+    # by the agent land in a different DB.
+    dag.agent_session_id = agent_session_id  # type: ignore[attr-defined]
+
     # Grant blanket consent for the workflow's lifetime.  Accepting a
     # workflow implies consent for all its operations unless a step
     # explicitly opts out via ``requires_individual_consent: true``.
+    # Route the grant to the agent's session DB so auto_run subprocesses
+    # (which also read the agent's DB) can see the blanket.
     from work_buddy.consent import grant_workflow_consent
-    grant_workflow_consent(run_id)
+    grant_workflow_consent(run_id, session_id=agent_session_id)
 
     # Build response with workflow context on first step
     response = _build_response(run_id, dag)
@@ -122,6 +133,7 @@ def start_workflow(
 def advance_workflow(
     workflow_run_id: str,
     step_result: Any | None = None,
+    agent_session_id: str | None = None,
 ) -> dict[str, Any]:
     """Complete the current step and return the next one.
 
@@ -133,6 +145,12 @@ def advance_workflow(
     dag = _ACTIVE_RUNS.get(workflow_run_id)
     if dag is None:
         return {"error": f"Unknown workflow run: {workflow_run_id!r}. It may have been completed or lost."}
+
+    # If the caller supplied a fresher agent session id (e.g. resumption
+    # after an MCP reload re-registered the agent), keep the DAG's pinned
+    # session in sync. Otherwise leave whatever was stored at start_workflow.
+    if agent_session_id and getattr(dag, "agent_session_id", None) != agent_session_id:
+        dag.agent_session_id = agent_session_id  # type: ignore[attr-defined]
 
     # Find the currently running step
     running = [
@@ -180,10 +198,13 @@ def advance_workflow(
 
     # If the completed step opted into individual consent, re-grant the
     # workflow blanket so subsequent (non-opted-out) steps resume their
-    # covered-by-blanket behavior.
+    # covered-by-blanket behavior. Route via the DAG-pinned session.
     if current_meta.get("requires_individual_consent", False):
         from work_buddy.consent import grant_workflow_consent
-        grant_workflow_consent(workflow_run_id)
+        grant_workflow_consent(
+            workflow_run_id,
+            session_id=getattr(dag, "agent_session_id", None),
+        )
         logger.info(
             "Main-execution step '%s' complete — workflow blanket re-granted",
             current_id,
@@ -493,7 +514,10 @@ def _build_response(
             # once the agent completes this step.
             if meta.get("requires_individual_consent", False):
                 from work_buddy.consent import revoke_workflow_consent
-                revoke_workflow_consent(run_id)
+                revoke_workflow_consent(
+                    run_id,
+                    session_id=getattr(dag, "agent_session_id", None),
+                )
                 logger.info(
                     "Main-execution step '%s' requires explicit consent — "
                     "workflow blanket temporarily suspended", task_id,
@@ -506,7 +530,10 @@ def _build_response(
         explicit_consent = meta.get("requires_individual_consent", False)
         if explicit_consent:
             from work_buddy.consent import revoke_workflow_consent
-            revoke_workflow_consent(run_id)
+            revoke_workflow_consent(
+                run_id,
+                session_id=getattr(dag, "agent_session_id", None),
+            )
             logger.info(
                 "Step '%s' requires explicit consent — "
                 "workflow blanket temporarily suspended", task_id,
@@ -517,12 +544,16 @@ def _build_response(
             task_id,
             auto_run_spec,
             dag.get_all_results(),
+            agent_session_id=getattr(dag, "agent_session_id", None),
         )
 
         # Re-grant workflow consent if we suspended it
         if explicit_consent:
             from work_buddy.consent import grant_workflow_consent
-            grant_workflow_consent(run_id)
+            grant_workflow_consent(
+                run_id,
+                session_id=getattr(dag, "agent_session_id", None),
+            )
             logger.info(
                 "Step '%s' done — workflow blanket re-granted", task_id,
             )
@@ -631,6 +662,8 @@ def _execute_auto_run(
     step_id: str,
     spec: dict[str, Any],
     step_results: dict[str, Any],
+    *,
+    agent_session_id: str | None = None,
 ) -> dict[str, Any]:
     """Execute an auto_run callable in an isolated subprocess.
 
@@ -643,6 +676,11 @@ def _execute_auto_run(
         spec: ``{"callable": "dotted.path", "kwargs": {...}, "timeout": 30}``
         step_results: All completed step results so far (available via
             ``input_map`` wiring).
+        agent_session_id: The agent session that started this workflow.
+            When provided, the subprocess runs under that session so its
+            consent checks read the same consent.db as the agent's own
+            grants. Falls back to the MCP server's own env session if
+            unset (legacy behavior for non-workflow callers).
 
     Returns:
         ``{"success": True, "value": <return value>}`` or
@@ -688,10 +726,17 @@ def _execute_auto_run(
             }
 
     # --- Build subprocess payload ---
+    # Prefer the workflow-pinned agent session so consent checks hit the
+    # agent's DB; fall back to the MCP server's env for legacy callers.
+    effective_session = (
+        agent_session_id
+        if agent_session_id
+        else os.environ.get("WORK_BUDDY_SESSION_ID", "")
+    )
     payload = {
         "callable": dotted_path,
         "kwargs": _safe_serialize(kwargs),
-        "session_id": os.environ.get("WORK_BUDDY_SESSION_ID", ""),
+        "session_id": effective_session,
     }
 
     repo_root = Path(__file__).resolve().parent.parent.parent
@@ -786,8 +831,14 @@ def _build_complete_response(run_id: str, dag: WorkflowDAG) -> dict[str, Any]:
     dag.save()
 
     # Revoke workflow blanket consent now that the workflow is done.
+    # Route via the DAG-pinned agent session so we undo the grant we
+    # wrote at start_workflow time — otherwise a stale blanket would
+    # linger in the agent's DB.
     from work_buddy.consent import revoke_workflow_consent
-    revoke_workflow_consent(run_id)
+    revoke_workflow_consent(
+        run_id,
+        session_id=getattr(dag, "agent_session_id", None),
+    )
 
     total = dag._graph.number_of_nodes()
     return {

@@ -37,7 +37,118 @@ NOTE_WIKILINK_RE = re.compile(
     r"\[\[([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\|📓\]\]"
 )
 
+# Matches inline tags like `#paper/ecg-classifier` or `#health/sleep`.
+# The lookbehind avoids matching `#` that sits inside a word (e.g., an ID or
+# URL fragment). Nested paths (a/b/c) are allowed.
+TAG_RE = re.compile(r"(?<![\w/])#([a-z0-9][a-z0-9_/-]*)", re.IGNORECASE)
+
+# Tag prefixes that are never treated as user-defined namespaces.
+#
+# - `todo`: plugin/system marker
+# - `tasker/...`: legacy work-buddy metadata (being stripped elsewhere)
+# - `projects/...`: orthogonal identity link into the projects registry
+# Note: `wb/` is NOT reserved — it's the canonical work-buddy-dev namespace.
+# Only the specific inline-todo markers `wb/todo` and `wb/done` are excluded
+# (see RESERVED_TAG_EXACT).
+RESERVED_TAG_PREFIXES: tuple[str, ...] = (
+    "tasker/",
+    "projects/",
+)
+
+# Specific tag values that are reserved regardless of prefix. These are
+# system markers (plugin-owned or inline-todo workflow) that would otherwise
+# be mis-classified as namespaces.
+RESERVED_TAG_EXACT: frozenset[str] = frozenset({
+    "todo",
+    "wb/todo",
+    "wb/done",
+})
+
+# Tags starting with these prefixes are *always* namespacey, regardless of
+# discovery frequency. They give power users an explicit opt-in.
+NAMESPACE_OPT_IN_PREFIXES: tuple[str, ...] = ("ns/", "task/")
+
 logger = get_logger(__name__)
+
+
+def _is_reserved(tag: str) -> bool:
+    """True if ``tag`` matches a reserved prefix or exact-value (never a
+    user namespace)."""
+    tag_lower = tag.lower()
+    if tag_lower in RESERVED_TAG_EXACT:
+        return True
+    for prefix in RESERVED_TAG_PREFIXES:
+        if tag_lower.startswith(prefix):
+            return True
+    return False
+
+
+def _is_opt_in(tag: str) -> bool:
+    """True if ``tag`` uses an always-namespacey opt-in prefix."""
+    tag_lower = tag.lower()
+    return any(tag_lower.startswith(p) for p in NAMESPACE_OPT_IN_PREFIXES)
+
+
+def _namespace_threshold() -> int:
+    """Minimum open-task count for a tag to be classified as a namespace."""
+    cfg = load_config()
+    val = cfg.get("tasks", {}).get("namespace_threshold", 2)
+    try:
+        return max(1, int(val))
+    except (TypeError, ValueError):
+        return 2
+
+
+def extract_tags_from_line(line: str) -> list[str]:
+    """Pull all `#tag` tokens out of a task line, normalized (no leading '#').
+
+    Preserves first-seen order; de-duplicates case-insensitively.
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+    for m in TAG_RE.finditer(line):
+        tag = m.group(1)
+        key = tag.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(tag)
+    return out
+
+
+def classify_tags(
+    tag_counts: dict[str, int],
+    tag_list_for_this_task: list[str],
+    *,
+    threshold: int = 2,
+) -> list[tuple[str, bool]]:
+    """Classify each tag on a single task as namespacey or not.
+
+    A tag is namespacey iff:
+      - it is NOT in the reserved-prefix blocklist, AND
+      - it uses an opt-in prefix (ns/, task/), OR it appears on >= ``threshold``
+        open tasks globally (per ``tag_counts``).
+
+    Reserved tags are still returned (so the cache can be queried for e.g.
+    `#projects/<slug>` linkages) but with ``is_namespace=False``.
+
+    Args:
+        tag_counts: Map of tag -> count of open tasks carrying that tag,
+                    computed once per sync across the whole vault.
+        tag_list_for_this_task: Tags parsed from this task's line.
+        threshold: Minimum count for discovery-based classification.
+    """
+    result: list[tuple[str, bool]] = []
+    for tag in tag_list_for_this_task:
+        if _is_reserved(tag):
+            result.append((tag, False))
+            continue
+        if _is_opt_in(tag):
+            result.append((tag, True))
+            continue
+        count = tag_counts.get(tag.lower(), 0)
+        result.append((tag, count >= threshold))
+    return result
 
 
 def _read_master_list() -> str | None:
@@ -88,14 +199,56 @@ def _parse_file_tasks(content: str) -> dict[str, dict[str, Any]]:
         note_match = NOTE_WIKILINK_RE.search(line_stripped)
         note_uuid = note_match.group(1) if note_match else None
 
+        raw_tags = extract_tags_from_line(line_stripped)
+
         tasks[task_id] = {
             "line_number": i + 1,
             "is_done": is_done,
             "line": line_stripped,
             "note_uuid": note_uuid,
+            "raw_tags": raw_tags,
         }
 
     return tasks
+
+
+def _rebuild_tag_cache(
+    file_tasks: dict[str, dict[str, Any]],
+    surviving_ids: set[str],
+) -> int:
+    """Rebuild the ``task_tags`` cache from parsed line data.
+
+    Only tasks still present in both the file and store (``surviving_ids``)
+    are written; tasks deleted this sync run are cleaned up separately
+    via the FK cascade. Returns the number of tasks whose tag rows were
+    (re)written.
+    """
+    threshold = _namespace_threshold()
+
+    # Global tag frequency across all parsed (open) tasks. Done tasks still
+    # contribute: a namespace doesn't vanish just because a task closed.
+    tag_counts: dict[str, int] = {}
+    for info in file_tasks.values():
+        for tag in info.get("raw_tags", []):
+            tag_counts[tag.lower()] = tag_counts.get(tag.lower(), 0) + 1
+
+    written = 0
+    for task_id in surviving_ids:
+        info = file_tasks.get(task_id)
+        if not info:
+            continue
+        classified = classify_tags(
+            tag_counts,
+            info.get("raw_tags", []),
+            threshold=threshold,
+        )
+        try:
+            store.set_task_tags(task_id, classified)
+            written += 1
+        except Exception as exc:
+            logger.warning("task_sync: failed to write tag cache for %s: %s", task_id, exc)
+
+    return written
 
 
 def task_sync() -> dict[str, Any]:
@@ -227,6 +380,16 @@ def task_sync() -> dict[str, Any]:
                     "task_sync: failed to reconcile note_uuid %s: %s", task_id, exc,
                 )
 
+    # --- Tag cache rebuild ---
+    # Survivors: everything in the file that also has (or now has) a store
+    # record. Excludes records just tombstone-deleted.
+    surviving_ids = file_ids & (store_ids | set(created))
+    try:
+        tag_rows_written = _rebuild_tag_cache(file_tasks, surviving_ids)
+    except Exception as exc:
+        logger.warning("task_sync: tag cache rebuild failed: %s", exc)
+        tag_rows_written = 0
+
     # --- Summary ---
     total_actions = (
         len(created)
@@ -244,6 +407,7 @@ def task_sync() -> dict[str, Any]:
         "deleted": len(deleted_from_store),
         "resolved_mismatches": len(resolved_mismatches),
         "resolved_note_uuids": len(resolved_note_uuids),
+        "tag_rows_written": tag_rows_written,
     }
 
     # Include details only if actions were taken (keeps log concise)

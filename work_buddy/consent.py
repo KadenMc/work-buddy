@@ -10,6 +10,16 @@ Consent is stored in a session-scoped SQLite database:
 
 ALL grants are session-scoped — new sessions start with a clean slate.
 
+Session routing (workflow consent):
+    The MCP server runs under its own bootstrap session, which is NOT
+    the agent's session. For workflow grants to be visible to auto_run
+    subprocesses (which run under the agent's session), grant/revoke
+    pass ``session_id=`` through to ``ConsentCache.grant/revoke`` — the
+    cache opens a one-off connection to that specific session's DB.
+    The conductor pins ``agent_session_id`` on the DAG and threads it
+    to every grant/revoke/auto_run call. Full notes in the
+    ``notifications/consent`` directions unit under "Session routing".
+
 Three consent modes:
     - "always": long-lived (24h TTL), session-scoped
     - "temporary": time-limited via caller-specified TTL
@@ -282,22 +292,39 @@ class ConsentCache:
             self._db_path = get_session_consent_db_path()
         return self._db_path
 
-    def _connect(self) -> sqlite3.Connection:
-        """Open a connection and ensure the schema exists."""
-        db_path = self._get_db_path()
+    def _connect(self, session_id: str | None = None) -> sqlite3.Connection:
+        """Open a connection and ensure the schema exists.
+
+        When ``session_id`` is provided, opens the connection against
+        that specific session's ``consent.db`` — bypassing the instance
+        cache. This is needed for writes/reads that must land in the
+        agent's session DB (e.g. the workflow blanket grant), rather
+        than whichever session the MCP server process itself happens
+        to be running as.
+        """
+        if session_id:
+            from work_buddy.agent_session import (
+                get_session_consent_db_path, get_session_dir,
+            )
+            db_path = get_session_consent_db_path(get_session_dir(session_id))
+        else:
+            db_path = self._get_db_path()
         db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(str(db_path), timeout=5)
         conn.execute("PRAGMA journal_mode=WAL")
-        if not self._initialized:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS grants (
-                    operation TEXT PRIMARY KEY,
-                    mode TEXT NOT NULL,
-                    granted_at TEXT NOT NULL,
-                    expires_at TEXT
-                )
-            """)
-            conn.commit()
+        # Schema is cheap-idempotent; always ensure it (we may be opening a
+        # DB that this cache instance hasn't seen before when session_id is
+        # supplied). The _initialized flag only tracks the default path.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS grants (
+                operation TEXT PRIMARY KEY,
+                mode TEXT NOT NULL,
+                granted_at TEXT NOT NULL,
+                expires_at TEXT
+            )
+        """)
+        conn.commit()
+        if session_id is None:
             self._initialized = True
         return conn
 
@@ -362,12 +389,19 @@ class ConsentCache:
         operation: str,
         mode: str,
         ttl_minutes: int | None = None,
+        *,
+        session_id: str | None = None,
     ) -> None:
         """Grant consent for an operation (all grants are session-scoped).
 
         mode="always": 24h TTL, session-scoped.
         mode="temporary": caller-specified TTL, session-scoped.
         mode="once": no expiry (revoked programmatically after execution).
+
+        When ``session_id`` is given, the grant is written to that
+        specific session's DB (bypassing the instance cache). This is
+        how workflow blanket grants are routed into the agent's DB so
+        auto_run subprocesses (which read the agent's DB) can see them.
         """
         now = datetime.now(timezone.utc)
 
@@ -384,7 +418,7 @@ class ConsentCache:
                 f"Invalid mode: {mode}. Must be 'always', 'temporary', or 'once'."
             )
 
-        conn = self._connect()
+        conn = self._connect(session_id=session_id)
         try:
             conn.execute(
                 """INSERT OR REPLACE INTO grants (operation, mode, granted_at, expires_at)
@@ -395,9 +429,14 @@ class ConsentCache:
         finally:
             conn.close()
 
-    def revoke(self, operation: str) -> None:
-        """Revoke consent for an operation."""
-        conn = self._connect()
+    def revoke(self, operation: str, *, session_id: str | None = None) -> None:
+        """Revoke consent for an operation.
+
+        When ``session_id`` is given, the revoke targets that specific
+        session's DB — needed to undo grants that were written there
+        (e.g. the workflow blanket on the agent's DB).
+        """
+        conn = self._connect(session_id=session_id)
         try:
             conn.execute("DELETE FROM grants WHERE operation = ?", (operation,))
             conn.commit()
@@ -671,6 +710,8 @@ _WORKFLOW_DEFAULT_TTL_MINUTES = 180  # 3 hours
 def grant_workflow_consent(
     workflow_run_id: str,
     ttl_minutes: int = _WORKFLOW_DEFAULT_TTL_MINUTES,
+    *,
+    session_id: str | None = None,
 ) -> None:
     """Grant blanket consent for all operations during a workflow run.
 
@@ -681,23 +722,39 @@ def grant_workflow_consent(
     Args:
         workflow_run_id: For audit trail only.
         ttl_minutes: How long the blanket lasts (default 3h).
+        session_id: When given, the grant is written to that session's
+            consent DB instead of the MCP server's default. This is how
+            workflow blankets land in the agent's DB so auto_run
+            subprocesses (running under the agent's session) can see
+            them.
     """
     _cache.grant(
         ConsentCache.WORKFLOW_CONSENT_OP,
         mode="temporary",
         ttl_minutes=ttl_minutes,
+        session_id=session_id,
     )
     _audit_log(
         "WORKFLOW_CONSENT_GRANTED",
         ConsentCache.WORKFLOW_CONSENT_OP,
-        f"workflow={workflow_run_id} | ttl={ttl_minutes}m",
+        f"workflow={workflow_run_id} | ttl={ttl_minutes}m"
+        + (f" | session={session_id}" if session_id else ""),
     )
 
 
-def revoke_workflow_consent(workflow_run_id: str = "") -> None:
-    """Revoke the workflow blanket consent (called on workflow completion)."""
+def revoke_workflow_consent(
+    workflow_run_id: str = "",
+    *,
+    session_id: str | None = None,
+) -> None:
+    """Revoke the workflow blanket consent (called on workflow completion).
+
+    When ``session_id`` is given, the revoke targets that session's DB —
+    mirroring the symmetric grant so we don't leave stale blankets
+    behind in agents' DBs.
+    """
     try:
-        _cache.revoke(ConsentCache.WORKFLOW_CONSENT_OP)
+        _cache.revoke(ConsentCache.WORKFLOW_CONSENT_OP, session_id=session_id)
         _audit_log(
             "WORKFLOW_CONSENT_REVOKED",
             ConsentCache.WORKFLOW_CONSENT_OP,

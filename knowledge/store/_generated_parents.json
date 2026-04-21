@@ -32,12 +32,13 @@
       "journal/hot_files",
       "journal/journal_sign_in",
       "journal/journal_state",
+      "journal/journal_triage_scan",
       "journal/journal_write",
       "journal/running_notes",
       "journal/vault_write_at_location"
     ],
     "content": {
-      "summary": "Container for 8 capabilities and workflows."
+      "summary": "Container for 9 capabilities and workflows."
     }
   },
   "context": {
@@ -57,10 +58,12 @@
       "context/chrome_tab_close",
       "context/chrome_tab_group",
       "context/chrome_tab_move",
+      "context/context_block",
       "context/context_bundle",
       "context/context_calendar",
       "context/context_chat",
       "context/context_chrome",
+      "context/context_drill_down",
       "context/context_git",
       "context/context_messages",
       "context/context_obsidian",
@@ -101,10 +104,12 @@
       "context/session_uncommitted",
       "context/session_wb_activity",
       "context/triage_execute",
-      "context/triage_item_detail"
+      "context/triage_item_detail",
+      "context/triage_review_pool",
+      "context/triage_submit"
     ],
     "content": {
-      "summary": "Container for 54 capabilities and workflows."
+      "summary": "Container for 58 capabilities and workflows."
     }
   },
   "artifacts": {
@@ -175,6 +180,20 @@
       "summary": "Container for 6 capabilities and workflows."
     }
   },
+  "triage": {
+    "kind": "system",
+    "name": "Triage",
+    "description": "Triage capabilities and workflows",
+    "tags": [
+      "triage"
+    ],
+    "children": [
+      "triage/inline_triage_scan"
+    ],
+    "content": {
+      "summary": "Container for 1 capabilities and workflows."
+    }
+  },
   "memory": {
     "kind": "system",
     "name": "Memory",
@@ -200,21 +219,24 @@
       "tasks"
     ],
     "children": [
+      "tasks/namespace_lookup",
       "tasks/task_archive",
       "tasks/task_assign",
       "tasks/task_briefing",
       "tasks/task_change_state",
       "tasks/task_create",
       "tasks/task_delete",
+      "tasks/task_namespace_suggest",
       "tasks/task_review_inbox",
       "tasks/task_scattered",
+      "tasks/task_set_tags",
       "tasks/task_stale_check",
       "tasks/task_sync",
       "tasks/task_toggle",
       "tasks/weekly_review_data"
     ],
     "content": {
-      "summary": "Container for 12 capabilities and workflows."
+      "summary": "Container for 15 capabilities and workflows."
     }
   },
   "threads": {

@@ -106,6 +106,32 @@ def build_presentation(
             detail = group.get("action_detail", "")
             presentation_group["suggested_task_text"] = detail
 
+        # Pre-populate namespace-tag suggestions for actions that produce or
+        # touch a task. The Review chip UI reads ``suggested_namespace_tags``
+        # and renders them as starting chips the user can accept/edit. These
+        # are lookups into the existing namespace universe — the agent/user
+        # still owns the decision to mint anything new.
+        if action in ("create_task", "record_into_task"):
+            suggested_text = (
+                presentation_group.get("suggested_task_text")
+                or presentation_group.get("intent")
+                or ""
+            )
+            if suggested_text:
+                try:
+                    from work_buddy.obsidian.tasks.namespace_suggest import (
+                        task_namespace_suggest,
+                    )
+                    result = task_namespace_suggest(task_text=suggested_text, limit=3)
+                    tags = [s["tag"] for s in result.get("suggestions", [])]
+                    if tags:
+                        presentation_group["suggested_namespace_tags"] = tags
+                except Exception as exc:
+                    # Lookups must never break the presentation build.
+                    logger.debug(
+                        "namespace suggest skipped for group %d: %s", i, exc,
+                    )
+
         groups_by_action[action].append(presentation_group)
 
     # Attach clarifying questions to their target groups
