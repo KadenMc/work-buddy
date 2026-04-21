@@ -19,7 +19,7 @@ def test_main_execution_individual_consent_suspends_blanket(monkeypatch):
     )
     monkeypatch.setattr(
         c, "revoke_workflow_consent",
-        lambda run_id="": calls.append(("revoke", run_id)),
+        lambda run_id="", **_: calls.append(("revoke", run_id)),
     )
 
     # Build a minimal fake DAG node with requires_individual_consent set

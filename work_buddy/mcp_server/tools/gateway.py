@@ -857,7 +857,10 @@ def register_tools(mcp: FastMCP) -> None:
             _t0 = _time.monotonic()
             try:
                 result = await asyncio.to_thread(
-                    _conductor().start_workflow, capability, parsed_params,
+                    _conductor().start_workflow,
+                    capability,
+                    parsed_params,
+                    _resolve_session(ctx),
                 )
             except Exception as exc:
                 _complete_operation(op_id, error=f"{type(exc).__name__}: {exc}")
@@ -1106,7 +1109,10 @@ def register_tools(mcp: FastMCP) -> None:
         parsed_result = _parse_params(step_result)
         _t0 = _time.monotonic()
         result = await asyncio.to_thread(
-            _conductor().advance_workflow, workflow_run_id, parsed_result,
+            _conductor().advance_workflow,
+            workflow_run_id,
+            parsed_result,
+            _resolve_session(ctx),
         )
         # Activity ledger: record workflow step
         from work_buddy.mcp_server.activity_ledger import record_workflow_step
@@ -1389,7 +1395,11 @@ def retry_operation(operation_id: str) -> dict[str, Any]:
     while True:
         try:
             if record["type"] == "workflow":
-                result = _conductor().start_workflow(record["name"], record["params"])
+                result = _conductor().start_workflow(
+                    record["name"],
+                    record["params"],
+                    record.get("originating_session_id"),
+                )
             else:
                 result = entry.callable(**record["params"])
             break

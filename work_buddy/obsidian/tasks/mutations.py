@@ -46,6 +46,42 @@ CHECKBOX_RE = re.compile(r"^(- \[)([ x])(\])")
 URGENCY_EMOJI_RE = re.compile(r"[🔼⏫]")
 TASK_ID_RE = re.compile(r"🆔\s*(t-[0-9a-f]+)")
 
+# User-supplied namespace tags must match this shape (no leading '#').
+# Mirrors sync.TAG_RE but as an anchored full-match pattern.
+NAMESPACE_TAG_RE = re.compile(r"^[a-z0-9][a-z0-9_/-]*$", re.IGNORECASE)
+
+
+def _normalize_tags(tags: list[str] | None) -> list[str]:
+    """Accept a list of tag strings with or without leading '#'.
+
+    Strips leading '#', rejects empties and malformed tokens, de-dupes
+    (case-insensitive, preserving first-seen order). Returns a list of
+    normalized tag names (no '#').
+
+    Raises ValueError on a malformed tag so create_task fails loudly.
+    """
+    if not tags:
+        return []
+    seen: set[str] = set()
+    out: list[str] = []
+    for raw in tags:
+        if not isinstance(raw, str):
+            raise ValueError(f"Tag must be a string, got {type(raw).__name__}: {raw!r}")
+        tag = raw.strip().lstrip("#").strip()
+        if not tag:
+            raise ValueError(f"Tag is empty or whitespace: {raw!r}")
+        if not NAMESPACE_TAG_RE.match(tag):
+            raise ValueError(
+                f"Tag {raw!r} is malformed — use lowercase letters, digits, '-', '_', "
+                f"and '/' for nesting (e.g. 'paper/ecg-classifier')."
+            )
+        key = tag.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(tag)
+    return out
+
 
 # ── ID generation ───────────────────────────────────────────────
 
@@ -200,6 +236,127 @@ def _strip_legacy_tags(line: str) -> str:
     # Clean up double spaces
     line = re.sub(r"  +", " ", line).rstrip()
     return line
+
+
+def _rewrite_namespace_tags(line: str, new_tags: list[str]) -> str:
+    """Replace the set of namespace tags on a task line.
+
+    Preserves: checkbox, leading text, `[[...|📓]]` wikilink, `#todo`,
+    `#projects/<slug>`, `#tasker/*`, plugin emojis (🆔, 📅, ✅, priority).
+    Strips: any other `#<tag>` on the line (i.e. existing user-supplied
+    namespace tags) plus `#ns/...` and `#task/...` opt-in tokens.
+    Inserts the new `#<tag>` list immediately before the `🆔` token (or
+    at the end of the line if 🆔 is missing).
+    """
+    # Reserved tokens we never strip. Kept in sync with sync.py's
+    # RESERVED_TAG_EXACT / RESERVED_TAG_PREFIXES: `wb/` is the canonical
+    # user namespace prefix and must be rewritable, but the specific
+    # inline-todo markers `wb/todo` and `wb/done` are preserved.
+    def _is_preserved(tag: str) -> bool:
+        tl = tag.lower()
+        if tl in ("todo", "wb/todo", "wb/done"):
+            return True
+        for prefix in ("projects/", "tasker/"):
+            if tl.startswith(prefix):
+                return True
+        return False
+
+    # Walk the line tokenwise so we don't disturb wikilinks or emoji.
+    tokens = line.split(" ")
+    kept: list[str] = []
+    for tok in tokens:
+        # Strip stray trailing punctuation? Not needed — task lines are
+        # space-separated by construction in create_task.
+        if tok.startswith("#"):
+            tag_body = tok[1:]
+            if NAMESPACE_TAG_RE.match(tag_body) and not _is_preserved(tag_body):
+                # This is a namespace-or-opt-in tag; drop it.
+                continue
+        kept.append(tok)
+
+    # Insert new tags before the 🆔 token.
+    validated = []
+    for t in new_tags:
+        t = t.strip().lstrip("#").strip()
+        if not t:
+            continue
+        if not NAMESPACE_TAG_RE.match(t):
+            raise ValueError(f"Tag {t!r} is malformed")
+        validated.append(f"#{t}")
+
+    # Dedupe tokens we're about to add in case caller passed dupes.
+    seen: set[str] = set()
+    dedup: list[str] = []
+    for tok in validated:
+        key = tok.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        dedup.append(tok)
+
+    # Find 🆔 position in kept tokens.
+    id_idx = -1
+    for i, tok in enumerate(kept):
+        if tok == "🆔":
+            id_idx = i
+            break
+        if TASK_ID_RE.search(tok):
+            # e.g. the 🆔 and ID got glued into a single token.
+            id_idx = i
+            break
+
+    if id_idx >= 0:
+        new_tokens = kept[:id_idx] + dedup + kept[id_idx:]
+    else:
+        new_tokens = kept + dedup
+
+    # Collapse any runs of blank tokens we produced by dropping tags.
+    new_tokens = [t for t in new_tokens if t != ""]
+
+    return " ".join(new_tokens)
+
+
+@bridge_retry()
+def set_task_tags_on_line(
+    task_id: str,
+    namespace_tags: list[str],
+) -> dict[str, Any]:
+    """Replace the namespace tags on a task line in the master list.
+
+    The task line's `#todo`, `#projects/<slug>`, `#tasker/*`, `#wb/*`,
+    wikilink, 🆔, and plugin emojis are preserved. Existing user-namespace
+    tags (anything else matching `#<tag>`) are stripped, and ``namespace_tags``
+    are inserted before the 🆔 marker.
+
+    After the markdown write, the ``task_tags`` cache for this task is
+    refreshed from the new line to keep SQLite in sync immediately; the
+    next ``task_sync`` will re-verify classification.
+    """
+    normalized = _normalize_tags(namespace_tags)
+
+    def _transform(old: str) -> str:
+        return _rewrite_namespace_tags(old, normalized)
+
+    result = _find_and_replace_task_line(
+        file_path=MASTER_TASK_FILE,
+        task_id=task_id,
+        description_match=None,
+        transform_fn=_transform,
+    )
+
+    # Refresh the tag cache for this task from the new token list.
+    if result.get("success"):
+        try:
+            # Seed as namespacey (user-supplied intent). task_sync will
+            # reclassify on its next run.
+            store.set_task_tags(task_id, [(t, True) for t in normalized])
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.warning(
+                "set_task_tags_on_line: cache refresh failed for %s: %s",
+                task_id, exc,
+            )
+
+    return result
 
 
 # ── Public API ──────────────────────────────────────────────────
@@ -461,12 +618,20 @@ def create_task(
     due_date: str | None = None,
     contract: str | None = None,
     summary: str | None = None,
+    tags: list[str] | None = None,
 ) -> dict[str, Any]:
     """Create a new task with an auto-generated ID, optionally with a linked note.
 
     If ``summary`` is provided, a note file is created and linked to the task.
     Metadata (state, urgency, contract) goes to the SQLite store.
-    The task line has only: #todo, text, note link, #projects/*, 🆔, plugin emojis.
+    The task line has: #todo, text, note link, #projects/*, user namespace tags,
+    🆔, plugin emojis.
+
+    ``tags`` is a list of user-defined namespace tags (without leading '#'),
+    e.g. ``["paper/ecg-classifier", "experiment/augmentation"]``. The tokens
+    are appended to the task line before the 🆔 marker. They will be picked
+    up by the next ``task_sync`` into the ``task_tags`` cache and classified
+    according to the reserved-prefix / opt-in / discovery-threshold rules.
 
     This function is idempotent on retry: it checks for existing note files
     and task lines before writing, so the retry capability can safely replay it.
@@ -474,6 +639,7 @@ def create_task(
     task_text = _validate_task_text(task_text)
     if urgency not in store.VALID_URGENCIES:
         raise ValueError(f"Invalid urgency {urgency!r}")
+    namespace_tags = _normalize_tags(tags)
 
     task_id = generate_task_id()
     note_uuid: str | None = None
@@ -499,11 +665,13 @@ def create_task(
         if "A one-paragraph description." in note_content:
             note_content = note_content.replace("A one-paragraph description.", summary)
 
-        tags = ["#todo"]
+        note_tags = ["#todo"]
         if project:
-            tags.append(f"#projects/{project}")
+            note_tags.append(f"#projects/{project}")
+        for t in namespace_tags:
+            note_tags.append(f"#{t}")
         note_content = note_content.replace(
-            "---\n\n#", f"---\n{' '.join(tags)}\n\n#", 1
+            "---\n\n#", f"---\n{' '.join(note_tags)}\n\n#", 1
         )
 
         if not bridge.write_file(note_path, note_content):
@@ -515,6 +683,8 @@ def create_task(
         parts.append(f"[[{note_uuid}|📓]]")
     if project:
         parts.append(f"#projects/{project}")
+    for t in namespace_tags:
+        parts.append(f"#{t}")
     parts.append(f"🆔 {task_id}")
     if due_date:
         parts.append(f"📅 {due_date}")
@@ -539,6 +709,22 @@ def create_task(
             contract=contract,
             note_uuid=note_uuid,
         )
+
+    # --- Seed tag cache ---
+    # Mark user-supplied tags as namespacey by default (they were explicitly
+    # provided). The projects/<slug> token, if any, is also cached but not
+    # flagged as a namespace. The next task_sync will reclassify according
+    # to the full rule set (reserved prefixes / discovery threshold).
+    seed_tags: list[tuple[str, bool]] = []
+    if project:
+        seed_tags.append((f"projects/{project}", False))
+    for t in namespace_tags:
+        seed_tags.append((t, True))
+    if seed_tags:
+        try:
+            store.set_task_tags(task_id, seed_tags)
+        except Exception as exc:  # pragma: no cover — defensive; next sync heals
+            logger.warning("create_task: failed to seed tag cache for %s: %s", task_id, exc)
 
     # --- Verify ---
     verified = _verify_task_creation(task_id, note_path)

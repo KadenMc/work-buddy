@@ -61,6 +61,7 @@ async function loadReview() {
 
     renderTriageReview(container, presentation, {
         perGroupSubmit: true,
+        showNamespaceTags: true,
         onSubmit: async (gd, reassignments) => {
             const resp = await fetchJSON('/api/review/execute', {
                 method: 'POST',

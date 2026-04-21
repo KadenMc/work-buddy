@@ -1032,6 +1032,80 @@
       "notifications/consent"
     ]
   },
+  "context/context_block": {
+    "kind": "capability",
+    "name": "Context Block",
+    "description": "Collect + render a context block from registered sources (git, tasks, projects, chrome, obsidian, obsidian_tasks, obsidian_wellness, calendar, day_planner, session_activity, chat, message, smart, datacore). Structured sources (git / tasks / projects / chrome) emit curated prompt text; the rest wrap legacy collectors. Supports per-source depth, target_date windows, max_chars budget, markdown or JSON output, and cache reuse via max_age_seconds.",
+    "capability_name": "context_block",
+    "category": "context",
+    "aliases": [
+      "user context",
+      "what is the user working on",
+      "active tasks projects commits",
+      "context packet",
+      "assemble context",
+      "build context block"
+    ],
+    "parameters": {
+      "sources": {
+        "type": "list",
+        "description": "Source names to include. Default: all registered.",
+        "required": false
+      },
+      "exclude": {
+        "type": "list",
+        "description": "Source names to drop from the default set.",
+        "required": false
+      },
+      "depth": {
+        "type": "str",
+        "description": "brief | normal | deep (default normal).",
+        "required": false
+      },
+      "per_source_depth": {
+        "type": "dict",
+        "description": "{source: depth} overrides for individual sources.",
+        "required": false
+      },
+      "target_date": {
+        "type": "str",
+        "description": "YYYY-MM-DD. Default: today (no time window shift).",
+        "required": false
+      },
+      "window_days": {
+        "type": "int",
+        "description": "Window size around target_date (default 1).",
+        "required": false
+      },
+      "max_chars": {
+        "type": "int",
+        "description": "Rendering budget. Truncates respecting section boundaries when possible.",
+        "required": false
+      },
+      "max_age_seconds": {
+        "type": "int",
+        "description": "Use cached fetch if younger than this. None (default) = always fresh. 0 = use any cached.",
+        "required": false
+      },
+      "custom": {
+        "type": "dict",
+        "description": "Per-source ad-hoc params forwarded to each source's collect().",
+        "required": false
+      },
+      "format": {
+        "type": "str",
+        "description": "markdown (default) or json.",
+        "required": false
+      }
+    },
+    "tags": [
+      "context",
+      "block"
+    ],
+    "parents": [
+      "context"
+    ]
+  },
   "context/context_bundle": {
     "kind": "capability",
     "name": "Context Bundle",
@@ -1162,6 +1236,45 @@
     "tags": [
       "context",
       "chrome"
+    ],
+    "parents": [
+      "context"
+    ]
+  },
+  "context/context_drill_down": {
+    "kind": "capability",
+    "name": "Context Drill Down",
+    "description": "Expand one item from a context source. Works on structured wave-1 sources that implement drill_down — tasks (field: 'note' / 'line'), git (field: 'full_message' / 'diff_stats'), projects (field: 'description' / 'full'). Wave-2/3 markdown wrappers don't implement drill-down — the prompt already holds their full body at DEEP depth.",
+    "capability_name": "context_drill_down",
+    "category": "context",
+    "aliases": [
+      "show full commit message",
+      "show full task note",
+      "expand project description",
+      "drill down on item",
+      "get more detail"
+    ],
+    "parameters": {
+      "source": {
+        "type": "str",
+        "description": "Source name (tasks / git / projects).",
+        "required": true
+      },
+      "item_id": {
+        "type": "str",
+        "description": "Item identifier within the source (task_id / commit sha / project slug).",
+        "required": true
+      },
+      "field": {
+        "type": "str",
+        "description": "Which expansion to return. See source docs for valid fields.",
+        "required": true
+      }
+    },
+    "tags": [
+      "context",
+      "drill",
+      "down"
     ],
     "parents": [
       "context"
@@ -2466,6 +2579,79 @@
       "journal"
     ]
   },
+  "triage/inline_triage_scan": {
+    "kind": "capability",
+    "name": "Inline Triage Scan",
+    "description": "Run one triage pass over a single user-sent Obsidian selection (from the 'Send to agent' right-click command). Builds one TriageItem with source='inline', collects the user-context packet (active tasks / contracts / projects / recent commits), and asks Sonnet for a constrained-JSON verdict — parsed and written directly into the Review pool. Escalates to Opus on timeout / context-exceeded / empty content / rate-limited. User-initiated, so force=True by default.",
+    "capability_name": "inline_triage_scan",
+    "category": "triage",
+    "aliases": [
+      "send to agent",
+      "inline selection triage",
+      "triage selection",
+      "obsidian selection handoff"
+    ],
+    "parameters": {
+      "file_path": {
+        "type": "str",
+        "description": "Vault-relative source path.",
+        "required": true
+      },
+      "selection": {
+        "type": "str",
+        "description": "The user's literal selection.",
+        "required": false
+      },
+      "paragraph": {
+        "type": "str",
+        "description": "Surrounding paragraph (used when selection is empty).",
+        "required": false
+      },
+      "cursor_line": {
+        "type": "int",
+        "description": "0-indexed cursor line.",
+        "required": false
+      },
+      "hint": {
+        "type": "str",
+        "description": "Optional user-typed intent hint.",
+        "required": false
+      },
+      "force": {
+        "type": "bool",
+        "description": "Bypass idempotence gate (default True for user-initiated).",
+        "required": false
+      },
+      "tier": {
+        "type": "str",
+        "description": "Override the starting ModelTier (default frontier_balanced).",
+        "required": false
+      },
+      "enrich": {
+        "type": "bool",
+        "description": "Include the user-context packet (default True).",
+        "required": false
+      },
+      "dry_run": {
+        "type": "bool",
+        "description": "Collect the item, skip the LLM call.",
+        "required": false
+      }
+    },
+    "requires": [
+      "obsidian"
+    ],
+    "mutates_state": true,
+    "retry_policy": "manual",
+    "tags": [
+      "triage",
+      "inline",
+      "scan"
+    ],
+    "parents": [
+      "triage"
+    ]
+  },
   "context/ir_index": {
     "kind": "capability",
     "name": "Ir Index",
@@ -2577,6 +2763,64 @@
     "tags": [
       "journal",
       "state"
+    ],
+    "parents": [
+      "journal"
+    ]
+  },
+  "journal/journal_triage_scan": {
+    "kind": "capability",
+    "name": "Journal Triage Scan",
+    "description": "Run one background-triage pass over today's Running Notes section. Segments the same-day content into threads via the local LLM, enriches each with hybrid-IR context, and asks Sonnet (escalating to Opus on failure) for a constrained-JSON verdict per thread — written directly into the Review pool. Never mutates the vault. Idempotent on unchanged content. Cadence is a sidecar-job concern; safe to call manually for testing.",
+    "capability_name": "journal_triage_scan",
+    "category": "journal",
+    "aliases": [
+      "journal triage scan",
+      "background running notes triage",
+      "process running notes proposals",
+      "triage running notes"
+    ],
+    "parameters": {
+      "journal_date": {
+        "type": "str",
+        "description": "YYYY-MM-DD. Default: today.",
+        "required": false
+      },
+      "force": {
+        "type": "bool",
+        "description": "Ignore the unchanged-content idempotence gate.",
+        "required": false
+      },
+      "profile": {
+        "type": "str",
+        "description": "Override the configured triage.segment_profile (segmentation LLM, not the agent).",
+        "required": false
+      },
+      "tier": {
+        "type": "str",
+        "description": "Override the starting ModelTier for the agent (default frontier_balanced).",
+        "required": false
+      },
+      "enrich": {
+        "type": "bool",
+        "description": "Pre-fetch hybrid-IR context per candidate (default True).",
+        "required": false
+      },
+      "dry_run": {
+        "type": "bool",
+        "description": "Collect + enrich candidates but skip the agent loop.",
+        "required": false
+      }
+    },
+    "requires": [
+      "obsidian"
+    ],
+    "mutates_state": true,
+    "retry_policy": "manual",
+    "tags": [
+      "journal",
+      "triage",
+      "scan"
     ],
     "parents": [
       "journal"
@@ -3365,6 +3609,39 @@
     ],
     "parents": [
       "memory"
+    ]
+  },
+  "tasks/namespace_lookup": {
+    "kind": "capability",
+    "name": "Namespace Lookup",
+    "description": "Return the closest existing namespace tags to a single query. Designed for the 'did you mean?' check before minting a brand-new namespace — the agent calls this to confirm a proposed namespace isn't a near-duplicate of something that already exists.",
+    "capability_name": "namespace_lookup",
+    "category": "tasks",
+    "aliases": [
+      "did you mean namespace",
+      "nearest namespace",
+      "check namespace exists",
+      "namespace duplicate check"
+    ],
+    "parameters": {
+      "query": {
+        "type": "str",
+        "description": "Candidate namespace path or label (with or without leading '#')",
+        "required": true
+      },
+      "limit": {
+        "type": "int",
+        "description": "Max results (default 5)",
+        "required": false
+      }
+    },
+    "tags": [
+      "tasks",
+      "namespace",
+      "lookup"
+    ],
+    "parents": [
+      "tasks"
     ]
   },
   "notifications/notification_list_pending": {
@@ -5038,6 +5315,11 @@
         "type": "str",
         "description": "If provided, creates a linked note file with this summary",
         "required": false
+      },
+      "tags": {
+        "type": "list[str]",
+        "description": "Namespace tags (no leading '#'), e.g. ['paper/ecg-classifier', 'experiment/augmentation']. Appended to the task line; picked up into the tag cache on next task_sync.",
+        "required": false
       }
     },
     "requires": [
@@ -5085,6 +5367,50 @@
       "tasks",
       "task",
       "delete"
+    ],
+    "parents": [
+      "tasks"
+    ]
+  },
+  "tasks/task_namespace_suggest": {
+    "kind": "capability",
+    "name": "Task Namespace Suggest",
+    "description": "Rank existing namespace tags by relevance to a task text (hybrid BM25+embedding via the shared embedding service; falls back to token overlap). Returns ranked candidates from the existing universe only — it does not propose new namespaces. The calling agent decides whether to apply suggestions, add more, or mint a new namespace.",
+    "capability_name": "task_namespace_suggest",
+    "category": "tasks",
+    "aliases": [
+      "suggest task tags",
+      "propose namespace",
+      "which namespace fits this task",
+      "tag suggestion"
+    ],
+    "parameters": {
+      "task_text": {
+        "type": "str",
+        "description": "The task description to score against",
+        "required": true
+      },
+      "contract": {
+        "type": "str",
+        "description": "Optional contract slug for boosting related namespaces",
+        "required": false
+      },
+      "project": {
+        "type": "str",
+        "description": "Optional project slug for boosting related namespaces",
+        "required": false
+      },
+      "limit": {
+        "type": "int",
+        "description": "Max suggestions (default 3)",
+        "required": false
+      }
+    },
+    "tags": [
+      "tasks",
+      "task",
+      "namespace",
+      "suggest"
     ],
     "parents": [
       "tasks"
@@ -5146,6 +5472,46 @@
       "tasks",
       "task",
       "scattered"
+    ],
+    "parents": [
+      "tasks"
+    ]
+  },
+  "tasks/task_set_tags": {
+    "kind": "capability",
+    "name": "Task Set Tags",
+    "description": "Replace the namespace tags on an existing task's master-list line. Preserves #todo, #projects/*, wikilinks, and plugin emojis.",
+    "capability_name": "task_set_tags",
+    "category": "tasks",
+    "aliases": [
+      "tag task",
+      "retag task",
+      "add namespace to task",
+      "remove tag from task",
+      "set task namespace"
+    ],
+    "parameters": {
+      "task_id": {
+        "type": "str",
+        "description": "Task ID (e.g., 't-a3f8c1e2')",
+        "required": true
+      },
+      "namespace_tags": {
+        "type": "list[str]",
+        "description": "Replacement list of namespace tags (no leading '#'). An empty list strips all user namespace tags.",
+        "required": true
+      }
+    },
+    "requires": [
+      "obsidian"
+    ],
+    "mutates_state": true,
+    "retry_policy": "verify_first",
+    "tags": [
+      "tasks",
+      "task",
+      "set",
+      "tags"
     ],
     "parents": [
       "tasks"
@@ -5535,6 +5901,126 @@
       "triage",
       "item",
       "detail"
+    ],
+    "parents": [
+      "context"
+    ]
+  },
+  "context/triage_review_pool": {
+    "kind": "capability",
+    "name": "Triage Review Pool",
+    "description": "Open the dashboard review modal over pending background-triage proposals. Aggregates unreviewed PoolEntries, composes a presentation, dispatches the modal, and (on response) executes the user's decisions via the existing triage executor. On-demand — nothing fires automatically.",
+    "capability_name": "triage_review_pool",
+    "category": "context",
+    "aliases": [
+      "review triage proposals",
+      "open triage modal",
+      "drain triage pool",
+      "review pending triage"
+    ],
+    "parameters": {
+      "source": {
+        "type": "str",
+        "description": "Optional source filter (e.g. 'journal_thread', 'chrome_tab').",
+        "required": false
+      },
+      "adapter": {
+        "type": "str",
+        "description": "Optional adapter-name filter (e.g. 'journal_triage').",
+        "required": false
+      },
+      "since": {
+        "type": "str",
+        "description": "ISO timestamp; only entries created at-or-after are included.",
+        "required": false
+      },
+      "max_items": {
+        "type": "int",
+        "description": "Safety cap on pending entries loaded (default 100).",
+        "required": false
+      },
+      "dispatch": {
+        "type": "bool",
+        "description": "False to compose the presentation without opening the modal.",
+        "required": false
+      }
+    },
+    "mutates_state": true,
+    "retry_policy": "manual",
+    "tags": [
+      "context",
+      "triage",
+      "review",
+      "pool"
+    ],
+    "parents": [
+      "context"
+    ]
+  },
+  "context/triage_submit": {
+    "kind": "capability",
+    "name": "Triage Submit",
+    "description": "Record a triage verdict for one item of an active background triage run. Called by local agents in the triage_agent preset; validates the run/item and writes a PoolEntry. Does not dispatch a modal or mutate the vault. Safe to call from any context — unknown run_ids return a structured error.",
+    "capability_name": "triage_submit",
+    "category": "context",
+    "aliases": [
+      "submit triage verdict",
+      "record triage decision",
+      "emit triage recommendation"
+    ],
+    "parameters": {
+      "run_id": {
+        "type": "str",
+        "description": "The producer-assigned background-triage run id (from the agent's prompt).",
+        "required": true
+      },
+      "item_id": {
+        "type": "str",
+        "description": "The id of the item this verdict applies to.",
+        "required": true
+      },
+      "recommended_action": {
+        "type": "str",
+        "description": "One of: close, group, create_task, record_into_task, leave.",
+        "required": true
+      },
+      "rationale": {
+        "type": "str",
+        "description": "One-to-three-sentence justification.",
+        "required": true
+      },
+      "group_intent": {
+        "type": "str",
+        "description": "Short noun-phrase naming the underlying intent (≤8 words, distinct from the action name and the rationale). Used as the group title in the review UI.",
+        "required": false
+      },
+      "confidence": {
+        "type": "float",
+        "description": "Optional [0,1] confidence score.",
+        "required": false
+      },
+      "target_task_id": {
+        "type": "str",
+        "description": "For record_into_task: the existing task id.",
+        "required": false
+      },
+      "suggested_task_text": {
+        "type": "str",
+        "description": "For create_task: the proposed task body.",
+        "required": false
+      },
+      "related_item_ids": {
+        "type": "list",
+        "description": "Other item_ids from this run that belong to the same cluster.",
+        "required": false
+      }
+    },
+    "mutates_state": true,
+    "retry_policy": "manual",
+    "tags": [
+      "context",
+      "triage",
+      "submit"
     ],
     "parents": [
       "context"

@@ -289,6 +289,31 @@ def api_tasks_search():
     return jsonify({"query": q, "count": len(tasks), "tasks": tasks[:limit], "method": "substring"})
 
 
+@app.get("/api/namespaces")
+def api_namespaces():
+    """Every namespacey tag in the task-tag cache, with open-task counts.
+
+    Query params:
+        recent_days: window for the ``recent_count`` column (default 14).
+    """
+    from work_buddy.dashboard.api import list_namespaces
+    recent_days = request.args.get("recent_days", 14, type=int)
+    return jsonify(list_namespaces(recent_days=recent_days))
+
+
+@app.get("/api/tasks/by-namespace/<path:namespace>")
+def api_tasks_by_namespace(namespace: str):
+    """Tasks filtered to a namespace tag.
+
+    Query params:
+        descendants: '1' (default) includes sub-namespaces; '0' is exact match only.
+    """
+    from work_buddy.dashboard.api import get_tasks_by_namespace
+    raw = request.args.get("descendants", "1").strip()
+    include_descendants = raw not in ("0", "false", "no", "")
+    return jsonify(get_tasks_by_namespace(namespace, include_descendants=include_descendants))
+
+
 @app.get("/api/sessions")
 def api_sessions():
     """Active agent sessions (legacy)."""

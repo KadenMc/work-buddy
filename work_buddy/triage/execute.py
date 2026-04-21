@@ -398,17 +398,25 @@ def _execute_create_task(
     if reason:
         note_content = f"**Reason:** {reason}\n\n" + note_content
 
+    # Namespace tags (optional) travel with the group decision.
+    # Validated by create_task itself via _normalize_tags.
+    namespace_tags = gd.get("namespace_tags") or []
+
     try:
         from work_buddy.obsidian.tasks.mutations import create_task
-        result = create_task(
-            task_text=task_text,
-            urgency="medium",
-            summary=note_content if note_content else None,
-        )
+        create_kwargs: dict[str, Any] = {
+            "task_text": task_text,
+            "urgency": "medium",
+            "summary": note_content if note_content else None,
+        }
+        if namespace_tags:
+            create_kwargs["tags"] = list(namespace_tags)
+        result = create_task(**create_kwargs)
         results["tasks_created"].append({
             "task_text": task_text,
             "task_id": result.get("task_id", ""),
             "item_ids": item_ids,
+            "namespace_tags": list(namespace_tags),
         })
     except Exception as e:
         logger.error("Failed to create task '%s': %s", task_text[:40], e)
@@ -461,11 +469,36 @@ def _execute_record_into_task(
     header = header_by_source.get(source, "\n## Related Items (from triage)\n\n")
     context = header + "\n".join(url_lines)
 
-    results["tasks_recorded"].append({
+    # Namespace tags (optional): if the user set tags in the Review UI,
+    # replace the target task's namespace tags in-line. Preserves #todo,
+    # #projects/*, wikilinks, and plugin emojis (see _rewrite_namespace_tags).
+    namespace_tags = gd.get("namespace_tags") or []
+    tag_update: dict[str, Any] | None = None
+    if namespace_tags:
+        try:
+            from work_buddy.obsidian.tasks.mutations import set_task_tags_on_line
+            tag_result = set_task_tags_on_line(target_task_id, list(namespace_tags))
+            tag_update = {
+                "success": bool(tag_result.get("success")),
+                "tags": list(namespace_tags),
+            }
+            if not tag_result.get("success"):
+                tag_update["error"] = tag_result.get("message", "unknown")
+        except Exception as e:
+            logger.warning(
+                "record_into_task: tag rewrite failed for %s: %s",
+                target_task_id, e,
+            )
+            tag_update = {"success": False, "tags": list(namespace_tags), "error": str(e)}
+
+    entry: dict[str, Any] = {
         "target_task_id": target_task_id,
         "context": context,
         "item_ids": item_ids,
-    })
+    }
+    if tag_update is not None:
+        entry["tag_update"] = tag_update
+    results["tasks_recorded"].append(entry)
 
 
 # ── Helpers ─────────────────────────────────────────────────────

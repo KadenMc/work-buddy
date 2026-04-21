@@ -45,10 +45,18 @@ def _html() -> str:
 <div class="tab-panel" id="panel-tasks">
     <div class="card-grid" id="task-counts"></div>
     <div class="task-toolbar">
-        <div class="section-title"><a id="master-task-link" href="#" style="color: var(--accent); text-decoration: none;" title="Open in Obsidian">Master Task List</a></div>
-        <input type="text" id="task-search" class="task-search-input" placeholder="Filter tasks..." />
+        <div class="section-title"><a id="master-task-link" href="#" style="color: var(--accent); text-decoration: none;" title="Open in Obsidian">Master Task List</a> <span id="task-namespace-breadcrumb" class="task-namespace-breadcrumb"></span></div>
+        <div class="task-toolbar-controls">
+            <div id="task-state-chips" class="task-state-chips" title="Toggle which task states to show"></div>
+            <input type="text" id="task-search" class="task-search-input" placeholder="Filter tasks..." />
+        </div>
     </div>
-    <div id="task-list"><div class="loading">Loading tasks...</div></div>
+    <div class="task-layout">
+        <aside id="task-namespace-tree" class="task-namespace-tree">
+            <div class="loading">Loading namespaces...</div>
+        </aside>
+        <div id="task-list" class="task-list-col"><div class="loading">Loading tasks...</div></div>
+    </div>
 </div>
 
 <!-- REVIEW -->
