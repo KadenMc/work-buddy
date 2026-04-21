@@ -564,8 +564,20 @@ def validate_dag(units: dict[str, KnowledgeUnit]) -> list[str]:
     - ``<<wb:path>>`` inline placeholder references in content
 
     Also warns (non-fatal) about broken references.
+
+    Degrades gracefully when networkx is unavailable (e.g. minimal CI
+    installs): skips cycle detection and returns an empty error list
+    with a logged warning, rather than crashing the store load.
     """
-    import networkx as nx
+    try:
+        import networkx as nx
+    except ImportError:
+        import logging
+        logging.getLogger(__name__).warning(
+            "networkx not installed — skipping DAG cycle detection. "
+            "Install networkx (pip install networkx) for full validation."
+        )
+        return []
 
     errors: list[str] = []
     g = nx.DiGraph()
