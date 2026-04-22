@@ -604,6 +604,12 @@ async function _postFix(reqId, params, btnEl) {
         // Re-fetch the graph regardless — even a failed fix may have
         // moved partial state (and recheck data is fresh server-side).
         await loadSettings(true);
+        // After re-render, briefly flash the requirement so the user
+        // sees that THIS row is the one that changed. Helps locate the
+        // result when a domain has many requirements.
+        if (data.ok) {
+            requestAnimationFrame(() => _flashNode('req:' + reqId));
+        }
     } catch (exc) {
         showToast(`Fix request failed: ${exc}`, 'error');
         btnEl.disabled = false;
