@@ -44,15 +44,18 @@ TAG_RE = re.compile(r"(?<![\w/])#([a-z0-9][a-z0-9_/-]*)", re.IGNORECASE)
 
 # Tag prefixes that are never treated as user-defined namespaces.
 #
-# - `todo`: plugin/system marker
 # - `tasker/...`: legacy work-buddy metadata (being stripped elsewhere)
-# - `projects/...`: orthogonal identity link into the projects registry
+#
+# Note: `projects/` is NOT reserved — `#projects/<slug>` is both the registry
+# link AND a first-class organizational axis in the namespace tree. Keeping
+# it out of the tree previously forced users to invent parallel taxonomies
+# (e.g., `#research/<slug>`) just to surface tasks in the dashboard.
+#
 # Note: `wb/` is NOT reserved — it's the canonical work-buddy-dev namespace.
 # Only the specific inline-todo markers `wb/todo` and `wb/done` are excluded
 # (see RESERVED_TAG_EXACT).
 RESERVED_TAG_PREFIXES: tuple[str, ...] = (
     "tasker/",
-    "projects/",
 )
 
 # Specific tag values that are reserved regardless of prefix. These are
@@ -116,8 +119,18 @@ def extract_tags_from_line(line: str) -> list[str]:
     return out
 
 
+def _tag_prefixes(tag: str) -> list[str]:
+    """Return every ancestor prefix of a slash-separated tag, shallowest first.
+
+    ``research/electricrag/writing-prep`` → ``["research", "research/electricrag",
+    "research/electricrag/writing-prep"]``.
+    """
+    parts = [p for p in tag.lower().split("/") if p]
+    return ["/".join(parts[: i + 1]) for i in range(len(parts))]
+
+
 def classify_tags(
-    tag_counts: dict[str, int],
+    prefix_counts: dict[str, int],
     tag_list_for_this_task: list[str],
     *,
     threshold: int = 2,
@@ -126,15 +139,22 @@ def classify_tags(
 
     A tag is namespacey iff:
       - it is NOT in the reserved-prefix blocklist, AND
-      - it uses an opt-in prefix (ns/, task/), OR it appears on >= ``threshold``
-        open tasks globally (per ``tag_counts``).
+      - it uses an opt-in prefix (ns/, task/), OR *any* of its ancestor
+        prefixes (including itself) has >= ``threshold`` tasks carrying it
+        or a descendant (per ``prefix_counts``).
 
-    Reserved tags are still returned (so the cache can be queried for e.g.
-    `#projects/<slug>` linkages) but with ``is_namespace=False``.
+    The ancestor walk is what rescues rare leaves: a one-off like
+    ``research/electricrag/writing-prep`` inherits namespacey-ness from
+    a popular parent like ``research/electricrag`` or ``research``, so a
+    unique sub-bucket is not silently dropped from the tree.
+
+    Reserved tags are still returned (so the cache can be queried for
+    non-tree linkages) but with ``is_namespace=False``.
 
     Args:
-        tag_counts: Map of tag -> count of open tasks carrying that tag,
-                    computed once per sync across the whole vault.
+        prefix_counts: Map of prefix -> count of distinct tasks whose
+                       tags include that prefix *or any descendant of it*.
+                       Computed once per sync across the whole vault.
         tag_list_for_this_task: Tags parsed from this task's line.
         threshold: Minimum count for discovery-based classification.
     """
@@ -146,8 +166,10 @@ def classify_tags(
         if _is_opt_in(tag):
             result.append((tag, True))
             continue
-        count = tag_counts.get(tag.lower(), 0)
-        result.append((tag, count >= threshold))
+        rescued = any(
+            prefix_counts.get(p, 0) >= threshold for p in _tag_prefixes(tag)
+        )
+        result.append((tag, rescued))
     return result
 
 
@@ -225,12 +247,19 @@ def _rebuild_tag_cache(
     """
     threshold = _namespace_threshold()
 
-    # Global tag frequency across all parsed (open) tasks. Done tasks still
-    # contribute: a namespace doesn't vanish just because a task closed.
-    tag_counts: dict[str, int] = {}
+    # Prefix frequency across all parsed tasks: for each tag, we credit every
+    # ancestor prefix (so `research/electricrag/x` contributes one task-count
+    # to `research`, `research/electricrag`, and `research/electricrag/x`).
+    # Using a set per task avoids double-counting when two tags share a prefix
+    # on the same task. This is what lets the classifier rescue rare leaves
+    # whose parent prefix is popular.
+    prefix_counts: dict[str, int] = {}
     for info in file_tasks.values():
+        task_prefixes: set[str] = set()
         for tag in info.get("raw_tags", []):
-            tag_counts[tag.lower()] = tag_counts.get(tag.lower(), 0) + 1
+            task_prefixes.update(_tag_prefixes(tag))
+        for p in task_prefixes:
+            prefix_counts[p] = prefix_counts.get(p, 0) + 1
 
     written = 0
     for task_id in surviving_ids:
@@ -238,7 +267,7 @@ def _rebuild_tag_cache(
         if not info:
             continue
         classified = classify_tags(
-            tag_counts,
+            prefix_counts,
             info.get("raw_tags", []),
             threshold=threshold,
         )
