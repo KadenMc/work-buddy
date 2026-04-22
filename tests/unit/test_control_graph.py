@@ -387,7 +387,68 @@ def test_soft_dep_down_degrades_not_blocks(mock_inputs):
     assert nodes["component:dashboard"].effective_state == "degraded"
     # The status reason should explain what's missing
     reason = nodes["component:dashboard"].status_reason
-    assert "embedding" in reason.lower() or "Operating without" in reason
+    assert "embedding" in reason.lower() or "Operating without" in reason or "Reduced" in reason
+
+
+def test_soft_dep_fallback_note_surfaces_in_status_reason(mock_inputs):
+    """When a soft dep declares a fallback_note via
+    ComponentDef.soft_dep_notes, the status reason surfaces that
+    specific description rather than a generic 'Operating without'."""
+    mock_inputs["health"]["components"] = [
+        {
+            "id": "embedding", "display_name": "Embedding", "category": "service",
+            "status": "unavailable", "wanted": None, "depends_on": [],
+            "details": {}, "children": [],
+        },
+        {
+            "id": "dashboard", "display_name": "Dashboard", "category": "service",
+            "status": "healthy", "wanted": None, "depends_on": [],
+            "details": {}, "children": [],
+        },
+        {
+            "id": "sidecar", "display_name": "Sidecar", "category": "external",
+            "status": "healthy", "wanted": None, "depends_on": [],
+            "details": {}, "children": [],
+        },
+        # Make the other dashboard soft deps healthy so only embedding's
+        # note appears in the reason.
+        {
+            "id": "messaging", "display_name": "Messaging", "category": "service",
+            "status": "healthy", "wanted": None, "depends_on": [],
+            "details": {}, "children": [],
+        },
+        {
+            "id": "obsidian", "display_name": "Obsidian", "category": "integration",
+            "status": "healthy", "wanted": None, "depends_on": [],
+            "details": {}, "children": [],
+        },
+        {
+            "id": "hindsight", "display_name": "Hindsight", "category": "integration",
+            "status": "healthy", "wanted": None, "depends_on": [],
+            "details": {}, "children": [],
+        },
+    ]
+    nodes = cg.build_graph(force=True)
+    dash = nodes["component:dashboard"]
+    assert dash.effective_state == "degraded"
+    # The embedding soft_dep_notes declaration mentions "substring" and
+    # "Chat-content" — at least one must show up in the reason so users
+    # see the specific impact, not a generic message.
+    reason = dash.status_reason.lower()
+    assert "substring" in reason or "chat" in reason or "reduced functionality" in reason
+
+
+def test_fallback_note_populates_edge_in_graph(mock_inputs):
+    """The Edge instance for a soft dep carries the fallback_note from
+    ComponentDef.soft_dep_notes — needed for the UI tooltip."""
+    nodes = cg.build_graph(force=True)
+    dash = nodes["component:dashboard"]
+    emb_edges = [e for e in dash.dependencies if e.target_id == "component:embedding"]
+    assert emb_edges, "dashboard should have a soft dep on embedding"
+    edge = emb_edges[0]
+    assert edge.hardness == "soft"
+    assert edge.fallback_note is not None
+    assert "substring" in edge.fallback_note.lower()
 
 
 def test_hard_dep_down_still_blocks(mock_inputs):

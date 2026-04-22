@@ -58,23 +58,34 @@ class Edge:
         function*. Failure cascades as ``blocked`` up the chain.
         Example: ``component:hindsight → component:postgresql`` —
         Hindsight literally cannot start without PostgreSQL.
-      - **soft**: if the target is down, *this node works with reduced
-        functionality*. Failure cascades as ``degraded`` at worst; if
-        the target is merely ``disabled``, nothing propagates.
-        Example: ``component:dashboard → component:embedding`` —
-        the dashboard falls back to substring search without embeddings;
-        it's genuinely ``degraded``, not ``blocked``.
+      - **soft**: if the target is down, *the node itself keeps running
+        but certain features it provides are reduced or entirely
+        unavailable*. Failure cascades as ``degraded`` at worst; if the
+        target is merely ``disabled``, nothing propagates (user made an
+        explicit choice not to use it).
 
-    Adopting soft edges is what lets the graph model the real runtime
-    dependency shape (e.g. dashboard transitively needs a lot of things)
-    without lying by marking half the system blocked when one optional
-    helper goes down.
+    ``fallback_note`` describes — in one human-readable sentence — what
+    specifically happens when a soft dep is down. It is **the distinction
+    between "works with a less-good fallback" and "the feature just goes
+    away"**, and is surfaced in the Settings UI so users understand what
+    they actually lose. Examples:
+
+      - "Hybrid search on tasks falls back to substring matching" —
+        graceful degradation; feature still works.
+      - "Chat search is unavailable" — hard failure of this specific
+        feature, but the rest of the dashboard continues.
+
+    When populated, the UI shows the note as the tooltip on the soft-dep
+    chip and prepends it to the "Operating without: X" status reason.
+    Without a note, the UI falls back to a generic "may be reduced"
+    message.
     """
 
     target_id: str
     mode: Literal["all", "any"] = "all"
     hardness: Literal["hard", "soft"] = "hard"
     group: str | None = None
+    fallback_note: str | None = None
 
 
 @dataclass
@@ -127,6 +138,7 @@ class ControlNode:
                     "mode": e.mode,
                     "hardness": e.hardness,
                     "group": e.group,
+                    "fallback_note": e.fallback_note,
                 }
                 for e in self.dependencies
             ],

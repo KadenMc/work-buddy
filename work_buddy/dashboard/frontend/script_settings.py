@@ -416,9 +416,28 @@ function renderSettingsSummary() {
         if (n.kind === 'capability') continue;  // exclude capability noise
         totals[n.effective_state] = (totals[n.effective_state] || 0) + 1;
     }
+    // Non-ok chips are click-to-jump: scroll to the first node with
+    // that state and flash it (requirement nodes included, so a broken
+    // requirement that didn't bubble up to a component still gets
+    // surfaced). ok / disabled chips are informational only.
+    const clickableStates = new Set(['blocked', 'unconfigured', 'degraded', 'unknown']);
     const summaryChips = ['blocked', 'unconfigured', 'degraded', 'unknown', 'ok', 'disabled']
         .filter(s => totals[s])
-        .map(s => `<span class="badge ${_badgeClass(s)}">${s}</span> <span class="settings-summary-count">${totals[s]}</span>`)
+        .map(s => {
+            const cls = _badgeClass(s);
+            if (clickableStates.has(s)) {
+                return (
+                    `<span class="badge badge-clickable ${cls}" ` +
+                    `onclick="onStateChipClick('${s}')" ` +
+                    `title="Click to jump to the first node in this state">${s}</span> ` +
+                    `<span class="settings-summary-count">${totals[s]}</span>`
+                );
+            }
+            return (
+                `<span class="badge ${cls}">${s}</span> ` +
+                `<span class="settings-summary-count">${totals[s]}</span>`
+            );
+        })
         .join('');
 
     let html = `
@@ -448,6 +467,28 @@ function renderSettingsSummary() {
     }
 
     el.innerHTML = html;
+}
+
+// Click a bulk state chip in the summary row: find the first node in
+// that state (considering ALL kinds, not just domain/subsystem/component),
+// open its ancestors, and flash it. This surfaces orphan requirement
+// failures that don't bubble up to a component.
+function onStateChipClick(state) {
+    if (!WB_CONTROL_GRAPH) return;
+    const nodes = WB_CONTROL_GRAPH.nodes;
+    // Prefer the most actionable node: requirement > component > subsystem > domain.
+    // Capabilities excluded — they're rarely where the fix lives.
+    const kindRank = {requirement: 0, component: 1, subsystem: 2, domain: 3};
+    const candidates = Object.values(nodes)
+        .filter(n => n.effective_state === state && n.kind !== 'capability')
+        .sort((a, b) => (kindRank[a.kind] ?? 99) - (kindRank[b.kind] ?? 99));
+    if (candidates.length === 0) {
+        showToast(`No ${state} nodes visible.`, 'info');
+        return;
+    }
+    const target = candidates[0];
+    _expandAncestorsOf(target.id);
+    _flashNode(target.id, candidates.length);
 }
 
 function _badgeClass(state) {
@@ -514,10 +555,22 @@ function _renderDependencyChips(nodes, deps) {
             const state = target ? target.effective_state : 'unknown';
             const label = target ? target.label : e.target_id;
             const hardness = e.hardness || 'hard';
+            // Soft-dep tooltip prefers the specific fallback_note so
+            // the user sees exactly what's affected when this dep is
+            // down — not a vague "may be reduced".
+            let softTip;
+            if (hardness === 'soft') {
+                softTip = e.fallback_note
+                    ? `When ${escapeHtml(label)} is unavailable: ${escapeHtml(e.fallback_note)}`
+                    : `Soft dependency — absence degrades some features, does not block this component`;
+            }
             const hardnessBadge = hardness === 'soft'
-                ? '<span class="settings-dep-hardness" title="Soft dependency — absence only degrades, does not block">soft</span>'
+                ? `<span class="settings-dep-hardness" title="${softTip}">soft</span>`
                 : '';
-            return `<span class="settings-dep-chip" title="${escapeHtml(e.target_id)} (${hardness})">${controlStateBadge(state, e.target_id)} ${escapeHtml(label)}${hardnessBadge}</span>`;
+            const chipTip = hardness === 'soft' && e.fallback_note
+                ? softTip
+                : `${escapeHtml(e.target_id)} (${hardness})`;
+            return `<span class="settings-dep-chip" title="${chipTip}">${controlStateBadge(state, e.target_id)} ${escapeHtml(label)}${hardnessBadge}</span>`;
         }).join('')}
     </div>`;
 }

@@ -72,6 +72,14 @@ class ComponentDef:
     # embedding service — dashboard falls back to substring search).
     # Added in the hard/soft-deps refactor (2026-04-22).
     soft_depends_on: list[str] = field(default_factory=list)
+    # Per-soft-dep notes describing what specifically happens when the
+    # target is unavailable. Keyed by the component id (matches an
+    # entry in soft_depends_on). Propagated onto the corresponding
+    # Edge's fallback_note and surfaced in the Settings UI. Use these
+    # to distinguish "graceful fallback" from "this specific feature
+    # just disappears" — both qualify as "soft" but the user experience
+    # is very different.
+    soft_dep_notes: dict[str, str] = field(default_factory=dict)
     health_source: str = "tool_probe"
     check_sequence: list[CheckStep] = field(default_factory=list)
     sidecar_service: str | None = None
@@ -307,16 +315,37 @@ _register(ComponentDef(
     # sidecar is down the dashboard won't restart when it crashes, and
     # there's no coordinated way to keep it alive. Modeled as hard.
     depends_on=["sidecar"],
-    # Soft helpers — the dashboard degrades gracefully without them:
-    #   * embedding: hybrid search on tasks/chats/palette falls back to substring
-    #   * messaging: ack-poller thread for cross-surface notification dismiss
-    #   * obsidian: Obsidian-backed task/journal panels read markdown fallback
-    #   * hindsight: project memory queries surface "" instead of recall text
-    # None of these breaks the dashboard itself — they just reduce what
-    # it can show. Without hard/soft distinction these couldn't be
-    # modeled (listing them as hard would mark the dashboard blocked
-    # whenever any optional helper was down, which is wrong).
+    # Soft helpers — the dashboard *itself* keeps running without them,
+    # but specific features change state. Each note below describes
+    # precisely what the user loses, so the UI doesn't lie by saying
+    # "may be reduced" when the truth is "this feature is gone."
     soft_depends_on=["embedding", "messaging", "obsidian", "hindsight"],
+    soft_dep_notes={
+        "embedding": (
+            "Hybrid search on tasks/palette falls back to substring "
+            "matching. Chat-content and commit IR search endpoints "
+            "return empty or error — there is no substring fallback "
+            "for those."
+        ),
+        "messaging": (
+            "Acknowledge-poller stops: cross-surface notification "
+            "dismissal (click to dismiss in Obsidian, have it vanish "
+            "from the dashboard) will no longer work until messaging "
+            "is healthy again."
+        ),
+        "obsidian": (
+            "Task/contract/journal panels still read the markdown "
+            "files directly, so basic reads work; but any feature "
+            "that routes through the bridge (live task mutations, "
+            "Obsidian command-palette execution, vault writes) is "
+            "unavailable."
+        ),
+        "hindsight": (
+            "Project-detail panel shows an empty memory section; "
+            "project-memory recall is unavailable. The rest of the "
+            "projects view works."
+        ),
+    },
     health_source="sidecar",
     sidecar_service="dashboard",
     check_sequence=[

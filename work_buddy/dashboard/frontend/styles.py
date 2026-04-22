@@ -2684,13 +2684,26 @@ body {
 .settings-pref-btn:disabled { cursor: not-allowed; opacity: 0.45; }
 .badge-clickable {
     cursor: pointer;
-    text-decoration: underline;
-    text-decoration-style: dotted;
-    text-decoration-thickness: 1px;
-    text-underline-offset: 2px;
+    position: relative;
+    border: 1px solid transparent;
+    transition: transform 0.12s ease, box-shadow 0.12s ease, border-color 0.12s ease;
+}
+/* Make the "click me" signal obvious — not just a cursor change. The
+   badge visibly lifts off the background on hover. */
+.badge-clickable::after {
+    content: "\2197";  /* up-right arrow — a "drill-in" glyph */
+    font-size: 0.8em;
+    margin-left: 4px;
+    opacity: 0.55;
 }
 .badge-clickable:hover {
-    filter: brightness(1.2);
+    transform: translateY(-1px) scale(1.05);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
+    border-color: currentColor;
+    filter: brightness(1.15);
+}
+.badge-clickable:active {
+    transform: translateY(0) scale(1);
 }
 
 .settings-dep-hardness {

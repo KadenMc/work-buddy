@@ -179,12 +179,20 @@ def _assemble() -> dict[str, ControlNode]:
         # Dependency edges — both hard and soft.
         # ``depends_on`` (hard, default): failure cascades as `blocked`.
         # ``soft_depends_on``: failure cascades as `degraded` at worst.
+        # Per-soft-dep notes from ComponentDef.soft_dep_notes are
+        # threaded onto the corresponding Edge so the UI can display
+        # exactly what functionality is affected.
         dep_edges = [
             Edge(target_id=f"component:{dep_id}", hardness="hard")
             for dep_id in comp.depends_on
         ]
+        soft_notes = getattr(comp, "soft_dep_notes", {}) or {}
         dep_edges += [
-            Edge(target_id=f"component:{dep_id}", hardness="soft")
+            Edge(
+                target_id=f"component:{dep_id}",
+                hardness="soft",
+                fallback_note=soft_notes.get(dep_id),
+            )
             for dep_id in getattr(comp, "soft_depends_on", [])
         ]
 
@@ -295,16 +303,23 @@ def _assemble() -> dict[str, ControlNode]:
             node.blocking_issues = blockers
         return state
 
-    # Components first (leaves in the runtime-dep graph)
+    # Requirements first: they depend only on their owning component's
+    # preference (read from the pref-config at construction time, not
+    # from any yet-to-be-computed effective_state). Resolving them
+    # before components lets components roll up their required-req
+    # failures into their own state — so a broken "master-task-list"
+    # requirement bubbles up to mark `component:obsidian` as
+    # `unconfigured`, which is what users expect when they see the
+    # totals-row chip.
+    for nid, n in nodes.items():
+        if n.kind == "requirement":
+            _resolve(nid)
+    # Components (which may now consult resolved requirement states)
     _resolve_in_dep_order(
         [nid for nid, n in nodes.items() if n.kind == "component"],
         nodes,
         _resolve,
     )
-    # Requirements (depend only on their owning component's preference)
-    for nid, n in nodes.items():
-        if n.kind == "requirement":
-            _resolve(nid)
     # Capabilities
     for nid, n in nodes.items():
         if n.kind == "capability":
@@ -424,20 +439,25 @@ def _derive_state(
     # ---- Soft-dep cascade ----
     # Soft deps being `disabled` is a non-event (we just don't use that
     # optional path). But soft deps in other unhealthy states make this
-    # node at most `degraded`.
-    soft_degraders = [
-        e.target_id for e in soft_edges
+    # node at most `degraded`. If the dep edge carries a `fallback_note`,
+    # surface it so users know precisely what's affected (vs. a vague
+    # "may be reduced").
+    soft_unhealthy_edges = [
+        e for e in soft_edges
         if nodes[e.target_id].effective_state
         in ("blocked", "unconfigured", "degraded", "unknown")
     ]
-    if soft_degraders:
-        # Stash for later — we still need to finish the kind-specific
-        # derivation to decide if the node is already in worse shape
-        # than degraded for some other reason.
-        _soft_degradation_reason = (
-            f"Operating without: {', '.join(soft_degraders)}"
-        )
-        _soft_degradation_list = soft_degraders
+    if soft_unhealthy_edges:
+        targets = [e.target_id for e in soft_unhealthy_edges]
+        notes = [e.fallback_note for e in soft_unhealthy_edges if e.fallback_note]
+        if notes:
+            # Join as one paragraph; user can parse bullets visually
+            _soft_degradation_reason = "Reduced functionality — " + " // ".join(notes)
+        else:
+            _soft_degradation_reason = (
+                f"Operating without: {', '.join(targets)}"
+            )
+        _soft_degradation_list = targets
     else:
         _soft_degradation_reason = ""
         _soft_degradation_list = []
@@ -464,7 +484,7 @@ def _derive_state(
         return ("degraded", merged_reason, _soft_degradation_list)
 
     if node.kind == "component":
-        return _soften(*_derive_component_state(node, health_by_id))
+        return _soften(*_derive_component_state(node, health_by_id, nodes))
 
     if node.kind == "requirement":
         return _derive_requirement_state(node, req_by_id)
@@ -482,8 +502,19 @@ def _derive_state(
 def _derive_component_state(
     node: ControlNode,
     health_by_id: dict[str, dict[str, Any]],
+    nodes: dict[str, ControlNode] | None = None,
 ) -> tuple[EffectiveState, str, list[str]]:
-    """Map HealthEngine status → EffectiveState for a component node."""
+    """Map HealthEngine status → EffectiveState for a component node,
+    then merge in any resolved-requirement failures.
+
+    Called *after* requirement nodes have been resolved, so we can
+    read their effective_state and roll up the worst into the
+    component's own state. This closes the gap where a probe-healthy
+    component with a failing required requirement would report ``ok``
+    at the component level while the requirement showed ``unconfigured``
+    below — the totals-row counted the failure but the top-issues list
+    (which only inspects domain/subsystem/component) saw nothing wrong.
+    """
     assert node.component_id is not None
     h = health_by_id.get(node.component_id, {})
     status = h.get("status", "unknown")
@@ -499,7 +530,52 @@ def _derive_component_state(
         "blocked": "blocked",
         "unknown": "unknown",
     }
-    return (mapping.get(status, "unknown"), reason, [])
+    probe_state: EffectiveState = mapping.get(status, "unknown")
+
+    # Requirement roll-up — only propagate ACTUAL failures.
+    #
+    # Skipped:
+    #   - ``disabled``: via preference cascade, expected.
+    #   - ``unknown``: means the check hasn't run (not a failure signal);
+    #     in production this is rare, but in tests not every requirement
+    #     gets a mocked result. Treating "unknown" as worse than ok would
+    #     pessimistically mark every component with any requirement as
+    #     unknown whenever one hasn't been checked yet.
+    #   - ``ok``: it's fine.
+    #
+    # Only blocked/unconfigured/degraded actually bubble up.
+    if nodes is not None and node.requirement_ids:
+        failing: list[tuple[str, EffectiveState]] = []
+        for rid in node.requirement_ids:
+            rn = nodes.get(rid)
+            if rn is None:
+                continue
+            if rn.effective_state in ("blocked", "unconfigured", "degraded"):
+                failing.append((rid, rn.effective_state))
+
+        if failing:
+            rank = {"blocked": 0, "unconfigured": 1, "degraded": 2}
+            worst_rid, worst_state = min(
+                failing, key=lambda p: rank.get(p[1], 99)
+            )
+            probe_rank = {
+                "blocked": 0, "unconfigured": 1, "degraded": 2,
+                "unknown": 3, "ok": 4, "disabled": 5,
+            }
+            # The requirement failure propagates only if it's worse than
+            # whatever the probe-based state already is. A component
+            # already blocked for another reason keeps its reason; a
+            # probe-healthy component with a failing required req
+            # correctly becomes unconfigured.
+            if rank.get(worst_state, 99) < probe_rank.get(probe_state, 99):
+                worst_rn = nodes.get(worst_rid)
+                label = worst_rn.label if worst_rn else worst_rid
+                merged_reason = f"Requirement '{label}' is {worst_state}"
+                if reason and reason != merged_reason:
+                    merged_reason = f"{reason}; {merged_reason}"
+                return (worst_state, merged_reason, [worst_rid])
+
+    return (probe_state, reason, [])
 
 
 def _derive_requirement_state(
