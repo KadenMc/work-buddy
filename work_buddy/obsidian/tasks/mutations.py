@@ -936,22 +936,13 @@ def strip_legacy_tags_from_line(line: str) -> str:
     return _strip_legacy_tags(line)
 
 
-@bridge_retry()
-def assign_task(task_id: str) -> dict[str, Any]:
-    """Claim a task for the current agent session and return full context.
+def _load_task_payload(task_id: str) -> dict[str, Any]:
+    """Pure read: resolve task metadata, line, and linked note content.
 
-    Records the session against the task (idempotent), then returns
-    everything the agent needs to start working: task text, metadata,
-    note content (if any), and note file path.
-
-    Uses the plugin cache for task details when available, falls back
-    to the markdown file directly when the cache is cold.
+    Returns the same read-only fields that read_task/assign_task surface,
+    with no session-tracking write and no state mutation. On missing
+    store record, returns ``{"success": False, "message": ...}``.
     """
-    from work_buddy.agent_session import _get_session_id
-
-    session_id = _get_session_id()
-
-    # Get store metadata first — this is the hard requirement
     meta = store.get(task_id)
     if meta is None:
         return {
@@ -978,6 +969,14 @@ def assign_task(task_id: str) -> dict[str, Any]:
     # Fallback: scan the markdown file directly
     if not task_text:
         content = bridge.read_file(MASTER_TASK_FILE)
+        # Filesystem fallback when the bridge is down/flaky — mirrors the note-read path
+        if content is None:
+            from pathlib import Path
+            from work_buddy.config import load_config
+            fs_path = Path(load_config()["vault_root"]) / MASTER_TASK_FILE
+            if fs_path.exists():
+                content = fs_path.read_text(encoding="utf-8")
+                logger.info("Read master task list via filesystem fallback: %s", MASTER_TASK_FILE)
         if content:
             found = _find_task_line(content.split("\n"), task_id=task_id)
             if found:
@@ -990,9 +989,6 @@ def assign_task(task_id: str) -> dict[str, Any]:
                 desc = re.sub(r"\[\[[^\]]+\]\]", "", desc)
                 desc = re.sub(r"[🆔📅✅🔼⏫]\s*\S*", "", desc)
                 task_text = re.sub(r"\s+", " ", desc).strip()
-
-    # Record session assignment (idempotent)
-    store.assign_session(task_id, session_id)
 
     # Read note if one exists
     note_path = None
@@ -1009,9 +1005,6 @@ def assign_task(task_id: str) -> dict[str, Any]:
                 note_content = fs_path.read_text(encoding="utf-8")
                 logger.info("Read task note via filesystem fallback: %s", note_path)
 
-    # Get all assigned sessions
-    sessions = store.get_sessions(task_id)
-
     return {
         "success": True,
         "task_id": task_id,
@@ -1025,6 +1018,38 @@ def assign_task(task_id: str) -> dict[str, Any]:
         "contract": meta.get("contract"),
         "note_path": note_path,
         "note_content": note_content,
-        "assigned_sessions": sessions,
-        "session_id": session_id,
+        "assigned_sessions": store.get_sessions(task_id),
     }
+
+
+@bridge_retry()
+def read_task(task_id: str) -> dict[str, Any]:
+    """Read a task's full context without claiming it.
+
+    Returns task text, metadata, and linked note content. Does NOT record
+    a session assignment — use ``assign_task`` when you intend to claim
+    the task for the current session.
+    """
+    return _load_task_payload(task_id)
+
+
+@bridge_retry()
+def assign_task(task_id: str) -> dict[str, Any]:
+    """Claim a task for the current agent session and return full context.
+
+    Composes ``_load_task_payload`` with a session-tracker write. Returns
+    everything the agent needs to start working plus the claiming session_id.
+    """
+    from work_buddy.agent_session import _get_session_id
+
+    payload = _load_task_payload(task_id)
+    if not payload.get("success"):
+        return payload
+
+    session_id = _get_session_id()
+    store.assign_session(task_id, session_id)
+
+    # Refresh the session list so the caller sees their own claim
+    payload["assigned_sessions"] = store.get_sessions(task_id)
+    payload["session_id"] = session_id
+    return payload
