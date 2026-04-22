@@ -40,11 +40,28 @@ async function pollWorkflowViews() {
             }
         }
 
-        // Detect removed views (dismissed or expired)
+        // Detect removed views (dismissed or expired).
+        //
+        // Two regimes — we do NOT want to yank a tab out from under the
+        // user while they're reading it:
+        //
+        //   * Tab is currently active → keep the tab, mark it dismissed
+        //     in-panel, let the user close it manually via the × button.
+        //   * Tab is inactive → remove as before (silent cleanup of
+        //     resolved notifications / expired views).
         for (const id of _knownViews) {
             if (!currentIds.has(id)) {
                 _knownViews.delete(id);
-                removeWorkflowTab(id);
+                const tabName = 'wv-' + id;
+                const btn = document.querySelector(
+                    '.tab-btn[data-tab="' + tabName + '"]'
+                );
+                const isActive = btn && btn.classList.contains('active');
+                if (isActive) {
+                    markWorkflowTabDismissed(id);
+                } else {
+                    removeWorkflowTab(id);
+                }
             }
         }
     } catch (e) {
@@ -117,6 +134,38 @@ function removeWorkflowTab(viewId) {
     // Switch to overview if this was active
     const active = document.querySelector('.tab-btn.active');
     if (!active) switchTab('overview');
+}
+
+// Keep the tab in place but mark it as dismissed. Called instead of
+// removeWorkflowTab when the user is currently viewing the tab — avoids
+// yanking the panel out from under them while reading. The user closes
+// manually via the × button (dismissAndRemoveTab, which is safe once
+// the server-side view is already gone).
+function markWorkflowTabDismissed(viewId) {
+    const tabName = 'wv-' + viewId;
+    const btn = document.querySelector('.tab-btn[data-tab="' + tabName + '"]');
+    const panel = document.getElementById('panel-' + tabName);
+    if (btn) {
+        btn.classList.add('tab-dismissed');
+        const label = btn.querySelector('span:not(.tab-close)');
+        if (label && !label.dataset.dismissedMark) {
+            label.dataset.dismissedMark = '1';
+            label.textContent = label.textContent + ' (closed)';
+        }
+    }
+    if (panel && !panel.querySelector('.wv-dismissed-banner')) {
+        const banner = document.createElement('div');
+        banner.className = 'wv-dismissed-banner';
+        banner.textContent = (
+            'This view has been closed elsewhere (another surface '
+            + 'responded or the workflow dismissed it). Close this tab '
+            + 'when you are done reading.'
+        );
+        panel.insertBefore(banner, panel.firstChild);
+    }
+    // Drop internal caches so switching away + back doesn't re-fetch
+    // a view that no longer exists server-side.
+    delete _viewPayloads[viewId];
 }
 
 const _renderedViews = new Set();
@@ -246,10 +295,30 @@ async function submitGenericResponse(viewId, value) {
         if (resp.ok) {
             const panel = document.getElementById('panel-wv-' + viewId);
             if (panel) panel.innerHTML = '<div class="empty-state">Response submitted: ' + value + '</div>';
+
+            // 2-second courtesy delay before removing the tab.
+            //
+            // Guarded so the removal doesn't yank a tab out from under
+            // the user if they've switched to a different tab in the
+            // interim — in that case leave the tab in place with its
+            // "Response submitted" body; the poll-loop will eventually
+            // notice the view is gone server-side and mark it dismissed
+            // via the same active-tab-safe path.
             setTimeout(() => {
                 const btn = document.querySelector('.tab-btn[data-tab="wv-' + viewId + '"]');
-                if (btn) btn.remove();
-                if (panel) panel.remove();
+                if (!btn) return;  // already gone
+                const isActive = btn.classList.contains('active');
+                if (isActive) {
+                    // Safe to remove — user is still on this tab.
+                    const p = document.getElementById('panel-wv-' + viewId);
+                    btn.remove();
+                    if (p) p.remove();
+                    switchTab('overview');
+                } else {
+                    // User moved on — don't yank. Mark dismissed so the
+                    // user can close it on their own terms.
+                    markWorkflowTabDismissed(viewId);
+                }
             }, 2000);
         }
     } catch(e) { console.error('Submit failed:', e); }

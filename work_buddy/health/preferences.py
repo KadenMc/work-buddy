@@ -110,6 +110,7 @@ def set_preference(
         reason=reason,
     )
     save_preferences(prefs)
+    _invalidate_control_graph()
 
 
 @requires_consent(
@@ -139,12 +140,47 @@ def apply_preference_updates(updates: dict[str, Any]) -> list[str]:
         elif isinstance(data, bool) or data is None:
             set_preference(comp_id, wanted=data)
             written.append(comp_id)
+    _invalidate_control_graph()
     return written
+
+
+def _invalidate_control_graph() -> None:
+    """Notify the control-graph cache that a preference changed.
+
+    Guarded to avoid circular imports during Phase-0-only deployments
+    where ``work_buddy.control`` may not yet be present.
+    """
+    try:
+        from work_buddy.control.graph import invalidate_graph
+        invalidate_graph()
+    except ImportError:
+        pass
 
 
 def is_wanted(component_id: str) -> bool | None:
     """Quick check: is this component wanted?
 
     Returns True, False, or None (undecided).
+
+    Core components (``ComponentDef.is_core=True``) always return True
+    regardless of config. The user cannot opt out — nothing else works
+    without them. See ``work_buddy.health.components.ComponentDef``.
     """
+    try:
+        from work_buddy.health.components import COMPONENT_CATALOG
+        comp = COMPONENT_CATALOG.get(component_id)
+        if comp is not None and comp.is_core:
+            return True
+    except Exception:
+        pass  # defensive: health.components should always import
     return get_preference(component_id).wanted
+
+
+def is_core(component_id: str) -> bool:
+    """Is this component marked as core (non-opt-out)?"""
+    try:
+        from work_buddy.health.components import COMPONENT_CATALOG
+        comp = COMPONENT_CATALOG.get(component_id)
+        return bool(comp and comp.is_core)
+    except Exception:
+        return False

@@ -180,3 +180,36 @@ def check_sidecar_service_telegram() -> dict[str, Any]:
 
 def check_sidecar_service_dashboard() -> dict[str, Any]:
     return _check_sidecar_service("dashboard", 5127)
+
+
+def check_sidecar_heartbeat() -> dict[str, Any]:
+    """Sidecar daemon liveness — reads sidecar_state.json top-level fields.
+
+    The sidecar writes ``last_tick_at`` every tick; freshness within 120s
+    is considered healthy. An older timestamp, missing file, or missing
+    pid means the daemon is not running or has become unresponsive.
+    """
+    import json as _json
+    import time as _time
+    from work_buddy.paths import resolve as _resolve
+
+    state_file = _resolve("runtime/sidecar-state")
+    if not state_file.exists():
+        return {"ok": False, "detail": "sidecar_state.json missing — daemon not started"}
+    try:
+        data = _json.loads(state_file.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return {"ok": False, "detail": f"sidecar_state.json unreadable: {exc}"}
+
+    pid = data.get("pid")
+    last_tick = data.get("last_tick_at")
+    if not pid or not last_tick:
+        return {"ok": False, "detail": "sidecar has no pid or last_tick_at — daemon not started"}
+
+    age = _time.time() - float(last_tick)
+    if age > 120:
+        return {
+            "ok": False,
+            "detail": f"sidecar last tick was {int(age)}s ago (threshold 120s) — daemon likely frozen",
+        }
+    return {"ok": True, "detail": f"sidecar alive (pid {pid}, tick age {int(age)}s)"}

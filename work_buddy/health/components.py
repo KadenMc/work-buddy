@@ -52,6 +52,11 @@ class ComponentDef:
             - "custom": uses only check_sequence
         check_sequence: Ordered diagnostic steps run by DiagnosticRunner.
         sidecar_service: Sidecar service name (if health_source involves sidecar).
+        is_core: True means the user cannot opt out. Core components are
+            always treated as wanted by the preference loader and the UI
+            hides their toggle. Use for prerequisites without which
+            work-buddy itself can't function (sidecar, dashboard, and
+            the services the dashboard hard-depends on).
     """
 
     id: str
@@ -62,6 +67,7 @@ class ComponentDef:
     check_sequence: list[CheckStep] = field(default_factory=list)
     sidecar_service: str | None = None
     requirements: list[str] = field(default_factory=list)  # Requirement IDs from REQUIREMENT_REGISTRY
+    is_core: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -76,6 +82,30 @@ def _register(comp: ComponentDef) -> None:
 
 
 # --- External dependencies ---
+
+_register(ComponentDef(
+    id="sidecar",
+    display_name="Sidecar Daemon",
+    category="external",
+    is_core=True,  # nothing works without the sidecar
+    health_source="sidecar",
+    sidecar_service="sidecar",  # synthetic entry synthesized by HealthEngine._load
+    check_sequence=[
+        CheckStep(
+            description="Sidecar daemon process alive and ticking",
+            check_fn="work_buddy.health.checks.check_sidecar_heartbeat",
+            on_fail=(
+                "The work-buddy sidecar daemon is not running (or has "
+                "stopped heartbeating). Start it with:\n"
+                + ("  Start-ScheduledTask 'WB-Sidecar'" if _IS_WINDOWS
+                   else "  python -m work_buddy.sidecar &")
+                + "\n\nMost work-buddy capabilities depend on the sidecar — "
+                "if it's down, health checks, scheduled jobs, and inter-agent "
+                "messaging will be unavailable."
+            ),
+        ),
+    ],
+))
 
 _register(ComponentDef(
     id="postgresql",
@@ -203,6 +233,7 @@ _register(ComponentDef(
     id="messaging",
     display_name="Messaging Service",
     category="service",
+    is_core=True,  # inter-agent + session hooks depend on it
     health_source="composite",
     sidecar_service="messaging",
     check_sequence=[
@@ -218,6 +249,7 @@ _register(ComponentDef(
     id="embedding",
     display_name="Embedding Service",
     category="service",
+    is_core=True,  # hybrid search + knowledge-index dense vectors depend on it
     health_source="composite",
     sidecar_service="embedding",
     check_sequence=[
@@ -254,6 +286,7 @@ _register(ComponentDef(
     id="dashboard",
     display_name="Dashboard",
     category="service",
+    is_core=True,  # this is the UI; turning it off turns off the Settings page itself
     health_source="sidecar",
     sidecar_service="dashboard",
     check_sequence=[

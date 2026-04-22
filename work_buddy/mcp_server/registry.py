@@ -40,7 +40,14 @@ class Capability:
     callable: Callable
     search_aliases: list[str] = field(default_factory=list)  # extra phrases for search scoring
     param_aliases: dict[str, str] = field(default_factory=dict)  # {alias: canonical} e.g. {"target_date": "target"}
-    requires: list[str] = field(default_factory=list)  # tool IDs, e.g. ["obsidian", "hindsight"]
+    requires: list[str] = field(default_factory=list)  # tool/component IDs, e.g. ["obsidian", "hindsight"]
+    # Names of other capabilities this capability calls directly. Used by
+    # the control graph to resolve transitive component dependencies
+    # (e.g. a workflow step invokes `task_toggle` which requires `obsidian`,
+    # so the step and workflow inherit the `obsidian` dependency).
+    # Empty list means "audited, no invocations"; missing entries are
+    # treated the same — see tests/unit/test_registry_invariants.py.
+    invokes: list[str] = field(default_factory=list)
     mutates_state: bool = False  # whether this capability modifies state
     retry_policy: str = "manual"  # "replay" | "verify_first" | "manual"
     # When True (default), the gateway auto-enqueues transient failures
@@ -106,6 +113,12 @@ class WorkflowStep:
     workflow_file: str | None = None  # sub-workflow reference
     optional: bool = False
     requires: list[str] = field(default_factory=list)  # tool IDs for conductor gating
+    # Capability names this step calls. For auto_run steps, this is typically
+    # a single capability owning the callable; for reasoning steps it's the
+    # capabilities the agent is instructed to invoke. Populated via
+    # `invokes: [...]` in workflows.json. The control-graph capability
+    # resolver walks this to compute transitive component dependencies.
+    invokes: list[str] = field(default_factory=list)
     auto_run: AutoRun | None = None  # conductor auto-executes this step
     result_schema: dict[str, Any] | None = None  # validate agent output before storing
     requires_individual_consent: bool = False  # if True, workflow blanket consent is suspended for this step
@@ -124,6 +137,11 @@ class WorkflowDefinition:
     steps: list[WorkflowStep] = field(default_factory=list)
     context: str = ""  # philosophy, "What NOT to do" sections
     slash_command: str | None = None  # e.g. "wb-morning"
+    # Computed at registry-build time: the union of all tool/component IDs
+    # required by this workflow's steps — both `step.requires` directly and
+    # the `requires` of capabilities named in `step.invokes`. Do not
+    # hand-author; see `_compute_workflow_requires()`.
+    requires: list[str] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -587,6 +605,13 @@ def _build_registry() -> dict[str, Capability | WorkflowDefinition]:
     for wf in _discover_workflows_from_store():
         registry[wf.name] = wf
     _log_to_file(_lf, f"  workflows (store): {time.time()-t:.2f}s")
+
+    # Compute WorkflowDefinition.requires as the union of each step's
+    # `requires` plus the `requires` of capabilities named in step.invokes.
+    # Computed, never hand-authored.
+    t = time.time()
+    _compute_workflow_requires(registry)
+    _log_to_file(_lf, f"  workflow_requires: {time.time()-t:.2f}s")
 
     # Populate slash_command on all entries from .claude/commands/ frontmatter
     t = time.time()
@@ -3423,6 +3448,18 @@ def _llm_capabilities() -> list[Capability]:
     from work_buddy.llm.call import llm_call
     from work_buddy.llm.submit import llm_submit
     from work_buddy.llm.with_tools import llm_with_tools
+    from work_buddy.llm.tool_presets import PRESETS as _LLM_TOOL_PRESETS
+
+    # `llm_with_tools` lets a local model call any capability whitelisted
+    # in either readonly_safe or readonly_context. For the control graph,
+    # those names are transitively invoked — so union the preset contents
+    # at registry-build time. Computed (not hand-authored) so drift is
+    # impossible: edit a preset in tool_presets.py and the control graph
+    # re-resolves automatically.
+    _llm_with_tools_invokes = sorted(
+        _LLM_TOOL_PRESETS.get("readonly_safe", frozenset())
+        | _LLM_TOOL_PRESETS.get("readonly_context", frozenset())
+    )
 
     return [
         Capability(
@@ -3676,6 +3713,7 @@ def _llm_capabilities() -> list[Capability]:
                 },
             },
             callable=llm_with_tools,
+            invokes=_llm_with_tools_invokes,  # unioned from tool_presets at build time
             # Retrying a failed local-LLM tool call wastes tokens, spams
             # consent prompts (the model re-invokes tools on each replay),
             # and is unlikely to succeed (model hang ≠ network hiccup).
@@ -5088,6 +5126,41 @@ def _build_slash_command_index() -> dict[str, str]:
     return index
 
 
+def _compute_workflow_requires(
+    registry: dict[str, Capability | WorkflowDefinition],
+) -> None:
+    """Populate ``WorkflowDefinition.requires`` in-place.
+
+    For each workflow, unions:
+      - Every step's own ``requires`` (tool/component IDs).
+      - The ``requires`` of every capability named in ``step.invokes``.
+
+    Invoked capabilities that are not (yet) in the registry (e.g. filtered
+    out by tool availability) are skipped silently — the workflow will
+    show an incomplete dependency set, which is recoverable once the
+    upstream component comes back.
+
+    Transitive closure (capability A.invokes = [B], B.requires = [obsidian])
+    is followed one hop. Multi-hop chains (A invokes B invokes C) are not
+    resolved here; the control-graph resolver in
+    ``work_buddy.control.capability_resolver`` handles the full closure on
+    demand without bloating the workflow dataclass.
+    """
+    for entry in registry.values():
+        if not isinstance(entry, WorkflowDefinition):
+            continue
+        seen: set[str] = set()
+        for step in entry.steps:
+            for t_id in step.requires:
+                seen.add(t_id)
+            for cap_name in step.invokes:
+                cap = registry.get(cap_name)
+                if isinstance(cap, Capability):
+                    for t_id in cap.requires:
+                        seen.add(t_id)
+        entry.requires = sorted(seen)
+
+
 def _discover_workflows_from_store() -> list[WorkflowDefinition]:
     """Load workflow definitions from the knowledge store.
 
@@ -5145,6 +5218,7 @@ def _discover_workflows_from_store() -> list[WorkflowDefinition]:
                 workflow_file=s.get("workflow_ref"),
                 optional=s.get("optional", False),
                 requires=s.get("requires", []),
+                invokes=s.get("invokes", []),
                 auto_run=auto_run,
                 result_schema=s.get("result_schema"),
                 requires_individual_consent=s.get("requires_individual_consent", False),
@@ -5302,6 +5376,7 @@ def _knowledge_capabilities() -> list[Capability]:
                 "top_n": {"type": "int", "required": False},
             },
             callable=docs_query,
+            invokes=["agent_docs"],  # thin wrapper — calls agent_docs(...) directly
             search_aliases=[
                 "legacy knowledge query",
                 "old docs query",
@@ -5318,6 +5393,7 @@ def _knowledge_capabilities() -> list[Capability]:
                 "depth": {"type": "str", "required": False},
             },
             callable=docs_get,
+            invokes=["agent_docs"],  # thin wrapper — calls agent_docs(path=name, depth=depth)
             search_aliases=[
                 "legacy knowledge get",
                 "old docs get",
@@ -5333,6 +5409,7 @@ def _knowledge_capabilities() -> list[Capability]:
                 "force": {"type": "bool", "required": False},
             },
             callable=docs_index_build,
+            invokes=["agent_docs_rebuild"],  # thin wrapper — calls agent_docs_rebuild(force=force)
             search_aliases=[
                 "legacy build index",
                 "old index rebuild",

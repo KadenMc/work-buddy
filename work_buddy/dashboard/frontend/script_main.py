@@ -14,6 +14,7 @@ const staticLoaders = {
     chats: () => loadChats(),
     contracts: () => loadContracts(),
     projects: () => loadProjects(),
+    settings: () => loadSettings(),
 };
 
 function switchTab(tabName) {

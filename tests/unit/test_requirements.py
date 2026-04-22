@@ -390,6 +390,11 @@ class TestCheckFunctions:
         assert result["ok"] is True
 
     def test_check_daily_note_not_yet_created(self, monkeypatch, tmp_path):
+        """If no daily note exists anywhere in the last 30 days, the check
+        fails with a guiding message. (Post-Phase-G behavior: the check
+        falls back to the latest available daily note rather than
+        strictly today's; this test exercises the empty-journal edge
+        case where no fallback exists either.)"""
         vault = tmp_path / "vault"
         (vault / "journal").mkdir(parents=True)
         monkeypatch.setattr(
@@ -403,7 +408,32 @@ class TestCheckFunctions:
         from work_buddy.health.requirement_checks import check_log_section
         result = check_log_section()
         assert result["ok"] is False
-        assert "does not exist" in result["detail"]
+        assert "No daily note found" in result["detail"]
+
+    def test_check_daily_note_falls_back_to_yesterday(self, monkeypatch, tmp_path):
+        """If today's note doesn't exist, check validates against the
+        most recent available daily note and surfaces which date."""
+        from datetime import date, timedelta
+        vault = tmp_path / "vault"
+        journal = vault / "journal"
+        journal.mkdir(parents=True)
+        # Create yesterday's note with a valid # Log section
+        y = (date.today() - timedelta(days=1)).strftime("%Y-%m-%d")
+        (journal / f"{y}.md").write_text("# Log\nstuff\n", encoding="utf-8")
+        monkeypatch.setattr(
+            "work_buddy.health.requirement_checks._vault_root",
+            lambda: vault,
+        )
+        monkeypatch.setattr(
+            "work_buddy.health.requirement_checks._cfg",
+            lambda: {"obsidian": {"journal_dir": "journal"}},
+        )
+        from work_buddy.health.requirement_checks import check_log_section
+        result = check_log_section()
+        assert result["ok"] is True
+        # Detail should announce the fallback date
+        assert y in result["detail"]
+        assert "last available" in result["detail"]
 
     def test_check_tasks_plugin_pass(self, monkeypatch, tmp_path):
         vault = tmp_path / "vault"

@@ -82,6 +82,26 @@ class HealthEngine:
                     _SIDECAR_STATE_FILE.read_text(encoding="utf-8")
                 )
                 self._sidecar_services = data.get("services", {})
+
+                # Synthetic "sidecar" entry — the daemon itself is not in
+                # its own `services` dict because it's the supervisor.
+                # We derive its health from the top-level pid and
+                # last_tick_at, so the ``sidecar`` ComponentDef (health
+                # source = "sidecar", sidecar_service = "sidecar") can be
+                # merged through the normal pipeline.
+                if "sidecar" not in self._sidecar_services:
+                    import time as _t
+                    pid = data.get("pid")
+                    last_tick = data.get("last_tick_at", 0)
+                    if pid and last_tick:
+                        age = _t.time() - float(last_tick)
+                        status = "healthy" if age < 120 else "degraded"
+                    else:
+                        status = "stopped"
+                    self._sidecar_services["sidecar"] = {
+                        "status": status,
+                        "pid": pid,
+                    }
             except Exception as exc:
                 log.warning("Failed to read sidecar_state.json: %s", exc)
 

@@ -173,7 +173,7 @@ def check_journal_dir() -> dict[str, Any]:
 
 
 def _find_todays_note() -> Path | None:
-    """Find today's daily note file."""
+    """Find today's daily note file (strict — only today)."""
     from datetime import date
     vault = _vault_root()
     cfg = _cfg()
@@ -183,19 +183,82 @@ def _find_todays_note() -> Path | None:
     return note_path if note_path.exists() else None
 
 
+def _find_latest_daily_note() -> tuple[Path | None, str | None]:
+    """Find today's daily note, falling back to the most recent earlier one.
+
+    Returns ``(path, is_today_flag)`` where ``is_today_flag`` is the
+    date string actually used (``"today"`` if the match was today's
+    file, or an ISO date otherwise). Returns ``(None, None)`` if no
+    daily note exists at all within the last 30 days.
+
+    Rationale: the user's day doesn't begin at midnight — they often
+    work past midnight against yesterday's note before sleeping and
+    creating the next day's. A strict "today only" check marks the
+    daily-note sections as degraded every post-midnight session, which
+    is noise, not signal. Fall back to the latest available note and
+    tell the user which date we're validating.
+    """
+    from datetime import date, timedelta
+    import re as _re
+
+    vault = _vault_root()
+    cfg = _cfg()
+    journal_dir = cfg.get("obsidian", {}).get("journal_dir", "journal")
+    journal_path = vault / journal_dir
+
+    today = date.today()
+    today_str = today.strftime("%Y-%m-%d")
+    today_path = journal_path / f"{today_str}.md"
+    if today_path.exists():
+        return today_path, "today"
+
+    # Scan the past 30 days for a dated daily-note file. 30 is a
+    # generous-but-bounded window — if nothing exists there, the user
+    # genuinely has no recent daily note and the check should report it.
+    for i in range(1, 31):
+        d = today - timedelta(days=i)
+        candidate = journal_path / f"{d.strftime('%Y-%m-%d')}.md"
+        if candidate.exists():
+            return candidate, d.strftime("%Y-%m-%d")
+    return None, None
+
+
 def _note_has_section(header_pattern: str) -> dict[str, Any]:
-    """Check if today's note has a section matching the pattern (case-insensitive)."""
+    """Check whether the latest daily note has a section.
+
+    Uses ``_find_latest_daily_note`` so a post-midnight session with no
+    today-dated file yet still validates against yesterday's note. The
+    detail string surfaces which date was actually checked.
+    """
     import re
-    note = _find_todays_note()
+    note, which_date = _find_latest_daily_note()
     if note is None:
-        return {"ok": False, "detail": "Today's daily note does not exist yet"}
+        return {
+            "ok": False,
+            "detail": (
+                "No daily note found within the last 30 days — "
+                "create one to validate journal sections."
+            ),
+        }
     try:
         content = note.read_text(encoding="utf-8")
         # Match markdown headers, ignoring bold/italic formatting
         pattern = rf"^#+\s+\**{re.escape(header_pattern)}"
-        if re.search(pattern, content, re.MULTILINE | re.IGNORECASE):
-            return {"ok": True, "detail": f"Found '{header_pattern}' section in {note.name}"}
-        return {"ok": False, "detail": f"No '{header_pattern}' section found in {note.name}"}
+        found = bool(re.search(pattern, content, re.MULTILINE | re.IGNORECASE))
+        prefix = (
+            ""
+            if which_date == "today"
+            else f"Operating on last available daily note ({which_date}). "
+        )
+        if found:
+            return {
+                "ok": True,
+                "detail": f"{prefix}Found '{header_pattern}' section in {note.name}",
+            }
+        return {
+            "ok": False,
+            "detail": f"{prefix}No '{header_pattern}' section found in {note.name}",
+        }
     except OSError as exc:
         return {"ok": False, "detail": f"Could not read {note}: {exc}"}
 

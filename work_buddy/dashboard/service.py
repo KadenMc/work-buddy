@@ -200,6 +200,76 @@ def api_reprobe(component_id: str):
         return jsonify({"error": str(exc)}), 500
 
 
+@app.post("/api/control/preference")
+def api_control_preference():
+    """Set one or more component feature preferences from the Settings tab.
+
+    Body: ``{"updates": {"<component_id>": {"wanted": bool|null, "reason": str?}, ...}}``
+
+    Gated by read-only mode. Writes to config.local.yaml via
+    ``apply_preference_updates`` (consent-gated at the capability level,
+    but we auto-grant here — the user clicking the toggle IS the consent,
+    same pattern as ``_launch_workflow_session``).
+
+    Returns the fresh control graph so the UI can re-render without a
+    separate round-trip.
+    """
+    blocked = _reject_read_only()
+    if blocked:
+        return blocked
+
+    data = request.get_json(silent=True) or {}
+    updates = data.get("updates")
+    if not isinstance(updates, dict) or not updates:
+        return jsonify({"error": "Request body must include non-empty 'updates' dict"}), 400
+
+    try:
+        from work_buddy.consent import grant_consent
+        from work_buddy.health.preferences import apply_preference_updates
+        from work_buddy.control.graph import build_graph, cache_info, invalidate_graph
+
+        # Clicking the toggle IS the consent — mirrors the workflow-launch pattern.
+        grant_consent("setup.write_preferences", mode="once")
+        written = apply_preference_updates(updates)
+        # apply_preference_updates calls _invalidate_control_graph internally,
+        # but call again defensively in case the guarded import failed earlier.
+        invalidate_graph()
+
+        nodes = build_graph(force=True)
+        return jsonify({
+            "written": written,
+            "nodes": {nid: n.to_dict() for nid, n in nodes.items()},
+            "cache": cache_info(),
+        })
+    except Exception as exc:
+        logger.exception("Failed to apply preference updates")
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.get("/api/control/graph")
+def api_control_graph():
+    """Unified control graph — domains, subsystems, components, requirements, capabilities.
+
+    Read-only view-model fused from preferences, health, requirements,
+    and the MCP registry. Frontend Settings tab consumes this.
+
+    Query params:
+        force: '1'/'true' to bypass the 45-s TTL cache and rebuild.
+    """
+    try:
+        from work_buddy.control.graph import build_graph, cache_info
+        force_raw = (request.args.get("force") or "").lower()
+        force = force_raw in ("1", "true", "yes")
+        nodes = build_graph(force=force)
+        return jsonify({
+            "nodes": {nid: n.to_dict() for nid, n in nodes.items()},
+            "cache": cache_info(),
+        })
+    except Exception as exc:
+        logger.exception("Failed to build control graph")
+        return jsonify({"error": str(exc)}), 500
+
+
 @app.get("/api/requirements")
 def api_requirements():
     """Full requirements validation results."""
