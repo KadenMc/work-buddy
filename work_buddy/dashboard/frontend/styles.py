@@ -2791,6 +2791,56 @@ body {
     color: var(--text-primary);
     border-color: var(--text-secondary);
 }
+/* Alert variant — on non-ok requirements + non-ok components. Red
+   border + red text so the "?" visibly says "click me, I can explain
+   what's going on" rather than fading in. */
+.settings-help-btn-alert {
+    color: var(--red);
+    border-color: var(--red);
+    background: #f851490a;
+}
+.settings-help-btn-alert:hover:not(:disabled) {
+    background: #f851491f;
+    color: var(--red);
+    border-color: var(--red);
+}
+
+/* Agent-handoff fix button — visually flagged as "this will spawn a
+   terminal" so users aren't surprised. Same accent chrome as the
+   other fix buttons but with a hint that it's different. */
+.settings-fix-btn-agent {
+    border-style: dashed;
+}
+.settings-fix-btn-agent::before {
+    content: "\u27a4 ";  /* right-arrow head — "this opens something" */
+    font-size: 0.85em;
+    opacity: 0.7;
+}
+
+/* Per-component reprobe button — same visual weight as the help
+   button but accent-colored so it reads as a refresh action
+   (mirrors the Status tab's diagnose button language). */
+.settings-reprobe-btn {
+    background: transparent;
+    color: var(--text-secondary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    width: 22px;
+    padding: 2px 0;
+    font-size: 13px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.settings-reprobe-btn:hover:not(:disabled) {
+    background: var(--accent-subtle);
+    color: var(--accent);
+    border-color: var(--accent);
+}
+.settings-reprobe-btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.45;
+}
 .settings-fix-btn:disabled,
 .settings-help-btn:disabled,
 .settings-fix-cancel-btn:disabled {

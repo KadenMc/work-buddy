@@ -182,7 +182,10 @@ def _spawn_fix_agent(req) -> dict[str, Any]:
     grant_consent("sidecar:remote_session_launch", mode="once")
 
     try:
-        result = begin_session(prompt=brief)
+        # remote_control=False — these sessions are an interactive
+        # desktop terminal the user drives locally. Remote-control mode
+        # is for Telegram/phone bridging; we want the normal case here.
+        result = begin_session(prompt=brief, remote_control=False)
     except Exception as exc:
         log.exception("Failed to spawn fix agent for %s", req.id)
         return {

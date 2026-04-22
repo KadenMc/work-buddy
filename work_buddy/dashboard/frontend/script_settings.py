@@ -570,21 +570,42 @@ function _renderRequirementActions(r) {
     if (r.effective_state === 'ok' || r.effective_state === 'disabled') {
         return '';
     }
+    // Label + tooltip communicate the MODE of the fix so users know
+    // what happens on click BEFORE clicking — the previous single "Fix"
+    // label collapsed three quite different flows (instant apply,
+    // inline form, spawned agent) into one opaque button.
+    let fixLabel = 'Fix';
+    let fixClass = 'settings-fix-btn';
+    let fixTitle = 'Apply the registered fix for this requirement';
+    if (r.fix_kind === 'programmatic') {
+        fixLabel = 'Apply';
+        fixTitle = 'Apply this fix now — no input needed. ' + (r.fix_preview || '');
+    } else if (r.fix_kind === 'input_required') {
+        fixLabel = 'Configure';
+        fixTitle = 'Opens an inline form to collect the value, then applies. ' + (r.fix_preview || '');
+    } else if (r.fix_kind === 'agent_handoff') {
+        fixLabel = 'Walk me through';
+        fixClass += ' settings-fix-btn-agent';
+        fixTitle = 'Opens a Claude Code session to walk you through this. ' + (r.fix_preview || '');
+    }
     const fixBtn = r.fix_kind && r.fix_kind !== 'none'
-        ? `<button class="settings-fix-btn" type="button"
+        ? `<button class="${fixClass}" type="button"
                    onclick="onFixClick(this)"
                    data-req-id="${escapeHtml(r.id.replace(/^req:/, ''))}"
                    data-fix-kind="${escapeHtml(r.fix_kind)}"
                    data-fix-preview="${escapeHtml(r.fix_preview || '')}"
                    data-fix-params='${escapeHtml(JSON.stringify(r.fix_params || {}))}'
                    ${WB_READ_ONLY_MODE ? 'disabled title="Dashboard is in read-only mode"' : ''}
-                   title="${WB_READ_ONLY_MODE ? 'Dashboard is in read-only mode' : 'Apply the registered fix for this requirement'}">Fix</button>`
+                   title="${escapeHtml(fixTitle.trim())}">${escapeHtml(fixLabel)}</button>`
         : '';
-    const helpBtn = `<button class="settings-help-btn" type="button"
+    // "?" = ALWAYS spawns an agent with this node's context. Visually
+    // distinct from the fix buttons so users who want help, not
+    // action, find the right button the first time.
+    const helpBtn = `<button class="settings-help-btn settings-help-btn-alert" type="button"
                               onclick="onHelpClick(this)"
                               data-node-id="${escapeHtml(r.id)}"
                               ${WB_READ_ONLY_MODE ? 'disabled' : ''}
-                              title="Spawn a Claude Code session with this requirement's full context">?</button>`;
+                              title="Spawn a Claude Code session focused on this requirement. Use when you want to understand or investigate rather than auto-apply a fix.">?</button>`;
     return `<span class="settings-req-actions">${fixBtn}${helpBtn}</span>`;
 }
 
@@ -696,6 +717,39 @@ function _renderInputForm(btnEl, reqId, fixParams) {
         if (actions) actions.style.display = '';
     });
     li.appendChild(form);
+}
+
+// ---- Per-component reprobe click ----
+//
+// Mirrors the Status-tab per-component reprobe: hits
+// POST /api/reprobe/<component_id> which re-runs a single probe and
+// rewrites tool_status.json for that one entry. Fast (~1s typical, no
+// full graph rebuild). We then bust the graph cache via force=1 so
+// the UI re-renders with the fresh state.
+async function onComponentReprobeClick(btnEl) {
+    if (WB_READ_ONLY_MODE) return;
+    const componentId = btnEl.dataset.componentId;
+    if (!componentId) return;
+    const orig = btnEl.textContent;
+    btnEl.disabled = true;
+    btnEl.textContent = '…';
+    try {
+        const resp = await fetch('/api/reprobe/' + encodeURIComponent(componentId), {method: 'POST'});
+        if (!resp.ok) {
+            const errText = await resp.text();
+            showToast(`Reprobe ${componentId} failed: ${errText}`, 'error');
+            return;
+        }
+        await loadSettings(true);  // force-refresh the graph (single probe is on disk now)
+        requestAnimationFrame(() => _flashNode('component:' + componentId));
+    } catch (exc) {
+        showToast(`Reprobe request failed: ${exc}`, 'error');
+    } finally {
+        // loadSettings re-renders so btnEl no longer exists if successful,
+        // but restore state on error paths.
+        btnEl.disabled = false;
+        btnEl.textContent = orig;
+    }
 }
 
 // ---- Help click ----
@@ -868,11 +922,24 @@ function _renderComponentNode(nodes, node, underParent) {
     // ? button always available on components — diagnose/help via
     // spawned Claude Code session, replacing the legacy Status-tab
     // diagnose+launchSetupAgent path with a single help-brief flow.
-    const helpBtn = `<button class="settings-help-btn" type="button"
+    // Styled emphatically (red-ish) when the component isn't ok so it
+    // visibly says "you may want to click me" rather than fading in.
+    const helpAlert = node.effective_state !== 'ok' && node.effective_state !== 'disabled'
+        ? ' settings-help-btn-alert' : '';
+    const helpBtn = `<button class="settings-help-btn${helpAlert}" type="button"
                               onclick="onHelpClick(this)"
                               data-node-id="${escapeHtml(node.id)}"
                               ${WB_READ_ONLY_MODE ? 'disabled' : ''}
-                              title="Spawn a Claude Code session to diagnose this component">?</button>`;
+                              title="Spawn a Claude Code session focused on this component. Bundles the full diagnostic output so you can investigate without re-explaining context.">?</button>`;
+    // ↻ Reprobe button — refreshes THIS component's probe only, same
+    // path as the legacy Status-tab reprobe. Fast (no full graph
+    // rebuild) so users can chase 'unknown'/'degraded' signals
+    // per-component without committing to the ~10s full reprobe.
+    const reprobeBtn = `<button class="settings-reprobe-btn" type="button"
+                                 onclick="onComponentReprobeClick(this)"
+                                 data-component-id="${escapeHtml(node.component_id || '')}"
+                                 ${WB_READ_ONLY_MODE ? 'disabled' : ''}
+                                 title="Re-run just this component's probe (fast). Use when you want a definitive state for this one thing without waiting for a full reprobe.">&#x21BB;</button>`;
     return `
         <div class="settings-node settings-component" data-state="${node.effective_state}" data-kind="component" data-wb-node-id="${escapeHtml(node.id)}">
             <div class="settings-node-header">
@@ -881,6 +948,7 @@ function _renderComponentNode(nodes, node, underParent) {
                 ${controlStateBadge(node.effective_state, node.id)}
                 ${preferenceBadge(node.preference)}
                 ${_renderAlsoIn(node, underParent)}
+                ${reprobeBtn}
                 ${helpBtn}
             </div>
             ${node.status_reason ? `<div class="settings-node-reason">${escapeHtml(node.status_reason)}</div>` : ''}

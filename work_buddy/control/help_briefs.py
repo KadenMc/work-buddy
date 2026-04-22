@@ -329,7 +329,9 @@ def spawn_help_agent(node_id: str) -> dict[str, Any]:
     grant_consent("sidecar:remote_session_launch", mode="once")
 
     try:
-        result = begin_session(prompt=brief)
+        # Interactive desktop — no remote-control bridge. See
+        # fix_runner._spawn_fix_agent for the same rationale.
+        result = begin_session(prompt=brief, remote_control=False)
     except Exception as exc:
         log.exception("Failed to spawn help agent for %s", node_id)
         return {"ok": False, "detail": f"Could not launch help session: {exc}"}
