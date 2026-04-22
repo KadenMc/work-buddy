@@ -48,13 +48,20 @@ def _find_file_for_path(unit_path: str) -> Path | None:
     return None
 
 
-def _best_file_for_new_path(unit_path: str) -> Path:
+def _best_file_for_new_path(unit_path: str, kind: str | None = None) -> Path:
     """Choose the best JSON file to house a new unit based on path prefix.
 
-    Heuristic: find the hand-authored file whose existing paths share the
-    longest common prefix with the new path. Falls back to the top-level
-    domain segment (e.g. "tasks/foo" → tasks.json).
+    Heuristic:
+    - ``kind == "workflow"`` → always ``workflows.json`` (convention; the
+      conductor scans all files by kind, but colocating workflows keeps
+      hand-authoring consistent).
+    - Otherwise: prefer the hand-authored file whose existing paths share
+      the longest common prefix with the new path; fall back to the top-
+      level domain segment (e.g. ``tasks/foo`` → ``tasks.json``).
     """
+    if kind == "workflow":
+        return _STORE_DIR / "workflows.json"
+
     top_segment = unit_path.split("/")[0]
 
     # Try exact domain file
@@ -221,7 +228,7 @@ def create_unit(
             unit_data["requires"] = extra["requires"]
 
     # Determine target file and write
-    target_file = _best_file_for_new_path(path)
+    target_file = _best_file_for_new_path(path, kind=kind)
     file_data = _read_json_file(target_file)
     file_data[path] = unit_data
     _write_json_file(target_file, file_data)
@@ -600,6 +607,206 @@ def docs_move(*, old_path: str, new_path: str) -> dict[str, Any]:
         new_path: New path for the unit.
     """
     return move_unit(old_path, new_path)
+
+
+# ---------------------------------------------------------------------------
+# Workflow-specific authoring
+# ---------------------------------------------------------------------------
+#
+# ``docs_create`` / ``docs_update`` handle prose-shaped units (directions,
+# system). Workflow units are structurally different: they carry a DAG
+# (``steps``), per-step prose (``step_instructions``), and a few workflow-
+# level knobs (``workflow_name``, ``execution``, ``allow_override``). Packing
+# those into the prose ``docs_*`` schema would mix concerns — so workflow
+# authoring lives in its own pair of capabilities.
+#
+# The ``steps`` and ``step_instructions`` parameters are accepted as JSON
+# strings (parsed here) so the MCP transport can stay flat-typed; callers
+# can still pass dicts when invoking the Python function directly.
+
+_WORKFLOW_EXTRA_KEYS = ("workflow_name", "execution", "allow_override", "steps", "step_instructions")
+
+
+def _coerce_json(value: Any, label: str) -> Any:
+    """Accept a JSON string or already-parsed value; raise on bad JSON."""
+    if value is None or not isinstance(value, str):
+        return value
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{label} must be valid JSON: {exc}") from exc
+
+
+def workflow_create(
+    *,
+    path: str,
+    name: str,
+    description: str,
+    workflow_name: str,
+    steps: Any,
+    step_instructions: Any = None,
+    execution: str = "main",
+    allow_override: bool = False,
+    content_full: str = "",
+    content_summary: str = "",
+    command: str | None = None,
+    parents: str | None = None,
+    children: str | None = None,
+    tags: str | None = None,
+    aliases: str | None = None,
+    dev_notes: str | None = None,
+) -> dict[str, Any]:
+    """Create a new workflow unit in the knowledge store.
+
+    Workflow DAGs are structurally richer than prose units, so they have
+    a dedicated creator. Prefer this over ``docs_create`` for ``kind="workflow"``
+    units; ``docs_create`` does not accept workflow-specific fields.
+
+    Args:
+        path: Unique path ID (e.g. ``"dev/dev-document"``).
+        name: Human-readable name.
+        description: One-line summary.
+        workflow_name: Registry slug used with ``wb_run("<workflow_name>")``.
+        steps: DAG definition. Either a list of step dicts, or a JSON string
+               encoding the same. Each step needs at least ``id``, ``name``,
+               ``step_type`` (``"reasoning"`` | ``"code"``), and
+               ``depends_on`` (list of prior step ids).
+        step_instructions: Optional ``{step_id: instruction_text}`` mapping
+               (dict or JSON string). Reasoning steps generally want this;
+               pure auto_run steps usually don't need it.
+        execution: Default execution policy (``"main"`` or ``"subagent"``).
+        allow_override: Whether callers may override execution per step.
+        content_full: Optional workflow-level context (philosophy, what-not-
+               to-do). Surfaces at ``depth="full"`` on ``agent_docs``.
+        content_summary: Optional one-paragraph summary.
+        command: Slash-command name (e.g. ``"wb-dev-document"``) for routing.
+        parents: Comma-separated parent paths (typical: the domain, e.g. ``"dev"``).
+        children: Comma-separated child paths (usually empty).
+        tags: Comma-separated search tags.
+        aliases: Comma-separated search aliases.
+        dev_notes: Dev-mode-only notes about the workflow's internals.
+
+    Returns:
+        The ``create_unit`` result dict (``{status, path, file, dag_errors}``)
+        or ``{"error": ...}`` on malformed input.
+    """
+    try:
+        steps_parsed = _coerce_json(steps, "steps")
+        instructions_parsed = _coerce_json(step_instructions, "step_instructions")
+    except ValueError as exc:
+        return {"error": str(exc)}
+
+    if not isinstance(steps_parsed, list) or not steps_parsed:
+        return {"error": "steps must be a non-empty list of step dicts"}
+    if instructions_parsed is not None and not isinstance(instructions_parsed, dict):
+        return {"error": "step_instructions must be a dict keyed by step id"}
+
+    extra: dict[str, Any] = {
+        "workflow_name": workflow_name,
+        "execution": execution,
+        "allow_override": bool(allow_override),
+        "steps": steps_parsed,
+    }
+    if instructions_parsed:
+        extra["step_instructions"] = instructions_parsed
+
+    return create_unit(
+        path=path,
+        kind="workflow",
+        name=name,
+        description=description,
+        content_full=content_full,
+        content_summary=content_summary,
+        command=command,
+        parents=_split_csv(parents),
+        children=_split_csv(children),
+        tags=_split_csv(tags),
+        aliases=_split_csv(aliases),
+        dev_notes=dev_notes if dev_notes else None,
+        extra=extra,
+    )
+
+
+def workflow_update(
+    *,
+    path: str,
+    name: str | None = None,
+    description: str | None = None,
+    workflow_name: str | None = None,
+    steps: Any = None,
+    step_instructions: Any = None,
+    execution: str | None = None,
+    allow_override: bool | None = None,
+    content_full: str | None = None,
+    content_summary: str | None = None,
+    command: str | None = None,
+    parents: str | None = None,
+    children: str | None = None,
+    tags: str | None = None,
+    aliases: str | None = None,
+    dev_notes: str | None = None,
+) -> dict[str, Any]:
+    """Update an existing workflow unit.
+
+    Only provided fields change; omitted fields preserved. For ``steps``
+    and ``step_instructions``, the new value replaces the old entirely —
+    partial per-step edits are not supported here (read the current value
+    via ``agent_docs``, mutate, pass the whole structure back).
+
+    Returns:
+        The ``update_unit`` result dict or ``{"error": ...}`` on bad input.
+    """
+    try:
+        steps_parsed = _coerce_json(steps, "steps") if steps is not None else None
+        instructions_parsed = (
+            _coerce_json(step_instructions, "step_instructions")
+            if step_instructions is not None
+            else None
+        )
+    except ValueError as exc:
+        return {"error": str(exc)}
+
+    if steps_parsed is not None and (not isinstance(steps_parsed, list) or not steps_parsed):
+        return {"error": "steps must be a non-empty list of step dicts"}
+    if instructions_parsed is not None and not isinstance(instructions_parsed, dict):
+        return {"error": "step_instructions must be a dict keyed by step id"}
+
+    updates: dict[str, Any] = {}
+    if name is not None:
+        updates["name"] = name
+    if description is not None:
+        updates["description"] = description
+    if content_full is not None:
+        updates["content_full"] = content_full
+    if content_summary is not None:
+        updates["content_summary"] = content_summary
+    if command is not None:
+        updates["command"] = command
+    if parents is not None:
+        updates["parents"] = _split_csv(parents)
+    if children is not None:
+        updates["children"] = _split_csv(children)
+    if tags is not None:
+        updates["tags"] = _split_csv(tags)
+    if aliases is not None:
+        updates["aliases"] = _split_csv(aliases)
+    if dev_notes is not None:
+        updates["dev_notes"] = dev_notes
+    if workflow_name is not None:
+        updates["workflow_name"] = workflow_name
+    if execution is not None:
+        updates["execution"] = execution
+    if allow_override is not None:
+        updates["allow_override"] = bool(allow_override)
+    if steps_parsed is not None:
+        updates["steps"] = steps_parsed
+    if instructions_parsed is not None:
+        updates["step_instructions"] = instructions_parsed
+
+    if not updates:
+        return {"error": "No fields to update."}
+
+    return update_unit(path, updates)
 
 
 # ---------------------------------------------------------------------------

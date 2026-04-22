@@ -106,10 +106,12 @@
       "context/triage_execute",
       "context/triage_item_detail",
       "context/triage_review_pool",
-      "context/triage_submit"
+      "context/triage_submit",
+      "context/workflow_create",
+      "context/workflow_update"
     ],
     "content": {
-      "summary": "Container for 58 capabilities and workflows."
+      "summary": "Container for 60 capabilities and workflows."
     }
   },
   "artifacts": {

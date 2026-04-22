@@ -1505,5 +1505,361 @@
     "parents": [
       "dev"
     ]
+  },
+  "dev/dev-document": {
+    "kind": "workflow",
+    "name": "Dev Doc Update",
+    "description": "Review current-session code changes, cross-check against the knowledge store, and update any units that have gone stale or need creating. Enforces scan → propose → confirm → apply → report so doc drift cannot be silently skipped.",
+    "content": {
+      "full": "Reviews the agent's current-session code changes and updates the knowledge store to match. The workflow gives the agent a deterministic starting set (changed files, classified subsystems, and knowledge units that textually reference them) via the auto_run `scan` step, then asks the agent to supplement that with semantic searches and user-knowledge about what was changed.\n\n## Philosophy\n\nStale documentation is worse than missing documentation — it actively misleads. Agents in dev mode have a recurring failure mode: making behavioral changes and forgetting to update the units that describe that behavior. This workflow makes doc hygiene a step with a DAG gate, not a prose item in a checklist that gets skipped under time pressure.\n\n## What the agent must bring\n\nThe workflow's intelligence is in the agent, not the scan. Specifically:\n- *Which* of the candidate units are actually semantically stale (the scan is grep-level, not semantic).\n- *What* new units (if any) should be created for subsystems the scan cannot know are new.\n- *Whether* CLAUDE.md or similar top-level instruction surfaces need manual updates — those live outside the knowledge store.\n\n## What this workflow is NOT\n\n- Not a commit gate by itself — `/wb-dev-commit` wraps it for that.\n- Not a replacement for dev_notes authoring — use `dev_notes` param on `docs_update`/`docs_create` for architectural gotchas.\n- Not a substitute for the agent's own judgment about whether an edit is worth making; empty `proposals: []` is fine when nothing is stale."
+    },
+    "tags": [
+      "dev",
+      "document",
+      "docs",
+      "knowledge-store",
+      "hygiene",
+      "drift",
+      "stale"
+    ],
+    "aliases": [
+      "update docs",
+      "doc update",
+      "doc hygiene",
+      "update knowledge",
+      "check doc drift",
+      "dev-document",
+      "dev document",
+      "sync knowledge store"
+    ],
+    "parents": [
+      "dev"
+    ],
+    "dev_notes": "The `scan` step uses grep-level matching intentionally — semantic search is the agent's job in `propose`. Don't 'improve' scan with embeddings; the split in responsibility keeps scan fast, deterministic, and cache-friendly, and forces the agent to actually load units instead of trusting a ranked list.\n\nThe `apply` step is a code step with an `invokes` list, not an auto_run — this is the task-new pattern, applied here so the agent mediates each doc mutation (consent flows, error recovery, per-edit rationale all stay in agent hands).",
+    "workflow_name": "dev-document",
+    "execution": "main",
+    "allow_override": false,
+    "steps": [
+      {
+        "id": "scan",
+        "name": "Scan current changes and candidate knowledge units",
+        "step_type": "code",
+        "depends_on": [],
+        "auto_run": {
+          "callable": "work_buddy.dev.document.scan_changes",
+          "kwargs": {
+            "base_ref": "HEAD"
+          },
+          "timeout": 30
+        },
+        "visibility": {
+          "mode": "summary",
+          "include_keys": [
+            "changed_files",
+            "classified",
+            "subsystem_slugs",
+            "candidate_units",
+            "warnings"
+          ]
+        },
+        "invokes": []
+      },
+      {
+        "id": "propose",
+        "name": "Propose knowledge-store edits (updates + new units)",
+        "step_type": "reasoning",
+        "depends_on": [
+          "scan"
+        ],
+        "result_schema": {
+          "required_keys": [
+            "proposals"
+          ],
+          "key_types": {
+            "proposals": "list"
+          }
+        },
+        "invokes": [
+          "agent_docs"
+        ]
+      },
+      {
+        "id": "confirm",
+        "name": "Confirm proposals with the user",
+        "step_type": "reasoning",
+        "depends_on": [
+          "propose"
+        ],
+        "result_schema": {
+          "required_keys": [
+            "final_proposals",
+            "confirmed"
+          ],
+          "key_types": {
+            "final_proposals": "list",
+            "confirmed": "bool"
+          }
+        },
+        "invokes": []
+      },
+      {
+        "id": "apply",
+        "name": "Apply accepted edits via docs_* / workflow_* capabilities",
+        "step_type": "code",
+        "depends_on": [
+          "confirm"
+        ],
+        "visibility": {
+          "mode": "summary",
+          "include_keys": [
+            "applied",
+            "failed",
+            "skipped",
+            "message"
+          ]
+        },
+        "invokes": [
+          "docs_create",
+          "docs_update",
+          "docs_delete",
+          "workflow_create",
+          "workflow_update"
+        ]
+      },
+      {
+        "id": "report",
+        "name": "Report what changed and flag follow-ups",
+        "step_type": "reasoning",
+        "depends_on": [
+          "apply"
+        ],
+        "invokes": []
+      }
+    ],
+    "step_instructions": {
+      "scan": "Auto-run. The conductor calls `work_buddy.dev.document.scan_changes(base_ref=\"HEAD\")` and wires the result into the next step. You don't invoke this — it returns:\n- `changed_files`: repo-relative paths of uncommitted + untracked files\n- `classified`: files grouped by bucket (module / knowledge / slash / tests / config / other)\n- `subsystem_slugs`: module keys derived from the changed paths (e.g. `obsidian/tasks`, `namespace_suggest`)\n- `candidate_units`: knowledge units whose text references a changed file or subsystem, ranked by match strength. **First-pass net only** — you must still do your own semantic searches in the next step.\n- `warnings`: non-fatal issues (empty diff, direct JSON edits).",
+      "propose": "Reasoning step. You're looking at the `scan` output and producing a list of concrete knowledge-store edits. You know the code you just wrote; the scan shows you which existing units textually reference it. Cross-check both, then fill the gap the scan cannot fill: **semantic drift** (the unit still reads correctly in grep but describes a behavior you just changed).\n\n## Required actions\n\n1. **Read each candidate_unit at `depth=\"full\"`** via `agent_docs(path=..., depth=\"full\")` that you haven't already loaded. Skim, decide: is this unit's content still accurate? Does it need new content added?\n\n2. **Do 2-4 semantic searches** against `agent_docs(query=...)` for concepts your change touches that the scan may have missed. Examples: if you added a workflow, query `\"workflow authoring\"`, `\"how to add workflow\"`, and the specific capability names. The scan uses grep — semantic search catches units that describe the same concept with different vocabulary.\n\n3. **Check CLAUDE.md** (the top-level instruction surface) for stale references: grep for keywords from your change. Stale entries in CLAUDE.md mislead every future agent.\n\n4. **Consider new units**: if you added a new subsystem, capability cluster, or workflow, there may be nothing in the store that describes it yet. Propose `action: \"create\"` with an appropriate path, kind, and content.\n\n## Advance with\n\n```json\n{\n  \"proposals\": [\n    {\n      \"action\": \"update\" | \"create\" | \"delete\" | \"no_op\",\n      \"path\": \"<unit path>\",\n      \"kind\": \"directions\" | \"system\" | \"workflow\" (required for create),\n      \"rationale\": \"<one-sentence why>\",\n      \"fields\": {\n        /* for update: only the fields changing */\n        /* for create: all fields needed by docs_create or workflow_create */\n        \"content_full\": \"...\",\n        \"description\": \"...\",\n        /* for workflow kind, include steps (as a list) and step_instructions (as a dict) */\n      }\n    }\n  ]\n}\n```\n\nAn empty `proposals: []` is a valid honest answer — if nothing is stale, don't invent work. But \"I can't find anything\" and \"I didn't look\" are different; you must have loaded at least the top candidate_units and done your semantic searches first.",
+      "confirm": "Reasoning step. Present the proposed edits to the user in a compact, readable form. For each proposal show: action, path, one-sentence rationale, and for content updates a brief diff hint (what's being added / changed / removed — not the full prose).\n\nAsk the user to accept, reject, or modify each. Batch the ask when the proposals are obviously independent; itemize when any single one might be contentious.\n\n## Advance with\n\n```json\n{\n  \"final_proposals\": [ /* the accepted subset, possibly modified */ ],\n  \"confirmed\": true | false\n}\n```\n\nIf the user declines entirely, pass `final_proposals: []` and `confirmed: false` — the apply step will skip.",
+      "apply": "Code step. Read `confirm.final_proposals` and iterate. For each:\n\n- `action: \"update\"` + `kind` in {directions, system} → `docs_update(path=..., **fields)`\n- `action: \"create\"` + `kind` in {directions, system} → `docs_create(path=..., kind=..., name=..., description=..., **fields)`\n- `action: \"update\"` + `kind == \"workflow\"` → `workflow_update(path=..., **fields)` (serialize `steps` and `step_instructions` as JSON strings)\n- `action: \"create\"` + `kind == \"workflow\"` → `workflow_create(path=..., name=..., description=..., workflow_name=..., steps=..., **fields)`\n- `action: \"delete\"` → `docs_delete(path=...)`\n- `action: \"no_op\"` → skip.\n\n**Fault tolerance**: one failure does not abort the loop. Collect results as `{applied: [path, ...], failed: [{path, error}, ...], skipped: [path, ...]}` and return them.\n\nIf `confirmed` is false, skip all and return `{applied: [], failed: [], skipped: [<all paths>], message: \"User declined; no edits applied.\"}`.",
+      "report": "Reasoning step. Short summary of what changed:\n- Count of applied / failed / skipped edits.\n- For failures, the path and error message.\n- For any CLAUDE.md or similar non-store files the user still needs to edit manually, flag them explicitly (the store capabilities don't touch CLAUDE.md).\n\nDo NOT re-summarize the code change itself — the user already knows what they did. Focus on doc hygiene outcomes."
+    },
+    "command": "wb-dev-document"
+  },
+  "dev/dev-commit": {
+    "kind": "workflow",
+    "name": "Dev Commit",
+    "description": "Commit work-buddy code changes with test verification, chained doc update, PII scan, cleanup review, and commit metadata recording. Replaces the prose /wb-commit directions.",
+    "content": {
+      "full": "Commit work-buddy code with test verification, doc hygiene (via chained /wb-dev-document), PII scan, cleanup review, structured commit metadata recording, and optional push + PR.\n\n## Philosophy\n\nThe previous `/wb-commit` was a prose checklist loaded by a slash command. Agents skipped the doc-update step under time pressure and silently left stale knowledge units in place. This workflow makes the doc check a DAG step whose skip requires explicit rationale, recorded in the commit body — so skipping is auditable, not invisible.\n\n## What this workflow is NOT\n\n- Not a general code-review step. Use `/security-review` or a PR reviewer for deeper passes.\n- Not a substitute for the agent's judgment on what 'precise staging' means. You still need to read your own diffs.\n- Not a gate on operational work. Only use from dev mode (after `/wb-dev` orient) when changing the work-buddy codebase itself.\n\n## Doc-update skip policy\n\n`document.skipped: true` is allowed but expensive: the skip rationale lands in the commit body, visible forever. Use only when the change genuinely documents nothing observable (pure typos, whitespace, test-only internals). When in doubt, run dev-document — empty `proposals: []` is cheap and honest."
+    },
+    "tags": [
+      "dev",
+      "commit",
+      "git",
+      "testing",
+      "knowledge-docs",
+      "workflow",
+      "pii"
+    ],
+    "aliases": [
+      "commit work-buddy",
+      "dev commit",
+      "commit with doc update",
+      "wb dev commit",
+      "dev-commit workflow"
+    ],
+    "parents": [
+      "dev"
+    ],
+    "dev_notes": "The `document` step uses `workflow_ref` for agent-mediated sub-workflow chaining (the conductor exposes the ref in `current_step.workflow_file`; the agent starts the sub-workflow and advances with its result). This is the task-new-style pattern: the parent workflow's step is a reasoning step, not an auto_run, so the agent can decide whether to run the sub-workflow or take the skip path.\n\nSkip enforcement is currently prose-level: `result_schema` only requires `skipped: bool`. A future tightening could add a step hook that requires `skip_rationale` when `skipped: true`, but the current design trusts the agent to follow the step_instruction.\n\n`pii_check` is scoped to the current diff + untracked set rather than a staged view. Running it before staging lets the agent fix hits in-place; if you run it after staging you'd need `git diff --cached` plumbing.",
+    "workflow_name": "dev-commit",
+    "execution": "main",
+    "allow_override": false,
+    "steps": [
+      {
+        "id": "assess",
+        "name": "Snapshot git state (branch, changed files, test candidates)",
+        "step_type": "code",
+        "depends_on": [],
+        "auto_run": {
+          "callable": "work_buddy.dev.commit.assess_state",
+          "kwargs": {},
+          "timeout": 20
+        },
+        "visibility": {
+          "mode": "summary",
+          "include_keys": [
+            "current_branch",
+            "is_main",
+            "changed_files",
+            "classified",
+            "test_candidates",
+            "warnings"
+          ]
+        },
+        "invokes": []
+      },
+      {
+        "id": "branch_guard",
+        "name": "Confirm branch (or create one off main)",
+        "step_type": "reasoning",
+        "depends_on": [
+          "assess"
+        ],
+        "result_schema": {
+          "required_keys": [
+            "branch",
+            "ready"
+          ],
+          "key_types": {
+            "branch": "str",
+            "ready": "bool"
+          }
+        },
+        "invokes": []
+      },
+      {
+        "id": "test",
+        "name": "Run relevant tests; record pass/fail",
+        "step_type": "reasoning",
+        "depends_on": [
+          "branch_guard"
+        ],
+        "result_schema": {
+          "required_keys": [
+            "tests_run",
+            "tests_passed",
+            "tests_failed",
+            "blocking"
+          ],
+          "key_types": {
+            "tests_run": "list",
+            "tests_passed": "int",
+            "tests_failed": "int",
+            "blocking": "bool"
+          }
+        },
+        "invokes": []
+      },
+      {
+        "id": "document",
+        "name": "Update knowledge-store docs via /wb-dev-document (or explicitly skip with rationale)",
+        "step_type": "reasoning",
+        "depends_on": [
+          "test"
+        ],
+        "workflow_ref": "dev-document",
+        "result_schema": {
+          "required_keys": [
+            "skipped"
+          ],
+          "key_types": {
+            "skipped": "bool"
+          }
+        },
+        "invokes": []
+      },
+      {
+        "id": "pii_check",
+        "name": "Scan changed files for PII patterns",
+        "step_type": "code",
+        "depends_on": [
+          "document"
+        ],
+        "auto_run": {
+          "callable": "work_buddy.dev.commit.pii_check",
+          "kwargs": {},
+          "timeout": 30
+        },
+        "visibility": {
+          "mode": "summary",
+          "include_keys": [
+            "files_scanned",
+            "hits",
+            "clean"
+          ]
+        },
+        "invokes": []
+      },
+      {
+        "id": "cleanup",
+        "name": "Review own changes for debug code, stale refs, PII hits",
+        "step_type": "reasoning",
+        "depends_on": [
+          "pii_check"
+        ],
+        "result_schema": {
+          "required_keys": [
+            "ready"
+          ],
+          "key_types": {
+            "ready": "bool"
+          }
+        },
+        "invokes": []
+      },
+      {
+        "id": "commit",
+        "name": "Stage precisely and commit",
+        "step_type": "reasoning",
+        "depends_on": [
+          "cleanup"
+        ],
+        "result_schema": {
+          "required_keys": [
+            "commit_hash",
+            "message"
+          ],
+          "key_types": {
+            "commit_hash": "str",
+            "message": "str"
+          },
+          "min_items": {
+            "commit_hash": 7
+          }
+        },
+        "invokes": []
+      },
+      {
+        "id": "record",
+        "name": "Record structured commit metadata via commit_record",
+        "step_type": "code",
+        "depends_on": [
+          "commit"
+        ],
+        "visibility": {
+          "mode": "summary",
+          "include_keys": [
+            "status",
+            "commit_hash",
+            "summary"
+          ]
+        },
+        "invokes": [
+          "commit_record"
+        ]
+      },
+      {
+        "id": "push",
+        "name": "Ask user about push + PR; act on the answer",
+        "step_type": "reasoning",
+        "depends_on": [
+          "record"
+        ],
+        "invokes": []
+      }
+    ],
+    "step_instructions": {
+      "assess": "Auto-run. The conductor calls `work_buddy.dev.commit.assess_state()` and passes the result forward. Returned fields:\n- `current_branch`, `is_main`: branch info.\n- `changed_files`, `classified`: what you're about to commit, by bucket (module / knowledge / slash / tests / config / other).\n- `test_candidates`: test files that *might* apply, heuristically derived from changed module names.\n- `warnings`: soft signals (on main, direct JSON edits, empty diff).",
+      "branch_guard": "Reasoning step. Read `assess.is_main`. If true, tell the user they're on a protected branch and create a new one:\n\n```bash\ngit checkout -b <branch-name>\n```\n\nNaming:\n- `fix/<short>` — bug fixes\n- `feat/<short>` — new features or capabilities\n- `docs/<short>` — documentation-only\n- `chore/<short>` — config / CI / deps\n\nIf on a feature branch already, confirm the name matches the work and proceed.\n\nAdvance with `{\"branch\": \"<current branch name>\", \"ready\": true}`. Set `ready: false` only if the user explicitly aborted.",
+      "test": "Reasoning step. For each module file you changed (`assess.classified.module`), run its matching test file(s). The conductor suggested candidates in `assess.test_candidates` — check them first, but also look for test files that import the modules you changed if the heuristic missed them.\n\nRun via:\n\n```bash\nexport WORK_BUDDY_SESSION_ID='test-session-00000000' && \\\n  python -m pytest <test_files> -q --tb=short\n```\n\nRecord: which files ran, pass count, fail count. If any failure is on code **you changed**, advance with `blocking: true` and fix before retrying the step. If failures are on code you didn't touch, note them and advance with `blocking: false`.\n\nIf no test files apply (e.g. pure doc change), advance with `tests_run: []`, `tests_passed: 0`, `tests_failed: 0`, `blocking: false`.\n\nAdvance shape:\n```json\n{\n  \"tests_run\": [\"tests/unit/test_foo.py\"],\n  \"tests_passed\": 12,\n  \"tests_failed\": 0,\n  \"blocking\": false,\n  \"rationale\": \"optional — e.g. 'no tests apply for pure doc change'\"\n}\n```",
+      "document": "Reasoning step with a sub-workflow reference. The parent workflow expects you to run `/wb-dev-document` (workflow name `dev-document`) to propagate your code changes into the knowledge store before committing.\n\n## The normal path\n\n```\nmcp__work-buddy__wb_run(\"dev-document\")\n```\n\nRun the sub-workflow to completion (scan → propose → confirm → apply → report). Then advance this step with:\n\n```json\n{\n  \"skipped\": false,\n  \"doc_result\": { /* the dev-document apply step's result */ },\n  \"units_updated\": [\"<unit path>\", ...]\n}\n```\n\n## The escape hatch (use sparingly)\n\nIf the commit is genuinely trivial — a typo, formatting, a test-only change that documents nothing observable — you may skip. `skip_rationale` is required and must be specific; 'trivial' alone is not acceptable:\n\n```json\n{\n  \"skipped\": true,\n  \"skip_rationale\": \"Typo fix in a docstring; no behavior change.\"\n}\n```\n\nThe rationale will be included in the commit body at the `record` step so the skip is auditable. If you find yourself writing a long rationale, that's a signal the change is not trivial — run dev-document instead.",
+      "pii_check": "Auto-run. The conductor calls `work_buddy.dev.commit.pii_check()` against the current change set. Returns `{files_scanned, hits, clean}`.\n- `clean: true` → proceed.\n- `hits` → each entry has `file`, `line`, `label`, `match`, `context`. Fix before committing. Common fixes: replace personal paths with config-driven values (`cfg[\"vault_root\"]`), replace named references to the user with 'the user', move machine-specific paths to gitignored configs.",
+      "cleanup": "Reasoning step. Walk each file you changed and look for:\n- Debug prints, `TODO`/`FIXME` you left while working.\n- Stale imports or references to things you renamed.\n- Dead code from a refactor.\n- **PII hits** from the previous step — if any, fix them now.\n\nDo not refactor unrelated code. Scope is your own changes only.\n\nAdvance with `{\"ready\": true}` when clean. If you find and fix issues, mention them in your response so the user sees the pass happened.",
+      "commit": "Reasoning step. Stage and commit.\n\n## Stage precisely\n\nDo NOT use `git add -A` or `git add .`.\n\n- When you own the whole file's diff: `git add <file1> <file2>`.\n- When a file mixes your hunks with another agent's: `git add -p <file>` and accept only yours.\n\nVerify with `git diff --cached --stat` that only your intended changes are staged.\n\n## Commit message\n\nFollow the repo's conventional-commit style (check `git log --oneline -5`). Keep the subject short and imperative; put the why in the body.\n\nIf the `document` step was skipped, paste the `skip_rationale` into the commit body under a `Doc-update skipped:` line so the skip is visible in history.\n\nUse a HEREDOC for multi-line commit messages:\n\n```bash\ngit commit -m \"$(cat <<'EOF'\n<subject>\n\n<body>\nEOF\n)\"\n```\n\nAdvance with:\n```json\n{\n  \"commit_hash\": \"<full or 7+ char hash from git output>\",\n  \"message\": \"<subject line>\",\n  \"staged_files\": [\"...\"]\n}\n```",
+      "record": "Code step. Dispatch `commit_record` via `wb_run` with structured metadata. Pull most fields from prior step_results:\n\n```\nmcp__work-buddy__wb_run(\"commit_record\", {\n    \"commit_hash\": <commit.commit_hash>,\n    \"message\": <commit.message>,\n    \"branch\": <branch_guard.branch>,\n    \"files_changed\": \",\".join(<commit.staged_files>),\n    \"tests_run\": \",\".join(<test.tests_run>),\n    \"tests_passed\": <test.tests_passed>,\n    \"tests_failed\": <test.tests_failed>,\n    \"knowledge_units_updated\": \",\".join(<document.units_updated or []>),\n    \"summary\": <one-line plain-English summary>,\n})\n```\n\nReturn the result dict unchanged. If `commit_record` fails, surface the error and proceed to the push step — a failed metadata record does not block the commit from being pushed.",
+      "push": "Reasoning step. Ask the user: **\"Want me to push and create a PR?\"**\n\nIf yes:\n\n```bash\ngit push -u origin <branch>\ngh pr create --title \"<concise title>\" --body \"$(cat <<'EOF'\n## Summary\n<1-3 bullets>\n\n## Test plan\n- [ ] <what to verify>\n\nTask: <task-id if any>\nEOF\n)\"\n```\n\nReport the PR URL back.\n\nIf the user declines, confirm the commit is on the local branch and remind them they can push later. Do NOT push without asking — this is a shared-state action that requires explicit consent."
+    },
+    "command": "wb-dev-commit"
   }
 }
