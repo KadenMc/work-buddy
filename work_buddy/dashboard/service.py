@@ -246,6 +246,46 @@ def api_control_preference():
         return jsonify({"error": str(exc)}), 500
 
 
+@app.post("/api/control/reprobe")
+def api_control_reprobe():
+    """Re-run every registered tool probe, then rebuild the control graph.
+
+    The existing ``GET /api/control/graph?force=1`` only busts the 45-s
+    graph cache — it doesn't touch ``tool_status.json``. So if the
+    probes were stale (hadn't run since the last 60-s auto-refresh), a
+    force-refresh would rebuild from the same stale data.
+
+    This endpoint runs ``probe_all(force=True)`` (parallel where
+    independent, serial for tool-probe ``depends_on`` chains),
+    rewrites ``tool_status.json``, invalidates the graph cache, and
+    returns the fresh graph. Worst-case latency is ~10 s (the Obsidian
+    HTTP probe's timeout) — the UI should show a spinner.
+
+    Read-only-gated because probing hits local services; the sidecar
+    is fine with bursty reprobes but we still respect read-only mode
+    for consistency with the rest of the mutating endpoints.
+    """
+    blocked = _reject_read_only()
+    if blocked:
+        return blocked
+
+    try:
+        from work_buddy.tools import _register_default_probes, probe_all
+        from work_buddy.control.graph import build_graph, cache_info, invalidate_graph
+
+        _register_default_probes()
+        probe_all(force=True)
+        invalidate_graph()
+        nodes = build_graph(force=True)
+        return jsonify({
+            "nodes": {nid: n.to_dict() for nid, n in nodes.items()},
+            "cache": cache_info(),
+        })
+    except Exception as exc:
+        logger.exception("reprobe-all failed")
+        return jsonify({"error": str(exc)}), 500
+
+
 @app.post("/api/control/fix/<path:req_id>")
 def api_control_fix(req_id: str):
     """Apply the registered fix for a requirement.

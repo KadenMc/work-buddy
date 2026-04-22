@@ -53,6 +53,41 @@ async function loadSettings(force) {
     }
 }
 
+// ---- Reprobe-all button ----
+//
+// Runs every registered tool probe from scratch via
+// POST /api/control/reprobe (backed by tools.probe_all(force=True)),
+// then renders the fresh graph. Unlike loadSettings(true) which only
+// busts the 45-s graph cache, this one actually re-pings every
+// service. Worst-case ~10s when Obsidian or Hindsight are slow —
+// button shows a spinner and blocks re-entry until done.
+async function reprobeAll(btnEl) {
+    if (WB_READ_ONLY_MODE) return;
+    const orig = btnEl.textContent;
+    btnEl.disabled = true;
+    btnEl.textContent = 'Probing…';
+    const tree = document.getElementById('settings-tree');
+    if (tree) tree.innerHTML = '<div class="loading">Reprobing every tool (up to ~10s)…</div>';
+    try {
+        const resp = await fetch('/api/control/reprobe', {method: 'POST'});
+        if (!resp.ok) {
+            const errText = await resp.text();
+            showToast(`Reprobe failed: ${errText}`, 'error');
+            return;
+        }
+        const data = await resp.json();
+        WB_CONTROL_GRAPH = data;
+        renderSettingsTree();
+        renderSettingsSummary();
+        showToast('Probes refreshed.', 'success');
+    } catch (exc) {
+        showToast(`Reprobe request failed: ${exc}`, 'error');
+    } finally {
+        btnEl.disabled = false;
+        btnEl.textContent = orig;
+    }
+}
+
 // Filter input — debounced
 let _settingsFilterTimer = null;
 document.addEventListener('DOMContentLoaded', () => {

@@ -315,7 +315,11 @@ def _assemble() -> dict[str, ControlNode]:
             req_by_id=req_by_id,
         )
         node.effective_state = state
-        if reason and not node.status_reason:
+        # The cascade-derived reason is authoritative — overwrite any
+        # initial placeholder set at construction time (e.g. the raw
+        # "Status: unknown" from health that's now superseded by a
+        # cascade-specific "Waiting for probes: ..." explanation).
+        if reason:
             node.status_reason = reason
         if blockers:
             node.blocking_issues = blockers
@@ -441,11 +445,15 @@ def _derive_state(
                 f"Blocked: hard dependency disabled ({', '.join(disabled_hard)})",
                 disabled_hard,
             )
-        # Any hard dep not-ok → blocked
+        # Any hard dep KNOWN bad → blocked. "unknown" (pending — probes
+        # haven't run yet) is intentionally excluded: propagating
+        # uncertainty as certainty-of-failure was what made the whole
+        # graph look red on dashboard startup. We treat unknown as
+        # "ask me again in a moment" below.
         hard_blockers = [
             e.target_id for e in hard_edges
             if nodes[e.target_id].effective_state
-            in ("blocked", "unconfigured", "degraded", "unknown")
+            in ("blocked", "unconfigured", "degraded")
         ]
         if hard_blockers:
             return (
@@ -453,17 +461,29 @@ def _derive_state(
                 f"Blocked: {', '.join(hard_blockers)}",
                 hard_blockers,
             )
+        # Any hard dep still pending (unknown) → I'm pending too.
+        # Propagate honest uncertainty instead of inventing failure.
+        hard_unknown = [
+            e.target_id for e in hard_edges
+            if nodes[e.target_id].effective_state == "unknown"
+        ]
+        if hard_unknown:
+            return (
+                "unknown",
+                f"Waiting for probes: {', '.join(hard_unknown)}",
+                [],
+            )
 
     # ---- Soft-dep cascade ----
     # Soft deps being `disabled` is a non-event (we just don't use that
-    # optional path). But soft deps in other unhealthy states make this
-    # node at most `degraded`. If the dep edge carries a `fallback_note`,
-    # surface it so users know precisely what's affected (vs. a vague
-    # "may be reduced").
+    # optional path). Soft deps KNOWN to be unhealthy make this node
+    # `degraded` at worst. Unknown soft deps DON'T degrade us — we
+    # don't announce a known reduction in functionality just because
+    # a probe hasn't completed yet.
     soft_unhealthy_edges = [
         e for e in soft_edges
         if nodes[e.target_id].effective_state
-        in ("blocked", "unconfigured", "degraded", "unknown")
+        in ("blocked", "unconfigured", "degraded")
     ]
     if soft_unhealthy_edges:
         targets = [e.target_id for e in soft_unhealthy_edges]

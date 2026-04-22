@@ -67,6 +67,32 @@ def test_control_graph_node_structure(client):
 
 
 @pytest.mark.unit
+def test_reprobe_endpoint_blocked_in_read_only(client):
+    with patch("work_buddy.dashboard.service._is_read_only", return_value=True):
+        resp = client.post("/api/control/reprobe")
+    assert resp.status_code == 403
+
+
+@pytest.mark.unit
+def test_reprobe_endpoint_runs_probe_all_and_returns_graph(client):
+    """The endpoint must call probe_all(force=True) and return the
+    rebuilt graph shape."""
+    with patch("work_buddy.dashboard.service._is_read_only", return_value=False), \
+         patch("work_buddy.tools._register_default_probes") as mock_reg, \
+         patch("work_buddy.tools.probe_all") as mock_probe:
+        resp = client.post("/api/control/reprobe")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert "nodes" in data
+    assert "cache" in data
+    # probe_all was called with force=True
+    assert mock_reg.called
+    assert mock_probe.called
+    args, kwargs = mock_probe.call_args
+    assert kwargs.get("force") is True or (args and args[0] is True)
+
+
+@pytest.mark.unit
 def test_control_graph_endpoint_handles_internal_error(client):
     """If build_graph raises, the endpoint returns 500 with an error body."""
     with patch(

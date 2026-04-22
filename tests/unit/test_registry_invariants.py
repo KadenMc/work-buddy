@@ -31,8 +31,20 @@ import pytest
 
 @pytest.fixture(scope="module")
 def registry():
-    from work_buddy.mcp_server.registry import get_registry
-    return get_registry()
+    """Unfiltered registry — see test_morning_routine_deps.py for rationale.
+
+    Cache-reset via ``_REGISTRY = None`` rather than the full
+    ``invalidate_registry()`` to avoid purging module state (which
+    makes isinstance checks fail against the reimported class).
+    """
+    from unittest.mock import patch
+    from work_buddy.mcp_server import registry as reg_mod
+
+    reg_mod._REGISTRY = None
+    with patch("work_buddy.tools.is_tool_available", return_value=True):
+        reg = reg_mod.get_registry()
+    yield reg
+    reg_mod._REGISTRY = None
 
 
 # ---------------------------------------------------------------------------
@@ -40,32 +52,45 @@ def registry():
 # ---------------------------------------------------------------------------
 
 def test_every_invokes_entry_resolves(registry):
-    """Every name in Capability.invokes or WorkflowStep.invokes exists in the registry.
+    """Every name in Capability.invokes or WorkflowStep.invokes exists
+    in the registry OR is currently filtered out because a tool it
+    requires is unavailable.
 
-    Exceptions: a tiny allowlist for names that appear in prose/docs
-    today but haven't been promoted to real registry entries yet. Add
-    here sparingly.
+    The registry filters capabilities whose `requires` tools failed
+    their probes at build time — those capabilities are tracked in
+    ``DISABLED_CAPABILITIES`` rather than being true typos. We accept
+    either state: registered, OR disabled-but-known. Anything else is
+    a real dangling reference.
+
+    Rationale: test environments probe against the user's live system;
+    an Obsidian bridge that's briefly down at test time shouldn't make
+    every workflow step that invokes an obsidian-requiring capability
+    look like a typo.
     """
     from work_buddy.mcp_server.registry import Capability, WorkflowDefinition
+    from work_buddy.tools import DISABLED_CAPABILITIES
 
-    # These names are referenced in agent prose (not Python `invokes`)
-    # and may eventually become real capabilities. If you grep the
-    # knowledge store and don't find them as `workflow_name` or
-    # `Capability.name`, they belong here.
-    allowlist: set[str] = set()  # intentionally empty for now
+    # Names that appear in agent prose today but haven't been promoted
+    # to real registry entries yet. Add sparingly.
+    allowlist: set[str] = set()
+
+    # Capabilities that are KNOWN to exist but were filtered out of
+    # this particular build because their required tool wasn't
+    # available. Not dangling — just dormant.
+    known_names = set(registry.keys()) | set(DISABLED_CAPABILITIES.keys()) | allowlist
 
     errors: list[str] = []
     for name, entry in registry.items():
         if isinstance(entry, Capability):
             for invoked in entry.invokes:
-                if invoked not in registry and invoked not in allowlist:
+                if invoked not in known_names:
                     errors.append(
                         f"Capability '{name}' invokes '{invoked}' which is not registered"
                     )
         elif isinstance(entry, WorkflowDefinition):
             for step in entry.steps:
                 for invoked in step.invokes:
-                    if invoked not in registry and invoked not in allowlist:
+                    if invoked not in known_names:
                         errors.append(
                             f"Workflow '{name}' step '{step.id}' invokes "
                             f"'{invoked}' which is not registered"

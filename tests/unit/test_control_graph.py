@@ -517,6 +517,75 @@ def test_soft_dep_disabled_does_not_degrade(mock_inputs):
     assert nodes["component:dashboard"].effective_state == "ok"
 
 
+def test_unknown_hard_dep_propagates_as_unknown_not_blocked(mock_inputs):
+    """Cold-start regression: when a hard dep hasn't been probed yet
+    (effective_state=unknown), downstream nodes should also be
+    `unknown`, not `blocked`. Propagating pending as failure is what
+    made the graph look red on dashboard startup."""
+    # component:hindsight depends on component:postgresql (hard).
+    # Leave health mock empty → postgresql state derives to "unknown"
+    # (no probe data yet).
+    mock_inputs["health"]["components"] = [
+        # no entry for postgresql → effectively unknown
+        {
+            "id": "hindsight", "display_name": "Hindsight", "category": "integration",
+            "status": "unknown", "wanted": None, "depends_on": ["postgresql"],
+            "details": {}, "children": [],
+        },
+    ]
+    nodes = cg.build_graph(force=True)
+    assert nodes["component:postgresql"].effective_state == "unknown"
+    # Hindsight's hard dep (postgres) is unknown — not bad, pending.
+    # Downstream should be unknown too, NOT blocked.
+    assert nodes["component:hindsight"].effective_state == "unknown"
+    assert "Waiting for probes" in nodes["component:hindsight"].status_reason
+
+
+def test_unknown_soft_dep_does_not_degrade(mock_inputs):
+    """Dashboard soft-depends on embedding. If embedding is pending
+    (unknown — no probe data), the dashboard is NOT degraded —
+    we're not announcing a known loss of functionality on the
+    basis of a probe that hasn't completed."""
+    # Dashboard healthy; sidecar healthy; embedding/messaging/obsidian/
+    # hindsight all absent from the mock → all unknown.
+    mock_inputs["health"]["components"] = [
+        {
+            "id": "dashboard", "display_name": "Dashboard", "category": "service",
+            "status": "healthy", "wanted": None, "depends_on": [],
+            "details": {}, "children": [],
+        },
+        {
+            "id": "sidecar", "display_name": "Sidecar", "category": "external",
+            "status": "healthy", "wanted": None, "depends_on": [],
+            "details": {}, "children": [],
+        },
+    ]
+    nodes = cg.build_graph(force=True)
+    # Dashboard's soft deps are all unknown — should stay ok.
+    assert nodes["component:dashboard"].effective_state == "ok"
+
+
+def test_known_hard_dep_still_blocks(mock_inputs):
+    """Regression guard: the unknown exemption should NOT make actual
+    failures softer. A KNOWN-degraded hard dep still cascades as
+    blocked."""
+    mock_inputs["health"]["components"] = [
+        {
+            "id": "postgresql", "display_name": "PostgreSQL", "category": "external",
+            "status": "unavailable", "wanted": None, "depends_on": [],
+            "details": {}, "children": [],
+        },
+        {
+            "id": "hindsight", "display_name": "Hindsight", "category": "integration",
+            "status": "healthy", "wanted": None, "depends_on": ["postgresql"],
+            "details": {}, "children": [],
+        },
+    ]
+    nodes = cg.build_graph(force=True)
+    assert nodes["component:postgresql"].effective_state == "degraded"
+    assert nodes["component:hindsight"].effective_state == "blocked"
+
+
 def test_core_component_preference_is_required(mock_inputs):
     """Components marked is_core=True always show preference='required', even
     if the user explicitly set features.<id>.wanted=false in config."""

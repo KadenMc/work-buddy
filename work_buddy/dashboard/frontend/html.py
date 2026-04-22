@@ -228,7 +228,9 @@ def _html() -> str:
         <div class="settings-toolbar-controls">
             <input type="text" id="settings-filter" class="task-search-input" placeholder="Filter by label or id (matches cascade up through parents)" />
             <button class="chats-accent-btn" onclick="loadSettings(true)"
-                    title="Bypass the 45-second cache and re-read preferences, health, requirements, and registry from disk. Use after toggling config.local.yaml directly or restarting a service.">Force refresh</button>
+                    title="Bypass the 45-second graph cache and rebuild from current probe/req data (fast).">Force refresh</button>
+            <button class="chats-accent-btn" onclick="reprobeAll(this)"
+                    title="Re-run every tool probe from scratch, then rebuild the graph. Takes up to ~10s if Obsidian or another service is slow. Use when startup says 'unknown' and you want definitive state right now.">Reprobe all</button>
         </div>
     </div>
     <div id="settings-summary" class="settings-summary"></div>

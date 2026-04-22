@@ -24,9 +24,34 @@ import pytest
 
 @pytest.fixture(scope="module")
 def registry():
-    """Full registry, built once per module for speed."""
-    from work_buddy.mcp_server.registry import get_registry
-    return get_registry()
+    """Full registry with tool-availability filtering disabled.
+
+    The default registry drops capabilities whose required tools fail
+    their probes at build time. That makes resolver tests environment-
+    dependent (an Obsidian bridge that's briefly down would filter
+    every obsidian-requiring capability and break these assertions).
+
+    We rebuild with ``is_tool_available`` patched to True so the
+    registry contains every declared capability and workflow, letting
+    the tests focus on the resolver logic rather than local machine
+    state.
+
+    We reset ``_REGISTRY`` to None directly instead of calling
+    ``invalidate_registry()`` — the latter purges ``work_buddy.*``
+    modules from ``sys.modules``, which makes ``isinstance(wf,
+    WorkflowDefinition)`` checks fail because the class the test
+    imports is a different object from the class the registry build
+    used. A plain cache reset is sufficient for our purposes.
+    """
+    from unittest.mock import patch
+    from work_buddy.mcp_server import registry as reg_mod
+
+    reg_mod._REGISTRY = None
+    with patch("work_buddy.tools.is_tool_available", return_value=True):
+        reg = reg_mod.get_registry()
+    yield reg
+    # Reset so subsequent test modules get a fresh filtered registry.
+    reg_mod._REGISTRY = None
 
 
 @pytest.fixture(scope="module")
