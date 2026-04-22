@@ -38,12 +38,24 @@ class TestRequirementRegistry:
                 f"{req.id} has invalid severity '{req.severity}'"
             )
 
-    def test_core_requirements_have_no_component(self):
+    def test_core_requirements_have_no_component_except_vault_root(self):
+        """Core requirements default to component=None (they're cross-cutting
+        prerequisites). One exception: ``core/config/vault-root`` is owned
+        by the obsidian component since it IS the path to the vault that
+        the obsidian bridge reads. Moved during the bootstrap-restructure
+        so users find it under Obsidian rather than a confusing
+        'Bootstrap' grab-bag."""
         for req in REQUIREMENT_REGISTRY.values():
-            if req.id.startswith("core/"):
-                assert req.component is None, (
-                    f"Core requirement {req.id} should have component=None"
+            if not req.id.startswith("core/"):
+                continue
+            if req.id == "core/config/vault-root":
+                assert req.component == "obsidian", (
+                    "vault_root should be owned by the obsidian component"
                 )
+                continue
+            assert req.component is None, (
+                f"Core requirement {req.id} should have component=None"
+            )
 
     def test_non_core_requirements_have_component(self):
         for req in REQUIREMENT_REGISTRY.values():
@@ -61,11 +73,22 @@ class TestRequirementRegistry:
         for req in REQUIREMENT_REGISTRY.values():
             assert req.setup_group, f"{req.id} is missing setup_group"
 
-    def test_bootstrap_group_for_core(self):
+    def test_setup_group_for_core_reqs(self):
+        """Every core/* requirement belongs to one of the post-refactor
+        setup groups: 'repository', 'credentials', or 'obsidian'
+        (vault_root moved to obsidian since it's the path to the vault).
+
+        The old single 'bootstrap' bucket was a grab-bag with mixed
+        semantics (config files + paths + secrets + vault location);
+        splitting it surfaces what each requirement is actually about
+        when shown in the Settings UI.
+        """
+        allowed_groups = {"repository", "credentials", "obsidian"}
         for req in REQUIREMENT_REGISTRY.values():
             if req.id.startswith("core/"):
-                assert req.setup_group == "bootstrap", (
-                    f"Core requirement {req.id} should have setup_group='bootstrap'"
+                assert req.setup_group in allowed_groups, (
+                    f"Core requirement {req.id} has setup_group={req.setup_group!r}; "
+                    f"expected one of {allowed_groups}"
                 )
 
 
@@ -281,15 +304,39 @@ class TestCheckFunctions:
 
     def test_check_anthropic_api_key_set(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-123")
+        monkeypatch.delenv("SUBAGENT_ANTHROPIC_API_KEY", raising=False)
         from work_buddy.health.requirement_checks import check_anthropic_api_key
         result = check_anthropic_api_key()
         assert result["ok"] is True
+        # Should report which env var matched
+        assert "ANTHROPIC_API_KEY" in result["detail"]
 
-    def test_check_anthropic_api_key_missing(self, monkeypatch):
+    def test_check_anthropic_api_key_subagent_set(self, monkeypatch):
+        """SUBAGENT_ANTHROPIC_API_KEY counts — work_buddy/llm/runner.py
+        prefers it over ANTHROPIC_API_KEY (so spawned Claude Code
+        sessions can fall back to OAuth/Claude Max when ANTHROPIC_API_KEY
+        is intentionally absent)."""
+        monkeypatch.setenv("SUBAGENT_ANTHROPIC_API_KEY", "sk-subagent-456")
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         from work_buddy.health.requirement_checks import check_anthropic_api_key
         result = check_anthropic_api_key()
+        assert result["ok"] is True
+        assert "SUBAGENT_ANTHROPIC_API_KEY" in result["detail"]
+
+    def test_check_anthropic_api_key_missing(self, monkeypatch, tmp_path):
+        """All three sources must be empty: SUBAGENT env, ANTHROPIC env,
+        and the repo .env file. Point _repo_root at a tmp_path that has
+        no .env to isolate from the developer's own .env."""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("SUBAGENT_ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setattr(
+            "work_buddy.health.requirement_checks._repo_root",
+            lambda: tmp_path,
+        )
+        from work_buddy.health.requirement_checks import check_anthropic_api_key
+        result = check_anthropic_api_key()
         assert result["ok"] is False
+        assert "No Anthropic API key found" in result["detail"]
 
     def test_check_obsidian_dir_pass(self, monkeypatch, tmp_path):
         vault = tmp_path / "vault"

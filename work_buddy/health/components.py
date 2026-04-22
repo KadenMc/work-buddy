@@ -151,6 +151,9 @@ _register(ComponentDef(
     category="integration",
     health_source="tool_probe",
     requirements=[
+        # Foundational: where the vault lives. Without this set
+        # correctly, every other Obsidian-related check fails.
+        "core/config/vault-root",
         "obsidian/vault/obsidian-dir",
         # The bridge plugin is the reason this component exists — without
         # it the HTTP probe has nothing to answer it. Listed first so

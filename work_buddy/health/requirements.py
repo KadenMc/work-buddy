@@ -100,7 +100,7 @@ _register(RequirementDef(
     check_fn="work_buddy.health.requirement_checks.check_config_yaml_exists",
     severity="required",
     fix_hint="Create config.yaml in the work-buddy repo root. Copy from config.yaml and adjust vault_root/repos_root.",
-    setup_group="bootstrap",
+    setup_group="repository",
 ))
 
 _register(RequirementDef(
@@ -114,17 +114,21 @@ _register(RequirementDef(
         "  cp config.local.yaml.example config.local.yaml\n"
         "Then edit it with your machine-specific settings."
     ),
-    setup_group="bootstrap",
+    setup_group="repository",
 ))
 
+# vault_root is the path to the Obsidian vault — semantically owned by
+# the obsidian component (without it, the bridge has nothing to read).
+# Moved out of the old "bootstrap" grab-bag so the user finds it where
+# they expect: under Obsidian.
 _register(RequirementDef(
     id="core/config/vault-root",
-    component=None,
+    component="obsidian",
     description="vault_root points to an existing directory",
     check_fn="work_buddy.health.requirement_checks.check_vault_root",
     severity="required",
     fix_hint="Set vault_root in config.yaml to your Obsidian vault path, e.g. '/path/to/your/vault'.",
-    setup_group="bootstrap",
+    setup_group="obsidian",
 ))
 
 _register(RequirementDef(
@@ -134,7 +138,7 @@ _register(RequirementDef(
     check_fn="work_buddy.health.requirement_checks.check_repos_root",
     severity="recommended",
     fix_hint="Set repos_root in config.yaml to your git repos directory.",
-    setup_group="bootstrap",
+    setup_group="repository",
 ))
 
 _register(RequirementDef(
@@ -144,17 +148,24 @@ _register(RequirementDef(
     check_fn="work_buddy.health.requirement_checks.check_timezone",
     severity="required",
     fix_hint="Set timezone in config.yaml to a valid IANA timezone, e.g. 'America/New_York'.",
-    setup_group="bootstrap",
+    setup_group="repository",
 ))
 
 _register(RequirementDef(
     id="core/env/anthropic-api-key",
     component=None,
-    description="ANTHROPIC_API_KEY environment variable is set",
+    description="Anthropic API key is reachable (env var or .env)",
     check_fn="work_buddy.health.requirement_checks.check_anthropic_api_key",
     severity="required",
-    fix_hint="Set the ANTHROPIC_API_KEY environment variable with your Anthropic API key.",
-    setup_group="bootstrap",
+    fix_hint=(
+        "Set SUBAGENT_ANTHROPIC_API_KEY (preferred) or ANTHROPIC_API_KEY "
+        "as an environment variable, or write it to the .env file at "
+        "the repo root. work_buddy/llm/runner.py reads SUBAGENT first, "
+        "falls back to ANTHROPIC, then scans .env. SUBAGENT is preferred "
+        "in environments where ANTHROPIC_API_KEY is intentionally unset "
+        "so spawned Claude Code sessions can fall back to OAuth/Claude Max."
+    ),
+    setup_group="credentials",
 ))
 
 _register(RequirementDef(
@@ -164,7 +175,7 @@ _register(RequirementDef(
     check_fn="work_buddy.health.requirement_checks.check_data_writable",
     severity="required",
     fix_hint="Ensure the data/ directory in the repo root exists and is writable.",
-    setup_group="bootstrap",
+    setup_group="repository",
 ))
 
 # --- Obsidian vault structure ---

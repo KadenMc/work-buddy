@@ -95,11 +95,65 @@ def check_timezone() -> dict[str, Any]:
 
 
 def check_anthropic_api_key() -> dict[str, Any]:
-    """Check that ANTHROPIC_API_KEY environment variable is set."""
-    key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if key:
-        return {"ok": True, "detail": f"ANTHROPIC_API_KEY is set ({len(key)} chars)"}
-    return {"ok": False, "detail": "ANTHROPIC_API_KEY environment variable is not set"}
+    """Check that the Anthropic API key is reachable from one of the
+    sources ``work_buddy.llm.runner`` actually consults.
+
+    Mirrors `runner.py:214` precisely:
+
+      1. ``SUBAGENT_ANTHROPIC_API_KEY`` env var (preferred — set this
+         in environments where ``ANTHROPIC_API_KEY`` is intentionally
+         absent so agent spawns fall back to OAuth/Claude Max).
+      2. ``ANTHROPIC_API_KEY`` env var (fallback — also activates API
+         billing for spawned Claude Code sessions, see executor.py).
+      3. ``.env`` file at the repo root, scanned for either of the
+         above keys.
+
+    The previous version checked only ``ANTHROPIC_API_KEY`` and missed
+    the dedicated subagent key, marking the requirement failed even
+    when LLM calls were actually working fine.
+    """
+    sub_key = os.environ.get("SUBAGENT_ANTHROPIC_API_KEY", "")
+    if sub_key:
+        return {
+            "ok": True,
+            "detail": f"SUBAGENT_ANTHROPIC_API_KEY is set ({len(sub_key)} chars)",
+        }
+    main_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if main_key:
+        return {
+            "ok": True,
+            "detail": f"ANTHROPIC_API_KEY is set ({len(main_key)} chars)",
+        }
+
+    # Fall back to scanning the repo .env file — runner.py does this too.
+    repo_env = _repo_root() / ".env"
+    if repo_env.exists():
+        try:
+            for line in repo_env.read_text(encoding="utf-8").splitlines():
+                if line.startswith("SUBAGENT_ANTHROPIC_API_KEY="):
+                    val = line.split("=", 1)[1].strip()
+                    if val:
+                        return {
+                            "ok": True,
+                            "detail": f"SUBAGENT_ANTHROPIC_API_KEY in .env ({len(val)} chars)",
+                        }
+                if line.startswith("ANTHROPIC_API_KEY="):
+                    val = line.split("=", 1)[1].strip()
+                    if val:
+                        return {
+                            "ok": True,
+                            "detail": f"ANTHROPIC_API_KEY in .env ({len(val)} chars)",
+                        }
+        except OSError as exc:
+            return {"ok": False, "detail": f"Could not read .env: {exc}"}
+
+    return {
+        "ok": False,
+        "detail": (
+            "No Anthropic API key found — set SUBAGENT_ANTHROPIC_API_KEY "
+            "or ANTHROPIC_API_KEY (env var or .env file)."
+        ),
+    }
 
 
 def check_data_writable() -> dict[str, Any]:

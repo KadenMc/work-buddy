@@ -198,34 +198,50 @@ SUBSYSTEMS: list[_DomainDef] = [
         "component_deps": ["smart_connections", "datacore"],
     },
     # ------------------------------------------------------------------
-    # Bootstrap — core/config/env requirements with no owning component.
+    # Repository Setup — work-buddy's own config files and paths.
     #
-    # These are the checks that must pass for work-buddy to do anything
-    # at all (config files exist, vault root is set, Anthropic API key
-    # is present, etc.). Before this subsystem existed they had no home
-    # in the tree — if one failed, the bulk "unconfigured N" chip
-    # counted it, but clicking "unconfigured" failed silently because
-    # the requirement had no grouping_parents to expand into.
-    #
-    # Listed under domain:system alongside component:sidecar.
+    # These are checks for things you'd touch when first cloning the
+    # repo or moving it: config files exist, repos_root points at the
+    # right directory, timezone is configured, the data/ dir is
+    # writable. Crucially does NOT include vault_root (that moved to
+    # component:obsidian since it's the path to the vault, an Obsidian
+    # concern) or API keys (those live under subsystem:credentials).
     # ------------------------------------------------------------------
     {
-        "id": "subsystem:bootstrap",
-        "label": "Bootstrap",
+        "id": "subsystem:repository-setup",
+        "label": "Repository Setup",
         "description": (
-            "Core configuration and environment checks that must pass "
-            "for anything else to work — config files, vault/repos "
-            "paths, timezone, Anthropic API key, writable data dir."
+            "work-buddy's own configuration: config.yaml + "
+            "config.local.yaml exist, repos_root points to a real "
+            "directory, timezone is a valid IANA zone, the data/ "
+            "directory is writable."
         ),
         "grouping_parents": ["domain:system"],
         "requirement_ids": [
             "core/config/config-yaml-exists",
             "core/config/config-local-exists",
-            "core/config/vault-root",
             "core/config/repos-root",
             "core/config/timezone",
-            "core/env/anthropic-api-key",
             "core/data/writable",
+        ],
+    },
+    # ------------------------------------------------------------------
+    # Credentials — API keys + secrets work-buddy needs to call out.
+    # Currently just the Anthropic key. Future home for any other
+    # service credentials we add (e.g. OpenAI, Telegram bot token if
+    # it stays a credential rather than a Telegram-component req).
+    # ------------------------------------------------------------------
+    {
+        "id": "subsystem:credentials",
+        "label": "Credentials",
+        "description": (
+            "API keys and secrets work-buddy needs to call external "
+            "services. Currently the Anthropic API key (read by "
+            "work_buddy.llm.runner)."
+        ),
+        "grouping_parents": ["domain:system"],
+        "requirement_ids": [
+            "core/env/anthropic-api-key",
         ],
     },
 ]
