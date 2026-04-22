@@ -3124,6 +3124,7 @@ def _task_capabilities() -> list[Capability]:
         assign_task,
         create_task,
         delete_task,
+        read_task,
         set_task_tags_on_line,
         toggle_task,
     )
@@ -3274,6 +3275,17 @@ def _task_capabilities() -> list[Capability]:
             },
             callable=assign_task,
             search_aliases=["assign task", "claim task", "work on task", "start task"],
+            requires=["obsidian"],
+        ),
+        Capability(
+            name="task_read",
+            description="Read a task's full context (text, note, metadata) without claiming it for the current session",
+            category="tasks",
+            parameters={
+                "task_id": {"type": "str", "description": "Task ID (e.g., 't-a3f8c1e2')", "required": True},
+            },
+            callable=read_task,
+            search_aliases=["read task", "view task", "show task", "inspect task", "look at task"],
             requires=["obsidian"],
         ),
         Capability(

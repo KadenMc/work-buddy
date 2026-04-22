@@ -75,8 +75,24 @@
     "workflow": null,
     "capabilities": ["tasks/task_assign", "tasks/task_toggle"],
     "content": {
-      "summary": "Use MCP tool directly, never Python. Present: task text/state/urgency, contract, note preview with path, session count. State NOT changed by assignment. After completing deliverable, proactively ask to mark done — always confirm first.",
-      "full": "Assign via mcp__work-buddy__wb_run(\"task_assign\", {\"task_id\": \"<id>\"}). Do NOT use Python code.\n\nIf no argument provided, ask for the task ID.\n\n## Presentation after assignment\n\n1. Task: text and current state/urgency\n2. Contract: which contract it serves (if any)\n3. Note: preview of note content (if exists) + file path\n4. Sessions: how many sessions have worked on this task\n\n## State\n\nTask state is NOT changed by assignment. To mark focused, use task_change_state separately.\n\n## Completion tracking\n\nAfter committing code (or completing the deliverable), proactively ask: \"Task <id> looks complete -- should I mark it done?\"\n\nOn approval: mcp__work-buddy__wb_run(\"task_toggle\", {\"task_id\": \"<id>\", \"done\": true})\n\nDo not silently mark the task done -- always confirm first."
+      "summary": "Use MCP tool directly, never Python. task_assign = claim + read; use task_read when you only want to inspect. Present: task text/state/urgency, contract, note preview with path, session count. State NOT changed by assignment. After completing deliverable, proactively ask to mark done — always confirm first.",
+      "full": "Assign via mcp__work-buddy__wb_run(\"task_assign\", {\"task_id\": \"<id>\"}). Do NOT use Python code.\n\nIf no argument provided, ask for the task ID.\n\n## Assign vs read\n\n- **task_assign** = read the task AND record the current session against it (claim). Use when the user is starting work.\n- **task_read** = pure read, no session write. Use when you only need to inspect a task (e.g. user is browsing, or an upstream flow wants the payload without implying a claim).\n\nBoth return the same read payload. Internally, task_assign composes task_read with a session-tracker write, so agents can swap call sites without reshaping downstream code.\n\n## Presentation after assignment\n\n1. Task: text and current state/urgency\n2. Contract: which contract it serves (if any)\n3. Note: preview of note content (if exists) + file path\n4. Sessions: how many sessions have worked on this task\n\n## State\n\nTask state is NOT changed by assignment. To mark focused, use task_change_state separately.\n\n## Completion tracking\n\nAfter committing code (or completing the deliverable), proactively ask: \"Task <id> looks complete -- should I mark it done?\"\n\nOn approval: mcp__work-buddy__wb_run(\"task_toggle\", {\"task_id\": \"<id>\", \"done\": true})\n\nDo not silently mark the task done -- always confirm first."
+    }
+  },
+  "tasks/task-read-directions": {
+    "kind": "directions",
+    "name": "Task Read Directions",
+    "description": "How to read a task without claiming it — inspection-only path that does not write a session assignment",
+    "aliases": ["read task", "view task", "inspect task", "show task", "look at task"],
+    "tags": ["tasks", "read", "inspect", "directions"],
+    "parents": ["tasks"],
+    "trigger": "user runs /wb-task-read or asks to view a task without claiming it for the current session",
+    "command": "wb-task-read",
+    "workflow": null,
+    "capabilities": ["tasks/task_read"],
+    "content": {
+      "summary": "Pure-read path. Use task_read when the user wants to inspect a task without claiming it for the current session. No session-tracker write, no state change. Use task_assign instead when the user is starting work.",
+      "full": "Read via mcp__work-buddy__wb_run(\"task_read\", {\"task_id\": \"<id>\"}). Do NOT use Python code.\n\nIf no argument provided, ask for the task ID.\n\n## When to use task_read vs task_assign\n\n- **task_read** — pure inspection. No session is recorded against the task. Use when the user is browsing, auditing, or you only need the payload for an upstream flow.\n- **task_assign** — inspection PLUS claims the task for the current session. Use when the user is starting work on it.\n\nBoth return the same read payload (task text, metadata, note content, file + line, existing session list). If you assigned a task earlier in the conversation and only want to re-inspect it now, task_read is fine — assigning again just writes an idempotent duplicate session row.\n\n## Presentation\n\nSame as task_assign:\n\n1. Task: text and current state/urgency\n2. Contract: which contract it serves (if any)\n3. Note: preview of note content (if exists) + file path\n4. Sessions: how many sessions have worked on this task (read-only view)\n\n## Do NOT\n\n- Do not propose marking the task done from a read. Completion tracking belongs to the assign flow — a user who only asked to inspect has not committed to finishing it."
     }
   },
   "tasks/briefing-directions": {

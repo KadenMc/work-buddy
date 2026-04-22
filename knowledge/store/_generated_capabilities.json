@@ -5496,6 +5496,38 @@
       "tasks"
     ]
   },
+  "tasks/task_read": {
+    "kind": "capability",
+    "name": "Task Read",
+    "description": "Read a task's full context (text, note, metadata) without claiming it for the current session",
+    "capability_name": "task_read",
+    "category": "tasks",
+    "aliases": [
+      "read task",
+      "view task",
+      "show task",
+      "inspect task",
+      "look at task"
+    ],
+    "parameters": {
+      "task_id": {
+        "type": "str",
+        "description": "Task ID (e.g., 't-a3f8c1e2')",
+        "required": true
+      }
+    },
+    "requires": [
+      "obsidian"
+    ],
+    "tags": [
+      "tasks",
+      "task",
+      "read"
+    ],
+    "parents": [
+      "tasks"
+    ]
+  },
   "tasks/task_review_inbox": {
     "kind": "capability",
     "name": "Task Review Inbox",
