@@ -27,12 +27,18 @@ def test_run_fix_unknown_requirement_returns_ok_false():
 
 
 def test_run_fix_no_fix_returns_ok_false():
-    """A requirement with fix_kind='none' refuses politely."""
+    """A requirement with fix_kind='none' refuses politely. Uses a
+    synthesized req so the test is decoupled from which real
+    requirements happen to be wired up at any given moment."""
     from work_buddy.control.fix_runner import run_fix
-    # obsidian/vault/obsidian-dir has no fixer (the .obsidian dir is
-    # created by Obsidian itself when the user opens the vault — we
-    # can't programmatically force that)
-    result = run_fix("obsidian/vault/obsidian-dir")
+    from work_buddy.health.requirements import REQUIREMENT_REGISTRY
+
+    fake = mock.Mock()
+    fake.id = "fake/no-fix"
+    fake.fix_kind = "none"
+    fake.fix_hint = "do it manually"
+    with mock.patch.dict(REQUIREMENT_REGISTRY, {"fake/no-fix": fake}, clear=False):
+        result = run_fix("fake/no-fix")
     assert result["ok"] is False
     assert "no automated fix" in result["detail"].lower()
 

@@ -56,15 +56,33 @@ def check_config_local_exists() -> dict[str, Any]:
 
 
 def check_vault_root() -> dict[str, Any]:
-    """Check that vault_root is set and points to an existing directory."""
+    """Check that vault_root is set, exists, AND is actually an Obsidian vault.
+
+    "Obsidian vault" is defined as "a directory containing a `.obsidian/`
+    subdirectory" — that's the marker Obsidian itself uses. We fold this
+    check into vault_root rather than a separate requirement because
+    vault_root's semantic meaning IS "path to an Obsidian vault." A
+    directory without `.obsidian/` isn't a vault, so vault_root is wrong;
+    splitting that into two requirements muddied the diagnostic.
+    """
     cfg = _cfg()
     vault_root = cfg.get("vault_root", "")
     if not vault_root:
         return {"ok": False, "detail": "vault_root is empty or not set in config"}
     p = Path(vault_root)
-    if p.is_dir():
-        return {"ok": True, "detail": f"vault_root exists: {p}"}
-    return {"ok": False, "detail": f"vault_root does not exist: {p}"}
+    if not p.is_dir():
+        return {"ok": False, "detail": f"vault_root does not exist: {p}"}
+    if not (p / ".obsidian").is_dir():
+        return {
+            "ok": False,
+            "detail": (
+                f"{p} exists but isn't an Obsidian vault — no .obsidian/ "
+                "subdirectory. Either point vault_root at the correct "
+                "directory, or open this directory in Obsidian once so "
+                "Obsidian initializes it."
+            ),
+        }
+    return {"ok": True, "detail": f"vault_root is a valid Obsidian vault: {p}"}
 
 
 def check_repos_root() -> dict[str, Any]:
@@ -175,17 +193,6 @@ def check_data_writable() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Obsidian vault structure checks
 # ---------------------------------------------------------------------------
-
-
-def check_obsidian_dir() -> dict[str, Any]:
-    """Check that .obsidian/ exists in vault root."""
-    vault = _vault_root()
-    if not vault or not vault.is_dir():
-        return {"ok": False, "detail": "vault_root is not set or doesn't exist (run bootstrap checks first)"}
-    obs_dir = vault / ".obsidian"
-    if obs_dir.is_dir():
-        return {"ok": True, "detail": f".obsidian/ found in {vault}"}
-    return {"ok": False, "detail": f".obsidian/ not found in {vault}"}
 
 
 def check_daily_notes_plugin() -> dict[str, Any]:

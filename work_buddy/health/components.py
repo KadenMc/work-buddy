@@ -151,10 +151,11 @@ _register(ComponentDef(
     category="integration",
     health_source="tool_probe",
     requirements=[
-        # Foundational: where the vault lives. Without this set
-        # correctly, every other Obsidian-related check fails.
+        # Foundational: where the vault lives. check_vault_root verifies
+        # both that the path exists AND that it contains an .obsidian/
+        # subdirectory (= it's actually an Obsidian vault), so we don't
+        # need a separate `obsidian/vault/obsidian-dir` requirement.
         "core/config/vault-root",
-        "obsidian/vault/obsidian-dir",
         # The bridge plugin is the reason this component exists — without
         # it the HTTP probe has nothing to answer it. Listed first so
         # it's the first thing users see when obsidian is broken.

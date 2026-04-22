@@ -245,16 +245,14 @@ _register(RequirementDef(
 ))
 
 # --- Obsidian vault structure ---
-
-_register(RequirementDef(
-    id="obsidian/vault/obsidian-dir",
-    component="obsidian",
-    description=".obsidian/ directory exists in vault root",
-    check_fn="work_buddy.health.requirement_checks.check_obsidian_dir",
-    severity="required",
-    fix_hint="Open the vault in Obsidian at least once to create the .obsidian/ directory.",
-    setup_group="vault",
-))
+#
+# Note: there used to be an `obsidian/vault/obsidian-dir` requirement
+# that checked for `.obsidian/` inside the vault root. Folded into
+# `check_vault_root` (above) since vault_root's semantic meaning IS
+# "path to an Obsidian vault" — and a directory without `.obsidian/`
+# isn't a vault, it's just a directory. Splitting that distinction
+# into two requirements made the diagnostic noisier than it needed
+# to be.
 
 _register(RequirementDef(
     id="obsidian/daily-note/plugin-enabled",

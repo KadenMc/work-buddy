@@ -256,8 +256,11 @@ class TestCheckFunctions:
         assert result["ok"] is False
 
     def test_check_vault_root_pass(self, monkeypatch, tmp_path):
+        # check_vault_root now requires the directory to be an actual
+        # Obsidian vault (contain .obsidian/), so the test vault needs
+        # the marker dir inside it.
         vault = tmp_path / "vault"
-        vault.mkdir()
+        (vault / ".obsidian").mkdir(parents=True)
         monkeypatch.setattr(
             "work_buddy.health.requirement_checks._cfg",
             lambda: {"vault_root": str(vault)},
@@ -338,27 +341,31 @@ class TestCheckFunctions:
         assert result["ok"] is False
         assert "No Anthropic API key found" in result["detail"]
 
-    def test_check_obsidian_dir_pass(self, monkeypatch, tmp_path):
+    def test_check_vault_root_rejects_dir_without_dot_obsidian(self, monkeypatch, tmp_path):
+        """check_vault_root now folds the .obsidian/ check inline:
+        a real directory that ISN'T an Obsidian vault should fail."""
+        bare = tmp_path / "not-a-vault"
+        bare.mkdir()
+        monkeypatch.setattr(
+            "work_buddy.health.requirement_checks._cfg",
+            lambda: {"vault_root": str(bare)},
+        )
+        from work_buddy.health.requirement_checks import check_vault_root
+        result = check_vault_root()
+        assert result["ok"] is False
+        assert ".obsidian" in result["detail"]
+
+    def test_check_vault_root_accepts_real_vault(self, monkeypatch, tmp_path):
         vault = tmp_path / "vault"
         (vault / ".obsidian").mkdir(parents=True)
         monkeypatch.setattr(
-            "work_buddy.health.requirement_checks._vault_root",
-            lambda: vault,
+            "work_buddy.health.requirement_checks._cfg",
+            lambda: {"vault_root": str(vault)},
         )
-        from work_buddy.health.requirement_checks import check_obsidian_dir
-        result = check_obsidian_dir()
+        from work_buddy.health.requirement_checks import check_vault_root
+        result = check_vault_root()
         assert result["ok"] is True
-
-    def test_check_obsidian_dir_missing(self, monkeypatch, tmp_path):
-        vault = tmp_path / "vault"
-        vault.mkdir()
-        monkeypatch.setattr(
-            "work_buddy.health.requirement_checks._vault_root",
-            lambda: vault,
-        )
-        from work_buddy.health.requirement_checks import check_obsidian_dir
-        result = check_obsidian_dir()
-        assert result["ok"] is False
+        assert "Obsidian vault" in result["detail"]
 
     def test_check_journal_dir_pass(self, monkeypatch, tmp_path):
         vault = tmp_path / "vault"
