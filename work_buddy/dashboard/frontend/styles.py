@@ -2689,9 +2689,12 @@ body {
     transition: transform 0.12s ease, box-shadow 0.12s ease, border-color 0.12s ease;
 }
 /* Make the "click me" signal obvious — not just a cursor change. The
-   badge visibly lifts off the background on hover. */
+   badge visibly lifts off the background on hover. Literal Unicode
+   arrow (↗) rather than a \\-escape — styles.py is a non-raw Python
+   string, so a CSS escape like "\2197" gets eaten by Python's octal
+   parser and shows up in the browser as "97" after an unprintable. */
 .badge-clickable::after {
-    content: "\2197";  /* up-right arrow — a "drill-in" glyph */
+    content: "\u2197";
     font-size: 0.8em;
     margin-left: 4px;
     opacity: 0.55;
@@ -2704,6 +2707,10 @@ body {
 }
 .badge-clickable:active {
     transform: translateY(0) scale(1);
+}
+.badge-clickable.pressed {
+    box-shadow: inset 0 0 0 2px currentColor;
+    filter: brightness(1.1);
 }
 
 .settings-dep-hardness {

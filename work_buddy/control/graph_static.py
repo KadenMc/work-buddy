@@ -197,6 +197,37 @@ SUBSYSTEMS: list[_DomainDef] = [
         "grouping_parents": ["domain:knowledge"],
         "component_deps": ["smart_connections", "datacore"],
     },
+    # ------------------------------------------------------------------
+    # Bootstrap — core/config/env requirements with no owning component.
+    #
+    # These are the checks that must pass for work-buddy to do anything
+    # at all (config files exist, vault root is set, Anthropic API key
+    # is present, etc.). Before this subsystem existed they had no home
+    # in the tree — if one failed, the bulk "unconfigured N" chip
+    # counted it, but clicking "unconfigured" failed silently because
+    # the requirement had no grouping_parents to expand into.
+    #
+    # Listed under domain:system alongside component:sidecar.
+    # ------------------------------------------------------------------
+    {
+        "id": "subsystem:bootstrap",
+        "label": "Bootstrap",
+        "description": (
+            "Core configuration and environment checks that must pass "
+            "for anything else to work — config files, vault/repos "
+            "paths, timezone, Anthropic API key, writable data dir."
+        ),
+        "grouping_parents": ["domain:system"],
+        "requirement_ids": [
+            "core/config/config-yaml-exists",
+            "core/config/config-local-exists",
+            "core/config/vault-root",
+            "core/config/repos-root",
+            "core/config/timezone",
+            "core/env/anthropic-api-key",
+            "core/data/writable",
+        ],
+    },
 ]
 
 

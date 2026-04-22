@@ -220,18 +220,33 @@ def _assemble() -> dict[str, ControlNode]:
     # -----------------------------------------------------------------
     # Step 3 — requirement nodes
     # -----------------------------------------------------------------
+    # A requirement can have grouping parents from TWO sources:
+    #   1. Its owning component (``req.component``), when set.
+    #   2. Any static topology node (domain/subsystem) whose
+    #      ``requirement_ids`` lists this req — crucial for bootstrap
+    #      requirements which have ``component=None`` and otherwise
+    #      wouldn't be renderable anywhere in the tree.
+    #
+    # Build a reverse index once so step 3 is O(#reqs).
+    static_req_parents: dict[str, list[str]] = {}
+    for static in iter_static_nodes():
+        owner_id = static["id"]
+        for rid in static.get("requirement_ids", []):
+            static_req_parents.setdefault(rid, []).append(owner_id)
+
     for req_id, req in REQUIREMENT_REGISTRY.items():
         node_id = f"req:{req_id}"
         result = req_by_id.get(req_id)
 
-        # A requirement's grouping parent is the component it belongs to
-        # (if any); requirements also appear under subsystems that list
-        # their ID in requirement_ids (already handled via the subsystem's
-        # requirement_ids field — we don't duplicate into grouping_parents
-        # to avoid UI-tree ambiguity).
         grouping: list[str] = []
         if req.component:
             grouping.append(f"component:{req.component}")
+        # Inherit grouping from any static node that claims this
+        # requirement. Preserves the dedup order so "my component first,
+        # then subsystem/domain" stays intuitive when both apply.
+        for parent_id in static_req_parents.get(req_id, []):
+            if parent_id not in grouping:
+                grouping.append(parent_id)
 
         nodes[node_id] = ControlNode(
             id=node_id,

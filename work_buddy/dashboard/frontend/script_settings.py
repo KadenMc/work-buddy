@@ -19,6 +19,10 @@ def _settings_script() -> str:
 // Internal state
 let WB_CONTROL_GRAPH = null;
 let WB_CONTROL_FILTER = '';
+// When true, the summary row renders an inline "Disabled components"
+// panel listing everything currently opted out. Toggled by clicking
+// the disabled chip.
+let WB_SHOW_DISABLED_LIST = false;
 // Set of node ids visible under the current filter. Computed from the
 // graph on every filter change. A node is visible if its own label/id
 // matches OR any transitive child/requirement/cap-chip matches.
@@ -416,20 +420,32 @@ function renderSettingsSummary() {
         if (n.kind === 'capability') continue;  // exclude capability noise
         totals[n.effective_state] = (totals[n.effective_state] || 0) + 1;
     }
-    // Non-ok chips are click-to-jump: scroll to the first node with
-    // that state and flash it (requirement nodes included, so a broken
-    // requirement that didn't bubble up to a component still gets
-    // surfaced). ok / disabled chips are informational only.
-    const clickableStates = new Set(['blocked', 'unconfigured', 'degraded', 'unknown']);
+    // Chip behaviors:
+    //   - Non-ok states (blocked/unconfigured/degraded/unknown): click
+    //     jumps to the first node in that state and flashes it.
+    //   - disabled: click toggles an inline list of what's disabled
+    //     (users want to see what they've opted out of without digging).
+    //   - ok: informational only (rarely actionable to see "which 42
+    //     things are healthy"); kept static.
+    const jumpStates = new Set(['blocked', 'unconfigured', 'degraded', 'unknown']);
     const summaryChips = ['blocked', 'unconfigured', 'degraded', 'unknown', 'ok', 'disabled']
         .filter(s => totals[s])
         .map(s => {
             const cls = _badgeClass(s);
-            if (clickableStates.has(s)) {
+            if (jumpStates.has(s)) {
                 return (
                     `<span class="badge badge-clickable ${cls}" ` +
                     `onclick="onStateChipClick('${s}')" ` +
                     `title="Click to jump to the first node in this state">${s}</span> ` +
+                    `<span class="settings-summary-count">${totals[s]}</span>`
+                );
+            }
+            if (s === 'disabled') {
+                const pressed = WB_SHOW_DISABLED_LIST ? ' pressed' : '';
+                return (
+                    `<span class="badge badge-clickable ${cls}${pressed}" ` +
+                    `onclick="onDisabledChipClick()" ` +
+                    `title="${WB_SHOW_DISABLED_LIST ? 'Click to hide the disabled-items list' : 'Click to list what is currently disabled'}">${s}</span> ` +
                     `<span class="settings-summary-count">${totals[s]}</span>`
                 );
             }
@@ -446,6 +462,40 @@ function renderSettingsSummary() {
             <div class="settings-summary-cache" title="Graph TTL is 45s; click Force refresh to rebuild immediately.">${cacheStr}</div>
         </div>
     `;
+
+    // Inline "what's disabled" panel — renders between the chip row
+    // and the top-issues/all-ok line when the user toggles it on.
+    if (WB_SHOW_DISABLED_LIST && totals.disabled > 0) {
+        const kindRank = {component: 0, subsystem: 1, domain: 2, requirement: 3};
+        const disabledNodes = nodes
+            .filter(n => n.effective_state === 'disabled' && n.kind !== 'capability')
+            .sort((a, b) => (kindRank[a.kind] ?? 99) - (kindRank[b.kind] ?? 99));
+        const rows = disabledNodes.map(n => {
+            // What made it disabled? Walk: if this is a component with
+            // preference=unwanted, say so; if it's required (core),
+            // that's impossible (core can't be disabled); otherwise
+            // it's a cascade from a disabled hard-dep.
+            let why = '';
+            if (n.preference === 'unwanted') {
+                why = 'opted out';
+            } else if ((n.blocking_issues || []).length) {
+                why = `dep disabled: ${n.blocking_issues.join(', ')}`;
+            } else {
+                why = n.status_reason || '';
+            }
+            return `
+                <div class="settings-summary-issue" onclick="onBadgeDrilldown({currentTarget:{dataset:{drilldownNode:'${escapeHtml(n.id)}'}},stopPropagation:()=>{},preventDefault:()=>{}})" title="Click to jump to this node">
+                    <span class="badge badge-muted">${escapeHtml(n.kind)}</span>
+                    <span class="settings-summary-issue-label">${escapeHtml(n.label)}</span>
+                    ${why ? `<span class="settings-summary-issue-reason">${escapeHtml(why)}</span>` : ''}
+                </div>
+            `;
+        }).join('');
+        html += `
+            <div class="settings-summary-issues-header">Disabled (${disabledNodes.length})</div>
+            <div class="settings-summary-issues">${rows}</div>
+        `;
+    }
 
     if (topIssues.length > 0) {
         const issueRows = topIssues.map(n => `
@@ -467,6 +517,14 @@ function renderSettingsSummary() {
     }
 
     el.innerHTML = html;
+}
+
+// Toggle the inline "what's disabled" panel in the summary row.
+// Unlike other state chips which jump to a single node, "disabled" is
+// plural by nature — users want to see the whole list.
+function onDisabledChipClick() {
+    WB_SHOW_DISABLED_LIST = !WB_SHOW_DISABLED_LIST;
+    renderSettingsSummary();
 }
 
 // Click a bulk state chip in the summary row: find the first node in
