@@ -696,6 +696,9 @@ def get_contracts_summary() -> dict[str, Any]:
                             "type": contract.get("type", ""),
                             "deadline": contract.get("deadline", ""),
                             "priority": contract.get("priority", ""),
+                            # Vault-relative path for obsidian:// URI in the dashboard.
+                            # Mirrors the config default (contracts.vault_path).
+                            "vault_path": f"work-buddy/contracts/{md_file.name}",
                         })
             except Exception:
                 continue
