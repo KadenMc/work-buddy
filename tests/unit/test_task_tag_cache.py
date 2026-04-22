@@ -65,19 +65,29 @@ class TestExtractTagsFromLine:
 
 class TestClassifyTags:
     def test_reserved_prefix_never_namespace(self):
-        counts = {"projects/ecg": 10, "todo": 50, "wb/todo": 5, "tasker/state/inbox": 2}
+        # `todo`, `wb/todo`, and anything under `tasker/` stay out of the
+        # tree. `projects/` is NOT reserved anymore — it's a first-class
+        # organizational axis.
+        counts = {"todo": 50, "wb/todo": 5, "tasker": 2, "tasker/state": 2, "tasker/state/inbox": 2}
         result = classify_tags(
             counts,
-            ["projects/ecg", "todo", "wb/todo", "tasker/state/inbox"],
+            ["todo", "wb/todo", "tasker/state/inbox"],
             threshold=2,
         )
         for _, is_ns in result:
             assert is_ns is False
 
+    def test_projects_prefix_is_namespace(self):
+        """`projects/<slug>` is the canonical project axis; it belongs in the tree."""
+        counts = {"projects": 10, "projects/ecg": 10}
+        result = classify_tags(counts, ["projects/ecg"], threshold=2)
+        assert result == [("projects/ecg", True)]
+
     def test_wb_prefix_is_namespace_except_reserved_exact(self):
         """`wb/` is the canonical work-buddy-dev namespace prefix.
         Only `wb/todo` and `wb/done` (inline-todo markers) are reserved."""
         counts = {
+            "wb": 38,
             "wb/consent": 5,
             "wb/workflow": 3,
             "wb/todo": 20,    # reserved — inline-TODO marker
@@ -93,44 +103,69 @@ class TestClassifyTags:
 
     def test_opt_in_prefix_always_namespace(self):
         # Even with count=1 and threshold=2, opt-in prefixes are namespaces.
-        counts = {"ns/foo": 1, "task/bar": 1}
+        counts = {"ns": 1, "ns/foo": 1, "task": 1, "task/bar": 1}
         result = classify_tags(
             counts, ["ns/foo", "task/bar"], threshold=2,
         )
         assert dict(result) == {"ns/foo": True, "task/bar": True}
 
     def test_discovery_threshold_below(self):
-        counts = {"paper/ecg": 1}
+        counts = {"paper": 1, "paper/ecg": 1}
         result = classify_tags(counts, ["paper/ecg"], threshold=2)
         assert result == [("paper/ecg", False)]
 
     def test_discovery_threshold_at_boundary(self):
-        counts = {"paper/ecg": 2}
+        counts = {"paper": 2, "paper/ecg": 2}
         result = classify_tags(counts, ["paper/ecg"], threshold=2)
         assert result == [("paper/ecg", True)]
 
+    def test_parent_rescues_rare_leaf(self):
+        # A one-off leaf (`research/electricrag/writing-prep` appears on
+        # a single task) is rescued by a popular parent prefix. This was
+        # the bug that hid the "Draft electricrag paper contract" task
+        # from the namespace tree.
+        counts = {
+            "research": 11,
+            "research/electricrag": 11,
+            "research/electricrag/quickhacks": 10,
+            "research/electricrag/writing-prep": 1,
+        }
+        result = classify_tags(
+            counts, ["research/electricrag/writing-prep"], threshold=2,
+        )
+        assert result == [("research/electricrag/writing-prep", True)]
+
+    def test_no_rescue_when_all_prefixes_rare(self):
+        # Single-segment rare tag with no popular ancestor stays out.
+        counts = {"admin": 1}
+        result = classify_tags(counts, ["admin"], threshold=2)
+        assert result == [("admin", False)]
+
     def test_mixed_tags(self):
         counts = {
-            "projects/ecg": 5,      # reserved → not namespace
+            "projects": 5,
+            "projects/ecg": 5,       # projects is first-class now → namespace
+            "paper": 3,
             "paper/ecg": 3,          # over threshold → namespace
             "admin": 1,              # under threshold → not namespace
+            "ns": 1,
             "ns/singleton": 1,       # opt-in → namespace
         }
         tags = ["projects/ecg", "paper/ecg", "admin", "ns/singleton"]
         result = dict(classify_tags(counts, tags, threshold=2))
         assert result == {
-            "projects/ecg": False,
+            "projects/ecg": True,
             "paper/ecg": True,
             "admin": False,
             "ns/singleton": True,
         }
 
     def test_reserved_wins_over_opt_in(self):
-        # Reserved check runs first; a `projects/...` tag is never a namespace
-        # even if someone were to also match an opt-in rule.
-        counts = {"projects/foo": 10}
-        result = classify_tags(counts, ["projects/foo"], threshold=2)
-        assert result == [("projects/foo", False)]
+        # Reserved check runs first; a `tasker/...` tag is never a namespace
+        # even if prefix counts would otherwise classify it as one.
+        counts = {"tasker": 10, "tasker/foo": 10}
+        result = classify_tags(counts, ["tasker/foo"], threshold=2)
+        assert result == [("tasker/foo", False)]
 
 
 # ── store: roundtrip ────────────────────────────────────────────
