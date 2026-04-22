@@ -573,8 +573,19 @@ function _renderRequirementList(nodes, reqIds) {
     // Key by the sorted requirement id list so restoration survives
     // re-renders even if a parent node's position shifts.
     const detailKey = 'req:' + reqIds.slice().sort().join(',');
+    // Auto-open when filter is active AND any contained requirement is
+    // a filter match — otherwise the user types "vault" and sees
+    // "Requirements (8/9 ok)" collapsed with no way to know vault-root
+    // is right there inside it.
+    const autoOpen = WB_CONTROL_FILTER && reqIds.some(rid => {
+        const r = nodes[rid];
+        if (!r) return false;
+        const f = WB_CONTROL_FILTER;
+        return (r.label || '').toLowerCase().includes(f) ||
+               (r.id || '').toLowerCase().includes(f);
+    });
     return `
-        <details class="settings-req-details" data-wb-detail-key="${escapeHtml(detailKey)}">
+        <details class="settings-req-details" data-wb-detail-key="${escapeHtml(detailKey)}"${autoOpen ? ' open' : ''}>
             <summary>Requirements (${passing}/${total} ok)</summary>
             <ul class="settings-req-list">
                 ${reqIds.map(rid => {
@@ -594,11 +605,20 @@ function _renderRequirementList(nodes, reqIds) {
 function _renderCapabilityList(capNames) {
     if (!capNames || capNames.length === 0) return '';
     const detailKey = 'cap:' + capNames.slice().sort().join(',');
+    // Auto-open when filter matches one of the listed capability names.
+    const autoOpen = WB_CONTROL_FILTER && capNames.some(
+        c => c.toLowerCase().includes(WB_CONTROL_FILTER)
+    );
     return `
-        <details class="settings-cap-details" data-wb-detail-key="${escapeHtml(detailKey)}">
+        <details class="settings-cap-details" data-wb-detail-key="${escapeHtml(detailKey)}"${autoOpen ? ' open' : ''}>
             <summary>Affects ${capNames.length} capabilities</summary>
             <div class="settings-cap-chips">
-                ${capNames.map(n => `<span class="settings-cap-chip">${escapeHtml(n)}</span>`).join('')}
+                ${capNames.map(n => {
+                    const hl = WB_CONTROL_FILTER && n.toLowerCase().includes(WB_CONTROL_FILTER)
+                        ? ' settings-cap-chip-match'
+                        : '';
+                    return `<span class="settings-cap-chip${hl}">${escapeHtml(n)}</span>`;
+                }).join('')}
             </div>
         </details>
     `;
@@ -751,7 +771,14 @@ function renderSettingsTree() {
     }
 
     // Snapshot BEFORE we rebuild — we restore after.
-    const priorState = _snapshotDetailsState(container);
+    //
+    // Important exception: when a filter is active we deliberately
+    // SKIP restoration. The new render has already computed which
+    // <details> should be open to surface the matches; restoring a
+    // previously-closed-by-the-user state would defeat the filter and
+    // hide what they're searching for. (Without filter, restore so
+    // their drill-down context survives preference toggles, etc.)
+    const priorState = WB_CONTROL_FILTER ? null : _snapshotDetailsState(container);
 
     const nodes = WB_CONTROL_GRAPH.nodes;
 

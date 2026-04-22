@@ -2650,6 +2650,12 @@ body {
     background: var(--bg);
     font-family: monospace;
 }
+.settings-cap-chip-match {
+    border-color: var(--accent);
+    background: var(--accent-subtle);
+    color: var(--accent);
+    font-weight: 600;
+}
 
 /* ---------- Settings preference toggle (3-state) ---------- */
 .settings-pref-controls {
