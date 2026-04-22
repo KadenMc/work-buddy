@@ -38,12 +38,24 @@ class TestRequirementRegistry:
                 f"{req.id} has invalid severity '{req.severity}'"
             )
 
-    def test_core_requirements_have_no_component(self):
+    def test_core_requirements_have_no_component_except_vault_root(self):
+        """Core requirements default to component=None (they're cross-cutting
+        prerequisites). One exception: ``core/config/vault-root`` is owned
+        by the obsidian component since it IS the path to the vault that
+        the obsidian bridge reads. Moved during the bootstrap-restructure
+        so users find it under Obsidian rather than a confusing
+        'Bootstrap' grab-bag."""
         for req in REQUIREMENT_REGISTRY.values():
-            if req.id.startswith("core/"):
-                assert req.component is None, (
-                    f"Core requirement {req.id} should have component=None"
+            if not req.id.startswith("core/"):
+                continue
+            if req.id == "core/config/vault-root":
+                assert req.component == "obsidian", (
+                    "vault_root should be owned by the obsidian component"
                 )
+                continue
+            assert req.component is None, (
+                f"Core requirement {req.id} should have component=None"
+            )
 
     def test_non_core_requirements_have_component(self):
         for req in REQUIREMENT_REGISTRY.values():
@@ -61,11 +73,22 @@ class TestRequirementRegistry:
         for req in REQUIREMENT_REGISTRY.values():
             assert req.setup_group, f"{req.id} is missing setup_group"
 
-    def test_bootstrap_group_for_core(self):
+    def test_setup_group_for_core_reqs(self):
+        """Every core/* requirement belongs to one of the post-refactor
+        setup groups: 'repository', 'credentials', or 'obsidian'
+        (vault_root moved to obsidian since it's the path to the vault).
+
+        The old single 'bootstrap' bucket was a grab-bag with mixed
+        semantics (config files + paths + secrets + vault location);
+        splitting it surfaces what each requirement is actually about
+        when shown in the Settings UI.
+        """
+        allowed_groups = {"repository", "credentials", "obsidian"}
         for req in REQUIREMENT_REGISTRY.values():
             if req.id.startswith("core/"):
-                assert req.setup_group == "bootstrap", (
-                    f"Core requirement {req.id} should have setup_group='bootstrap'"
+                assert req.setup_group in allowed_groups, (
+                    f"Core requirement {req.id} has setup_group={req.setup_group!r}; "
+                    f"expected one of {allowed_groups}"
                 )
 
 
@@ -233,8 +256,11 @@ class TestCheckFunctions:
         assert result["ok"] is False
 
     def test_check_vault_root_pass(self, monkeypatch, tmp_path):
+        # check_vault_root now requires the directory to be an actual
+        # Obsidian vault (contain .obsidian/), so the test vault needs
+        # the marker dir inside it.
         vault = tmp_path / "vault"
-        vault.mkdir()
+        (vault / ".obsidian").mkdir(parents=True)
         monkeypatch.setattr(
             "work_buddy.health.requirement_checks._cfg",
             lambda: {"vault_root": str(vault)},
@@ -281,37 +307,65 @@ class TestCheckFunctions:
 
     def test_check_anthropic_api_key_set(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-123")
+        monkeypatch.delenv("SUBAGENT_ANTHROPIC_API_KEY", raising=False)
         from work_buddy.health.requirement_checks import check_anthropic_api_key
         result = check_anthropic_api_key()
         assert result["ok"] is True
+        # Should report which env var matched
+        assert "ANTHROPIC_API_KEY" in result["detail"]
 
-    def test_check_anthropic_api_key_missing(self, monkeypatch):
+    def test_check_anthropic_api_key_subagent_set(self, monkeypatch):
+        """SUBAGENT_ANTHROPIC_API_KEY counts — work_buddy/llm/runner.py
+        prefers it over ANTHROPIC_API_KEY (so spawned Claude Code
+        sessions can fall back to OAuth/Claude Max when ANTHROPIC_API_KEY
+        is intentionally absent)."""
+        monkeypatch.setenv("SUBAGENT_ANTHROPIC_API_KEY", "sk-subagent-456")
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         from work_buddy.health.requirement_checks import check_anthropic_api_key
         result = check_anthropic_api_key()
-        assert result["ok"] is False
+        assert result["ok"] is True
+        assert "SUBAGENT_ANTHROPIC_API_KEY" in result["detail"]
 
-    def test_check_obsidian_dir_pass(self, monkeypatch, tmp_path):
+    def test_check_anthropic_api_key_missing(self, monkeypatch, tmp_path):
+        """All three sources must be empty: SUBAGENT env, ANTHROPIC env,
+        and the repo .env file. Point _repo_root at a tmp_path that has
+        no .env to isolate from the developer's own .env."""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("SUBAGENT_ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setattr(
+            "work_buddy.health.requirement_checks._repo_root",
+            lambda: tmp_path,
+        )
+        from work_buddy.health.requirement_checks import check_anthropic_api_key
+        result = check_anthropic_api_key()
+        assert result["ok"] is False
+        assert "No Anthropic API key found" in result["detail"]
+
+    def test_check_vault_root_rejects_dir_without_dot_obsidian(self, monkeypatch, tmp_path):
+        """check_vault_root now folds the .obsidian/ check inline:
+        a real directory that ISN'T an Obsidian vault should fail."""
+        bare = tmp_path / "not-a-vault"
+        bare.mkdir()
+        monkeypatch.setattr(
+            "work_buddy.health.requirement_checks._cfg",
+            lambda: {"vault_root": str(bare)},
+        )
+        from work_buddy.health.requirement_checks import check_vault_root
+        result = check_vault_root()
+        assert result["ok"] is False
+        assert ".obsidian" in result["detail"]
+
+    def test_check_vault_root_accepts_real_vault(self, monkeypatch, tmp_path):
         vault = tmp_path / "vault"
         (vault / ".obsidian").mkdir(parents=True)
         monkeypatch.setattr(
-            "work_buddy.health.requirement_checks._vault_root",
-            lambda: vault,
+            "work_buddy.health.requirement_checks._cfg",
+            lambda: {"vault_root": str(vault)},
         )
-        from work_buddy.health.requirement_checks import check_obsidian_dir
-        result = check_obsidian_dir()
+        from work_buddy.health.requirement_checks import check_vault_root
+        result = check_vault_root()
         assert result["ok"] is True
-
-    def test_check_obsidian_dir_missing(self, monkeypatch, tmp_path):
-        vault = tmp_path / "vault"
-        vault.mkdir()
-        monkeypatch.setattr(
-            "work_buddy.health.requirement_checks._vault_root",
-            lambda: vault,
-        )
-        from work_buddy.health.requirement_checks import check_obsidian_dir
-        result = check_obsidian_dir()
-        assert result["ok"] is False
+        assert "Obsidian vault" in result["detail"]
 
     def test_check_journal_dir_pass(self, monkeypatch, tmp_path):
         vault = tmp_path / "vault"
@@ -390,6 +444,11 @@ class TestCheckFunctions:
         assert result["ok"] is True
 
     def test_check_daily_note_not_yet_created(self, monkeypatch, tmp_path):
+        """If no daily note exists anywhere in the last 30 days, the check
+        fails with a guiding message. (Post-Phase-G behavior: the check
+        falls back to the latest available daily note rather than
+        strictly today's; this test exercises the empty-journal edge
+        case where no fallback exists either.)"""
         vault = tmp_path / "vault"
         (vault / "journal").mkdir(parents=True)
         monkeypatch.setattr(
@@ -403,12 +462,50 @@ class TestCheckFunctions:
         from work_buddy.health.requirement_checks import check_log_section
         result = check_log_section()
         assert result["ok"] is False
-        assert "does not exist" in result["detail"]
+        assert "No daily note found" in result["detail"]
+
+    def test_check_daily_note_falls_back_to_yesterday(self, monkeypatch, tmp_path):
+        """If today's note doesn't exist, check validates against the
+        most recent available daily note and surfaces which date."""
+        from datetime import date, timedelta
+        vault = tmp_path / "vault"
+        journal = vault / "journal"
+        journal.mkdir(parents=True)
+        # Create yesterday's note with a valid # Log section
+        y = (date.today() - timedelta(days=1)).strftime("%Y-%m-%d")
+        (journal / f"{y}.md").write_text("# Log\nstuff\n", encoding="utf-8")
+        monkeypatch.setattr(
+            "work_buddy.health.requirement_checks._vault_root",
+            lambda: vault,
+        )
+        monkeypatch.setattr(
+            "work_buddy.health.requirement_checks._cfg",
+            lambda: {"obsidian": {"journal_dir": "journal"}},
+        )
+        from work_buddy.health.requirement_checks import check_log_section
+        result = check_log_section()
+        assert result["ok"] is True
+        # Detail should announce the fallback date
+        assert y in result["detail"]
+        assert "last available" in result["detail"]
+
+    def _seed_tasks_plugin_dir(self, vault):
+        """Create a plausible plugin folder with a manifest. Helper for
+        the two-part installed/enabled tests."""
+        plugin_dir = vault / ".obsidian" / "plugins" / "obsidian-tasks-plugin"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "manifest.json").write_text(
+            json.dumps({"id": "obsidian-tasks-plugin", "name": "Tasks", "version": "1.0.0"}),
+            encoding="utf-8",
+        )
+        return plugin_dir
 
     def test_check_tasks_plugin_pass(self, monkeypatch, tmp_path):
+        """Both installed (folder+manifest) AND enabled (in cp-json) → ok."""
         vault = tmp_path / "vault"
         obs = vault / ".obsidian"
         obs.mkdir(parents=True)
+        self._seed_tasks_plugin_dir(vault)
         cp = obs / "community-plugins.json"
         cp.write_text(json.dumps(["obsidian-tasks-plugin", "datacore"]), encoding="utf-8")
         monkeypatch.setattr(
@@ -418,8 +515,53 @@ class TestCheckFunctions:
         from work_buddy.health.requirement_checks import check_tasks_plugin
         result = check_tasks_plugin()
         assert result["ok"] is True
+        assert "installed and enabled" in result["detail"].lower()
+
+    def test_check_tasks_plugin_not_installed(self, monkeypatch, tmp_path):
+        """No plugin folder at all → distinct 'not installed' message
+        that points the user at Community Plugins → Browse."""
+        vault = tmp_path / "vault"
+        obs = vault / ".obsidian"
+        obs.mkdir(parents=True)
+        # Note: NO plugin folder created. The community-plugins.json
+        # could still list it (stale config), but the folder is the
+        # ground truth for "is the code present?"
+        cp = obs / "community-plugins.json"
+        cp.write_text(json.dumps(["datacore"]), encoding="utf-8")
+        monkeypatch.setattr(
+            "work_buddy.health.requirement_checks._vault_root",
+            lambda: vault,
+        )
+        from work_buddy.health.requirement_checks import check_tasks_plugin
+        result = check_tasks_plugin()
+        assert result["ok"] is False
+        assert "NOT installed" in result["detail"]
+        assert "Browse" in result["detail"]  # install hint
+
+    def test_check_tasks_plugin_installed_but_disabled(self, monkeypatch, tmp_path):
+        """Plugin folder is there, but id not in community-plugins.json
+        → distinct 'installed but not enabled' message that tells the
+        user to just toggle it on. This was the hidden case the
+        previous check conflated with 'not installed'."""
+        vault = tmp_path / "vault"
+        obs = vault / ".obsidian"
+        obs.mkdir(parents=True)
+        self._seed_tasks_plugin_dir(vault)
+        cp = obs / "community-plugins.json"
+        cp.write_text(json.dumps(["datacore"]), encoding="utf-8")  # tasks NOT listed
+        monkeypatch.setattr(
+            "work_buddy.health.requirement_checks._vault_root",
+            lambda: vault,
+        )
+        from work_buddy.health.requirement_checks import check_tasks_plugin
+        result = check_tasks_plugin()
+        assert result["ok"] is False
+        assert "IS installed but NOT enabled" in result["detail"]
+        assert "toggle" in result["detail"].lower()
 
     def test_check_tasks_plugin_missing(self, monkeypatch, tmp_path):
+        """Backwards-compat alias for the old test — equivalent to
+        the new 'not installed' case."""
         vault = tmp_path / "vault"
         obs = vault / ".obsidian"
         obs.mkdir(parents=True)
@@ -432,6 +574,55 @@ class TestCheckFunctions:
         from work_buddy.health.requirement_checks import check_tasks_plugin
         result = check_tasks_plugin()
         assert result["ok"] is False
+
+    def test_check_tasks_plugin_respects_override_config_dir(
+        self, monkeypatch, tmp_path,
+    ):
+        """Obsidian supports an override config folder (not .obsidian).
+        The check must use it when config.yaml sets obsidian.config_dir.
+        A vault whose Obsidian config is in .obsidian-work should NOT
+        be reported as broken when the plugin is installed+enabled
+        there, even though .obsidian/ doesn't exist."""
+        vault = tmp_path / "vault"
+        override = vault / ".obsidian-work"
+        plugin_dir = override / "plugins" / "obsidian-tasks-plugin"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "manifest.json").write_text(
+            json.dumps({"id": "obsidian-tasks-plugin", "name": "Tasks", "version": "1"}),
+            encoding="utf-8",
+        )
+        (override / "community-plugins.json").write_text(
+            json.dumps(["obsidian-tasks-plugin"]), encoding="utf-8",
+        )
+        # Do NOT create vault/.obsidian — the override must be used.
+        monkeypatch.setattr(
+            "work_buddy.health.requirement_checks._vault_root",
+            lambda: vault,
+        )
+        monkeypatch.setattr(
+            "work_buddy.config.load_config",
+            lambda: {"obsidian": {"config_dir": ".obsidian-work"}},
+        )
+        from work_buddy.health.requirement_checks import check_tasks_plugin
+        result = check_tasks_plugin()
+        assert result["ok"] is True, result["detail"]
+        assert "installed and enabled" in result["detail"].lower()
+
+    def test_resolve_config_dir_prefers_explicit_argument(self, monkeypatch, tmp_path):
+        """Unit test for the resolver primitive itself."""
+        from work_buddy.obsidian.plugins import resolve_config_dir
+        vault = tmp_path / "vault"
+        # Explicit argument beats config.yaml and the .obsidian default.
+        monkeypatch.setattr(
+            "work_buddy.config.load_config",
+            lambda: {"obsidian": {"config_dir": ".from-yaml"}},
+        )
+        assert resolve_config_dir(vault, ".explicit").name == ".explicit"
+        # Without argument, config.yaml wins.
+        assert resolve_config_dir(vault).name == ".from-yaml"
+        # If config.yaml has no entry, default to .obsidian.
+        monkeypatch.setattr("work_buddy.config.load_config", lambda: {})
+        assert resolve_config_dir(vault).name == ".obsidian"
 
     def test_check_master_task_list_pass(self, monkeypatch, tmp_path):
         vault = tmp_path / "vault"

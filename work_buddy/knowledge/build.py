@@ -138,6 +138,8 @@ def build_capability_units() -> dict[str, dict[str, Any]]:
             unit["parameters"] = entry.parameters
         if entry.requires:
             unit["requires"] = entry.requires
+        if entry.invokes:
+            unit["invokes"] = entry.invokes
         if entry.mutates_state:
             unit["mutates_state"] = True
             unit["retry_policy"] = entry.retry_policy

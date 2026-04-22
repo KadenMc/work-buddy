@@ -110,6 +110,7 @@ def set_preference(
         reason=reason,
     )
     save_preferences(prefs)
+    _invalidate_control_graph()
 
 
 @requires_consent(
@@ -122,12 +123,25 @@ def apply_preference_updates(updates: dict[str, Any]) -> list[str]:
 
     ``updates`` maps component_id -> {"wanted": bool|None, "reason": str} or bool/None.
     Returns the list of component_ids that were written.
+
+    Core components (``ComponentDef.is_core=True``) are silently skipped
+    — the UI hides their toggle, but a stale cache or direct API call
+    could still attempt an update, which we reject at the write layer
+    so the config file never acquires a setting that would be ignored
+    at read time anyway.
     """
     from work_buddy.health.components import COMPONENT_CATALOG
 
     written: list[str] = []
     for comp_id, data in updates.items():
-        if comp_id not in COMPONENT_CATALOG:
+        comp = COMPONENT_CATALOG.get(comp_id)
+        if comp is None:
+            continue
+        # Core components cannot be opted out. Silently skip rather than
+        # raising — the caller (dashboard, agent, CLI) shouldn't need to
+        # know about the core/non-core distinction to dispatch preference
+        # updates in bulk.
+        if comp.is_core:
             continue
         if isinstance(data, dict):
             set_preference(
@@ -139,12 +153,47 @@ def apply_preference_updates(updates: dict[str, Any]) -> list[str]:
         elif isinstance(data, bool) or data is None:
             set_preference(comp_id, wanted=data)
             written.append(comp_id)
+    _invalidate_control_graph()
     return written
+
+
+def _invalidate_control_graph() -> None:
+    """Notify the control-graph cache that a preference changed.
+
+    Guarded to avoid circular imports during Phase-0-only deployments
+    where ``work_buddy.control`` may not yet be present.
+    """
+    try:
+        from work_buddy.control.graph import invalidate_graph
+        invalidate_graph()
+    except ImportError:
+        pass
 
 
 def is_wanted(component_id: str) -> bool | None:
     """Quick check: is this component wanted?
 
     Returns True, False, or None (undecided).
+
+    Core components (``ComponentDef.is_core=True``) always return True
+    regardless of config. The user cannot opt out — nothing else works
+    without them. See ``work_buddy.health.components.ComponentDef``.
     """
+    try:
+        from work_buddy.health.components import COMPONENT_CATALOG
+        comp = COMPONENT_CATALOG.get(component_id)
+        if comp is not None and comp.is_core:
+            return True
+    except Exception:
+        pass  # defensive: health.components should always import
     return get_preference(component_id).wanted
+
+
+def is_core(component_id: str) -> bool:
+    """Is this component marked as core (non-opt-out)?"""
+    try:
+        from work_buddy.health.components import COMPONENT_CATALOG
+        comp = COMPONENT_CATALOG.get(component_id)
+        return bool(comp and comp.is_core)
+    except Exception:
+        return False

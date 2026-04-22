@@ -52,16 +52,39 @@ class ComponentDef:
             - "custom": uses only check_sequence
         check_sequence: Ordered diagnostic steps run by DiagnosticRunner.
         sidecar_service: Sidecar service name (if health_source involves sidecar).
+        is_core: True means the user cannot opt out. Core components are
+            always treated as wanted by the preference loader and the UI
+            hides their toggle. Use for prerequisites without which
+            work-buddy itself can't function (sidecar, dashboard, and
+            the services the dashboard hard-depends on).
     """
 
     id: str
     display_name: str
     category: str
+    # Hard deps: if the target is unhealthy, THIS component is `blocked`.
+    # Use only for targets without which this component literally cannot
+    # function (e.g. Hindsight → PostgreSQL).
     depends_on: list[str] = field(default_factory=list)
+    # Soft deps: if the target is unhealthy, this component is at most
+    # `degraded`. Use for optional helpers whose absence reduces
+    # functionality but does not break the component (e.g. dashboard →
+    # embedding service — dashboard falls back to substring search).
+    # Added in the hard/soft-deps refactor (2026-04-22).
+    soft_depends_on: list[str] = field(default_factory=list)
+    # Per-soft-dep notes describing what specifically happens when the
+    # target is unavailable. Keyed by the component id (matches an
+    # entry in soft_depends_on). Propagated onto the corresponding
+    # Edge's fallback_note and surfaced in the Settings UI. Use these
+    # to distinguish "graceful fallback" from "this specific feature
+    # just disappears" — both qualify as "soft" but the user experience
+    # is very different.
+    soft_dep_notes: dict[str, str] = field(default_factory=dict)
     health_source: str = "tool_probe"
     check_sequence: list[CheckStep] = field(default_factory=list)
     sidecar_service: str | None = None
     requirements: list[str] = field(default_factory=list)  # Requirement IDs from REQUIREMENT_REGISTRY
+    is_core: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -76,6 +99,30 @@ def _register(comp: ComponentDef) -> None:
 
 
 # --- External dependencies ---
+
+_register(ComponentDef(
+    id="sidecar",
+    display_name="Sidecar Daemon",
+    category="external",
+    is_core=True,  # nothing works without the sidecar
+    health_source="sidecar",
+    sidecar_service="sidecar",  # synthetic entry synthesized by HealthEngine._load
+    check_sequence=[
+        CheckStep(
+            description="Sidecar daemon process alive and ticking",
+            check_fn="work_buddy.health.checks.check_sidecar_heartbeat",
+            on_fail=(
+                "The work-buddy sidecar daemon is not running (or has "
+                "stopped heartbeating). Start it with:\n"
+                + ("  Start-ScheduledTask 'WB-Sidecar'" if _IS_WINDOWS
+                   else "  python -m work_buddy.sidecar &")
+                + "\n\nMost work-buddy capabilities depend on the sidecar — "
+                "if it's down, health checks, scheduled jobs, and inter-agent "
+                "messaging will be unavailable."
+            ),
+        ),
+    ],
+))
 
 _register(ComponentDef(
     id="postgresql",
@@ -104,7 +151,15 @@ _register(ComponentDef(
     category="integration",
     health_source="tool_probe",
     requirements=[
-        "obsidian/vault/obsidian-dir",
+        # Foundational: where the vault lives. check_vault_root verifies
+        # both that the path exists AND that it contains an .obsidian/
+        # subdirectory (= it's actually an Obsidian vault), so we don't
+        # need a separate `obsidian/vault/obsidian-dir` requirement.
+        "core/config/vault-root",
+        # The bridge plugin is the reason this component exists — without
+        # it the HTTP probe has nothing to answer it. Listed first so
+        # it's the first thing users see when obsidian is broken.
+        "obsidian/plugins/work-buddy-plugin",
         "obsidian/daily-note/plugin-enabled",
         "obsidian/daily-note/dir-exists",
         "obsidian/daily-note/log-section",
@@ -203,6 +258,8 @@ _register(ComponentDef(
     id="messaging",
     display_name="Messaging Service",
     category="service",
+    is_core=True,  # inter-agent + session hooks depend on it
+    depends_on=["sidecar"],  # supervised by the sidecar daemon
     health_source="composite",
     sidecar_service="messaging",
     check_sequence=[
@@ -218,6 +275,8 @@ _register(ComponentDef(
     id="embedding",
     display_name="Embedding Service",
     category="service",
+    is_core=True,  # hybrid search + knowledge-index dense vectors depend on it
+    depends_on=["sidecar"],  # supervised by the sidecar daemon
     health_source="composite",
     sidecar_service="embedding",
     check_sequence=[
@@ -233,6 +292,7 @@ _register(ComponentDef(
     id="telegram",
     display_name="Telegram Bot",
     category="service",
+    depends_on=["sidecar"],  # supervised by the sidecar daemon
     health_source="composite",
     sidecar_service="telegram",
     requirements=["services/telegram/bot-token"],
@@ -254,6 +314,42 @@ _register(ComponentDef(
     id="dashboard",
     display_name="Dashboard",
     category="service",
+    is_core=True,  # this is the UI; turning it off turns off the Settings page itself
+    # The sidecar daemon supervises the dashboard process — if the
+    # sidecar is down the dashboard won't restart when it crashes, and
+    # there's no coordinated way to keep it alive. Modeled as hard.
+    depends_on=["sidecar"],
+    # Soft helpers — the dashboard *itself* keeps running without them,
+    # but specific features change state. Each note below describes
+    # precisely what the user loses, so the UI doesn't lie by saying
+    # "may be reduced" when the truth is "this feature is gone."
+    soft_depends_on=["embedding", "messaging", "obsidian", "hindsight"],
+    soft_dep_notes={
+        "embedding": (
+            "Hybrid search on tasks/palette falls back to substring "
+            "matching. Chat-content and commit IR search endpoints "
+            "return empty or error — there is no substring fallback "
+            "for those."
+        ),
+        "messaging": (
+            "Acknowledge-poller stops: cross-surface notification "
+            "dismissal (click to dismiss in Obsidian, have it vanish "
+            "from the dashboard) will no longer work until messaging "
+            "is healthy again."
+        ),
+        "obsidian": (
+            "Task/contract/journal panels still read the markdown "
+            "files directly, so basic reads work; but any feature "
+            "that routes through the bridge (live task mutations, "
+            "Obsidian command-palette execution, vault writes) is "
+            "unavailable."
+        ),
+        "hindsight": (
+            "Project-detail panel shows an empty memory section; "
+            "project-memory recall is unavailable. The rest of the "
+            "projects view works."
+        ),
+    },
     health_source="sidecar",
     sidecar_service="dashboard",
     check_sequence=[

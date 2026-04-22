@@ -13,6 +13,7 @@
       "architecture/artifact-system",
       "architecture/context-pipeline",
       "architecture/contracts",
+      "architecture/control-graph",
       "architecture/embedding-service",
       "architecture/knowledge-system",
       "architecture/llm-runner",
@@ -389,6 +390,45 @@
       "work_buddy.context.cache",
       "work_buddy.context.registry",
       "work_buddy.context.sources"
+    ]
+  },
+  "architecture/control-graph": {
+    "kind": "system",
+    "name": "Control Graph",
+    "description": "Unified view-model over preferences, requirements, health, and registry. Powers the Settings tab; backs the fix + help systems.",
+    "content": {
+      "full": "Unified view-model layer that fuses work-buddy's five loosely-coupled observability subsystems into one queryable graph. Lives in ``work_buddy/control/`` — pure Python, no state ownership, rebuilds from the authoritative sources on a 45-second TTL cache.\n\n## What it aggregates\n\n* **Preferences** (``work_buddy.health.preferences``) — what the user wants.\n* **Requirements** (``work_buddy.health.requirements``) — filesystem/config checks.\n* **Health** (``work_buddy.health.engine``) — runtime probes + sidecar state.\n* **Diagnostics** (``work_buddy.health.diagnostics``) — ordered troubleshooting.\n* **Registry** (``work_buddy.mcp_server.registry``) — capabilities + workflows.\n\nBefore the control graph, each subsystem exposed its own slice and agents had to correlate state across five different shapes. The graph gives one node view that answers questions like \"this workflow is blocked because a requirement of a dependency component isn't met\" without cross-cutting the consumer.\n\n## Node model (``work_buddy/control/nodes.py``)\n\nFive kinds of ``ControlNode``:\n\n* ``domain`` — top-level user-facing bucket (Journal, Notifications, Knowledge, Browser, Calendar, Runtime, System).\n* ``subsystem`` — intermediate grouping under a domain (Daily Notes, Task Lifecycle, Hindsight, Bootstrap, Credentials, ...).\n* ``component`` — concrete runtime entity from ``COMPONENT_CATALOG``. Carries the ``preference`` field.\n* ``requirement`` — configuration check (wrapped from ``REQUIREMENT_REGISTRY``). Carries fix metadata (``fix_kind``, ``fix_fn``, ``fix_params``, ``fix_preview``).\n* ``capability`` — registry entry (both atomic Capability and WorkflowDefinition). Unparented — surfaces via component ``affects_capabilities`` inverse edges rather than a noisy flat domain listing.\n\nEach node carries two kinds of edges:\n\n* ``grouping_parents`` — hierarchical roll-up (\"I live under X\"). Multi-parent allowed: ``component:dashboard`` appears under both ``domain:notifications`` and ``domain:runtime``.\n* ``dependencies`` — runtime contract (\"I need X healthy\"). An ``Edge`` has ``target_id``, ``mode`` (\"all\" default; \"any\" reserved), and ``hardness`` (\"hard\" default / \"soft\").\n\n## Hard vs soft dependencies\n\n* **Hard** — failure cascades as ``blocked``. Use for targets without which this node literally cannot function (Hindsight → PostgreSQL).\n* **Soft** — failure cascades as ``degraded`` at worst; disabled soft deps don't cascade at all. Use for optional helpers whose absence reduces functionality but doesn't break the node (dashboard → embedding: hybrid search falls back to substring).\n\nDeclared on ``ComponentDef`` via ``depends_on`` (hard) and ``soft_depends_on`` (soft).\n\n## effective_state derivation\n\nOne derived label per node. Six values: ``ok``, ``degraded``, ``blocked``, ``disabled``, ``unconfigured``, ``unknown``.\n\nKey rules:\n\n* ``preference=unwanted`` → ``disabled`` (the cascade rule: unwanted is invisible; probes skip it).\n* ``preference=required`` (core components, ``is_core=True``) is treated like ``wanted`` for cascade.\n* **Unknown is distinct from failure.** A hard dep in ``unknown`` (pending probe) → downstream is also ``unknown``, NOT ``blocked``. Propagating uncertainty as certainty-of-failure is what painted the whole graph red on dashboard startup before this rule landed.\n* Soft-dep ``unknown`` doesn't degrade either — we don't announce a known reduction in functionality on the basis of a probe that hasn't completed.\n* Known-bad hard dep (``blocked``/``unconfigured``/``degraded``) → downstream ``blocked``.\n* Grouping roll-up uses worst-child-wins with ranking ``blocked > unconfigured > degraded > unknown > ok > disabled``; all-children-disabled → parent is ``disabled``.\n\n## Fix system (``work_buddy/control/fix_runner.py``)\n\nEvery requirement may opt into a fix. Four kinds:\n\n* ``none`` (default) — no automated fix; fix_hint only.\n* ``programmatic`` — ``fix_fn()`` does the fix end-to-end. UI shows an inline confirm panel with ``fix_preview``, then applies on user click.\n* ``input_required`` — ``fix_fn(**form_values)``. UI renders an inline form from ``fix_params``; user submits, fix applies.\n* ``agent_handoff`` — clicking **Walk me through** spawns a Claude Code session with the registered ``fix_agent_brief`` as prompt (desktop session, non-remote).\n\nFixers live in ``work_buddy/health/fixers.py``. They are idempotent, specific in their detail messages, and return ``{ok, detail, side_effects}`` without raising (the dispatcher converts exceptions for consistent endpoint behavior). Post-fix, the requirement's check is re-run and the graph cache busts.\n\n## Help system (``work_buddy/control/help_briefs.py``)\n\nUniversal ``?`` button on every non-ok requirement (except those already offering agent_handoff as their fix, which redundantly spawn) and every component. Spawns a Claude Code session with a structured brief that bundles DiagnosticRunner output, requirement metadata, current state, blocking issues, and pointers to relevant agent docs. Subsumes the legacy Status-tab ``🪄 /wb-setup diagnose`` hint.\n\n## Endpoints (``work_buddy/dashboard/service.py``)\n\n* ``GET /api/control/graph[?force=1]`` — serialized node map + cache info.\n* ``POST /api/control/reprobe`` — runs ``probe_all(force=True)`` (re-pings every service, ~10s worst case), rewrites tool_status.json, returns fresh graph. Read-only-gated.\n* ``POST /api/control/preference`` — ``{updates: {component_id: {wanted, reason}}}``. Auto-consents; calls ``apply_preference_updates`` + invalidates graph.\n* ``POST /api/control/fix/<req_id>`` — applies the fix; body ``{params}`` for input_required. Re-runs the check, returns ``{ok, detail, side_effects, recheck, spawned}``.\n* ``POST /api/control/help/<node_id>`` — spawns a help session.\n\n## Caching and invalidation\n\n* ``build_graph()`` in ``work_buddy/control/graph.py`` has a 45-s TTL with a ``threading.Lock``.\n* ``invalidate_graph()`` is called from ``preferences.set_preference``, ``preferences.apply_preference_updates``, and every mutating endpoint above.\n* ``?force=1`` / ``build_graph(force=True)`` bypasses cache but does NOT reprobe; use ``POST /api/control/reprobe`` when you want fresh probe data on top of a fresh graph.\n\n## Settings tab\n\nThe primary consumer lives at ``work_buddy/dashboard/frontend/script_settings.py`` + ``panel-settings`` in ``html.py``. Renders the graph as a hierarchy of domains; exposes preference toggles (3-state: Want / No thanks / Undecided), Configure / Walk me through action buttons per requirement, universal ``?`` help button, per-component ↻ reprobe button, and clickable bulk-state chips for drill-down into problem nodes.\n\n## Relationship to other surfaces\n\n* ``SetupWizard.guided()`` consumes the same domains (Phase G migration).\n* Status tab retains bridge latency chart + event log + notification log; its per-component Diagnose button is the predecessor of Settings' ↻ reprobe + ? help buttons (different entry points, same underlying data).\n* Agents can call ``agent_docs(scope=\"architecture/control-graph\")`` for this overview, then ``/api/control/graph`` for live state.",
+      "summary": "Graph of domains/subsystems/components/requirements/capabilities fused from the five existing subsystems. Settings tab renders it; Fix + Help + Reprobe endpoints mutate/refresh it. Read-only in spirit: source data lives in health/, preferences/, requirements/, registry — control/ just aggregates and exposes."
+    },
+    "tags": [
+      "control-graph",
+      "settings",
+      "fix",
+      "help",
+      "preferences",
+      "requirements",
+      "observability",
+      "orchestration"
+    ],
+    "aliases": [
+      "settings tab",
+      "control graph",
+      "fix system",
+      "help agent",
+      "reprobe",
+      "component preferences"
+    ],
+    "parents": [
+      "architecture"
+    ],
+    "entry_points": [
+      "work_buddy.control",
+      "work_buddy.control.graph",
+      "work_buddy.control.nodes",
+      "work_buddy.control.graph_static",
+      "work_buddy.control.fix_runner",
+      "work_buddy.control.help_briefs",
+      "work_buddy.health.fixers"
     ]
   }
 }

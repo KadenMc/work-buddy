@@ -144,7 +144,15 @@ def _bridge_stats(sample: dict[str, Any]) -> dict[str, Any]:
         "trend": trend,
         "samples": len(latencies),
         "history": [
-            {"ts": s["ts"], "ms": s["latency_ms"], "ok": s["status"] == "healthy"}
+            # `status` lets the sparkline renderer visually distinguish
+            # "unreachable" (port closed — Obsidian not running) from
+            # "timeout" (port open, bridge hung — Obsidian lagging).
+            # Previously both were conflated under a single bar-fail
+            # class, so you couldn't tell from the graph whether your
+            # spike was "closed the app" or "something's slow."
+            {"ts": s["ts"], "ms": s["latency_ms"],
+             "ok": s["status"] == "healthy",
+             "status": s["status"]}
             for s in usable
         ],
     }

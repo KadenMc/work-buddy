@@ -6,8 +6,44 @@ from pathlib import Path
 from typing import Any, Callable
 
 
+def resolve_config_dir(
+    vault_root: Path,
+    config_dir_name: str | None = None,
+) -> Path:
+    """Resolve the vault's Obsidian configuration directory.
+
+    Obsidian supports an **override config folder** — a user can launch
+    with ``--config-dir`` or configure a non-default name per vault, and
+    Obsidian will then read/write ``community-plugins.json``, plugin
+    folders, etc. from that directory instead of ``.obsidian/``. The
+    override name is NOT stored in any file we can read from the vault,
+    so we accept it explicitly from the caller (typically via
+    ``config.yaml``'s ``obsidian.config_dir``).
+
+    Resolution order:
+
+      1. Explicit ``config_dir_name`` argument (if non-empty).
+      2. ``config.yaml`` → ``obsidian.config_dir`` (loaded lazily to
+         avoid circular imports).
+      3. Default ``.obsidian``.
+
+    Returns the absolute path; does NOT verify the directory exists
+    (that's the caller's job — the requirement check uses it to
+    discriminate "missing directory" from "wrong path configured").
+    """
+    if config_dir_name:
+        return vault_root / config_dir_name
+    try:
+        from work_buddy.config import load_config
+        cfg_name = load_config().get("obsidian", {}).get("config_dir") or ".obsidian"
+    except Exception:
+        cfg_name = ".obsidian"
+    return vault_root / cfg_name
+
+
 def _obsidian_dir(vault_root: Path) -> Path:
-    return vault_root / ".obsidian"
+    """Backward-compat wrapper. New code should call resolve_config_dir."""
+    return resolve_config_dir(vault_root)
 
 
 def active_plugins(vault_root: Path) -> set[str]:

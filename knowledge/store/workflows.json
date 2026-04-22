@@ -10,7 +10,14 @@
         "id": "load-contracts",
         "name": "Load contracts from directory",
         "step_type": "code",
-        "depends_on": []
+        "depends_on": [],
+        "invokes": [
+          "contract_health",
+          "active_contracts",
+          "stale_contracts",
+          "overdue_contracts",
+          "contract_constraints"
+        ]
       },
       {
         "id": "health-check",
@@ -18,7 +25,8 @@
         "step_type": "reasoning",
         "depends_on": [
           "load-contracts"
-        ]
+        ],
+        "invokes": []
       },
       {
         "id": "check-alignment",
@@ -26,7 +34,8 @@
         "step_type": "reasoning",
         "depends_on": [
           "health-check"
-        ]
+        ],
+        "invokes": []
       },
       {
         "id": "surface-actions",
@@ -34,7 +43,8 @@
         "step_type": "reasoning",
         "depends_on": [
           "check-alignment"
-        ]
+        ],
+        "invokes": []
       },
       {
         "id": "handle-no-contracts",
@@ -43,7 +53,8 @@
         "depends_on": [
           "load-contracts"
         ],
-        "optional": true
+        "optional": true,
+        "invokes": []
       }
     ],
     "tags": [
@@ -82,7 +93,8 @@
         },
         "visibility": {
           "mode": "none"
-        }
+        },
+        "invokes": []
       },
       {
         "id": "extract-and-cluster",
@@ -100,7 +112,8 @@
         },
         "visibility": {
           "mode": "none"
-        }
+        },
+        "invokes": []
       },
       {
         "id": "summarize",
@@ -118,7 +131,8 @@
         },
         "visibility": {
           "mode": "none"
-        }
+        },
+        "invokes": []
       },
       {
         "id": "intent-group",
@@ -136,7 +150,8 @@
         },
         "visibility": {
           "mode": "none"
-        }
+        },
+        "invokes": []
       },
       {
         "id": "contextualize",
@@ -153,7 +168,8 @@
         },
         "visibility": {
           "mode": "none"
-        }
+        },
+        "invokes": []
       },
       {
         "id": "build-presentation",
@@ -178,7 +194,8 @@
             "narrative",
             "groups_by_action"
           ]
-        }
+        },
+        "invokes": []
       },
       {
         "id": "resolve-and-clarify",
@@ -199,7 +216,8 @@
             "total_items": "int",
             "has_clarifying_questions": "bool"
           }
-        }
+        },
+        "invokes": []
       },
       {
         "id": "dispatch-clarify",
@@ -214,7 +232,8 @@
             "presentation": "resolve-and-clarify"
           },
           "timeout": 330
-        }
+        },
+        "invokes": []
       },
       {
         "id": "build-recommendations",
@@ -234,7 +253,10 @@
             "total_groups": "int",
             "total_items": "int"
           }
-        }
+        },
+        "invokes": [
+          "request_poll"
+        ]
       },
       {
         "id": "dispatch-review",
@@ -249,7 +271,8 @@
             "presentation": "build-recommendations"
           },
           "timeout": 630
-        }
+        },
+        "invokes": []
       },
       {
         "id": "execute",
@@ -265,7 +288,8 @@
             "presentation": "build-recommendations"
           },
           "timeout": 120
-        }
+        },
+        "invokes": []
       }
     ],
     "tags": [
@@ -300,7 +324,8 @@
         "id": "run-collector",
         "name": "Run the context bundle collector",
         "step_type": "code",
-        "depends_on": []
+        "depends_on": [],
+        "invokes": []
       },
       {
         "id": "read-bundle",
@@ -311,7 +336,8 @@
         ],
         "visibility": {
           "mode": "summary"
-        }
+        },
+        "invokes": []
       },
       {
         "id": "synthesize",
@@ -319,7 +345,8 @@
         "step_type": "reasoning",
         "depends_on": [
           "read-bundle"
-        ]
+        ],
+        "invokes": []
       },
       {
         "id": "connect-contracts",
@@ -327,7 +354,8 @@
         "step_type": "reasoning",
         "depends_on": [
           "synthesize"
-        ]
+        ],
+        "invokes": []
       },
       {
         "id": "suggest-action",
@@ -335,7 +363,8 @@
         "step_type": "reasoning",
         "depends_on": [
           "connect-contracts"
-        ]
+        ],
+        "invokes": []
       }
     ],
     "tags": [
@@ -359,7 +388,8 @@
         "id": "identify-deliverable",
         "name": "Identify the deliverable",
         "step_type": "reasoning",
-        "depends_on": []
+        "depends_on": [],
+        "invokes": []
       },
       {
         "id": "draft-contract",
@@ -367,7 +397,8 @@
         "step_type": "reasoning",
         "depends_on": [
           "identify-deliverable"
-        ]
+        ],
+        "invokes": []
       },
       {
         "id": "check-scope",
@@ -375,7 +406,8 @@
         "step_type": "reasoning",
         "depends_on": [
           "draft-contract"
-        ]
+        ],
+        "invokes": []
       },
       {
         "id": "review-existing",
@@ -383,7 +415,8 @@
         "step_type": "reasoning",
         "depends_on": [
           "draft-contract"
-        ]
+        ],
+        "invokes": []
       },
       {
         "id": "confirm-save",
@@ -392,7 +425,8 @@
         "depends_on": [
           "check-scope",
           "review-existing"
-        ]
+        ],
+        "invokes": []
       }
     ],
     "tags": [
@@ -423,7 +457,8 @@
         "id": "discover",
         "name": "Discover inline TODOs across vault",
         "step_type": "code",
-        "depends_on": []
+        "depends_on": [],
+        "invokes": []
       },
       {
         "id": "triage",
@@ -431,7 +466,8 @@
         "step_type": "reasoning",
         "depends_on": [
           "discover"
-        ]
+        ],
+        "invokes": []
       },
       {
         "id": "execute",
@@ -439,6 +475,9 @@
         "step_type": "reasoning",
         "depends_on": [
           "triage"
+        ],
+        "invokes": [
+          "task_create"
         ]
       },
       {
@@ -450,7 +489,8 @@
         ],
         "visibility": {
           "mode": "none"
-        }
+        },
+        "invokes": []
       }
     ],
     "tags": [
@@ -481,6 +521,7 @@
         "name": "Load morning config",
         "step_type": "code",
         "depends_on": [],
+        "invokes": [],
         "auto_run": {
           "callable": "work_buddy.morning.get_morning_config"
         }
@@ -492,6 +533,7 @@
         "depends_on": [
           "load-config"
         ],
+        "invokes": [],
         "auto_run": {
           "callable": "work_buddy.morning.resolve_phases",
           "input_map": {
@@ -506,6 +548,10 @@
         "depends_on": [
           "resolve-phases"
         ],
+        "invokes": [
+          "context_bundle",
+          "journal_state"
+        ],
         "execution": "subagent",
         "visibility": {
           "mode": "summary"
@@ -517,6 +563,9 @@
         "step_type": "reasoning",
         "depends_on": [
           "context-snapshot"
+        ],
+        "invokes": [
+          "journal_sign_in"
         ]
       },
       {
@@ -526,7 +575,11 @@
         "depends_on": [
           "context-snapshot"
         ],
-        "optional": true
+        "optional": true,
+        "invokes": [
+          "journal_state",
+          "update-journal"
+        ]
       },
       {
         "id": "calendar-today",
@@ -535,7 +588,10 @@
         "depends_on": [
           "context-snapshot"
         ],
-        "optional": true
+        "optional": true,
+        "invokes": [
+          "context_calendar"
+        ]
       },
       {
         "id": "task-briefing",
@@ -545,6 +601,9 @@
           "context-snapshot"
         ],
         "optional": true,
+        "invokes": [
+          "task_briefing"
+        ],
         "visibility": {
           "mode": "summary",
           "include_keys": [
@@ -564,6 +623,10 @@
           "context-snapshot"
         ],
         "optional": true,
+        "invokes": [
+          "contract_constraints",
+          "contract_health"
+        ],
         "visibility": {
           "mode": "full"
         }
@@ -575,7 +638,8 @@
         "depends_on": [
           "context-snapshot"
         ],
-        "optional": true
+        "optional": true,
+        "invokes": []
       },
       {
         "id": "synthesize",
@@ -588,7 +652,8 @@
           "task-briefing",
           "contract-check",
           "blindspot-scan"
-        ]
+        ],
+        "invokes": []
       },
       {
         "id": "propose-mits",
@@ -596,6 +661,11 @@
         "step_type": "reasoning",
         "depends_on": [
           "synthesize"
+        ],
+        "invokes": [
+          "task_change_state",
+          "task_create",
+          "task_toggle"
         ]
       },
       {
@@ -604,6 +674,9 @@
         "step_type": "reasoning",
         "depends_on": [
           "propose-mits"
+        ],
+        "invokes": [
+          "journal_write"
         ]
       },
       {
@@ -613,6 +686,9 @@
         "depends_on": [
           "propose-mits",
           "calendar-today"
+        ],
+        "invokes": [
+          "day_planner"
         ]
       }
     ],
@@ -648,7 +724,10 @@
         "id": "extract",
         "name": "Extract Running Notes section from journal",
         "step_type": "code",
-        "depends_on": []
+        "depends_on": [],
+        "invokes": [
+          "running_notes"
+        ]
       },
       {
         "id": "segment",
@@ -658,7 +737,8 @@
           "extract"
         ],
         "execution": "subagent",
-        "workflow_ref": "segment-notes"
+        "workflow_ref": "segment-notes",
+        "invokes": []
       },
       {
         "id": "analyze-similarity",
@@ -673,7 +753,8 @@
             "clusters",
             "cluster_count"
           ]
-        }
+        },
+        "invokes": []
       },
       {
         "id": "review-clusters",
@@ -681,7 +762,8 @@
         "step_type": "reasoning",
         "depends_on": [
           "analyze-similarity"
-        ]
+        ],
+        "invokes": []
       },
       {
         "id": "route",
@@ -690,7 +772,10 @@
         "depends_on": [
           "review-clusters"
         ],
-        "workflow_ref": "route-information"
+        "workflow_ref": "route-information",
+        "invokes": [
+          "project_list"
+        ]
       },
       {
         "id": "rewrite",
@@ -701,7 +786,8 @@
         ],
         "visibility": {
           "mode": "full"
-        }
+        },
+        "invokes": []
       }
     ],
     "tags": [
@@ -733,7 +819,8 @@
         "id": "find-bundle",
         "name": "Find the latest context bundle",
         "step_type": "code",
-        "depends_on": []
+        "depends_on": [],
+        "invokes": []
       },
       {
         "id": "check-freshness",
@@ -741,7 +828,8 @@
         "step_type": "code",
         "depends_on": [
           "find-bundle"
-        ]
+        ],
+        "invokes": []
       },
       {
         "id": "read-and-synthesize",
@@ -749,7 +837,8 @@
         "step_type": "reasoning",
         "depends_on": [
           "check-freshness"
-        ]
+        ],
+        "invokes": []
       }
     ],
     "tags": [
@@ -778,7 +867,8 @@
         "id": "cluster-items",
         "name": "Cluster items for review by type/theme",
         "step_type": "reasoning",
-        "depends_on": []
+        "depends_on": [],
+        "invokes": []
       },
       {
         "id": "present-clusters",
@@ -786,7 +876,8 @@
         "step_type": "reasoning",
         "depends_on": [
           "cluster-items"
-        ]
+        ],
+        "invokes": []
       },
       {
         "id": "record-decisions",
@@ -797,7 +888,8 @@
         ],
         "visibility": {
           "mode": "full"
-        }
+        },
+        "invokes": []
       },
       {
         "id": "execute-routing",
@@ -813,7 +905,10 @@
             "failed",
             "skipped"
           ]
-        }
+        },
+        "invokes": [
+          "task_create"
+        ]
       },
       {
         "id": "return-results",
@@ -824,7 +919,8 @@
         ],
         "visibility": {
           "mode": "full"
-        }
+        },
+        "invokes": []
       }
     ],
     "tags": [
@@ -859,7 +955,8 @@
         "name": "Extract Running Notes section from journal",
         "step_type": "code",
         "depends_on": [],
-        "execution": "main"
+        "execution": "main",
+        "invokes": []
       },
       {
         "id": "generate-ids",
@@ -871,7 +968,8 @@
         "execution": "main",
         "visibility": {
           "mode": "full"
-        }
+        },
+        "invokes": []
       },
       {
         "id": "segment-and-tag",
@@ -880,7 +978,8 @@
         "depends_on": [
           "generate-ids"
         ],
-        "execution": "main"
+        "execution": "main",
+        "invokes": []
       },
       {
         "id": "validate",
@@ -889,7 +988,8 @@
         "depends_on": [
           "segment-and-tag"
         ],
-        "execution": "main"
+        "execution": "main",
+        "invokes": []
       },
       {
         "id": "extract-threads",
@@ -901,7 +1001,8 @@
         "execution": "main",
         "visibility": {
           "mode": "none"
-        }
+        },
+        "invokes": []
       },
       {
         "id": "return-results",
@@ -913,7 +1014,8 @@
         "execution": "main",
         "visibility": {
           "mode": "full"
-        }
+        },
+        "invokes": []
       }
     ],
     "tags": [
@@ -950,7 +1052,9 @@
         "step_type": "reasoning",
         "depends_on": [],
         "result_schema": {
-          "required_keys": ["task_text"],
+          "required_keys": [
+            "task_text"
+          ],
           "key_types": {
             "task_text": "str",
             "urgency": "str",
@@ -960,13 +1064,16 @@
             "summary": "str",
             "proposed_tags": "list"
           }
-        }
+        },
+        "invokes": []
       },
       {
         "id": "enrich",
         "name": "Enrich plan with tag-universe context",
         "step_type": "code",
-        "depends_on": ["plan"],
+        "depends_on": [
+          "plan"
+        ],
         "auto_run": {
           "callable": "work_buddy.obsidian.tasks.namespace_suggest.enrich_plan",
           "input_map": {
@@ -976,41 +1083,74 @@
         },
         "visibility": {
           "mode": "summary",
-          "include_keys": ["suggestions", "tag_status", "universe_size"]
-        }
+          "include_keys": [
+            "suggestions",
+            "tag_status",
+            "universe_size"
+          ]
+        },
+        "invokes": []
       },
       {
         "id": "confirm",
         "name": "Confirm plan with user (especially any new namespaces)",
         "step_type": "reasoning",
-        "depends_on": ["enrich"],
+        "depends_on": [
+          "enrich"
+        ],
         "result_schema": {
-          "required_keys": ["final_plan", "confirmed"],
+          "required_keys": [
+            "final_plan",
+            "confirmed"
+          ],
           "key_types": {
             "final_plan": "dict",
             "confirmed": "bool"
           }
-        }
+        },
+        "invokes": []
       },
       {
         "id": "apply",
         "name": "Create the task (via task_create)",
         "step_type": "code",
-        "depends_on": ["confirm"],
+        "depends_on": [
+          "confirm"
+        ],
         "visibility": {
           "mode": "summary",
-          "include_keys": ["success", "task_id", "task_line", "skipped", "message"]
-        }
+          "include_keys": [
+            "success",
+            "task_id",
+            "task_line",
+            "skipped",
+            "message"
+          ]
+        },
+        "invokes": [
+          "task_create"
+        ]
       },
       {
         "id": "report",
         "name": "Report the created task",
         "step_type": "reasoning",
-        "depends_on": ["apply"]
+        "depends_on": [
+          "apply"
+        ],
+        "invokes": []
       }
     ],
-    "tags": ["tasks", "task", "new", "create", "namespace"],
-    "parents": ["tasks"],
+    "tags": [
+      "tasks",
+      "task",
+      "new",
+      "create",
+      "namespace"
+    ],
+    "parents": [
+      "tasks"
+    ],
     "allow_override": false,
     "step_instructions": {
       "plan": "Agentic step. Read the user's request (from the slash-command argument or the surrounding conversation) and emit a structured plan.\n\nAdvance with a dict of this exact shape (omit optional fields when unknown; do NOT invent):\n\n```json\n{\n  \"task_text\": \"short single-line description (required)\",\n  \"urgency\": \"low | medium | high\",\n  \"project\": \"slug, if obvious or explicit\",\n  \"contract\": \"contract slug the task serves, if known\",\n  \"due_date\": \"YYYY-MM-DD, only if the user mentioned a date\",\n  \"summary\": \"only if the user asked for a linked note\",\n  \"proposed_tags\": [\"paper/ecg-classifier\", \"experiment/augmentation\"]\n}\n```\n\nReason about namespace tags at this step using whatever context you have (session, active contract, recent git, recent conversation). Reserved prefixes (`projects/`, `todo`, `wb/`, `tasker/`) are not user namespaces — don't propose them as tags. The next step enriches your proposal with existence + near-match checks against the namespace universe.",
@@ -1039,7 +1179,13 @@
             "stale",
             "counts"
           ]
-        }
+        },
+        "invokes": [
+          "task_review_inbox",
+          "task_stale_check",
+          "task_briefing",
+          "project_list"
+        ]
       },
       {
         "id": "present",
@@ -1047,7 +1193,8 @@
         "step_type": "reasoning",
         "depends_on": [
           "gather"
-        ]
+        ],
+        "invokes": []
       },
       {
         "id": "apply",
@@ -1058,7 +1205,12 @@
         ],
         "visibility": {
           "mode": "none"
-        }
+        },
+        "invokes": [
+          "task_change_state",
+          "task_toggle",
+          "task_archive"
+        ]
       },
       {
         "id": "summary",
@@ -1066,7 +1218,8 @@
         "step_type": "reasoning",
         "depends_on": [
           "apply"
-        ]
+        ],
+        "invokes": []
       }
     ],
     "tags": [
@@ -1112,7 +1265,8 @@
             "collect_until",
             "last_log_ts"
           ]
-        }
+        },
+        "invokes": []
       },
       {
         "id": "collect",
@@ -1135,7 +1289,8 @@
             "collect_since",
             "collect_until"
           ]
-        }
+        },
+        "invokes": []
       },
       {
         "id": "synthesize",
@@ -1143,7 +1298,8 @@
         "step_type": "reasoning",
         "depends_on": [
           "collect"
-        ]
+        ],
+        "invokes": []
       },
       {
         "id": "write",
@@ -1152,7 +1308,8 @@
         "depends_on": [
           "synthesize"
         ],
-        "requires_individual_consent": true
+        "requires_individual_consent": true,
+        "invokes": []
       }
     ],
     "tags": [
@@ -1185,7 +1342,11 @@
             "inbox_count",
             "stale_count"
           ]
-        }
+        },
+        "invokes": [
+          "weekly_review_data",
+          "project_list"
+        ]
       },
       {
         "id": "draft",
@@ -1193,7 +1354,8 @@
         "step_type": "reasoning",
         "depends_on": [
           "gather"
-        ]
+        ],
+        "invokes": []
       },
       {
         "id": "validate",
@@ -1201,7 +1363,8 @@
         "step_type": "reasoning",
         "depends_on": [
           "draft"
-        ]
+        ],
+        "invokes": []
       },
       {
         "id": "apply",
@@ -1212,7 +1375,11 @@
         ],
         "visibility": {
           "mode": "none"
-        }
+        },
+        "invokes": [
+          "task_change_state",
+          "task_toggle"
+        ]
       },
       {
         "id": "record",
@@ -1220,7 +1387,8 @@
         "step_type": "reasoning",
         "depends_on": [
           "apply"
-        ]
+        ],
+        "invokes": []
       }
     ],
     "tags": [
@@ -1268,7 +1436,11 @@
             "files_read": 1,
             "wrappers_found": 1
           }
-        }
+        },
+        "invokes": [
+          "dev_mode_toggle",
+          "agent_docs"
+        ]
       }
     ],
     "tags": [
@@ -1312,7 +1484,8 @@
             "last",
             "checksum"
           ]
-        }
+        },
+        "invokes": []
       },
       {
         "id": "verify-result",
@@ -1320,7 +1493,8 @@
         "step_type": "reasoning",
         "depends_on": [
           "compute-primes"
-        ]
+        ],
+        "invokes": []
       }
     ],
     "tags": [

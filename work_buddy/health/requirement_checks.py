@@ -32,6 +32,19 @@ def _repo_root() -> Path:
     return Path(__file__).parent.parent.parent
 
 
+def _obsidian_config_dir(vault: Path | None = None) -> Path:
+    """Resolve the Obsidian config dir for the current vault.
+
+    Honors ``obsidian.config_dir`` in config.yaml so vaults using
+    Obsidian's override-config-folder feature (not ``.obsidian``) are
+    still correctly inspected. Falls back to ``<vault>/.obsidian``.
+    Deferred import of the plugin helper avoids cross-package
+    circular-import risk at module load time.
+    """
+    from work_buddy.obsidian.plugins import resolve_config_dir
+    return resolve_config_dir(vault if vault is not None else _vault_root())
+
+
 # ---------------------------------------------------------------------------
 # Core / bootstrap checks
 # ---------------------------------------------------------------------------
@@ -56,15 +69,38 @@ def check_config_local_exists() -> dict[str, Any]:
 
 
 def check_vault_root() -> dict[str, Any]:
-    """Check that vault_root is set and points to an existing directory."""
+    """Check that vault_root is set, exists, AND is actually an Obsidian vault.
+
+    "Obsidian vault" is defined as "a directory containing a `.obsidian/`
+    subdirectory" — that's the marker Obsidian itself uses. We fold this
+    check into vault_root rather than a separate requirement because
+    vault_root's semantic meaning IS "path to an Obsidian vault." A
+    directory without `.obsidian/` isn't a vault, so vault_root is wrong;
+    splitting that into two requirements muddied the diagnostic.
+    """
     cfg = _cfg()
     vault_root = cfg.get("vault_root", "")
     if not vault_root:
         return {"ok": False, "detail": "vault_root is empty or not set in config"}
     p = Path(vault_root)
-    if p.is_dir():
-        return {"ok": True, "detail": f"vault_root exists: {p}"}
-    return {"ok": False, "detail": f"vault_root does not exist: {p}"}
+    if not p.is_dir():
+        return {"ok": False, "detail": f"vault_root does not exist: {p}"}
+    config_dir = _obsidian_config_dir(p)
+    if not config_dir.is_dir():
+        expected = config_dir.name
+        return {
+            "ok": False,
+            "detail": (
+                f"{p} exists but isn't an Obsidian vault — no {expected}/ "
+                "subdirectory. Either point vault_root at the correct "
+                "directory, open this directory in Obsidian once so it "
+                "initializes the config folder, OR set "
+                "obsidian.config_dir in config.yaml if your vault uses "
+                "Obsidian's override-config-folder feature with a "
+                "non-default name."
+            ),
+        }
+    return {"ok": True, "detail": f"vault_root is a valid Obsidian vault: {p}"}
 
 
 def check_repos_root() -> dict[str, Any]:
@@ -95,11 +131,65 @@ def check_timezone() -> dict[str, Any]:
 
 
 def check_anthropic_api_key() -> dict[str, Any]:
-    """Check that ANTHROPIC_API_KEY environment variable is set."""
-    key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if key:
-        return {"ok": True, "detail": f"ANTHROPIC_API_KEY is set ({len(key)} chars)"}
-    return {"ok": False, "detail": "ANTHROPIC_API_KEY environment variable is not set"}
+    """Check that the Anthropic API key is reachable from one of the
+    sources ``work_buddy.llm.runner`` actually consults.
+
+    Mirrors `runner.py:214` precisely:
+
+      1. ``SUBAGENT_ANTHROPIC_API_KEY`` env var (preferred — set this
+         in environments where ``ANTHROPIC_API_KEY`` is intentionally
+         absent so agent spawns fall back to OAuth/Claude Max).
+      2. ``ANTHROPIC_API_KEY`` env var (fallback — also activates API
+         billing for spawned Claude Code sessions, see executor.py).
+      3. ``.env`` file at the repo root, scanned for either of the
+         above keys.
+
+    The previous version checked only ``ANTHROPIC_API_KEY`` and missed
+    the dedicated subagent key, marking the requirement failed even
+    when LLM calls were actually working fine.
+    """
+    sub_key = os.environ.get("SUBAGENT_ANTHROPIC_API_KEY", "")
+    if sub_key:
+        return {
+            "ok": True,
+            "detail": f"SUBAGENT_ANTHROPIC_API_KEY is set ({len(sub_key)} chars)",
+        }
+    main_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if main_key:
+        return {
+            "ok": True,
+            "detail": f"ANTHROPIC_API_KEY is set ({len(main_key)} chars)",
+        }
+
+    # Fall back to scanning the repo .env file — runner.py does this too.
+    repo_env = _repo_root() / ".env"
+    if repo_env.exists():
+        try:
+            for line in repo_env.read_text(encoding="utf-8").splitlines():
+                if line.startswith("SUBAGENT_ANTHROPIC_API_KEY="):
+                    val = line.split("=", 1)[1].strip()
+                    if val:
+                        return {
+                            "ok": True,
+                            "detail": f"SUBAGENT_ANTHROPIC_API_KEY in .env ({len(val)} chars)",
+                        }
+                if line.startswith("ANTHROPIC_API_KEY="):
+                    val = line.split("=", 1)[1].strip()
+                    if val:
+                        return {
+                            "ok": True,
+                            "detail": f"ANTHROPIC_API_KEY in .env ({len(val)} chars)",
+                        }
+        except OSError as exc:
+            return {"ok": False, "detail": f"Could not read .env: {exc}"}
+
+    return {
+        "ok": False,
+        "detail": (
+            "No Anthropic API key found — set SUBAGENT_ANTHROPIC_API_KEY "
+            "or ANTHROPIC_API_KEY (env var or .env file)."
+        ),
+    }
 
 
 def check_data_writable() -> dict[str, Any]:
@@ -123,26 +213,18 @@ def check_data_writable() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def check_obsidian_dir() -> dict[str, Any]:
-    """Check that .obsidian/ exists in vault root."""
-    vault = _vault_root()
-    if not vault or not vault.is_dir():
-        return {"ok": False, "detail": "vault_root is not set or doesn't exist (run bootstrap checks first)"}
-    obs_dir = vault / ".obsidian"
-    if obs_dir.is_dir():
-        return {"ok": True, "detail": f".obsidian/ found in {vault}"}
-    return {"ok": False, "detail": f".obsidian/ not found in {vault}"}
-
-
 def check_daily_notes_plugin() -> dict[str, Any]:
     """Check that the Daily Notes core plugin is enabled."""
     vault = _vault_root()
     if not vault or not vault.is_dir():
         return {"ok": False, "detail": "vault_root is not set or doesn't exist"}
-    # Core plugins are stored in .obsidian/core-plugins-migration.json
-    # or .obsidian/core-plugins.json depending on Obsidian version
+    # Core plugins are stored in <config>/core-plugins-migration.json
+    # or <config>/core-plugins.json depending on Obsidian version.
+    # <config> is usually .obsidian but may be overridden via
+    # obsidian.config_dir in config.yaml.
+    config_dir = _obsidian_config_dir(vault)
     for filename in ("core-plugins-migration.json", "core-plugins.json"):
-        cp_file = vault / ".obsidian" / filename
+        cp_file = config_dir / filename
         if cp_file.exists():
             try:
                 with open(cp_file, encoding="utf-8") as f:
@@ -173,7 +255,7 @@ def check_journal_dir() -> dict[str, Any]:
 
 
 def _find_todays_note() -> Path | None:
-    """Find today's daily note file."""
+    """Find today's daily note file (strict — only today)."""
     from datetime import date
     vault = _vault_root()
     cfg = _cfg()
@@ -183,19 +265,82 @@ def _find_todays_note() -> Path | None:
     return note_path if note_path.exists() else None
 
 
+def _find_latest_daily_note() -> tuple[Path | None, str | None]:
+    """Find today's daily note, falling back to the most recent earlier one.
+
+    Returns ``(path, is_today_flag)`` where ``is_today_flag`` is the
+    date string actually used (``"today"`` if the match was today's
+    file, or an ISO date otherwise). Returns ``(None, None)`` if no
+    daily note exists at all within the last 30 days.
+
+    Rationale: the user's day doesn't begin at midnight — they often
+    work past midnight against yesterday's note before sleeping and
+    creating the next day's. A strict "today only" check marks the
+    daily-note sections as degraded every post-midnight session, which
+    is noise, not signal. Fall back to the latest available note and
+    tell the user which date we're validating.
+    """
+    from datetime import date, timedelta
+    import re as _re
+
+    vault = _vault_root()
+    cfg = _cfg()
+    journal_dir = cfg.get("obsidian", {}).get("journal_dir", "journal")
+    journal_path = vault / journal_dir
+
+    today = date.today()
+    today_str = today.strftime("%Y-%m-%d")
+    today_path = journal_path / f"{today_str}.md"
+    if today_path.exists():
+        return today_path, "today"
+
+    # Scan the past 30 days for a dated daily-note file. 30 is a
+    # generous-but-bounded window — if nothing exists there, the user
+    # genuinely has no recent daily note and the check should report it.
+    for i in range(1, 31):
+        d = today - timedelta(days=i)
+        candidate = journal_path / f"{d.strftime('%Y-%m-%d')}.md"
+        if candidate.exists():
+            return candidate, d.strftime("%Y-%m-%d")
+    return None, None
+
+
 def _note_has_section(header_pattern: str) -> dict[str, Any]:
-    """Check if today's note has a section matching the pattern (case-insensitive)."""
+    """Check whether the latest daily note has a section.
+
+    Uses ``_find_latest_daily_note`` so a post-midnight session with no
+    today-dated file yet still validates against yesterday's note. The
+    detail string surfaces which date was actually checked.
+    """
     import re
-    note = _find_todays_note()
+    note, which_date = _find_latest_daily_note()
     if note is None:
-        return {"ok": False, "detail": "Today's daily note does not exist yet"}
+        return {
+            "ok": False,
+            "detail": (
+                "No daily note found within the last 30 days — "
+                "create one to validate journal sections."
+            ),
+        }
     try:
         content = note.read_text(encoding="utf-8")
         # Match markdown headers, ignoring bold/italic formatting
         pattern = rf"^#+\s+\**{re.escape(header_pattern)}"
-        if re.search(pattern, content, re.MULTILINE | re.IGNORECASE):
-            return {"ok": True, "detail": f"Found '{header_pattern}' section in {note.name}"}
-        return {"ok": False, "detail": f"No '{header_pattern}' section found in {note.name}"}
+        found = bool(re.search(pattern, content, re.MULTILINE | re.IGNORECASE))
+        prefix = (
+            ""
+            if which_date == "today"
+            else f"Operating on last available daily note ({which_date}). "
+        )
+        if found:
+            return {
+                "ok": True,
+                "detail": f"{prefix}Found '{header_pattern}' section in {note.name}",
+            }
+        return {
+            "ok": False,
+            "detail": f"{prefix}No '{header_pattern}' section found in {note.name}",
+        }
     except OSError as exc:
         return {"ok": False, "detail": f"Could not read {note}: {exc}"}
 
@@ -224,26 +369,159 @@ def check_master_task_list() -> dict[str, Any]:
     return {"ok": False, "detail": f"Master task list not found: {task_file}"}
 
 
-def check_tasks_plugin() -> dict[str, Any]:
-    """Check that the Obsidian Tasks community plugin is installed and enabled.
+def _community_plugin_state(
+    *,
+    plugin_id: str,
+    folder_name: str,
+    install_hint: str,
+    enable_hint: str,
+    healthy_detail: str,
+) -> dict[str, Any]:
+    """Shared two-part community-plugin check: installed vs enabled.
 
-    Uses direct file inspection rather than importing plugins.py to avoid
-    triggering agent_session side-effects.
+    Every Obsidian community plugin lives in two orthogonal states that
+    users tend to conflate:
+
+      * **Installed** — a folder ``.obsidian/plugins/<folder_name>/``
+        exists with a ``manifest.json`` inside. This proves the user
+        has the plugin code on disk.
+      * **Enabled**   — the plugin's id appears in
+        ``.obsidian/community-plugins.json`` (a bare JSON list of the
+        enabled-plugin ids Obsidian loads on startup). This proves the
+        user has toggled it on.
+
+    The two can disagree in both directions: installed-but-disabled is
+    common (user turned it off); enabled-without-install is rare but
+    not impossible (stale config file). The previous ``check_tasks_plugin``
+    conflated both failure modes under a single "not in
+    community-plugins.json" message, so the user couldn't tell whether
+    to install or just toggle on.
+
+    Returns a RequirementResult-shaped dict. The detail message is
+    specific to which state we landed in:
+      * ok:           {healthy_detail}
+      * not installed: {install_hint}
+      * installed but disabled: {enable_hint}
+      * missing community-plugins.json: "enable any community plugin first"
+      * malformed json / IO error: the raw OSError message
     """
     vault = _vault_root()
     if not vault or not vault.is_dir():
         return {"ok": False, "detail": "vault_root is not set or doesn't exist"}
-    cp_file = vault / ".obsidian" / "community-plugins.json"
+
+    config_dir = _obsidian_config_dir(vault)
+    plugin_dir = config_dir / "plugins" / folder_name
+    manifest = plugin_dir / "manifest.json"
+    if not manifest.exists():
+        return {
+            "ok": False,
+            "detail": f"Plugin NOT installed at {plugin_dir}. {install_hint}",
+        }
+
+    cp_file = config_dir / "community-plugins.json"
     if not cp_file.exists():
-        return {"ok": False, "detail": "community-plugins.json not found"}
+        return {
+            "ok": False,
+            "detail": (
+                "Plugin is installed, but community-plugins.json is missing — "
+                "Obsidian hasn't been opened with any community plugin enabled. "
+                f"{enable_hint}"
+            ),
+        }
     try:
         with open(cp_file, encoding="utf-8") as f:
             data = json.load(f)
-        if isinstance(data, list) and "obsidian-tasks-plugin" in data:
-            return {"ok": True, "detail": "Tasks plugin is active"}
-        return {"ok": False, "detail": "Tasks plugin is not in community-plugins.json"}
     except (json.JSONDecodeError, OSError) as exc:
         return {"ok": False, "detail": f"Could not read community-plugins.json: {exc}"}
+
+    if isinstance(data, list) and plugin_id in data:
+        return {"ok": True, "detail": healthy_detail}
+
+    # Installed but not enabled — the most common failure mode, and the
+    # one the user can fix in seconds.
+    return {
+        "ok": False,
+        "detail": f"Plugin IS installed but NOT enabled. {enable_hint}",
+    }
+
+
+def check_tasks_plugin() -> dict[str, Any]:
+    """Check that the Obsidian Tasks community plugin is installed AND enabled.
+
+    Distinguishes installed-but-disabled (toggle it on) from not-
+    installed (install first). Uses direct file inspection rather than
+    importing plugins.py to avoid triggering agent_session side-effects.
+    """
+    return _community_plugin_state(
+        plugin_id="obsidian-tasks-plugin",
+        folder_name="obsidian-tasks-plugin",
+        install_hint=(
+            "Install via Obsidian Settings → Community Plugins → Browse, "
+            "search for 'Tasks' (by Martin Schenck)."
+        ),
+        enable_hint=(
+            "Open Obsidian → Settings → Community Plugins and toggle "
+            "'Tasks' on."
+        ),
+        healthy_detail="Tasks plugin installed and enabled",
+    )
+
+
+def check_work_buddy_plugin() -> dict[str, Any]:
+    """Check that the work-buddy Obsidian plugin is installed AND enabled.
+
+    The plugin (https://github.com/KadenMc/obsidian-work-buddy) is what
+    provides the Obsidian bridge HTTP endpoint on port 27125 that the
+    ``obsidian`` tool probe and every bridge-backed capability depends
+    on. Delegates to ``_community_plugin_state`` for the two-part
+    installed-vs-enabled distinction.
+    """
+    vault = _vault_root()
+    if not vault or not vault.is_dir():
+        return {"ok": False, "detail": "vault_root is not set or doesn't exist"}
+
+    config_dir = _obsidian_config_dir(vault)
+    plugin_dir = config_dir / "plugins" / "obsidian-work-buddy"
+    manifest = plugin_dir / "manifest.json"
+    if not manifest.exists():
+        return {
+            "ok": False,
+            "detail": (
+                f"work-buddy plugin NOT installed at {plugin_dir} — "
+                "clone https://github.com/KadenMc/obsidian-work-buddy into "
+                f"{config_dir.name}/plugins/ and enable it under Settings → "
+                "Community Plugins."
+            ),
+        }
+
+    cp_file = config_dir / "community-plugins.json"
+    if not cp_file.exists():
+        return {
+            "ok": False,
+            "detail": (
+                "community-plugins.json not found — enable at least one "
+                "community plugin in Obsidian first."
+            ),
+        }
+    try:
+        with open(cp_file, encoding="utf-8") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError) as exc:
+        return {"ok": False, "detail": f"Could not read community-plugins.json: {exc}"}
+
+    if isinstance(data, list) and "work-buddy" in data:
+        return {
+            "ok": True,
+            "detail": "work-buddy plugin installed and enabled (bridge should respond on port 27125)",
+        }
+    return {
+        "ok": False,
+        "detail": (
+            "work-buddy plugin IS installed but NOT enabled — "
+            "open Obsidian → Settings → Community Plugins and toggle "
+            "'Work Buddy' on."
+        ),
+    }
 
 
 def check_contracts_dir() -> dict[str, Any]:

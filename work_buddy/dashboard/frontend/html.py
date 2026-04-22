@@ -11,6 +11,35 @@ def _html() -> str:
         <span id="sidecar-status"><span class="status-dot stopped"></span> loading...</span>
         <span id="clock"></span>
         <span class="cp-kbd-hint" onclick="cpOpen()" title="Command palette">Ctrl+K</span>
+        <button class="header-settings-btn" onclick="switchTab('settings')"
+                title="Settings &mdash; component preferences &amp; control graph"
+                aria-label="Open Settings">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"
+                 width="18" height="18" fill="none"
+                 stroke="currentColor" stroke-width="2"
+                 stroke-linecap="round" stroke-linejoin="round"
+                 aria-hidden="true">
+                <circle cx="12" cy="12" r="3"></circle>
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83
+                         2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33
+                         1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2
+                         v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33
+                         l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83
+                         l.06-.06a1.65 1.65 0 0 0 .33-1.82
+                         1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2
+                         2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9
+                         a1.65 1.65 0 0 0-.33-1.82l-.06-.06
+                         a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06
+                         a1.65 1.65 0 0 0 1.82.33H9
+                         a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2
+                         2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51
+                         1.65 1.65 0 0 0 1.82-.33l.06-.06
+                         a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06
+                         a1.65 1.65 0 0 0-.33 1.82V9
+                         a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2
+                         2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+            </svg>
+        </button>
     </div>
 </header>
 
@@ -23,6 +52,11 @@ def _html() -> str:
         <button class="tab-btn" data-tab="chats">Chats</button>
         <button class="tab-btn" data-tab="contracts">Contracts</button>
         <button class="tab-btn" data-tab="projects">Projects</button>
+        <!-- Settings is an off-nav tab reached via the gear icon in the
+             header. The panel still lives below (#panel-settings) and
+             is still registered in staticLoaders, but it's not part of
+             the primary navigation rhythm. -->
+        <button class="tab-btn" data-tab="settings" style="display:none" aria-hidden="true"></button>
     </div>
     <div class="tab-bar-right" id="workflow-tabs"></div>
 </nav>
@@ -182,6 +216,23 @@ def _html() -> str:
 <!-- CONTRACTS -->
 <div class="tab-panel" id="panel-contracts">
     <div id="contracts-table"><div class="loading">Loading contracts...</div></div>
+</div>
+
+<!-- SETTINGS -->
+<!-- Unified control-graph view: domains → subsystems → components →
+     requirements + affected capabilities. Read-only in Phase E;
+     preference toggles land in Phase F. -->
+<div class="tab-panel" id="panel-settings">
+    <div class="settings-toolbar">
+        <div class="section-title">Control Graph</div>
+        <div class="settings-toolbar-controls">
+            <input type="text" id="settings-filter" class="task-search-input" placeholder="Filter by label or id (matches cascade up through parents)" />
+            <button class="chats-accent-btn" onclick="reprobeAll(this)"
+                    title="Re-run every tool probe from scratch, then rebuild the graph. Takes up to ~10s if Obsidian or another service is slow. Use when the tree shows 'unknown' badges and you want definitive state right now.">Reprobe all</button>
+        </div>
+    </div>
+    <div id="settings-summary" class="settings-summary"></div>
+    <div id="settings-tree"><div class="loading">Loading control graph...</div></div>
 </div>
 
 <!-- PROJECTS -->

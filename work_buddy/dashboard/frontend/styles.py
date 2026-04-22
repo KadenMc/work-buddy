@@ -322,6 +322,23 @@ body {
 .bar-slow:hover { opacity: 1; }
 .bar-fail { background: var(--red); opacity: 0.7; }
 .bar-fail:hover { opacity: 1; }
+/* bar-unreachable: distinct from bar-fail so you can tell from a
+   glance whether you closed Obsidian (port refused) or the bridge
+   was just lagging (timed out). Diagonal red-on-dark stripes read as
+   "not there" while staying in the unhealthy color family — solid
+   red bars still mean "bridge hung", striped red bars mean "Obsidian
+   not running". */
+.bar-unreachable {
+    background: repeating-linear-gradient(
+        45deg,
+        var(--red),
+        var(--red) 2px,
+        var(--bg-tertiary) 2px,
+        var(--bg-tertiary) 5px
+    );
+    opacity: 0.75;
+}
+.bar-unreachable:hover { opacity: 1; }
 
 /* -- Health tree ------------------------------------------------------- */
 
@@ -2407,6 +2424,516 @@ body {
     font-style: italic;
     padding: 8px 0;
 }
+
+/* ---------- Dismissed workflow tab (preserved for read) ---------- */
+.tab-btn.tab-dismissed {
+    opacity: 0.55;
+    text-decoration: line-through;
+    text-decoration-color: var(--text-tertiary);
+}
+.wv-dismissed-banner {
+    margin: 0 0 12px 0;
+    padding: 8px 12px;
+    background: #d299221a;
+    border-left: 3px solid var(--yellow);
+    font-size: 12px;
+    color: var(--text-secondary);
+    border-radius: 2px;
+}
+
+/* ---------- Header settings gear ---------- */
+.header-settings-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    color: var(--text-secondary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 4px;
+    width: 28px;
+    height: 28px;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+}
+.header-settings-btn svg {
+    display: block;
+    width: 16px;
+    height: 16px;
+    transition: transform 0.3s;
+}
+.header-settings-btn:hover {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+}
+.header-settings-btn:hover svg {
+    transform: rotate(30deg);
+}
+
+/* ---------- Settings tab (control graph) ---------- */
+.settings-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 12px;
+}
+.settings-toolbar-controls {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+.settings-summary {
+    margin-bottom: 16px;
+    padding: 8px 12px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 12px;
+}
+.settings-summary-row {
+    display: flex;
+    gap: 24px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+.settings-summary-totals { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.settings-summary-count { color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.settings-summary-cache { color: var(--text-tertiary); margin-left: auto; font-family: monospace; font-size: 11px; cursor: help; }
+
+.settings-summary-issues-header {
+    margin-top: 12px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+.settings-summary-issues {
+    margin-top: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+.settings-summary-issue {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    padding: 6px 10px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg);
+    cursor: pointer;
+    transition: background 0.1s;
+}
+.settings-summary-issue:hover { background: var(--bg-tertiary); }
+.settings-summary-issue-label { font-weight: 500; }
+.settings-summary-issue-reason { color: var(--text-secondary); font-size: 12px; font-style: italic; margin-left: auto; }
+.settings-summary-all-ok {
+    margin-top: 10px;
+    font-size: 12px;
+    color: var(--green);
+    font-style: italic;
+}
+
+.settings-domain {
+    margin-bottom: 12px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-secondary);
+}
+.settings-domain[data-state="blocked"],
+.settings-domain[data-state="unconfigured"] {
+    border-left: 3px solid var(--red);
+}
+.settings-domain[data-state="degraded"] {
+    border-left: 3px solid var(--yellow);
+}
+.settings-domain[data-state="ok"] {
+    border-left: 3px solid var(--green);
+}
+.settings-domain-header {
+    padding: 10px 14px;
+    font-weight: 600;
+    cursor: pointer;
+    display: flex;
+    gap: 10px;
+    align-items: center;
+}
+.settings-domain-label { flex-shrink: 0; }
+.settings-domain-count { color: var(--text-tertiary); font-weight: 400; font-size: 11px; margin-left: auto; }
+.settings-domain-desc { padding: 0 14px 8px 14px; color: var(--text-secondary); font-size: 12px; }
+.settings-domain-body { padding: 0 14px 14px 14px; display: flex; flex-direction: column; gap: 10px; }
+
+.settings-node {
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg);
+}
+.settings-subsystem { border-left: 2px solid var(--accent); }
+.settings-component { border-left: 2px solid var(--text-secondary); }
+.settings-node[data-state="blocked"] { background: #f851490a; }
+.settings-node[data-state="unconfigured"] { background: #d299220a; }
+.settings-node[data-state="disabled"] { opacity: 0.55; }
+
+.settings-node-header {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+.settings-node-kind {
+    font-size: 10px;
+    color: var(--text-tertiary);
+    font-family: monospace;
+    letter-spacing: 0.05em;
+}
+.settings-node-label { font-weight: 500; }
+.settings-node-reason {
+    margin-top: 4px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    font-style: italic;
+}
+.settings-node-desc { margin-top: 4px; font-size: 12px; color: var(--text-secondary); }
+.settings-also-in {
+    font-size: 10px;
+    color: var(--text-tertiary);
+    cursor: help;
+    border: 1px solid var(--border);
+    padding: 1px 6px;
+    border-radius: 3px;
+}
+
+.settings-dep-chips {
+    margin-top: 6px;
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    flex-wrap: wrap;
+    font-size: 11px;
+}
+.settings-dep-label { color: var(--text-tertiary); }
+.settings-dep-chip {
+    display: inline-flex;
+    gap: 4px;
+    align-items: center;
+    padding: 1px 6px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+}
+
+.settings-req-details,
+.settings-cap-details {
+    margin-top: 6px;
+    font-size: 12px;
+}
+.settings-req-details summary,
+.settings-cap-details summary {
+    cursor: pointer;
+    color: var(--text-secondary);
+    padding: 2px 0;
+    user-select: none;
+}
+.settings-req-list {
+    list-style: none;
+    margin: 4px 0 0 0;
+    padding-left: 6px;
+}
+.settings-req-item {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    padding: 3px 0;
+    font-size: 12px;
+    border-bottom: 1px dashed var(--border);
+}
+.settings-req-item.muted { color: var(--text-tertiary); font-style: italic; }
+.settings-req-label { flex: 1; min-width: 0; }
+.settings-req-reason { color: var(--text-tertiary); font-size: 11px; }
+
+.settings-cap-chips {
+    margin-top: 4px;
+    display: flex;
+    gap: 4px;
+    flex-wrap: wrap;
+}
+.settings-cap-chip {
+    padding: 1px 6px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    font-size: 11px;
+    background: var(--bg);
+    font-family: monospace;
+}
+.settings-cap-chip-match {
+    border-color: var(--accent);
+    background: var(--accent-subtle);
+    color: var(--accent);
+    font-weight: 600;
+}
+
+/* ---------- Settings preference toggle (3-state) ---------- */
+.settings-pref-controls {
+    margin-top: 8px;
+    display: inline-flex;
+    gap: 2px;
+    padding: 2px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg);
+}
+.settings-pref-btn {
+    background: transparent;
+    color: var(--text-secondary);
+    border: none;
+    border-radius: 4px;
+    padding: 4px 10px;
+    font-size: 11px;
+    cursor: pointer;
+    transition: background 0.12s, color 0.12s;
+}
+.settings-pref-btn:hover:not(:disabled) {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+}
+.settings-pref-btn.active {
+    background: var(--accent-subtle);
+    color: var(--accent);
+    font-weight: 600;
+}
+.settings-pref-btn.pending { opacity: 0.6; }
+.settings-pref-btn:disabled { cursor: not-allowed; opacity: 0.45; }
+.badge-clickable {
+    cursor: pointer;
+    position: relative;
+    border: 1px solid transparent;
+    transition: transform 0.12s ease, box-shadow 0.12s ease, border-color 0.12s ease;
+}
+/* Make the "click me" signal obvious — not just a cursor change. The
+   badge visibly lifts off the background on hover. Literal Unicode
+   arrow (↗) rather than a \\-escape — styles.py is a non-raw Python
+   string, so a CSS escape like "\2197" gets eaten by Python's octal
+   parser and shows up in the browser as "97" after an unprintable. */
+.badge-clickable::after {
+    content: "\u2197";
+    font-size: 0.8em;
+    margin-left: 4px;
+    opacity: 0.55;
+}
+.badge-clickable:hover {
+    transform: translateY(-1px) scale(1.05);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
+    border-color: currentColor;
+    filter: brightness(1.15);
+}
+.badge-clickable:active {
+    transform: translateY(0) scale(1);
+}
+.badge-clickable.pressed {
+    box-shadow: inset 0 0 0 2px currentColor;
+    filter: brightness(1.1);
+}
+
+.settings-dep-hardness {
+    margin-left: 6px;
+    padding: 0 4px;
+    font-size: 9px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    vertical-align: middle;
+    cursor: help;
+}
+
+@keyframes wbFlashPulse {
+    0%   { box-shadow: 0 0 0 0 rgba(248, 81, 73, 0.55); }
+    50%  { box-shadow: 0 0 0 6px rgba(248, 81, 73, 0.15); }
+    100% { box-shadow: 0 0 0 0 rgba(248, 81, 73, 0); }
+}
+.wb-flash {
+    animation: wbFlashPulse 0.9s ease-out 2;
+}
+
+.settings-pref-required {
+    margin-top: 8px;
+    display: inline-block;
+    padding: 4px 10px;
+    border: 1px solid var(--green);
+    border-radius: 6px;
+    color: var(--green);
+    background: var(--green-subtle);
+    font-size: 11px;
+    font-weight: 600;
+    cursor: help;
+}
+
+/* ---------- Fix + Help action buttons (Fix-A) ---------- */
+.settings-req-actions {
+    display: inline-flex;
+    gap: 4px;
+    margin-left: auto;
+}
+.settings-fix-btn,
+.settings-help-btn,
+.settings-fix-cancel-btn {
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text-secondary);
+    border-radius: 4px;
+    padding: 2px 8px;
+    font-size: 11px;
+    cursor: pointer;
+    transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.settings-fix-btn:hover:not(:disabled),
+.settings-fix-cancel-btn:hover:not(:disabled) {
+    background: var(--accent-subtle);
+    color: var(--accent);
+    border-color: var(--accent);
+}
+.settings-help-btn {
+    width: 22px;
+    padding: 2px 0;
+    text-align: center;
+    font-weight: 700;
+    font-family: monospace;
+}
+.settings-help-btn:hover:not(:disabled) {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    border-color: var(--text-secondary);
+}
+/* Alert variant — on non-ok requirements + non-ok components. Red
+   border + red text so the "?" visibly says "click me, I can explain
+   what's going on" rather than fading in. */
+.settings-help-btn-alert {
+    color: var(--red);
+    border-color: var(--red);
+    background: #f851490a;
+}
+.settings-help-btn-alert:hover:not(:disabled) {
+    background: #f851491f;
+    color: var(--red);
+    border-color: var(--red);
+}
+
+/* Agent-handoff fix button — visually flagged as "this will spawn a
+   terminal" so users aren't surprised. Same accent chrome as the
+   other fix buttons but with a hint that it's different. */
+.settings-fix-btn-agent {
+    border-style: dashed;
+}
+.settings-fix-btn-agent::before {
+    content: "\u27a4 ";  /* right-arrow head — "this opens something" */
+    font-size: 0.85em;
+    opacity: 0.7;
+}
+
+/* Per-component reprobe button — same visual weight as the help
+   button but accent-colored so it reads as a refresh action
+   (mirrors the Status tab's diagnose button language). */
+.settings-reprobe-btn {
+    background: transparent;
+    color: var(--text-secondary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    width: 22px;
+    padding: 2px 0;
+    font-size: 13px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.settings-reprobe-btn:hover:not(:disabled) {
+    background: var(--accent-subtle);
+    color: var(--accent);
+    border-color: var(--accent);
+}
+.settings-reprobe-btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.45;
+}
+.settings-fix-btn:disabled,
+.settings-help-btn:disabled,
+.settings-fix-cancel-btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.45;
+}
+
+/* The component-header version sits to the right of the also-in pill */
+.settings-component .settings-help-btn {
+    margin-left: 4px;
+}
+
+/* Inline input form for input_required fixes */
+.settings-fix-form {
+    margin-top: 6px;
+    padding: 8px 10px;
+    border: 1px dashed var(--border);
+    border-radius: 4px;
+    background: var(--bg);
+}
+.settings-fix-form-fields {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: 8px;
+}
+.settings-fix-field {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+.settings-fix-field-label {
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+.settings-fix-field input {
+    padding: 4px 6px;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    font-size: 12px;
+    font-family: inherit;
+}
+.settings-fix-field input:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+.settings-fix-form-actions {
+    display: flex;
+    gap: 6px;
+    justify-content: flex-end;
+}
+/* Confirm-panel variant of the fix form — shown for programmatic
+   fixes so the user sees exactly what will change and clicks Apply
+   deliberately, instead of a terse browser window.confirm(). */
+.settings-fix-confirm-header {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    margin-bottom: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+.settings-fix-confirm-body {
+    padding: 6px 10px;
+    background: var(--accent-subtle);
+    border-left: 3px solid var(--accent);
+    border-radius: 2px;
+    font-size: 12px;
+    line-height: 1.45;
+    margin-bottom: 8px;
+    white-space: pre-wrap;
+}
+/* Apply inherits the accent-hover from .settings-fix-btn — no extra
+   chrome, just the same visual weight as other fix buttons. */
 """
 
 
