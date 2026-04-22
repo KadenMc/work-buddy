@@ -40,8 +40,29 @@ class RequirementDef:
         description: Human-readable description of what's checked.
         check_fn: Dotted import path to callable returning ``{ok, detail}``.
         severity: ``"required"`` or ``"recommended"``.
-        fix_hint: Human-readable fix instructions.
-        setup_group: Wizard grouping: ``"bootstrap"``, ``"journal"``, ``"tasks"``, etc.
+        fix_hint: Human-readable fix instructions (legacy; new code prefers fix_*).
+        setup_group: Wizard grouping: ``"repository"``, ``"journal"``, ``"tasks"``, etc.
+
+    Fix system (added 2026-04-22) — opt-in per requirement:
+        fix_kind: How this requirement can be fixed:
+            - ``"none"`` (default): no automated fix; user must follow fix_hint manually.
+            - ``"programmatic"``: ``fix_fn(**no_args)`` does the fix end-to-end.
+            - ``"input_required"``: ``fix_fn(**user_inputs)`` does the fix; user must
+              first supply values declared in ``fix_params``.
+            - ``"agent_handoff"``: too complex for a button; clicking "Fix" spawns
+              a Claude Code session with ``fix_agent_brief`` as context.
+        fix_fn: Dotted import path to callable returning ``{ok: bool, detail: str,
+                side_effects?: list[str]}``. Required for programmatic / input_required.
+        fix_params: For input_required, declares the form fields the user must fill.
+            Shape: ``{field_name: {type: "str"|"path"|"secret", label: str,
+                                    default: Any, required: bool, hint: str}}``.
+        fix_preview: One-line description of what the fix will do, shown in the
+            confirm popover before the user commits. E.g. "Will create
+            C:\\Vaults\\SecondBrain\\journal\\". Null = no preview shown.
+        fix_agent_brief: For agent_handoff, the prompt the spawned Claude Code
+            session receives. Should explain what the user is trying to fix and
+            what the agent is empowered to do. Null = use a generic brief built
+            from the other requirement metadata.
     """
 
     id: str
@@ -51,6 +72,12 @@ class RequirementDef:
     severity: str  # "required" | "recommended"
     fix_hint: str
     setup_group: str
+    # Fix system (defaults preserve back-compat: existing reqs are no-fix)
+    fix_kind: str = "none"  # "none" | "programmatic" | "input_required" | "agent_handoff"
+    fix_fn: str | None = None
+    fix_params: dict[str, dict[str, Any]] = field(default_factory=dict)
+    fix_preview: str | None = None
+    fix_agent_brief: str | None = None
 
 
 @dataclass
@@ -176,6 +203,11 @@ _register(RequirementDef(
     severity="required",
     fix_hint="Ensure the data/ directory in the repo root exists and is writable.",
     setup_group="repository",
+    # Smoke fix for Fix-A — proves the pipeline end-to-end on the
+    # cheapest possible programmatic fixer.
+    fix_kind="programmatic",
+    fix_fn="work_buddy.health.fixers.fix_data_writable",
+    fix_preview="Create the data/ directory if missing and verify it's writable.",
 ))
 
 # --- Obsidian vault structure ---

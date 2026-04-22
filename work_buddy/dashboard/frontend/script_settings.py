@@ -519,6 +519,168 @@ function renderSettingsSummary() {
     el.innerHTML = html;
 }
 
+// ---- Per-requirement action buttons (Fix + Help) ----
+//
+// Two universal actions on every requirement that's not currently ok:
+//
+//   * Fix — present iff the requirement declared a fix_kind != "none".
+//     Programmatic: confirm popover with fix_preview, then one-click apply.
+//     Input-required: inline form with fields from fix_params, submit applies.
+//     Agent-handoff: confirm popover, then spawns a Claude Code session.
+//
+//   * ? — always present (when not ok). Spawns a help-agent session with
+//     a structured brief. Replaces the legacy Status-tab `🪄 /wb-setup
+//     diagnose` hint.
+function _renderRequirementActions(r) {
+    if (r.effective_state === 'ok' || r.effective_state === 'disabled') {
+        return '';
+    }
+    const fixBtn = r.fix_kind && r.fix_kind !== 'none'
+        ? `<button class="settings-fix-btn" type="button"
+                   onclick="onFixClick(this)"
+                   data-req-id="${escapeHtml(r.id.replace(/^req:/, ''))}"
+                   data-fix-kind="${escapeHtml(r.fix_kind)}"
+                   data-fix-preview="${escapeHtml(r.fix_preview || '')}"
+                   data-fix-params='${escapeHtml(JSON.stringify(r.fix_params || {}))}'
+                   ${WB_READ_ONLY_MODE ? 'disabled title="Dashboard is in read-only mode"' : ''}
+                   title="${WB_READ_ONLY_MODE ? 'Dashboard is in read-only mode' : 'Apply the registered fix for this requirement'}">Fix</button>`
+        : '';
+    const helpBtn = `<button class="settings-help-btn" type="button"
+                              onclick="onHelpClick(this)"
+                              data-node-id="${escapeHtml(r.id)}"
+                              ${WB_READ_ONLY_MODE ? 'disabled' : ''}
+                              title="Spawn a Claude Code session with this requirement's full context">?</button>`;
+    return `<span class="settings-req-actions">${fixBtn}${helpBtn}</span>`;
+}
+
+// ---- Fix click ----
+async function onFixClick(btnEl) {
+    if (WB_READ_ONLY_MODE) return;
+    const reqId = btnEl.dataset.reqId;
+    const fixKind = btnEl.dataset.fixKind;
+    const preview = btnEl.dataset.fixPreview;
+    let params = {};
+    try { params = JSON.parse(btnEl.dataset.fixParams || '{}'); } catch (e) { params = {}; }
+
+    if (fixKind === 'input_required' && Object.keys(params).length > 0) {
+        // Render an inline form below the requirement row, replacing the
+        // action buttons until submission/cancel. Form is built from
+        // fix_params: {field: {type, label, default, required, hint, secret}}.
+        _renderInputForm(btnEl, reqId, params);
+        return;
+    }
+
+    // programmatic | agent_handoff: confirm popover, then POST
+    const confirmText =
+        fixKind === 'agent_handoff'
+            ? 'This will open a new Claude Code terminal session to walk you through the fix. Proceed?'
+            : (preview ? `${preview}\n\nProceed?` : 'Apply the registered fix?');
+    if (!confirm(confirmText)) return;
+
+    await _postFix(reqId, {}, btnEl);
+}
+
+async function _postFix(reqId, params, btnEl) {
+    btnEl.disabled = true;
+    const orig = btnEl.textContent;
+    btnEl.textContent = '…';
+    try {
+        const resp = await fetch('/api/control/fix/' + encodeURI(reqId), {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({params}),
+        });
+        const data = await resp.json();
+        if (data.spawned) {
+            showToast(`Help session launched (pid ${data.spawned.pid}).`, 'success');
+        } else if (data.ok) {
+            const eff = data.side_effects && data.side_effects.length
+                ? ` — ${data.side_effects.join('; ')}`
+                : '';
+            showToast(`Fixed: ${data.detail}${eff}`, 'success');
+        } else {
+            showToast(`Fix did not apply: ${data.detail}`, 'error');
+        }
+        // Re-fetch the graph regardless — even a failed fix may have
+        // moved partial state (and recheck data is fresh server-side).
+        await loadSettings(true);
+    } catch (exc) {
+        showToast(`Fix request failed: ${exc}`, 'error');
+        btnEl.disabled = false;
+        btnEl.textContent = orig;
+    }
+}
+
+function _renderInputForm(btnEl, reqId, fixParams) {
+    const li = btnEl.closest('.settings-req-item');
+    if (!li) return;
+    // Hide the actions while form is open
+    const actions = li.querySelector('.settings-req-actions');
+    if (actions) actions.style.display = 'none';
+
+    const fields = Object.entries(fixParams).map(([name, spec]) => {
+        const inputType = spec.secret ? 'password' : (spec.type === 'path' ? 'text' : 'text');
+        const required = spec.required ? 'required' : '';
+        const placeholder = spec.hint ? `placeholder="${escapeHtml(spec.hint)}"` : '';
+        const defaultVal = spec.default != null ? `value="${escapeHtml(String(spec.default))}"` : '';
+        return `
+            <label class="settings-fix-field">
+                <span class="settings-fix-field-label">${escapeHtml(spec.label || name)}${spec.required ? ' *' : ''}</span>
+                <input type="${inputType}" name="${escapeHtml(name)}" ${required} ${placeholder} ${defaultVal}
+                       autocomplete="off" spellcheck="false" />
+            </label>
+        `;
+    }).join('');
+
+    const form = document.createElement('form');
+    form.className = 'settings-fix-form';
+    form.innerHTML = `
+        <div class="settings-fix-form-fields">${fields}</div>
+        <div class="settings-fix-form-actions">
+            <button type="submit" class="settings-fix-btn">Apply</button>
+            <button type="button" class="settings-fix-cancel-btn">Cancel</button>
+        </div>
+    `;
+    form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const fd = new FormData(form);
+        const params = {};
+        for (const [k, v] of fd.entries()) params[k] = v;
+        // Restore actions visibility before posting (so re-render doesn't
+        // leave the form orphaned)
+        await _postFix(reqId, params, form.querySelector('button[type="submit"]'));
+    });
+    form.querySelector('.settings-fix-cancel-btn').addEventListener('click', () => {
+        form.remove();
+        if (actions) actions.style.display = '';
+    });
+    li.appendChild(form);
+}
+
+// ---- Help click ----
+async function onHelpClick(btnEl) {
+    if (WB_READ_ONLY_MODE) return;
+    const nodeId = btnEl.dataset.nodeId;
+    if (!confirm('Open a Claude Code session focused on diagnosing this? A new terminal window will appear.')) return;
+    btnEl.disabled = true;
+    const orig = btnEl.textContent;
+    btnEl.textContent = '…';
+    try {
+        const resp = await fetch('/api/control/help/' + encodeURI(nodeId), {method: 'POST'});
+        const data = await resp.json();
+        if (data.ok) {
+            showToast(`Help session launched (pid ${data.pid || '?'}).`, 'success');
+        } else {
+            showToast(`Help launch failed: ${data.detail}`, 'error');
+        }
+    } catch (exc) {
+        showToast(`Help request failed: ${exc}`, 'error');
+    } finally {
+        btnEl.disabled = false;
+        btnEl.textContent = orig;
+    }
+}
+
 // Toggle the inline "what's disabled" panel in the summary row.
 // Unlike other state chips which jump to a single node, "disabled" is
 // plural by nature — users want to see the whole list.
@@ -595,6 +757,7 @@ function _renderRequirementList(nodes, reqIds) {
                         ${controlStateBadge(r.effective_state, r.id)}
                         <span class="settings-req-label">${escapeHtml(r.label)}</span>
                         ${r.status_reason ? `<span class="settings-req-reason">${escapeHtml(r.status_reason)}</span>` : ''}
+                        ${_renderRequirementActions(r)}
                     </li>`;
                 }).join('')}
             </ul>
@@ -661,6 +824,14 @@ function _renderAlsoIn(node, currentParent) {
 
 function _renderComponentNode(nodes, node, underParent) {
     if (!_isVisible(node)) return '';
+    // ? button always available on components — diagnose/help via
+    // spawned Claude Code session, replacing the legacy Status-tab
+    // diagnose+launchSetupAgent path with a single help-brief flow.
+    const helpBtn = `<button class="settings-help-btn" type="button"
+                              onclick="onHelpClick(this)"
+                              data-node-id="${escapeHtml(node.id)}"
+                              ${WB_READ_ONLY_MODE ? 'disabled' : ''}
+                              title="Spawn a Claude Code session to diagnose this component">?</button>`;
     return `
         <div class="settings-node settings-component" data-state="${node.effective_state}" data-kind="component" data-wb-node-id="${escapeHtml(node.id)}">
             <div class="settings-node-header">
@@ -669,6 +840,7 @@ function _renderComponentNode(nodes, node, underParent) {
                 ${controlStateBadge(node.effective_state, node.id)}
                 ${preferenceBadge(node.preference)}
                 ${_renderAlsoIn(node, underParent)}
+                ${helpBtn}
             </div>
             ${node.status_reason ? `<div class="settings-node-reason">${escapeHtml(node.status_reason)}</div>` : ''}
             ${preferenceToggleControls(node.component_id, node.preference)}

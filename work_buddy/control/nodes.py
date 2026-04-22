@@ -124,6 +124,14 @@ class ControlNode:
     blocking_issues: list[str] = field(default_factory=list)
     primary_actions: list[dict] = field(default_factory=list)
 
+    # Fix system metadata (only meaningful for kind="requirement"):
+    # mirror of the underlying RequirementDef so the UI can decide which
+    # buttons to render without making a separate fetch per requirement.
+    # Empty/None for nodes that don't have a fix concept (domains, etc.).
+    fix_kind: str = "none"        # "none" | "programmatic" | "input_required" | "agent_handoff"
+    fix_params: dict = field(default_factory=dict)
+    fix_preview: str | None = None
+
     def to_dict(self) -> dict:
         """Plain-dict representation for JSON serialization."""
         return {
@@ -150,6 +158,9 @@ class ControlNode:
             "status_reason": self.status_reason,
             "blocking_issues": list(self.blocking_issues),
             "primary_actions": list(self.primary_actions),
+            "fix_kind": self.fix_kind,
+            "fix_params": dict(self.fix_params),
+            "fix_preview": self.fix_preview,
         }
 
 

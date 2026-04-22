@@ -246,6 +246,71 @@ def api_control_preference():
         return jsonify({"error": str(exc)}), 500
 
 
+@app.post("/api/control/fix/<path:req_id>")
+def api_control_fix(req_id: str):
+    """Apply the registered fix for a requirement.
+
+    Body: ``{"params": {field: value, ...}}`` for input_required
+    requirements; empty/omitted for programmatic and agent_handoff.
+
+    Returns a structured ``{ok, detail, side_effects, recheck, spawned}``
+    so the UI can show what happened (success vs apply-but-recheck-failed
+    vs error) without losing detail.
+
+    Gated by read-only mode. Auto-grants the consent for the fix —
+    clicking the button IS the consent, same pattern as the preference
+    toggle and workflow-launch.
+    """
+    blocked = _reject_read_only()
+    if blocked:
+        return blocked
+
+    data = request.get_json(silent=True) or {}
+    params = data.get("params") if isinstance(data.get("params"), dict) else {}
+
+    try:
+        from work_buddy.consent import grant_consent
+        from work_buddy.control.fix_runner import run_fix
+
+        grant_consent(f"setup.fix_requirement", mode="once")
+        result = run_fix(req_id, params=params)
+        return jsonify(result)
+    except Exception as exc:
+        logger.exception("Fix dispatcher failed for %s", req_id)
+        return jsonify({
+            "ok": False,
+            "detail": str(exc),
+            "side_effects": [],
+            "recheck": None,
+            "spawned": None,
+        }), 500
+
+
+@app.post("/api/control/help/<path:node_id>")
+def api_control_help(node_id: str):
+    """Spawn a Claude Code help session focused on a specific control-graph node.
+
+    Universal "?" button on requirements (when not ok) and components.
+    Replaces the legacy Status-tab `🪄 /wb-setup diagnose` hint with a
+    structured brief that bundles DiagnosticRunner output + requirement
+    metadata + current state.
+
+    Read-only-mode-gated since spawning a new agent is a side-effect.
+    """
+    blocked = _reject_read_only()
+    if blocked:
+        return blocked
+
+    try:
+        from work_buddy.control.help_briefs import spawn_help_agent
+        result = spawn_help_agent(node_id)
+        status = 200 if result.get("ok") else 500
+        return jsonify(result), status
+    except Exception as exc:
+        logger.exception("Help-agent dispatcher failed for %s", node_id)
+        return jsonify({"ok": False, "detail": str(exc)}), 500
+
+
 @app.get("/api/control/graph")
 def api_control_graph():
     """Unified control graph — domains, subsystems, components, requirements, capabilities.

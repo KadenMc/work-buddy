@@ -2754,6 +2754,96 @@ body {
     font-weight: 600;
     cursor: help;
 }
+
+/* ---------- Fix + Help action buttons (Fix-A) ---------- */
+.settings-req-actions {
+    display: inline-flex;
+    gap: 4px;
+    margin-left: auto;
+}
+.settings-fix-btn,
+.settings-help-btn,
+.settings-fix-cancel-btn {
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text-secondary);
+    border-radius: 4px;
+    padding: 2px 8px;
+    font-size: 11px;
+    cursor: pointer;
+    transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.settings-fix-btn:hover:not(:disabled),
+.settings-fix-cancel-btn:hover:not(:disabled) {
+    background: var(--accent-subtle);
+    color: var(--accent);
+    border-color: var(--accent);
+}
+.settings-help-btn {
+    width: 22px;
+    padding: 2px 0;
+    text-align: center;
+    font-weight: 700;
+    font-family: monospace;
+}
+.settings-help-btn:hover:not(:disabled) {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    border-color: var(--text-secondary);
+}
+.settings-fix-btn:disabled,
+.settings-help-btn:disabled,
+.settings-fix-cancel-btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.45;
+}
+
+/* The component-header version sits to the right of the also-in pill */
+.settings-component .settings-help-btn {
+    margin-left: 4px;
+}
+
+/* Inline input form for input_required fixes */
+.settings-fix-form {
+    margin-top: 6px;
+    padding: 8px 10px;
+    border: 1px dashed var(--border);
+    border-radius: 4px;
+    background: var(--bg);
+}
+.settings-fix-form-fields {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: 8px;
+}
+.settings-fix-field {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+.settings-fix-field-label {
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+.settings-fix-field input {
+    padding: 4px 6px;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    font-size: 12px;
+    font-family: inherit;
+}
+.settings-fix-field input:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+.settings-fix-form-actions {
+    display: flex;
+    gap: 6px;
+    justify-content: flex-end;
+}
 """
 
 

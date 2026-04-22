@@ -258,6 +258,9 @@ def _assemble() -> dict[str, ControlNode]:
             effective_state="unknown",  # filled in step 5
             component_id=req.component,
             status_reason=(result.detail if result else "Check not yet run"),
+            fix_kind=getattr(req, "fix_kind", "none"),
+            fix_params=dict(getattr(req, "fix_params", {}) or {}),
+            fix_preview=getattr(req, "fix_preview", None),
         )
 
     # -----------------------------------------------------------------
