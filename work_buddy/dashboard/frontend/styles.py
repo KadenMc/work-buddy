@@ -323,14 +323,22 @@ body {
 .bar-fail { background: var(--red); opacity: 0.7; }
 .bar-fail:hover { opacity: 1; }
 /* bar-unreachable: distinct from bar-fail so you can tell from a
-   glance whether you closed Obsidian or the bridge was lagging.
-   Muted gray with a dark red underline — reads as "gone", not "slow". */
+   glance whether you closed Obsidian (port refused) or the bridge
+   was just lagging (timed out). Diagonal red-on-dark stripes read as
+   "not there" while staying in the unhealthy color family — solid
+   red bars still mean "bridge hung", striped red bars mean "Obsidian
+   not running". */
 .bar-unreachable {
-    background: var(--text-tertiary);
-    opacity: 0.5;
-    border-bottom: 2px solid var(--red);
+    background: repeating-linear-gradient(
+        45deg,
+        var(--red),
+        var(--red) 2px,
+        var(--bg-tertiary) 2px,
+        var(--bg-tertiary) 5px
+    );
+    opacity: 0.75;
 }
-.bar-unreachable:hover { opacity: 0.9; }
+.bar-unreachable:hover { opacity: 1; }
 
 /* -- Health tree ------------------------------------------------------- */
 
