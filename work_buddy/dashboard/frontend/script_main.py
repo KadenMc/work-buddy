@@ -2023,15 +2023,20 @@ async function loadContracts() {
         return;
     }
 
-    let rows = contracts.map(c => `
+    let rows = contracts.map(c => {
+        const noteLink = c.vault_path
+            ? `<a href="obsidian://open?vault=${encodeURIComponent(WB_VAULT_NAME)}&file=${encodeURIComponent(c.vault_path)}" title="Open contract in Obsidian" style="text-decoration:none;cursor:pointer;margin-left:6px;">&#x1F4D3;</a>`
+            : '';
+        return `
         <tr>
-            <td><strong>${c.title}</strong></td>
+            <td><strong>${c.title}</strong>${noteLink}</td>
             <td>${statusBadge(c.status)}</td>
             <td>${c.type || '—'}</td>
             <td>${c.deadline || '—'}</td>
             <td>${c.priority || '—'}</td>
         </tr>
-    `).join('');
+    `;
+    }).join('');
 
     document.getElementById('contracts-table').innerHTML = `
         <table class="data-table">
