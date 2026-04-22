@@ -494,7 +494,7 @@ function renderSettingsSummary() {
     let html = `
         <div class="settings-summary-row">
             <div class="settings-summary-totals">${summaryChips}</div>
-            <div class="settings-summary-cache" title="Graph TTL is 45s; click Force refresh to rebuild immediately.">${cacheStr}</div>
+            <div class="settings-summary-cache" title="Graph TTL is 45s; click Reprobe all to re-run every probe and rebuild from scratch.">${cacheStr}</div>
         </div>
     `;
 
@@ -605,14 +605,21 @@ function _renderRequirementActions(r) {
                    ${WB_READ_ONLY_MODE ? 'disabled title="Dashboard is in read-only mode"' : ''}
                    title="${escapeHtml(fixTitle.trim())}">${escapeHtml(fixLabel)}</button>`
         : '';
-    // "?" = ALWAYS spawns an agent with this node's context. Visually
-    // distinct from the fix buttons so users who want help, not
-    // action, find the right button the first time.
-    const helpBtn = `<button class="settings-help-btn settings-help-btn-alert" type="button"
-                              onclick="onHelpClick(this)"
-                              data-node-id="${escapeHtml(r.id)}"
-                              ${WB_READ_ONLY_MODE ? 'disabled' : ''}
-                              title="Spawn a Claude Code session focused on this requirement. Use when you want to understand or investigate rather than auto-apply a fix.">?</button>`;
+    // "?" = spawns an agent briefed to explain/diagnose. Hidden on
+    // agent_handoff requirements because "Walk me through" already
+    // spawns a session for the same kind of requirement — a second
+    // button that also opens a terminal would be redundant.
+    //
+    // Kept on programmatic / input_required requirements where it's
+    // a genuinely distinct action: "?" explains, Configure applies.
+    const showHelp = r.fix_kind !== 'agent_handoff';
+    const helpBtn = showHelp
+        ? `<button class="settings-help-btn settings-help-btn-alert" type="button"
+                    onclick="onHelpClick(this)"
+                    data-node-id="${escapeHtml(r.id)}"
+                    ${WB_READ_ONLY_MODE ? 'disabled' : ''}
+                    title="Spawn a Claude Code session focused on this requirement. Use when you want to understand or investigate rather than auto-apply a fix.">?</button>`
+        : '';
     return `<span class="settings-req-actions">${fixBtn}${helpBtn}</span>`;
 }
 
