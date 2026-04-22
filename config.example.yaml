@@ -32,6 +32,10 @@ obsidian:
   wellness_days: 14
   api_port: 27124        # Obsidian Local REST API plugin port
   bridge_port: 27125     # work-buddy plugin port
+  # config_dir: ".obsidian"   # Override if your vault uses Obsidian's
+  #                             override-config-folder feature (a
+  #                             non-default config-folder name, e.g.
+  #                             ".obsidian-work"). Default is ".obsidian".
 
 tasks:
   db_path: "tasks/task_metadata.db"

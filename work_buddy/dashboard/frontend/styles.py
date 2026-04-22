@@ -322,6 +322,15 @@ body {
 .bar-slow:hover { opacity: 1; }
 .bar-fail { background: var(--red); opacity: 0.7; }
 .bar-fail:hover { opacity: 1; }
+/* bar-unreachable: distinct from bar-fail so you can tell from a
+   glance whether you closed Obsidian or the bridge was lagging.
+   Muted gray with a dark red underline — reads as "gone", not "slow". */
+.bar-unreachable {
+    background: var(--text-tertiary);
+    opacity: 0.5;
+    border-bottom: 2px solid var(--red);
+}
+.bar-unreachable:hover { opacity: 0.9; }
 
 /* -- Health tree ------------------------------------------------------- */
 

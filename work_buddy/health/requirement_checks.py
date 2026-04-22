@@ -32,6 +32,19 @@ def _repo_root() -> Path:
     return Path(__file__).parent.parent.parent
 
 
+def _obsidian_config_dir(vault: Path | None = None) -> Path:
+    """Resolve the Obsidian config dir for the current vault.
+
+    Honors ``obsidian.config_dir`` in config.yaml so vaults using
+    Obsidian's override-config-folder feature (not ``.obsidian``) are
+    still correctly inspected. Falls back to ``<vault>/.obsidian``.
+    Deferred import of the plugin helper avoids cross-package
+    circular-import risk at module load time.
+    """
+    from work_buddy.obsidian.plugins import resolve_config_dir
+    return resolve_config_dir(vault if vault is not None else _vault_root())
+
+
 # ---------------------------------------------------------------------------
 # Core / bootstrap checks
 # ---------------------------------------------------------------------------
@@ -72,14 +85,19 @@ def check_vault_root() -> dict[str, Any]:
     p = Path(vault_root)
     if not p.is_dir():
         return {"ok": False, "detail": f"vault_root does not exist: {p}"}
-    if not (p / ".obsidian").is_dir():
+    config_dir = _obsidian_config_dir(p)
+    if not config_dir.is_dir():
+        expected = config_dir.name
         return {
             "ok": False,
             "detail": (
-                f"{p} exists but isn't an Obsidian vault — no .obsidian/ "
+                f"{p} exists but isn't an Obsidian vault — no {expected}/ "
                 "subdirectory. Either point vault_root at the correct "
-                "directory, or open this directory in Obsidian once so "
-                "Obsidian initializes it."
+                "directory, open this directory in Obsidian once so it "
+                "initializes the config folder, OR set "
+                "obsidian.config_dir in config.yaml if your vault uses "
+                "Obsidian's override-config-folder feature with a "
+                "non-default name."
             ),
         }
     return {"ok": True, "detail": f"vault_root is a valid Obsidian vault: {p}"}
@@ -200,10 +218,13 @@ def check_daily_notes_plugin() -> dict[str, Any]:
     vault = _vault_root()
     if not vault or not vault.is_dir():
         return {"ok": False, "detail": "vault_root is not set or doesn't exist"}
-    # Core plugins are stored in .obsidian/core-plugins-migration.json
-    # or .obsidian/core-plugins.json depending on Obsidian version
+    # Core plugins are stored in <config>/core-plugins-migration.json
+    # or <config>/core-plugins.json depending on Obsidian version.
+    # <config> is usually .obsidian but may be overridden via
+    # obsidian.config_dir in config.yaml.
+    config_dir = _obsidian_config_dir(vault)
     for filename in ("core-plugins-migration.json", "core-plugins.json"):
-        cp_file = vault / ".obsidian" / filename
+        cp_file = config_dir / filename
         if cp_file.exists():
             try:
                 with open(cp_file, encoding="utf-8") as f:
@@ -348,26 +369,102 @@ def check_master_task_list() -> dict[str, Any]:
     return {"ok": False, "detail": f"Master task list not found: {task_file}"}
 
 
-def check_tasks_plugin() -> dict[str, Any]:
-    """Check that the Obsidian Tasks community plugin is installed and enabled.
+def _community_plugin_state(
+    *,
+    plugin_id: str,
+    folder_name: str,
+    install_hint: str,
+    enable_hint: str,
+    healthy_detail: str,
+) -> dict[str, Any]:
+    """Shared two-part community-plugin check: installed vs enabled.
 
-    Uses direct file inspection rather than importing plugins.py to avoid
-    triggering agent_session side-effects.
+    Every Obsidian community plugin lives in two orthogonal states that
+    users tend to conflate:
+
+      * **Installed** — a folder ``.obsidian/plugins/<folder_name>/``
+        exists with a ``manifest.json`` inside. This proves the user
+        has the plugin code on disk.
+      * **Enabled**   — the plugin's id appears in
+        ``.obsidian/community-plugins.json`` (a bare JSON list of the
+        enabled-plugin ids Obsidian loads on startup). This proves the
+        user has toggled it on.
+
+    The two can disagree in both directions: installed-but-disabled is
+    common (user turned it off); enabled-without-install is rare but
+    not impossible (stale config file). The previous ``check_tasks_plugin``
+    conflated both failure modes under a single "not in
+    community-plugins.json" message, so the user couldn't tell whether
+    to install or just toggle on.
+
+    Returns a RequirementResult-shaped dict. The detail message is
+    specific to which state we landed in:
+      * ok:           {healthy_detail}
+      * not installed: {install_hint}
+      * installed but disabled: {enable_hint}
+      * missing community-plugins.json: "enable any community plugin first"
+      * malformed json / IO error: the raw OSError message
     """
     vault = _vault_root()
     if not vault or not vault.is_dir():
         return {"ok": False, "detail": "vault_root is not set or doesn't exist"}
-    cp_file = vault / ".obsidian" / "community-plugins.json"
+
+    config_dir = _obsidian_config_dir(vault)
+    plugin_dir = config_dir / "plugins" / folder_name
+    manifest = plugin_dir / "manifest.json"
+    if not manifest.exists():
+        return {
+            "ok": False,
+            "detail": f"Plugin NOT installed at {plugin_dir}. {install_hint}",
+        }
+
+    cp_file = config_dir / "community-plugins.json"
     if not cp_file.exists():
-        return {"ok": False, "detail": "community-plugins.json not found"}
+        return {
+            "ok": False,
+            "detail": (
+                "Plugin is installed, but community-plugins.json is missing — "
+                "Obsidian hasn't been opened with any community plugin enabled. "
+                f"{enable_hint}"
+            ),
+        }
     try:
         with open(cp_file, encoding="utf-8") as f:
             data = json.load(f)
-        if isinstance(data, list) and "obsidian-tasks-plugin" in data:
-            return {"ok": True, "detail": "Tasks plugin is active"}
-        return {"ok": False, "detail": "Tasks plugin is not in community-plugins.json"}
     except (json.JSONDecodeError, OSError) as exc:
         return {"ok": False, "detail": f"Could not read community-plugins.json: {exc}"}
+
+    if isinstance(data, list) and plugin_id in data:
+        return {"ok": True, "detail": healthy_detail}
+
+    # Installed but not enabled — the most common failure mode, and the
+    # one the user can fix in seconds.
+    return {
+        "ok": False,
+        "detail": f"Plugin IS installed but NOT enabled. {enable_hint}",
+    }
+
+
+def check_tasks_plugin() -> dict[str, Any]:
+    """Check that the Obsidian Tasks community plugin is installed AND enabled.
+
+    Distinguishes installed-but-disabled (toggle it on) from not-
+    installed (install first). Uses direct file inspection rather than
+    importing plugins.py to avoid triggering agent_session side-effects.
+    """
+    return _community_plugin_state(
+        plugin_id="obsidian-tasks-plugin",
+        folder_name="obsidian-tasks-plugin",
+        install_hint=(
+            "Install via Obsidian Settings → Community Plugins → Browse, "
+            "search for 'Tasks' (by Martin Schenck)."
+        ),
+        enable_hint=(
+            "Open Obsidian → Settings → Community Plugins and toggle "
+            "'Tasks' on."
+        ),
+        healthy_detail="Tasks plugin installed and enabled",
+    )
 
 
 def check_work_buddy_plugin() -> dict[str, Any]:
@@ -376,34 +473,28 @@ def check_work_buddy_plugin() -> dict[str, Any]:
     The plugin (https://github.com/KadenMc/obsidian-work-buddy) is what
     provides the Obsidian bridge HTTP endpoint on port 27125 that the
     ``obsidian`` tool probe and every bridge-backed capability depends
-    on. If the plugin directory is absent OR the plugin id is missing
-    from community-plugins.json, the bridge will never come up no
-    matter how healthy Obsidian itself looks.
-
-    Two-part check:
-      1. Plugin directory exists under .obsidian/plugins/obsidian-work-buddy
-         with a manifest.json — proves it's installed.
-      2. Plugin id "work-buddy" appears in .obsidian/community-plugins.json
-         — proves it's enabled (Obsidian keeps this list authoritative).
+    on. Delegates to ``_community_plugin_state`` for the two-part
+    installed-vs-enabled distinction.
     """
     vault = _vault_root()
     if not vault or not vault.is_dir():
         return {"ok": False, "detail": "vault_root is not set or doesn't exist"}
 
-    plugin_dir = vault / ".obsidian" / "plugins" / "obsidian-work-buddy"
+    config_dir = _obsidian_config_dir(vault)
+    plugin_dir = config_dir / "plugins" / "obsidian-work-buddy"
     manifest = plugin_dir / "manifest.json"
     if not manifest.exists():
         return {
             "ok": False,
             "detail": (
-                f"work-buddy plugin not installed at {plugin_dir} — "
+                f"work-buddy plugin NOT installed at {plugin_dir} — "
                 "clone https://github.com/KadenMc/obsidian-work-buddy into "
-                ".obsidian/plugins/ and enable it under Settings → "
+                f"{config_dir.name}/plugins/ and enable it under Settings → "
                 "Community Plugins."
             ),
         }
 
-    cp_file = vault / ".obsidian" / "community-plugins.json"
+    cp_file = config_dir / "community-plugins.json"
     if not cp_file.exists():
         return {
             "ok": False,
@@ -426,7 +517,7 @@ def check_work_buddy_plugin() -> dict[str, Any]:
     return {
         "ok": False,
         "detail": (
-            "work-buddy plugin is installed but NOT enabled — "
+            "work-buddy plugin IS installed but NOT enabled — "
             "open Obsidian → Settings → Community Plugins and toggle "
             "'Work Buddy' on."
         ),

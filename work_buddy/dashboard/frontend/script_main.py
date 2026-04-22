@@ -909,18 +909,50 @@ async function loadStatus() {
     const bridgeEl = document.getElementById('status-bridge');
     if (b.status) {
         const dotClass = b.status === 'healthy' ? 'healthy' : (b.status === 'timeout' ? 'unhealthy' : 'crashed');
-        const statusLabel = b.status === 'healthy' ? 'connected' : b.status;
+        // Distinguish "unreachable" (port closed, Obsidian not running)
+        // from "timeout" (port open but bridge hung). The api layer
+        // already tags them separately; the header just surfaces it
+        // with friendlier language.
+        const statusLabel = b.status === 'healthy'
+            ? 'connected'
+            : (b.status === 'unreachable'
+                ? 'Obsidian not running'
+                : b.status === 'timeout'
+                    ? 'bridge lagging'
+                    : b.status);
         const latencyColor = (b.latency_ms || 0) > 2000 ? 'var(--red)' : (b.latency_ms || 0) > 500 ? 'var(--yellow)' : 'var(--text-primary)';
 
-        // Log-scale sparkline, normalized so tallest bar fills 100%
+        // Log-scale sparkline, normalized so tallest bar fills 100%.
+        //
+        // Bar class has four possible values now:
+        //   * bar-ok         → healthy probe, <=500ms
+        //   * bar-slow       → healthy probe, >500ms (lag)
+        //   * bar-fail       → unhealthy, timed out (Obsidian hung)
+        //   * bar-unreachable → unhealthy, port closed (Obsidian not running)
+        //
+        // The unreachable bars render distinctly so a glance at the
+        // graph tells the user "I closed Obsidian" vs "Obsidian's
+        // lagging" — the previous collapsed bar-fail hid the distinction.
         const hist = b.history || [];
         const logMax = Math.max(1, ...hist.map(h => Math.log10(Math.max(1, h.ms))));
         const bars = hist.map(h => {
             const logMs = Math.log10(Math.max(1, h.ms));
             const pct = Math.max(8, (logMs / logMax) * 100);
-            const cls = !h.ok ? 'bar-fail' : h.ms > 500 ? 'bar-slow' : 'bar-ok';
+            let cls;
+            if (h.ok) {
+                cls = h.ms > 500 ? 'bar-slow' : 'bar-ok';
+            } else if (h.status === 'unreachable') {
+                cls = 'bar-unreachable';
+            } else {
+                cls = 'bar-fail';  // timeout / error / http-non-200
+            }
             const dt = new Date(h.ts * 1000);
-            const tip = dt.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'}) + ' \u2014 ' + h.ms + 'ms';
+            const label = h.ok
+                ? (h.ms + 'ms')
+                : (h.status === 'unreachable'
+                    ? 'Obsidian closed (port refused)'
+                    : 'Obsidian lag/timeout (' + h.ms + 'ms)');
+            const tip = dt.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'}) + ' \u2014 ' + label;
             return `<div class="bar ${cls}" style="height:${pct}%" title="${tip}"></div>`;
         }).join('');
 

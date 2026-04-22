@@ -489,10 +489,23 @@ class TestCheckFunctions:
         assert y in result["detail"]
         assert "last available" in result["detail"]
 
+    def _seed_tasks_plugin_dir(self, vault):
+        """Create a plausible plugin folder with a manifest. Helper for
+        the two-part installed/enabled tests."""
+        plugin_dir = vault / ".obsidian" / "plugins" / "obsidian-tasks-plugin"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "manifest.json").write_text(
+            json.dumps({"id": "obsidian-tasks-plugin", "name": "Tasks", "version": "1.0.0"}),
+            encoding="utf-8",
+        )
+        return plugin_dir
+
     def test_check_tasks_plugin_pass(self, monkeypatch, tmp_path):
+        """Both installed (folder+manifest) AND enabled (in cp-json) → ok."""
         vault = tmp_path / "vault"
         obs = vault / ".obsidian"
         obs.mkdir(parents=True)
+        self._seed_tasks_plugin_dir(vault)
         cp = obs / "community-plugins.json"
         cp.write_text(json.dumps(["obsidian-tasks-plugin", "datacore"]), encoding="utf-8")
         monkeypatch.setattr(
@@ -502,8 +515,53 @@ class TestCheckFunctions:
         from work_buddy.health.requirement_checks import check_tasks_plugin
         result = check_tasks_plugin()
         assert result["ok"] is True
+        assert "installed and enabled" in result["detail"].lower()
+
+    def test_check_tasks_plugin_not_installed(self, monkeypatch, tmp_path):
+        """No plugin folder at all → distinct 'not installed' message
+        that points the user at Community Plugins → Browse."""
+        vault = tmp_path / "vault"
+        obs = vault / ".obsidian"
+        obs.mkdir(parents=True)
+        # Note: NO plugin folder created. The community-plugins.json
+        # could still list it (stale config), but the folder is the
+        # ground truth for "is the code present?"
+        cp = obs / "community-plugins.json"
+        cp.write_text(json.dumps(["datacore"]), encoding="utf-8")
+        monkeypatch.setattr(
+            "work_buddy.health.requirement_checks._vault_root",
+            lambda: vault,
+        )
+        from work_buddy.health.requirement_checks import check_tasks_plugin
+        result = check_tasks_plugin()
+        assert result["ok"] is False
+        assert "NOT installed" in result["detail"]
+        assert "Browse" in result["detail"]  # install hint
+
+    def test_check_tasks_plugin_installed_but_disabled(self, monkeypatch, tmp_path):
+        """Plugin folder is there, but id not in community-plugins.json
+        → distinct 'installed but not enabled' message that tells the
+        user to just toggle it on. This was the hidden case the
+        previous check conflated with 'not installed'."""
+        vault = tmp_path / "vault"
+        obs = vault / ".obsidian"
+        obs.mkdir(parents=True)
+        self._seed_tasks_plugin_dir(vault)
+        cp = obs / "community-plugins.json"
+        cp.write_text(json.dumps(["datacore"]), encoding="utf-8")  # tasks NOT listed
+        monkeypatch.setattr(
+            "work_buddy.health.requirement_checks._vault_root",
+            lambda: vault,
+        )
+        from work_buddy.health.requirement_checks import check_tasks_plugin
+        result = check_tasks_plugin()
+        assert result["ok"] is False
+        assert "IS installed but NOT enabled" in result["detail"]
+        assert "toggle" in result["detail"].lower()
 
     def test_check_tasks_plugin_missing(self, monkeypatch, tmp_path):
+        """Backwards-compat alias for the old test — equivalent to
+        the new 'not installed' case."""
         vault = tmp_path / "vault"
         obs = vault / ".obsidian"
         obs.mkdir(parents=True)
@@ -516,6 +574,55 @@ class TestCheckFunctions:
         from work_buddy.health.requirement_checks import check_tasks_plugin
         result = check_tasks_plugin()
         assert result["ok"] is False
+
+    def test_check_tasks_plugin_respects_override_config_dir(
+        self, monkeypatch, tmp_path,
+    ):
+        """Obsidian supports an override config folder (not .obsidian).
+        The check must use it when config.yaml sets obsidian.config_dir.
+        A vault whose Obsidian config is in .obsidian-work should NOT
+        be reported as broken when the plugin is installed+enabled
+        there, even though .obsidian/ doesn't exist."""
+        vault = tmp_path / "vault"
+        override = vault / ".obsidian-work"
+        plugin_dir = override / "plugins" / "obsidian-tasks-plugin"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "manifest.json").write_text(
+            json.dumps({"id": "obsidian-tasks-plugin", "name": "Tasks", "version": "1"}),
+            encoding="utf-8",
+        )
+        (override / "community-plugins.json").write_text(
+            json.dumps(["obsidian-tasks-plugin"]), encoding="utf-8",
+        )
+        # Do NOT create vault/.obsidian — the override must be used.
+        monkeypatch.setattr(
+            "work_buddy.health.requirement_checks._vault_root",
+            lambda: vault,
+        )
+        monkeypatch.setattr(
+            "work_buddy.config.load_config",
+            lambda: {"obsidian": {"config_dir": ".obsidian-work"}},
+        )
+        from work_buddy.health.requirement_checks import check_tasks_plugin
+        result = check_tasks_plugin()
+        assert result["ok"] is True, result["detail"]
+        assert "installed and enabled" in result["detail"].lower()
+
+    def test_resolve_config_dir_prefers_explicit_argument(self, monkeypatch, tmp_path):
+        """Unit test for the resolver primitive itself."""
+        from work_buddy.obsidian.plugins import resolve_config_dir
+        vault = tmp_path / "vault"
+        # Explicit argument beats config.yaml and the .obsidian default.
+        monkeypatch.setattr(
+            "work_buddy.config.load_config",
+            lambda: {"obsidian": {"config_dir": ".from-yaml"}},
+        )
+        assert resolve_config_dir(vault, ".explicit").name == ".explicit"
+        # Without argument, config.yaml wins.
+        assert resolve_config_dir(vault).name == ".from-yaml"
+        # If config.yaml has no entry, default to .obsidian.
+        monkeypatch.setattr("work_buddy.config.load_config", lambda: {})
+        assert resolve_config_dir(vault).name == ".obsidian"
 
     def test_check_master_task_list_pass(self, monkeypatch, tmp_path):
         vault = tmp_path / "vault"
