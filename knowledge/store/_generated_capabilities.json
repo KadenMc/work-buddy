@@ -6257,5 +6257,219 @@
     "parents": [
       "tasks"
     ]
+  },
+  "context/workflow_create": {
+    "kind": "capability",
+    "name": "Workflow Create",
+    "description": "Create a new workflow unit (DAG + step instructions). Use this instead of docs_create for kind='workflow' units — docs_create does not accept workflow-specific fields.",
+    "capability_name": "workflow_create",
+    "category": "context",
+    "aliases": [
+      "create workflow",
+      "new workflow",
+      "author workflow DAG",
+      "register workflow",
+      "add workflow unit",
+      "define workflow"
+    ],
+    "parameters": {
+      "path": {
+        "type": "str",
+        "description": "Unique path ID (e.g. 'dev/dev-document')",
+        "required": true
+      },
+      "name": {
+        "type": "str",
+        "description": "Human-readable name",
+        "required": true
+      },
+      "description": {
+        "type": "str",
+        "description": "One-line summary",
+        "required": true
+      },
+      "workflow_name": {
+        "type": "str",
+        "description": "Registry slug used with wb_run('<workflow_name>')",
+        "required": true
+      },
+      "steps": {
+        "type": "str",
+        "description": "JSON array of step dicts. Each step requires at least id, name, step_type ('reasoning' or 'code'), and depends_on (list of prior step ids). Additional keys: auto_run, visibility, result_schema, invokes, optional.",
+        "required": true
+      },
+      "step_instructions": {
+        "type": "str",
+        "description": "JSON object mapping step_id -> instruction text. Reasoning steps generally need this; pure auto_run steps usually don't.",
+        "required": false
+      },
+      "execution": {
+        "type": "str",
+        "description": "Default execution policy: 'main' or 'subagent' (default 'main')",
+        "required": false
+      },
+      "allow_override": {
+        "type": "bool",
+        "description": "Allow per-step execution override (default false)",
+        "required": false
+      },
+      "content_full": {
+        "type": "str",
+        "description": "Workflow-level context (philosophy, what-not-to-do). Surfaces at depth='full'.",
+        "required": false
+      },
+      "content_summary": {
+        "type": "str",
+        "description": "One-paragraph summary.",
+        "required": false
+      },
+      "command": {
+        "type": "str",
+        "description": "Slash command name (e.g. 'wb-dev-document')",
+        "required": false
+      },
+      "parents": {
+        "type": "str",
+        "description": "Comma-separated parent paths (typical: domain, e.g. 'dev')",
+        "required": false
+      },
+      "children": {
+        "type": "str",
+        "description": "Comma-separated child paths",
+        "required": false
+      },
+      "tags": {
+        "type": "str",
+        "description": "Comma-separated search tags",
+        "required": false
+      },
+      "aliases": {
+        "type": "str",
+        "description": "Comma-separated search aliases",
+        "required": false
+      },
+      "dev_notes": {
+        "type": "str",
+        "description": "Dev-mode-only notes about the workflow's internals",
+        "required": false
+      }
+    },
+    "mutates_state": true,
+    "retry_policy": "manual",
+    "tags": [
+      "context",
+      "workflow",
+      "create"
+    ],
+    "parents": [
+      "context"
+    ]
+  },
+  "context/workflow_update": {
+    "kind": "capability",
+    "name": "Workflow Update",
+    "description": "Update an existing workflow unit. Only provided fields change; omitted fields preserved. 'steps' and 'step_instructions' replace/merge rather than patch individual entries — read the current value, mutate, and pass the whole structure back.",
+    "capability_name": "workflow_update",
+    "category": "context",
+    "aliases": [
+      "update workflow",
+      "edit workflow DAG",
+      "modify workflow steps",
+      "change workflow",
+      "patch workflow",
+      "edit step instructions"
+    ],
+    "parameters": {
+      "path": {
+        "type": "str",
+        "description": "Path of workflow to update",
+        "required": true
+      },
+      "name": {
+        "type": "str",
+        "description": "New human-readable name",
+        "required": false
+      },
+      "description": {
+        "type": "str",
+        "description": "New one-line summary",
+        "required": false
+      },
+      "workflow_name": {
+        "type": "str",
+        "description": "New registry slug",
+        "required": false
+      },
+      "steps": {
+        "type": "str",
+        "description": "JSON array replacing the DAG. Callers should read the current value via agent_docs, mutate, and pass back.",
+        "required": false
+      },
+      "step_instructions": {
+        "type": "str",
+        "description": "JSON object merged into step_instructions. Keys present in the new dict overwrite; keys absent are preserved. Pass the whole dict to replace cleanly.",
+        "required": false
+      },
+      "execution": {
+        "type": "str",
+        "description": "New default execution policy",
+        "required": false
+      },
+      "allow_override": {
+        "type": "bool",
+        "description": "New allow_override flag",
+        "required": false
+      },
+      "content_full": {
+        "type": "str",
+        "description": "New workflow-level content",
+        "required": false
+      },
+      "content_summary": {
+        "type": "str",
+        "description": "New summary",
+        "required": false
+      },
+      "command": {
+        "type": "str",
+        "description": "New slash command name",
+        "required": false
+      },
+      "parents": {
+        "type": "str",
+        "description": "New comma-separated parent paths (replaces)",
+        "required": false
+      },
+      "children": {
+        "type": "str",
+        "description": "New comma-separated child paths (replaces)",
+        "required": false
+      },
+      "tags": {
+        "type": "str",
+        "description": "New comma-separated tags (replaces)",
+        "required": false
+      },
+      "aliases": {
+        "type": "str",
+        "description": "New comma-separated aliases (replaces)",
+        "required": false
+      },
+      "dev_notes": {
+        "type": "str",
+        "description": "New dev-mode-only notes. Pass an empty string to clear.",
+        "required": false
+      }
+    },
+    "mutates_state": true,
+    "retry_policy": "manual",
+    "tags": [
+      "context",
+      "workflow",
+      "update"
+    ],
+    "parents": [
+      "context"
+    ]
   }
 }

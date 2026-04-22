@@ -5276,7 +5276,10 @@ def _knowledge_capabilities() -> list[Capability]:
         docs_query, docs_get, docs_index_build,
     )
     from work_buddy.knowledge.validate import docs_validate
-    from work_buddy.knowledge.editor import docs_create, docs_update, docs_delete, docs_move
+    from work_buddy.knowledge.editor import (
+        docs_create, docs_update, docs_delete, docs_move,
+        workflow_create, workflow_update,
+    )
     from work_buddy.knowledge.vault_editor import mint_personal_unit
 
     return [
@@ -5605,6 +5608,116 @@ def _knowledge_capabilities() -> list[Capability]:
                 "relocate knowledge",
                 "change unit path",
                 "move documentation",
+            ],
+        ),
+        Capability(
+            name="workflow_create",
+            description=(
+                "Create a new workflow unit (DAG + step instructions). "
+                "Use this instead of docs_create for kind='workflow' units — "
+                "docs_create does not accept workflow-specific fields."
+            ),
+            category="context",
+            parameters={
+                "path": {"type": "str", "description": "Unique path ID (e.g. 'dev/dev-document')", "required": True},
+                "name": {"type": "str", "description": "Human-readable name", "required": True},
+                "description": {"type": "str", "description": "One-line summary", "required": True},
+                "workflow_name": {"type": "str", "description": "Registry slug used with wb_run('<workflow_name>')", "required": True},
+                "steps": {
+                    "type": "str",
+                    "description": (
+                        "JSON array of step dicts. Each step requires at least "
+                        "id, name, step_type ('reasoning' or 'code'), and "
+                        "depends_on (list of prior step ids). Additional keys: "
+                        "auto_run, visibility, result_schema, invokes, optional."
+                    ),
+                    "required": True,
+                },
+                "step_instructions": {
+                    "type": "str",
+                    "description": (
+                        "JSON object mapping step_id -> instruction text. "
+                        "Reasoning steps generally need this; pure auto_run "
+                        "steps usually don't."
+                    ),
+                    "required": False,
+                },
+                "execution": {"type": "str", "description": "Default execution policy: 'main' or 'subagent' (default 'main')", "required": False},
+                "allow_override": {"type": "bool", "description": "Allow per-step execution override (default false)", "required": False},
+                "content_full": {"type": "str", "description": "Workflow-level context (philosophy, what-not-to-do). Surfaces at depth='full'.", "required": False},
+                "content_summary": {"type": "str", "description": "One-paragraph summary.", "required": False},
+                "command": {"type": "str", "description": "Slash command name (e.g. 'wb-dev-document')", "required": False},
+                "parents": {"type": "str", "description": "Comma-separated parent paths (typical: domain, e.g. 'dev')", "required": False},
+                "children": {"type": "str", "description": "Comma-separated child paths", "required": False},
+                "tags": {"type": "str", "description": "Comma-separated search tags", "required": False},
+                "aliases": {"type": "str", "description": "Comma-separated search aliases", "required": False},
+                "dev_notes": {"type": "str", "description": "Dev-mode-only notes about the workflow's internals", "required": False},
+            },
+            callable=workflow_create,
+            mutates_state=True,
+            retry_policy="manual",
+            search_aliases=[
+                "create workflow",
+                "new workflow",
+                "author workflow DAG",
+                "register workflow",
+                "add workflow unit",
+                "define workflow",
+            ],
+        ),
+        Capability(
+            name="workflow_update",
+            description=(
+                "Update an existing workflow unit. Only provided fields "
+                "change; omitted fields preserved. 'steps' and "
+                "'step_instructions' replace/merge rather than patch "
+                "individual entries — read the current value, mutate, "
+                "and pass the whole structure back."
+            ),
+            category="context",
+            parameters={
+                "path": {"type": "str", "description": "Path of workflow to update", "required": True},
+                "name": {"type": "str", "description": "New human-readable name", "required": False},
+                "description": {"type": "str", "description": "New one-line summary", "required": False},
+                "workflow_name": {"type": "str", "description": "New registry slug", "required": False},
+                "steps": {
+                    "type": "str",
+                    "description": (
+                        "JSON array replacing the DAG. Callers should read the "
+                        "current value via agent_docs, mutate, and pass back."
+                    ),
+                    "required": False,
+                },
+                "step_instructions": {
+                    "type": "str",
+                    "description": (
+                        "JSON object merged into step_instructions. Keys "
+                        "present in the new dict overwrite; keys absent are "
+                        "preserved. Pass the whole dict to replace cleanly."
+                    ),
+                    "required": False,
+                },
+                "execution": {"type": "str", "description": "New default execution policy", "required": False},
+                "allow_override": {"type": "bool", "description": "New allow_override flag", "required": False},
+                "content_full": {"type": "str", "description": "New workflow-level content", "required": False},
+                "content_summary": {"type": "str", "description": "New summary", "required": False},
+                "command": {"type": "str", "description": "New slash command name", "required": False},
+                "parents": {"type": "str", "description": "New comma-separated parent paths (replaces)", "required": False},
+                "children": {"type": "str", "description": "New comma-separated child paths (replaces)", "required": False},
+                "tags": {"type": "str", "description": "New comma-separated tags (replaces)", "required": False},
+                "aliases": {"type": "str", "description": "New comma-separated aliases (replaces)", "required": False},
+                "dev_notes": {"type": "str", "description": "New dev-mode-only notes. Pass an empty string to clear.", "required": False},
+            },
+            callable=workflow_update,
+            mutates_state=True,
+            retry_policy="manual",
+            search_aliases=[
+                "update workflow",
+                "edit workflow DAG",
+                "modify workflow steps",
+                "change workflow",
+                "patch workflow",
+                "edit step instructions",
             ],
         ),
         # ----- Unified knowledge query surface -----
