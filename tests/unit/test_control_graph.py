@@ -130,16 +130,20 @@ def test_wanted_component_with_healthy_probe_is_ok(mock_inputs):
     mock_inputs["prefs"]["telegram"] = mock_inputs["_FeaturePreference"](
         component_id="telegram", wanted=True,
     )
-    mock_inputs["health"]["components"] = [{
-        "id": "telegram",
-        "display_name": "Telegram Bot",
-        "category": "service",
-        "status": "healthy",
-        "wanted": True,
-        "depends_on": [],
-        "details": {},
-        "children": [],
-    }]
+    # telegram now hard-depends on sidecar (post hard/soft refactor), so
+    # sidecar must be healthy in the mock for telegram to be ok.
+    mock_inputs["health"]["components"] = [
+        {
+            "id": "telegram", "display_name": "Telegram Bot", "category": "service",
+            "status": "healthy", "wanted": True, "depends_on": ["sidecar"],
+            "details": {}, "children": [],
+        },
+        {
+            "id": "sidecar", "display_name": "Sidecar", "category": "external",
+            "status": "healthy", "wanted": None, "depends_on": [],
+            "details": {}, "children": [],
+        },
+    ]
     nodes = cg.build_graph(force=True)
     assert nodes["component:telegram"].effective_state == "ok"
 
@@ -352,6 +356,104 @@ def test_capability_resolver_computes_transitive_deps(mock_inputs):
     deps = resolve_dependencies("wf_x", registry=registry)
     assert "obsidian" in deps["components"]
     assert "cap_a" in deps["capabilities"]
+
+
+def test_soft_dep_down_degrades_not_blocks(mock_inputs):
+    """component:dashboard has soft deps on embedding/messaging/obsidian/hindsight.
+    Embedding being down should mark dashboard degraded, not blocked."""
+    mock_inputs["health"]["components"] = [
+        {
+            "id": "embedding", "display_name": "Embedding", "category": "service",
+            "status": "unavailable", "wanted": None, "depends_on": [],
+            "details": {}, "children": [],
+        },
+        {
+            "id": "dashboard", "display_name": "Dashboard", "category": "service",
+            "status": "healthy", "wanted": None, "depends_on": [],
+            "details": {}, "children": [],
+        },
+        {
+            "id": "sidecar", "display_name": "Sidecar", "category": "external",
+            "status": "healthy", "wanted": None, "depends_on": [],
+            "details": {}, "children": [],
+        },
+    ]
+    nodes = cg.build_graph(force=True)
+    # Embedding itself is degraded (unavailable → degraded via the
+    # component-state mapping) — confirmed.
+    assert nodes["component:embedding"].effective_state == "degraded"
+    # Dashboard: hard dep sidecar ok, soft dep embedding degraded.
+    # Should be degraded, NOT blocked.
+    assert nodes["component:dashboard"].effective_state == "degraded"
+    # The status reason should explain what's missing
+    reason = nodes["component:dashboard"].status_reason
+    assert "embedding" in reason.lower() or "Operating without" in reason
+
+
+def test_hard_dep_down_still_blocks(mock_inputs):
+    """Sanity: hard deps still produce `blocked` state as before.
+    Hindsight hard-depends on Postgres, so Postgres down → Hindsight blocked."""
+    mock_inputs["health"]["components"] = [
+        {
+            "id": "postgresql", "display_name": "PostgreSQL", "category": "external",
+            "status": "unavailable", "wanted": None, "depends_on": [],
+            "details": {}, "children": [],
+        },
+        {
+            "id": "hindsight", "display_name": "Hindsight", "category": "integration",
+            "status": "healthy", "wanted": None, "depends_on": ["postgresql"],
+            "details": {}, "children": [],
+        },
+    ]
+    nodes = cg.build_graph(force=True)
+    assert nodes["component:hindsight"].effective_state == "blocked"
+
+
+def test_soft_dep_disabled_does_not_degrade(mock_inputs):
+    """If a soft dep is `disabled` (user opted out), the parent is NOT
+    degraded — the user made an explicit choice to not use that feature,
+    so "operating without it" is the expected state, not a warning."""
+    mock_inputs["prefs"]["hindsight"] = mock_inputs["_FeaturePreference"](
+        component_id="hindsight", wanted=False,
+    )
+    # Dashboard has 4 soft deps: embedding, messaging, obsidian, hindsight.
+    # For this test to isolate the "disabled soft dep doesn't degrade"
+    # rule, the other 3 soft deps need healthy status so they don't
+    # cause an unrelated soft-degradation.
+    mock_inputs["health"]["components"] = [
+        {
+            "id": "dashboard", "display_name": "Dashboard", "category": "service",
+            "status": "healthy", "wanted": None, "depends_on": [],
+            "details": {}, "children": [],
+        },
+        {
+            "id": "sidecar", "display_name": "Sidecar", "category": "external",
+            "status": "healthy", "wanted": None, "depends_on": [],
+            "details": {}, "children": [],
+        },
+        {
+            "id": "embedding", "display_name": "Embedding", "category": "service",
+            "status": "healthy", "wanted": None, "depends_on": [],
+            "details": {}, "children": [],
+        },
+        {
+            "id": "messaging", "display_name": "Messaging", "category": "service",
+            "status": "healthy", "wanted": None, "depends_on": [],
+            "details": {}, "children": [],
+        },
+        {
+            "id": "obsidian", "display_name": "Obsidian", "category": "integration",
+            "status": "healthy", "wanted": None, "depends_on": [],
+            "details": {}, "children": [],
+        },
+    ]
+    nodes = cg.build_graph(force=True)
+    # hindsight gets "disabled" via the preference cascade
+    assert nodes["component:hindsight"].effective_state == "disabled"
+    # Dashboard: hard dep sidecar ok; soft deps embedding/messaging/obsidian
+    # all healthy; soft dep hindsight disabled (not "unhealthy").
+    # Should remain ok — disabled soft deps don't degrade.
+    assert nodes["component:dashboard"].effective_state == "ok"
 
 
 def test_core_component_preference_is_required(mock_inputs):

@@ -51,10 +51,29 @@ class Edge:
     ``mode='any'`` (deferred) is reserved for future "LM Studio OR Ollama"
     style fan-in. Phase A honors only ``mode='all'`` — every listed target
     must be healthy for the edge to be satisfied.
+
+    ``hardness`` distinguishes two semantic flavors:
+
+      - **hard** (default): if the target is down, *this node cannot
+        function*. Failure cascades as ``blocked`` up the chain.
+        Example: ``component:hindsight → component:postgresql`` —
+        Hindsight literally cannot start without PostgreSQL.
+      - **soft**: if the target is down, *this node works with reduced
+        functionality*. Failure cascades as ``degraded`` at worst; if
+        the target is merely ``disabled``, nothing propagates.
+        Example: ``component:dashboard → component:embedding`` —
+        the dashboard falls back to substring search without embeddings;
+        it's genuinely ``degraded``, not ``blocked``.
+
+    Adopting soft edges is what lets the graph model the real runtime
+    dependency shape (e.g. dashboard transitively needs a lot of things)
+    without lying by marking half the system blocked when one optional
+    helper goes down.
     """
 
     target_id: str
     mode: Literal["all", "any"] = "all"
+    hardness: Literal["hard", "soft"] = "hard"
     group: str | None = None
 
 
@@ -103,7 +122,12 @@ class ControlNode:
             "description": self.description,
             "grouping_parents": list(self.grouping_parents),
             "dependencies": [
-                {"target_id": e.target_id, "mode": e.mode, "group": e.group}
+                {
+                    "target_id": e.target_id,
+                    "mode": e.mode,
+                    "hardness": e.hardness,
+                    "group": e.group,
+                }
                 for e in self.dependencies
             ],
             "preference": self.preference,

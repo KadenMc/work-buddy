@@ -176,10 +176,16 @@ def _assemble() -> dict[str, ControlNode]:
         pref_obj = prefs.get(comp_id)
         preference = _preference_from_obj(pref_obj, is_core=comp.is_core)
 
-        # Dependency edges — from ComponentDef.depends_on (e.g. hindsight → postgresql)
+        # Dependency edges — both hard and soft.
+        # ``depends_on`` (hard, default): failure cascades as `blocked`.
+        # ``soft_depends_on``: failure cascades as `degraded` at worst.
         dep_edges = [
-            Edge(target_id=f"component:{dep_id}")
+            Edge(target_id=f"component:{dep_id}", hardness="hard")
             for dep_id in comp.depends_on
+        ]
+        dep_edges += [
+            Edge(target_id=f"component:{dep_id}", hardness="soft")
+            for dep_id in getattr(comp, "soft_depends_on", [])
         ]
 
         # Requirement ids for this component
@@ -370,59 +376,105 @@ def _derive_state(
     if effective_pref == "unwanted":
         return ("disabled", "Opted out via preferences", [])
 
-    # Rule 2 + 3: dependency cascade (only for kinds with explicit dep edges)
-    if node.dependencies:
-        dep_states = [
-            nodes[e.target_id].effective_state
-            for e in node.dependencies
-            if e.target_id in nodes and e.mode == "all"
+    # Dependency cascade — hard deps can block, soft deps can only
+    # degrade. Both kinds respect the "disabled children mean I'm fine"
+    # rule for soft edges (soft-dep disabled = we just don't use that
+    # optional feature) but not for hard edges (hard-dep disabled =
+    # we're genuinely blocked — the thing we need doesn't exist).
+    hard_edges = [
+        e for e in node.dependencies
+        if e.target_id in nodes and e.mode == "all" and e.hardness == "hard"
+    ]
+    soft_edges = [
+        e for e in node.dependencies
+        if e.target_id in nodes and e.mode == "all" and e.hardness == "soft"
+    ]
+
+    # ---- Hard-dep cascade ----
+    if hard_edges:
+        hard_states = [nodes[e.target_id].effective_state for e in hard_edges]
+        # All hard deps disabled → we're disabled too (nothing upstream
+        # to use, so we're effectively off)
+        if hard_states and all(s == "disabled" for s in hard_states):
+            return ("disabled", "All hard dependencies are disabled", [])
+        # Some (but not all) hard deps disabled → still blocked
+        disabled_hard = [
+            e.target_id for e in hard_edges
+            if nodes[e.target_id].effective_state == "disabled"
         ]
-        if dep_states and all(s == "disabled" for s in dep_states):
-            return ("disabled", "All dependencies are disabled", [])
-        blocked_by = [
-            e.target_id
-            for e in node.dependencies
-            if e.target_id in nodes
-            and e.mode == "all"
-            and nodes[e.target_id].effective_state == "disabled"
-        ]
-        if blocked_by:
-            # Mixed: some deps disabled, others fine — still blocked on them
+        if disabled_hard:
             return (
                 "blocked",
-                f"Blocked: dependency disabled ({', '.join(blocked_by)})",
-                blocked_by,
+                f"Blocked: hard dependency disabled ({', '.join(disabled_hard)})",
+                disabled_hard,
             )
+        # Any hard dep not-ok → blocked
         hard_blockers = [
-            e.target_id
-            for e in node.dependencies
-            if e.target_id in nodes
-            and e.mode == "all"
-            and nodes[e.target_id].effective_state
+            e.target_id for e in hard_edges
+            if nodes[e.target_id].effective_state
             in ("blocked", "unconfigured", "degraded", "unknown")
         ]
         if hard_blockers:
-            # Bubble up the worst — if any are blocked/unconfigured, propagate
-            # that; if only degraded/unknown, propagate blocked.
             return (
                 "blocked",
                 f"Blocked: {', '.join(hard_blockers)}",
                 hard_blockers,
             )
 
-    # Rule 4: kind-specific derivation
+    # ---- Soft-dep cascade ----
+    # Soft deps being `disabled` is a non-event (we just don't use that
+    # optional path). But soft deps in other unhealthy states make this
+    # node at most `degraded`.
+    soft_degraders = [
+        e.target_id for e in soft_edges
+        if nodes[e.target_id].effective_state
+        in ("blocked", "unconfigured", "degraded", "unknown")
+    ]
+    if soft_degraders:
+        # Stash for later — we still need to finish the kind-specific
+        # derivation to decide if the node is already in worse shape
+        # than degraded for some other reason.
+        _soft_degradation_reason = (
+            f"Operating without: {', '.join(soft_degraders)}"
+        )
+        _soft_degradation_list = soft_degraders
+    else:
+        _soft_degradation_reason = ""
+        _soft_degradation_list = []
+
+    # Rule 4: kind-specific derivation. If soft deps are unhealthy, we
+    # "soften" the kind-specific result: an otherwise-ok node becomes
+    # degraded; an already-worse node keeps its worse state.
+    def _soften(state: EffectiveState, reason: str, blockers: list[str]) -> tuple[EffectiveState, str, list[str]]:
+        if not _soft_degradation_list:
+            return (state, reason, blockers)
+        rank = {
+            "blocked": 0, "unconfigured": 1, "degraded": 2,
+            "unknown": 3, "ok": 4, "disabled": 5,
+        }
+        # If the kind-specific state is already worse than or equal to
+        # degraded, keep it — don't paper over a real problem with a
+        # soft-dep degradation message.
+        if rank.get(state, 99) <= rank["degraded"]:
+            return (state, reason, blockers)
+        # Otherwise (ok/unknown/disabled with live soft-dep issue)
+        merged_reason = _soft_degradation_reason
+        if reason and reason != merged_reason:
+            merged_reason = f"{reason}; also {_soft_degradation_reason}"
+        return ("degraded", merged_reason, _soft_degradation_list)
+
     if node.kind == "component":
-        return _derive_component_state(node, health_by_id)
+        return _soften(*_derive_component_state(node, health_by_id))
 
     if node.kind == "requirement":
         return _derive_requirement_state(node, req_by_id)
 
     if node.kind == "capability":
         # Deps-ok and preference-ok by this point → capability is ok
-        return ("ok", "", [])
+        return _soften("ok", "", [])
 
     if node.kind in ("subsystem", "domain"):
-        return _rollup_grouping(node, nodes)
+        return _soften(*_rollup_grouping(node, nodes))
 
     return ("unknown", "", [])
 

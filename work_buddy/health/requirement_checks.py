@@ -309,6 +309,69 @@ def check_tasks_plugin() -> dict[str, Any]:
         return {"ok": False, "detail": f"Could not read community-plugins.json: {exc}"}
 
 
+def check_work_buddy_plugin() -> dict[str, Any]:
+    """Check that the work-buddy Obsidian plugin is installed AND enabled.
+
+    The plugin (https://github.com/KadenMc/obsidian-work-buddy) is what
+    provides the Obsidian bridge HTTP endpoint on port 27125 that the
+    ``obsidian`` tool probe and every bridge-backed capability depends
+    on. If the plugin directory is absent OR the plugin id is missing
+    from community-plugins.json, the bridge will never come up no
+    matter how healthy Obsidian itself looks.
+
+    Two-part check:
+      1. Plugin directory exists under .obsidian/plugins/obsidian-work-buddy
+         with a manifest.json — proves it's installed.
+      2. Plugin id "work-buddy" appears in .obsidian/community-plugins.json
+         — proves it's enabled (Obsidian keeps this list authoritative).
+    """
+    vault = _vault_root()
+    if not vault or not vault.is_dir():
+        return {"ok": False, "detail": "vault_root is not set or doesn't exist"}
+
+    plugin_dir = vault / ".obsidian" / "plugins" / "obsidian-work-buddy"
+    manifest = plugin_dir / "manifest.json"
+    if not manifest.exists():
+        return {
+            "ok": False,
+            "detail": (
+                f"work-buddy plugin not installed at {plugin_dir} — "
+                "clone https://github.com/KadenMc/obsidian-work-buddy into "
+                ".obsidian/plugins/ and enable it under Settings → "
+                "Community Plugins."
+            ),
+        }
+
+    cp_file = vault / ".obsidian" / "community-plugins.json"
+    if not cp_file.exists():
+        return {
+            "ok": False,
+            "detail": (
+                "community-plugins.json not found — enable at least one "
+                "community plugin in Obsidian first."
+            ),
+        }
+    try:
+        with open(cp_file, encoding="utf-8") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError) as exc:
+        return {"ok": False, "detail": f"Could not read community-plugins.json: {exc}"}
+
+    if isinstance(data, list) and "work-buddy" in data:
+        return {
+            "ok": True,
+            "detail": "work-buddy plugin installed and enabled (bridge should respond on port 27125)",
+        }
+    return {
+        "ok": False,
+        "detail": (
+            "work-buddy plugin is installed but NOT enabled — "
+            "open Obsidian → Settings → Community Plugins and toggle "
+            "'Work Buddy' on."
+        ),
+    }
+
+
 def check_contracts_dir() -> dict[str, Any]:
     """Check that the contracts directory exists in the vault."""
     vault = _vault_root()

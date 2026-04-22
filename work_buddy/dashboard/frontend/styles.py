@@ -2480,9 +2480,44 @@ body {
     align-items: center;
     flex-wrap: wrap;
 }
-.settings-summary-kinds { color: var(--text-secondary); }
-.settings-summary-states { display: flex; gap: 6px; align-items: center; }
-.settings-summary-cache { color: var(--text-tertiary); margin-left: auto; font-family: monospace; font-size: 11px; }
+.settings-summary-totals { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.settings-summary-count { color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.settings-summary-cache { color: var(--text-tertiary); margin-left: auto; font-family: monospace; font-size: 11px; cursor: help; }
+
+.settings-summary-issues-header {
+    margin-top: 12px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+.settings-summary-issues {
+    margin-top: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+.settings-summary-issue {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    padding: 6px 10px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg);
+    cursor: pointer;
+    transition: background 0.1s;
+}
+.settings-summary-issue:hover { background: var(--bg-tertiary); }
+.settings-summary-issue-label { font-weight: 500; }
+.settings-summary-issue-reason { color: var(--text-secondary); font-size: 12px; font-style: italic; margin-left: auto; }
+.settings-summary-all-ok {
+    margin-top: 10px;
+    font-size: 12px;
+    color: var(--green);
+    font-style: italic;
+}
 
 .settings-domain {
     margin-bottom: 12px;
@@ -2647,6 +2682,40 @@ body {
 }
 .settings-pref-btn.pending { opacity: 0.6; }
 .settings-pref-btn:disabled { cursor: not-allowed; opacity: 0.45; }
+.badge-clickable {
+    cursor: pointer;
+    text-decoration: underline;
+    text-decoration-style: dotted;
+    text-decoration-thickness: 1px;
+    text-underline-offset: 2px;
+}
+.badge-clickable:hover {
+    filter: brightness(1.2);
+}
+
+.settings-dep-hardness {
+    margin-left: 6px;
+    padding: 0 4px;
+    font-size: 9px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    vertical-align: middle;
+    cursor: help;
+}
+
+@keyframes wbFlashPulse {
+    0%   { box-shadow: 0 0 0 0 rgba(248, 81, 73, 0.55); }
+    50%  { box-shadow: 0 0 0 6px rgba(248, 81, 73, 0.15); }
+    100% { box-shadow: 0 0 0 0 rgba(248, 81, 73, 0); }
+}
+.wb-flash {
+    animation: wbFlashPulse 0.9s ease-out 2;
+}
+
 .settings-pref-required {
     margin-top: 8px;
     display: inline-block;

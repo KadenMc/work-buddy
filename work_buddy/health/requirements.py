@@ -259,6 +259,21 @@ _register(RequirementDef(
 ))
 
 _register(RequirementDef(
+    id="obsidian/plugins/work-buddy-plugin",
+    component="obsidian",
+    description="work-buddy Obsidian bridge plugin is installed and enabled",
+    check_fn="work_buddy.health.requirement_checks.check_work_buddy_plugin",
+    severity="required",
+    fix_hint=(
+        "Clone https://github.com/KadenMc/obsidian-work-buddy into "
+        ".obsidian/plugins/ and enable 'Work Buddy' under Settings → "
+        "Community Plugins. This plugin provides the HTTP bridge on port "
+        "27125 that every Obsidian-backed capability relies on."
+    ),
+    setup_group="obsidian",
+))
+
+_register(RequirementDef(
     id="obsidian/contracts/dir-exists",
     component="obsidian",
     description="Contracts directory exists in vault",

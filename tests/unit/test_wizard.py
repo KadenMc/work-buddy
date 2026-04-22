@@ -257,6 +257,34 @@ class TestWizardPreferences:
         # Should not have called set_preference for unknown component
         assert all("totally_fake" not in str(c) for c in called)
 
+    def test_preferences_refuses_to_opt_out_core_component(
+        self, mock_preferences, monkeypatch
+    ):
+        """Core components (sidecar/messaging/embedding/dashboard) cannot
+        be opted out via apply_preference_updates. A malicious or stale
+        POST that tries to set features.sidecar.wanted=false should be
+        silently dropped — is_wanted() ignores such settings at read
+        time anyway, so admitting them to the config would just be
+        dead bytes."""
+        import work_buddy.health.preferences as pmod
+        from work_buddy.consent import grant_consent
+        called = []
+        monkeypatch.setattr(pmod, "set_preference",
+                            lambda *a, **kw: called.append((a, kw)))
+        grant_consent("setup.write_preferences", mode="once")
+
+        wizard = SetupWizard()
+        # Try to opt out sidecar (core) + obsidian (non-core) in one call
+        wizard.preferences(updates={
+            "sidecar": {"wanted": False},
+            "obsidian": {"wanted": False},
+        })
+        # sidecar write must NOT have happened; obsidian write must have.
+        any_sidecar = any("sidecar" in str(c) for c in called)
+        any_obsidian = any("obsidian" in str(c) for c in called)
+        assert not any_sidecar, f"sidecar write leaked: {called}"
+        assert any_obsidian, f"obsidian write missing: {called}"
+
 
 class TestWizardPreferencePropagation:
     """Verify that setting wanted=false affects health and requirements."""

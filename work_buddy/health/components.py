@@ -62,7 +62,16 @@ class ComponentDef:
     id: str
     display_name: str
     category: str
+    # Hard deps: if the target is unhealthy, THIS component is `blocked`.
+    # Use only for targets without which this component literally cannot
+    # function (e.g. Hindsight → PostgreSQL).
     depends_on: list[str] = field(default_factory=list)
+    # Soft deps: if the target is unhealthy, this component is at most
+    # `degraded`. Use for optional helpers whose absence reduces
+    # functionality but does not break the component (e.g. dashboard →
+    # embedding service — dashboard falls back to substring search).
+    # Added in the hard/soft-deps refactor (2026-04-22).
+    soft_depends_on: list[str] = field(default_factory=list)
     health_source: str = "tool_probe"
     check_sequence: list[CheckStep] = field(default_factory=list)
     sidecar_service: str | None = None
@@ -135,6 +144,10 @@ _register(ComponentDef(
     health_source="tool_probe",
     requirements=[
         "obsidian/vault/obsidian-dir",
+        # The bridge plugin is the reason this component exists — without
+        # it the HTTP probe has nothing to answer it. Listed first so
+        # it's the first thing users see when obsidian is broken.
+        "obsidian/plugins/work-buddy-plugin",
         "obsidian/daily-note/plugin-enabled",
         "obsidian/daily-note/dir-exists",
         "obsidian/daily-note/log-section",
@@ -234,6 +247,7 @@ _register(ComponentDef(
     display_name="Messaging Service",
     category="service",
     is_core=True,  # inter-agent + session hooks depend on it
+    depends_on=["sidecar"],  # supervised by the sidecar daemon
     health_source="composite",
     sidecar_service="messaging",
     check_sequence=[
@@ -250,6 +264,7 @@ _register(ComponentDef(
     display_name="Embedding Service",
     category="service",
     is_core=True,  # hybrid search + knowledge-index dense vectors depend on it
+    depends_on=["sidecar"],  # supervised by the sidecar daemon
     health_source="composite",
     sidecar_service="embedding",
     check_sequence=[
@@ -265,6 +280,7 @@ _register(ComponentDef(
     id="telegram",
     display_name="Telegram Bot",
     category="service",
+    depends_on=["sidecar"],  # supervised by the sidecar daemon
     health_source="composite",
     sidecar_service="telegram",
     requirements=["services/telegram/bot-token"],
@@ -287,6 +303,20 @@ _register(ComponentDef(
     display_name="Dashboard",
     category="service",
     is_core=True,  # this is the UI; turning it off turns off the Settings page itself
+    # The sidecar daemon supervises the dashboard process — if the
+    # sidecar is down the dashboard won't restart when it crashes, and
+    # there's no coordinated way to keep it alive. Modeled as hard.
+    depends_on=["sidecar"],
+    # Soft helpers — the dashboard degrades gracefully without them:
+    #   * embedding: hybrid search on tasks/chats/palette falls back to substring
+    #   * messaging: ack-poller thread for cross-surface notification dismiss
+    #   * obsidian: Obsidian-backed task/journal panels read markdown fallback
+    #   * hindsight: project memory queries surface "" instead of recall text
+    # None of these breaks the dashboard itself — they just reduce what
+    # it can show. Without hard/soft distinction these couldn't be
+    # modeled (listing them as hard would mark the dashboard blocked
+    # whenever any optional helper was down, which is wrong).
+    soft_depends_on=["embedding", "messaging", "obsidian", "hindsight"],
     health_source="sidecar",
     sidecar_service="dashboard",
     check_sequence=[

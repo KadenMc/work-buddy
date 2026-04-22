@@ -123,12 +123,25 @@ def apply_preference_updates(updates: dict[str, Any]) -> list[str]:
 
     ``updates`` maps component_id -> {"wanted": bool|None, "reason": str} or bool/None.
     Returns the list of component_ids that were written.
+
+    Core components (``ComponentDef.is_core=True``) are silently skipped
+    — the UI hides their toggle, but a stale cache or direct API call
+    could still attempt an update, which we reject at the write layer
+    so the config file never acquires a setting that would be ignored
+    at read time anyway.
     """
     from work_buddy.health.components import COMPONENT_CATALOG
 
     written: list[str] = []
     for comp_id, data in updates.items():
-        if comp_id not in COMPONENT_CATALOG:
+        comp = COMPONENT_CATALOG.get(comp_id)
+        if comp is None:
+            continue
+        # Core components cannot be opted out. Silently skip rather than
+        # raising — the caller (dashboard, agent, CLI) shouldn't need to
+        # know about the core/non-core distinction to dispatch preference
+        # updates in bulk.
+        if comp.is_core:
             continue
         if isinstance(data, dict):
             set_preference(

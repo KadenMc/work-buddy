@@ -226,8 +226,9 @@ def _html() -> str:
     <div class="settings-toolbar">
         <div class="section-title">Control Graph</div>
         <div class="settings-toolbar-controls">
-            <input type="text" id="settings-filter" class="task-search-input" placeholder="Filter by label or id..." />
-            <button class="chats-accent-btn" onclick="loadSettings(true)" title="Force a fresh build (bypass cache)">Rebuild</button>
+            <input type="text" id="settings-filter" class="task-search-input" placeholder="Filter by label or id (matches cascade up through parents)" />
+            <button class="chats-accent-btn" onclick="loadSettings(true)"
+                    title="Bypass the 45-second cache and re-read preferences, health, requirements, and registry from disk. Use after toggling config.local.yaml directly or restarting a service.">Force refresh</button>
         </div>
     </div>
     <div id="settings-summary" class="settings-summary"></div>
