@@ -2894,6 +2894,29 @@ body {
     gap: 6px;
     justify-content: flex-end;
 }
+/* Confirm-panel variant of the fix form — shown for programmatic
+   fixes so the user sees exactly what will change and clicks Apply
+   deliberately, instead of a terse browser window.confirm(). */
+.settings-fix-confirm-header {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    margin-bottom: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+.settings-fix-confirm-body {
+    padding: 6px 10px;
+    background: var(--accent-subtle);
+    border-left: 3px solid var(--accent);
+    border-radius: 2px;
+    font-size: 12px;
+    line-height: 1.45;
+    margin-bottom: 8px;
+    white-space: pre-wrap;
+}
+/* Apply inherits the accent-hover from .settings-fix-btn — no extra
+   chrome, just the same visual weight as other fix buttons. */
 """
 
 

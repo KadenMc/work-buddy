@@ -570,19 +570,26 @@ function _renderRequirementActions(r) {
     if (r.effective_state === 'ok' || r.effective_state === 'disabled') {
         return '';
     }
-    // Label + tooltip communicate the MODE of the fix so users know
-    // what happens on click BEFORE clicking — the previous single "Fix"
-    // label collapsed three quite different flows (instant apply,
-    // inline form, spawned agent) into one opaque button.
+    // Two user-facing verbs:
+    //   * "Configure" covers BOTH programmatic and input_required.
+    //     Internally, clicking it opens an inline panel: if the fix
+    //     needs input, the panel is a form; if not, the panel is a
+    //     preview-with-Apply-button so the user confirms the auto-
+    //     change before it happens. Same intent ("configure this
+    //     requirement to pass"), just branches on whether we need
+    //     values from the user.
+    //   * "Walk me through" means we're handing off to a Claude Code
+    //     session. Kept distinct because the side-effect (a new
+    //     terminal opens) is categorically different.
     let fixLabel = 'Fix';
     let fixClass = 'settings-fix-btn';
     let fixTitle = 'Apply the registered fix for this requirement';
-    if (r.fix_kind === 'programmatic') {
-        fixLabel = 'Apply';
-        fixTitle = 'Apply this fix now — no input needed. ' + (r.fix_preview || '');
-    } else if (r.fix_kind === 'input_required') {
+    if (r.fix_kind === 'programmatic' || r.fix_kind === 'input_required') {
         fixLabel = 'Configure';
-        fixTitle = 'Opens an inline form to collect the value, then applies. ' + (r.fix_preview || '');
+        fixTitle = (r.fix_kind === 'input_required'
+            ? 'Opens a form to collect the needed values, then applies. '
+            : 'Opens a preview of what will change, then applies on your confirm. ')
+            + (r.fix_preview || '');
     } else if (r.fix_kind === 'agent_handoff') {
         fixLabel = 'Walk me through';
         fixClass += ' settings-fix-btn-agent';
@@ -610,6 +617,20 @@ function _renderRequirementActions(r) {
 }
 
 // ---- Fix click ----
+//
+// Three code paths based on fix_kind:
+//
+//   * input_required → inline form panel, submit applies.
+//   * programmatic   → inline CONFIRM panel (shows preview + what
+//                      will change), Apply button commits. No
+//                      browser window.confirm() — that's ugly and
+//                      under-describes the change. The inline panel
+//                      is styled the same as the form panel so
+//                      both variants of Configure feel consistent.
+//   * agent_handoff  → still uses a lightweight confirm popover
+//                      (one question: "open a new terminal?") —
+//                      no data to preview, and the side effect is
+//                      self-evident once the terminal appears.
 async function onFixClick(btnEl) {
     if (WB_READ_ONLY_MODE) return;
     const reqId = btnEl.dataset.reqId;
@@ -619,21 +640,48 @@ async function onFixClick(btnEl) {
     try { params = JSON.parse(btnEl.dataset.fixParams || '{}'); } catch (e) { params = {}; }
 
     if (fixKind === 'input_required' && Object.keys(params).length > 0) {
-        // Render an inline form below the requirement row, replacing the
-        // action buttons until submission/cancel. Form is built from
-        // fix_params: {field: {type, label, default, required, hint, secret}}.
         _renderInputForm(btnEl, reqId, params);
         return;
     }
 
-    // programmatic | agent_handoff: confirm popover, then POST
-    const confirmText =
-        fixKind === 'agent_handoff'
-            ? 'This will open a new Claude Code terminal session to walk you through the fix. Proceed?'
-            : (preview ? `${preview}\n\nProceed?` : 'Apply the registered fix?');
-    if (!confirm(confirmText)) return;
+    if (fixKind === 'programmatic') {
+        _renderConfirmPanel(btnEl, reqId, preview);
+        return;
+    }
 
+    // agent_handoff: lightweight confirm + spawn
+    const ok = confirm('This will open a new Claude Code terminal session to walk you through the fix. Proceed?');
+    if (!ok) return;
     await _postFix(reqId, {}, btnEl);
+}
+
+// Inline confirmation panel for programmatic fixes. Mirrors the
+// structure of the input form so users see a consistent "Configure"
+// panel regardless of whether input is needed.
+function _renderConfirmPanel(btnEl, reqId, preview) {
+    const li = btnEl.closest('.settings-req-item');
+    if (!li) return;
+    const actions = li.querySelector('.settings-req-actions');
+    if (actions) actions.style.display = 'none';
+
+    const panel = document.createElement('div');
+    panel.className = 'settings-fix-form settings-fix-confirm';
+    panel.innerHTML = `
+        <div class="settings-fix-confirm-header">What will happen:</div>
+        <div class="settings-fix-confirm-body">${escapeHtml(preview || 'Apply the registered fix for this requirement.')}</div>
+        <div class="settings-fix-form-actions">
+            <button type="button" class="settings-fix-btn settings-fix-apply-btn">Apply</button>
+            <button type="button" class="settings-fix-cancel-btn">Cancel</button>
+        </div>
+    `;
+    panel.querySelector('.settings-fix-apply-btn').addEventListener('click', async (e) => {
+        await _postFix(reqId, {}, e.currentTarget);
+    });
+    panel.querySelector('.settings-fix-cancel-btn').addEventListener('click', () => {
+        panel.remove();
+        if (actions) actions.style.display = '';
+    });
+    li.appendChild(panel);
 }
 
 async function _postFix(reqId, params, btnEl) {
