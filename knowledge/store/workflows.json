@@ -1280,7 +1280,7 @@
           "input_map": {
             "journal_state": "read-journal"
           },
-          "timeout": 180
+          "timeout": 300
         },
         "visibility": {
           "mode": "summary",
@@ -1319,7 +1319,8 @@
     ],
     "parents": [
       "daily-journal"
-    ]
+    ],
+    "dev_notes": "The `collect` step calls `collect_scoped_context` which fans `collect_bundle` across ~10 sources. With cold caches and a multi-hour window, total wall time routinely lands in the 100-200s range (multi-repo GitSource across 16 repos adds ~5-15s on top of the chat/chrome/obsidian scans). Timeout raised from 180s -> 300s on 2026-04-23 after a real timeout in session 985e3e38 even with a 1-hour window. When `t-a373609f` lands (cache `max_age_seconds` plumbing), the caller can pass a floor so re-runs within a minute or two are instant and the timeout becomes largely cosmetic."
   },
   "tasks/weekly-review": {
     "kind": "workflow",
