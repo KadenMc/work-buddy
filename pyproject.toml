@@ -56,7 +56,18 @@ build-backend = "poetry.core.masonry.api"
 dev = [
     "pytest (>=9.0.3,<10.0.0)",
     "pytest-cov (>=7.1.0,<8.0.0)",
-    "freezegun (>=1.5.5,<2.0.0)"
+    "freezegun (>=1.5.5,<2.0.0)",
+    # Transformers 4.x ships a buggy lazy-loaded module
+    # (transformers/models/gemma4/image_processing_pil_gemma4.py) that
+    # references PILImageResampling at class-definition time but imports
+    # PIL only conditionally. Freezegun walks transformers.__dir__ for
+    # snapshotting when any test uses @freeze_time, which triggers the
+    # lazy-load → NameError if Pillow isn't installed. Our production
+    # code never touches transformers.models.gemma4 (we use BERT-family
+    # sentence-transformers models, not Gemma), so this is purely a
+    # test-env concern. Pinning Pillow here keeps CI stable without
+    # adding a production dep.
+    "Pillow (>=10.0.0)"
 ]
 docs = [
     "mkdocs (>=1.6.0,<2.0.0)",
