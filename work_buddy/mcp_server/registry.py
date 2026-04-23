@@ -2831,6 +2831,13 @@ def _journal_capabilities() -> list[Capability]:
             callable=lambda **kw: __import__("work_buddy.obsidian.vault_writer", fromlist=["write_at_location"]).write_at_location(**kw),
             requires=["obsidian"],
             mutates_state=True,
+            # Intentionally NO auto-retry policy here. The gateway's
+            # auto-enqueue is binary: it either retries every transient
+            # (incl. mid-write timeouts that may have partially persisted)
+            # or none. For section-insert that risks duplicates. Callers
+            # who hit ``EditorConflict`` can replay deliberately via
+            # ``obsidian_retry`` once the user finishes typing, or design
+            # the call to be idempotent at their layer.
         ),
         Capability(
             name="obsidian_retry",

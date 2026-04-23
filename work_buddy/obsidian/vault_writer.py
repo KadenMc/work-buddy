@@ -229,7 +229,7 @@ def write_at_location(
     from work_buddy.consent import ConsentRequired
 
     try:
-        ok = _write_note(note_rel_str, note_abs, new_content)
+        ok = vault_write(note_rel_str, note_abs, new_content)
     except ConsentRequired as exc:
         return {
             "status": "consent_required",
@@ -274,14 +274,31 @@ def _read_note(vault_rel_path: str, abs_path: Path) -> str | None:
         return None
 
 
-def _write_note(vault_rel_path: str, abs_path: Path, content: str) -> bool:
+def vault_write(vault_rel_path: str, abs_path: Path, content: str) -> bool:
     """Write a note, preferring Obsidian bridge, falling back to direct write.
 
-    Re-raises ConsentRequired — that's a hard stop, not a fallback case.
+    The "safe" vault write entry point for callers that don't own the file
+    via a plugin (journals, knowledge units, capture, generic content).
+
+    For task lines, contracts, and anything the Obsidian Tasks plugin owns
+    state for, use ``bridge.write_file_raw`` directly — the direct-write
+    fallback here would skip the plugin's mutation pipeline and corrupt
+    plugin-owned state (recurrence, done-dates, checkbox transitions). See
+    the ``obsidian/vault-write-decision`` knowledge unit for the picking
+    rule.
+
+    Re-raises:
+      - ``ConsentRequired`` — caller must handle consent flow.
+      - ``EditorConflict`` — bridge refused because the file is open with
+        unsaved typing. We DO NOT fall back to a direct write here:
+        clobbering the user's editor by writing to disk is exactly what
+        the conflict signal exists to prevent. Caller (or the gateway's
+        retry queue) should retry later when the user finishes editing.
     """
     import logging
     log = logging.getLogger(__name__)
     from work_buddy.consent import ConsentRequired
+    from work_buddy.obsidian.bridge import EditorConflict
 
     # Normalize path separators — bridge expects forward slashes
     vault_rel_path = vault_rel_path.replace("\\", "/")
@@ -297,6 +314,10 @@ def _write_note(vault_rel_path: str, abs_path: Path, content: str) -> bool:
             log.info("Bridge not available, falling back to direct write")
     except ConsentRequired:
         raise  # Caller must handle consent flow
+    except EditorConflict:
+        # Don't fall back. Direct disk write would still be clobbered by
+        # the user's next save. Surface the conflict to the caller.
+        raise
     except Exception as exc:
         log.warning("Bridge write failed: %s: %s", type(exc).__name__, exc)
 

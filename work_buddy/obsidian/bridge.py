@@ -10,8 +10,30 @@ import subprocess
 import time
 import urllib.parse
 from typing import Any
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+
+
+class EditorConflict(Exception):
+    """Bridge refused a write because an open editor has unsaved changes.
+
+    Raised by ``write_file_raw`` after the in-bridge retry schedule
+    (5s / 10s / 20s) is exhausted and the target file's editor still
+    has uncommitted typing. Callers should treat this as a "retry
+    later" signal — pushing to the existing retry queue is the right
+    response for programmatic writes; agents can choose to surface it
+    via ``wb_notify``.
+
+    Critically: callers MUST NOT fall back to direct filesystem writes
+    when this is raised. The whole point is that the user has unsaved
+    work in their editor; a direct write would still be clobbered the
+    moment they save.
+    """
+
+    def __init__(self, path: str, reason: str = "editor_dirty"):
+        self.path = path
+        self.reason = reason
+        super().__init__(f"editor_dirty: {path}")
 
 from work_buddy.config import load_config
 from work_buddy.consent import requires_consent
@@ -357,23 +379,145 @@ def read_file(path: str) -> str | None:
     return result.get("content")
 
 
+def _request_with_status(
+    method: str,
+    path: str,
+    data: dict | str | None = None,
+    timeout: int = 10,
+) -> tuple[int | None, dict | None]:
+    """Make a bridge request returning (status_code, body).
+
+    Distinct from ``_request`` because some callers — namely
+    ``write_file_raw`` — need to distinguish HTTP status codes
+    (specifically 409 Conflict) rather than collapsing every
+    non-2xx response into ``None``.
+
+    Returns ``(None, None)`` on network failure (bridge down,
+    socket timeout). Returns ``(status, body_or_None)`` for any
+    HTTP response — caller is responsible for status handling.
+    No retries; caller orchestrates them.
+    """
+    url = f"{_base_url()}{path}"
+    body = None
+    if data is not None:
+        if isinstance(data, dict):
+            body = json.dumps(data).encode("utf-8")
+        else:
+            body = data.encode("utf-8")
+
+    global _last_success_ts, _last_success_ms, _consecutive_failures
+    global _last_failure_reason
+
+    req = Request(url, data=body, method=method)
+    req.add_header("Content-Type", "application/json")
+
+    t0 = time.time()
+    try:
+        with urlopen(req, timeout=timeout) as resp:
+            elapsed_ms = (time.time() - t0) * 1000
+            _last_success_ts = time.time()
+            _last_success_ms = elapsed_ms
+            _consecutive_failures = 0
+            if resp.status == 204:
+                return resp.status, None
+            payload = resp.read().decode("utf-8")
+            return resp.status, json.loads(payload) if payload else None
+    except HTTPError as exc:
+        # 4xx/5xx — server reachable, structured response. Read the
+        # body if any so the caller can act on the error reason.
+        try:
+            payload = exc.read().decode("utf-8")
+            err_body = json.loads(payload) if payload else None
+        except Exception:
+            err_body = None
+        # 4xx is a structured refusal, not a bridge fault — don't bump
+        # _consecutive_failures (latency tracking is for connectivity,
+        # not application-level conflict).
+        return exc.code, err_body
+    except (TimeoutError, URLError, OSError) as exc:
+        _consecutive_failures += 1
+        _last_failure_reason = type(exc).__name__
+        logger.warning(
+            "Bridge request failed: %s %s — %s [%s]",
+            method, path, exc, get_latency_context(),
+        )
+        return None, None
+
+
 def write_file_raw(path: str, content: str) -> bool:
-    """Write or create a file by vault-relative path (no consent check).
+    """Write or create a vault file (bridge-only, no consent check, no fallback).
 
     For internal callers that handle consent at a higher level (e.g.,
-    ``append_to_journal`` which has its own ``@requires_consent``).
+    ``append_to_journal`` which has its own ``@requires_consent``) or
+    that own files the Tasks plugin has state for and so cannot use
+    the fallback-capable ``vault_write`` helper. See the
+    ``obsidian/vault-write-decision`` knowledge unit for the picking
+    rule between this and ``vault_write``.
 
-    Returns True on success, False on failure.
-    Uses a longer timeout (15s) and one retry to handle the bridge's
-    documented latency spikes, which are especially likely on file creation
-    with larger payloads.
+    Editor-conflict handling
+    ------------------------
+    The plugin returns ``409 Conflict`` if the target file is open in a
+    MarkdownView with unsaved typing — writing would silently clobber
+    the user's in-flight edits. This function retries on a 5s / 10s /
+    20s schedule (total ~35s) to span CM6's auto-save debounce + a
+    realistic typing window. If the conflict persists past the schedule,
+    raises ``EditorConflict``. Callers MUST NOT swallow that into a
+    direct filesystem write — see the ``EditorConflict`` docstring.
+
+    Returns
+    -------
+    True on success. False on transport failure (bridge down, timeout,
+    server-side 5xx). Raises ``EditorConflict`` if the editor-dirty
+    retry schedule is exhausted.
+
+    Bridge latency: uses a 15s per-request timeout (bridge has documented
+    multi-second latency spikes especially on creates with large payloads).
     """
     encoded = urllib.parse.quote(path, safe="/")
-    result = _request(
-        "PUT", f"/files/{encoded}", {"content": content},
-        timeout=15, retries=1,
-    )
-    return result is not None
+
+    # Editor-dirty retry schedule. First attempt is immediate (delay 0).
+    # Subsequent delays span CM6 debounce (~2s) plus realistic typing
+    # windows. ~35s total before raising. Keep this schedule short enough
+    # that callers in user-facing flows don't appear hung; long enough
+    # that "I was typing for 20 seconds" cases still resolve.
+    backoff_seconds = (0, 5, 10, 20)
+
+    for attempt, delay in enumerate(backoff_seconds):
+        if delay:
+            logger.info(
+                "Bridge write blocked by editor (attempt %d/%d): "
+                "waiting %ds before retry of %s",
+                attempt, len(backoff_seconds), delay, path,
+            )
+            time.sleep(delay)
+
+        status, body = _request_with_status(
+            "PUT", f"/files/{encoded}", {"content": content}, timeout=15,
+        )
+
+        if status is None:
+            # Network/timeout failure — separate concern from editor
+            # conflicts. Let normal retry queue / gateway machinery handle
+            # bridge-down recovery; don't burn through the 5/10/20 schedule
+            # waiting for a bridge that isn't there.
+            return False
+
+        if status in (200, 201):
+            return True
+
+        if status == 409:
+            # Editor dirty — wait and retry per backoff schedule.
+            continue
+
+        # Other 4xx/5xx — structural failure, no point retrying.
+        logger.warning(
+            "Bridge write failed: status=%d body=%r path=%s",
+            status, body, path,
+        )
+        return False
+
+    # Exhausted the backoff schedule still on 409s.
+    raise EditorConflict(path)
 
 
 @requires_consent(

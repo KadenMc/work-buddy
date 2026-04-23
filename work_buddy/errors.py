@@ -31,6 +31,14 @@ _TRANSIENT_PATTERNS: tuple[str, ...] = (
     "winerror 10061",    # Windows connection refused
     "errno 111",         # Linux connection refused
     "errno 104",         # Linux connection reset
+    "editor_dirty",      # Obsidian bridge editor-conflict (EditorConflict)
+)
+
+# Exception class names (not types) that are always transient. Name-based
+# matching keeps this module dependency-free — we don't have to import the
+# defining modules just to recognize their exceptions in classify_error.
+_TRANSIENT_EXCEPTION_NAMES: tuple[str, ...] = (
+    "EditorConflict",  # work_buddy.obsidian.bridge — see retry-queue note below
 )
 
 # Exception types that are always transient (regardless of message).
@@ -70,6 +78,8 @@ def classify_error(exc: Exception) -> str:
         return "transient"
 
     exc_type_name = type(exc).__name__
+    if exc_type_name in _TRANSIENT_EXCEPTION_NAMES:
+        return "transient"
     if exc_type_name in _PERMANENT_EXCEPTION_NAMES:
         return "permanent"
 
