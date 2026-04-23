@@ -458,66 +458,55 @@ def write_file_raw(path: str, content: str) -> bool:
     ------------------------
     The plugin returns ``409 Conflict`` if the target file is open in a
     MarkdownView with unsaved typing — writing would silently clobber
-    the user's in-flight edits. This function retries on a 5s / 10s /
-    20s schedule (total ~35s) to span CM6's auto-save debounce + a
-    realistic typing window. If the conflict persists past the schedule,
-    raises ``EditorConflict``. Callers MUST NOT swallow that into a
-    direct filesystem write — see the ``EditorConflict`` docstring.
+    the user's in-flight edits. We raise ``EditorConflict`` immediately
+    on the first 409 instead of retrying inside this function: the
+    payload we'd send on retry is the *same* bytes the caller composed
+    minutes ago, so even after the user's typing auto-saves to disk,
+    a bridge-level retry would clobber the saved typing with stale
+    content. Re-doing the read-modify-write is the caller's job.
+
+    The right place for that retry is the gateway's transient-error
+    auto-enqueue: ``EditorConflict`` is classified transient, and any
+    capability with ``retry_policy`` ``replay`` or ``verify_first``
+    will be re-invoked from scratch by the sidecar's retry sweep
+    (work_buddy/sidecar/retry_sweep.py) on adaptive backoff. Each
+    re-invocation reads the file fresh and recomputes the payload.
+
+    Callers MUST NOT swallow ``EditorConflict`` into a direct filesystem
+    write — see the ``EditorConflict`` docstring.
 
     Returns
     -------
     True on success. False on transport failure (bridge down, timeout,
-    server-side 5xx). Raises ``EditorConflict`` if the editor-dirty
-    retry schedule is exhausted.
+    server-side 5xx). Raises ``EditorConflict`` on a 409 from the plugin.
 
     Bridge latency: uses a 15s per-request timeout (bridge has documented
     multi-second latency spikes especially on creates with large payloads).
     """
     encoded = urllib.parse.quote(path, safe="/")
 
-    # Editor-dirty retry schedule. First attempt is immediate (delay 0).
-    # Subsequent delays span CM6 debounce (~2s) plus realistic typing
-    # windows. ~35s total before raising. Keep this schedule short enough
-    # that callers in user-facing flows don't appear hung; long enough
-    # that "I was typing for 20 seconds" cases still resolve.
-    backoff_seconds = (0, 5, 10, 20)
+    status, body = _request_with_status(
+        "PUT", f"/files/{encoded}", {"content": content}, timeout=15,
+    )
 
-    for attempt, delay in enumerate(backoff_seconds):
-        if delay:
-            logger.info(
-                "Bridge write blocked by editor (attempt %d/%d): "
-                "waiting %ds before retry of %s",
-                attempt, len(backoff_seconds), delay, path,
-            )
-            time.sleep(delay)
-
-        status, body = _request_with_status(
-            "PUT", f"/files/{encoded}", {"content": content}, timeout=15,
-        )
-
-        if status is None:
-            # Network/timeout failure — separate concern from editor
-            # conflicts. Let normal retry queue / gateway machinery handle
-            # bridge-down recovery; don't burn through the 5/10/20 schedule
-            # waiting for a bridge that isn't there.
-            return False
-
-        if status in (200, 201):
-            return True
-
-        if status == 409:
-            # Editor dirty — wait and retry per backoff schedule.
-            continue
-
-        # Other 4xx/5xx — structural failure, no point retrying.
-        logger.warning(
-            "Bridge write failed: status=%d body=%r path=%s",
-            status, body, path,
-        )
+    if status is None:
+        # Network/timeout failure — different failure mode from editor
+        # conflict. Surface as False so the existing fallback / retry
+        # machinery can handle it.
         return False
 
-    # Exhausted the backoff schedule still on 409s.
-    raise EditorConflict(path)
+    if status in (200, 201):
+        return True
+
+    if status == 409:
+        raise EditorConflict(path)
+
+    # Other 4xx/5xx — structural failure.
+    logger.warning(
+        "Bridge write failed: status=%d body=%r path=%s",
+        status, body, path,
+    )
+    return False
 
 
 @requires_consent(
