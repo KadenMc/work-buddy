@@ -74,6 +74,35 @@ def resolve_session_id(session_id: str) -> str:
     return full_id
 
 
+def get_session_cwd(session_id: str) -> str | None:
+    """Recover the working directory a session ran in from its JSONL.
+
+    Claude Code stamps ``cwd`` onto every conversation turn after the first
+    few bookkeeping entries. We scan a small prefix of the file for the first
+    non-empty value. Returns ``None`` if the session can't be found or no
+    ``cwd`` is stamped in the first 50 records.
+    """
+    try:
+        path, _ = resolve_session_path(session_id)
+    except FileNotFoundError:
+        return None
+    try:
+        with path.open("r", encoding="utf-8") as fh:
+            for i, line in enumerate(fh):
+                if i >= 50:
+                    break
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                cwd = rec.get("cwd")
+                if cwd:
+                    return str(cwd)
+    except OSError:
+        return None
+    return None
+
+
 # ---------------------------------------------------------------------------
 # ConversationSession
 # ---------------------------------------------------------------------------

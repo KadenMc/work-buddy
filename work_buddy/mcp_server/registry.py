@@ -3925,6 +3925,27 @@ def _remote_session_capabilities() -> list[Capability]:
             bypass_permissions=bypass_permissions,
         )
 
+    def _session_resume(
+        session_id: str,
+        cwd: str | None = None,
+        bypass_permissions: bool = True,
+    ) -> dict:
+        # Resume into a local terminal — no remote-control, no prompt.
+        # cwd defaults to the session's own recorded cwd via begin_session.
+        # Validate up-front: begin_session falls back to a bare `claude
+        # --resume` if resolution fails, which spawns a useless terminal.
+        from work_buddy.sessions.inspector import resolve_session_id
+        try:
+            resolved = resolve_session_id(session_id)
+        except FileNotFoundError as exc:
+            return {"status": "error", "error": str(exc)}
+        return begin_session(
+            cwd=cwd,
+            session_id=resolved,
+            bypass_permissions=bypass_permissions,
+            remote_control=False,
+        )
+
     def _remote_list(cwd: str | None = None) -> dict:
         sessions = list_resumable_sessions(cwd=cwd or str(_REPO_ROOT))
         return {
@@ -3979,6 +4000,43 @@ def _remote_session_capabilities() -> list[Capability]:
             ],
             mutates_state=True,
             retry_policy="manual",
+        ),
+        Capability(
+            name="session_resume",
+            description=(
+                "Resume an existing Claude Code session in a new local "
+                "terminal window. No prompt is sent and remote-control is "
+                "off — the terminal opens directly into the conversation, "
+                "ready for the user to type. cwd is auto-derived from the "
+                "session's recorded working directory."
+            ),
+            category="sidecar",
+            parameters={
+                "session_id": {
+                    "type": "str",
+                    "description": "Full or partial (>=8-char prefix) session UUID to resume.",
+                    "required": True,
+                },
+                "cwd": {
+                    "type": "str",
+                    "description": "Override the working directory. Defaults to the session's own recorded cwd, falling back to repo root.",
+                    "required": False,
+                },
+                "bypass_permissions": {
+                    "type": "bool",
+                    "description": "Add --dangerously-skip-permissions. Default: True.",
+                    "required": False,
+                },
+            },
+            callable=_session_resume,
+            search_aliases=[
+                "resume session", "continue session", "reopen chat",
+                "pick up conversation", "claude --resume", "reattach",
+                "open terminal to session",
+            ],
+            mutates_state=True,
+            retry_policy="manual",
+            consent_operations=["sidecar:remote_session_launch"],
         ),
         Capability(
             name="remote_session_list",
