@@ -146,9 +146,9 @@ def mint_personal_unit(
     full_content = "\n".join(fm_lines) + "\n\n" + body
 
     # Write via vault_writer pattern
-    from work_buddy.obsidian.vault_writer import _write_note
+    from work_buddy.obsidian.vault_writer import vault_write
 
-    success = _write_note(full_vault_rel, abs_path, full_content)
+    success = vault_write(full_vault_rel, abs_path, full_content)
 
     if not success:
         return {"error": f"Failed to write {full_vault_rel}"}
@@ -229,8 +229,8 @@ def _append_evidence(
     fm_yaml = yaml.dump(fm, default_flow_style=False, allow_unicode=True).strip()
     full_content = f"---\n{fm_yaml}\n---\n\n{body}"
 
-    from work_buddy.obsidian.vault_writer import _write_note
-    success = _write_note(vault_rel, abs_path, full_content)
+    from work_buddy.obsidian.vault_writer import vault_write
+    success = vault_write(vault_rel, abs_path, full_content)
 
     if not success:
         return {"error": f"Failed to update {vault_rel}"}

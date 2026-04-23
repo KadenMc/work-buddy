@@ -2785,6 +2785,12 @@ def _journal_capabilities() -> list[Capability]:
             requires=["obsidian"],
             mutates_state=True,
             consent_operations=["update_journal_entry", "morning.persist_briefing"],
+            # ``verify_first`` so EditorConflict gets re-invoked from scratch
+            # by the sidecar (each retry re-reads + re-applies). Trade-off:
+            # a mid-write timeout that *did* persist server-side could
+            # duplicate a log entry. Low probability; preferable to silent
+            # clobber-the-user's-typing.
+            retry_policy="verify_first",
         ),
         Capability(
             name="day_planner",
@@ -2831,6 +2837,16 @@ def _journal_capabilities() -> list[Capability]:
             callable=lambda **kw: __import__("work_buddy.obsidian.vault_writer", fromlist=["write_at_location"]).write_at_location(**kw),
             requires=["obsidian"],
             mutates_state=True,
+            # ``verify_first`` so the sidecar retry sweep re-invokes this
+            # capability from scratch on transient failure. Critical for
+            # the EditorConflict path: each retry must re-read the file +
+            # re-find the section + re-splice. Retrying the same payload
+            # at a lower layer would clobber any typing the user managed
+            # to auto-save during the wait. Trade-off: a mid-write TCP
+            # timeout that *did* persist server-side would duplicate the
+            # insert on retry. Low-probability vs. the high-probability
+            # silent-clobber case we're avoiding.
+            retry_policy="verify_first",
         ),
         Capability(
             name="obsidian_retry",

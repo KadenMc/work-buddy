@@ -11,15 +11,16 @@
     ],
     "children": [
       "obsidian/bridge",
-      "obsidian/vault-writer",
-      "obsidian/datacore-query-directions",
       "obsidian/calendar",
+      "obsidian/datacore-query-directions",
       "obsidian/day-planner",
       "obsidian/ktr",
       "obsidian/smart-ecosystem",
       "obsidian/tags",
       "obsidian/tasks-plugin",
-      "obsidian/vault-events"
+      "obsidian/vault-events",
+      "obsidian/vault-write-decision",
+      "obsidian/vault-writer"
     ],
     "content": {
       "summary": "work-buddy integrates with Obsidian via an HTTP bridge plugin on port 27125. Subsystems include tasks, datacore, smart connections, day planner, and vault events.",
@@ -294,6 +295,37 @@
     ],
     "parents": [
       "obsidian"
+    ]
+  },
+  "obsidian/vault-write-decision": {
+    "kind": "system",
+    "name": "Picking a Vault Write Path",
+    "description": "When to use bridge.write_file_raw directly vs. vault_write — the safe/fallback distinction explained",
+    "content": {
+      "full": "## Two paths, on purpose\n\nWork-buddy has two ways to write a vault file from Python. They look similar; pick the wrong one and you either lose data on bridge outages or corrupt plugin-owned state.\n\n| Helper | Behavior on bridge down | Use for |\n|---|---|---|\n| `work_buddy.obsidian.vault_writer.vault_write(path, abs_path, content)` | Falls back to atomic direct filesystem write | Journals, knowledge units, capture, generic content the user typed (no plugin owns state for these files) |\n| `work_buddy.obsidian.bridge.write_file_raw(path, content)` | Returns False; no fallback | Master task list (`tasks/master-task-list.md`), task notes, archives, contract files — anything the Obsidian Tasks plugin has live cache state for |\n\n## Why the split is principled\n\nThe Tasks plugin maintains a runtime cache of every task in the vault. Mutations are supposed to flow through `executeToggleTaskDoneCommand` and `task.handleNewStatus` so recurrence rolls forward, done-dates fire, checkbox transitions propagate, and the cache reindexes correctly (see `obsidian/tasks-plugin`).\n\nA direct `Path.write_text()` to the master task list bypasses ALL of that. The file on disk would be correct momentarily, but the plugin's in-memory cache would be stale until the next vault rescan, and any mutation the plugin then applied would be against pre-write state. Recurring tasks would lose their schedule, done-dates would be wrong, and so on.\n\nNon-task files have no equivalent plugin invariant, so falling back to a direct write is safe — the bridge is just a delivery mechanism.\n\n## EditorConflict (both paths)\n\nBoth helpers route through `bridge.write_file_raw` when the bridge is up. That function raises `EditorConflict` **immediately** on the first `409` from the plugin's pre-flight dirty-editor check. There is no in-bridge retry: retrying the same payload bytes after the user's typing auto-saves to disk would silently clobber those saved keystrokes. Re-reading + re-computing the payload is the *caller's* job — in practice, the gateway's retry queue (`architecture/retry-queue`).\n\nCapabilities with `retry_policy=\"verify_first\"` or `\"replay\"` auto-enqueue on transient errors; the sidecar sweep re-invokes the whole capability from scratch on adaptive backoff (10 / 20 / 45 / 90 / 120s), so each attempt reads the file fresh. `vault_write_at_location`, `journal_write`, and the task mutation family all carry `verify_first` for this reason.\n\n`vault_write` deliberately does NOT fall back to a direct disk write on `EditorConflict` — such a write would still be clobbered the moment the user saves. The conflict signal exists precisely to prevent that.\n\n## Decision recipe\n\n1. Does the Obsidian Tasks plugin (or any other plugin with a live cache) own state for this file? → `bridge.write_file_raw`.\n2. Otherwise → `vault_writer.vault_write`.\n3. Either way: be ready for `ConsentRequired` and `EditorConflict`. Do not catch + ignore them — they are deliberate refusals.\n\n## Anti-patterns\n\n- **Retrying a write with the same payload after the user has been typing.** The whole reason EditorConflict is raised at the first 409 is that a later retry with the original payload would clobber whatever the user auto-saved in the interim. Retry must go through the gateway / sidecar so each attempt re-computes the payload.\n- **Falling back to direct write on `EditorConflict`.** The conflict signal exists precisely to prevent the disk-clobbers-editor scenario. Bypassing it re-introduces the bug.\n- **Using `vault_write` for `master-task-list.md`.** The fallback on bridge-down would silently corrupt the Tasks-plugin cache.\n- **Re-implementing the section-aware logic in callers.** `vault_writer.write_at_location` already handles section parsing; reach for it before duplicating.",
+      "summary": "Two vault-write entry points exist on purpose. vault_write (with direct-write fallback) for content the agent fully owns. bridge.write_file_raw (bridge-only) for files the Tasks plugin has live state for."
+    },
+    "tags": [
+      "obsidian",
+      "bridge",
+      "vault",
+      "write",
+      "fallback",
+      "tasks-plugin",
+      "architecture"
+    ],
+    "aliases": [
+      "vault write decision",
+      "which write helper",
+      "_write_note vs write_file_raw",
+      "fallback rules"
+    ],
+    "parents": [
+      "obsidian"
+    ],
+    "entry_points": [
+      "work_buddy.obsidian.bridge",
+      "work_buddy.obsidian.vault_writer"
     ]
   }
 }
