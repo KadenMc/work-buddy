@@ -2123,9 +2123,10 @@ body {
 }
 .chats-hdr-btn:hover { color: var(--text-primary); border-color: var(--accent); }
 .chats-hdr-btn.active { border-color: var(--accent); color: var(--accent); }
-.chats-hdr-btn.primary { border-color: var(--accent); color: var(--accent); }
-.chats-hdr-btn.primary:hover { background: var(--accent); color: #fff; }
 .chats-hdr-btn[disabled] { opacity: 0.5; cursor: wait; }
+.chats-hdr-divider {
+    width: 1px; background: var(--border); align-self: stretch; margin: 0 2px;
+}
 .chats-in-search {
     padding: 8px 12px; background: var(--bg-secondary);
     border: 1px solid var(--border); border-top: none;

@@ -1219,8 +1219,9 @@ function renderChatHeader(meta) {
         + (meta.start_time ? ' &middot; ' + formatTimestamp(meta.start_time) : '')
         + '</div>'
         + '<div class="chats-hdr-right">'
-        + '<button class="chats-hdr-btn primary" id="chats-hdr-resume" onclick="chatsResumeSession()" title="Open a local terminal and resume this session (claude --resume). No prompt sent.">Resume</button>'
+        + '<button class="chats-hdr-btn" id="chats-hdr-resume" onclick="chatsResumeSession()" title="Open a new local terminal and resume this session (claude --resume). No prompt sent.">Resume</button>'
         + '<button class="chats-hdr-btn" onclick="chatsToggleInSearch()">Search</button>'
+        + '<span class="chats-hdr-divider"></span>'
         + '<button class="chats-hdr-btn' + (chatsState.roleFilter === 'user' ? ' active' : '') + '" onclick="chatsFilterRole(&#39;user&#39;)">User</button>'
         + '<button class="chats-hdr-btn' + (chatsState.roleFilter === 'assistant' ? ' active' : '') + '" onclick="chatsFilterRole(&#39;assistant&#39;)">Assistant</button>'
         + '<button class="chats-hdr-btn' + (!chatsState.roleFilter ? ' active' : '') + '" onclick="chatsFilterRole(null)">All</button>'
@@ -1230,6 +1231,7 @@ function renderChatHeader(meta) {
 async function chatsResumeSession() {
     var sid = chatsState.selectedId;
     if (!sid) return;
+    if (!confirm('Open a new Claude Code terminal and resume this session? (claude --resume — no prompt sent, but a new window will appear on your desktop.)')) return;
     var btn = document.getElementById('chats-hdr-resume');
     var originalLabel = btn ? btn.textContent : 'Resume';
     if (btn) { btn.disabled = true; btn.textContent = 'Opening…'; }

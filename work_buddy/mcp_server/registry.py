@@ -4036,6 +4036,7 @@ def _remote_session_capabilities() -> list[Capability]:
             ],
             mutates_state=True,
             retry_policy="manual",
+            consent_operations=["sidecar:remote_session_launch"],
         ),
         Capability(
             name="remote_session_list",
