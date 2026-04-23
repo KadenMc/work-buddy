@@ -61,9 +61,12 @@ nav:
 - Architecture:
   - Architecture & Repo Structure: handbook/architecture.md
   - Artifact System: handbook/architecture_artifact-system.md
+  - Context Pipeline: handbook/architecture_context-pipeline.md
   - Contracts: handbook/architecture_contracts.md
+  - Control Graph: handbook/architecture_control-graph.md
   - Embedding Service: handbook/architecture_embedding-service.md
   - Knowledge System: handbook/architecture_knowledge-system.md
+  - LLM Runner: handbook/architecture_llm-runner.md
   - Local LLM With Tools: handbook/architecture_llm-with-tools.md
   - MCP Server Import Discipline: handbook/architecture_mcp-import-discipline.md
   - Repository Structure: handbook/architecture_repo-structure.md
@@ -95,10 +98,12 @@ nav:
   - Collect And Orient: handbook/context_collect-and-orient.md
   - Context Collection Directions: handbook/context_collect-directions.md
   - Context Review Directions: handbook/context_context-review-directions.md
+  - Context Block: handbook/context_context_block.md
   - Context Bundle: handbook/context_context_bundle.md
   - Context Calendar: handbook/context_context_calendar.md
   - Context Chat: handbook/context_context_chat.md
   - Context Chrome: handbook/context_context_chrome.md
+  - Context Drill Down: handbook/context_context_drill_down.md
   - Context Git: handbook/context_context_git.md
   - Context Messages: handbook/context_context_messages.md
   - Context Obsidian: handbook/context_context_obsidian.md
@@ -143,6 +148,10 @@ nav:
   - Session Inspection: handbook/context_sessions.md
   - Triage Execute: handbook/context_triage_execute.md
   - Triage Item Detail: handbook/context_triage_item_detail.md
+  - Triage Review Pool: handbook/context_triage_review_pool.md
+  - Triage Submit: handbook/context_triage_submit.md
+  - Workflow Create: handbook/context_workflow_create.md
+  - Workflow Update: handbook/context_workflow_update.md
 - Contracts:
   - Contracts: handbook/contracts.md
   - Active Contracts: handbook/contracts_active_contracts.md
@@ -164,8 +173,11 @@ nav:
   - Update Journal: handbook/daily-journal_update-journal.md
 - Dev:
   - Development: handbook/dev.md
-  - Work-Buddy Commit: handbook/dev_commit.md
   - MCP Gateway Design Tenets: handbook/dev_design-tenets.md
+  - Dev Commit: handbook/dev_dev-commit.md
+  - Dev Commit Directions: handbook/dev_dev-commit-directions.md
+  - Dev Doc Update: handbook/dev_dev-document.md
+  - Dev Doc Update Directions: handbook/dev_dev-document-directions.md
   - Development Mode: handbook/dev_dev-mode.md
   - Dev-Mode Orientation: handbook/dev_dev-orient.md
   - Documentation Architecture: handbook/dev_documentation-architecture.md
@@ -175,7 +187,14 @@ nav:
   - Stress Test: handbook/dev_stress-test.md
 - Features:
   - Features: handbook/features.md
+  - LM Studio Embedding Offload Setup: handbook/features_lmstudio-offload-setup.md
   - Feature Preferences: handbook/features_preferences.md
+- Inline:
+  - Inline Commands: handbook/inline.md
+  - Inline Consume Modes: handbook/inline_consume-modes.md
+  - Inline Commands Directions: handbook/inline_directions.md
+  - Inline Commands Overview: handbook/inline_overview.md
+  - Inline Persistent Watchers: handbook/inline_persistence.md
 - Journal:
   - Journal: handbook/journal.md
   - Activity Timeline: handbook/journal_activity_timeline.md
@@ -183,6 +202,7 @@ nav:
   - Hot Files: handbook/journal_hot_files.md
   - Journal Sign In: handbook/journal_journal_sign_in.md
   - Journal State: handbook/journal_journal_state.md
+  - Journal Triage Scan: handbook/journal_journal_triage_scan.md
   - Journal Write: handbook/journal_journal_write.md
   - Running Notes: handbook/journal_running_notes.md
   - Journal Update Directions: handbook/journal_update-directions.md
@@ -237,6 +257,7 @@ nav:
   - Tag Wrangler Integration: handbook/obsidian_tags.md
   - Obsidian Tasks Plugin Integration: handbook/obsidian_tasks-plugin.md
   - Vault Event Tracking: handbook/obsidian_vault-events.md
+  - Picking a Vault Write Path: handbook/obsidian_vault-write-decision.md
   - Vault Location Writer: handbook/obsidian_vault-writer.md
 - Operations:
   - Operations: handbook/operations.md
@@ -296,7 +317,10 @@ nav:
   - Task Handoff Directions: handbook/tasks_handoff-directions.md
   - Inline Todos: handbook/tasks_inline-todos.md
   - Inline TODOs Directions: handbook/tasks_inline-todos-directions.md
+  - Namespace Lookup: handbook/tasks_namespace_lookup.md
+  - Task New: handbook/tasks_task-new.md
   - Task Creation Directions: handbook/tasks_task-new-directions.md
+  - Task Read Directions: handbook/tasks_task-read-directions.md
   - Scattered Tasks Directions: handbook/tasks_task-scattered-directions.md
   - Task Triage: handbook/tasks_task-triage.md
   - Task Archive: handbook/tasks_task_archive.md
@@ -305,8 +329,11 @@ nav:
   - Task Change State: handbook/tasks_task_change_state.md
   - Task Create: handbook/tasks_task_create.md
   - Task Delete: handbook/tasks_task_delete.md
+  - Task Namespace Suggest: handbook/tasks_task_namespace_suggest.md
+  - Task Read: handbook/tasks_task_read.md
   - Task Review Inbox: handbook/tasks_task_review_inbox.md
   - Task Scattered: handbook/tasks_task_scattered.md
+  - Task Set Tags: handbook/tasks_task_set_tags.md
   - Task Stale Check: handbook/tasks_task_stale_check.md
   - Task Sync: handbook/tasks_task_sync.md
   - Task Toggle: handbook/tasks_task_toggle.md
@@ -323,4 +350,7 @@ nav:
   - Thread List: handbook/threads_thread_list.md
   - Thread Poll: handbook/threads_thread_poll.md
   - Thread Send: handbook/threads_thread_send.md
+- Triage:
+  - Triage: handbook/triage.md
+  - Inline Triage Scan: handbook/triage_inline_triage_scan.md
 # AUTOGEN_NAV_END

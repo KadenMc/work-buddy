@@ -102,7 +102,42 @@ class ConversationSource:
                 i = end
                 continue
 
-            # dense_text: first user msg + first assistant text
+            # dense_text: first user msg + first assistant text.
+            #
+            # !! TOOL-ONLY SPANS ARE NOT INDEXED / NOT SEARCHABLE.
+            # Spans where the first user msg AND the first assistant
+            # message are both tool-call-only yield an empty dense_text
+            # (user_texts[0] and asst_texts[0] are either missing or '').
+            # Those spans exist in the SQLite document store but have
+            # NO VECTOR in the .npz — meaning:
+            #
+            #   * They DO NOT participate in dense/semantic retrieval.
+            #   * They DO NOT appear in ``context_search`` results for
+            #     the conversation source under method='semantic' or
+            #     method='keyword,semantic'.
+            #   * They DO still have ``display_text`` and metadata in
+            #     the SQLite store, so substring search (``method='substring'``)
+            #     can still find them.
+            #
+            # Operational consequence: for large conversation corpora,
+            # roughly HALF of all spans end up with empty dense_text.
+            # Expect ``vector_count`` in ``ir_index(status)`` to be
+            # ~50% of ``doc_count`` on this source. That is NOT a
+            # backlog. See ``dense_eligible_docs`` / ``pending_eligible``
+            # in the status payload for the real backlog signal.
+            #
+            # This is a deliberate retrieval-quality choice: tool-only
+            # turns tend to be noise for semantic search (tool-result
+            # payloads are often verbose boilerplate). But it IS a
+            # limitation worth being explicit about — tool-result
+            # searching is its own beast and not what the conversation
+            # dense index is for.
+            #
+            # If it ever needs to change (e.g., tool-heavy spans turn
+            # out to be retrieval-valuable for some flow), the fix is
+            # to fall back to ``display_text`` here when
+            # user_texts[0]+asst_texts[0] are both empty. Open design
+            # question; not a bug in the current design.
             dense_parts = []
             if user_texts:
                 dense_parts.append(user_texts[0])

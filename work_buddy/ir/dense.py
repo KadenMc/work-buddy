@@ -258,11 +258,23 @@ def _encode_bulk_direct(
     batch_size: int = 32,
     kind: str = "passage",
 ) -> np.ndarray:
-    """Encode documents in-process (no HTTP).
+    """Encode documents in-process (no HTTP to our own embedding service).
 
-    When running inside the embedding service (``_IN_SERVICE``), reuses the
-    already-loaded models from the service registry. Otherwise loads a
-    fresh SentenceTransformer for standalone / CLI usage.
+    Dispatches on the model's configured provider:
+
+    * ``provider: sentence_transformer`` (default) — in-process encode
+      via the ``SentenceTransformer`` loaded in the embedding service
+      registry (or a freshly-loaded one for CLI usage).
+    * ``provider: lmstudio`` — POST to LM Studio's ``/v1/embeddings``
+      endpoint. See ``docs/handbook/features_lmstudio-offload-setup.md``
+      for the full setup procedure (GGUF audit, drift test, config).
+      On error, honors the model's ``on_error`` setting:
+        - ``on_error: fallback`` (default) — falls back to the local
+          sentence_transformer path. The cosine drift between Q8 GGUF
+          and fp32 sentence-transformers is ~0.0002 in practice, so
+          mixed-provenance vectors cluster correctly for retrieval.
+        - ``on_error: fail`` — re-raises. Useful for research workflows
+          that need single-provenance vectors.
 
     ``kind="passage"`` uses ``leaf-ir`` (asymmetric document encoder),
     ``kind="label"`` uses ``leaf-mt`` (symmetric).
@@ -273,18 +285,79 @@ def _encode_bulk_direct(
     # leaf-mt encodes without a prompt; leaf-ir uses the "document" prompt.
     prompt = None if kind == "label" else "document"
 
+    # Load per-model config once so both provider dispatch and the
+    # local fallback path read from the same source of truth.
+    from work_buddy.config import load_config
+    cfg = load_config()
+    model_cfg = (
+        cfg.get("embedding", {}).get("models", {}).get(model_key, {}) or {}
+    )
+    provider = (model_cfg.get("provider") or "sentence_transformer").lower()
+
+    # Route to the LM Studio provider when opted in. Fallback logic is
+    # deliberately shallow: try once, on error either fail loudly or
+    # quietly drop to the local path. We do not silently retry LM
+    # Studio — a flaky link should surface as a provider error once,
+    # not hundreds of times across a 7k-row encode loop.
+    if provider == "lmstudio":
+        on_error = (model_cfg.get("on_error") or "fallback").lower()
+        lmstudio_model_id = model_cfg.get("lmstudio_model")
+        if not lmstudio_model_id:
+            msg = (
+                f"embedding.models.{model_key}.provider is 'lmstudio' "
+                "but lmstudio_model is not set. Refusing to proceed "
+                "with an unknown model id."
+            )
+            if on_error == "fail":
+                raise ValueError(msg)
+            logger.warning("%s — falling back to sentence_transformer", msg)
+        else:
+            try:
+                from work_buddy.embedding.providers.lmstudio import (
+                    encode as lmstudio_encode,
+                    resolve_base_url,
+                )
+                base_url = resolve_base_url(cfg)
+                logger.info(
+                    "Bulk-encoding %d texts via LM Studio "
+                    "(model_key=%s, lmstudio_model=%s, base_url=%s)",
+                    len(texts), model_key, lmstudio_model_id, base_url,
+                )
+                # LM Studio handles batching natively on the server;
+                # batch_size here bounds the HTTP payload size.
+                vecs = lmstudio_encode(
+                    texts,
+                    model_id=lmstudio_model_id,
+                    base_url=base_url,
+                    batch_size=batch_size,
+                )
+                print(
+                    f"  Encoded {len(texts)}/{len(texts)} documents "
+                    f"(via LM Studio).", file=sys.stderr,
+                )
+                return vecs
+            except Exception as exc:
+                if on_error == "fail":
+                    # Re-raise as-is to preserve the error_kind on
+                    # LocalInferenceError so callers can classify.
+                    raise
+                logger.warning(
+                    "LM Studio bulk encode failed (%s: %s) — falling "
+                    "back to local sentence_transformer for kind=%s",
+                    type(exc).__name__, exc, kind,
+                )
+                # fall through to the local path
+
+    # Local (sentence_transformers) path — the default, and the
+    # fallback when LM Studio is misconfigured or unreachable.
     if _IN_SERVICE:
         from work_buddy.embedding.service import _get_model
         model = _get_model(model_key)  # may trigger lazy load on first call
         logger.info("Using in-service %s model for bulk encoding (kind=%s)",
                     model_key, kind)
     else:
-        from work_buddy.config import load_config
-        cfg = load_config()
         default_hf = "MongoDB/mdbr-leaf-mt" if kind == "label" else "MongoDB/mdbr-leaf-ir-asym"
-        model_name = cfg.get("embedding", {}).get("models", {}).get(
-            model_key, {}
-        ).get("name", default_hf)
+        model_name = model_cfg.get("name", default_hf)
         from sentence_transformers import SentenceTransformer
         logger.info("Loading %s for bulk encoding (kind=%s)...", model_name, kind)
         model = SentenceTransformer(model_name)

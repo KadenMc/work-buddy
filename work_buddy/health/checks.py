@@ -81,6 +81,53 @@ def check_postgresql() -> dict[str, Any]:
     return _tcp_check(5432, timeout=2.0)
 
 
+def check_lmstudio() -> dict[str, Any]:
+    """Check LM Studio is reachable on the configured base URL.
+
+    LM Studio is an optional external service — the embedding system
+    uses sentence-transformers by default, but can offload the passage
+    encoder to LM Studio's ``/v1/embeddings`` endpoint (see
+    ``docs/handbook/features_lmstudio-offload-setup.md``). This check
+    surfaces "is LM Studio actually reachable?" on the Settings page so
+    the user gets a clear answer when a configured ``provider:
+    lmstudio`` entry doesn't work.
+
+    Uses the same base-URL resolution helper as the embedding provider
+    so both read from the single ``lmstudio.base_url`` config key.
+    Probes ``GET /v1/models`` — a ``200`` confirms the server is both
+    up and responding to the OpenAI-compatible API surface.
+    """
+    from work_buddy.embedding.providers.lmstudio import resolve_base_url
+    from work_buddy.config import load_config
+
+    base_url = resolve_base_url(load_config())
+    # Parse host/port from base_url for the TCP pre-check. Falls back
+    # to (127.0.0.1, 1234) if parsing fails so we still get a useful
+    # probe result rather than a traceback.
+    host, port = "127.0.0.1", 1234
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(base_url)
+        if parsed.hostname:
+            host = parsed.hostname
+        if parsed.port:
+            port = parsed.port
+    except Exception:
+        pass
+
+    tcp = _tcp_check(port, host=host, timeout=1.5)
+    if not tcp["ok"]:
+        return {
+            "ok": False,
+            "detail": (
+                f"LM Studio not reachable at {base_url} "
+                f"(port {port} closed). Start LM Studio and enable its "
+                f"local server (Developer tab → Start Server)."
+            ),
+        }
+    return _http_check(port, "/v1/models", timeout=5.0)
+
+
 def check_obsidian_bridge() -> dict[str, Any]:
     """Check Obsidian bridge health endpoint.
 

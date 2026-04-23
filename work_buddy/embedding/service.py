@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import re
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -58,7 +59,25 @@ _DEFAULT_MODEL = "leaf-mt"
 
 @dataclass
 class ModelEntry:
-    """Runtime state for a registered model."""
+    """Runtime state for a registered model.
+
+    Each entry carries its own ``load_cond`` so a slow ``_load_model()``
+    call on one model does NOT block ``_get_model()`` calls for a
+    *different* model. The global ``_registry_lock`` is only used for
+    dict-level operations (init, iteration during eviction) — never
+    held across the actual SentenceTransformer instantiation, which
+    can take 5+ seconds and would otherwise starve interactive
+    queries that only need the small query-side model.
+
+    Fields:
+        _loading: True while some thread is actively running
+            ``_load_model(self)``. Other threads entering
+            ``_get_model`` wait on ``load_cond`` until this flips
+            back to False.
+        load_cond: Per-entry condition variable coordinating the
+            double-checked load. Replaces the old global lock for
+            model-loading concerns.
+    """
 
     key: str  # short name, e.g. "leaf-mt"
     hf_name: str  # HuggingFace model ID
@@ -66,7 +85,7 @@ class ModelEntry:
     eager: bool = True
     model: Any = field(default=None, repr=False)  # SentenceTransformer | None
     load_time_s: float | None = None
-    status: str = "pending"  # "pending" | "loaded" | "error"
+    status: str = "pending"  # "pending" | "loading" | "loaded" | "error"
     error: str | None = None
     last_used_at: float = 0.0  # monotonic timestamp of last _get_model hit
     # Guards against the "loaded model never released" leak. Models
@@ -75,12 +94,19 @@ class ModelEntry:
     # RAM for the life of the service — hundreds of MB per model.
     # The idle-evictor thread below drops models whose
     # last_used_at is older than IDLE_EVICT_SECONDS.
+    _loading: bool = field(default=False, repr=False)
+    load_cond: threading.Condition = field(
+        default_factory=threading.Condition, repr=False,
+    )
 
 
 _registry: dict[str, ModelEntry] = {}
 _default_model_key: str = _DEFAULT_MODEL
 _device: str | None = None  # resolved device string ("cpu", "cuda", etc.)
-_registry_lock = __import__("threading").RLock()
+# Only protects the _registry dict itself (init, iteration for eviction).
+# Loading is coordinated per-entry via ModelEntry.load_cond so a slow
+# load of one model never blocks access to another.
+_registry_lock = threading.RLock()
 
 # Evict any non-eager model whose last use is older than this many seconds.
 # Eager models (leaf-mt, leaf-ir-query by default) are never evicted — they
@@ -121,6 +147,75 @@ def _init_registry(cfg: dict | None = None) -> None:
           file=sys.stderr)
 
 
+def _validate_lmstudio_providers(cfg: dict | None = None) -> None:
+    """Log a loud WARN at startup when any model opts into LM Studio but
+    LM Studio isn't reachable.
+
+    Purely informational — dispatch at encode time handles the actual
+    fallback based on each model's ``on_error`` config. This exists so
+    the user gets a breadcrumb the moment the service boots, rather
+    than having to wait for the next ir-index-rebuild to notice a
+    silently-misconfigured provider.
+
+    Does nothing when no model has ``provider: lmstudio`` configured —
+    common case for users who never opted in. Never blocks startup.
+    """
+    embed_cfg = (cfg or {}).get("embedding", {})
+    models_cfg = embed_cfg.get("models", {}) or {}
+    opted_in = {
+        key: mcfg for key, mcfg in models_cfg.items()
+        if isinstance(mcfg, dict)
+        and (mcfg.get("provider") or "").lower() == "lmstudio"
+    }
+    if not opted_in:
+        return
+
+    from work_buddy.embedding.providers.lmstudio import validate_reachable
+    report = validate_reachable(cfg)
+    if report["ok"]:
+        # Also verify each opted-in model id appears in the
+        # loaded-models list. Missing isn't fatal (LM Studio can
+        # JIT-load cataloged models on first request) but it's worth
+        # surfacing: if the id is wrong, every encode will fail.
+        loaded_ids = set(report.get("model_ids") or [])
+        for key, mcfg in opted_in.items():
+            want = mcfg.get("lmstudio_model")
+            if not want:
+                print(
+                    f"WARNING: embedding.models.{key}.provider is "
+                    f"'lmstudio' but no lmstudio_model is set. Will "
+                    f"fail every encode until configured.",
+                    file=sys.stderr,
+                )
+                continue
+            if want not in loaded_ids:
+                print(
+                    f"WARNING: embedding.models.{key}.lmstudio_model "
+                    f"= {want!r} is NOT in LM Studio's loaded models "
+                    f"({sorted(loaded_ids)}). LM Studio may JIT-load "
+                    f"it on first request; if not, set on_error: "
+                    f"fallback or correct the id.",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    f"LM Studio provider for embedding.models.{key} "
+                    f"verified — model {want!r} is loaded at "
+                    f"{report['base_url']}.",
+                    file=sys.stderr,
+                )
+    else:
+        keys = ", ".join(sorted(opted_in))
+        print(
+            f"WARNING: models [{keys}] have provider: lmstudio but "
+            f"LM Studio is not reachable — {report['detail']}. Bulk "
+            f"document encoding will fall back to sentence_transformer "
+            f"for any model with on_error: fallback, and fail hard for "
+            f"any with on_error: fail.",
+            file=sys.stderr,
+        )
+
+
 def _load_model(entry: ModelEntry) -> None:
     """Load a single model into memory."""
     from sentence_transformers import SentenceTransformer
@@ -146,18 +241,79 @@ def _load_model(entry: ModelEntry) -> None:
 
 
 def _get_model(key: str | None = None) -> Any:
-    """Return a loaded model by key, loading lazily if needed."""
+    """Return a loaded model by key, loading lazily if needed.
+
+    Concurrency contract:
+      * Fast path (model already loaded): no lock acquired. Returns the
+        model reference immediately.
+      * Slow path (model needs loading): coordinates via a per-entry
+        ``load_cond``. Only one thread actually runs ``_load_model``;
+        other threads requesting the same model wait on the condition.
+        Threads requesting a *different* model never block — each
+        entry has its own condition.
+      * The actual ``_load_model`` call runs OUTSIDE any held lock so
+        concurrent access to other models isn't starved during the
+        5-second SentenceTransformer instantiation.
+    """
     key = key or _default_model_key
     entry = _registry.get(key)
     if entry is None:
-        raise ValueError(f"Unknown model '{key}'. Available: {list(_registry.keys())}")
-    with _registry_lock:
-        if entry.model is None and entry.status != "error":
-            _load_model(entry)
-        if entry.model is None:
-            raise RuntimeError(f"Model '{key}' failed to load: {entry.error}")
+        raise ValueError(
+            f"Unknown model '{key}'. Available: {list(_registry.keys())}"
+        )
+
+    # Fast path: already loaded. No lock acquired.
+    if entry.model is not None:
         entry.last_used_at = time.monotonic()
         return entry.model
+    if entry.status == "error":
+        raise RuntimeError(f"Model '{key}' failed to load: {entry.error}")
+
+    # Slow path: coordinate via per-entry condition. This lock is only
+    # ever contended among threads wanting THIS specific model.
+    with entry.load_cond:
+        # Re-check under lock — another thread may have loaded it or
+        # marked it errored in the tiny window between the fast-path
+        # check and this acquisition.
+        if entry.model is not None:
+            entry.last_used_at = time.monotonic()
+            return entry.model
+        if entry.status == "error":
+            raise RuntimeError(f"Model '{key}' failed to load: {entry.error}")
+
+        if entry._loading:
+            # Another thread is already loading this entry. Wait for
+            # completion and re-check. ``wait`` releases the cond
+            # while blocked and re-acquires before returning.
+            while entry._loading:
+                entry.load_cond.wait()
+            if entry.model is not None:
+                entry.last_used_at = time.monotonic()
+                return entry.model
+            raise RuntimeError(
+                f"Model '{key}' failed to load: {entry.error}"
+            )
+
+        # This thread claims the load.
+        entry._loading = True
+        entry.status = "loading"
+
+    # Load OUTSIDE entry.load_cond — crucially, we hold no locks during
+    # the slow SentenceTransformer instantiation. Other threads
+    # requesting THIS model will enter the `wait` branch above and
+    # park harmlessly on the condition. Threads requesting OTHER
+    # models are unaffected.
+    try:
+        _load_model(entry)
+    finally:
+        with entry.load_cond:
+            entry._loading = False
+            entry.load_cond.notify_all()
+
+    if entry.model is None:
+        raise RuntimeError(f"Model '{key}' failed to load: {entry.error}")
+    entry.last_used_at = time.monotonic()
+    return entry.model
 
 
 def _evict_model(entry: "ModelEntry") -> bool:
@@ -655,6 +811,18 @@ def main():
 
     # Build model registry from config (cheap — just metadata)
     _init_registry(cfg)
+
+    # Surface LM Studio configuration drift at startup (loud but
+    # non-fatal). Keeps the user informed when they've opted into
+    # offloading but LM Studio isn't actually up, without blocking
+    # the service — fallback paths kick in at encode time.
+    try:
+        _validate_lmstudio_providers(cfg)
+    except Exception as exc:
+        print(
+            f"LM Studio provider validation raised (non-fatal): {exc}",
+            file=sys.stderr,
+        )
 
     # Enable in-service mode for dense retrieval so it calls models
     # directly instead of HTTP round-tripping to itself. Set before

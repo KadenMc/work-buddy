@@ -31,3 +31,32 @@ dashboard:
 #     wanted: true
 #   chrome_extension:
 #     wanted: true
+
+# --- LM Studio embedding offload (optional) ---
+# Route document-side passage encoding to LM Studio's /v1/embeddings
+# instead of loading the sentence-transformers passage model in-process.
+# Saves ~500 MB RSS on the main machine; can also forward to a remote
+# compute device via LM Link.
+#
+# Query encoding ALWAYS stays local — this only affects bulk document
+# encoding during ir-index-rebuild.
+#
+# Full setup procedure (GGUF download, metadata audit, drift test):
+#   docs/handbook/features_lmstudio-offload-setup.md
+#
+# lmstudio:
+#   base_url: "http://localhost:1234"    # bare server root, no /v1 suffix
+#
+# embedding:
+#   models:
+#     leaf-ir:
+#       name: "MongoDB/mdbr-leaf-ir-asym"
+#       dims: 768
+#       eager: false
+#       provider: lmstudio
+#       lmstudio_model: "text-embedding-snowflake-arctic-embed-m-v1.5"
+#       # fallback: drop to sentence_transformer on LM Studio errors.
+#       #   Measured drift is ~0.0002 cosine — retrieval-safe to mix.
+#       # fail: re-raise. Use for research workflows that need
+#       #   single-provenance vectors in the index.
+#       on_error: fallback
