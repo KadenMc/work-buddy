@@ -44,27 +44,36 @@ def _cfg_with_overrides(**overrides: Any) -> dict[str, Any]:
 def get_git_context(*, days: int = 7, dirty_only: bool = False, annotate: bool = False) -> str:
     """Recent git activity across all repos: commits, diffs, dirty trees.
 
+    Delegates to the multi-repo :class:`work_buddy.context.sources.git.GitSource`,
+    which walks every ``.git`` directory under ``cfg['repos_root']``.
+
     Args:
         days: Lookback window for detailed commit history.
         dirty_only: If true, only include repos with uncommitted changes.
         annotate: If true, tag commits made by agent sessions with their
-            session ID.  Slower — scans JSONL session files.
+            session ID. Slower — scans JSONL session files.
     """
-    from work_buddy.collectors import git_collector
+    from work_buddy.context.sources.git import GitSource
+    from work_buddy.context.types import ContextRequest, ContextDepth
 
-    cfg = _cfg_with_overrides(
-        git__detail_days=days,
-        git__dirty_only=dirty_only,
-    )
-    # Keep active_days at least as wide as detail_days
-    cfg["git"]["active_days"] = max(days, cfg["git"].get("active_days", 30))
-
-    session_map = None
+    custom: dict[str, Any] = {
+        "dirty_only": dirty_only,
+        "include_status": True,
+        "max_commits": 100,
+    }
     if annotate:
         from work_buddy.sessions.inspector import build_session_map
-        session_map = build_session_map(days=days)
+        custom["session_map"] = build_session_map(days=days)
 
-    return git_collector.collect(cfg, session_map=session_map)
+    src = GitSource()
+    request = ContextRequest(
+        sources=["git"],
+        window_days=days,
+        depth=ContextDepth.DEEP,
+        custom={"git": custom},
+    )
+    section = src.collect(request)
+    return src.render(section, ContextDepth.DEEP)
 
 
 def get_obsidian_context(*, journal_days: int = 7, modified_days: int = 3) -> str:
@@ -777,10 +786,10 @@ def get_projects_context() -> str:
     in repos, task project tags, git activity, and contracts.
     Also syncs results to the project store.
     """
-    from work_buddy.collectors import project_collector
+    from work_buddy.projects.sync import sync_projects
 
     cfg = _cfg_with_overrides()
-    return project_collector.collect(cfg)
+    return sync_projects(cfg)
 
 
 # ---------------------------------------------------------------------------
@@ -973,7 +982,7 @@ def project_discover() -> str:
     promote real projects.
     """
     import json
-    from work_buddy.collectors import project_collector
+    from work_buddy.projects import sync as project_sync
     from work_buddy.projects import store
 
     cfg = _cfg_with_overrides()
@@ -982,8 +991,8 @@ def project_discover() -> str:
     git_days = cfg.get("git", {}).get("detail_days", 7)
 
     # Gather signals
-    task_counts = project_collector._scan_task_projects(vault_root)
-    git_activity = project_collector._scan_git_activity(repos_root, days=git_days)
+    task_counts = project_sync._scan_task_projects(vault_root)
+    git_activity = project_sync._scan_git_activity(repos_root, days=git_days)
 
     # Get confirmed slugs
     confirmed = {p["slug"] for p in store.list_projects()}

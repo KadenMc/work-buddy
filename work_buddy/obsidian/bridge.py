@@ -55,6 +55,8 @@ _last_success_ts: float = 0.0      # epoch of last successful request
 _last_success_ms: float = 0.0      # latency of last successful request
 _consecutive_failures: int = 0     # reset on success
 _last_failure_reason: str = ""     # e.g. "TimeoutError", "ConnectionRefusedError"
+_last_failure_kind: str = ""       # "timeout" | "unreachable" | "http_error" | ""
+_last_failure_status: int | None = None  # HTTP status on 4xx/5xx, else None
 
 
 def _record_probe_success(elapsed_ms: float) -> None:
@@ -78,6 +80,122 @@ def _record_probe_failure(reason: str) -> None:
     global _consecutive_failures, _last_failure_reason
     _consecutive_failures += 1
     _last_failure_reason = reason
+
+
+def get_last_bridge_state() -> dict[str, Any]:
+    """Classify the most recent bridge failure into the four-state taxonomy.
+
+    Returns a dict with:
+
+    * ``state``: one of ``"ok"`` (no recent failure), ``"timeout"`` (state
+      2 — bridge responding slowly), ``"obsidian_not_running"`` (state
+      1), ``"plugin_not_installed"`` (state 3),
+      ``"plugin_disabled"`` (state 4), ``"http_error"`` (non-2xx /
+      non-409 response from the bridge), or ``"unknown"`` (filesystem
+      check couldn't resolve the vault).
+    * ``detail``: human-readable one-liner explaining the state.
+    * ``status``: HTTP status code if state is ``"http_error"``, else
+      ``None``.
+    * ``reason``: the underlying exception class name if available.
+
+    Safe to call from any thread; reads module-level counters set by
+    ``_request_with_status`` + the filesystem ``get_work_buddy_plugin_state``
+    check. Cheap — no network, one optional filesystem touch.
+    """
+    if _last_failure_kind == "":
+        return {"state": "ok", "detail": "no recent failure", "status": None, "reason": ""}
+
+    if _last_failure_kind == "timeout":
+        return {
+            "state": "timeout",
+            "detail": (
+                "Bridge port is open but the request timed out — Obsidian is "
+                "alive but the plugin is busy, the event loop is stalled, or "
+                "a latency spike is in progress."
+            ),
+            "status": None,
+            "reason": _last_failure_reason,
+        }
+
+    if _last_failure_kind == "http_error":
+        return {
+            "state": "http_error",
+            "detail": f"Bridge returned HTTP {_last_failure_status}",
+            "status": _last_failure_status,
+            "reason": _last_failure_reason,
+        }
+
+    # _last_failure_kind == "unreachable" — connection refused / DNS /
+    # host down. Disambiguate state 1 vs 3 vs 4 via the filesystem
+    # check. Keep it cheap: process check first (state 1), fall through
+    # to plugin state.
+    if not is_obsidian_running():
+        return {
+            "state": "obsidian_not_running",
+            "detail": "Obsidian is not running (port 27125 unreachable, Obsidian.exe not found).",
+            "status": None,
+            "reason": _last_failure_reason,
+        }
+
+    try:
+        from work_buddy.health.requirement_checks import get_work_buddy_plugin_state
+        plugin_state, plugin_detail = get_work_buddy_plugin_state()
+    except Exception as exc:
+        return {
+            "state": "unknown",
+            "detail": f"Unable to inspect plugin state: {exc}",
+            "status": None,
+            "reason": _last_failure_reason,
+        }
+
+    if plugin_state == "not_installed":
+        return {
+            "state": "plugin_not_installed",
+            "detail": (
+                "Obsidian is running but the work-buddy plugin is not "
+                f"installed ({plugin_detail}). Install from "
+                "https://github.com/KadenMc/obsidian-work-buddy."
+            ),
+            "status": None,
+            "reason": _last_failure_reason,
+        }
+
+    if plugin_state == "disabled":
+        return {
+            "state": "plugin_disabled",
+            "detail": (
+                "Obsidian is running and the plugin is installed but not "
+                f"enabled ({plugin_detail}). Open Obsidian → Settings → "
+                "Community Plugins and toggle 'Work Buddy' on."
+            ),
+            "status": None,
+            "reason": _last_failure_reason,
+        }
+
+    # plugin_state == "ok" — plugin enabled but port still unreachable.
+    # This is the ambiguous case: state 1 process check said "running",
+    # plugin is on, yet TCP refused. Most likely a race (Obsidian just
+    # started, plugin not loaded yet) or a port binding error.
+    if plugin_state == "unknown":
+        return {
+            "state": "unknown",
+            "detail": (
+                f"Bridge unreachable; plugin state could not be resolved: "
+                f"{plugin_detail}."
+            ),
+            "status": None,
+            "reason": _last_failure_reason,
+        }
+    return {
+        "state": "obsidian_not_running",
+        "detail": (
+            "Bridge port refused connection despite Obsidian appearing "
+            "to be running with the plugin enabled — Obsidian may still "
+            "be starting up, or the plugin failed to bind to port 27125."
+        ),
+        "status": None,
+        "reason": _last_failure_reason,
+    }
 
 
 def get_latency_context() -> str:
@@ -194,6 +312,29 @@ def _request(
 
 
 _bridge_confirmed = False
+
+
+def _probe_port_open(timeout: float = 0.5) -> bool:
+    """Fast TCP check: is the bridge port actually listening?
+
+    Distinguishes "port refused" (states 1/3/4 in the four-state
+    taxonomy) from "port open but HTTP hung" (state 2). Used by
+    ``_request_with_status`` as a fallback when the urllib exception
+    stringification doesn't cleanly identify the underlying cause
+    (common on Windows where ``ConnectionRefusedError`` can surface as
+    an OSError whose message mentions "timed out").
+    """
+    import socket
+    try:
+        cfg = load_config()
+        port = cfg.get("obsidian", {}).get("bridge_port", 27125)
+    except Exception:
+        port = 27125
+    try:
+        with socket.create_connection(("127.0.0.1", int(port)), timeout=timeout):
+            return True
+    except (OSError, socket.timeout):
+        return False
 
 
 def is_obsidian_running() -> bool:
@@ -406,7 +547,7 @@ def _request_with_status(
             body = data.encode("utf-8")
 
     global _last_success_ts, _last_success_ms, _consecutive_failures
-    global _last_failure_reason
+    global _last_failure_reason, _last_failure_kind, _last_failure_status
 
     req = Request(url, data=body, method=method)
     req.add_header("Content-Type", "application/json")
@@ -418,6 +559,8 @@ def _request_with_status(
             _last_success_ts = time.time()
             _last_success_ms = elapsed_ms
             _consecutive_failures = 0
+            _last_failure_kind = ""
+            _last_failure_status = None
             if resp.status == 204:
                 return resp.status, None
             payload = resp.read().decode("utf-8")
@@ -433,10 +576,35 @@ def _request_with_status(
         # 4xx is a structured refusal, not a bridge fault — don't bump
         # _consecutive_failures (latency tracking is for connectivity,
         # not application-level conflict).
+        _last_failure_kind = "http_error"
+        _last_failure_status = exc.code
         return exc.code, err_body
     except (TimeoutError, URLError, OSError) as exc:
         _consecutive_failures += 1
         _last_failure_reason = type(exc).__name__
+        # Classify for the four-state taxonomy.
+        #   TIMEOUT (state 2: bridge lagging)   — TCP connected, HTTP hung.
+        #   UNREACHABLE (states 1/3/4)          — TCP never connected.
+        # On Windows, urllib wraps ConnectionRefusedError inside URLError
+        # and the stringification often contains the word "timed out"
+        # even though the socket was refused — so we inspect the
+        # underlying exception class via .reason, not the message.
+        underlying: BaseException = exc
+        if isinstance(exc, URLError) and exc.reason is not None:
+            underlying = exc.reason if isinstance(exc.reason, BaseException) else exc
+        if isinstance(underlying, ConnectionError):
+            _last_failure_kind = "unreachable"
+        elif isinstance(underlying, TimeoutError):
+            # Ambiguous: could be (a) HTTP hung while TCP is open (real
+            # state-2 timeout) or (b) the TCP connect itself timed out
+            # because the port isn't listening (states 1/3/4 — Windows
+            # often surfaces closed ports as socket timeouts rather
+            # than ECONNREFUSED). Probe the TCP layer to disambiguate.
+            _last_failure_kind = "timeout" if _probe_port_open() else "unreachable"
+        else:
+            # Last-resort disambiguation via TCP probe.
+            _last_failure_kind = "unreachable" if not _probe_port_open() else "timeout"
+        _last_failure_status = None
         logger.warning(
             "Bridge request failed: %s %s — %s [%s]",
             method, path, exc, get_latency_context(),

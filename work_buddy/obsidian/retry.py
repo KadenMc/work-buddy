@@ -51,29 +51,81 @@ F = TypeVar("F", bound=Callable[..., Any])
 # should use bridge_failure() and is_bridge_failure(), not this key.
 _BRIDGE_TRANSIENT_KEY = "_bridge_transient"
 
+# States that are NOT recoverable by waiting / retrying. When the bridge
+# state is one of these, @bridge_retry short-circuits after the first
+# attempt — sleeping 60s for a disabled plugin helps nobody.
+_TERMINAL_STATES = frozenset({
+    "obsidian_not_running",
+    "plugin_not_installed",
+    "plugin_disabled",
+})
+
 
 # ---------------------------------------------------------------------------
 # Standard bridge failure protocol
 # ---------------------------------------------------------------------------
 
-def bridge_failure(message: str) -> dict[str, Any]:
-    """Create a standard transient bridge failure result.
+def bridge_failure(
+    message: str,
+    *,
+    state: str | None = None,
+    state_detail: str | None = None,
+) -> dict[str, Any]:
+    """Create a standard bridge failure result enriched with four-state diagnostics.
 
     Use this in any ``@bridge_retry``-decorated function when a bridge
-    operation fails (e.g. ``bridge.read_file()`` returns None).  The
+    operation fails (e.g. ``bridge.read_file()`` returns None). The
     decorator detects the marker and retries automatically.
+
+    If ``state`` / ``state_detail`` are omitted, the helper consults
+    ``bridge.get_last_bridge_state()`` to auto-classify the failure into
+    the four-state taxonomy (obsidian_not_running, timeout,
+    plugin_not_installed, plugin_disabled, http_error, unknown). This
+    lets callers surface actionable messages without knowing the state
+    machine themselves.
 
     Args:
         message: Human-readable description of what failed.
+        state: Optional override for the state label (e.g. if the caller
+            already classified the failure).
+        state_detail: Optional override for the state explanation.
 
     Returns:
-        ``{"success": False, "message": ..., "_bridge_transient": True}``
+        ``{"success": False, "message": ..., "_bridge_transient": bool,
+        "_bridge_state": str, "_bridge_state_detail": str}``. The
+        transient flag is set to ``False`` for terminal states (plugin
+        disabled / not installed, Obsidian not running) so the retry
+        decorator can short-circuit instead of sleeping uselessly.
     """
+    if state is None or state_detail is None:
+        try:
+            from work_buddy.obsidian.bridge import get_last_bridge_state
+            info = get_last_bridge_state()
+            state = state or info.get("state") or "unknown"
+            state_detail = state_detail or info.get("detail") or ""
+        except Exception:
+            state = state or "unknown"
+            state_detail = state_detail or ""
+
     return {
         "success": False,
         "message": message,
         _BRIDGE_TRANSIENT_KEY: True,
+        "_bridge_state": state,
+        "_bridge_state_detail": state_detail,
+        "_bridge_terminal": state in _TERMINAL_STATES,
     }
+
+
+def is_terminal_bridge_failure(result: Any) -> bool:
+    """True if the failure is one that retrying will never fix (state 1/3/4).
+
+    Used by ``@bridge_retry`` to short-circuit the wait-and-retry loop
+    when the diagnosis is "Obsidian not running", "plugin not
+    installed", or "plugin disabled" — states the user must resolve
+    out of band.
+    """
+    return isinstance(result, dict) and result.get("_bridge_terminal") is True
 
 
 def is_bridge_failure(result: Any) -> bool:
@@ -192,6 +244,17 @@ def bridge_retry(
                         result.get("message", ""), latency,
                     )
                     last_failure = result
+
+                    # Short-circuit on terminal states — sleeping 60s for
+                    # a disabled plugin is pure waste. The user must act
+                    # (open Obsidian, enable the plugin, install it).
+                    if is_terminal_bridge_failure(result):
+                        logger.info(
+                            "bridge_retry(%s): terminal state '%s' — "
+                            "skipping remaining retries.",
+                            fn.__name__, result.get("_bridge_state"),
+                        )
+                        return result
 
                     if attempt < max_retries:
                         time.sleep(wait_seconds)
@@ -339,6 +402,16 @@ def obsidian_retry(
                 result.get("message", ""), latency,
             )
             last_failure = result
+
+            # Short-circuit on terminal states (plugin disabled / not
+            # installed / Obsidian not running).
+            if is_terminal_bridge_failure(result):
+                logger.info(
+                    "obsidian_retry(%s): terminal state '%s' — "
+                    "skipping remaining retries.",
+                    capability, result.get("_bridge_state"),
+                )
+                return result
 
             if attempt < max_retries:
                 time.sleep(wait_seconds)

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import subprocess
 from datetime import datetime, timezone
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -354,25 +355,31 @@ class TestGitSource:
             return result
         return _run
 
-    def test_collect_parses_commits(self, tmp_cache_root, clean_registry):
+    def test_collect_parses_commits(self, tmp_cache_root, clean_registry, tmp_path):
         from work_buddy.context.sources.git import GitSource
 
         sample = (
             "abc123fullsha\x1fabc123\x1f2026-04-20T10:00:00+00:00\x1fAlice\x1ffirst commit\n"
             "def456fullsha\x1fdef456\x1f2026-04-20T11:00:00+00:00\x1fBob\x1fsecond commit\n"
         )
-        # First call is `git log ...`, second is `git rev-parse HEAD`.
+        # GitSource default path: git log + git rev-parse HEAD per repo.
         call_sequence = [
             MagicMock(stdout=sample, stderr="", returncode=0),
             MagicMock(stdout="abc123fullsha\n", stderr="", returncode=0),
         ]
+        # Force single-repo scope via custom.repo_path so the test doesn't
+        # depend on load_config's repos_root discovery.
+        req = ContextRequest(custom={"git": {"repo_path": str(tmp_path)}})
         with patch("subprocess.run", side_effect=call_sequence):
-            section = GitSource().collect(ContextRequest())
+            section = GitSource().collect(req)
 
         assert len(section.items) == 2
-        assert section.items[0]["short"] == "abc123"
-        assert section.items[0]["subject"] == "first commit"
-        assert section.metadata["head"] == "abc123fullsha"
+        # Multi-repo sorts by date desc so the newer commit surfaces first.
+        assert section.items[0]["short"] == "def456"
+        assert section.items[0]["subject"] == "second commit"
+        assert section.items[1]["short"] == "abc123"
+        # Multi-repo schema: head lives per-repo under metadata["repos"].
+        assert section.metadata["repos"][0]["head"] == "abc123fullsha"
 
     def test_is_stale_when_head_moved(self, tmp_cache_root, clean_registry):
         from work_buddy.context.sources.git import GitSource
@@ -416,6 +423,11 @@ class TestBuildTriageContextRetrofit:
         ), patch(
             "work_buddy.contracts.active_contracts",
             return_value=[{"title": "C", "status": "active", "deadline": "", "claim": ""}],
+        ), patch(
+            # Constrain GitSource to a single repo so the subprocess mock
+            # sequence matches (1 git log + 1 rev-parse HEAD).
+            "work_buddy.context.sources.git._resolve_repos",
+            return_value=[Path("/fake/repo")],
         ), patch(
             "subprocess.run",
             side_effect=[
