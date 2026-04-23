@@ -50,6 +50,24 @@ def _obsidian_config_dir(vault: Path | None = None) -> Path:
 # ---------------------------------------------------------------------------
 
 
+def check_lmstudio_reachable() -> dict[str, Any]:
+    """Check LM Studio's local server is reachable.
+
+    Only meaningful when the user has opted into offloading at least
+    one embedding model to LM Studio (``embedding.models.<key>.provider:
+    lmstudio`` in config). Delegates to the same runtime health probe
+    used by the embedding component's check_sequence so both read from
+    one place — ``work_buddy.health.checks.check_lmstudio``.
+
+    If the user hasn't opted in to any LM Studio provider, this check
+    is still registered (the user may opt in later) but it's marked
+    ``severity=recommended`` at the RequirementDef level so failures
+    don't block setup.
+    """
+    from work_buddy.health.checks import check_lmstudio
+    return check_lmstudio()
+
+
 def check_config_yaml_exists() -> dict[str, Any]:
     """Check that config.yaml exists in the repo root."""
     path = _repo_root() / "config.yaml"

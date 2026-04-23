@@ -143,6 +143,47 @@ _register(ComponentDef(
     ],
 ))
 
+_register(ComponentDef(
+    id="lmstudio",
+    display_name="LM Studio",
+    category="external",
+    # Optional. The embedding subsystem falls back to sentence-transformers
+    # when LM Studio isn't reachable, and nothing in work-buddy hard-
+    # requires LM Studio — LLM calls also have Anthropic fallbacks. So
+    # users can opt out entirely via Settings and the wizard hides it.
+    is_core=False,
+    # tool_probe (not "custom"): an always-on external service, polled
+    # on the normal registry-build cadence via
+    # ``work_buddy.tools._probe_lmstudio``. "custom" is reserved for
+    # components that only resolve when the user explicitly clicks
+    # Diagnose; using it here would pin the dashboard at "unknown"
+    # indefinitely.
+    health_source="tool_probe",
+    # Listed first so the diagnostic panel leads with the reachable check.
+    requirements=["services/lmstudio/reachable"],
+    check_sequence=[
+        CheckStep(
+            description=(
+                "LM Studio reachable on configured base URL (/v1/models)"
+            ),
+            check_fn="work_buddy.health.checks.check_lmstudio",
+            on_fail=(
+                "LM Studio is not reachable. Open LM Studio and start "
+                "its local server (Developer tab → Start Server). The "
+                "default URL is http://localhost:1234 — override via "
+                "lmstudio.base_url in config.yaml if you run it on a "
+                "different host or port.\n\n"
+                "LM Studio is optional — it's only needed if you've "
+                "opted into offloading an embedding model to it "
+                "(embedding.models.<key>.provider: lmstudio). The "
+                "passage-encoder offload procedure, including GGUF "
+                "audit and drift-test steps, is documented in "
+                "docs/handbook/features_lmstudio-offload-setup.md."
+            ),
+        ),
+    ],
+))
+
 # --- Core integrations ---
 
 _register(ComponentDef(
@@ -277,6 +318,25 @@ _register(ComponentDef(
     category="service",
     is_core=True,  # hybrid search + knowledge-index dense vectors depend on it
     depends_on=["sidecar"],  # supervised by the sidecar daemon
+    # Optional offload of the passage-side document encoder to LM
+    # Studio. When a user configures
+    # ``embedding.models.<key>.provider: lmstudio`` AND LM Studio is
+    # reachable, bulk document encoding runs remotely (memory win —
+    # ~500 MB RSS stays off the main machine). When LM Studio is down
+    # (or the user never opted in), the sentence-transformers fallback
+    # handles everything. The component itself keeps working either
+    # way, so this is modeled as soft.
+    soft_depends_on=["lmstudio"],
+    soft_dep_notes={
+        "lmstudio": (
+            "Document-side passage encoding falls back to the local "
+            "sentence-transformers model when LM Studio is unreachable "
+            "(only applies if you've opted into "
+            "embedding.models.<key>.provider: lmstudio in config — "
+            "otherwise this dep is ignored). Query encoding never "
+            "offloads and is unaffected."
+        ),
+    },
     health_source="composite",
     sidecar_service="embedding",
     check_sequence=[

@@ -1742,7 +1742,7 @@ def _context_capabilities() -> list[Capability]:
         ),
         Capability(
             name="ir_index",
-            description="Build or check the IR search index. Run 'build' to index conversations for semantic search. Run 'status' to check index health.",
+            description="Build or check the IR search index. Run 'build' to (re)encode dense vectors for indexed documents; 'status' returns per-source counts including dense_eligible_docs (how many docs CAN be encoded) and pending_eligible (real backlog — NOT doc_count vs vector_count, which is misleading because sources like conversation intentionally leave dense_text empty for tool-only spans).",
             category="context",
             search_aliases=[
                 "build index",

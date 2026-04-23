@@ -28,6 +28,19 @@ from work_buddy.logging_config import get_logger
 logger = get_logger(__name__)
 
 
+def _profile_name(model: str) -> str:
+    """Broker profile name for an OpenAI-compat chat call.
+
+    Prefix ``openai_compat:`` distinguishes this from the LM-Studio
+    native path and from the embedding path, so per-profile slot limits
+    are set independently. Users pointing ``openai_compat`` at LM Studio
+    AND using ``lmstudio_native`` get two logical profiles against the
+    same physical server — that's fine, the broker is a client-side
+    admission control, not a server capacity model.
+    """
+    return f"openai_compat:{model}"
+
+
 def call_openai_compat(
     *,
     base_url: str,
@@ -39,8 +52,16 @@ def call_openai_compat(
     output_schema: dict | None = None,
     api_key_env: str | None = None,
     timeout: float = 180.0,
+    priority: "Priority | None" = None,
+    queue_wait_s: float = 30.0,
 ) -> dict[str, Any]:
     """POST a chat completion to an OpenAI-compatible endpoint.
+
+    Routed through ``LocalInferenceBroker`` so concurrent callers
+    respect per-profile slot limits and priority ordering. Without the
+    broker, a background classifier call could starve an interactive
+    agent response; with it, INTERACTIVE admits ahead of queued
+    BACKGROUND work on the same model.
 
     Args:
         base_url: Server base URL ending in ``/v1`` (e.g.,
@@ -59,6 +80,12 @@ def call_openai_compat(
             no auth is required.
         timeout: HTTP timeout in seconds. Default 180s accounts for
             slower local inference on CPU or partial-offload setups.
+        priority: Broker priority class. Defaults to ``WORKFLOW``; bump
+            to ``INTERACTIVE`` for user-facing agent loops, drop to
+            ``BACKGROUND`` for batch classifier / summarizer work.
+        queue_wait_s: Max time to wait for a broker slot before giving
+            up (``QueueWaitTimeout``). 30s is a conservative default
+            that stays well under the typical end-to-end caller budget.
 
     Returns:
         ``{content, input_tokens, output_tokens, model}``. ``model``
@@ -66,9 +93,16 @@ def call_openai_compat(
         when the server normalizes names).
 
     Raises:
-        httpx.HTTPError on connection failure or non-2xx.
-        ValueError on malformed response.
+        LocalInferenceError on HTTP failure or malformed response.
+        QueueFull / QueueWaitTimeout when the broker can't admit.
     """
+    # Deferred import so this module stays cheap to import and the
+    # broker's config-load path runs lazily at first use.
+    from work_buddy.inference import get_broker, Priority as _Priority
+
+    prio = priority if priority is not None else _Priority.WORKFLOW
+    broker = get_broker()
+
     headers = {"Content-Type": "application/json"}
     if api_key_env:
         token = os.environ.get(api_key_env, "")
@@ -97,15 +131,22 @@ def call_openai_compat(
 
     url = base_url.rstrip("/") + "/chat/completions"
 
-    try:
-        with httpx.Client(timeout=timeout) as client:
-            response = client.post(url, headers=headers, json=payload)
-            response.raise_for_status()
-            body = response.json()
-    except httpx.HTTPError as exc:
-        raise interpret_httpx_exception(
-            exc, model=model, endpoint="/v1/chat/completions",
-        ) from exc
+    with broker.slot(
+        profile=_profile_name(model),
+        priority=prio,
+        queue_wait_s=queue_wait_s,
+        inference_s=timeout,
+    ) as ticket:
+        try:
+            ticket.mark_started_http()
+            with httpx.Client(timeout=timeout) as client:
+                response = client.post(url, headers=headers, json=payload)
+                response.raise_for_status()
+                body = response.json()
+        except httpx.HTTPError as exc:
+            raise interpret_httpx_exception(
+                exc, model=model, endpoint="/v1/chat/completions",
+            ) from exc
 
     try:
         choice = body["choices"][0]

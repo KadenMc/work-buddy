@@ -577,6 +577,54 @@ def _probe_postgresql() -> bool:
     return _port_open(5432, timeout=2.0)
 
 
+def _probe_lmstudio() -> bool:
+    """Check if LM Studio is reachable on the configured base URL.
+
+    Honors ``lmstudio.base_url`` in config (default
+    ``http://localhost:1234``). Does a quick TCP connect on the bound
+    host+port and, when that succeeds, a brief GET /v1/models to
+    confirm the OpenAI-compatible API surface is actually serving —
+    merely binding the port isn't enough (a stopped-but-not-cleaned-
+    up LM Studio process can leave a closed socket behind).
+
+    LM Studio is optional: only the embedding-offload path and LLM
+    backend profiles use it, and both fall back gracefully. Keep
+    this probe cheap — 1.5s hard ceiling total so registry builds
+    don't stall when users have LM Studio pointed at an unreachable
+    remote host via LM Link.
+    """
+    import http.client
+    import socket
+    from urllib.parse import urlparse
+    from work_buddy.embedding.providers.lmstudio import resolve_base_url
+    from work_buddy.config import load_config
+
+    try:
+        base_url = resolve_base_url(load_config())
+    except Exception:
+        return False
+
+    parsed = urlparse(base_url)
+    host = parsed.hostname or "127.0.0.1"
+    port = parsed.port or 1234
+
+    try:
+        with socket.create_connection((host, port), timeout=0.8):
+            pass
+    except (OSError, ConnectionRefusedError):
+        return False
+
+    try:
+        conn = http.client.HTTPConnection(host, port, timeout=0.7)
+        conn.request("GET", "/v1/models")
+        resp = conn.getresponse()
+        resp.read()
+        conn.close()
+        return resp.status == 200
+    except Exception:
+        return False
+
+
 def _probe_hindsight() -> bool:
     """Check if Hindsight memory server is reachable."""
     import urllib.request
@@ -708,6 +756,18 @@ def _register_default_probes() -> None:
             probe_fn=_probe_postgresql,
             config_key="tools.postgresql.enabled",
             reason_when_missing="PostgreSQL not accepting connections on port 5432",
+        ),
+        ToolProbe(
+            id="lmstudio",
+            display_name="LM Studio",
+            probe_fn=_probe_lmstudio,
+            config_key="tools.lmstudio.enabled",
+            reason_when_missing=(
+                "LM Studio not reachable at the configured base URL "
+                "(default http://localhost:1234). Optional — only "
+                "needed when opted into offloading embeddings or LLM "
+                "calls to it."
+            ),
         ),
         ToolProbe(
             id="obsidian",

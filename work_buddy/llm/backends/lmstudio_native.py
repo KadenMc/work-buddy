@@ -33,6 +33,19 @@ from work_buddy.logging_config import get_logger
 logger = get_logger(__name__)
 
 
+def _profile_name(model: str) -> str:
+    """Broker profile name for an LM Studio native-chat call.
+
+    Prefix ``lmstudio_native:`` distinguishes the native tool-call loop
+    from the plain ``openai_compat:`` path and from the embedding
+    ``lmstudio:`` path. Each gets independent slot limits — typical
+    user config points all three at the same LM Studio instance, but
+    client-side admission control stays per-endpoint-type so an active
+    embed job doesn't starve a user-facing chat call.
+    """
+    return f"lmstudio_native:{model}"
+
+
 def call_lmstudio_native(
     *,
     base_url: str,
@@ -46,6 +59,8 @@ def call_lmstudio_native(
     temperature: float = 0.0,
     api_key_env: str | None = None,
     timeout: float = 300.0,
+    priority: "Priority | None" = None,
+    queue_wait_s: float = 30.0,
 ) -> dict[str, Any]:
     """POST to LM Studio's native ``/api/v1/chat`` endpoint.
 
@@ -82,6 +97,12 @@ def call_lmstudio_native(
             is enabled. LM Studio default is unauth — pass None.
         timeout: HTTP timeout. Default 300s accommodates tool-call
             loops with multiple MCP round-trips.
+        priority: Broker priority class. Defaults to ``WORKFLOW``;
+            bump to ``INTERACTIVE`` for user-facing loops, drop to
+            ``BACKGROUND`` for cron-driven work.
+        queue_wait_s: Max wait for a broker slot before giving up
+            (``QueueWaitTimeout``). 30s is a safe default; tighten
+            for user-facing calls or loosen for batch jobs.
 
     Returns:
         ``{content, tool_calls, response_id, model, input_tokens,
@@ -131,15 +152,29 @@ def call_lmstudio_native(
 
     url = base_url.rstrip("/") + "/api/v1/chat"
 
-    try:
-        with httpx.Client(timeout=timeout) as client:
-            response = client.post(url, headers=headers, json=payload)
-            response.raise_for_status()
-            body = response.json()
-    except httpx.HTTPError as exc:
-        raise interpret_httpx_exception(
-            exc, model=model, endpoint="/api/v1/chat",
-        ) from exc
+    # Deferred import so this module stays cheap to import and the
+    # broker's config-load path runs lazily at first use.
+    from work_buddy.inference import get_broker, Priority as _Priority
+
+    prio = priority if priority is not None else _Priority.WORKFLOW
+    broker = get_broker()
+
+    with broker.slot(
+        profile=_profile_name(model),
+        priority=prio,
+        queue_wait_s=queue_wait_s,
+        inference_s=timeout,
+    ) as ticket:
+        try:
+            ticket.mark_started_http()
+            with httpx.Client(timeout=timeout) as client:
+                response = client.post(url, headers=headers, json=payload)
+                response.raise_for_status()
+                body = response.json()
+        except httpx.HTTPError as exc:
+            raise interpret_httpx_exception(
+                exc, model=model, endpoint="/api/v1/chat",
+            ) from exc
 
     # Observed response shape from LM Studio /api/v1/chat:
     #   {

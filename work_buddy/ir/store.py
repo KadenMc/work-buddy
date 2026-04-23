@@ -478,7 +478,24 @@ def index_status(source: str | None = None) -> dict[str, Any]:
         src = row["source"]
         count = doc_count(conn, src)
         last_build = get_meta(conn, f"last_build:{src}")
-        sources_info[src] = {"doc_count": count, "last_build": last_build}
+        # dense_eligible_docs: how many docs in this source actually have
+        # non-empty dense_text — i.e., the set _build_vectors_for_projection
+        # will attempt to encode on the legacy (single-projection) path.
+        # Exposed because ``doc_count`` alone is misleading: sources like
+        # 'conversation' intentionally leave dense_text empty for tool-only
+        # spans, so a doc_count vs vector_count delta of "50%" is usually
+        # expected. This field makes the real backlog (eligible - vectored)
+        # visible at a glance. See conversations.py ingestor for why.
+        eligible = conn.execute(
+            "SELECT COUNT(*) FROM documents WHERE source = ? "
+            "AND dense_text IS NOT NULL AND TRIM(dense_text) != ''",
+            (src,),
+        ).fetchone()[0]
+        sources_info[src] = {
+            "doc_count": count,
+            "dense_eligible_docs": eligible,
+            "last_build": last_build,
+        }
 
     conn.close()
 
@@ -497,11 +514,22 @@ def index_status(source: str | None = None) -> dict[str, Any]:
             vdata = load_vectors(cfg, source=src)
             if vdata:
                 vectors, doc_ids = vdata
+                eligible = sources_info.get(src, {}).get(
+                    "dense_eligible_docs", 0
+                )
+                # pending = docs that *should* have vectors but don't
+                # yet. This is the number to watch for "is the index
+                # catching up?" — vector_count vs doc_count is
+                # misleading because many docs are intentionally
+                # ineligible (empty dense_text).
+                vector_count = len(doc_ids)
+                pending = max(0, eligible - vector_count)
                 vectors_info[src] = {
                     "vector_file": str(npz),
                     "vector_file_mb": round(npz.stat().st_size / 1024 / 1024, 1),
-                    "vector_count": len(doc_ids),
+                    "vector_count": vector_count,
                     "vector_dims": vectors.shape[1],
+                    "pending_eligible": pending,
                 }
     if vectors_info:
         result["vectors"] = vectors_info

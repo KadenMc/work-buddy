@@ -555,6 +555,96 @@ _register(RequirementDef(
 # --- Services ---
 
 _register(RequirementDef(
+    id="services/lmstudio/reachable",
+    component="lmstudio",
+    description=(
+        "LM Studio's local server is reachable at the configured "
+        "base URL (/v1/models responds)"
+    ),
+    check_fn="work_buddy.health.requirement_checks.check_lmstudio_reachable",
+    # Recommended, not required: LM Studio is an optional offload
+    # target. The embedding system falls back to sentence-transformers
+    # when LM Studio isn't reachable, so a failure here shouldn't
+    # block setup for users who never opted into offloading.
+    severity="recommended",
+    fix_hint=(
+        "Open LM Studio and start its local server (Developer tab → "
+        "Start Server). The default base URL is http://localhost:1234 — "
+        "if you run LM Studio on a different host/port, override "
+        "lmstudio.base_url in config.yaml.\n\n"
+        "The full offload setup procedure (downloading and verifying a "
+        "GGUF, importing into LM Studio, running the drift test, and "
+        "updating embedding.models.<key>.provider to lmstudio) lives "
+        "at docs/handbook/features_lmstudio-offload-setup.md."
+    ),
+    setup_group="embedding",
+    fix_kind="agent_handoff",
+    fix_preview=(
+        "Spawns a Claude Code session that walks you through setting "
+        "up LM Studio as an embedding-offload target — download GGUF, "
+        "verify metadata, import into LM Studio, run drift test, "
+        "update config."
+    ),
+    fix_agent_brief=(
+        "You are helping the user set up LM Studio as an embedding "
+        "offload target for work-buddy's document-side passage "
+        "encoder. This is an OPTIONAL performance win (moves ~500 MB "
+        "of model RSS off the main machine) — it is NOT required for "
+        "work-buddy to function. The sentence-transformers fallback is "
+        "always available.\n\n"
+        "## Authoritative procedure\n\n"
+        "Read the full runbook at "
+        "``docs/handbook/features_lmstudio-offload-setup.md`` in the "
+        "work-buddy repo and follow it end to end. It covers:\n\n"
+        "1. Installing LM Studio (skip if already installed).\n"
+        "2. Downloading the verified Q8_0 GGUF of "
+        "``snowflake-arctic-embed-m-v1.5`` via ``lms import`` or "
+        "manual placement under ``~/.lmstudio/models/<publisher>/"
+        "<repo>/``.\n"
+        "3. Running ``scripts/audit_lmstudio_gguf.py`` against the "
+        "downloaded file to verify metadata (architecture=bert, "
+        "pooling_type=CLS, embedding_length=768). Refuse to proceed "
+        "if any check fails — a broken GGUF produces silently wrong "
+        "embeddings.\n"
+        "4. Starting LM Studio's local server and running "
+        "``scripts/verify_lmstudio_embedding.py --mode all`` to "
+        "measure cosine drift between the Q8 GGUF and the "
+        "sentence-transformers fp32 baseline. Expect mean cosine "
+        "≥ 0.99 (observed drift in the reference machine: 0.9998).\n"
+        "5. Editing ``config.yaml``:\n"
+        "   - Set ``lmstudio.base_url`` if not the default.\n"
+        "   - Under ``embedding.models.leaf-ir``, set "
+        "``provider: lmstudio`` and ``lmstudio_model`` to the model "
+        "id LM Studio exposes (``GET /v1/models`` shows it).\n"
+        "6. Restarting the sidecar so the embedding service picks up "
+        "the new provider config.\n"
+        "7. Triggering a small re-index or waiting for the ir-index-"
+        "rebuild cron to confirm the new provider is being used.\n\n"
+        "## System notes\n\n"
+        "- LM Studio's ``/v1/models`` returns the model id the user "
+        "will put in ``lmstudio_model``. Default ids start with "
+        "``text-embedding-``.\n"
+        "- Never mass-reencode the entire index without the user's "
+        "explicit go-ahead — the drift is small enough that "
+        "incremental convergence under the existing cron is usually "
+        "preferable.\n"
+        "- If the drift test returns mean cosine < 0.98, STOP and "
+        "escalate. That usually means a pooling or normalization "
+        "mismatch (different quant author, different conversion "
+        "flags) — the fix is to pick a different GGUF repo, not to "
+        "ship the current one.\n\n"
+        "## Context to collect before starting\n\n"
+        "- Is LM Studio already installed on the user's machine?\n"
+        "- Does the user want LM Studio to run on this machine or on "
+        "a remote compute device via LM Link? (If remote, they'll "
+        "need to set ``lmstudio.base_url`` to the remote host.)\n"
+        "- Does the user care about vector-provenance purity (i.e., "
+        "want ``on_error: fail`` so Q8 and fp32 vectors never mix in "
+        "the index)? Default is ``fallback``."
+    ),
+))
+
+_register(RequirementDef(
     id="services/telegram/bot-token",
     component="telegram",
     description="Telegram bot token is configured",
