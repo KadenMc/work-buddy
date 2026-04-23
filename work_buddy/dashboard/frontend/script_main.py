@@ -1219,11 +1219,40 @@ function renderChatHeader(meta) {
         + (meta.start_time ? ' &middot; ' + formatTimestamp(meta.start_time) : '')
         + '</div>'
         + '<div class="chats-hdr-right">'
+        + '<button class="chats-hdr-btn primary" id="chats-hdr-resume" onclick="chatsResumeSession()" title="Open a local terminal and resume this session (claude --resume). No prompt sent.">Resume</button>'
         + '<button class="chats-hdr-btn" onclick="chatsToggleInSearch()">Search</button>'
         + '<button class="chats-hdr-btn' + (chatsState.roleFilter === 'user' ? ' active' : '') + '" onclick="chatsFilterRole(&#39;user&#39;)">User</button>'
         + '<button class="chats-hdr-btn' + (chatsState.roleFilter === 'assistant' ? ' active' : '') + '" onclick="chatsFilterRole(&#39;assistant&#39;)">Assistant</button>'
         + '<button class="chats-hdr-btn' + (!chatsState.roleFilter ? ' active' : '') + '" onclick="chatsFilterRole(null)">All</button>'
         + '</div>';
+}
+
+async function chatsResumeSession() {
+    var sid = chatsState.selectedId;
+    if (!sid) return;
+    var btn = document.getElementById('chats-hdr-resume');
+    var originalLabel = btn ? btn.textContent : 'Resume';
+    if (btn) { btn.disabled = true; btn.textContent = 'Opening…'; }
+    try {
+        var resp = await fetch('/api/chats/' + encodeURIComponent(sid) + '/resume', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: '{}',
+        });
+        var data = await resp.json().catch(function() { return {}; });
+        if (!resp.ok || !data.success) {
+            alert('Resume failed: ' + (data.error || resp.statusText));
+            if (btn) { btn.textContent = originalLabel; btn.disabled = false; }
+            return;
+        }
+        if (btn) { btn.textContent = 'Opened'; }
+        setTimeout(function() {
+            if (btn) { btn.textContent = originalLabel; btn.disabled = false; }
+        }, 2000);
+    } catch (err) {
+        alert('Resume request failed: ' + err);
+        if (btn) { btn.textContent = originalLabel; btn.disabled = false; }
+    }
 }
 
 function renderMessages() {

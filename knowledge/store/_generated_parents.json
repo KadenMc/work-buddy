@@ -152,6 +152,7 @@
       "status/remote_session_list",
       "status/service_health",
       "status/session_activity",
+      "status/session_resume",
       "status/session_summary",
       "status/setup_help",
       "status/setup_wizard",
@@ -160,7 +161,7 @@
       "status/tailscale_status"
     ],
     "content": {
-      "summary": "Container for 17 capabilities and workflows."
+      "summary": "Container for 18 capabilities and workflows."
     }
   },
   "messaging": {

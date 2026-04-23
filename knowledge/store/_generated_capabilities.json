@@ -2664,7 +2664,7 @@
   "context/ir_index": {
     "kind": "capability",
     "name": "Ir Index",
-    "description": "Build or check the IR search index. Run 'build' to index conversations for semantic search. Run 'status' to check index health.",
+    "description": "Build or check the IR search index. Run 'build' to (re)encode dense vectors for indexed documents; 'status' returns per-source counts including dense_eligible_docs (how many docs CAN be encoded) and pending_eligible (real backlog — NOT doc_count vs vector_count, which is misleading because sources like conversation intentionally leave dense_text empty for tool-only spans).",
     "capability_name": "ir_index",
     "category": "context",
     "aliases": [
@@ -2874,7 +2874,7 @@
       "obsidian"
     ],
     "mutates_state": true,
-    "retry_policy": "manual",
+    "retry_policy": "verify_first",
     "tags": [
       "journal",
       "write"
@@ -4908,6 +4908,49 @@
       "context"
     ]
   },
+  "status/session_resume": {
+    "kind": "capability",
+    "name": "Session Resume",
+    "description": "Resume an existing Claude Code session in a new local terminal window. No prompt is sent and remote-control is off — the terminal opens directly into the conversation, ready for the user to type. cwd is auto-derived from the session's recorded working directory.",
+    "capability_name": "session_resume",
+    "category": "sidecar",
+    "aliases": [
+      "resume session",
+      "continue session",
+      "reopen chat",
+      "pick up conversation",
+      "claude --resume",
+      "reattach",
+      "open terminal to session"
+    ],
+    "parameters": {
+      "session_id": {
+        "type": "str",
+        "description": "Full or partial (>=8-char prefix) session UUID to resume.",
+        "required": true
+      },
+      "cwd": {
+        "type": "str",
+        "description": "Override the working directory. Defaults to the session's own recorded cwd, falling back to repo root.",
+        "required": false
+      },
+      "bypass_permissions": {
+        "type": "bool",
+        "description": "Add --dangerously-skip-permissions. Default: True.",
+        "required": false
+      }
+    },
+    "mutates_state": true,
+    "retry_policy": "manual",
+    "tags": [
+      "sidecar",
+      "session",
+      "resume"
+    ],
+    "parents": [
+      "status"
+    ]
+  },
   "context/session_search": {
     "kind": "capability",
     "name": "Session Search",
@@ -6219,7 +6262,7 @@
       "obsidian"
     ],
     "mutates_state": true,
-    "retry_policy": "manual",
+    "retry_policy": "verify_first",
     "tags": [
       "journal",
       "vault",

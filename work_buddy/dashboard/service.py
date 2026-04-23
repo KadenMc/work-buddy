@@ -1854,6 +1854,59 @@ def api_investigate():
 # Agent launch
 # ---------------------------------------------------------------------------
 
+@app.post("/api/chats/<session_id>/resume")
+def api_chat_resume(session_id: str):
+    """Resume a Claude Code session in a new local terminal.
+
+    No prompt is sent; remote-control is off. The terminal opens into the
+    session's recorded working directory, ready for the user to type.
+    """
+    blocked = _reject_read_only()
+    if blocked:
+        return blocked
+    if not session_id:
+        return jsonify({"success": False, "error": "session_id required."}), 400
+
+    try:
+        from work_buddy.consent import grant_consent
+        from work_buddy.session_launcher import begin_session
+        from work_buddy.sessions.inspector import resolve_session_id
+
+        # Verify the session exists before spending a terminal spawn on it —
+        # begin_session falls back to a bare `claude --resume` if resolution
+        # fails, which opens a useless window.
+        try:
+            resolved_id = resolve_session_id(session_id)
+        except FileNotFoundError as exc:
+            return jsonify({"success": False, "error": str(exc)}), 404
+
+        # Clicking the dashboard button IS the user's consent, matching the
+        # pattern in api_launch_agent.
+        grant_consent("sidecar:remote_session_launch", mode="always")
+
+        result = begin_session(
+            session_id=resolved_id,
+            remote_control=False,
+            bypass_permissions=True,
+        )
+        if result.get("status") != "ok":
+            return jsonify({
+                "success": False,
+                "error": result.get("error", "Resume failed."),
+            }), 500
+
+        return jsonify({
+            "success": True,
+            "pid": result.get("pid"),
+            "session_id": result.get("session_id"),
+            "cwd": result.get("cwd"),
+            "message": result.get("message", "Session resumed."),
+        })
+    except Exception as exc:
+        logger.error("Failed to resume chat session %s: %s", session_id, exc)
+        return jsonify({"success": False, "error": str(exc)}), 500
+
+
 @app.post("/api/launch-agent")
 def api_launch_agent():
     """Launch an agent session — desktop (no remote) or mobile (remote control).

@@ -374,11 +374,19 @@ def begin_session(
             "default_ttl": 30,
         }
 
-    if cwd is None:
-        cwd = str(_REPO_ROOT)
-
     # --- Resume path ---
     if session_id or session_name:
+        # When resuming, prefer the session's own recorded cwd over the repo
+        # root default — otherwise `claude --resume` opens in the wrong dir.
+        if cwd is None and session_id:
+            try:
+                from work_buddy.sessions.inspector import get_session_cwd
+                cwd = get_session_cwd(session_id)
+            except Exception as exc:
+                logger.debug("get_session_cwd failed for '%s': %s", session_id, exc)
+                cwd = None
+        if cwd is None:
+            cwd = str(_REPO_ROOT)
         return _do_resume(
             session_id=session_id,
             session_name=session_name,
@@ -386,6 +394,9 @@ def begin_session(
             bypass_permissions=bypass_permissions,
             remote_control=remote_control,
         )
+
+    if cwd is None:
+        cwd = str(_REPO_ROOT)
 
     # --- New session path ---
     return _do_start(cwd=cwd, prompt=prompt, bypass_permissions=bypass_permissions,
