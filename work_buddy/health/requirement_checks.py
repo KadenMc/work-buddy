@@ -467,6 +467,50 @@ def check_tasks_plugin() -> dict[str, Any]:
     )
 
 
+def get_work_buddy_plugin_state() -> tuple[str, str]:
+    """Return a short state code + detail for the work-buddy plugin.
+
+    Filesystem-only inspection (no network). Safe to call from the
+    bridge write path to disambiguate connection-refused failures into
+    one of the documented four states (see ``obsidian/bridge``
+    directions).
+
+    Returns a tuple ``(state, detail)`` where ``state`` is one of:
+
+    * ``"ok"`` — manifest exists and ``work-buddy`` is in
+      ``community-plugins.json``. Bridge should be reachable; a
+      connection-refused error here means state 1 (Obsidian not running)
+      or state 2 (bridge lagging under load).
+    * ``"not_installed"`` — plugin folder/manifest missing (state 3).
+    * ``"disabled"`` — manifest present but ``work-buddy`` absent from
+      ``community-plugins.json`` (state 4).
+    * ``"unknown"`` — vault misconfigured, config dir unreadable, or IO
+      error. Diagnostics in ``detail``.
+    """
+    vault = _vault_root()
+    if not vault or not vault.is_dir():
+        return "unknown", "vault_root is not set or doesn't exist"
+
+    config_dir = _obsidian_config_dir(vault)
+    plugin_dir = config_dir / "plugins" / "obsidian-work-buddy"
+    manifest = plugin_dir / "manifest.json"
+    if not manifest.exists():
+        return "not_installed", f"plugin missing at {plugin_dir}"
+
+    cp_file = config_dir / "community-plugins.json"
+    if not cp_file.exists():
+        return "disabled", "community-plugins.json missing — no community plugins enabled"
+    try:
+        with open(cp_file, encoding="utf-8") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError) as exc:
+        return "unknown", f"could not read community-plugins.json: {exc}"
+
+    if isinstance(data, list) and "work-buddy" in data:
+        return "ok", "installed and enabled"
+    return "disabled", "installed but not enabled in community-plugins.json"
+
+
 def check_work_buddy_plugin() -> dict[str, Any]:
     """Check that the work-buddy Obsidian plugin is installed AND enabled.
 
