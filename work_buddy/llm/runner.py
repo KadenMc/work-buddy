@@ -79,12 +79,11 @@ def run_task(
     json_mode: bool = False,
     output_schema: dict | None = None,
     cache_ttl_minutes: int | None = None,
-    content_hash: str | None = None,
-    content_sample: str | None = None,
     trace_id: str | None = None,
     tier: ModelTier | None = None,
     allowed_tiers: list[ModelTier] | None = None,
     profile: str | None = None,
+    backend_kind: str | None = None,
 ) -> TaskResult:
     """Run a single LLM task with optional caching.
 
@@ -102,8 +101,6 @@ def run_task(
             parsing failures, no missing fields. Implicitly enables JSON parsing.
             Uses Anthropic's ``output_config.format.json_schema``.
         cache_ttl_minutes: Cache TTL. None = use config default. 0 = no caching.
-        content_hash: Hash of input content for cache invalidation.
-        content_sample: ~500 char sample for fuzzy cache matching when hash differs.
         tier: Model tier to use (haiku/sonnet/opus). Overrides ``model``.
         allowed_tiers: If set, restricts which tiers can be used. Rejects
             requests for disallowed tiers. Used by classify() to lock tasks
@@ -112,6 +109,13 @@ def run_task(
             under ``llm.profiles`` in config. Mutually exclusive with
             ``tier``. When set, dispatches to the configured backend
             (e.g. LM Studio) instead of Anthropic.
+        backend_kind: Local dispatch endpoint — ``"lmstudio_native"`` or
+            ``"openai_compat"``. Tier-aware callers (``LLMRunner``) pass
+            this from the tier binding; it is the authoritative choice.
+            When ``None``, defaults to ``"openai_compat"`` — the endpoint
+            whose server-side JIT auto-load lets a cold request succeed
+            without a prior model-load step. Only override when calling
+            a profile intended for MCP tool use.
 
     Returns:
         TaskResult with response content, token counts, and cache status.
@@ -158,16 +162,32 @@ def run_task(
         execution_mode = "cloud"
         backend_id = "anthropic_default"
 
-    # Scope the cache key by backend+model so Claude and local results
-    # never collide when callers pass the same (system, user, schema).
-    scoped_task_id = f"{backend_id}:{resolved_model}:{task_id}"
+    # Fingerprint the prompts so the cache is content-aware by
+    # construction. ``system_hash`` goes into the scoped key (editing a
+    # system prompt cleanly invalidates); ``input_hash`` goes into the
+    # entry for exact-match lookup; full ``user`` text is handed to the
+    # cache so it can compute + store the SimHash fingerprint.
+    import hashlib
+    system_hash = hashlib.sha256(system.encode("utf-8")).hexdigest()[:12]
+    input_hash = hashlib.sha256(user.encode("utf-8")).hexdigest()
+    system_preview = system[:500]
+
+    # Scope the cache key by backend + model + system_hash + task_id so
+    # Claude and local results never collide when callers pass the same
+    # (system, user, schema), and editing the system prompt cleanly
+    # partitions the cache space.
+    scoped_task_id = f"{backend_id}:{resolved_model}:{system_hash}:{task_id}"
     ttl = cache_ttl_minutes if cache_ttl_minutes is not None else llm_cfg.get("cache_ttl_minutes", 30)
 
     # Check cache
     if ttl > 0:
         from work_buddy.llm.cache import get as cache_get
 
-        cached = cache_get(scoped_task_id, content_hash=content_hash, content_sample=content_sample)
+        cached = cache_get(
+            scoped_task_id,
+            input_hash=input_hash,
+            input_text=user,
+        )
         if cached is not None:
             logger.info("Cache hit for task %s", scoped_task_id)
             # Log the cache hit for cost tracking (zero cost but counted)
@@ -192,7 +212,9 @@ def run_task(
                 cache_key=scoped_task_id,
             )
 
-    # Local profile path: dispatch via openai_compat backend.
+    # Local profile path: dispatch via the caller-requested endpoint
+    # kind (``backend_kind``), defaulting to openai-compat when no
+    # caller opinion is supplied. See the ``backend_kind`` arg doc.
     if profile_info is not None:
         return _run_profile(
             profile_info=profile_info,
@@ -205,9 +227,11 @@ def run_task(
             output_schema=output_schema,
             json_mode=json_mode,
             ttl=ttl,
-            content_hash=content_hash,
-            content_sample=content_sample,
+            input_hash=input_hash,
+            system_hash=system_hash,
+            system_preview=system_preview,
             trace_id=trace_id,
+            backend_kind=backend_kind,
         )
 
     # Call Anthropic API — check dedicated subagent key first, then general key
@@ -303,10 +327,12 @@ def run_task(
             from work_buddy.llm.cache import put as cache_put
 
             cache_put(
-                task_id=scoped_task_id,
+                scoped_task_id,
                 result={"content": content, "parsed": parsed},
-                content_hash=content_hash,
-                content_sample=content_sample,
+                input_hash=input_hash,
+                input_text=user,
+                system_hash=system_hash,
+                system_preview=system_preview,
                 ttl_minutes=ttl,
                 model=resolved_model,
                 tokens={"input": input_tokens, "output": output_tokens},
@@ -339,27 +365,46 @@ def _run_profile(
     output_schema: dict | None,
     json_mode: bool,
     ttl: int,
-    content_hash: str | None,
-    content_sample: str | None,
+    input_hash: str,
+    system_hash: str,
+    system_preview: str,
     trace_id: str | None,
+    backend_kind: str | None = None,
 ) -> TaskResult:
-    """Dispatch a profile-based request to the configured backend.
+    """Dispatch a profile-based request to the requested endpoint kind.
 
-    Supported providers:
+    ``backend_kind`` is the authoritative choice of endpoint:
 
-    - ``lmstudio_native`` — routes to LM Studio's /api/v1/chat endpoint
-      via ``call_lmstudio_native``. Handles reasoning models correctly
-      (separates thinking from final message); use this whenever the
-      backend is known to be LM Studio.
-    - ``openai_compat`` — routes to an OpenAI-compatible
-      /v1/chat/completions endpoint via ``call_openai_compat``. Use
-      for servers that don't support LM Studio's native protocol
-      (vLLM, Ollama, llama.cpp server). Note: on reasoning models,
+    - ``"lmstudio_native"`` — routes to LM Studio's /api/v1/chat endpoint
+      via ``call_lmstudio_native``. Required for server-side MCP
+      tool-call loops; also separates thinking from final message for
+      reasoning models.
+    - ``"openai_compat"`` — routes to an OpenAI-compatible
+      /v1/chat/completions endpoint via ``call_openai_compat``. Works
+      with LM Studio's JIT auto-load, vLLM, Ollama, llama.cpp, etc. Use
+      this whenever tool-calling is not required. On reasoning models,
       the openai-compat endpoint may return empty content because
-      reasoning tokens count against max_tokens and the grammar of
-      structured outputs can collide with the thinking phase.
+      reasoning tokens count against ``max_tokens`` and structured-output
+      grammar can collide with the thinking phase.
+
+    When ``backend_kind`` is ``None``, defaults to ``"openai_compat"`` —
+    the endpoint whose JIT auto-load lets a cold request succeed. Any
+    ``provider`` field present in config is observed only to emit a
+    warning when it disagrees with ``backend_kind``; the config value
+    is not used for dispatch. Tier binding → dispatch kind is the one
+    source of truth, authored at :mod:`work_buddy.llm.tiers`.
     """
-    provider = profile_info["provider"]
+    provider = backend_kind or "openai_compat"
+    config_provider = profile_info.get("provider")
+    if config_provider and config_provider != provider:
+        logger.warning(
+            "Profile %r has provider=%r in config but dispatch resolved "
+            "to %r (from tier binding). The tier binding wins; drop the "
+            "provider field from the backend config entry.",
+            profile_info.get("backend_id", "?"),
+            config_provider,
+            provider,
+        )
     resolved_model = profile_info["model"]
     backend_id = profile_info["backend_id"]
     execution_mode = profile_info["execution_mode"]
@@ -476,10 +521,12 @@ def _run_profile(
     if ttl > 0:
         from work_buddy.llm.cache import put as cache_put
         cache_put(
-            task_id=scoped_task_id,
+            scoped_task_id,
             result={"content": content, "parsed": parsed},
-            content_hash=content_hash,
-            content_sample=content_sample,
+            input_hash=input_hash,
+            input_text=user,
+            system_hash=system_hash,
+            system_preview=system_preview,
             ttl_minutes=ttl,
             model=server_model,
             tokens={"input": input_tokens, "output": output_tokens},

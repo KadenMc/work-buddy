@@ -61,6 +61,15 @@ TRIAGE_DEFAULTS: dict[str, Any] = {
         # Cache TTL (minutes). Segmentation is content-keyed via
         # llm_call's cache so identical inputs don't re-bill.
         "cache_ttl_minutes": 60,
+        # Tier escalation chain for the journal-adapter segmenter.
+        # On validation failure (content-layer, not LLMResponse
+        # error), the adapter re-issues the call at the next tier.
+        # Background segmentation is mechanical grouping — Haiku
+        # is usually sufficient when the local model can't; Sonnet
+        # is rarely worth the spend. Add ``"frontier_balanced"``
+        # to extend to Sonnet. Empty list = single-shot at
+        # ``local_fast``.
+        "tier_chain": ["local_fast", "frontier_fast"],
     },
 
     # Per-item agent stage (llm_with_tools). The agent gets the
@@ -109,11 +118,6 @@ TRIAGE_DEFAULTS: dict[str, Any] = {
         "journal_triage": {
             # Upper bound on threads fed to the agent per pass.
             "max_threads": 16,
-            # ID pool handed to the segmenter. Listing 64 ids in the
-            # prompt bloats input tokens and multiplies the model's
-            # reasoning load for no real benefit — a single day's
-            # notes rarely exceed ~8 threads. Keep this tight.
-            "id_pool_size": 16,
         },
     },
 }

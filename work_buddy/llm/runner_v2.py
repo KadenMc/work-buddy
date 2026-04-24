@@ -329,7 +329,20 @@ class LLMRunner:
                     f"Tier {binding.tier.value} has backend={binding.backend} but no profile",
                     "Set ``profile`` on the tier's config entry.",
                 )
+            # ``backend_kind`` tells run_task which local endpoint kind
+            # to use. The tier binding is authoritative: tool-support
+            # tiers hit the native MCP-capable endpoint, non-tool tiers
+            # use openai-compat so LM Studio's JIT auto-load works.
+            if binding.backend not in ("lmstudio_native", "openai_compat"):
+                return _error_response(
+                    binding,
+                    ErrorKind.BACKEND_UNAVAILABLE,
+                    f"Tier {binding.tier.value} has unsupported local "
+                    f"backend={binding.backend!r}",
+                    "Expected 'lmstudio_native' or 'openai_compat'.",
+                )
             kwargs["profile"] = binding.profile
+            kwargs["backend_kind"] = binding.backend
 
         try:
             result = run_task(**kwargs)

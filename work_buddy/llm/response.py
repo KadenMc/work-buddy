@@ -39,6 +39,7 @@ class ErrorKind(str, Enum):
     MODEL_UNSUPPORTED = "model_unsupported"
     BAD_REQUEST = "bad_request"
     MALFORMED_RESPONSE = "malformed_response"
+    VALIDATION_FAILED = "validation_failed"
     UNKNOWN = "unknown"
 
 

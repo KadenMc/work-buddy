@@ -131,12 +131,16 @@ llm:
   cache_ttl_minutes: 30
   simhash_hamming_threshold: 3
 
-  # Optional: OpenAI-compatible inference backends (LM Studio, vLLM, Ollama, llama.cpp).
+  # Optional: local-inference backend hosts (LM Studio, vLLM, Ollama, llama.cpp).
   # With LM Link, the main machine runs LM Studio at localhost:1234 as the API surface;
   # actual inference is routed to whichever linked device has the requested model loaded.
+  #
+  # NOTE: you do NOT pick the endpoint kind here (openai-compat vs LM Studio native).
+  # That is derived at dispatch time from the tier's ``tool_support`` flag — tool-calling
+  # tiers use the native /api/v1/chat endpoint, non-tool tiers use /v1/chat/completions
+  # so LM Studio's JIT auto-load works on cold requests. Just give us the host.
   # backends:
   #   lmstudio_local:
-  #     provider: openai_compat
   #     base_url: "http://localhost:1234/v1"       # LM Studio on main machine; LM Link routes to remote device
   #     api_key_env: ""                            # LM Studio default: unauth. Set to the env var name if you enable auth.
 

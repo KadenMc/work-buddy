@@ -12,8 +12,12 @@ Flow:
   (:data:`work_buddy.triage.verdict_schema.VERDICT_SCHEMA`). The parsed
   verdict is written directly to the Review pool via
   :func:`triage_submit`.
-- Escalation: TIMEOUT / CONTEXT_EXCEEDED / EMPTY_CONTENT / RATE_LIMITED
-  → FRONTIER_BEST (Opus).
+- Backend-error escalation: TIMEOUT / CONTEXT_EXCEEDED / EMPTY_CONTENT /
+  RATE_LIMITED → FRONTIER_BEST (Opus).
+- Validation-failure escalation: verdict parsed but missing
+  ``recommended_action`` at a tier below FRONTIER_BEST → one retry at
+  FRONTIER_BEST before giving up with :data:`ErrorKind.VALIDATION_FAILED`.
+  Handled by :func:`work_buddy.triage.verdict_call.call_for_verdict`.
 
 Registered as a capability-type sidecar cron job. Safe to call
 manually via ``wb_run`` for smoke tests or ad-hoc runs.
@@ -250,23 +254,23 @@ def _invoke_agent(
     ``record_into_task``.
     """
     from work_buddy.triage.capabilities.triage_submit import triage_submit
+    from work_buddy.triage.verdict_call import call_for_verdict
 
     user_prompt = _render_item_prompt(
         item=item, run_id=run_id, triage_context_block=triage_context_block,
     )
 
-    resp = runner.call(
+    # Backend-error escalation (TIMEOUT etc. → FRONTIER_BEST) plus
+    # one validation-failure escalation at FRONTIER_BEST when the
+    # verdict parses but is missing ``recommended_action``.
+    resp = call_for_verdict(
+        runner=runner,
         tier=tier,
         system=_AGENT_SYSTEM_PROMPT,
         user=user_prompt,
         output_schema=VERDICT_SCHEMA,
-        escalate_on=[
-            ErrorKind.TIMEOUT,
-            ErrorKind.CONTEXT_EXCEEDED,
-            ErrorKind.EMPTY_CONTENT,
-            ErrorKind.RATE_LIMITED,
-        ],
-        escalate_to=[ModelTier.FRONTIER_BEST],
+        caller="journal_triage",
+        item_id=item.id,
     )
 
     if resp.is_error():
@@ -281,17 +285,6 @@ def _invoke_agent(
         }
 
     verdict = resp.structured_output or {}
-    if not verdict.get("recommended_action"):
-        logger.warning(
-            "journal_triage: LLM returned no recommended_action for item %s "
-            "(tier=%s, content_len=%d)",
-            item.id, resp.tier_used, len(resp.content),
-        )
-        return {
-            "content": resp.content,
-            "error": "LLM returned no recommended_action",
-            "error_kind": ErrorKind.SCHEMA_VIOLATION.value,
-        }
 
     submit_kwargs = verdict_to_submit_kwargs(verdict)
     submit_result = triage_submit(
