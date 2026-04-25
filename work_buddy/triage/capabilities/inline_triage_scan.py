@@ -12,8 +12,14 @@ No tool-call dance, no local-LLM timeouts: the migration from
 ``llm_with_tools`` on a local model (qwen2.5-coder-14b, 4+ min TTFT,
 drops verdict fields) to ``LLMRunner.call(tier=FRONTIER_BALANCED,
 output_schema=_VERDICT_SCHEMA)`` is what this file ships as phase 2 of
-the LLM + Context refactor. Escalation falls through to
-``FRONTIER_BEST`` on timeout / context-exceeded / empty-content.
+the LLM + Context refactor.
+
+Escalation:
+  - Backend errors (TIMEOUT / CONTEXT_EXCEEDED / EMPTY_CONTENT /
+    RATE_LIMITED) → FRONTIER_BEST via LLMRunner's built-in escalation.
+  - Verdict parses but omits ``recommended_action`` → one validation
+    retry at FRONTIER_BEST, then :data:`ErrorKind.VALIDATION_FAILED`.
+    Handled by :func:`work_buddy.triage.verdict_call.call_for_verdict`.
 """
 
 from __future__ import annotations
@@ -181,21 +187,21 @@ def _invoke_agent(
     ``error_kind``) so its submission-check-and-log path works unchanged.
     """
     from work_buddy.triage.capabilities.triage_submit import triage_submit
+    from work_buddy.triage.verdict_call import call_for_verdict
 
     user_prompt = _render_item_prompt(item=item, run_id=run_id, context=context)
 
-    resp = runner.call(
+    # Backend-error escalation (TIMEOUT etc. → FRONTIER_BEST) plus
+    # one validation-failure escalation at FRONTIER_BEST when the
+    # verdict parses but is missing ``recommended_action``.
+    resp = call_for_verdict(
+        runner=runner,
         tier=tier,
         system=_AGENT_SYSTEM_PROMPT,
         user=user_prompt,
         output_schema=VERDICT_SCHEMA,
-        escalate_on=[
-            ErrorKind.TIMEOUT,
-            ErrorKind.CONTEXT_EXCEEDED,
-            ErrorKind.EMPTY_CONTENT,
-            ErrorKind.RATE_LIMITED,
-        ],
-        escalate_to=[ModelTier.FRONTIER_BEST],
+        caller="inline_triage",
+        item_id=item.id,
     )
 
     if resp.is_error():
@@ -210,17 +216,6 @@ def _invoke_agent(
         }
 
     verdict = resp.structured_output or {}
-    if not verdict.get("recommended_action"):
-        logger.warning(
-            "inline_triage: LLM returned no recommended_action for item %s "
-            "(tier=%s, content_len=%d)",
-            item.id, resp.tier_used, len(resp.content),
-        )
-        return {
-            "content": resp.content,
-            "error": "LLM returned no recommended_action",
-            "error_kind": ErrorKind.SCHEMA_VIOLATION.value,
-        }
 
     # Submit directly — no tool-call dance. triage_submit whitelists
     # fields and validates the run_id.

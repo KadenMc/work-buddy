@@ -716,78 +716,74 @@
   "daily-journal/process-backlog": {
     "kind": "workflow",
     "name": "Process Backlog",
-    "description": "Orchestrates the full backlog processing pipeline: segment Running Notes into threads, route each thread to its destination with user confirmation, and rewrite Running Notes with only the items that remain open.",
+    "description": "Process the Running Notes backlog: line-range segmentation, per-thread tag/summary manifest, tag-similarity clustering, user MERGE/SPLIT review, routing to tasks/considerations/notes, and consent-gated rewrite of the section.",
     "workflow_name": "process-backlog",
     "execution": "main",
     "steps": [
       {
         "id": "extract",
-        "name": "Extract Running Notes section from journal",
+        "name": "Read Running Notes section from journal",
         "step_type": "code",
         "depends_on": [],
-        "invokes": [
-          "running_notes"
-        ]
+        "execution": "main",
+        "auto_run": true
       },
       {
         "id": "segment",
-        "name": "Segment Running Notes into coherent threads",
-        "step_type": "reasoning",
+        "name": "Line-range segmentation into thread groups",
+        "step_type": "code",
         "depends_on": [
           "extract"
         ],
-        "execution": "subagent",
-        "workflow_ref": "segment-notes",
-        "invokes": []
+        "execution": "main",
+        "auto_run": true
       },
       {
-        "id": "analyze-similarity",
-        "name": "Embed threads and cluster into information units",
+        "id": "manifest",
+        "name": "Generate per-thread tags + summaries",
         "step_type": "code",
         "depends_on": [
           "segment"
         ],
-        "visibility": {
-          "mode": "summary",
-          "include_keys": [
-            "clusters",
-            "cluster_count"
-          ]
-        },
-        "invokes": []
+        "execution": "main",
+        "auto_run": true
       },
       {
-        "id": "review-clusters",
-        "name": "Review clusters and apply merge/split decisions",
+        "id": "cluster",
+        "name": "Cluster threads by tag similarity",
+        "step_type": "code",
+        "depends_on": [
+          "manifest"
+        ],
+        "execution": "main",
+        "auto_run": true
+      },
+      {
+        "id": "review",
+        "name": "Present clusters and collect user MERGE/SPLIT/TAG decisions",
         "step_type": "reasoning",
         "depends_on": [
-          "analyze-similarity"
+          "cluster"
         ],
-        "invokes": []
+        "execution": "main"
       },
       {
         "id": "route",
-        "name": "Route information units to destinations with user confirmation",
+        "name": "Execute routing decisions per thread",
         "step_type": "reasoning",
         "depends_on": [
-          "review-clusters"
+          "review"
         ],
-        "workflow_ref": "route-information",
-        "invokes": [
-          "project_list"
-        ]
+        "execution": "main"
       },
       {
         "id": "rewrite",
-        "name": "Rewrite Running Notes with only open items",
-        "step_type": "code",
+        "name": "Rewrite Running Notes; remove processed lines (consent-gated)",
+        "step_type": "reasoning",
         "depends_on": [
           "route"
         ],
-        "visibility": {
-          "mode": "full"
-        },
-        "invokes": []
+        "execution": "main"
       }
     ],
     "tags": [
@@ -800,12 +796,18 @@
     ],
     "allow_override": false,
     "step_instructions": {
-      "extract": "(main)\n\nRead the target journal's Running Notes section via the gateway:\n\n```\nmcp__work-buddy__wb_run(\"running_notes\")\n```\n\n**Handle edge cases:**\n- No Running Notes section → nothing to process, complete workflow\n- Empty Running Notes → nothing to process\n- Very short Running Notes (< 3 items) → ask user if they really want to run the full pipeline, or just handle inline\n\n**Output:** `raw_text` (the Running Notes content).",
-      "segment": "(subagent)\n\nSpawn a subagent to run `workflows/daily-journal/segment-notes.md`.\n\n**Subagent prompt must include:**\n- The `raw_text` from the extract phase\n- The pool of pre-generated thread IDs\n- The segmentation rules from the workflow spec\n\n**Output:** tagged text + thread list + validation result.\n\nIf validation fails, the subagent should fix and re-validate (up to 3 attempts). If it still fails, return the error and the main agent handles it.",
+      "extract": "Auto-run. Read the Running Notes section from today's journal via ``read_running_notes(same_day=True)``. Strip carry-over banners with ``strip_banners`` (banner_date_map preserved for later attribution). Pass the cleaned text and banner_date_map to the next step.",
+      "segment": "Auto-run. Call ``work_buddy.triage.adapters.journal._segment_with_escalation`` with the cleaned text and banner_date_map. Output: a list of thread dicts (id, raw_text, line_count, source_dates, has_multi_flag, lines). Ids are locally-generated 6-hex tokens. The escalation chain (configured in ``triage.segment.tier_chain``, default LOCAL_FAST → FRONTIER_FAST) handles validation failures automatically. If segmentation returns ``None`` for all tiers, fail the workflow with the audit log already emitted by the adapter.",
       "analyze-similarity": "(main, code)\n\nEmbed all thread summaries and cluster into information units. This step runs `work_buddy.journal_backlog.similarity.analyze_threads` — a deterministic pipeline (embed + cluster + report). Candidate for auto_run conversion in future.\n\nThe pipeline requires the Smart Environment to be loaded (embeddings). Check `context_smart` readiness first. Input: the `thread_manifest.jsonl` path from the segment step.\n\n**Output:** `result` dict containing clusters, the agent report (markdown), and the structured agent context (JSON).",
       "review-clusters": "(main, reasoning)\n\nAgentic step. The agent reviews clustering results and confirms merge/split decisions with the user. Behavioral instructions (confidence thresholds, presentation format, merge/split procedures) are in the slash command, not here.\n\n**Applying decisions (data contracts):**\n- **MERGE clusters**: Combine thread lists, concatenate raw text, union tags\n- **SPLIT cluster**: Move specified threads to their own new unit or an existing cluster\n- **MOVE singleton**: Add to specified cluster\n\n**Output:** Final list of information units (merged/cleaned clusters), each with combined raw text, unified tags, and a summary. These become the routing input items for the next step.",
-      "route": "(main)\n\nAgentic step. Convert reviewed information units into routing input items and invoke `workflows/routing/route-information.md`. Behavioral instructions (proposal generation, confidence levels) are in the slash command, not here.\n\nBefore proposing destinations, call `mcp__work-buddy__wb_run(\"project_list\")` to get the list of known projects. Only propose `work/projects/<slug>/` destinations for slugs that appear in the project list â€” do not invent project paths.\n\nEach information unit becomes one routing input item:\n\n```json\n{\n  \"id\": \"unit_0\",\n  \"raw_text\": \"Combined text from all threads in this unit\",\n  \"source\": \"journal/<date>/RunningNotes\",\n  \"thread_ids\": [\"t_a3f8c1\", \"t_b2c3d4\"],\n  \"agent_summary\": \"Best guess at what this unit is about\",\n  \"tags\": [\"#projects/my-project\", \"#research/my-topic\"],\n  \"proposed_type\": \"task | consideration | reference | admin | personal | delete | unknown\",\n  \"proposed_destination\": \"best guess at where it should go\",\n  \"confidence\": \"high | medium | low\",\n  \"staleness_note\": \"any indication this might be completed or stale\"\n}\n```\n\nThe routing workflow handles user interaction, confirmation, and execution. It returns a routing record.",
-      "rewrite": "(main, consent-gated)\n\nAgentic step. The agent rewrites Running Notes with only remaining items after routing. Behavioral instructions (presentation format, consent requirements) are in the slash command, not here.\n\nRewrite rules:\n1. **Items with action `delete` or `route`**: remove from Running Notes\n2. **Items with action `skip`**: keep in Running Notes\n3. **Items with action `split`**: keep un-routed portions, remove routed portions\n\n**This is a filesystem write and is consent-gated.**\n\n## Parallelization notes\n\n- Segmentation: single subagent (needs full context)\n- Similarity analysis: single main agent (embeds all threads in one batch, ~35 threads takes ~10s)\n- Cluster review: single main agent (interactive with user)\n- Routing: sequential units in main agent, but sub-agents can pre-compute routing proposals in parallel\n- Rewrite: single main agent operation\n\nFor very large backlogs (50+ threads), consider pre-computing all routing proposals via parallel sub-agents.\n\n## Cost management\n\n- **First run** on a large backlog will be expensive (full segmentation + many routing interactions)\n- **Subsequent runs** process only new items since last run â€” much cheaper\n- Track last-processed date in session metadata to scope future runs\n- For enormous backlogs (100+ items), suggest processing in chunks across sessions\n\n## DAG state persistence\n\nThe DAG state is saved to `agents/<session>/workflows/process-backlog.json`. If the session is interrupted, the workflow can resume from the last completed task. The segmentation result and routing record are stored as task results in the DAG."
+      "route": "Reasoning step. For each information unit, propose a destination:\n\n- ``destination_type=task`` → ``task_text``, ``urgency``, optional ``project`` / ``due_date``.\n- ``destination_type=consideration`` → ``title``, ``project``, ``consideration_type``, ``status``, ``body``, optional ``review_date``.\n- ``destination_type=note`` → ``content``, ``note_path`` (must be relative; vault traversal rejected).\n- ``action=delete`` → the unit is dropped (with a one-line ``reason``).\n- ``action=skip`` → leave it in Running Notes for next time.\n- ``action=split`` → the unit's thread fans out to multiple destinations; provide a ``splits`` list with per-split decisions and a ``rewrite_map[id]`` text/None pair for the rewrite step.\n\nConfirm proposals with the user, then call ``work_buddy.journal_backlog.execute_routing_plan(plan, vault_root)``. The capability is consent-gated. Capture the returned routing_record for the rewrite step.",
+      "rewrite": "Reasoning step (consent-gated). Call ``work_buddy.journal_backlog.rewrite_running_notes(journal_path, original_text, threads, routing_record, original_file_content, rewrite_map)``. The function:\n\n- Drops lines belonging to routed/deleted threads.\n- Keeps lines belonging to skipped threads.\n- Replaces split threads' lines with explicit text from ``rewrite_map`` (if any).\n- Multi-thread overlap: a line is kept if ANY of its memberships is a keep-decision — conservative against silent data loss.\n- Unassigned lines (blanks, ``---`` separators, structural content) are always kept.\n\nReturns ``{success, file, message, preview}``. Confirm the preview with the user before granting consent. The capability checks the file hasn't changed on disk since the rewrite was prepared and refuses to write if it has.",
+      "manifest": "Auto-run. Call ``work_buddy.journal_backlog.build_thread_manifest(threads)``. Each thread gets a ``{id, tags, summary}`` entry via FRONTIER_FAST (Haiku). Per-thread errors don't abort: failed entries have ``tags=[]`` and an ``error`` field; downstream cluster step skips them gracefully. The content-aware LLM cache means repeated runs on identical thread text hit cleanly.",
+      "cluster": "Auto-run. Call ``work_buddy.journal_backlog.linearize_threads(manifest)`` to seriate by Jaccard tag similarity (break_threshold=0.15) and ``generate_clustered_review(threads, manifest, journal_date, source_dates)`` to render markdown for the review step. Returns clusters (list of lists) plus the rendered markdown.",
+      "review": "Reasoning step. Present the cluster review markdown to the user. Collect their MERGE / SPLIT / TAG decisions per cluster:\n\n- **MERGE**: combine threads (the user names the resulting cluster).\n- **SPLIT**: extract a thread from its current cluster into its own (or into another existing cluster).\n- **TAG**: edit the manifest tags for a thread without changing cluster membership.\n\nApply the decisions in-memory: produce a final list of ``information_units`` (each is a list of thread dicts with combined raw_text, unified tags, agreed summary). Do NOT route yet — routing comes next."
+    },
+    "content": {
+      "full": "Process the Running Notes backlog from today (or a given date) by segmenting into threads, clustering by topic, routing to vault destinations, and rewriting the section with only open items remaining.\n\n## Substrate\n\nThis workflow runs on the **line-range segmentation** substrate (introduced when the tagged-text path was retired). The model partitions numbered input lines into groups; ids and per-thread metadata are computed on our side. See ``architecture/llm-runner`` for the segmenter's escalation contract and ``work_buddy.triage.adapters.journal._segment_with_escalation`` for the entry point.\n\n## Step ownership\n\n- Auto-run code steps (extract, segment, manifest, cluster) execute deterministic Python with no per-call agent reasoning. Each is a single capability invocation.\n- Reasoning steps (review, route, rewrite) involve user judgment or consent: clustering decisions, routing destinations, file-write confirmation.\n\n## Failure modes\n\n- Segmentation exhausts all tiers \\u2192 audit log fires from the adapter; workflow surfaces the failure to the user with the per-tier outcome breakdown.\n- Manifest builder errors per-thread \\u2192 failed entries marked but workflow continues; the cluster step gracefully handles entries with empty tags.\n- Routing partially succeeds \\u2192 ``execute_routing_plan`` returns per-item results; user can decide to retry the failed items or proceed with the rewrite for the successful ones.\n- Rewrite consent declined \\u2192 the file isn't modified; ``preview`` is still returned so the user can inspect what would have changed.\n- Concurrent edit of the journal file \\u2192 rewrite refuses to write (compares ``original_file_content`` vs current disk content)."
     }
   },
   "context/review-latest-bundle": {

@@ -39,6 +39,7 @@ RESOURCES: dict[str, str] = {
 
     # Caches — safe to delete anytime
     "cache/llm":                 "cache/llm_cache.json",
+    "cache/segmentation":        "cache/segmentation_cache.json",
     "cache/chrome-tabs":         "cache/chrome_tabs.json",
     "cache/chrome-request":      "cache/chrome_tabs_request",
     "cache/knowledge-content":   "cache/knowledge_index/content.npz",

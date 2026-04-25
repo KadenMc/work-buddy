@@ -1,4 +1,12 @@
-"""Unit tests for the journal triage adapter + repair_segmentation helper."""
+"""Unit tests for the journal triage adapter and line-range segmentation.
+
+Covers:
+- ``collect_same_day_candidates`` happy path + empty/error edges
+- Escalation loop: validation failure at one tier → retry at next
+- Exhaustion audit log shape
+- ``validate_line_range_segmentation`` (new ``{"groups": [[...]]}`` shape)
+- ``build_threads_from_line_ranges`` (local id assignment + multi detection)
+"""
 
 from __future__ import annotations
 
@@ -6,108 +14,24 @@ from typing import Any
 
 import pytest
 
-from work_buddy.journal_backlog.segment import (
-    generate_thread_ids,
-    repair_segmentation,
-    validate_segmentation,
-)
+from work_buddy.llm import ModelTier
+
+
+@pytest.fixture(autouse=True)
+def _isolate_segmentation_cache(monkeypatch, tmp_path):
+    """Each test gets a fresh segmentation cache file. Prevents the
+    content-addressable cache from leaking results between tests that
+    use the same canned input text."""
+    from work_buddy.journal_backlog import segmentation_cache as seg_cache_mod
+    monkeypatch.setattr(
+        seg_cache_mod,
+        "_DEFAULT_CACHE_PATH",
+        tmp_path / "segmentation_isolated.json",
+    )
 
 
 # ---------------------------------------------------------------------------
-# repair_segmentation
-# ---------------------------------------------------------------------------
-
-
-def test_repair_passthrough_on_valid_result() -> None:
-    out = repair_segmentation(
-        tagged_text="x",
-        validation_result={"valid": True},
-        original_text="x",
-        id_pool=["t_aaaaaa"],
-    )
-    assert out["should_retry"] is False
-    assert out["errors_grouped"] == {}
-    assert "t_aaaaaa" in out["available_ids"]
-
-
-def test_repair_categorizes_errors_and_lists_available_ids() -> None:
-    pool = ["t_aaaaaa", "t_bbbbbb", "t_cccccc"]
-    tagged = (
-        "<!-- [t_aaaaaa] -->\n"
-        "note line\n"
-        "<!-- [/t_aaaaaa] -->\n"
-    )
-    validation = {
-        "valid": False,
-        "errors": [
-            "Open tags without close: ['t_bbbbbb']",
-            "Nested thread: t_cccccc opened inside t_aaaaaa at line 4",
-            "Content modified at line 3: 'foo' -> 'bar'",
-        ],
-    }
-    out = repair_segmentation(
-        tagged_text=tagged,
-        validation_result=validation,
-        original_text="note line",
-        id_pool=pool,
-    )
-    assert out["should_retry"] is True
-    assert "unbalanced_tags" in out["errors_grouped"]
-    assert "nesting" in out["errors_grouped"]
-    assert "content_drift" in out["errors_grouped"]
-    # t_aaaaaa was used in the attempt; bbbb/cccc were not.
-    assert "t_aaaaaa" not in out["available_ids"]
-    assert "t_bbbbbb" in out["available_ids"]
-    assert "t_cccccc" in out["available_ids"]
-    assert "byte-for-byte" in out["instructions"]
-
-
-def test_repair_refuses_retry_on_heavy_drift() -> None:
-    validation = {
-        "valid": False,
-        "errors": [f"Content modified at line {i}: 'a' -> 'b'" for i in range(6)],
-    }
-    out = repair_segmentation(
-        tagged_text="",
-        validation_result=validation,
-        original_text="original",
-        id_pool=["t_aaaaaa"],
-    )
-    assert out["should_retry"] is False
-
-
-# ---------------------------------------------------------------------------
-# validate_segmentation ↔ repair_segmentation round-trip
-# ---------------------------------------------------------------------------
-
-
-def test_repair_respects_validate_output() -> None:
-    """End-to-end: a truly-broken attempt's validate output feeds cleanly
-    into repair_segmentation without attribute errors."""
-    original = "one line\ntwo line"
-    bad_tagged = (
-        "<!-- [t_aaaaaa] -->\n"
-        "one line\n"
-        "<!-- [t_bbbbbb] -->\n"
-        "two line\n"
-        # Missing close tags entirely
-    )
-    result = validate_segmentation(bad_tagged, original)
-    assert result["valid"] is False
-    repair = repair_segmentation(
-        tagged_text=bad_tagged,
-        validation_result=result,
-        original_text=original,
-        id_pool=generate_thread_ids(5),
-    )
-    # Helper should produce something usable regardless of our exact
-    # error grouping
-    assert isinstance(repair["instructions"], str)
-    assert isinstance(repair["available_ids"], list)
-
-
-# ---------------------------------------------------------------------------
-# Journal adapter
+# Adapter: collect_same_day_candidates
 # ---------------------------------------------------------------------------
 
 
@@ -151,7 +75,6 @@ def test_journal_adapter_empty_when_segmentation_fails(monkeypatch) -> None:
         "work_buddy.journal_backlog.read_running_notes",
         lambda **kw: notes,
     )
-    # LLMRunner returns content that doesn't parse as valid segmentation JSON.
     from work_buddy.llm import LLMResponse
     monkeypatch.setattr(
         "work_buddy.llm.runner_v2.LLMRunner.call",
@@ -168,9 +91,8 @@ def test_journal_adapter_empty_when_segmentation_fails(monkeypatch) -> None:
 def test_journal_adapter_builds_items_from_valid_segmentation(
     monkeypatch,
 ) -> None:
-    """Give the adapter a segmenter that returns a valid line-range
-    JSON mapping and confirm TriageItems are produced with the right
-    shape."""
+    """Model returns valid line-range groups → TriageItems produced with
+    locally-generated ids and correct raw_text."""
     from work_buddy.triage.adapters import journal as adapter_mod
 
     original = "- alpha idea\n- beta idea"
@@ -179,23 +101,8 @@ def test_journal_adapter_builds_items_from_valid_segmentation(
         lambda **kw: original,
     )
 
-    # Force a deterministic id pool so we can assemble a valid response.
-    fixed_ids = ["t_aaaaaa", "t_bbbbbb"] + [
-        f"t_{i:06x}" for i in range(62)
-    ]
-    monkeypatch.setattr(
-        "work_buddy.journal_backlog.segment.generate_thread_ids",
-        lambda count=50: list(fixed_ids[:count]),
-    )
-
-    # Line-range JSON: line 1 → t_aaaaaa, line 2 → t_bbbbbb
     import json as _json
-    payload = _json.dumps({
-        "threads": [
-            {"id": "t_aaaaaa", "lines": [1]},
-            {"id": "t_bbbbbb", "lines": [2]},
-        ],
-    })
+    payload = _json.dumps({"groups": [[1], [2]]})
     from work_buddy.llm import LLMResponse
     monkeypatch.setattr(
         "work_buddy.llm.runner_v2.LLMRunner.call",
@@ -207,19 +114,19 @@ def test_journal_adapter_builds_items_from_valid_segmentation(
     )
     assert ch is not None
     assert len(items) == 2
-    ids = {i.id for i in items}
-    assert ids == {"journal_t_aaaaaa", "journal_t_bbbbbb"}
     for item in items:
         assert item.source == "journal_thread"
         assert item.label  # non-empty
         assert item.metadata["journal_date"] == "2026-04-18"
-    # Reconstructed raw_text for t_aaaaaa should be exactly line 1 content
-    alpha = next(i for i in items if i.id == "journal_t_aaaaaa")
-    assert alpha.text == "- alpha idea"
+        assert item.id.startswith("journal_t_")
+    # Raw text reconstruction is line-accurate.
+    texts = {item.text for item in items}
+    assert texts == {"- alpha idea", "- beta idea"}
 
 
-def test_journal_adapter_repairs_then_succeeds(monkeypatch) -> None:
-    """First call has missing coverage; repair retry fills it in."""
+def test_journal_adapter_escalates_on_validation_failure(monkeypatch) -> None:
+    """First tier produces invalid content (missing coverage); escalation
+    to the next tier produces valid content."""
     from work_buddy.triage.adapters import journal as adapter_mod
 
     original = "- alpha idea\n- beta idea"
@@ -227,38 +134,190 @@ def test_journal_adapter_repairs_then_succeeds(monkeypatch) -> None:
         "work_buddy.journal_backlog.read_running_notes",
         lambda **kw: original,
     )
-    fixed_ids = ["t_aaaaaa", "t_bbbbbb"] + [
-        f"t_{i:06x}" for i in range(62)
-    ]
-    monkeypatch.setattr(
-        "work_buddy.journal_backlog.segment.generate_thread_ids",
-        lambda count=50: list(fixed_ids[:count]),
-    )
 
-    # First response: only covers line 1 (line 2 unassigned → fails)
     import json as _json
-    first = _json.dumps({"threads": [{"id": "t_aaaaaa", "lines": [1]}]})
-    # Second (repair) response: covers both lines
-    second = _json.dumps({
-        "threads": [
-            {"id": "t_aaaaaa", "lines": [1]},
-            {"id": "t_bbbbbb", "lines": [2]},
-        ],
-    })
+    # First tier covers only line 1 (line 2 unassigned → fails)
+    first = _json.dumps({"groups": [[1]]})
+    # Second tier covers both lines
+    second = _json.dumps({"groups": [[1], [2]]})
     responses = iter([first, second])
+    tiers_called: list[ModelTier] = []
 
     from work_buddy.llm import LLMResponse
 
-    def fake_llm_call(self, **kw):
+    def fake_llm_call(self, *, tier, **kw):
+        tiers_called.append(tier)
         return LLMResponse(content=next(responses))
 
     monkeypatch.setattr("work_buddy.llm.runner_v2.LLMRunner.call", fake_llm_call)
 
     items, ch = adapter_mod.collect_same_day_candidates(
-        journal_date="2026-04-18", profile="local_general",
+        journal_date="2026-04-18",
+        profile="local_general",
+        tier_chain=[ModelTier.LOCAL_FAST, ModelTier.FRONTIER_FAST],
     )
     assert ch is not None
     assert len(items) == 2
+    assert tiers_called == [ModelTier.LOCAL_FAST, ModelTier.FRONTIER_FAST]
+
+
+def test_journal_adapter_exhausts_tier_chain_and_logs_audit(
+    monkeypatch, caplog,
+) -> None:
+    """Every tier fails content validation → empty items + audit log."""
+    import logging
+    from work_buddy.triage.adapters import journal as adapter_mod
+
+    original = "- alpha idea\n- beta idea"
+    monkeypatch.setattr(
+        "work_buddy.journal_backlog.read_running_notes",
+        lambda **kw: original,
+    )
+
+    # Both tiers return invalid (line 2 unassigned)
+    import json as _json
+    bad = _json.dumps({"groups": [[1]]})
+
+    from work_buddy.llm import LLMResponse
+    monkeypatch.setattr(
+        "work_buddy.llm.runner_v2.LLMRunner.call",
+        lambda self, **kw: LLMResponse(content=bad),
+    )
+
+    with caplog.at_level(
+        logging.INFO, logger="work_buddy.triage.adapters.journal",
+    ):
+        items, ch = adapter_mod.collect_same_day_candidates(
+            journal_date="2026-04-18",
+            profile="local_general",
+            tier_chain=[ModelTier.LOCAL_FAST, ModelTier.FRONTIER_FAST],
+        )
+
+    assert items == []
+    assert ch is not None
+    audit_records = [
+        r for r in caplog.records
+        if "segmentation failed across all tiers" in r.getMessage()
+    ]
+    assert audit_records, "expected an exhaustion log line"
+    msg = audit_records[0].getMessage()
+    assert "local_fast" in msg
+    assert "frontier_fast" in msg
+    assert "missing_coverage" in msg
+
+
+# ---------------------------------------------------------------------------
+# Segmentation cache integration (content-addressable layer)
+# ---------------------------------------------------------------------------
+
+
+def test_segmenter_reuses_cache_on_identical_content(monkeypatch) -> None:
+    """First scan writes the segmentation cache; second scan with the
+    same input must hit the cache and NOT call the LLM."""
+    from work_buddy.triage.adapters import journal as adapter_mod
+
+    original = "- alpha idea\n- beta idea\n- gamma idea"
+    monkeypatch.setattr(
+        "work_buddy.journal_backlog.read_running_notes",
+        lambda **kw: original,
+    )
+
+    import json as _json
+    payload = _json.dumps({"groups": [[1, 2], [3]]})
+    from work_buddy.llm import LLMResponse
+    call_count = {"n": 0}
+
+    def fake_llm_call(self, **kw):
+        call_count["n"] += 1
+        return LLMResponse(content=payload)
+
+    monkeypatch.setattr("work_buddy.llm.runner_v2.LLMRunner.call", fake_llm_call)
+
+    items_a, ch_a = adapter_mod.collect_same_day_candidates(
+        journal_date="2026-04-18", profile="local_general",
+    )
+    items_b, ch_b = adapter_mod.collect_same_day_candidates(
+        journal_date="2026-04-18", profile="local_general",
+    )
+    assert len(items_a) == 2
+    assert len(items_b) == 2
+    # Cache hit on the second call → exactly ONE LLM call across both.
+    assert call_count["n"] == 1
+
+
+def test_segmenter_cache_misses_on_content_change(monkeypatch) -> None:
+    """Changing one line of input must miss the cache and call the LLM
+    afresh (no SimHash fuzzy-hit on stale line numbers)."""
+    from work_buddy.triage.adapters import journal as adapter_mod
+
+    original_a = "- alpha idea\n- beta idea\n- gamma idea"
+    original_b = "- alpha idea\n- BETA EDITED\n- gamma idea"
+    raw = {"current": original_a}
+    monkeypatch.setattr(
+        "work_buddy.journal_backlog.read_running_notes",
+        lambda **kw: raw["current"],
+    )
+
+    import json as _json
+    payloads = iter([
+        _json.dumps({"groups": [[1, 2], [3]]}),
+        _json.dumps({"groups": [[1], [2, 3]]}),
+    ])
+    from work_buddy.llm import LLMResponse
+    call_count = {"n": 0}
+
+    def fake_llm_call(self, **kw):
+        call_count["n"] += 1
+        return LLMResponse(content=next(payloads))
+
+    monkeypatch.setattr("work_buddy.llm.runner_v2.LLMRunner.call", fake_llm_call)
+
+    adapter_mod.collect_same_day_candidates(
+        journal_date="2026-04-18", profile="local_general",
+    )
+    raw["current"] = original_b
+    adapter_mod.collect_same_day_candidates(
+        journal_date="2026-04-18", profile="local_general",
+    )
+    # Edit invalidates the cache → LLM is called on both runs.
+    assert call_count["n"] == 2
+
+
+def test_segmenter_cache_robust_to_blank_line_insertion(monkeypatch) -> None:
+    """Adding/removing blank lines doesn't change the content set →
+    cache hits and re-emits groups for the new line numbers."""
+    from work_buddy.triage.adapters import journal as adapter_mod
+
+    raw = {"current": "- alpha idea\n- beta idea"}
+    monkeypatch.setattr(
+        "work_buddy.journal_backlog.read_running_notes",
+        lambda **kw: raw["current"],
+    )
+
+    import json as _json
+    payload = _json.dumps({"groups": [[1, 2]]})
+    from work_buddy.llm import LLMResponse
+    call_count = {"n": 0}
+
+    def fake_llm_call(self, **kw):
+        call_count["n"] += 1
+        return LLMResponse(content=payload)
+
+    monkeypatch.setattr("work_buddy.llm.runner_v2.LLMRunner.call", fake_llm_call)
+
+    items_a, _ = adapter_mod.collect_same_day_candidates(
+        journal_date="2026-04-18", profile="local_general",
+    )
+    # Insert a blank line between the two content lines.
+    raw["current"] = "- alpha idea\n\n- beta idea"
+    items_b, _ = adapter_mod.collect_same_day_candidates(
+        journal_date="2026-04-18", profile="local_general",
+    )
+    # Both runs produce one thread covering the two content lines.
+    assert len(items_a) == 1
+    assert len(items_b) == 1
+    # Cache hit on second run despite the blank-line edit → 1 LLM call total.
+    assert call_count["n"] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -280,17 +339,11 @@ def test_validate_line_range_accepts_well_formed() -> None:
     )
 
     originals = ["- one", "- two", "- three"]
-    seg = {
-        "threads": [
-            {"id": "t_aaaaaa", "lines": [1, 2]},
-            {"id": "t_bbbbbb", "lines": [3]},
-        ],
-    }
-    result = validate_line_range_segmentation(
-        seg, originals, id_pool=["t_aaaaaa", "t_bbbbbb"],
-    )
+    seg = {"groups": [[1, 2], [3]]}
+    result = validate_line_range_segmentation(seg, originals)
     assert result["valid"] is True
-    assert result["thread_count"] == 2
+    assert result["group_count"] == 2
+    assert result["groups"] == [[1, 2], [3]]
 
 
 def test_validate_line_range_rejects_missing_coverage() -> None:
@@ -299,64 +352,91 @@ def test_validate_line_range_rejects_missing_coverage() -> None:
     )
 
     originals = ["- one", "- two", "- three"]
-    seg = {"threads": [{"id": "t_aaaaaa", "lines": [1]}]}
+    seg = {"groups": [[1]]}
     result = validate_line_range_segmentation(seg, originals)
     assert result["valid"] is False
     assert any("not assigned" in e for e in result["errors"])
 
 
-def test_validate_line_range_rejects_overlap_without_multi() -> None:
-    from work_buddy.journal_backlog.segment import (
-        validate_line_range_segmentation,
-    )
-
-    originals = ["- one", "- two"]
-    seg = {
-        "threads": [
-            {"id": "t_aaaaaa", "lines": [1, 2]},
-            {"id": "t_bbbbbb", "lines": [2]},
-        ],
-    }
-    result = validate_line_range_segmentation(seg, originals)
-    assert result["valid"] is False
-    assert any("cited by" in e and "multi" in e for e in result["errors"])
-
-
-def test_validate_line_range_allows_overlap_with_multi() -> None:
+def test_validate_line_range_allows_overlap_unconditionally() -> None:
+    """Overlap between groups is allowed — no flag required. The multi-
+    thread signal is encoded by the overlap itself."""
     from work_buddy.journal_backlog.segment import (
         validate_line_range_segmentation,
     )
 
     originals = ["- shared", "- only-b"]
-    seg = {
-        "threads": [
-            {"id": "t_aaaaaa", "lines": [1], "multi": True},
-            {"id": "t_bbbbbb", "lines": [1, 2], "multi": True},
-        ],
-    }
+    seg = {"groups": [[1], [1, 2]]}
     result = validate_line_range_segmentation(seg, originals)
     assert result["valid"] is True
 
 
-def test_validate_line_range_rejects_bad_ids_and_oor_lines() -> None:
+def test_validate_line_range_accepts_any_well_formed_ids_freely() -> None:
+    """Regression: the old validator rejected ids that weren't in a
+    pre-generated pool. The new shape has no ids at all — groups are
+    just line-number lists — so any well-formed partition passes."""
+    from work_buddy.journal_backlog.segment import (
+        validate_line_range_segmentation,
+    )
+
+    originals = ["- a", "- b", "- c"]
+    # 20 arbitrary groupings; as long as coverage is complete, each is valid.
+    seg = {"groups": [[1, 2], [3]]}
+    assert validate_line_range_segmentation(seg, originals)["valid"]
+    seg = {"groups": [[1], [2, 3]]}
+    assert validate_line_range_segmentation(seg, originals)["valid"]
+    seg = {"groups": [[1, 2, 3]]}
+    assert validate_line_range_segmentation(seg, originals)["valid"]
+
+
+def test_validate_line_range_rejects_oor_line() -> None:
     from work_buddy.journal_backlog.segment import (
         validate_line_range_segmentation,
     )
 
     originals = ["- a", "- b"]
-    seg = {
-        "threads": [
-            {"id": "bad_id", "lines": [1]},
-            {"id": "t_aaaaaa", "lines": [5]},
-        ],
-    }
-    result = validate_line_range_segmentation(
-        seg, originals, id_pool=["t_aaaaaa", "t_bbbbbb"],
-    )
+    seg = {"groups": [[1], [5]]}
+    result = validate_line_range_segmentation(seg, originals)
     assert result["valid"] is False
-    errs = " ".join(result["errors"])
-    assert "invalid id" in errs.lower()
-    assert "out of range" in errs.lower()
+    assert any("out of range" in e.lower() for e in result["errors"])
+
+
+def test_validate_line_range_rejects_missing_groups_key() -> None:
+    from work_buddy.journal_backlog.segment import (
+        validate_line_range_segmentation,
+    )
+
+    originals = ["- a"]
+    result = validate_line_range_segmentation({"threads": []}, originals)
+    assert result["valid"] is False
+    assert any("groups" in e.lower() for e in result["errors"])
+
+
+def test_validate_line_range_rejects_non_numeric_string() -> None:
+    """A string that isn't a number or range (``"two"``) is unparseable —
+    caught distinctly from bad types like dicts or ``None``."""
+    from work_buddy.journal_backlog.segment import (
+        validate_line_range_segmentation,
+    )
+
+    originals = ["- a", "- b"]
+    seg = {"groups": [[1, "two"]]}
+    result = validate_line_range_segmentation(seg, originals)
+    assert result["valid"] is False
+    assert any("unparseable" in e.lower() for e in result["errors"])
+
+
+def test_validate_line_range_rejects_structurally_non_integer_type() -> None:
+    """Dicts, lists, ``None`` aren't valid line entries at all."""
+    from work_buddy.journal_backlog.segment import (
+        validate_line_range_segmentation,
+    )
+
+    originals = ["- a", "- b"]
+    seg = {"groups": [[1, {"line": 2}]]}
+    result = validate_line_range_segmentation(seg, originals)
+    assert result["valid"] is False
+    assert any("non-integer" in e.lower() for e in result["errors"])
 
 
 def test_build_threads_from_line_ranges_reconstructs_raw_text() -> None:
@@ -366,60 +446,276 @@ def test_build_threads_from_line_ranges_reconstructs_raw_text() -> None:
     )
 
     originals = ["- alpha", "- beta", "- gamma"]
-    seg = {
-        "threads": [
-            {"id": "t_aaaaaa", "lines": [1, 2]},
-            {"id": "t_bbbbbb", "lines": [3]},
-        ],
-    }
+    seg = {"groups": [[1, 2], [3]]}
     validated = validate_line_range_segmentation(seg, originals)
     assert validated["valid"]
     threads = build_threads_from_line_ranges(validated, originals)
-    by_id = {t["id"]: t for t in threads}
-    assert by_id["t_aaaaaa"]["raw_text"] == "- alpha\n- beta"
-    assert by_id["t_aaaaaa"]["line_count"] == 2
-    assert by_id["t_bbbbbb"]["raw_text"] == "- gamma"
+    assert len(threads) == 2
+    # Ids are locally generated t_xxxxxx — shape is stable but value is random.
+    for t in threads:
+        assert t["id"].startswith("t_") and len(t["id"]) == 8
+    # Order preserved from the model's groups list.
+    assert threads[0]["raw_text"] == "- alpha\n- beta"
+    assert threads[0]["line_count"] == 2
+    assert threads[1]["raw_text"] == "- gamma"
+    assert threads[1]["line_count"] == 1
+
+
+def test_build_threads_computes_multi_from_overlap() -> None:
+    """has_multi_flag is True for any group whose lines also appear in
+    another group."""
+    from work_buddy.journal_backlog.segment import (
+        build_threads_from_line_ranges,
+        validate_line_range_segmentation,
+    )
+
+    originals = ["- shared", "- only-a", "- only-b"]
+    # Group 1: {1, 2}, Group 2: {1, 3} — line 1 overlaps, so both multi.
+    seg = {"groups": [[1, 2], [1, 3]]}
+    validated = validate_line_range_segmentation(seg, originals)
+    threads = build_threads_from_line_ranges(validated, originals)
+    assert all(t["has_multi_flag"] for t in threads)
+
+
+def test_build_threads_no_multi_when_groups_disjoint() -> None:
+    from work_buddy.journal_backlog.segment import (
+        build_threads_from_line_ranges,
+        validate_line_range_segmentation,
+    )
+
+    originals = ["- a", "- b", "- c"]
+    seg = {"groups": [[1, 2], [3]]}
+    validated = validate_line_range_segmentation(seg, originals)
+    threads = build_threads_from_line_ranges(validated, originals)
+    assert all(not t["has_multi_flag"] for t in threads)
+
+
+def test_build_threads_assigns_unique_ids() -> None:
+    """Local id generation must produce unique ids within a run."""
+    from work_buddy.journal_backlog.segment import (
+        build_threads_from_line_ranges,
+        validate_line_range_segmentation,
+    )
+
+    originals = [f"- line {i}" for i in range(1, 11)]
+    seg = {"groups": [[i] for i in range(1, 11)]}
+    validated = validate_line_range_segmentation(seg, originals)
+    threads = build_threads_from_line_ranges(validated, originals)
+    ids = [t["id"] for t in threads]
+    assert len(set(ids)) == len(ids), "ids must be unique within a run"
 
 
 def test_validate_line_range_permits_unassigned_separator() -> None:
     """Standalone `---` lines carry boundary info, not content. The
-    validator must NOT require them to be assigned to a thread, so a
-    trailing separator doesn't force the model to spawn a junk thread
-    around it."""
+    validator must NOT require them to be assigned to a group."""
     from work_buddy.journal_backlog.segment import (
         validate_line_range_segmentation,
     )
 
     originals = ["- alpha idea", "- beta idea", "---"]
-    seg = {
-        "threads": [
-            {"id": "t_aaaaaa", "lines": [1]},
-            {"id": "t_bbbbbb", "lines": [2]},
-        ],
-    }
+    seg = {"groups": [[1], [2]]}
     result = validate_line_range_segmentation(seg, originals)
     assert result["valid"] is True
-    # Line 3 (`---`) was legitimately skipped — no error.
     assert all("not assigned" not in e for e in result["errors"])
 
 
-def test_repair_line_range_extracts_available_ids() -> None:
+def test_validate_line_range_permits_unassigned_code_fences() -> None:
+    """Markdown code-fence delimiters (``\\`\\`\\``` / ``~~~``) bracket a
+    code block but are themselves structural — not content the model
+    needs to assign to a group. The validator must agree, otherwise
+    every journal section with a fenced code block fails coverage."""
     from work_buddy.journal_backlog.segment import (
-        repair_line_range_segmentation,
         validate_line_range_segmentation,
     )
 
-    originals = ["- one", "- two"]
-    pool = ["t_aaaaaa", "t_bbbbbb", "t_cccccc"]
-    seg = {"threads": [{"id": "t_aaaaaa", "lines": [1]}]}
-    validation = validate_line_range_segmentation(seg, originals, id_pool=pool)
-    repair = repair_line_range_segmentation(
-        segmentation=seg,
-        validation_result=validation,
-        original_lines=originals,
-        id_pool=pool,
+    # Lines: 1=fence-open, 2=code, 3=fence-close, 4=text after code block
+    originals = ["```", "00:00:12 | INFO | something", "```", "- after"]
+    # Model legitimately groups the code line plus the trailing text;
+    # leaves the fence delimiters unassigned.
+    seg = {"groups": [[2], [4]]}
+    result = validate_line_range_segmentation(seg, originals)
+    assert result["valid"] is True
+
+
+def test_validate_line_range_permits_language_tagged_fence() -> None:
+    """Code fences with a language tag (e.g. ``\\`\\`\\`python``) are also
+    delimiters and should be exempt."""
+    from work_buddy.journal_backlog.segment import (
+        validate_line_range_segmentation,
     )
-    assert repair["should_retry"] is True
-    assert "t_aaaaaa" not in repair["available_ids"]
-    assert "t_bbbbbb" in repair["available_ids"]
-    assert "missing_coverage" in repair["errors_grouped"]
+
+    originals = ["```python", "x = 1", "```", "- text"]
+    seg = {"groups": [[2], [4]]}
+    result = validate_line_range_segmentation(seg, originals)
+    assert result["valid"] is True
+
+
+def test_validate_line_range_permits_tilde_code_fence() -> None:
+    """Some markdown flavors use ``~~~`` instead of ``\\`\\`\\``` for fences."""
+    from work_buddy.journal_backlog.segment import (
+        validate_line_range_segmentation,
+    )
+
+    originals = ["~~~", "code line", "~~~", "- text"]
+    seg = {"groups": [[2], [4]]}
+    result = validate_line_range_segmentation(seg, originals)
+    assert result["valid"] is True
+
+
+# ---------------------------------------------------------------------------
+# Range / string entry parsing
+# ---------------------------------------------------------------------------
+
+
+def test_validate_line_range_accepts_inclusive_range_string() -> None:
+    """``"3-5"`` expands to lines 3, 4, 5."""
+    from work_buddy.journal_backlog.segment import (
+        validate_line_range_segmentation,
+    )
+
+    originals = [f"- line {i}" for i in range(1, 6)]
+    seg = {"groups": [[1, 2], ["3-5"]]}
+    result = validate_line_range_segmentation(seg, originals)
+    assert result["valid"] is True
+    assert result["groups"] == [[1, 2], [3, 4, 5]]
+
+
+def test_validate_line_range_accepts_mixed_int_and_range() -> None:
+    """Entries in a single group can mix plain integers and range strings."""
+    from work_buddy.journal_backlog.segment import (
+        validate_line_range_segmentation,
+    )
+
+    originals = [f"- line {i}" for i in range(1, 11)]
+    seg = {"groups": [[1, "3-5", 9], ["2", "6-8", 10]]}
+    result = validate_line_range_segmentation(seg, originals)
+    assert result["valid"] is True
+    assert result["groups"] == [[1, 3, 4, 5, 9], [2, 6, 7, 8, 10]]
+
+
+def test_validate_line_range_accepts_single_int_as_string() -> None:
+    """Robustness: a model emitting ``"15"`` instead of ``15`` is accepted
+    as line 15 — we must not fail just because the model wavered on the
+    output type."""
+    from work_buddy.journal_backlog.segment import (
+        validate_line_range_segmentation,
+    )
+
+    originals = [f"- line {i}" for i in range(1, 21)]
+    seg = {"groups": [["1", "2", "15"], [3, "4", 5]]}
+    result = validate_line_range_segmentation(seg, originals)
+    # Coverage is incomplete (many lines missing) — but the entries that
+    # WERE given must parse cleanly; the only error should be coverage.
+    parse_errors = [
+        e for e in result["errors"]
+        if "unparseable" in e or "non-integer" in e or "range" in e.lower()
+    ]
+    assert not parse_errors, f"expected string ints to parse, got: {parse_errors}"
+
+
+def test_validate_line_range_accepts_degenerate_range() -> None:
+    """``"5-5"`` is a valid single-line range (equivalent to ``5`` or ``"5"``)."""
+    from work_buddy.journal_backlog.segment import (
+        validate_line_range_segmentation,
+    )
+
+    originals = ["- a", "- b", "- c"]
+    seg = {"groups": [["1-1"], ["2-2"], ["3-3"]]}
+    result = validate_line_range_segmentation(seg, originals)
+    assert result["valid"] is True
+    assert result["groups"] == [[1], [2], [3]]
+
+
+def test_validate_line_range_tolerates_whitespace_in_range() -> None:
+    """Model wobble: ``" 3 - 5 "`` should parse the same as ``"3-5"``."""
+    from work_buddy.journal_backlog.segment import (
+        validate_line_range_segmentation,
+    )
+
+    originals = [f"- line {i}" for i in range(1, 6)]
+    seg = {"groups": [[1, 2], [" 3 - 5 "]]}
+    result = validate_line_range_segmentation(seg, originals)
+    assert result["valid"] is True
+    assert result["groups"] == [[1, 2], [3, 4, 5]]
+
+
+def test_validate_line_range_rejects_reversed_range() -> None:
+    from work_buddy.journal_backlog.segment import (
+        validate_line_range_segmentation,
+    )
+
+    originals = [f"- line {i}" for i in range(1, 6)]
+    seg = {"groups": [["5-3"]]}
+    result = validate_line_range_segmentation(seg, originals)
+    assert result["valid"] is False
+    assert any("reversed" in e.lower() for e in result["errors"])
+
+
+def test_validate_line_range_rejects_zero_or_below() -> None:
+    from work_buddy.journal_backlog.segment import (
+        validate_line_range_segmentation,
+    )
+
+    originals = [f"- line {i}" for i in range(1, 6)]
+    # Zero-start range — 1-indexed input should reject.
+    seg = {"groups": [["0-3"]]}
+    result = validate_line_range_segmentation(seg, originals)
+    assert result["valid"] is False
+    assert any("below 1" in e.lower() for e in result["errors"])
+
+
+def test_validate_line_range_rejects_range_exceeding_input() -> None:
+    from work_buddy.journal_backlog.segment import (
+        validate_line_range_segmentation,
+    )
+
+    originals = [f"- line {i}" for i in range(1, 6)]  # 5 lines
+    seg = {"groups": [["1-100"]]}
+    result = validate_line_range_segmentation(seg, originals)
+    assert result["valid"] is False
+    # One error per bad range — not 95 errors per out-of-bounds line.
+    range_errors = [e for e in result["errors"] if "1-100" in e]
+    assert len(range_errors) == 1
+
+
+def test_validate_line_range_rejects_unparseable_string() -> None:
+    from work_buddy.journal_backlog.segment import (
+        validate_line_range_segmentation,
+    )
+
+    originals = [f"- line {i}" for i in range(1, 6)]
+    seg = {"groups": [[1, "abc"]]}
+    result = validate_line_range_segmentation(seg, originals)
+    assert result["valid"] is False
+    assert any("unparseable" in e.lower() for e in result["errors"])
+
+
+def test_validate_line_range_rejects_bool_entry() -> None:
+    """``True`` is a Python ``int`` subclass; accepting it silently would
+    silently alias line 1. Reject explicitly."""
+    from work_buddy.journal_backlog.segment import (
+        validate_line_range_segmentation,
+    )
+
+    originals = ["- a", "- b"]
+    seg = {"groups": [[True, 2]]}
+    result = validate_line_range_segmentation(seg, originals)
+    assert result["valid"] is False
+    assert any("boolean" in e.lower() for e in result["errors"])
+
+
+def test_build_threads_from_range_reconstructs_raw_text() -> None:
+    """Range entries flow through the builder the same as integer lists."""
+    from work_buddy.journal_backlog.segment import (
+        build_threads_from_line_ranges,
+        validate_line_range_segmentation,
+    )
+
+    originals = ["- alpha", "- beta", "- gamma", "- delta", "- epsilon"]
+    seg = {"groups": [["1-3"], [4, 5]]}
+    validated = validate_line_range_segmentation(seg, originals)
+    assert validated["valid"]
+    threads = build_threads_from_line_ranges(validated, originals)
+    assert threads[0]["raw_text"] == "- alpha\n- beta\n- gamma"
+    assert threads[0]["line_count"] == 3
+    assert threads[1]["raw_text"] == "- delta\n- epsilon"

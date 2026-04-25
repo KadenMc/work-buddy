@@ -151,11 +151,26 @@ def _summarize_tabs(
     uncached_indices: list[int] = []
     tabs_cached = 0
 
+    # Cache provenance: the summarize_batch path has its own system
+    # prompt we don't see here. Use a versioned tag as the ``system``
+    # identity so prompt revisions can be bumped without silent cache
+    # reuse. When ``summarize_batch`` changes materially, bump this.
+    _SUMMARIZE_TAB_VERSION = "summarize_tab:v1"
+    _summarize_system_hash = hashlib.sha256(
+        _SUMMARIZE_TAB_VERSION.encode()
+    ).hexdigest()[:12]
+
     # Check cache per tab
     for i, tab in enumerate(selected):
         url = tab["url"]
         cache_key = f"summarize_tab:{_normalize_for_cache(url)}"
-        cached = cache_get(cache_key)
+        content_text = tab_contents.get(url, {}).get("text", "") or ""
+        input_hash = hashlib.sha256(content_text.encode()).hexdigest()
+        cached = cache_get(
+            cache_key,
+            input_hash=input_hash,
+            input_text=content_text,
+        )
         if cached:
             tabs_cached += 1
             r = cached["result"]
@@ -199,9 +214,9 @@ def _summarize_tabs(
                 tab = selected[i]
                 url = tab["url"]
                 cache_key = f"summarize_tab:{_normalize_for_cache(url)}"
-                content_text = tab_contents.get(url, {}).get("text", "")
+                content_text = tab_contents.get(url, {}).get("text", "") or ""
                 cache_put(
-                    task_id=cache_key,
+                    cache_key,
                     result={
                         "content_summary": batch_results[j].content_summary,
                         "entities": [{"name": e.name, "type": e.type, "context": e.context} for e in batch_results[j].entities],
@@ -209,8 +224,10 @@ def _summarize_tabs(
                         "user_intent_speculation": batch_results[j].user_intent_speculation,
                         "user_posture": batch_results[j].user_posture,
                     },
-                    content_hash=hashlib.md5(content_text.encode()).hexdigest() if content_text else None,
-                    content_sample=content_text[:500] if content_text else None,
+                    input_hash=hashlib.sha256(content_text.encode()).hexdigest(),
+                    input_text=content_text,
+                    system_hash=_summarize_system_hash,
+                    system_preview=_SUMMARIZE_TAB_VERSION,
                     ttl_minutes=30,
                 )
 

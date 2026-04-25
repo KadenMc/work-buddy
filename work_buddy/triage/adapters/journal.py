@@ -15,18 +15,23 @@ Called by ``BackgroundTriageProducer``. Steps:
      each into a :class:`TriageItem` with ``source="journal_thread"``
      and a stable ``journal_<tid>`` id.
 
-One repair retry: if validation fails (missing coverage, overlapping
-threads without ``multi``, etc.), a structured repair prompt is
-built and the call is retried once.
+Tier escalation: if the first-tier model's output fails
+content validation (coverage misses, overlap without ``multi``,
+etc.), the adapter re-issues the call at the next tier in the
+configured ``segment.tier_chain`` (default: ``LOCAL_FAST`` →
+``FRONTIER_FAST``). Segmentation is a mechanical grouping task —
+when a small local model can't produce a valid partition, the
+right move is a bigger brain, not another shot at the same one.
 
-Graceful degradation: if the local profile is not reachable or
-segmentation fails twice in a row, the adapter returns an empty
-candidate list. The producer then treats the pass as a skipped /
-empty run rather than hard-failing.
+Graceful degradation: if every tier in the chain errors or fails
+validation, the adapter returns an empty candidate list with a
+per-tier audit trail in the log. The producer then treats the
+pass as a skipped / empty run rather than hard-failing.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 from typing import Any
 
@@ -41,7 +46,7 @@ logger = get_logger(__name__)
 # ---------------------------------------------------------------------------
 
 _SYSTEM_PROMPT = """\
-You group lines of a running-notes section into threads.
+You group lines of a running-notes section into threads by topic.
 
 Input: the running notes with each line prefixed by its 1-based line number and a pipe, e.g.:
     1| - first line content
@@ -49,35 +54,35 @@ Input: the running notes with each line prefixed by its 1-based line number and 
     3|
 
 Output: a JSON object of the form
-    {"threads": [
-        {"id": "t_xxxxxx", "lines": [1, 2, 5]},
-        {"id": "t_yyyyyy", "lines": [3, 4]}
+    {"groups": [
+        [1, "3-5", 9],
+        ["10-13"],
+        [14, 15]
     ]}
 
+Each inner array is one thread. Entries can be:
+  - a plain integer — a single line number (e.g. ``9``)
+  - an inclusive range string ``"N-M"`` — lines N through M (e.g. ``"3-5"`` means lines 3, 4, and 5)
+
+For contiguous runs, prefer ranges — they're terser and less error-prone
+than enumerating each line. Mix freely: ``[1, "3-5", 9]`` is group {1, 3, 4, 5, 9}.
+
 Rules:
-1. Use ONLY thread ids from the provided pool.
-2. Every input CONTENT line must appear in at least one thread. Blank
+1. Every input CONTENT line must appear in at least one group. Blank
    lines and structural separator lines (lines containing only ``---``)
    may be left out — they carry boundary information, not content.
-3. A line can appear in at most one thread UNLESS it legitimately bridges
-   two threads — in that case add the line to BOTH threads and set
-   "multi": true on both.
-4. Do NOT include the line content in your output — only line numbers.
-5. Return only the JSON object. No prose, no markdown fences.
+2. A line may appear in more than one group if it legitimately bridges
+   two threads. No extra flag is needed; overlap itself encodes the
+   multi-thread signal.
+3. Do NOT include the line content in your output — only line numbers.
+4. Return only the JSON object. No prose, no markdown fences.
 """
 
 
-def _segmentation_user_prompt(
-    *,
-    numbered_text: str,
-    id_pool: list[str],
-) -> str:
-    pool_preview = ", ".join(id_pool[:50])
-    if len(id_pool) > 50:
-        pool_preview += f", …({len(id_pool) - 50} more)"
+def _segmentation_user_prompt(*, numbered_text: str) -> str:
     return (
-        f"Thread id pool ({len(id_pool)} ids): {pool_preview}\n\n"
-        f"=== BEGIN NUMBERED NOTES ===\n{numbered_text}\n=== END NUMBERED NOTES ==="
+        f"=== BEGIN NUMBERED NOTES ===\n{numbered_text}\n"
+        f"=== END NUMBERED NOTES ==="
     )
 
 
@@ -91,10 +96,10 @@ def collect_same_day_candidates(
     journal_date: str | None = None,
     profile: str,
     max_threads: int | None = None,
-    id_pool_size: int | None = None,
     segment_max_tokens: int | None = None,
     segment_temperature: float | None = None,
     segment_cache_ttl_minutes: int | None = None,
+    tier_chain: list[Any] | None = None,
 ) -> tuple[list[TriageItem], str | None]:
     """Return ``(items, content_hash)`` for the producer.
 
@@ -103,14 +108,15 @@ def collect_same_day_candidates(
         profile: Local LLM profile name used for segmentation.
         max_threads: Upper bound on how many threads we'll propagate
             downstream. ``None`` → load from feature config.
-        id_pool_size: Thread-ID pool size handed to the segmenter.
-            ``None`` → load from feature config.
         segment_max_tokens: Token budget for the segmentation call.
             ``None`` → load from feature config.
         segment_temperature: Sampling temperature for segmentation.
             ``None`` → load from feature config.
         segment_cache_ttl_minutes: LLM-cache TTL. ``None`` → load
             from feature config.
+        tier_chain: Ordered list of ``ModelTier`` values (or their
+            string names) to try when a tier's output fails content
+            validation. ``None`` → load from feature config.
 
     Returns:
         ``(items, content_hash)``. ``items`` is an empty list when
@@ -120,6 +126,7 @@ def collect_same_day_candidates(
     """
     from work_buddy.journal_backlog import read_running_notes
     from work_buddy.journal_backlog.segment import strip_banners
+    from work_buddy.llm import ModelTier
     from work_buddy.triage.background import content_hash as _hash
     from work_buddy.triage.config import (
         adapter_config,
@@ -132,14 +139,32 @@ def collect_same_day_candidates(
 
     if max_threads is None:
         max_threads = ad_cfg.get("max_threads", 64)
-    if id_pool_size is None:
-        id_pool_size = ad_cfg.get("id_pool_size", 64)
     if segment_max_tokens is None:
         segment_max_tokens = seg_cfg.get("max_tokens", 8192)
     if segment_temperature is None:
         segment_temperature = seg_cfg.get("temperature", 0.0)
     if segment_cache_ttl_minutes is None:
         segment_cache_ttl_minutes = seg_cfg.get("cache_ttl_minutes", 60)
+
+    # Resolve tier chain: explicit arg → config → hard-coded fallback.
+    raw_chain = (
+        tier_chain if tier_chain is not None
+        else seg_cfg.get("tier_chain", ["local_fast", "frontier_fast"])
+    )
+    resolved_chain: list[ModelTier] = []
+    for entry in raw_chain or []:
+        if isinstance(entry, ModelTier):
+            resolved_chain.append(entry)
+            continue
+        try:
+            resolved_chain.append(ModelTier(entry))
+        except ValueError:
+            logger.warning(
+                "journal adapter: ignoring unknown tier %r in tier_chain",
+                entry,
+            )
+    if not resolved_chain:
+        resolved_chain = [ModelTier.LOCAL_FAST]
 
     try:
         raw = read_running_notes(same_day=True, journal_date=journal_date)
@@ -156,21 +181,17 @@ def collect_same_day_candidates(
 
     ch = _hash([cleaned])
 
-    threads = _segment_with_repair(
+    threads = _segment_with_escalation(
         original_text=cleaned,
         banner_date_map=banner_date_map,
         profile=profile,
-        id_pool_size=id_pool_size,
+        tier_chain=resolved_chain,
         max_tokens=segment_max_tokens,
         temperature=segment_temperature,
         cache_ttl_minutes=segment_cache_ttl_minutes,
+        journal_date=journal_date,
     )
     if threads is None:
-        logger.info(
-            "journal adapter: segmentation failed for date=%s "
-            "(returning empty candidate list)",
-            journal_date,
-        )
         return [], ch
 
     if len(threads) > max_threads:
@@ -208,108 +229,205 @@ def collect_same_day_candidates(
 # ---------------------------------------------------------------------------
 
 
-def _segment_with_repair(
+_SYSTEM_PROMPT_HASH = hashlib.sha256(
+    _SYSTEM_PROMPT.encode("utf-8")
+).hexdigest()[:12]
+
+
+def _segment_with_escalation(
     *,
     original_text: str,
     banner_date_map: list[tuple[int, str]] | None,
     profile: str,
-    id_pool_size: int = 64,
+    tier_chain: list[Any],
     max_tokens: int = 8192,
     temperature: float = 0.0,
     cache_ttl_minutes: int = 60,
+    journal_date: str | None = None,
 ) -> list[dict[str, Any]] | None:
-    """One attempt + one repair retry via the line-range protocol.
+    """Run segmentation, escalating through ``tier_chain`` on failure.
+
+    Each tier sees the same clean prompt — no repair instructions, no
+    redundant bookkeeping constraints on the model. On content-validation
+    failure, the loop records a structured per-tier outcome and moves
+    to the next tier. If every tier exhausts, emits one aggregated log
+    line carrying the full audit trail (tier, outcome, error categories,
+    sample) and returns ``None``.
+
+    The LLM's job is partition-only: return line-number groups. Ids are
+    generated locally after validation; the ``has_multi_flag`` is
+    derived from line overlap between groups. See
+    :func:`build_threads_from_line_ranges`.
+
+    ### Caching
+
+    Two layers, in order of precedence:
+
+    1. **Content-addressable segmentation cache** — keyed by the *content
+       set* of the input lines (line content hashes, not line numbers).
+       Survives line reordering, blank-line edits, and whitespace-only
+       changes. Stores groups as content-hash sets and translates back
+       to current line numbers on lookup. Misses on any meaningful
+       content change → falls through to a fresh LLM call.
+    2. **LLM-prompt cache (disabled here)** — the generic
+       :mod:`work_buddy.llm.cache` lives at the prompt level. Disabled
+       on this path (``cache_ttl_minutes=0``) because its SimHash
+       fuzzy-match would happily serve stale line-number partitions on
+       small content edits — the very failure mode the segmentation
+       cache exists to fix.
 
     Returns the list of thread dicts produced by
-    :func:`build_threads_from_line_ranges`, or ``None`` if
-    segmentation failed twice in a row.
+    :func:`build_threads_from_line_ranges`, or ``None`` if no tier
+    produced a valid segmentation.
     """
     from work_buddy.journal_backlog.segment import (
         build_threads_from_line_ranges,
-        generate_thread_ids,
         number_lines,
-        repair_line_range_segmentation,
         validate_line_range_segmentation,
     )
+    from work_buddy.journal_backlog.segmentation_cache import (
+        get_cached_segmentation,
+        put_segmentation,
+    )
 
-    id_pool = generate_thread_ids(count=id_pool_size)
     numbered, original_lines = number_lines(original_text)
+    user_prompt = _segmentation_user_prompt(numbered_text=numbered)
+
+    # Content-addressable cache lookup BEFORE any LLM call. Keyed on
+    # the system_hash + the content-set of original_lines.
+    cached_groups = get_cached_segmentation(
+        original_lines=original_lines,
+        system_hash=_SYSTEM_PROMPT_HASH,
+    )
+    if cached_groups is not None:
+        # Sanity-validate against the current line numbers — coverage
+        # check might catch a translation edge case (e.g. a content hash
+        # that mapped to multiple positions in current input but only
+        # one in cached input).
+        check = validate_line_range_segmentation(
+            {"groups": cached_groups}, original_lines,
+        )
+        if check.get("valid"):
+            logger.info(
+                "journal adapter: segmentation cache hit (content-addressable)",
+            )
+            return build_threads_from_line_ranges(
+                check, original_lines, banner_date_map=banner_date_map,
+            )
+        # Cached entry exists but doesn't validate against current
+        # input. Rare; fall through to LLM. Don't surface as an error.
 
     call_kwargs = {
         "profile": profile,
         "max_tokens": max_tokens,
         "temperature": temperature,
-        "cache_ttl_minutes": cache_ttl_minutes,
+        # Disable the LLM-prompt cache for segmenter calls. We cache at
+        # the content-addressable layer above; the prompt-level cache
+        # would fuzzy-match on small content edits and serve stale line
+        # numbers — the exact bug this rework exists to fix.
+        "cache_ttl_minutes": 0,
     }
 
-    attempt = _call_segmenter(
-        system=_SYSTEM_PROMPT,
-        user=_segmentation_user_prompt(
-            numbered_text=numbered, id_pool=id_pool,
-        ),
-        **call_kwargs,
-    )
-    if attempt is None:
-        return None
+    attempts: list[dict[str, Any]] = []
 
-    result = validate_line_range_segmentation(
-        attempt, original_lines, id_pool=id_pool,
-    )
-    if result.get("valid"):
-        return build_threads_from_line_ranges(
-            result, original_lines, banner_date_map=banner_date_map,
+    for tier in tier_chain:
+        parsed, failure = _call_segmenter(
+            system=_SYSTEM_PROMPT,
+            user=user_prompt,
+            tier=tier,
+            **call_kwargs,
         )
+        if parsed is None:
+            attempts.append({
+                "tier": getattr(tier, "value", str(tier)),
+                "outcome": failure or "llm_error_or_unparseable",
+            })
+            continue
 
-    repair = repair_line_range_segmentation(
-        segmentation=attempt,
-        validation_result=result,
-        original_lines=original_lines,
-        id_pool=id_pool,
-    )
-    if not repair.get("should_retry"):
-        logger.info(
-            "journal adapter: segmentation errors non-recoverable "
-            "(categories=%s)",
-            list(repair.get("errors_grouped", {}).keys()),
-        )
-        return None
+        result = validate_line_range_segmentation(parsed, original_lines)
+        if result.get("valid"):
+            # Persist to the content-addressable cache so subsequent
+            # runs on the same content (any ordering) reuse this work.
+            try:
+                put_segmentation(
+                    original_lines=original_lines,
+                    system_hash=_SYSTEM_PROMPT_HASH,
+                    groups=result["groups"],
+                    ttl_minutes=cache_ttl_minutes if cache_ttl_minutes > 0 else 60,
+                )
+            except Exception as exc:
+                # Cache write is best-effort — never block on a write failure.
+                logger.warning(
+                    "journal adapter: segmentation cache write failed: %s", exc,
+                )
+            return build_threads_from_line_ranges(
+                result, original_lines, banner_date_map=banner_date_map,
+            )
 
-    retry_system = _SYSTEM_PROMPT + "\n\n" + repair["instructions"]
-    retry_user = _segmentation_user_prompt(
-        numbered_text=numbered,
-        id_pool=repair["available_ids"] or id_pool,
-    )
-    second = _call_segmenter(
-        system=retry_system, user=retry_user, **call_kwargs,
-    )
-    if second is None:
-        return None
+        errors = result.get("errors", []) or []
+        grouped = _group_validation_errors(errors)
+        attempts.append({
+            "tier": getattr(tier, "value", str(tier)),
+            "outcome": "validation_failed",
+            "error_kind": "validation_failed",
+            "error_count": len(errors),
+            "categories": list(grouped.keys()),
+            "sample": [e[:120] for e in errors[:3]],
+        })
 
-    result2 = validate_line_range_segmentation(
-        second, original_lines, id_pool=id_pool,
-    )
-    if result2.get("valid"):
-        return build_threads_from_line_ranges(
-            result2, original_lines, banner_date_map=banner_date_map,
-        )
     logger.info(
-        "journal adapter: segmentation still invalid after repair "
-        "(errors=%d)",
-        len(result2.get("errors", [])),
+        "journal adapter: segmentation failed across all tiers for "
+        "date=%s: %s",
+        journal_date,
+        attempts,
     )
     return None
+
+
+def _group_validation_errors(errors: list[str]) -> dict[str, list[str]]:
+    """Bucket validator error strings into categories for logging.
+
+    Categories map to the failure modes the line-range validator can
+    produce: missing coverage (non-blank lines unassigned), bad shape
+    (JSON didn't parse as ``{"groups": [[...]]}``), bad line numbers
+    (out of range or non-integer), and a catch-all.
+    """
+    grouped: dict[str, list[str]] = {
+        "missing_coverage": [],
+        "bad_shape": [],
+        "bad_line": [],
+        "other": [],
+    }
+    for err in errors:
+        lower = err.lower()
+        if "not assigned" in lower:
+            grouped["missing_coverage"].append(err)
+        elif "groups" in lower and ("missing" in lower or "not a list" in lower or "not an array" in lower):
+            grouped["bad_shape"].append(err)
+        elif "out of range" in lower or "non-integer" in lower:
+            grouped["bad_line"].append(err)
+        else:
+            grouped["other"].append(err)
+    return {k: v for k, v in grouped.items() if v}
 
 
 def _call_segmenter(
     *,
     system: str,
     user: str,
+    tier: Any,
     profile: str,
     max_tokens: int,
     temperature: float,
     cache_ttl_minutes: int,
-) -> dict[str, Any] | None:
-    """Run the local-profile LLM call and parse the JSON response.
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Run one LLM call at ``tier`` and parse the JSON response.
+
+    Returns ``(parsed_json, None)`` on success, or
+    ``(None, failure_kind)`` on any failure. ``failure_kind`` is a
+    short string drawn from ``LLMResponse.error_kind`` when the
+    runner reports an error, or a local tag (``"empty_content"``,
+    ``"unparseable"``) for adapter-side failures.
 
     We DO NOT pass ``output_schema=`` here. Empirically, LM Studio's
     openai-compat ``response_format: json_schema`` path breaks for
@@ -319,28 +437,23 @@ def _call_segmenter(
     asks for JSON directly; :func:`validate_line_range_segmentation`
     is our real safety net against malformed output.
 
-    Migrated to :class:`LLMRunner` in phase 8. The ``profile`` arg
-    still controls which local profile gets used — mapped to the
-    nearest :class:`ModelTier` (LOCAL_FAST for non-tool-calling
-    segmentation profiles). Callers passing a non-standard profile
-    should add a tier-binding override in ``config.local.yaml`` under
-    ``llm.tiers`` rather than relying on this mapping to change.
+    ``profile`` is advisory: :class:`LLMRunner` resolves the concrete
+    model from the tier binding, not the profile string. Callers who
+    need a non-default profile should override the binding in
+    ``config.local.yaml`` under ``llm.tiers``.
     """
-    from work_buddy.llm import ErrorKind, LLMRunner, ModelTier
+    from work_buddy.llm import LLMRunner
 
-    # The segmenter runs freeform JSON-emission, not tool calls. Map
-    # the profile arg onto LOCAL_FAST — its default binding is
-    # local_general which is what the segmenter expects. A future
-    # refactor can plumb profile-override through LLMRunner directly.
     if profile and profile not in ("local_general",):
         logger.debug(
             "journal adapter: profile=%r override won't take effect — "
-            "LLMRunner uses the tier binding for LOCAL_FAST",
+            "LLMRunner uses the tier binding for %s",
             profile,
+            getattr(tier, "value", tier),
         )
 
     resp = LLMRunner().call(
-        tier=ModelTier.LOCAL_FAST,
+        tier=tier,
         system=system,
         user=user,
         max_tokens=max_tokens,
@@ -348,15 +461,17 @@ def _call_segmenter(
         cache_ttl_minutes=cache_ttl_minutes,
     )
     if resp.is_error():
+        kind = resp.error_kind.value if resp.error_kind else "unknown"
         logger.warning(
-            "journal adapter: segmentation llm_call error: %s",
-            resp.error,
+            "journal adapter: segmentation llm_call error at tier=%s: "
+            "kind=%s msg=%s",
+            getattr(tier, "value", tier), kind, resp.error,
         )
-        return None
+        return None, kind
 
     content = (resp.content or "").strip()
     if not content:
-        return None
+        return None, "empty_content"
     if content.startswith("```"):
         content = content.split("\n", 1)[1] if "\n" in content else content
         if content.endswith("```"):
@@ -365,22 +480,21 @@ def _call_segmenter(
     # Models sometimes emit leading/trailing prose despite the prompt.
     # Locate the outermost {...} and parse that.
     try:
-        import json
-        return json.loads(content)
+        return json.loads(content), None
     except (json.JSONDecodeError, ValueError):
         brace_start = content.find("{")
         brace_end = content.rfind("}")
         if brace_start >= 0 and brace_end > brace_start:
             try:
-                import json
-                return json.loads(content[brace_start : brace_end + 1])
+                return json.loads(content[brace_start : brace_end + 1]), None
             except (json.JSONDecodeError, ValueError):
                 pass
         logger.warning(
-            "journal adapter: segmentation response unparseable "
-            "(len=%d)", len(content),
+            "journal adapter: segmentation response unparseable at "
+            "tier=%s (len=%d)",
+            getattr(tier, "value", tier), len(content),
         )
-        return None
+        return None, "unparseable"
 
 
 def _derive_label(text: str, *, max_chars: int = 72) -> str:

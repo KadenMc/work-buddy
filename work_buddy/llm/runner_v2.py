@@ -57,7 +57,7 @@ _LOCAL_ERROR_KIND_MAP: dict[str, ErrorKind] = {
     "server_error": ErrorKind.UNKNOWN,
     "bad_request": ErrorKind.BAD_REQUEST,
     "context_exceeded": ErrorKind.CONTEXT_EXCEEDED,
-    "model_not_loaded": ErrorKind.MODEL_NOT_LOADED,
+    "model_not_available": ErrorKind.MODEL_NOT_AVAILABLE,
     "model_unsupported": ErrorKind.MODEL_UNSUPPORTED,
     "malformed_response": ErrorKind.MALFORMED_RESPONSE,
     "unknown": ErrorKind.UNKNOWN,
@@ -329,7 +329,20 @@ class LLMRunner:
                     f"Tier {binding.tier.value} has backend={binding.backend} but no profile",
                     "Set ``profile`` on the tier's config entry.",
                 )
+            # ``backend_kind`` tells run_task which local endpoint kind
+            # to use. The tier binding is authoritative: tool-support
+            # tiers hit the native MCP-capable endpoint, non-tool tiers
+            # use openai-compat so LM Studio's JIT auto-load works.
+            if binding.backend not in ("lmstudio_native", "openai_compat"):
+                return _error_response(
+                    binding,
+                    ErrorKind.BACKEND_UNAVAILABLE,
+                    f"Tier {binding.tier.value} has unsupported local "
+                    f"backend={binding.backend!r}",
+                    "Expected 'lmstudio_native' or 'openai_compat'.",
+                )
             kwargs["profile"] = binding.profile
+            kwargs["backend_kind"] = binding.backend
 
         try:
             result = run_task(**kwargs)
