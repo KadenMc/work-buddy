@@ -994,6 +994,22 @@ def api_costs_projects():
         return jsonify({"error": str(exc)}), 500
 
 
+@app.get("/api/costs/rate-limits")
+def api_costs_rate_limits():
+    """Return the most-recent Anthropic rate-limit observations per model.
+
+    Read-only view of ``data/runtime/rate_limits.json``, populated by
+    the runner whenever it makes a successful Anthropic API call.
+    Empty ``observations`` when no calls have been recorded yet.
+    """
+    try:
+        from work_buddy.llm.rate_limits import read_observations
+        return jsonify({"observations": read_observations()})
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Rate-limit fetch failed")
+        return jsonify({"error": str(exc)}), 500
+
+
 @app.post("/api/costs/rescan")
 def api_costs_rescan():
     """Re-scan Claude Code transcripts to refresh the claude_code source."""

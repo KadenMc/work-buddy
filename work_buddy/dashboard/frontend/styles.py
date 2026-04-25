@@ -3099,6 +3099,149 @@ body {
     color: var(--accent); border-color: var(--accent);
 }
 
+/* Rate-limit chip + popover ---------------------------------------- */
+
+.costs-rate-chip {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    padding: 3px 10px;
+    border-radius: 12px;
+    font-size: 11px;
+    cursor: pointer;
+    font-family: inherit;
+    transition: all 0.12s;
+    user-select: none;
+}
+.costs-rate-chip:hover {
+    color: var(--text-primary); border-color: var(--accent);
+}
+.costs-rate-chip.warn {
+    background: rgba(210, 153, 34, 0.15);
+    border-color: var(--yellow);
+    color: var(--yellow);
+}
+.costs-rate-chip.hot {
+    background: rgba(248, 81, 73, 0.15);
+    border-color: var(--red);
+    color: var(--red);
+}
+.costs-rate-chip.stale { opacity: 0.55; }
+
+.costs-rate-popover {
+    position: absolute;
+    top: 100%; right: 0; margin-top: 6px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 14px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+    width: 420px; max-width: 92vw;
+    max-height: 70vh; overflow-y: auto;
+    z-index: 100;
+    font-size: 12px;
+}
+
+/* The toolbar-right needs position:relative so the popover anchors. */
+.costs-toolbar-right { position: relative; }
+
+.costs-rate-pop-header {
+    font-weight: 600; color: var(--text-primary);
+    display: flex; justify-content: space-between; align-items: baseline;
+    padding-bottom: 8px; border-bottom: 1px solid var(--border); margin-bottom: 10px;
+}
+.costs-rate-pop-sub {
+    font-weight: 400; font-size: 11px; color: var(--text-muted);
+}
+
+.costs-rate-model {
+    padding: 8px 0; border-bottom: 1px solid var(--border);
+}
+.costs-rate-model:last-of-type { border-bottom: none; }
+.costs-rate-model-row {
+    display: flex; justify-content: space-between; align-items: baseline;
+    margin-bottom: 6px;
+}
+.costs-rate-model code {
+    font-family: ui-monospace, SFMono-Regular, monospace;
+    font-size: 11px; color: var(--text-primary);
+}
+.costs-rate-state { font-size: 11px; }
+.costs-rate-model.state-healthy .costs-rate-state { color: var(--green); }
+.costs-rate-model.state-warn    .costs-rate-state { color: var(--yellow); }
+.costs-rate-model.state-hot     .costs-rate-state { color: var(--red); }
+.costs-rate-model.state-stale   .costs-rate-state { color: var(--text-muted); }
+.costs-rate-model.state-stale code { color: var(--text-muted); }
+
+.costs-rate-bar-row {
+    display: grid;
+    grid-template-columns: 110px 1fr auto;
+    gap: 8px; align-items: center;
+    margin: 3px 0; font-size: 11px;
+}
+.costs-rate-bar-label { color: var(--text-secondary); }
+.costs-rate-bar {
+    background: var(--bg-tertiary); border: 1px solid var(--border);
+    border-radius: 4px; height: 8px; overflow: hidden;
+}
+.costs-rate-bar-fill {
+    height: 100%; background: var(--green); transition: width 0.2s;
+}
+.costs-rate-model.state-warn .costs-rate-bar-fill { background: var(--yellow); }
+.costs-rate-model.state-hot  .costs-rate-bar-fill { background: var(--red); }
+.costs-rate-model.state-stale .costs-rate-bar-fill { background: var(--text-muted); }
+.costs-rate-bar-value {
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+    font-size: 10px;
+}
+
+.costs-rate-meta {
+    color: var(--text-muted); font-size: 10px; margin-top: 6px;
+}
+
+/* Help section in the popover */
+.costs-rate-help {
+    margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border);
+}
+.costs-rate-help-toggle {
+    background: transparent; border: none;
+    color: var(--text-secondary); cursor: pointer; font-size: 11px;
+    padding: 0; font-family: inherit; display: inline-flex;
+    align-items: center; gap: 6px;
+}
+.costs-rate-help-toggle:hover { color: var(--accent); }
+.costs-rate-help-icon {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 14px; height: 14px; border-radius: 50%;
+    border: 1px solid currentColor; font-size: 9px; font-style: italic;
+    font-weight: 700;
+}
+.costs-rate-help-body {
+    margin-top: 8px; color: var(--text-secondary); font-size: 11px;
+    line-height: 1.5;
+}
+.costs-rate-help-body p { margin: 6px 0; }
+.costs-rate-help-body ul { margin: 4px 0 8px 20px; padding: 0; }
+.costs-rate-help-body li { margin: 3px 0; }
+.costs-rate-help-body strong { color: var(--text-primary); }
+
+/* "Active in the last hour" dot — reusable across views.
+   Currently used by the Costs Sessions table and the Chats list. Lift
+   to its own .css-snippet module if a third consumer appears. */
+.wb-active-dot {
+    display: inline-block;
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--green);
+    margin-right: 6px; vertical-align: middle;
+    box-shadow: 0 0 0 2px rgba(63, 185, 80, 0.18);
+    animation: wb-active-pulse 2.4s ease-in-out infinite;
+}
+@keyframes wb-active-pulse {
+    0%, 100% { opacity: 1.0; box-shadow: 0 0 0 2px rgba(63, 185, 80, 0.18); }
+    50%      { opacity: 0.6; box-shadow: 0 0 0 4px rgba(63, 185, 80, 0.10); }
+}
+
 .costs-charts-row {
     display: grid; grid-template-columns: 1fr 1fr; gap: 16px;
     margin: 16px 0;

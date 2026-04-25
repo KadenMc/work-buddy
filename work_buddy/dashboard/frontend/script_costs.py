@@ -110,6 +110,9 @@ function _costsSyncToolbar() {
 // ---- Fetch ----
 async function loadCosts(force) {
     await costsLoadProjects();
+    // Refresh the rate-limit chip alongside the cost data — they're
+    // both "what's happening with my Claude usage right now" indicators.
+    _costsLoadRateLimits();
 
     const meta = document.getElementById('costs-meta');
     if (meta) meta.textContent = 'loading...';
@@ -289,6 +292,10 @@ function _costsCurrentModels() {
 async function refreshCostsData() {
     const meta = document.getElementById('costs-meta');
     if (meta) meta.textContent = 'loading...';
+    // Refresh rate-limit chip in lockstep — same "what's happening now"
+    // theme; lets the chip pick up observations from background runner
+    // calls between dashboard interactions.
+    _costsLoadRateLimits();
 
     const params = new URLSearchParams();
     params.set('source', 'all');
@@ -307,6 +314,197 @@ async function refreshCostsData() {
     // selection is sticky across auto-refreshes.
     costsRenderAll({skipModelsFilter: true});
 }
+
+// ---- Rate-limit chip + popover ----
+//
+// Reads the on-disk observations (one per model) populated by the
+// runner from anthropic-ratelimit-* response headers. Renders a single
+// compact chip in the toolbar showing the most-restrictive headroom
+// across recently-observed models. Click expands a per-model popover
+// with a help section (everyone reading this for the first time gets
+// the full explainer).
+
+let _rlObservations = {};
+let _rlPopoverOpen = false;
+const _RL_STALE_MS = 5 * 60 * 1000;  // observations older than 5 min = idle
+const _RL_PRESSURE_PCT = 30;          // amber threshold
+const _RL_HOT_PCT = 10;               // red threshold
+
+async function _costsLoadRateLimits() {
+    const data = await fetchJSON('/api/costs/rate-limits');
+    _rlObservations = (data && data.observations) || {};
+    _costsRenderRateChip();
+    if (_rlPopoverOpen) _costsRenderRatePopover();
+}
+
+function _rlAge(obs) {
+    if (!obs || !obs.observed_at) return Infinity;
+    const t = new Date(obs.observed_at).getTime();
+    return isFinite(t) ? Date.now() - t : Infinity;
+}
+
+function _rlAgeLabel(ms) {
+    if (!isFinite(ms)) return 'never';
+    const s = Math.round(ms / 1000);
+    if (s < 60)   return s + 's ago';
+    if (s < 3600) return Math.round(s / 60) + 'm ago';
+    return Math.round(s / 3600) + 'h ago';
+}
+
+function _rlLowestPct(obs) {
+    // Returns lowest "remaining/limit" percentage across requests/input/
+    // output dims (skip combined; usually redundant). null if no data.
+    let lowest = null;
+    for (const dim of ['requests', 'input_tokens', 'output_tokens']) {
+        const d = obs && obs[dim];
+        if (d && d.limit && d.remaining != null) {
+            const pct = (d.remaining / d.limit) * 100;
+            if (lowest === null || pct < lowest) lowest = pct;
+        }
+    }
+    return lowest;
+}
+
+function _costsRenderRateChip() {
+    const chip = document.getElementById('costs-rate-chip');
+    const pctEl = document.getElementById('costs-rate-pct');
+    if (!chip || !pctEl) return;
+
+    const models = Object.keys(_rlObservations);
+    if (models.length === 0) {
+        chip.style.display = 'none';
+        return;
+    }
+    chip.style.display = '';
+
+    let lowest = null;
+    let allStale = true;
+    for (const model of models) {
+        const obs = _rlObservations[model];
+        if (_rlAge(obs) > _RL_STALE_MS) continue;
+        allStale = false;
+        const p = _rlLowestPct(obs);
+        if (p !== null && (lowest === null || p < lowest)) lowest = p;
+    }
+
+    chip.classList.remove('warn', 'hot', 'stale');
+    if (allStale || lowest === null) {
+        chip.classList.add('stale');
+        pctEl.textContent = '—';
+        chip.title = 'No recent rate-limit observations. Click for details.';
+    } else {
+        if (lowest < _RL_HOT_PCT) chip.classList.add('hot');
+        else if (lowest < _RL_PRESSURE_PCT) chip.classList.add('warn');
+        pctEl.textContent = Math.round(lowest) + '%';
+        chip.title = 'Most-restrictive headroom across recent calls. Click for details.';
+    }
+}
+
+function costsToggleRateLimitPopover(ev) {
+    if (ev) ev.stopPropagation();
+    _rlPopoverOpen = !_rlPopoverOpen;
+    const pop = document.getElementById('costs-rate-popover');
+    if (!pop) return;
+    pop.style.display = _rlPopoverOpen ? '' : 'none';
+    if (_rlPopoverOpen) _costsRenderRatePopover();
+}
+
+function _costsRenderRatePopover() {
+    const el = document.getElementById('costs-rate-popover');
+    if (!el) return;
+    const models = Object.keys(_rlObservations).sort();
+
+    let html = `<div class="costs-rate-pop-header">
+        <span>Anthropic rate-limit headroom</span>
+        <span class="costs-rate-pop-sub">last observed values</span>
+    </div>`;
+
+    if (models.length === 0) {
+        html += '<div class="empty-state" style="padding: 12px;">No observations yet — make a Claude API call through work-buddy to populate.</div>';
+    } else {
+        for (const model of models) {
+            const obs = _rlObservations[model];
+            const ageMs = _rlAge(obs);
+            const stale = ageMs > _RL_STALE_MS;
+            const lowest = _rlLowestPct(obs);
+            let stateLabel, stateClass;
+            if (stale) {
+                stateLabel = '— idle'; stateClass = 'stale';
+            } else if (lowest !== null && lowest < _RL_HOT_PCT) {
+                stateLabel = '⚠ hot'; stateClass = 'hot';
+            } else if (lowest !== null && lowest < _RL_PRESSURE_PCT) {
+                stateLabel = '⚠ pressured'; stateClass = 'warn';
+            } else {
+                stateLabel = '✓ healthy'; stateClass = 'healthy';
+            }
+
+            html += `<div class="costs-rate-model state-${stateClass}">`;
+            html += `<div class="costs-rate-model-row">
+                        <code>${costsEsc(model)}</code>
+                        <span class="costs-rate-state">${stateLabel}</span>
+                     </div>`;
+            for (const [dim, label] of [
+                ['requests', 'Requests/min'],
+                ['input_tokens', 'Input tokens/min'],
+                ['output_tokens', 'Output tokens/min'],
+            ]) {
+                const d = obs[dim];
+                if (!d || d.limit == null || d.remaining == null) continue;
+                const pct = Math.max(0, Math.min(100, (d.remaining / d.limit) * 100));
+                html += `<div class="costs-rate-bar-row">
+                            <span class="costs-rate-bar-label">${label}</span>
+                            <div class="costs-rate-bar"><div class="costs-rate-bar-fill" style="width: ${pct}%"></div></div>
+                            <span class="costs-rate-bar-value">${costsFmtN(d.remaining)} / ${costsFmtN(d.limit)}</span>
+                         </div>`;
+            }
+            const ageNote = stale ? ' \u2014 bucket has likely reset since' : '';
+            html += `<div class="costs-rate-meta">Last observed: ${_rlAgeLabel(ageMs)}${costsEsc(ageNote)}</div>`;
+            html += `</div>`;
+        }
+    }
+
+    // Help section — collapsed by default. Explains everything for a
+    // first-time reader: what RPM/ITPM/OTPM mean, how the bucket model
+    // works, why values may be stale, and the coverage gap.
+    html += `<div class="costs-rate-help">
+        <button class="costs-rate-help-toggle" onclick="costsRateLimitToggleHelp()">
+            <span class="costs-rate-help-icon">\u2139</span> What is this?
+        </button>
+        <div id="costs-rate-help-body" class="costs-rate-help-body" style="display: none;">
+            <p>Anthropic's API enforces three per-minute rate limits per model family. The strictest one bites first:</p>
+            <ul>
+                <li><strong>Requests/min (RPM)</strong> \u2014 how many API calls in a 60s window. Each call counts as 1 regardless of size.</li>
+                <li><strong>Input tokens/min (ITPM)</strong> \u2014 total input tokens (your prompts, system messages, cache reads, cache writes) sent in a 60s window.</li>
+                <li><strong>Output tokens/min (OTPM)</strong> \u2014 total output tokens Claude generates back in a 60s window.</li>
+            </ul>
+            <p>Each is a "token bucket" that refills continuously over the window. When a bucket hits zero, calls return HTTP 429 and you have to wait briefly.</p>
+            <p><strong>Caveats about this view:</strong></p>
+            <ul>
+                <li>Values come from Anthropic's response headers, captured on each work-buddy API call. Calls Claude Code makes directly drain the same buckets but aren't visible here.</li>
+                <li>Observations older than 5 minutes are marked <em>idle</em> \u2014 the bucket has very likely reset on Anthropic's side since.</li>
+                <li>Total monthly spend, plan tier, and prepaid balance aren't in these headers \u2014 they require Anthropic's Admin API (separate key class).</li>
+            </ul>
+        </div>
+    </div>`;
+
+    el.innerHTML = html;
+}
+
+function costsRateLimitToggleHelp() {
+    const body = document.getElementById('costs-rate-help-body');
+    if (body) body.style.display = body.style.display === 'none' ? '' : 'none';
+}
+
+// Click outside the popover closes it.
+document.addEventListener('click', function(ev) {
+    if (!_rlPopoverOpen) return;
+    const pop = document.getElementById('costs-rate-popover');
+    const chip = document.getElementById('costs-rate-chip');
+    if (pop && chip && !pop.contains(ev.target) && !chip.contains(ev.target)) {
+        _rlPopoverOpen = false;
+        pop.style.display = 'none';
+    }
+});
 
 // ---- Rendering ----
 function costsRenderAll(opts) {
@@ -917,10 +1115,21 @@ function costsRenderModelTable(shape, data) {
 //   num:   true → right-aligned number column
 //   sort:  the sort comparator key on the session record (null = unsortable)
 //   render(s) → returns the <td>...</td> string for this column on row ``s``
+// 60 minutes — the user's chosen threshold for "Active" sessions.
+const COSTS_ACTIVE_WINDOW_MS = 60 * 60 * 1000;
+
+function _costsActiveDot(s) {
+    if (!s || !s.last) return '';
+    const t = new Date(s.last).getTime();
+    if (!isFinite(t)) return '';
+    if (Date.now() - t > COSTS_ACTIVE_WINDOW_MS) return '';
+    return '<span class="wb-active-dot" title="Active in the last hour"></span>';
+}
+
 function _costsSessionColumns(shape) {
     const ccCols = [
         { key: 'short_id',  label: 'Session',  sort: 'short_id',
-          render: s => `<td><code title="${costsEsc(s.session_id)}">${costsEsc(s.short_id)}</code></td>` },
+          render: s => `<td>${_costsActiveDot(s)}<code title="${costsEsc(s.session_id)}">${costsEsc(s.short_id)}</code></td>` },
         { key: 'project',   label: 'Project',  sort: 'project',
           render: s => `<td title="${costsEsc(s.project)}">${costsEsc(s.project)}</td>` },
         { key: 'branch',    label: 'Branch',   sort: 'branch',
@@ -943,7 +1152,7 @@ function _costsSessionColumns(shape) {
     ];
     const intCols = [
         { key: 'short_id',  label: 'Session',  sort: 'short_id',
-          render: s => `<td><code title="${costsEsc(s.session_id)}">${costsEsc(s.short_id)}</code></td>` },
+          render: s => `<td>${_costsActiveDot(s)}<code title="${costsEsc(s.session_id)}">${costsEsc(s.short_id)}</code></td>` },
         { key: 'project',   label: 'Project',  sort: 'project',
           render: s => {
               const p = s.project ? s.project.replace(/^.*[\\\/]/, '') : '';

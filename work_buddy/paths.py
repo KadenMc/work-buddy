@@ -59,6 +59,9 @@ RESOURCES: dict[str, str] = {
     "logs/search-debug":         "logs/search_debug.log",
     "logs/escalations":          "logs/escalations.log",
 
+    # Anthropic rate-limit observations (latest snapshot per model).
+    "runtime/rate-limits":       "runtime/rate_limits.json",
+
     # Telegram
     "runtime/telegram-chat-id":  "runtime/telegram_chat_id",
 }

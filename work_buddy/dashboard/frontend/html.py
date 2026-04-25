@@ -239,6 +239,16 @@ def _html() -> str:
             </select>
         </div>
         <div class="costs-toolbar-right">
+            <!-- Rate-limit headroom chip + popover. Hidden until we have
+                 at least one observation. Click expands; click outside
+                 collapses. See script_costs.py for behaviour. -->
+            <span id="costs-rate-chip" class="costs-rate-chip"
+                  style="display: none;"
+                  onclick="costsToggleRateLimitPopover(event)"
+                  title="Click for per-model breakdown">
+                Limits: <span id="costs-rate-pct">—</span>
+            </span>
+            <div id="costs-rate-popover" class="costs-rate-popover" style="display: none;"></div>
             <span id="costs-meta" class="costs-meta"></span>
             <button class="chats-accent-btn" onclick="loadCosts(true)">Refresh</button>
         </div>

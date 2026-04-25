@@ -1295,16 +1295,28 @@ function renderChatList() {
         return;
     }
 
+    // 60-minute window: a chat whose latest activity is within the
+    // last hour gets the same green pulse dot the Costs view uses for
+    // "active session." Prefer end_time; fall back to start_time when
+    // the data lacks an end_time.
+    const ACTIVE_WINDOW_MS = 60 * 60 * 1000;
+
     container.innerHTML = chats.map(c => {
         const title = c.first_message
             ? escapeHtml(cleanMsgText(c.first_message).split('\\n')[0].substring(0, 100))
             : 'Untitled chat';
+        const lastTs = c.end_time || c.start_time || '';
+        const lastMs = lastTs ? new Date(lastTs).getTime() : NaN;
+        const isActive = isFinite(lastMs) && (Date.now() - lastMs) < ACTIVE_WINDOW_MS;
+        const activeDot = isActive
+            ? '<span class="wb-active-dot" title="Active in the last hour"></span>'
+            : '';
         return '<div class="chat-card' + (c.session_id === chatsState.selectedId ? ' active' : '') + '"'
             + ' data-sid="' + c.session_id + '">'
             + (c.project_name ? '<div class="chat-card-project">' + escapeHtml(c.project_name) + '</div>' : '')
             + '<div class="chat-card-title">' + title + '</div>'
             + '<div class="chat-card-meta">'
-            + '<span>' + formatTimestamp(c.start_time) + '</span>'
+            + '<span>' + activeDot + formatTimestamp(c.start_time) + '</span>'
             + '<span>' + (c.duration || '--') + '</span>'
             + '<span>' + c.message_count + ' msgs</span>'
             + '</div>'
