@@ -62,7 +62,9 @@ function costsFmtCost(c) {
     if (!isFinite(c)) return '-';
     if (c < 0.01) return '$' + c.toFixed(4);
     if (c < 1)    return '$' + c.toFixed(3);
-    return '$' + c.toFixed(2);
+    if (c < 100)  return '$' + c.toFixed(2);
+    // Past $100, cents are noise; show whole dollars with thousands separator.
+    return '$' + Math.round(c).toLocaleString();
 }
 function costsFmtDate(s) {
     if (!s) return '-';
