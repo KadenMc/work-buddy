@@ -368,6 +368,131 @@ def test_api_costs_route_all_source_wraps(monkeypatch, agents_dir):
     assert body["internal"]["totals"]["calls"] == 7
 
 
+def test_aggregator_project_filter_narrows_sessions(tmp_path):
+    """Project substring filter excludes sessions from other repos."""
+    root = tmp_path / "agents"
+    _write_session(
+        root, "2026-04-25T10-00-00_wb",
+        manifest={"short_id": "wb", "project": "C:\\repo\\work-buddy"},
+        entries=[{"timestamp": "2026-04-25T10:00:00",
+                   "model": "claude-sonnet-4-6", "task_id": "t",
+                   "input_tokens": 100, "output_tokens": 50,
+                   "estimated_cost_usd": 0.001, "cached": False,
+                   "execution_mode": "cloud"}],
+    )
+    _write_session(
+        root, "2026-04-25T11-00-00_other",
+        manifest={"short_id": "ot", "project": "C:\\repo\\other-thing"},
+        entries=[{"timestamp": "2026-04-25T11:00:00",
+                   "model": "claude-sonnet-4-6", "task_id": "t",
+                   "input_tokens": 200, "output_tokens": 100,
+                   "estimated_cost_usd": 0.005, "cached": False,
+                   "execution_mode": "cloud"}],
+    )
+    s_wb = costs_mod.get_costs_summary(agents_dir=root, project="work-buddy")
+    s_ot = costs_mod.get_costs_summary(agents_dir=root, project="other-thing")
+    s_all = costs_mod.get_costs_summary(agents_dir=root)
+    assert s_wb["session_count"] == 1
+    assert s_wb["sessions"][0]["short_id"] == "wb"
+    assert s_ot["session_count"] == 1
+    assert s_ot["sessions"][0]["short_id"] == "ot"
+    assert s_all["session_count"] == 2
+
+
+def test_aggregator_project_filter_no_match_returns_empty(tmp_path):
+    root = tmp_path / "agents"
+    _write_session(
+        root, "2026-04-25T10-00-00_wb",
+        manifest={"short_id": "wb", "project": "C:\\repo\\work-buddy"},
+        entries=[{"timestamp": "2026-04-25T10:00:00",
+                   "model": "claude-sonnet-4-6", "task_id": "t",
+                   "input_tokens": 100, "output_tokens": 50,
+                   "estimated_cost_usd": 0.001, "cached": False,
+                   "execution_mode": "cloud"}],
+    )
+    s = costs_mod.get_costs_summary(agents_dir=root, project="nonexistent")
+    assert s["session_count"] == 0
+    assert s["totals"]["calls"] == 0
+
+
+def test_aggregator_project_filter_matches_path_or_basename(tmp_path):
+    """Filter should match against the full path OR the last component."""
+    root = tmp_path / "agents"
+    _write_session(
+        root, "2026-04-25T10-00-00_a",
+        manifest={"short_id": "a", "project": "C:\\Vaults\\SecondBrain\\repos\\work-buddy"},
+        entries=[{"timestamp": "2026-04-25T10:00:00",
+                   "model": "claude-sonnet-4-6", "task_id": "t",
+                   "input_tokens": 100, "output_tokens": 50,
+                   "estimated_cost_usd": 0.001, "cached": False,
+                   "execution_mode": "cloud"}],
+    )
+    # Match by basename
+    s1 = costs_mod.get_costs_summary(agents_dir=root, project="work-buddy")
+    assert s1["session_count"] == 1
+    # Match by middle path component
+    s2 = costs_mod.get_costs_summary(agents_dir=root, project="SecondBrain")
+    assert s2["session_count"] == 1
+    # Case-insensitive
+    s3 = costs_mod.get_costs_summary(agents_dir=root, project="WORK-BUDDY")
+    assert s3["session_count"] == 1
+
+
+def test_api_costs_route_passes_project_param(monkeypatch, agents_dir):
+    """``GET /api/costs?project=X`` threads the filter into both aggregators."""
+    monkeypatch.setattr(costs_mod, "_AGENTS_DIR", agents_dir)
+    from work_buddy.dashboard.service import app
+    client = app.test_client()
+    # The fixture has a session with project="C:\repo\one"; filter to it.
+    resp = client.get("/api/costs?source=internal&project=repo/one")
+    body = resp.get_json()
+    # 2 cloud + 1 cache hit from cloud-aaa = 3 calls (legacy-ccc and
+    # corrupt-ddd are in repo/two; local-bbb is also repo/one)
+    short_ids = {s["short_id"] for s in body["sessions"]}
+    assert "cloud-aaa" in short_ids
+    assert "local-bbb" in short_ids
+    assert "legacy-ccc" not in short_ids
+    assert "corrupt-ddd" not in short_ids
+
+
+def test_api_costs_projects_endpoint_pins_workbuddy(monkeypatch, tmp_path):
+    """The /api/costs/projects endpoint pins work-buddy first."""
+    root = tmp_path / "agents"
+    _write_session(
+        root, "2026-04-20T10-00-00_a",
+        manifest={"short_id": "a", "project": "C:\\repo\\work-buddy",
+                  "created_at": "2026-04-20T10:00:00"},
+        entries=[{"timestamp": "2026-04-20T10:00:00",
+                   "model": "claude-sonnet-4-6", "task_id": "t",
+                   "input_tokens": 1, "output_tokens": 1,
+                   "estimated_cost_usd": 0.001, "cached": False,
+                   "execution_mode": "cloud"}],
+    )
+    _write_session(
+        root, "2026-04-25T10-00-00_b",
+        manifest={"short_id": "b", "project": "C:\\repo\\zebra-project",
+                  "created_at": "2026-04-25T10:00:00"},
+        entries=[{"timestamp": "2026-04-25T10:00:00",
+                   "model": "claude-sonnet-4-6", "task_id": "t",
+                   "input_tokens": 1, "output_tokens": 1,
+                   "estimated_cost_usd": 0.001, "cached": False,
+                   "execution_mode": "cloud"}],
+    )
+    monkeypatch.setattr(costs_mod, "_AGENTS_DIR", root)
+    # Force the claude_code DB to not exist so we test internal-only.
+    from work_buddy.llm.claude_code_usage import scanner as _scanner
+    monkeypatch.setattr(_scanner, "get_db_path", lambda: tmp_path / "missing.db")
+
+    from work_buddy.dashboard.service import app
+    client = app.test_client()
+    resp = client.get("/api/costs/projects")
+    body = resp.get_json()
+    # work-buddy must come first even though zebra-project is more recent.
+    names = [p["name"] for p in body["projects"]]
+    assert names[0] == "work-buddy"
+    assert "zebra-project" in names
+
+
 def test_vendor_route_serves_chart_js():
     from work_buddy.dashboard.service import app
     client = app.test_client()

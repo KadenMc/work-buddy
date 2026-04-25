@@ -220,32 +220,42 @@ def _html() -> str:
 </div>
 
 <!-- COSTS -->
-<!-- LLM cost / usage view. Phase 1 backed by data/agents/<session>/llm_costs.jsonl
-     (first-party log written by work_buddy.llm.cost). Phase 2 adds Claude Code
-     transcript-derived usage as a second source. UI inspired by claude-usage. -->
+<!-- LLM cost / usage view. Two complementary data sources behind the
+     scenes — work-buddy's per-call log + Claude Code session transcripts.
+     The user picks a project; the UI decides which data is relevant. -->
 <div class="tab-panel" id="panel-costs">
     <div class="costs-toolbar">
         <div class="costs-toolbar-left">
-            <select id="costs-source" class="chats-select" onchange="costsSourceChanged(this.value)">
-                <option value="internal">Work Buddy log</option>
-                <option value="claude_code">Claude Code</option>
-                <option value="all">Both</option>
+            <select id="costs-project" class="chats-select chats-project-select"
+                    onchange="costsProjectChanged(this.value)">
+                <option value="">All projects</option>
             </select>
             <select id="costs-range" class="chats-select" onchange="costsRangeChanged(this.value)">
+                <option value="today">Today</option>
                 <option value="7">Last 7 days</option>
                 <option value="30" selected>Last 30 days</option>
                 <option value="90">Last 90 days</option>
                 <option value="all">All time</option>
             </select>
-            <select id="costs-mode" class="chats-select" onchange="costsModeChanged(this.value)">
-                <option value="all">All execution modes</option>
-                <option value="cloud">Cloud only</option>
-                <option value="local">Local only</option>
-            </select>
         </div>
         <div class="costs-toolbar-right">
             <span id="costs-meta" class="costs-meta"></span>
             <button class="chats-accent-btn" onclick="loadCosts(true)">Refresh</button>
+        </div>
+    </div>
+
+    <!-- Activity pill bar: visible only when project = work-buddy. -->
+    <div id="costs-activity-row" class="costs-activity-row" style="display:none;">
+        <span class="costs-filter-label">Activity:</span>
+        <div class="costs-activity-pills" id="costs-activity-pills">
+            <button class="costs-pill active" data-activity="all"
+                    onclick="costsActivityChanged('all')">All</button>
+            <button class="costs-pill" data-activity="claude_code"
+                    onclick="costsActivityChanged('claude_code')">Claude Code</button>
+            <button class="costs-pill" data-activity="api"
+                    onclick="costsActivityChanged('api')">API</button>
+            <button class="costs-pill" data-activity="local"
+                    onclick="costsActivityChanged('local')">Local</button>
         </div>
     </div>
 

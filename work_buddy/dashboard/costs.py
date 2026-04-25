@@ -177,7 +177,25 @@ def _round_cost(bucket: dict[str, Any]) -> dict[str, Any]:
     return bucket
 
 
-def get_costs_summary(*, agents_dir: Path | None = None) -> dict[str, Any]:
+def _project_matches(session_project: str, project_filter: str | None) -> bool:
+    """Substring-match the user's project filter against a session's project path."""
+    if not project_filter:
+        return True
+    if not session_project:
+        return False
+    pf = project_filter.lower()
+    sp = session_project.lower().replace("\\", "/")
+    # Match against the full path and against the last path component
+    # (the conventional "project name" — what the user typically picks).
+    last = sp.rstrip("/").split("/")[-1] if sp else ""
+    return pf in sp or pf in last
+
+
+def get_costs_summary(
+    *,
+    agents_dir: Path | None = None,
+    project: str | None = None,
+) -> dict[str, Any]:
     """Return the full cost summary read model.
 
     Top-level shape::
@@ -189,7 +207,7 @@ def get_costs_summary(*, agents_dir: Path | None = None) -> dict[str, Any]:
           "by_model":    [{"model": "...",     ... _empty_totals ...}, ...],
           "by_backend":  [{"backend": "...",   ... _empty_totals ...}, ...],
           "by_task":     [{"task": "...",      ... _empty_totals ...}, ...],
-          "by_execution_mode": [{"mode": "cloud"|"local"|"unknown", ... _empty_totals ...}, ...],
+          "by_execution_mode": [{"mode": "cloud"|"local", ... _empty_totals ...}, ...],
           "sessions":    [{"session_id": "...", "short_id": "...",
                            "project": "...", "first": "...", "last": "...",
                            "models": [...], ... _empty_totals ...}, ...],
@@ -199,6 +217,13 @@ def get_costs_summary(*, agents_dir: Path | None = None) -> dict[str, Any]:
           "log_files_seen": int,
           "log_files_parsed": int,
         }
+
+    Args:
+        agents_dir: Override the default ``data/agents/`` location.
+        project: Optional substring filter. Matches against each session's
+            ``manifest.project`` (full path or last path component, case
+            insensitive). When non-empty, only sessions whose project
+            matches are included in every aggregate.
 
     Costs are pre-summed per bucket; the frontend can derive percentages
     or filtered slices client-side without a second round trip.
@@ -223,7 +248,11 @@ def get_costs_summary(*, agents_dir: Path | None = None) -> dict[str, Any]:
         manifest = _read_session_manifest(session_dir)
         sess_id = manifest.get("session_id") or session_dir.name
         short_id = manifest.get("short_id") or sess_id[:8]
-        project = manifest.get("project") or ""
+        sess_project = manifest.get("project") or ""
+
+        # Drop sessions outside the project filter before parsing the log.
+        if not _project_matches(sess_project, project):
+            continue
 
         sess_bucket = _empty_totals()
         sess_models: set[str] = set()
@@ -266,7 +295,7 @@ def get_costs_summary(*, agents_dir: Path | None = None) -> dict[str, Any]:
             sessions.append({
                 "session_id": sess_id,
                 "short_id": short_id,
-                "project": project,
+                "project": sess_project,
                 "directory": session_dir.name,
                 "first": sess_first_ts,
                 "last": sess_last_ts,

@@ -2944,7 +2944,31 @@ body {
 .costs-toolbar {
     display: flex; justify-content: space-between; align-items: center;
     gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--border);
-    margin-bottom: 16px; flex-wrap: wrap;
+    margin-bottom: 12px; flex-wrap: wrap;
+}
+
+.costs-activity-row {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 0 12px 0;
+}
+.costs-activity-pills {
+    display: inline-flex; gap: 4px;
+    background: var(--bg-secondary); border: 1px solid var(--border);
+    border-radius: 16px; padding: 3px;
+}
+.costs-pill {
+    background: transparent; border: none; color: var(--text-secondary);
+    padding: 4px 14px; font-size: 12px; cursor: pointer; border-radius: 12px;
+    font-family: inherit; transition: background 0.12s, color 0.12s;
+}
+.costs-pill:hover { color: var(--text-primary); }
+.costs-pill.active {
+    background: var(--accent-subtle); color: var(--accent);
+    font-weight: 500;
+}
+
+.card.card-accent {
+    border-left: 2px solid var(--accent);
 }
 .costs-toolbar-left, .costs-toolbar-right {
     display: flex; align-items: center; gap: 8px; flex-wrap: wrap;

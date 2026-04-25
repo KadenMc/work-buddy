@@ -53,8 +53,30 @@ def _round(bucket: dict[str, Any]) -> dict[str, Any]:
     return bucket
 
 
-def get_claude_code_usage_summary(*, db_path: Path | None = None) -> dict[str, Any]:
+def _project_matches(cwd: str, project_filter: str | None) -> bool:
+    """Substring-match the user's project filter against a row's cwd."""
+    if not project_filter:
+        return True
+    if not cwd:
+        return False
+    pf = project_filter.lower()
+    sp = cwd.lower().replace("\\", "/")
+    last = sp.rstrip("/").split("/")[-1] if sp else ""
+    return pf in sp or pf in last
+
+
+def get_claude_code_usage_summary(
+    *,
+    db_path: Path | None = None,
+    project: str | None = None,
+) -> dict[str, Any]:
     """Return the Claude-Code-usage cost / usage read model.
+
+    Args:
+        db_path: Override the SQLite cache path.
+        project: Optional substring filter against each row's ``cwd``
+            (matches full path or last component). When non-empty, only
+            matching rows / sessions are included in the read model.
 
     When the cache DB has not been populated yet, returns
     ``{"available": False, "source": "claude_code", ...}`` so the
@@ -93,16 +115,18 @@ def get_claude_code_usage_summary(*, db_path: Path | None = None) -> dict[str, A
                    session_id
             FROM turns
         """):
+            cwd = row["cwd"] or ""
+            if not _project_matches(cwd, project):
+                continue
             _add_turn(totals, row)
             day = (row["timestamp"] or "")[:10]
             if day:
                 _add_turn(by_day[day], row)
             _add_turn(by_model[row["model"] or "unknown"], row)
             _add_turn(by_tool[row["tool_name"] or "(no tool)"], row)
-            project = ((row["cwd"] or "")
-                       .replace("\\", "/").rstrip("/").split("/")[-1]
-                       or "unknown")
-            _add_turn(by_project[project], row)
+            row_project = (cwd.replace("\\", "/").rstrip("/").split("/")[-1]
+                           or "unknown")
+            _add_turn(by_project[row_project], row)
 
         sessions = []
         for s in conn.execute("""
@@ -112,6 +136,9 @@ def get_claude_code_usage_summary(*, db_path: Path | None = None) -> dict[str, A
             FROM sessions
             ORDER BY last_timestamp DESC
         """):
+            sess_proj = s["project_name"] or ""
+            if not _project_matches(sess_proj, project):
+                continue
             cost = calc_cost(
                 s["model"], int(s["total_input_tokens"] or 0),
                 int(s["total_output_tokens"] or 0),
@@ -121,7 +148,7 @@ def get_claude_code_usage_summary(*, db_path: Path | None = None) -> dict[str, A
             sessions.append({
                 "session_id": s["session_id"],
                 "short_id": (s["session_id"] or "")[:8],
-                "project": s["project_name"] or "",
+                "project": sess_proj,
                 "branch": s["git_branch"] or "",
                 "first": s["first_timestamp"] or "",
                 "last": s["last_timestamp"] or "",

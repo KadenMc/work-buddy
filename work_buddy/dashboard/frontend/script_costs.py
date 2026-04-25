@@ -2,12 +2,14 @@
 
 Charting via Chart.js v4.4.0, vendored at
 ``work_buddy/dashboard/frontend/vendor/chart.umd.min.js`` and served by
-the Flask ``/static/<path>`` route in ``service.py``.
+the Flask ``/vendor/<path>`` route in ``service.py``.
 
-UI structure follows ``claude-usage`` (MIT, Pawel Huryn) but is fully
-re-expressed in work-buddy's existing CSS variables — no franken-styling
-across the dashboard. Token-color encoding intentionally matches
-``claude-usage`` so any future cross-comparison stays visually coherent.
+UX model (post-2026-04-25 redesign): the user picks a **project** (the
+primary axis, modeled on the Chats project filter). When project =
+``work-buddy``, an Activity sub-pill exposes Claude Code / API / Local /
+All. For every other project, only Claude Code data is meaningful so
+the activity pill is hidden. Conditional plot/card visibility is driven
+by (project, activity).
 """
 
 from __future__ import annotations
@@ -17,14 +19,15 @@ def _costs_script() -> str:
     return r"""
 // ---- Costs tab state ----
 let costsState = {
-    raw: null,                    // last /api/costs response
-    selectedModels: null,         // null = all
-    range: '30',                  // '7' | '30' | '90' | 'all'
-    mode: 'all',                  // 'all' | 'cloud' | 'local'
-    source: 'internal',           // 'internal' | 'claude_code' | 'all'
+    raw: null,                    // last /api/costs?source=all response
+    project: '',                  // '' = all projects, else exact project name
+    activity: 'all',              // 'all' | 'claude_code' | 'api' | 'local'
+                                  // (only meaningful when project === 'work-buddy')
+    range: '30',                  // 'today' | '7' | '30' | '90' | 'all'
+    selectedModels: null,         // null = all selected; Set of strings otherwise
     sessionFilter: '',
-    sessionSort: 'last',
     charts: {},                   // Chart.js instances keyed by canvas id
+    projectsLoaded: false,
 };
 
 // Token color encoding — matches claude-usage so cross-tool comparisons stay coherent.
@@ -69,12 +72,37 @@ function costsEsc(s) {
         .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+// ---- Project list population ----
+async function costsLoadProjects() {
+    if (costsState.projectsLoaded) return;
+    const data = await fetchJSON('/api/costs/projects');
+    if (!data || !data.projects) return;
+    costsState.projectsLoaded = true;
+    const sel = document.getElementById('costs-project');
+    if (!sel) return;
+    // "All projects" stays first; "work-buddy" is pinned by the backend.
+    let html = '<option value="">All projects</option>';
+    for (const p of data.projects) {
+        const sub = p.session_count ? ' (' + p.session_count + ')' : '';
+        html += '<option value="' + costsEsc(p.name) + '">'
+              + costsEsc(p.name) + sub + '</option>';
+    }
+    sel.innerHTML = html;
+    // Restore selection if the user had picked something earlier.
+    if (costsState.project) sel.value = costsState.project;
+}
+
 // ---- Fetch ----
 async function loadCosts(force) {
+    await costsLoadProjects();
+
     const meta = document.getElementById('costs-meta');
     if (meta) meta.textContent = 'loading...';
-    const url = '/api/costs?source=' + encodeURIComponent(costsState.source);
-    const data = await fetchJSON(url);
+
+    const params = new URLSearchParams();
+    params.set('source', 'all');
+    if (costsState.project) params.set('project', costsState.project);
+    const data = await fetchJSON('/api/costs?' + params.toString());
     if (!data || data.error) {
         document.getElementById('costs-cards').innerHTML =
             '<div class="empty-state">Failed to load cost data: ' +
@@ -83,42 +111,42 @@ async function loadCosts(force) {
         return;
     }
 
-    // Two response shapes:
-    //   source=internal     → the internal shape directly
-    //   source=claude_code  → the transcripts shape directly
-    //   source=all          → {internal, claude_code, source:'all'}
-    let primary = data;
-    let secondary = null;
-    if (data.source === 'all') {
-        primary = data.internal || {};
-        secondary = data.claude_code || null;
-    }
-    // Detect which shape we got; claude_code shape carries
-    // ``source: 'claude_code'`` and may have ``available: false``.
-    costsState.raw = primary;
-    costsState.claudeCode = (data.source === 'all') ? secondary :
-        (primary && primary.source === 'claude_code') ? primary : null;
-    costsState.shape = (primary && primary.source === 'claude_code')
-        ? 'claude_code' : 'internal';
+    costsState.raw = data;
+    _costsSyncActivityVisibility();
 
-    const allModels = primary && primary.all_models ? primary.all_models : [];
-    if (costsState.selectedModels === null) {
-        costsState.selectedModels = new Set(allModels);
-    } else {
-        for (const m of Array.from(costsState.selectedModels)) {
-            if (!allModels.includes(m)) costsState.selectedModels.delete(m);
-        }
-    }
+    // Reset selectedModels to all-known when refetching (new project may
+    // expose a different model set).
+    const all = _costsCurrentModels();
+    costsState.selectedModels = new Set(all);
+
     costsRenderAll();
+}
 
-    if (meta) {
-        const t = primary.totals || {};
-        const sCount = primary.session_count || 0;
-        const callsLabel = costsState.shape === 'claude_code'
-            ? (t.turns || 0) + ' turns'
-            : (t.calls || 0) + ' calls';
-        meta.textContent = `${sCount} sessions · ${callsLabel} · ${costsFmtDate(primary.generated_at)}`;
-    }
+// ---- Toolbar handlers ----
+function costsProjectChanged(v) {
+    costsState.project = v || '';
+    // Reset activity to "all" whenever the project changes.
+    costsState.activity = 'all';
+    _costsSyncActivityVisibility();
+    loadCosts(true);
+}
+function costsRangeChanged(v) {
+    costsState.range = v;
+    costsRenderAll();
+}
+function costsActivityChanged(v) {
+    costsState.activity = v;
+    document.querySelectorAll('#costs-activity-pills .costs-pill').forEach(b => {
+        b.classList.toggle('active', b.dataset.activity === v);
+    });
+    costsRenderAll();
+}
+
+function _costsSyncActivityVisibility() {
+    const row = document.getElementById('costs-activity-row');
+    if (!row) return;
+    const isWB = (costsState.project || '').toLowerCase() === 'work-buddy';
+    row.style.display = isWB ? '' : 'none';
 }
 
 async function costsRescanClaudeCode(btn) {
@@ -133,13 +161,44 @@ async function costsRescanClaudeCode(btn) {
     await loadCosts(true);
 }
 
-function costsSourceChanged(v) { costsState.source = v; loadCosts(true); }
-function costsRangeChanged(v)  { costsState.range = v; costsRenderAll(); }
-function costsModeChanged(v)   { costsState.mode = v; costsRenderAll(); }
+// ---- Active-data resolver ----
+// Given (project, activity), returns the read-model dict the renderers
+// read from, plus a ``shape`` discriminator. Per the design notes:
+//   - project='' (All)        → claude_code (the dominant signal)
+//   - project='work-buddy'    → activity-driven:
+//       'all'         → claude_code (Claude Code dominates; internal stats
+//                       still surface as sub-text on cards)
+//       'claude_code' → claude_code
+//       'api'         → internal, with cards filtered to cloud
+//       'local'       → internal, with cards filtered to local
+//   - project=other          → claude_code
+function _costsActiveData() {
+    const raw = costsState.raw || {};
+    const project = costsState.project || '';
+    const isWB = project.toLowerCase() === 'work-buddy';
 
-// ---- Filter helpers ----
+    if (!isWB) {
+        return { data: raw.claude_code || {}, shape: 'claude_code',
+                 activity: null };
+    }
+
+    const activity = costsState.activity || 'all';
+    if (activity === 'claude_code' || activity === 'all') {
+        return { data: raw.claude_code || {}, shape: 'claude_code',
+                 activity, sidecar: raw.internal || null };
+    }
+    // api / local — internal source.
+    return { data: raw.internal || {}, shape: 'internal', activity };
+}
+
+// ---- Range filter helpers ----
 function _costsRangeStartIso() {
     if (costsState.range === 'all') return null;
+    if (costsState.range === 'today') {
+        const d = new Date();
+        d.setHours(0, 0, 0, 0);
+        return d.toISOString().slice(0, 10);
+    }
     const days = parseInt(costsState.range, 10);
     if (!isFinite(days) || days <= 0) return null;
     const d = new Date();
@@ -147,27 +206,22 @@ function _costsRangeStartIso() {
     d.setHours(0, 0, 0, 0);
     return d.toISOString().slice(0, 10);
 }
-
-function _costsFilterSession(s) {
-    // Range
-    const start = _costsRangeStartIso();
-    if (start && (s.last || '').slice(0, 10) < start) return false;
-    // Model selection — internal sessions carry a `models` list; transcript
-    // sessions carry a single `model`. Handle both.
-    if (costsState.selectedModels && costsState.selectedModels.size > 0) {
-        const sm = s.models || (s.model ? [s.model] : []);
-        const overlap = sm.some(m => costsState.selectedModels.has(m));
-        if (!overlap) return false;
-    }
-    return true;
-}
-
 function _costsFilterDay(d) {
     const start = _costsRangeStartIso();
     if (start && d.day < start) return false;
     return true;
 }
-
+function _costsFilterSession(s) {
+    const start = _costsRangeStartIso();
+    if (start && (s.last || '').slice(0, 10) < start) return false;
+    if (costsState.selectedModels && costsState.selectedModels.size > 0) {
+        const sm = s.models || (s.model ? [s.model] : []);
+        if (sm.length > 0 && !sm.some(m => costsState.selectedModels.has(m))) {
+            return false;
+        }
+    }
+    return true;
+}
 function _costsFilterModelRow(r) {
     if (costsState.selectedModels && costsState.selectedModels.size > 0) {
         return costsState.selectedModels.has(r.model);
@@ -175,28 +229,22 @@ function _costsFilterModelRow(r) {
     return true;
 }
 
-function _costsModeMatches(entry) {
-    if (costsState.mode === 'all') return true;
-    // We don't have a per-day per-mode shape in the read model, but
-    // the by_execution_mode list lets us compute totals. Mode filtering
-    // on aggregate slices (by_day, by_model) is best-effort: when a
-    // user picks 'cloud only' we'll display the full daily series but
-    // re-color the cards using the matching mode bucket. UX expectation
-    // is documented in DECISIONS.md.
-    return true;
+function _costsCurrentModels() {
+    const { data } = _costsActiveData();
+    return data.all_models || [];
 }
 
 // ---- Rendering ----
 function costsRenderAll() {
     if (!costsState.raw) return;
 
-    // If the user picked the claude_code source but no scan has run yet,
-    // surface an explicit "Scan now" prompt instead of empty charts.
-    if (costsState.shape === 'claude_code'
-            && costsState.raw.available === false) {
+    const { data, shape, activity, sidecar } = _costsActiveData();
+
+    // Empty-state for the Claude Code source when nothing is cached yet.
+    if (shape === 'claude_code' && data && data.available === false) {
         document.getElementById('costs-cards').innerHTML =
             `<div class="empty-state" style="padding:24px;text-align:center;">
-                <div style="margin-bottom:12px;">${costsEsc(costsState.raw.message || 'No Claude Code usage cached yet.')}</div>
+                <div style="margin-bottom:12px;">${costsEsc(data.message || 'No Claude Code usage cached yet.')}</div>
                 <button class="chats-accent-btn"
                         onclick="costsRescanClaudeCode(this)">Rescan Claude Code</button>
             </div>`;
@@ -204,41 +252,72 @@ function costsRenderAll() {
         document.getElementById('costs-model-table').innerHTML = '';
         document.getElementById('costs-sessions-table').innerHTML = '';
         ['daily', 'model', 'task', 'mode'].forEach(_costsDestroyChart);
+        _costsRenderMeta(0, 0);
         return;
     }
 
+    // Track shape on costsState so older filter helpers that referenced
+    // ``costsState.shape`` keep working.
+    costsState.shape = shape;
+
     costsRenderModelsFilter();
-    costsRenderCards();
-    costsRenderDailyChart();
-    costsRenderModelChart();
+    costsRenderCards(shape, data, activity, sidecar);
+    costsRenderDailyChart(shape, data);
+    costsRenderModelChart(shape, data);
+
+    // Source-aware secondary charts.
     const tt = document.getElementById('costs-task-title');
     const mt = document.getElementById('costs-mode-title');
-    if (costsState.shape === 'claude_code') {
+    const taskCard = document.getElementById('costs-task-chart')?.closest('.costs-chart-card');
+    const modeCard = document.getElementById('costs-mode-chart')?.closest('.costs-chart-card');
+
+    const isWB = (costsState.project || '').toLowerCase() === 'work-buddy';
+    const isAllProjects = !costsState.project;
+
+    if (shape === 'claude_code') {
+        // Top tools (always useful for Claude Code).
+        if (taskCard) taskCard.style.display = '';
         if (tt) tt.textContent = 'Top tools (by turns)';
-        if (mt) mt.textContent = 'Top projects (by cost)';
-        costsRenderToolChart();
-        costsRenderProjectChart();
+        costsRenderToolChart(data);
+
+        // Top projects only makes sense when not already filtered to one project.
+        if (modeCard) modeCard.style.display = isAllProjects ? '' : 'none';
+        if (isAllProjects) {
+            if (mt) mt.textContent = 'Top projects (by cost)';
+            costsRenderProjectChart(data);
+        } else {
+            _costsDestroyChart('mode');
+        }
     } else {
-        if (tt) tt.textContent = 'Top callers (by cost)';
-        if (mt) mt.textContent = 'Cloud vs Local mix';
-        costsRenderTaskChart();
-        costsRenderModeChart();
+        // shape === 'internal' (work-buddy + activity = api or local)
+        // Top callers chart only meaningful for the work-buddy infra view.
+        if (taskCard) taskCard.style.display = isWB ? '' : 'none';
+        if (modeCard) modeCard.style.display = isWB ? '' : 'none';
+        if (isWB) {
+            if (tt) tt.textContent = 'Top callers (by cost)';
+            costsRenderTaskChart(data, activity);
+            if (mt) mt.textContent = 'Cloud vs Local mix';
+            costsRenderModeChart(data, activity);
+        } else {
+            _costsDestroyChart('task');
+            _costsDestroyChart('mode');
+        }
     }
-    costsRenderModelTable();
-    costsRenderSessionsTable();
+
+    costsRenderModelTable(shape, data);
+    costsRenderSessionsTable(shape, data);
 }
 
+// ---- Models filter (no All/None — chip toggling only) ----
 function costsRenderModelsFilter() {
-    const all = costsState.raw.all_models || [];
+    const all = _costsCurrentModels();
     const el = document.getElementById('costs-models-filter');
     if (!el) return;
     if (all.length === 0) {
-        el.innerHTML = '<div class="empty-state" style="padding:8px 0;">No model data yet.</div>';
+        el.innerHTML = '';
         return;
     }
     let html = '<span class="costs-filter-label">Models:</span>';
-    html += '<button class="costs-filter-pill costs-filter-action" onclick="costsModelsAll()">all</button>';
-    html += '<button class="costs-filter-pill costs-filter-action" onclick="costsModelsNone()">none</button>';
     for (const m of all) {
         const on = costsState.selectedModels.has(m);
         html += `<button class="costs-filter-pill${on ? ' active' : ''}"
@@ -252,102 +331,143 @@ function costsModelToggle(m) {
     else costsState.selectedModels.add(m);
     costsRenderAll();
 }
-function costsModelsAll()  { costsState.selectedModels = new Set(costsState.raw.all_models || []); costsRenderAll(); }
-function costsModelsNone() { costsState.selectedModels = new Set(); costsRenderAll(); }
 
-function _costsAggregateByDayFiltered() {
-    // Sum filtered by_day rows into a single totals dict, plus return
-    // the filtered list itself for charting.
-    const days = (costsState.raw.by_day || []).filter(_costsFilterDay);
-    const totals = { calls: 0, api_calls: 0, cache_hits: 0,
-                     cloud_calls: 0, local_calls: 0,
-                     input_tokens: 0, output_tokens: 0, cost_usd: 0 };
+// ---- Aggregation helpers (range-filtered) ----
+function _costsAggregateByDay(data) {
+    const days = (data.by_day || []).filter(_costsFilterDay);
+    const totals = {
+        calls: 0, api_calls: 0, cache_hits: 0,
+        cloud_calls: 0, local_calls: 0,
+        turns: 0,
+        input_tokens: 0, output_tokens: 0,
+        cache_read_tokens: 0, cache_creation_tokens: 0,
+        cost_usd: 0,
+    };
     for (const d of days) {
-        totals.calls          += d.calls || 0;
-        totals.api_calls      += d.api_calls || 0;
-        totals.cache_hits     += d.cache_hits || 0;
-        totals.cloud_calls    += d.cloud_calls || 0;
-        totals.local_calls    += d.local_calls || 0;
-        totals.input_tokens   += d.input_tokens || 0;
-        totals.output_tokens  += d.output_tokens || 0;
-        totals.cost_usd       += d.cost_usd || 0;
+        for (const k of Object.keys(totals)) {
+            totals[k] += (d[k] || 0);
+        }
     }
     return { days, totals };
 }
 
-function _costsAggregateByDayTranscripts() {
-    const days = (costsState.raw.by_day || []).filter(_costsFilterDay);
-    const totals = { turns: 0, input_tokens: 0, output_tokens: 0,
-                     cache_read_tokens: 0, cache_creation_tokens: 0,
-                     cost_usd: 0 };
-    for (const d of days) {
-        totals.turns               += d.turns || 0;
-        totals.input_tokens        += d.input_tokens || 0;
-        totals.output_tokens       += d.output_tokens || 0;
-        totals.cache_read_tokens   += d.cache_read_tokens || 0;
-        totals.cache_creation_tokens += d.cache_creation_tokens || 0;
-        totals.cost_usd            += d.cost_usd || 0;
-    }
-    return { days, totals };
+// ---- Meta line ----
+function _costsRenderMeta(filteredSessions, filteredCalls,
+                          totalSessions, totalCalls) {
+    const meta = document.getElementById('costs-meta');
+    if (!meta) return;
+    const sLabel = (totalSessions != null && filteredSessions !== totalSessions)
+        ? `${filteredSessions} of ${totalSessions} sessions`
+        : `${filteredSessions} session${filteredSessions === 1 ? '' : 's'}`;
+    const cLabel = (totalCalls != null && filteredCalls !== totalCalls)
+        ? `${filteredCalls} of ${totalCalls} ${costsState.shape === 'claude_code' ? 'turns' : 'calls'}`
+        : `${filteredCalls} ${costsState.shape === 'claude_code' ? 'turn' : 'call'}${filteredCalls === 1 ? '' : 's'}`;
+    meta.textContent = `${sLabel} · ${cLabel}`;
 }
 
-function costsRenderCards() {
+// ---- Cards ----
+function costsRenderCards(shape, data, activity, sidecar) {
     const wrap = document.getElementById('costs-cards');
     if (!wrap) return;
 
-    if (costsState.shape === 'claude_code') {
-        const { totals } = _costsAggregateByDayTranscripts();
-        const sessionCount = (costsState.raw.sessions || []).filter(_costsFilterSession).length;
-        const cards = [
-            { label: 'Sessions',     value: sessionCount.toString() },
-            { label: 'Turns',        value: costsFmtN(totals.turns) },
-            { label: 'Input',        value: costsFmtN(totals.input_tokens) },
-            { label: 'Output',       value: costsFmtN(totals.output_tokens) },
-            { label: 'Cache read',   value: costsFmtN(totals.cache_read_tokens),
-                sub: '90% off input rate' },
-            { label: 'Cache write',  value: costsFmtN(totals.cache_creation_tokens),
-                sub: '+25% premium' },
-            { label: 'Est. cost',    value: costsFmtCost(totals.cost_usd),
-                sub: 'Anthropic Apr 2026 rates' },
-        ];
-        wrap.innerHTML = cards.map(c => `
-            <div class="card">
-                <div class="card-label">${costsEsc(c.label)}</div>
-                <div class="card-value">${costsEsc(c.value)}</div>
-                ${c.sub ? `<div class="card-sub">${costsEsc(c.sub)}</div>` : ''}
-            </div>
-        `).join('');
-        return;
+    const sessions = (data.sessions || []).filter(_costsFilterSession);
+    const totalSessions = (data.sessions || []).length;
+    const { totals } = _costsAggregateByDay(data);
+
+    // Apply activity-mode filtering for the internal shape.
+    let displayed = totals;
+    if (shape === 'internal' && activity === 'api') {
+        displayed = _costsFilterTotalsByMode(totals, 'cloud');
+    } else if (shape === 'internal' && activity === 'local') {
+        displayed = _costsFilterTotalsByMode(totals, 'local');
     }
 
-    const { totals } = _costsAggregateByDayFiltered();
-    const sessionCount = (costsState.raw.sessions || []).filter(_costsFilterSession).length;
-    const cards = [
-        { label: 'Sessions',     value: sessionCount.toString() },
-        { label: 'Calls',        value: costsFmtN(totals.calls),
-            sub: `${totals.cloud_calls} cloud · ${totals.local_calls} local` },
-        { label: 'Input tokens', value: costsFmtN(totals.input_tokens) },
-        { label: 'Output tokens',value: costsFmtN(totals.output_tokens) },
-    ];
-    // Show cache cards only when the data is present (rows post-2026-04-25
-    // carry these; legacy rows have them as 0).
-    if ((totals.cache_read_tokens || 0) > 0 || (totals.cache_creation_tokens || 0) > 0) {
-        cards.push(
-            { label: 'Cache read',  value: costsFmtN(totals.cache_read_tokens),
-                sub: '90% off input rate' },
-            { label: 'Cache write', value: costsFmtN(totals.cache_creation_tokens),
-                sub: '+25% premium' },
-        );
+    const totalCalls = (data.totals || {}).calls || (data.totals || {}).turns || 0;
+    const filteredCalls = (displayed.calls || displayed.turns || 0);
+    _costsRenderMeta(sessions.length, filteredCalls,
+                      totalSessions, totalCalls);
+
+    const cards = [];
+    cards.push({ label: 'Sessions', value: sessions.length.toString() });
+
+    if (shape === 'claude_code') {
+        cards.push({ label: 'Turns', value: costsFmtN(displayed.turns) });
+    } else {
+        // Internal log — split cloud/local in the Calls card sub.
+        let sub;
+        if (activity === 'api')   sub = `${displayed.cloud_calls || 0} cloud`;
+        else if (activity === 'local') sub = `${displayed.local_calls || 0} local`;
+        else sub = `${displayed.cloud_calls || 0} cloud · ${displayed.local_calls || 0} local`;
+        cards.push({ label: 'Calls',
+                     value: costsFmtN(displayed.calls), sub });
     }
-    cards.push({ label: 'Est. cost',    value: costsFmtCost(totals.cost_usd),
-        sub: 'cloud only; local logs $0' });
+
+    cards.push({ label: 'Input',  value: costsFmtN(displayed.input_tokens) });
+    cards.push({ label: 'Output', value: costsFmtN(displayed.output_tokens) });
+
+    const hasCache = (displayed.cache_read_tokens || 0) > 0
+                  || (displayed.cache_creation_tokens || 0) > 0;
+    if (hasCache) {
+        cards.push({ label: 'Cache read',
+                     value: costsFmtN(displayed.cache_read_tokens),
+                     sub: '90% off input rate' });
+        cards.push({ label: 'Cache write',
+                     value: costsFmtN(displayed.cache_creation_tokens),
+                     sub: '+25% premium' });
+    }
+
+    let costSub;
+    if (shape === 'internal' && activity === 'local') costSub = 'local LLM — no cloud cost';
+    else if (shape === 'internal' && activity === 'api') costSub = 'work-buddy API spend';
+    else if (shape === 'claude_code') costSub = 'Claude Code (Anthropic rates)';
+    else costSub = 'cloud only; local logs $0';
+    cards.push({ label: 'Est. cost',
+                 value: costsFmtCost(displayed.cost_usd),
+                 sub: costSub });
+
+    // Sidecar: when project=work-buddy + activity=all, the primary view is
+    // claude_code, but it's worth surfacing the small work-buddy infra
+    // contribution as a separate card (so it stays visible).
+    if (sidecar && (sidecar.totals || {}).calls) {
+        const t = sidecar.totals;
+        cards.push({ label: 'Plus work-buddy infra',
+                     value: costsFmtN(t.calls),
+                     sub: `${t.cloud_calls || 0} cloud · ${t.local_calls || 0} local · ${costsFmtCost(t.cost_usd)}`,
+                     accent: true });
+    }
+
     wrap.innerHTML = cards.map(c => `
-        <div class="card">
+        <div class="card${c.accent ? ' card-accent' : ''}">
             <div class="card-label">${costsEsc(c.label)}</div>
             <div class="card-value">${costsEsc(c.value)}</div>
             ${c.sub ? `<div class="card-sub">${costsEsc(c.sub)}</div>` : ''}
         </div>
     `).join('');
+}
+
+function _costsFilterTotalsByMode(totals, mode) {
+    // For internal shape: rough activity filter over already-summed
+    // totals. We only know cloud_calls / local_calls; tokens are
+    // mixed. The cards still render, but the displayed numbers are
+    // approximate when activity≠all (the underlying log doesn't track
+    // per-call mode-tagged tokens). Caveat surfaced via the cost-card
+    // sub-text.
+    if (mode === 'cloud') {
+        return {
+            ...totals,
+            calls: totals.cloud_calls || 0,
+            local_calls: 0,
+        };
+    }
+    if (mode === 'local') {
+        return {
+            ...totals,
+            calls: totals.local_calls || 0,
+            cloud_calls: 0,
+            cost_usd: 0,
+        };
+    }
+    return totals;
 }
 
 function _costsDestroyChart(id) {
@@ -357,29 +477,34 @@ function _costsDestroyChart(id) {
     }
 }
 
-function costsRenderDailyChart() {
+// ---- Daily chart (hidden when range = today) ----
+function costsRenderDailyChart(shape, data) {
+    const card = document.getElementById('costs-daily-chart')?.closest('.costs-chart-card');
+    if (costsState.range === 'today') {
+        if (card) card.style.display = 'none';
+        _costsDestroyChart('daily');
+        return;
+    }
+    if (card) card.style.display = '';
+
     const canvas = document.getElementById('costs-daily-chart');
     if (!canvas || typeof Chart === 'undefined') return;
     _costsDestroyChart('daily');
 
-    const isTr = costsState.shape === 'claude_code';
-    const { days } = isTr ? _costsAggregateByDayTranscripts()
-                          : _costsAggregateByDayFiltered();
+    const { days } = _costsAggregateByDay(data);
     const labels = days.map(d => d.day);
     const inputs = days.map(d => d.input_tokens || 0);
     const outputs = days.map(d => d.output_tokens || 0);
     const cacheRead = days.map(d => d.cache_read_tokens || 0);
     const cacheCreate = days.map(d => d.cache_creation_tokens || 0);
     const costs = days.map(d => d.cost_usd || 0);
+
     const datasets = [
         { label: 'Input',  data: inputs,
           backgroundColor: COSTS_TOKEN_COLORS.input, stack: 'tokens', yAxisID: 'y' },
         { label: 'Output', data: outputs,
           backgroundColor: COSTS_TOKEN_COLORS.output, stack: 'tokens', yAxisID: 'y' },
     ];
-    // Cache datasets render whenever the data is present, not based on source.
-    // Internal-log rows after 2026-04-25 carry cache token splits;
-    // transcript rows always have them.
     const hasCache = cacheRead.some(v => v > 0) || cacheCreate.some(v => v > 0);
     if (hasCache) {
         datasets.push(
@@ -418,18 +543,75 @@ function costsRenderDailyChart() {
     });
 }
 
-// Transcript-only: top 10 tools by turn count.
-function costsRenderToolChart() {
+// ---- Model donut ----
+function costsRenderModelChart(shape, data) {
+    const canvas = document.getElementById('costs-model-chart');
+    if (!canvas || typeof Chart === 'undefined') return;
+    _costsDestroyChart('model');
+    const rows = (data.by_model || []).filter(_costsFilterModelRow);
+    const labels = rows.map(r => r.model);
+    const data_arr = rows.map(r => r.cost_usd || 0);
+    const useTokens = labels.length === 0 || data_arr.every(v => v === 0);
+    const tokens = rows.map(r => (r.input_tokens || 0) + (r.output_tokens || 0));
+    costsState.charts.model = new Chart(canvas.getContext('2d'), {
+        type: 'doughnut',
+        data: { labels, datasets: [{
+            data: useTokens ? tokens : data_arr,
+            backgroundColor: labels.map((_, i) => COSTS_MODEL_PALETTE[i % COSTS_MODEL_PALETTE.length]),
+        }]},
+        options: { responsive: true, maintainAspectRatio: false,
+            plugins: { legend: { position: 'right',
+                labels: { color: '#e6edf3', boxWidth: 12 } },
+                tooltip: { callbacks: { label: ctx => ctx.label + ': ' +
+                    (useTokens ? costsFmtN(ctx.parsed) + ' tokens'
+                                : costsFmtCost(ctx.parsed)) } } } },
+    });
+}
+
+// ---- Task / Tool / Mode / Project charts ----
+function costsRenderTaskChart(data, activity) {
     const canvas = document.getElementById('costs-task-chart');
     if (!canvas || typeof Chart === 'undefined') return;
     _costsDestroyChart('task');
-    const rows = (costsState.raw.by_tool || []).slice(0, 10);
-    const labels = rows.map(r => r.tool);
-    const data = rows.map(r => r.turns || 0);
+    const rows = (data.by_task || []).slice(0, 10);
+    const labels = rows.map(r => r.task);
+    const data_arr = rows.map(r => r.cost_usd || 0);
+    const useTokens = data_arr.every(v => v === 0);
+    const tokens = rows.map(r => (r.input_tokens || 0) + (r.output_tokens || 0));
     costsState.charts.task = new Chart(canvas.getContext('2d'), {
         type: 'bar',
         data: { labels, datasets: [{
-            label: 'turns', data, backgroundColor: '#4f8ef7',
+            label: useTokens ? 'tokens' : 'cost (USD)',
+            data: useTokens ? tokens : data_arr,
+            backgroundColor: '#D87857',
+        }]},
+        options: {
+            indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+            plugins: { legend: { display: false },
+                tooltip: { callbacks: { label: ctx => useTokens
+                    ? costsFmtN(ctx.parsed.x) + ' tokens'
+                    : costsFmtCost(ctx.parsed.x) } } },
+            scales: {
+                x: { ticks: { color: '#8b949e',
+                              callback: useTokens ? costsFmtN : costsFmtCost },
+                     grid: { color: '#21262d' } },
+                y: { ticks: { color: '#e6edf3' }, grid: { display: false } },
+            },
+        },
+    });
+}
+
+function costsRenderToolChart(data) {
+    const canvas = document.getElementById('costs-task-chart');
+    if (!canvas || typeof Chart === 'undefined') return;
+    _costsDestroyChart('task');
+    const rows = (data.by_tool || []).slice(0, 10);
+    const labels = rows.map(r => r.tool);
+    const data_arr = rows.map(r => r.turns || 0);
+    costsState.charts.task = new Chart(canvas.getContext('2d'), {
+        type: 'bar',
+        data: { labels, datasets: [{
+            label: 'turns', data: data_arr, backgroundColor: '#4f8ef7',
         }]},
         options: {
             indexAxis: 'y', responsive: true, maintainAspectRatio: false,
@@ -444,18 +626,39 @@ function costsRenderToolChart() {
     });
 }
 
-// Transcript-only: top 10 projects by cost.
-function costsRenderProjectChart() {
+function costsRenderModeChart(data, activity) {
     const canvas = document.getElementById('costs-mode-chart');
     if (!canvas || typeof Chart === 'undefined') return;
     _costsDestroyChart('mode');
-    const rows = (costsState.raw.by_project || []).slice(0, 10);
+    let rows = data.by_execution_mode || [];
+    if (activity === 'api')   rows = rows.filter(r => r.mode === 'cloud');
+    if (activity === 'local') rows = rows.filter(r => r.mode === 'local');
+    const labels = rows.map(r => r.mode || 'unknown');
+    const calls = rows.map(r => r.calls || 0);
+    const colors = labels.map(l => l === 'cloud' ? '#D87857'
+                                  : l === 'local' ? '#3fb950' : '#6e7681');
+    costsState.charts.mode = new Chart(canvas.getContext('2d'), {
+        type: 'doughnut',
+        data: { labels, datasets: [{ data: calls, backgroundColor: colors }] },
+        options: { responsive: true, maintainAspectRatio: false,
+            plugins: { legend: { position: 'right',
+                labels: { color: '#e6edf3', boxWidth: 12 } },
+                tooltip: { callbacks: { label: ctx => ctx.label + ': ' +
+                    costsFmtN(ctx.parsed) + ' calls' } } } },
+    });
+}
+
+function costsRenderProjectChart(data) {
+    const canvas = document.getElementById('costs-mode-chart');
+    if (!canvas || typeof Chart === 'undefined') return;
+    _costsDestroyChart('mode');
+    const rows = (data.by_project || []).slice(0, 10);
     const labels = rows.map(r => r.project);
-    const data = rows.map(r => r.cost_usd || 0);
+    const data_arr = rows.map(r => r.cost_usd || 0);
     costsState.charts.mode = new Chart(canvas.getContext('2d'), {
         type: 'bar',
         data: { labels, datasets: [{
-            label: 'cost', data, backgroundColor: '#3fb950',
+            label: 'cost', data: data_arr, backgroundColor: '#3fb950',
         }]},
         options: {
             indexAxis: 'y', responsive: true, maintainAspectRatio: false,
@@ -470,108 +673,17 @@ function costsRenderProjectChart() {
     });
 }
 
-function costsRenderModelChart() {
-    const canvas = document.getElementById('costs-model-chart');
-    if (!canvas || typeof Chart === 'undefined') return;
-    _costsDestroyChart('model');
-    const rows = (costsState.raw.by_model || []).filter(_costsFilterModelRow);
-    const labels = rows.map(r => r.model);
-    const data = rows.map(r => r.cost_usd || 0);
-    if (labels.length === 0 || data.every(v => v === 0)) {
-        // Fall back to token volume if no cloud cost recorded.
-        const tokens = rows.map(r => (r.input_tokens || 0) + (r.output_tokens || 0));
-        canvas.parentElement.dataset.fallback = 'tokens';
-        costsState.charts.model = new Chart(canvas.getContext('2d'), {
-            type: 'doughnut',
-            data: { labels, datasets: [{ data: tokens,
-                backgroundColor: labels.map((_, i) => COSTS_MODEL_PALETTE[i % COSTS_MODEL_PALETTE.length]) }] },
-            options: { responsive: true, maintainAspectRatio: false,
-                plugins: { legend: { position: 'right',
-                    labels: { color: '#e6edf3', boxWidth: 12 } },
-                    tooltip: { callbacks: { label: ctx => ctx.label + ': ' +
-                        costsFmtN(ctx.parsed) + ' tokens (no cloud cost)' } } } },
-        });
-        return;
-    }
-    canvas.parentElement.dataset.fallback = '';
-    costsState.charts.model = new Chart(canvas.getContext('2d'), {
-        type: 'doughnut',
-        data: { labels, datasets: [{ data,
-            backgroundColor: labels.map((_, i) => COSTS_MODEL_PALETTE[i % COSTS_MODEL_PALETTE.length]) }] },
-        options: { responsive: true, maintainAspectRatio: false,
-            plugins: { legend: { position: 'right',
-                labels: { color: '#e6edf3', boxWidth: 12 } },
-                tooltip: { callbacks: { label: ctx => ctx.label + ': ' +
-                    costsFmtCost(ctx.parsed) } } } },
-    });
-}
-
-function costsRenderTaskChart() {
-    const canvas = document.getElementById('costs-task-chart');
-    if (!canvas || typeof Chart === 'undefined') return;
-    _costsDestroyChart('task');
-    const rows = (costsState.raw.by_task || []).slice(0, 10);
-    const labels = rows.map(r => r.task);
-    const data = rows.map(r => r.cost_usd || 0);
-    const tokens = rows.map(r => (r.input_tokens || 0) + (r.output_tokens || 0));
-    const useTokens = data.every(v => v === 0);
-    costsState.charts.task = new Chart(canvas.getContext('2d'), {
-        type: 'bar',
-        data: {
-            labels,
-            datasets: [{
-                label: useTokens ? 'tokens' : 'cost (USD)',
-                data: useTokens ? tokens : data,
-                backgroundColor: '#D87857',
-            }],
-        },
-        options: {
-            indexAxis: 'y', responsive: true, maintainAspectRatio: false,
-            plugins: { legend: { display: false },
-                tooltip: { callbacks: { label: ctx => useTokens ?
-                    costsFmtN(ctx.parsed.x) + ' tokens' :
-                    costsFmtCost(ctx.parsed.x) } } },
-            scales: {
-                x: { ticks: { color: '#8b949e',
-                    callback: useTokens ? costsFmtN : costsFmtCost },
-                    grid: { color: '#21262d' } },
-                y: { ticks: { color: '#e6edf3' }, grid: { display: false } },
-            },
-        },
-    });
-}
-
-function costsRenderModeChart() {
-    const canvas = document.getElementById('costs-mode-chart');
-    if (!canvas || typeof Chart === 'undefined') return;
-    _costsDestroyChart('mode');
-    const rows = costsState.raw.by_execution_mode || [];
-    const labels = rows.map(r => r.mode || 'unknown');
-    const calls = rows.map(r => r.calls || 0);
-    const colors = labels.map(l => l === 'cloud' ? '#D87857' :
-                                    l === 'local' ? '#3fb950' : '#6e7681');
-    costsState.charts.mode = new Chart(canvas.getContext('2d'), {
-        type: 'doughnut',
-        data: { labels, datasets: [{ data: calls, backgroundColor: colors }] },
-        options: { responsive: true, maintainAspectRatio: false,
-            plugins: { legend: { position: 'right',
-                labels: { color: '#e6edf3', boxWidth: 12 } },
-                tooltip: { callbacks: { label: ctx => ctx.label + ': ' +
-                    costsFmtN(ctx.parsed) + ' calls' } } } },
-    });
-}
-
-function costsRenderModelTable() {
-    const rows = (costsState.raw.by_model || []).filter(_costsFilterModelRow);
+// ---- Tables ----
+function costsRenderModelTable(shape, data) {
+    const rows = (data.by_model || []).filter(_costsFilterModelRow);
     const wrap = document.getElementById('costs-model-table');
     if (!wrap) return;
     if (rows.length === 0) {
         wrap.innerHTML = '<div class="empty-state">No model data in this filter.</div>';
         return;
     }
-    const isTr = costsState.shape === 'claude_code';
     let html;
-    if (isTr) {
+    if (shape === 'claude_code') {
         html = '<table class="data-table costs-table"><thead><tr>' +
             '<th>Model</th><th class="num">Turns</th><th class="num">Input</th>' +
             '<th class="num">Output</th><th class="num">Cache read</th>' +
@@ -588,35 +700,33 @@ function costsRenderModelTable() {
                 <td class="num">${costsFmtCost(r.cost_usd)}</td>
             </tr>`;
         }
-        html += '</tbody></table>';
-        wrap.innerHTML = html;
-        return;
-    }
-    // "Cache hits" here is the work-buddy-side LLM-cache count
-    // (work_buddy.llm.cache, an in-process result cache). Distinct from
-    // the Anthropic prompt-cache tokens displayed in the cards above.
-    html = '<table class="data-table costs-table"><thead><tr>' +
-        '<th>Model</th><th class="num">Calls</th><th class="num">API</th>' +
-        '<th class="num">Cache hits</th><th class="num">Input</th>' +
-        '<th class="num">Output</th><th class="num">Cost</th>' +
-        '</tr></thead><tbody>';
-    for (const r of rows) {
-        html += `<tr>
-            <td><code class="costs-model-name">${costsEsc(r.model)}</code></td>
-            <td class="num">${costsFmtN(r.calls)}</td>
-            <td class="num">${costsFmtN(r.api_calls)}</td>
-            <td class="num">${costsFmtN(r.cache_hits)}</td>
-            <td class="num">${costsFmtN(r.input_tokens)}</td>
-            <td class="num">${costsFmtN(r.output_tokens)}</td>
-            <td class="num">${costsFmtCost(r.cost_usd)}</td>
-        </tr>`;
+    } else {
+        // "Cache hits" here is the work-buddy-side LLM-cache count
+        // (work_buddy.llm.cache, an in-process result cache). Distinct from
+        // the Anthropic prompt-cache tokens displayed in the cards above.
+        html = '<table class="data-table costs-table"><thead><tr>' +
+            '<th>Model</th><th class="num">Calls</th><th class="num">API</th>' +
+            '<th class="num">Cache hits</th><th class="num">Input</th>' +
+            '<th class="num">Output</th><th class="num">Cost</th>' +
+            '</tr></thead><tbody>';
+        for (const r of rows) {
+            html += `<tr>
+                <td><code class="costs-model-name">${costsEsc(r.model)}</code></td>
+                <td class="num">${costsFmtN(r.calls)}</td>
+                <td class="num">${costsFmtN(r.api_calls)}</td>
+                <td class="num">${costsFmtN(r.cache_hits)}</td>
+                <td class="num">${costsFmtN(r.input_tokens)}</td>
+                <td class="num">${costsFmtN(r.output_tokens)}</td>
+                <td class="num">${costsFmtCost(r.cost_usd)}</td>
+            </tr>`;
+        }
     }
     html += '</tbody></table>';
     wrap.innerHTML = html;
 }
 
-function costsRenderSessionsTable() {
-    const all = (costsState.raw.sessions || []).filter(_costsFilterSession);
+function costsRenderSessionsTable(shape, data) {
+    const all = (data.sessions || []).filter(_costsFilterSession);
     const filterStr = (costsState.sessionFilter || '').toLowerCase();
     const filtered = filterStr ? all.filter(s => {
         return (s.short_id || '').toLowerCase().includes(filterStr)
@@ -636,9 +746,8 @@ function costsRenderSessionsTable() {
         return;
     }
 
-    const isTr = costsState.shape === 'claude_code';
     let html;
-    if (isTr) {
+    if (shape === 'claude_code') {
         html = '<table class="data-table costs-table"><thead><tr>' +
             '<th>Session</th><th>Project</th><th>Branch</th><th>Last</th>' +
             '<th class="num">Turns</th><th class="num">In</th>' +
@@ -663,32 +772,29 @@ function costsRenderSessionsTable() {
         if (filtered.length > 200) {
             html += `<tr><td colspan="10" class="empty-state">Showing first 200 of ${filtered.length}</td></tr>`;
         }
-        html += '</tbody></table>';
-        wrap.innerHTML = html;
-        return;
-    }
-
-    html = '<table class="data-table costs-table"><thead><tr>' +
-        '<th>Session</th><th>Project</th><th>Last</th>' +
-        '<th class="num">Calls</th><th class="num">In</th>' +
-        '<th class="num">Out</th><th class="num">Cost</th><th>Models</th>' +
-        '</tr></thead><tbody>';
-    for (const s of filtered.slice(0, 200)) {
-        const proj = s.project ? s.project.replace(/^.*[\\\/]/, '') : '';
-        html += `<tr>
-            <td><code title="${costsEsc(s.session_id)}">${costsEsc(s.short_id)}</code></td>
-            <td title="${costsEsc(s.project)}">${costsEsc(proj)}</td>
-            <td>${costsFmtDate(s.last)}</td>
-            <td class="num">${costsFmtN(s.calls)}</td>
-            <td class="num">${costsFmtN(s.input_tokens)}</td>
-            <td class="num">${costsFmtN(s.output_tokens)}</td>
-            <td class="num">${costsFmtCost(s.cost_usd)}</td>
-            <td class="costs-model-cell">${(s.models || []).map(m =>
-                `<span class="costs-model-chip">${costsEsc(m)}</span>`).join('')}</td>
-        </tr>`;
-    }
-    if (filtered.length > 200) {
-        html += `<tr><td colspan="8" class="empty-state">Showing first 200 of ${filtered.length}</td></tr>`;
+    } else {
+        html = '<table class="data-table costs-table"><thead><tr>' +
+            '<th>Session</th><th>Project</th><th>Last</th>' +
+            '<th class="num">Calls</th><th class="num">In</th>' +
+            '<th class="num">Out</th><th class="num">Cost</th><th>Models</th>' +
+            '</tr></thead><tbody>';
+        for (const s of filtered.slice(0, 200)) {
+            const proj = s.project ? s.project.replace(/^.*[\\\/]/, '') : '';
+            html += `<tr>
+                <td><code title="${costsEsc(s.session_id)}">${costsEsc(s.short_id)}</code></td>
+                <td title="${costsEsc(s.project)}">${costsEsc(proj)}</td>
+                <td>${costsFmtDate(s.last)}</td>
+                <td class="num">${costsFmtN(s.calls)}</td>
+                <td class="num">${costsFmtN(s.input_tokens)}</td>
+                <td class="num">${costsFmtN(s.output_tokens)}</td>
+                <td class="num">${costsFmtCost(s.cost_usd)}</td>
+                <td class="costs-model-cell">${(s.models || []).map(m =>
+                    `<span class="costs-model-chip">${costsEsc(m)}</span>`).join('')}</td>
+            </tr>`;
+        }
+        if (filtered.length > 200) {
+            html += `<tr><td colspan="8" class="empty-state">Showing first 200 of ${filtered.length}</td></tr>`;
+        }
     }
     html += '</tbody></table>';
     wrap.innerHTML = html;
@@ -700,7 +806,10 @@ document.addEventListener('DOMContentLoaded', function() {
     if (f) {
         f.addEventListener('input', function() {
             costsState.sessionFilter = f.value || '';
-            costsRenderSessionsTable();
+            costsRenderSessionsTable(
+                costsState.shape || 'internal',
+                _costsActiveData().data,
+            );
         });
     }
 });

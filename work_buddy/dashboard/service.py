@@ -841,20 +841,18 @@ def api_costs():
 
     Optional query params:
         source: ``internal`` (default), ``claude_code``, or ``all``.
-            ``internal`` reads the per-call log written by
-            ``work_buddy.llm.cost``. ``claude_code`` reads the
-            transcript-derived cache populated by
-            ``claude_code_usage_scan``. ``all`` returns both keyed under
-            ``internal`` and ``claude_code``.
+        project: substring match on project name / cwd. When set, every
+            aggregate is computed only over matching sessions/turns.
     """
     source = (request.args.get("source") or "internal").lower()
+    project = request.args.get("project") or None
     # Backwards-compat: the old ``transcripts`` source name still routes
     # to claude_code so any external bookmarks / scripts keep working.
     if source == "transcripts":
         source = "claude_code"
     try:
         from work_buddy.dashboard.costs import get_costs_summary
-        internal = get_costs_summary()
+        internal = get_costs_summary(project=project)
         if source == "internal":
             return jsonify(internal)
 
@@ -863,7 +861,7 @@ def api_costs():
             from work_buddy.dashboard.costs_claude_code_usage import (
                 get_claude_code_usage_summary,
             )
-            claude_code = get_claude_code_usage_summary()
+            claude_code = get_claude_code_usage_summary(project=project)
         except ImportError:
             claude_code = None
         except Exception as exc:  # noqa: BLE001
@@ -881,6 +879,107 @@ def api_costs():
         })
     except Exception as exc:  # noqa: BLE001
         logger.exception("Cost aggregation failed")
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.get("/api/costs/projects")
+def api_costs_projects():
+    """List of projects that have cost data, with counts and recency.
+
+    Pinning order in the response:
+      1. ``__all__`` placeholder ("All projects" pseudo-project).
+      2. ``work-buddy`` if it has any data.
+      3. Other projects, sorted by ``last_seen`` desc.
+
+    Each entry has::
+
+        {
+          "name": "work-buddy",
+          "session_count": 42,
+          "last_seen": "2026-04-25T20:14:00",
+          "in_internal": true,    # has rows in the per-call log
+          "in_claude_code": true, # has rows in the transcripts cache
+        }
+    """
+    try:
+        projects: dict[str, dict] = {}
+
+        # Internal source (per-call log) — collect from session manifests.
+        try:
+            from work_buddy.dashboard.costs import (
+                _iter_session_dirs, _read_session_manifest,
+            )
+            for sd in _iter_session_dirs():
+                if not (sd / "llm_costs.jsonl").exists():
+                    continue
+                m = _read_session_manifest(sd)
+                proj_path = m.get("project") or ""
+                if not proj_path:
+                    continue
+                name = proj_path.replace("\\", "/").rstrip("/").split("/")[-1]
+                if not name:
+                    continue
+                p = projects.setdefault(name, {
+                    "name": name, "session_count": 0,
+                    "last_seen": "", "in_internal": False,
+                    "in_claude_code": False,
+                })
+                p["session_count"] += 1
+                p["in_internal"] = True
+                # Use the manifest's created_at as the recency proxy.
+                created = m.get("created_at") or ""
+                if created > p["last_seen"]:
+                    p["last_seen"] = created
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Internal-source project scan failed: %s", exc)
+
+        # Claude Code source — query the cache DB.
+        try:
+            import sqlite3
+            from work_buddy.llm.claude_code_usage import scanner as _scanner
+            db = _scanner.get_db_path()
+            if db.exists():
+                conn = sqlite3.connect(db)
+                conn.row_factory = sqlite3.Row
+                try:
+                    for s in conn.execute("""
+                        SELECT project_name, COUNT(*) AS n,
+                               MAX(last_timestamp) AS last_seen
+                        FROM sessions
+                        WHERE project_name IS NOT NULL AND project_name != ''
+                        GROUP BY project_name
+                    """):
+                        full = s["project_name"]
+                        name = full.replace("\\", "/").rstrip("/").split("/")[-1]
+                        if not name:
+                            continue
+                        p = projects.setdefault(name, {
+                            "name": name, "session_count": 0,
+                            "last_seen": "", "in_internal": False,
+                            "in_claude_code": False,
+                        })
+                        p["session_count"] += int(s["n"] or 0)
+                        p["in_claude_code"] = True
+                        ls = s["last_seen"] or ""
+                        if ls > p["last_seen"]:
+                            p["last_seen"] = ls
+                finally:
+                    conn.close()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Claude-Code-source project scan failed: %s", exc)
+
+        # Pin "work-buddy" first, then sort rest by recency.
+        rest = [p for p in projects.values() if p["name"].lower() != "work-buddy"]
+        rest.sort(key=lambda p: p["last_seen"], reverse=True)
+        ordered: list[dict] = []
+        wb = projects.get("work-buddy")
+        if wb:
+            ordered.append(wb)
+        ordered.extend(rest)
+
+        return jsonify({"projects": ordered, "count": len(ordered)})
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Project list failed")
         return jsonify({"error": str(exc)}), 500
 
 
