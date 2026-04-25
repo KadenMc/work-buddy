@@ -35,7 +35,7 @@ class ErrorKind(str, Enum):
     AUTH = "auth"
     RATE_LIMITED = "rate_limited"
     TOOL_EXECUTION = "tool_execution"
-    MODEL_NOT_LOADED = "model_not_loaded"
+    MODEL_NOT_AVAILABLE = "model_not_available"
     MODEL_UNSUPPORTED = "model_unsupported"
     BAD_REQUEST = "bad_request"
     MALFORMED_RESPONSE = "malformed_response"

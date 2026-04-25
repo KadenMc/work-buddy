@@ -26,7 +26,11 @@ class LocalInferenceError(Exception):
         message: Human-readable description.
         kind: Category discriminator — one of:
             * ``"server_unreachable"`` — LM Studio server isn't up / port closed
-            * ``"model_not_loaded"`` — requested model not on any linked device
+            * ``"model_not_available"`` — requested model not reachable: not in
+              the LM Studio catalog, no linked device surfaces it, or LM Link
+              is currently disconnected. NOT necessarily "loaded into memory" —
+              JIT can usually load a cataloged model on demand. This kind
+              covers the broader "we can't reach this model right now" state.
             * ``"model_unsupported"`` — server rejected the model for this endpoint
             * ``"bad_request"`` — 4xx with an otherwise unclassified body
             * ``"server_error"`` — 5xx with no matched sub-pattern
@@ -149,13 +153,16 @@ def _interpret_status_error(
     code = (err.get("code") or "").strip()
     msg_lower = message.lower()
 
-    # --- Model-not-loaded family -------------------------------------------
+    # --- Model-not-available family ----------------------------------------
     # LM Studio variants observed in the wild:
     #   "Invalid model identifier '<id>'. There are no downloaded llm models."
     #   "No models loaded. Please load a model in the developer page ..."
     #   "Model '<id>' not found"
-    # These all mean: the model the caller asked for isn't reachable on
-    # any linked device.
+    # These all mean the model the caller asked for isn't reachable right
+    # now. The model may be downloaded but JIT-loadable, fully missing,
+    # or living on a disconnected LM Link device — we can't tell from a
+    # single chat error. Use the broader name accordingly so the kind
+    # doesn't imply "just needs to be loaded into memory."
     if (
         code == "model_not_found"
         or "no models loaded" in msg_lower
@@ -165,17 +172,18 @@ def _interpret_status_error(
     ):
         return LocalInferenceError(
             (
-                f"Model {model!r} is not loaded on any device reachable "
-                f"from LM Studio."
+                f"Model {model!r} is not currently available via LM Studio."
             ),
-            kind="model_not_loaded",
+            kind="model_not_available",
             hint=(
-                "Verify: (1) LM Studio is running on the main machine; "
-                "(2) on the compute laptop, LM Link shows as Connected; "
-                "(3) the requested model appears as Loaded in the laptop's "
-                "Chat tab. Then `curl <base_url>/v1/models` on main should "
-                "list the remote models. If only local models appear, the "
-                "laptop isn't surfacing via LM Link — re-establish the link."
+                "The model isn't reachable right now. Common causes: "
+                "(1) LM Link to the laptop hosting the model dropped — "
+                "reconnect the laptop and confirm it appears in LM Studio's "
+                "Discover tab; (2) the model was never downloaded — pull "
+                "it via `lms get <hf-url>` or LM Studio's Discover; "
+                "(3) Just-in-Time loading is disabled in LM Studio settings. "
+                "Verify with `curl <base_url>/v1/models` — the requested id "
+                "should appear in the response."
             ),
             raw=body,
         )

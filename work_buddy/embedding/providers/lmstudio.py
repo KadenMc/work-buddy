@@ -99,10 +99,11 @@ def encode(
             v1.5`` have no document-side prefix.)
         model_id: Model id as exposed by LM Studio's ``/v1/models``
             (e.g. ``text-embedding-snowflake-arctic-embed-m-v1.5``).
-            Must match an already-loaded model — LM Studio may JIT-
-            load a cataloged model on first request, but unloaded
-            models will error with ``model_not_loaded`` via the error
-            interpreter.
+            Must match a model reachable from this LM Studio instance —
+            either loaded already or cataloged so LM Studio can JIT-load
+            on first request. If the model isn't downloaded locally and
+            no LM Link device is surfacing it, the call errors with
+            ``model_not_available`` via the error interpreter.
         base_url: LM Studio base URL without ``/v1`` suffix. Falls back
             to ``resolve_base_url()`` when None.
         timeout: HTTP timeout per batch. Default 20s (down from the

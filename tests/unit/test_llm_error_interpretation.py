@@ -56,10 +56,15 @@ def test_read_timeout_maps_to_timeout():
 
 
 # ---------------------------------------------------------------------------
-# Model-not-loaded family (LM Studio's actual error shapes)
+# Model-not-available family (LM Studio's actual error shapes)
 # ---------------------------------------------------------------------------
+# Renamed from "model_not_loaded": the error doesn't actually mean "the
+# model is downloaded but not in memory" — that case JIT auto-loads
+# successfully. This kind covers the broader "we can't reach this model
+# right now" state: not downloaded, no linked device surfaces it, or
+# LM Link dropped.
 
-def test_invalid_model_identifier_maps_to_model_not_loaded():
+def test_invalid_model_identifier_maps_to_model_not_available():
     # Actual observed shape from /api/v1/chat when LM Link is down
     body = {
         "error": {
@@ -71,12 +76,12 @@ def test_invalid_model_identifier_maps_to_model_not_loaded():
     }
     exc = _status_error(404, body)
     err = interpret_httpx_exception(exc, model="qwen/qwen3.5-9b", endpoint="/api/v1/chat")
-    assert err.kind == "model_not_loaded"
+    assert err.kind == "model_not_available"
     assert "qwen/qwen3.5-9b" in str(err)
     assert "LM Link" in err.hint
 
 
-def test_no_models_loaded_maps_to_model_not_loaded():
+def test_no_models_loaded_maps_to_model_not_available():
     # Actual observed shape from /v1/chat/completions when nothing's loaded
     body = {
         "error": {
@@ -88,7 +93,7 @@ def test_no_models_loaded_maps_to_model_not_loaded():
     }
     exc = _status_error(400, body)
     err = interpret_httpx_exception(exc, model="qwen/qwen3.5-9b", endpoint="/v1/chat/completions")
-    assert err.kind == "model_not_loaded"
+    assert err.kind == "model_not_available"
     assert "LM Link" in err.hint
 
 
@@ -97,7 +102,7 @@ def test_model_not_found_code_alone_triggers_classification():
     body = {"error": {"message": "whatever", "code": "model_not_found"}}
     exc = _status_error(404, body)
     err = interpret_httpx_exception(exc, model="foo", endpoint="/api/v1/chat")
-    assert err.kind == "model_not_loaded"
+    assert err.kind == "model_not_available"
 
 
 # ---------------------------------------------------------------------------
@@ -148,12 +153,12 @@ def test_unsupported_model_for_endpoint():
 
 def test_to_dict_shape():
     err = LocalInferenceError(
-        "oops", kind="model_not_loaded", hint="do the thing",
+        "oops", kind="model_not_available", hint="do the thing",
     )
     d = err.to_dict(model="m")
     assert d == {
         "error": "oops",
-        "error_kind": "model_not_loaded",
+        "error_kind": "model_not_available",
         "hint": "do the thing",
         "model": "m",
     }
@@ -163,8 +168,8 @@ def test_to_dict_shape():
 # Integration: llm_with_tools surfaces hint + error_kind
 # ---------------------------------------------------------------------------
 
-def test_with_tools_surfaces_model_not_loaded_hint(monkeypatch, tmp_path):
-    """End-to-end check that a model-not-loaded failure propagates
+def test_with_tools_surfaces_model_not_available_hint(monkeypatch, tmp_path):
+    """End-to-end check that a model-not-available failure propagates
     structured error info through llm_with_tools's response."""
     monkeypatch.setattr(
         "work_buddy.llm.profiles.load_config",
@@ -214,7 +219,7 @@ def test_with_tools_surfaces_model_not_loaded_hint(monkeypatch, tmp_path):
         profile="local_general", tool_preset="readonly_safe",
     )
 
-    assert result["error_kind"] == "model_not_loaded"
+    assert result["error_kind"] == "model_not_available"
     assert "LM Link" in result["hint"]
     assert result["content"] == ""
     # Agent should still see which model + preset it was trying to use
