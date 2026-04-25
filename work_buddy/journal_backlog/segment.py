@@ -56,6 +56,12 @@ _BANNER_RE = re.compile(
 # Structural separators (banner boundaries, not user content)
 _SEPARATOR_RE = re.compile(r"^-{3,}\s*$")
 
+# Markdown code-fence delimiters (``` or ~~~ with optional language tag).
+# These are structural — they bracket a code block but are not content
+# lines themselves. The model correctly identifies them as such and
+# leaves them outside any group; the validator must agree.
+_CODE_FENCE_RE = re.compile(r"^(?:```|~~~)[a-zA-Z0-9_+-]*\s*$")
+
 # Line-entry parsers for the group output. An entry may be:
 #   - a JSON integer (e.g., ``5``)
 #   - a JSON string holding a single line number (e.g., ``"5"``)
@@ -293,13 +299,15 @@ def validate_line_range_segmentation(
 
     n_lines = len(original_lines)
     # Coverage is required for content lines only. Structural markers
-    # (standalone ``---`` separators) carry boundary information but
-    # are not content — the model MAY group them into an adjacent
-    # thread, but it isn't required to.
+    # (standalone ``---`` separators, markdown code-fence delimiters)
+    # carry boundary information but are not content — the model MAY
+    # group them into an adjacent thread, but it isn't required to.
     non_blank_lines = {
         i + 1
         for i, line in enumerate(original_lines)
-        if line.strip() and not _SEPARATOR_RE.match(line.strip())
+        if line.strip()
+        and not _SEPARATOR_RE.match(line.strip())
+        and not _CODE_FENCE_RE.match(line.strip())
     }
 
     cited: set[int] = set()

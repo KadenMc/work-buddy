@@ -519,6 +519,49 @@ def test_validate_line_range_permits_unassigned_separator() -> None:
     assert all("not assigned" not in e for e in result["errors"])
 
 
+def test_validate_line_range_permits_unassigned_code_fences() -> None:
+    """Markdown code-fence delimiters (``\\`\\`\\``` / ``~~~``) bracket a
+    code block but are themselves structural — not content the model
+    needs to assign to a group. The validator must agree, otherwise
+    every journal section with a fenced code block fails coverage."""
+    from work_buddy.journal_backlog.segment import (
+        validate_line_range_segmentation,
+    )
+
+    # Lines: 1=fence-open, 2=code, 3=fence-close, 4=text after code block
+    originals = ["```", "00:00:12 | INFO | something", "```", "- after"]
+    # Model legitimately groups the code line plus the trailing text;
+    # leaves the fence delimiters unassigned.
+    seg = {"groups": [[2], [4]]}
+    result = validate_line_range_segmentation(seg, originals)
+    assert result["valid"] is True
+
+
+def test_validate_line_range_permits_language_tagged_fence() -> None:
+    """Code fences with a language tag (e.g. ``\\`\\`\\`python``) are also
+    delimiters and should be exempt."""
+    from work_buddy.journal_backlog.segment import (
+        validate_line_range_segmentation,
+    )
+
+    originals = ["```python", "x = 1", "```", "- text"]
+    seg = {"groups": [[2], [4]]}
+    result = validate_line_range_segmentation(seg, originals)
+    assert result["valid"] is True
+
+
+def test_validate_line_range_permits_tilde_code_fence() -> None:
+    """Some markdown flavors use ``~~~`` instead of ``\\`\\`\\``` for fences."""
+    from work_buddy.journal_backlog.segment import (
+        validate_line_range_segmentation,
+    )
+
+    originals = ["~~~", "code line", "~~~", "- text"]
+    seg = {"groups": [[2], [4]]}
+    result = validate_line_range_segmentation(seg, originals)
+    assert result["valid"] is True
+
+
 # ---------------------------------------------------------------------------
 # Range / string entry parsing
 # ---------------------------------------------------------------------------

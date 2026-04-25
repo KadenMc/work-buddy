@@ -61,6 +61,9 @@ logger = get_logger(__name__)
 
 _DEFAULT_CACHE_PATH = resolve("cache/segmentation")
 _SEPARATOR_RE = re.compile(r"^-{3,}\s*$")
+# Markdown code-fence delimiters — structural, not content. Mirrors the
+# validator's treatment in :mod:`work_buddy.journal_backlog.segment`.
+_CODE_FENCE_RE = re.compile(r"^(?:```|~~~)[a-zA-Z0-9_+-]*\s*$")
 
 
 # ---------------------------------------------------------------------------
@@ -79,11 +82,14 @@ def _normalize_line(line: str) -> str:
 
 
 def _is_content_line(line: str) -> bool:
-    """A line is 'content' if it's non-blank and not a horizontal-rule separator."""
+    """A line is 'content' if it's non-blank, not a horizontal-rule separator,
+    and not a markdown code-fence delimiter (``\\`\\`\\``` or ``~~~``)."""
     stripped = line.strip()
     if not stripped:
         return False
     if _SEPARATOR_RE.match(stripped):
+        return False
+    if _CODE_FENCE_RE.match(stripped):
         return False
     return True
 

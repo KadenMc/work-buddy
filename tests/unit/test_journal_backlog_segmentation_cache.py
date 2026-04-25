@@ -114,6 +114,30 @@ def test_cache_blank_lines_ignored(cache_path: Path) -> None:
     assert sorted_groups == [[2, 4]]
 
 
+def test_cache_code_fences_ignored(cache_path: Path) -> None:
+    """Markdown code-fence delimiters (``\\`\\`\\``` / ``~~~``) are
+    structural — the cache's content set must not include them, so
+    inserting fences around an existing block doesn't break the hit."""
+    from work_buddy.journal_backlog.segmentation_cache import (
+        get_cached_segmentation,
+        put_segmentation,
+    )
+
+    put_segmentation(
+        original_lines=["- alpha", "code-content", "- beta"],
+        system_hash="sys1", groups=[[1], [2], [3]], cache_path=cache_path,
+    )
+    # Wrap the code-content line in fence delimiters; same content set.
+    hit = get_cached_segmentation(
+        original_lines=["- alpha", "```", "code-content", "```", "- beta"],
+        system_hash="sys1", cache_path=cache_path,
+    )
+    assert hit is not None
+    sorted_groups = sorted(sorted(g) for g in hit)
+    # alpha → new line 1, code-content → new line 3, beta → new line 5
+    assert sorted_groups == [[1], [3], [5]]
+
+
 # ---------------------------------------------------------------------------
 # Miss conditions
 # ---------------------------------------------------------------------------
