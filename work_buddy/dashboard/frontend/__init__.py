@@ -72,7 +72,6 @@ def render_page() -> str:
     <title>work-buddy dashboard</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg">
     <style>{_styles()}</style>
-    <!-- Chart.js v4.4.0, vendored locally — see frontend/vendor/README.md -->
     <script src="/vendor/chart.umd.min.js"></script>
 </head>
 <body>
