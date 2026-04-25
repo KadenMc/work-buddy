@@ -12,7 +12,22 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from work_buddy.llm import ModelTier
+
+
+@pytest.fixture(autouse=True)
+def _isolate_segmentation_cache(monkeypatch, tmp_path):
+    """Each test gets a fresh segmentation cache file. Prevents the
+    content-addressable cache from leaking results between tests that
+    use the same canned input text."""
+    from work_buddy.journal_backlog import segmentation_cache as seg_cache_mod
+    monkeypatch.setattr(
+        seg_cache_mod,
+        "_DEFAULT_CACHE_PATH",
+        tmp_path / "segmentation_isolated.json",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -189,6 +204,120 @@ def test_journal_adapter_exhausts_tier_chain_and_logs_audit(
     assert "local_fast" in msg
     assert "frontier_fast" in msg
     assert "missing_coverage" in msg
+
+
+# ---------------------------------------------------------------------------
+# Segmentation cache integration (content-addressable layer)
+# ---------------------------------------------------------------------------
+
+
+def test_segmenter_reuses_cache_on_identical_content(monkeypatch) -> None:
+    """First scan writes the segmentation cache; second scan with the
+    same input must hit the cache and NOT call the LLM."""
+    from work_buddy.triage.adapters import journal as adapter_mod
+
+    original = "- alpha idea\n- beta idea\n- gamma idea"
+    monkeypatch.setattr(
+        "work_buddy.journal_backlog.read_running_notes",
+        lambda **kw: original,
+    )
+
+    import json as _json
+    payload = _json.dumps({"groups": [[1, 2], [3]]})
+    from work_buddy.llm import LLMResponse
+    call_count = {"n": 0}
+
+    def fake_llm_call(self, **kw):
+        call_count["n"] += 1
+        return LLMResponse(content=payload)
+
+    monkeypatch.setattr("work_buddy.llm.runner_v2.LLMRunner.call", fake_llm_call)
+
+    items_a, ch_a = adapter_mod.collect_same_day_candidates(
+        journal_date="2026-04-18", profile="local_general",
+    )
+    items_b, ch_b = adapter_mod.collect_same_day_candidates(
+        journal_date="2026-04-18", profile="local_general",
+    )
+    assert len(items_a) == 2
+    assert len(items_b) == 2
+    # Cache hit on the second call → exactly ONE LLM call across both.
+    assert call_count["n"] == 1
+
+
+def test_segmenter_cache_misses_on_content_change(monkeypatch) -> None:
+    """Changing one line of input must miss the cache and call the LLM
+    afresh (no SimHash fuzzy-hit on stale line numbers)."""
+    from work_buddy.triage.adapters import journal as adapter_mod
+
+    original_a = "- alpha idea\n- beta idea\n- gamma idea"
+    original_b = "- alpha idea\n- BETA EDITED\n- gamma idea"
+    raw = {"current": original_a}
+    monkeypatch.setattr(
+        "work_buddy.journal_backlog.read_running_notes",
+        lambda **kw: raw["current"],
+    )
+
+    import json as _json
+    payloads = iter([
+        _json.dumps({"groups": [[1, 2], [3]]}),
+        _json.dumps({"groups": [[1], [2, 3]]}),
+    ])
+    from work_buddy.llm import LLMResponse
+    call_count = {"n": 0}
+
+    def fake_llm_call(self, **kw):
+        call_count["n"] += 1
+        return LLMResponse(content=next(payloads))
+
+    monkeypatch.setattr("work_buddy.llm.runner_v2.LLMRunner.call", fake_llm_call)
+
+    adapter_mod.collect_same_day_candidates(
+        journal_date="2026-04-18", profile="local_general",
+    )
+    raw["current"] = original_b
+    adapter_mod.collect_same_day_candidates(
+        journal_date="2026-04-18", profile="local_general",
+    )
+    # Edit invalidates the cache → LLM is called on both runs.
+    assert call_count["n"] == 2
+
+
+def test_segmenter_cache_robust_to_blank_line_insertion(monkeypatch) -> None:
+    """Adding/removing blank lines doesn't change the content set →
+    cache hits and re-emits groups for the new line numbers."""
+    from work_buddy.triage.adapters import journal as adapter_mod
+
+    raw = {"current": "- alpha idea\n- beta idea"}
+    monkeypatch.setattr(
+        "work_buddy.journal_backlog.read_running_notes",
+        lambda **kw: raw["current"],
+    )
+
+    import json as _json
+    payload = _json.dumps({"groups": [[1, 2]]})
+    from work_buddy.llm import LLMResponse
+    call_count = {"n": 0}
+
+    def fake_llm_call(self, **kw):
+        call_count["n"] += 1
+        return LLMResponse(content=payload)
+
+    monkeypatch.setattr("work_buddy.llm.runner_v2.LLMRunner.call", fake_llm_call)
+
+    items_a, _ = adapter_mod.collect_same_day_candidates(
+        journal_date="2026-04-18", profile="local_general",
+    )
+    # Insert a blank line between the two content lines.
+    raw["current"] = "- alpha idea\n\n- beta idea"
+    items_b, _ = adapter_mod.collect_same_day_candidates(
+        journal_date="2026-04-18", profile="local_general",
+    )
+    # Both runs produce one thread covering the two content lines.
+    assert len(items_a) == 1
+    assert len(items_b) == 1
+    # Cache hit on second run despite the blank-line edit → 1 LLM call total.
+    assert call_count["n"] == 1
 
 
 # ---------------------------------------------------------------------------

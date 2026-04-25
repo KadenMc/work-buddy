@@ -31,6 +31,7 @@ pass as a skipped / empty run rather than hard-failing.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from typing import Any
 
@@ -228,6 +229,11 @@ def collect_same_day_candidates(
 # ---------------------------------------------------------------------------
 
 
+_SYSTEM_PROMPT_HASH = hashlib.sha256(
+    _SYSTEM_PROMPT.encode("utf-8")
+).hexdigest()[:12]
+
+
 def _segment_with_escalation(
     *,
     original_text: str,
@@ -253,6 +259,23 @@ def _segment_with_escalation(
     derived from line overlap between groups. See
     :func:`build_threads_from_line_ranges`.
 
+    ### Caching
+
+    Two layers, in order of precedence:
+
+    1. **Content-addressable segmentation cache** — keyed by the *content
+       set* of the input lines (line content hashes, not line numbers).
+       Survives line reordering, blank-line edits, and whitespace-only
+       changes. Stores groups as content-hash sets and translates back
+       to current line numbers on lookup. Misses on any meaningful
+       content change → falls through to a fresh LLM call.
+    2. **LLM-prompt cache (disabled here)** — the generic
+       :mod:`work_buddy.llm.cache` lives at the prompt level. Disabled
+       on this path (``cache_ttl_minutes=0``) because its SimHash
+       fuzzy-match would happily serve stale line-number partitions on
+       small content edits — the very failure mode the segmentation
+       cache exists to fix.
+
     Returns the list of thread dicts produced by
     :func:`build_threads_from_line_ranges`, or ``None`` if no tier
     produced a valid segmentation.
@@ -262,15 +285,47 @@ def _segment_with_escalation(
         number_lines,
         validate_line_range_segmentation,
     )
+    from work_buddy.journal_backlog.segmentation_cache import (
+        get_cached_segmentation,
+        put_segmentation,
+    )
 
     numbered, original_lines = number_lines(original_text)
     user_prompt = _segmentation_user_prompt(numbered_text=numbered)
+
+    # Content-addressable cache lookup BEFORE any LLM call. Keyed on
+    # the system_hash + the content-set of original_lines.
+    cached_groups = get_cached_segmentation(
+        original_lines=original_lines,
+        system_hash=_SYSTEM_PROMPT_HASH,
+    )
+    if cached_groups is not None:
+        # Sanity-validate against the current line numbers — coverage
+        # check might catch a translation edge case (e.g. a content hash
+        # that mapped to multiple positions in current input but only
+        # one in cached input).
+        check = validate_line_range_segmentation(
+            {"groups": cached_groups}, original_lines,
+        )
+        if check.get("valid"):
+            logger.info(
+                "journal adapter: segmentation cache hit (content-addressable)",
+            )
+            return build_threads_from_line_ranges(
+                check, original_lines, banner_date_map=banner_date_map,
+            )
+        # Cached entry exists but doesn't validate against current
+        # input. Rare; fall through to LLM. Don't surface as an error.
 
     call_kwargs = {
         "profile": profile,
         "max_tokens": max_tokens,
         "temperature": temperature,
-        "cache_ttl_minutes": cache_ttl_minutes,
+        # Disable the LLM-prompt cache for segmenter calls. We cache at
+        # the content-addressable layer above; the prompt-level cache
+        # would fuzzy-match on small content edits and serve stale line
+        # numbers — the exact bug this rework exists to fix.
+        "cache_ttl_minutes": 0,
     }
 
     attempts: list[dict[str, Any]] = []
@@ -291,6 +346,20 @@ def _segment_with_escalation(
 
         result = validate_line_range_segmentation(parsed, original_lines)
         if result.get("valid"):
+            # Persist to the content-addressable cache so subsequent
+            # runs on the same content (any ordering) reuse this work.
+            try:
+                put_segmentation(
+                    original_lines=original_lines,
+                    system_hash=_SYSTEM_PROMPT_HASH,
+                    groups=result["groups"],
+                    ttl_minutes=cache_ttl_minutes if cache_ttl_minutes > 0 else 60,
+                )
+            except Exception as exc:
+                # Cache write is best-effort — never block on a write failure.
+                logger.warning(
+                    "journal adapter: segmentation cache write failed: %s", exc,
+                )
             return build_threads_from_line_ranges(
                 result, original_lines, banner_date_map=banner_date_map,
             )
