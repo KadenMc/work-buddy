@@ -153,6 +153,8 @@ def _empty_totals() -> dict[str, Any]:
         "calls": 0,
         "api_calls": 0,
         "cache_hits": 0,
+        "cloud_calls": 0,
+        "local_calls": 0,
         "input_tokens": 0,
         "output_tokens": 0,
         "cost_usd": 0.0,
@@ -162,6 +164,13 @@ def _empty_totals() -> dict[str, Any]:
 def _accumulate(bucket: dict[str, Any], entry: dict[str, Any]) -> None:
     """Mutate ``bucket`` (an _empty_totals dict) with ``entry``'s contribution."""
     bucket["calls"] += 1
+    # Cloud/local is the canonical execution-mode taxonomy. Anything missing
+    # the field defaults to cloud (see the comment in get_costs_summary).
+    mode = entry.get("execution_mode") or "cloud"
+    if mode == "local":
+        bucket["local_calls"] += 1
+    else:
+        bucket["cloud_calls"] += 1
     if entry.get("cached"):
         bucket["cache_hits"] += 1
     else:
@@ -243,7 +252,12 @@ def get_costs_summary(*, agents_dir: Path | None = None) -> dict[str, Any]:
             backend = entry.get("backend") or "unknown"
             task_full = entry.get("task_id", "unknown") or "unknown"
             task_prefix = task_full.split(":", 1)[0]
-            mode = entry.get("execution_mode") or "unknown"
+            # Default missing execution_mode to "cloud" — verified safe by
+            # the 2026-04-25 audit + scripts/backfill_execution_mode.py.
+            # The legacy gap (~2026-04-06 to 2026-04-12) only covered
+            # Anthropic API rows; ``log_call`` has defaulted ``cloud``
+            # since the field landed, so new rows always carry it.
+            mode = entry.get("execution_mode") or "cloud"
 
             sess_models.add(model)
             _accumulate(totals, entry)

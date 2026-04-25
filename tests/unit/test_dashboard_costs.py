@@ -190,9 +190,57 @@ def test_aggregator_by_execution_mode(agents_dir):
     by_mode = {r["mode"]: r for r in s["by_execution_mode"]}
     assert "cloud" in by_mode
     assert "local" in by_mode
-    # legacy entries with no execution_mode field bucket as "unknown".
-    assert "unknown" in by_mode
+    # Legacy rows missing ``execution_mode`` are defaulted to "cloud" by
+    # the aggregator (see scripts/backfill_execution_mode.py + the
+    # ``mode = entry.get("execution_mode") or "cloud"`` line in costs.py).
+    # The "unknown" bucket should never appear.
+    assert "unknown" not in by_mode
     assert by_mode["local"]["cost_usd"] == 0.0
+
+
+def test_aggregator_unknown_bucket_never_appears(agents_dir):
+    """The 'unknown' execution_mode bucket is impossible by construction."""
+    s = costs_mod.get_costs_summary(agents_dir=agents_dir)
+    modes = {r["mode"] for r in s["by_execution_mode"]}
+    assert modes <= {"cloud", "local"}, (
+        f"Unexpected mode bucket(s): {modes - {'cloud', 'local'}}"
+    )
+
+
+def test_aggregator_cloud_local_call_counts(agents_dir):
+    """Each bucket exposes cloud_calls and local_calls counts."""
+    s = costs_mod.get_costs_summary(agents_dir=agents_dir)
+    t = s["totals"]
+    assert t["cloud_calls"] + t["local_calls"] == t["calls"]
+    # Sample entries in the fixture: cloud-aaa has 2 cloud rows; local-bbb
+    # has 1 local row; legacy-ccc has 2 cloud rows (missing execution_mode
+    # defaults to cloud); corrupt-ddd has 2 cloud rows.
+    assert t["cloud_calls"] >= 6
+    assert t["local_calls"] >= 1
+
+
+def test_aggregator_legacy_missing_execution_mode_buckets_as_cloud(tmp_path):
+    """Pre-Phase-1 rows with no ``execution_mode`` field land in 'cloud'."""
+    root = tmp_path / "agents"
+    _write_session(
+        root, "2026-04-08T00-00-00_legacy",
+        manifest={"short_id": "legacy"},
+        entries=[{
+            "timestamp": "2026-04-08T08:00:00",
+            "model": "claude-sonnet-4-6",
+            "task_id": "test",
+            "input_tokens": 100, "output_tokens": 50,
+            "estimated_cost_usd": 0.0011,
+            "cached": False,
+            # NOTE: deliberately omitting execution_mode
+        }],
+    )
+    s = costs_mod.get_costs_summary(agents_dir=root)
+    by_mode = {r["mode"]: r for r in s["by_execution_mode"]}
+    assert "cloud" in by_mode
+    assert "unknown" not in by_mode
+    assert s["totals"]["cloud_calls"] == 1
+    assert s["totals"]["local_calls"] == 0
 
 
 def test_aggregator_empty_directory(tmp_path):

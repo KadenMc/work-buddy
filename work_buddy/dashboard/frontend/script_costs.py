@@ -260,11 +260,14 @@ function _costsAggregateByDayFiltered() {
     // the filtered list itself for charting.
     const days = (costsState.raw.by_day || []).filter(_costsFilterDay);
     const totals = { calls: 0, api_calls: 0, cache_hits: 0,
+                     cloud_calls: 0, local_calls: 0,
                      input_tokens: 0, output_tokens: 0, cost_usd: 0 };
     for (const d of days) {
         totals.calls          += d.calls || 0;
         totals.api_calls      += d.api_calls || 0;
         totals.cache_hits     += d.cache_hits || 0;
+        totals.cloud_calls    += d.cloud_calls || 0;
+        totals.local_calls    += d.local_calls || 0;
         totals.input_tokens   += d.input_tokens || 0;
         totals.output_tokens  += d.output_tokens || 0;
         totals.cost_usd       += d.cost_usd || 0;
@@ -322,7 +325,7 @@ function costsRenderCards() {
     const cards = [
         { label: 'Sessions',     value: sessionCount.toString() },
         { label: 'Calls',        value: costsFmtN(totals.calls),
-            sub: `${totals.api_calls} api · ${totals.cache_hits} cache` },
+            sub: `${totals.cloud_calls} cloud · ${totals.local_calls} local` },
         { label: 'Input tokens', value: costsFmtN(totals.input_tokens) },
         { label: 'Output tokens',value: costsFmtN(totals.output_tokens) },
         { label: 'Est. cost',    value: costsFmtCost(totals.cost_usd),
