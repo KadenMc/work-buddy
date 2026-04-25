@@ -93,6 +93,16 @@ async function costsLoadProjects() {
     sel.innerHTML = html;
     // Restore selection if the user had picked something earlier.
     if (costsState.project) sel.value = costsState.project;
+    _costsSyncToolbar();
+}
+
+// Mirror costsState back into the toolbar widgets (range select, activity
+// pills row + active pill). Needed when state was set programmatically —
+// most notably the URL-hash restore on initial page load.
+function _costsSyncToolbar() {
+    const rangeSel = document.getElementById('costs-range');
+    if (rangeSel && costsState.range) rangeSel.value = costsState.range;
+    _costsSyncActivityVisibility();  // pill visibility + .active class
 }
 
 // ---- Fetch ----
@@ -139,18 +149,19 @@ function costsProjectChanged(v) {
     // Reset activity to "all" whenever the project changes.
     costsState.activity = 'all';
     _costsSyncActivityVisibility();
+    if (typeof _persistHash === 'function') _persistHash();
     loadCosts(true);
 }
 function costsRangeChanged(v) {
     costsState.range = v;
+    if (typeof _persistHash === 'function') _persistHash();
     costsRenderAll();
 }
 function costsActivityChanged(v) {
     const prev = costsState.activity;
     costsState.activity = v;
-    document.querySelectorAll('#costs-activity-pills .costs-pill').forEach(b => {
-        b.classList.toggle('active', b.dataset.activity === v);
-    });
+    _costsSyncActivityPills();
+    if (typeof _persistHash === 'function') _persistHash();
     // api / local require a backend refetch (execution_mode filter
     // applies at row level — by_model / sessions need to be re-aggregated).
     // Switching back to claude_code / all / programmatic doesn't need a
@@ -161,11 +172,20 @@ function costsActivityChanged(v) {
     else costsRenderAll();
 }
 
+function _costsSyncActivityPills() {
+    document.querySelectorAll('#costs-activity-pills .costs-pill').forEach(b => {
+        b.classList.toggle('active', b.dataset.activity === costsState.activity);
+    });
+}
+
 function _costsSyncActivityVisibility() {
     const row = document.getElementById('costs-activity-row');
     if (!row) return;
     const isWB = (costsState.project || '').toLowerCase() === 'work-buddy';
     row.style.display = isWB ? '' : 'none';
+    // Keep pill `.active` class in sync — needed when state was set
+    // programmatically (e.g. URL hash restore) without a pill click.
+    _costsSyncActivityPills();
 }
 
 async function costsRescanClaudeCode(btn) {
@@ -336,7 +356,83 @@ function costsRenderAll() {
     costsRenderSessionsTable(shape, data);
 }
 
-// ---- Models filter (no All/None — chip toggling only) ----
+// ---- Models filter ----
+//
+// Model chips are grouped by family (Anthropic Sonnet / Haiku / Opus,
+// Qwen, Google, Other) so the user can bulk-toggle a whole family in
+// one click. Within a family, click a chip to toggle one model.
+// Alt/Shift-click on either a family pill or a chip = solo (deselect
+// everything else, select only this). A small "Reset" link appears at
+// the right of the row when the filter is narrowed.
+//
+// Family extraction:
+//   * ``claude-(opus|sonnet|haiku)-...`` → "Anthropic Opus" etc.
+//   * ``vendor/model``                   → vendor (capitalized)
+//   * else                                → "Other"
+
+function _costsModelFamily(model) {
+    if (!model) return 'Other';
+    const claude = model.match(/^claude-(opus|sonnet|haiku)\b/);
+    if (claude) {
+        return 'Anthropic ' + claude[1].charAt(0).toUpperCase() + claude[1].slice(1);
+    }
+    const vendor = model.match(/^([^/]+)\//);
+    if (vendor) {
+        const v = vendor[1];
+        return v.charAt(0).toUpperCase() + v.slice(1);
+    }
+    return 'Other';
+}
+
+function _costsModelShortLabel(model, family) {
+    // Strip the family-derived prefix so chips read tighter when the
+    // family pill is right next to them.
+    if (family.startsWith('Anthropic ')) {
+        const m = model.match(/^claude-(opus|sonnet|haiku)-(.+)$/);
+        if (m) return m[2];
+    } else if (family !== 'Other') {
+        const m = model.match(/^[^/]+\/(.+)$/);
+        if (m) return m[1];
+    }
+    return model;
+}
+
+function _costsGroupModelsByFamily(models) {
+    const map = new Map();
+    for (const m of models) {
+        const fam = _costsModelFamily(m);
+        if (!map.has(fam)) map.set(fam, []);
+        map.get(fam).push(m);
+    }
+    // Anthropic tiers ordered Opus → Sonnet → Haiku (capability descending);
+    // then vendor families A→Z; "Other" last.
+    const tierOrder = ['Anthropic Opus', 'Anthropic Sonnet', 'Anthropic Haiku'];
+    const ordered = [];
+    for (const tier of tierOrder) {
+        if (map.has(tier)) {
+            ordered.push({ family: tier, models: map.get(tier) });
+            map.delete(tier);
+        }
+    }
+    const rest = [...map.entries()]
+        .map(([family, models]) => ({ family, models }))
+        .sort((a, b) => {
+            if (a.family === 'Other') return 1;
+            if (b.family === 'Other') return -1;
+            return a.family.localeCompare(b.family);
+        });
+    return ordered.concat(rest);
+}
+
+function _costsFamilyState(familyModels) {
+    if (!costsState.selectedModels) return 'all';
+    let on = 0;
+    for (const m of familyModels) if (costsState.selectedModels.has(m)) on++;
+    if (on === 0) return 'none';
+    if (on === familyModels.length) return 'all';
+    return 'partial';
+}
+
 function costsRenderModelsFilter() {
     const all = _costsCurrentModels();
     const el = document.getElementById('costs-models-filter');
@@ -345,18 +441,90 @@ function costsRenderModelsFilter() {
         el.innerHTML = '';
         return;
     }
+    const groups = _costsGroupModelsByFamily(all);
+    const isNarrowed = !!costsState.selectedModels
+        && costsState.selectedModels.size !== all.length;
+
     let html = '<span class="costs-filter-label">Models:</span>';
-    for (const m of all) {
-        const on = costsState.selectedModels.has(m);
-        html += `<button class="costs-filter-pill${on ? ' active' : ''}"
-                    onclick="costsModelToggle('${costsEsc(m)}')">${costsEsc(m)}</button>`;
+    for (const grp of groups) {
+        const state = _costsFamilyState(grp.models);
+        const stateClass = state === 'all' ? ' active'
+                         : state === 'partial' ? ' indeterminate' : '';
+        html += '<span class="costs-family-group">';
+        html += `<button class="costs-family-pill${stateClass}"
+                    title="Click to toggle family · Alt-click to solo"
+                    onclick="costsModelFamilyClick(event, '${costsEsc(grp.family)}')">${costsEsc(grp.family)}</button>`;
+        for (const m of grp.models) {
+            const on = costsState.selectedModels && costsState.selectedModels.has(m);
+            const label = _costsModelShortLabel(m, grp.family);
+            html += `<button class="costs-filter-pill${on ? ' active' : ''}"
+                        title="Click to toggle · Alt-click to solo"
+                        onclick="costsModelClick(event, '${costsEsc(m)}')">${costsEsc(label)}</button>`;
+        }
+        html += '</span>';
+    }
+    if (isNarrowed) {
+        html += '<button class="costs-models-reset"'
+              + ' title="Re-select every model"'
+              + ' onclick="costsModelsReset()">Reset</button>';
     }
     el.innerHTML = html;
 }
 
+// ---- Click dispatchers (modifier-key aware) ----
+
+function costsModelClick(ev, model) {
+    if (ev && (ev.altKey || ev.shiftKey)) costsModelSolo(model);
+    else costsModelToggle(model);
+}
+
 function costsModelToggle(m) {
+    if (!costsState.selectedModels) {
+        costsState.selectedModels = new Set(_costsCurrentModels());
+    }
     if (costsState.selectedModels.has(m)) costsState.selectedModels.delete(m);
     else costsState.selectedModels.add(m);
+    costsRenderAll();
+}
+
+function costsModelSolo(m) {
+    costsState.selectedModels = new Set([m]);
+    costsRenderAll();
+}
+
+function costsModelFamilyClick(ev, family) {
+    if (ev && (ev.altKey || ev.shiftKey)) costsModelFamilySolo(family);
+    else costsModelFamilyToggle(family);
+}
+
+function costsModelFamilyToggle(family) {
+    const groups = _costsGroupModelsByFamily(_costsCurrentModels());
+    const grp = groups.find(g => g.family === family);
+    if (!grp) return;
+    if (!costsState.selectedModels) {
+        costsState.selectedModels = new Set(_costsCurrentModels());
+    }
+    const state = _costsFamilyState(grp.models);
+    if (state === 'all') {
+        // All currently on → toggle off.
+        for (const m of grp.models) costsState.selectedModels.delete(m);
+    } else {
+        // Partial or none → toggle all on.
+        for (const m of grp.models) costsState.selectedModels.add(m);
+    }
+    costsRenderAll();
+}
+
+function costsModelFamilySolo(family) {
+    const groups = _costsGroupModelsByFamily(_costsCurrentModels());
+    const grp = groups.find(g => g.family === family);
+    if (!grp) return;
+    costsState.selectedModels = new Set(grp.models);
+    costsRenderAll();
+}
+
+function costsModelsReset() {
+    costsState.selectedModels = new Set(_costsCurrentModels());
     costsRenderAll();
 }
 

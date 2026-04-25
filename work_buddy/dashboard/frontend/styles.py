@@ -3052,6 +3052,53 @@ body {
     color: var(--text-muted); background: transparent; border-style: dashed;
 }
 
+/* Model-family grouping
+   Each family gets a subtle bordered container holding [family pill] +
+   [member chips]. The family pill is visually heavier so it reads as a
+   header, and a third "indeterminate" state covers the partial-on case. */
+.costs-family-group {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 3px 6px; margin-right: 4px;
+    background: rgba(255,255,255,0.015);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+}
+.costs-family-pill {
+    background: var(--bg-tertiary); border: 1px solid var(--border);
+    color: var(--text-primary); padding: 3px 10px; border-radius: 12px;
+    font-size: 11px; font-weight: 600; cursor: pointer;
+    transition: all 0.12s; font-family: inherit;
+}
+.costs-family-pill:hover {
+    background: var(--accent-subtle); color: var(--accent);
+    border-color: var(--accent);
+}
+.costs-family-pill.active {
+    background: var(--accent); color: #fff; border-color: var(--accent);
+}
+/* Indeterminate = some members on, some off. Striped fill makes it
+   read as "in between" without a competing color. */
+.costs-family-pill.indeterminate {
+    background: var(--accent-subtle);
+    color: var(--accent); border-color: var(--accent);
+    background-image: repeating-linear-gradient(
+        45deg,
+        transparent 0,
+        transparent 3px,
+        rgba(216, 120, 87, 0.15) 3px,
+        rgba(216, 120, 87, 0.15) 6px
+    );
+}
+.costs-models-reset {
+    background: transparent; border: 1px dashed var(--border);
+    color: var(--text-muted); padding: 3px 10px; border-radius: 12px;
+    font-size: 11px; cursor: pointer; font-family: inherit;
+    margin-left: 8px;
+}
+.costs-models-reset:hover {
+    color: var(--accent); border-color: var(--accent);
+}
+
 .costs-charts-row {
     display: grid; grid-template-columns: 1fr 1fr; gap: 16px;
     margin: 16px 0;
