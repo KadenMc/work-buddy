@@ -32,6 +32,9 @@ async function loadReview() {
     const sourceSel = document.getElementById('review-source-filter');
     const qs = sourceSel && sourceSel.value ? ('?source=' + encodeURIComponent(sourceSel.value)) : '';
 
+    // Persist source filter selection into the URL hash so reload restores it.
+    if (typeof _persistHash === 'function') _persistHash();
+
     const data = await fetchJSON('/api/review' + qs);
     if (!data || data.status === 'error') {
         container.innerHTML = '<div class="empty-state">Failed to load review pool' +

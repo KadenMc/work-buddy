@@ -35,11 +35,137 @@ function switchTab(tabName) {
     } else if (tabName.startsWith('wv-') && typeof loadWorkflowView === 'function') {
         loadWorkflowView(tabName.replace('wv-', ''));
     }
+    _persistHash();
 }
 
 document.querySelectorAll('.tab-btn').forEach(btn =>
     btn.addEventListener('click', () => switchTab(btn.dataset.tab))
 );
+
+
+// ---- URL hash state (Decision 2) ----
+//
+// Encode 7 high-leverage state keys in `window.location.hash` so that any
+// real page reload (Cmd-R, Werkzeug --dev restart, browser tab restore) can
+// rehydrate the UI to its last in-memory state. This is the persistence
+// layer; the data-only auto-refresh below removes the routine destructive
+// re-render that previously made these reloads visible.
+//
+// Keys (URLSearchParams-style, in the hash fragment only):
+//   tab  — active tab id; 'ntf' is a synthetic value for workflow views
+//   cp   — Costs project filter
+//   cr   — Costs range pill (today/7/30/90/all)
+//   ca   — Costs activity pill (only meaningful when project=work-buddy)
+//   ci   — Chats selected session (short_id with collision fallback)
+//   rs   — Review source-filter dropdown value
+//   tn   — Tasks namespace drill-down
+//   ntf  — workflow view ID (paired with tab=ntf); maps to wv-<id> internally
+//
+// The legacy `#view/<id>` deep-link format is still handled by the existing
+// hashchange route in script_workflows.py — `_initFromHash` stays out of its
+// way so old links keep working.
+
+function _persistHash() {
+    if (window._wbHashInitInProgress) return;
+    const params = new URLSearchParams();
+    const active = document.querySelector('.tab-btn.active');
+    let tab = active ? active.dataset.tab : 'overview';
+    if (tab.startsWith('wv-')) {
+        params.set('tab', 'ntf');
+        params.set('ntf', tab.slice(3));
+    } else {
+        params.set('tab', tab);
+        if (tab === 'costs' && typeof costsState !== 'undefined') {
+            if (costsState.project) params.set('cp', costsState.project);
+            if (costsState.range) params.set('cr', costsState.range);
+            // Only encode `ca` when the activity pill row is visible
+            // (project=work-buddy) and the user is on a non-default pill.
+            const isWB = (costsState.project || '').toLowerCase() === 'work-buddy';
+            if (isWB && costsState.activity && costsState.activity !== 'all') {
+                params.set('ca', costsState.activity);
+            }
+        } else if (tab === 'chats' && typeof chatsState !== 'undefined' && chatsState.selectedId) {
+            const sid = chatsState.selectedId;
+            const shortId = sid.slice(0, 8);
+            const matches = (chatsState.chats || []).filter(c => c.short_id === shortId);
+            params.set('ci', matches.length === 1 ? shortId : sid);
+        } else if (tab === 'review') {
+            const rsEl = document.getElementById('review-source-filter');
+            const rs = rsEl && rsEl.value;
+            if (rs) params.set('rs', rs);
+        } else if (tab === 'tasks' && window._selectedNamespace) {
+            params.set('tn', window._selectedNamespace);
+        }
+    }
+    history.replaceState(null, '', '#' + params.toString());
+}
+
+async function _initFromHash() {
+    const hash = window.location.hash || '';
+    // Legacy `#view/<id>` is owned by script_workflows.handleHashRoute.
+    if (/^#view\//.test(hash)) return;
+
+    const params = new URLSearchParams(hash.slice(1));
+    if (!params.has('tab')) {
+        // No hash (or unknown hash) → default to overview, then write the
+        // canonical hash back so subsequent reloads have something to honor
+        // (Decision Q3: write #tab=overview eagerly).
+        switchTab('overview');
+        return;
+    }
+
+    window._wbHashInitInProgress = true;
+    try {
+        // Apply restorable state synchronously *before* switchTab runs the
+        // tab loader, so the loader picks up the right defaults.
+        if (typeof costsState !== 'undefined') {
+            if (params.has('cp')) costsState.project = params.get('cp') || '';
+            if (params.has('cr')) costsState.range = params.get('cr');
+            if (params.has('ca')) costsState.activity = params.get('ca');
+        }
+        if (params.has('tn')) {
+            window._selectedNamespace = params.get('tn');
+        }
+        if (params.has('rs')) {
+            const rsEl = document.getElementById('review-source-filter');
+            if (rsEl) rsEl.value = params.get('rs');
+        }
+        // ci needs the chat list to exist before we can resolve short→full,
+        // so loadChats() consumes it from window._urlState below.
+        window._urlState = Object.fromEntries(params);
+
+        let tab = params.get('tab');
+        if (tab === 'ntf' && params.get('ntf')) {
+            const viewId = params.get('ntf');
+            const tabName = 'wv-' + viewId;
+            if (document.querySelector('.tab-btn[data-tab="' + tabName + '"]')) {
+                switchTab(tabName);
+            } else {
+                // Tab not yet created — fetch the view and create it. Mirrors
+                // the legacy handleHashRoute() flow.
+                try {
+                    const resp = await fetch('/api/workflow-views/' + viewId);
+                    const view = resp.ok ? await resp.json() : null;
+                    if (view && view.status === 'active'
+                        && typeof createWorkflowTab === 'function') {
+                        createWorkflowTab(view);
+                        switchTab(tabName);
+                    } else {
+                        switchTab('overview');
+                    }
+                } catch (e) {
+                    switchTab('overview');
+                }
+            }
+        } else {
+            switchTab(tab);
+        }
+    } finally {
+        window._wbHashInitInProgress = false;
+        // Now that init has settled, persist the canonical hash.
+        _persistHash();
+    }
+}
 
 
 // ---- Clock ----
@@ -897,6 +1023,7 @@ async function _refreshTaskView() {
 function selectNamespace(ns) {
     window._selectedNamespace = ns;
     _refreshTaskView();
+    _persistHash();
 }
 
 
@@ -1122,6 +1249,31 @@ async function loadChats() {
     chatsState.chats = data.chats || [];
     renderChatList();
     chatsPopulateProjectFilter();
+
+    // One-shot restore: if a `ci` URL key was stashed by _initFromHash,
+    // resolve it (short_id → full session_id) and select that chat. The
+    // key is cleared after consumption so subsequent loadChats() calls
+    // (e.g. tab re-entry) don't re-apply stale state.
+    if (window._urlState && window._urlState.ci) {
+        const target = window._urlState.ci;
+        delete window._urlState.ci;
+        let resolved = null;
+        // Short ID (8 chars) — look for unique match by short_id field.
+        if (target.length <= 8) {
+            const matches = chatsState.chats.filter(c => c.short_id === target);
+            if (matches.length === 1) resolved = matches[0].session_id;
+        }
+        // Fall back to direct session_id match (covers full UUID and the
+        // collision-fallback case where _persistHash wrote the full ID).
+        if (!resolved && chatsState.chats.find(c => c.session_id === target)) {
+            resolved = target;
+        }
+        if (resolved) {
+            selectChat(resolved);
+        } else {
+            console.warn('[hash-restore] chat session not found:', target);
+        }
+    }
 }
 
 function renderChatList() {
@@ -1169,6 +1321,7 @@ function renderChatList() {
 
 async function selectChat(sessionId) {
     chatsState.selectedId = sessionId;
+    _persistHash();
     chatsState.offset = 0;
     chatsState._earliestLoaded = 0;
     chatsState.messages = [];
@@ -1664,6 +1817,7 @@ async function chatsJumpToCommitSearch(sessionId, messageIndex) {
     chatsCloseGlobalSearch();
 
     chatsState.selectedId = sessionId;
+    _persistHash();
     chatsState.expandedMessages.clear();
     chatsState.searchHits = [];
     chatsState.commits = [];
@@ -1738,6 +1892,7 @@ async function chatsJumpToHit(sessionId, spanIndex) {
     chatsCloseGlobalSearch();
 
     chatsState.selectedId = sessionId;
+    _persistHash();
     chatsState.expandedMessages.clear();
     chatsState.searchHits = [];
     chatsState.commits = [];
@@ -2081,6 +2236,7 @@ async function loadContracts() {
 
 // ---- Projects ----
 let _projectsCache = [];
+let _selectedProjectSlug = null;
 
 async function loadProjects() {
     const data = await fetchJSON('/api/projects');
@@ -2126,9 +2282,22 @@ function renderProjectList(projects) {
     container.querySelectorAll('.proj-card').forEach(card => {
         card.addEventListener('click', () => selectProject(card.dataset.slug));
     });
+
+    // Re-apply highlight after re-render so auto-refresh doesn't visually
+    // unselect the user's active project (the right-hand detail pane is
+    // never re-rendered by loadProjects, only this left list is).
+    if (_selectedProjectSlug) {
+        const activeCard = container.querySelector(
+            '.proj-card[data-slug="' + _selectedProjectSlug + '"]');
+        if (activeCard) {
+            activeCard.style.background = 'var(--bg-tertiary)';
+            activeCard.style.borderColor = 'var(--accent)';
+        }
+    }
 }
 
 async function selectProject(slug) {
+    _selectedProjectSlug = slug;
     // Highlight selected card
     document.querySelectorAll('.proj-card').forEach(c => {
         c.style.background = c.dataset.slug === slug ? 'var(--bg-tertiary)' : 'var(--bg-secondary)';
@@ -2407,15 +2576,46 @@ async function launchSetupAgent(componentId, mode, btn) {
 }
 
 
-// ---- Auto-refresh ----
+// ---- Auto-refresh (Decision 1(b)) ----
+//
+// Earlier this called switchTab(activeTab) every 30s, which re-runs the
+// full loader and rewrites panel.innerHTML. That destroyed any in-flight
+// state the user had built up (active filters, scroll position, model-chip
+// hover, drawer contents) and was the *source* of the chronic
+// "dashboard refresh bug" — it wasn't a real reload, just a destructive
+// re-render. The data refreshers below re-fetch and update only the data
+// regions of each panel, leaving toolbars, chips, scroll, and selection
+// alone. Workflow views (wv-*) skip the interval entirely.
+//
+// Adding a new tab? Either:
+//   - alias your loader here (safe when the loader only writes to data
+//     regions and doesn't rebuild any toolbar/chip/input the user might be
+//     interacting with), or
+//   - write a sibling refreshXData() that does the data-only subset.
+const dataRefreshers = {
+    overview: () => loadOverview(),
+    tasks: () => _refreshTaskView(),       // skips _renderTaskStateChips()
+    review: () => loadReview(),
+    status: () => loadStatus(),
+    chats: () => loadChats(),              // re-fetches list; viewer state survives (separate DOM)
+    contracts: () => loadContracts(),
+    projects: () => loadProjects(),        // left list only; right pane untouched
+    costs: () => refreshCostsData(),       // data-only: skips costsRenderModelsFilter
+    settings: () => loadSettings(),        // existing snapshot/restore handles open <details>
+};
+
 let refreshInterval = null;
 
 function startAutoRefresh(seconds = 30) {
     if (refreshInterval) clearInterval(refreshInterval);
     refreshInterval = setInterval(() => {
         const activeTab = document.querySelector('.tab-btn.active');
-        // Don't auto-refresh workflow views — they have live user state
-        if (activeTab && !activeTab.dataset.tab.startsWith('wv-')) switchTab(activeTab.dataset.tab);
+        if (!activeTab) return;
+        const tab = activeTab.dataset.tab;
+        // Workflow views have live user state; skip them.
+        if (tab.startsWith('wv-')) return;
+        const refresher = dataRefreshers[tab];
+        if (refresher) refresher();
     }, seconds * 1000);
 }
 
@@ -2425,8 +2625,14 @@ if (WB_VAULT_NAME) {
     const mtl = document.getElementById('master-task-link');
     if (mtl) mtl.href = `obsidian://open?vault=${encodeURIComponent(WB_VAULT_NAME)}&file=tasks%2Fmaster-task-list.md`;
 }
-loadOverview();
 startAutoRefresh(30);
+// _initFromHash decides which tab/state to load based on the URL hash;
+// falls back to overview when no hash is present.
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', _initFromHash);
+} else {
+    _initFromHash();
+}
 """
 
 

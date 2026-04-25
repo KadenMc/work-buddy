@@ -278,9 +278,40 @@ function _costsCurrentModels() {
     return data.all_models || [];
 }
 
+// ---- Data-only refresh (Decision 1(b)) ----
+//
+// Auto-refresh hook for the Costs tab. Re-fetches /api/costs and re-renders
+// data regions, but skips the models-filter chip rebuild (which would drop
+// any in-progress hover/click on a chip) and preserves the user's
+// selectedModels selection. Toolbar widgets — project select, range select,
+// activity pills — are untouched here; they only mutate via their own
+// onchange handlers.
+async function refreshCostsData() {
+    const meta = document.getElementById('costs-meta');
+    if (meta) meta.textContent = 'loading...';
+
+    const params = new URLSearchParams();
+    params.set('source', 'all');
+    if (costsState.project) params.set('project', costsState.project);
+    if (costsState.activity === 'api')   params.set('execution_mode', 'cloud');
+    if (costsState.activity === 'local') params.set('execution_mode', 'local');
+
+    const data = await fetchJSON('/api/costs?' + params.toString());
+    if (!data || data.error) {
+        if (meta) meta.textContent = '';
+        return;
+    }
+    costsState.raw = data;
+    _costsSyncActivityVisibility();
+    // Note: do NOT reset costsState.selectedModels — the user's chip
+    // selection is sticky across auto-refreshes.
+    costsRenderAll({skipModelsFilter: true});
+}
+
 // ---- Rendering ----
-function costsRenderAll() {
+function costsRenderAll(opts) {
     if (!costsState.raw) return;
+    const skipModelsFilter = !!(opts && opts.skipModelsFilter);
 
     const { data, shape, activity, sidecar } = _costsActiveData();
 
@@ -304,7 +335,7 @@ function costsRenderAll() {
     // ``costsState.shape`` keep working.
     costsState.shape = shape;
 
-    costsRenderModelsFilter();
+    if (!skipModelsFilter) costsRenderModelsFilter();
     costsRenderCards(shape, data, activity, sidecar);
     costsRenderDailyChart(shape, data);
     costsRenderModelChart(shape, data);
