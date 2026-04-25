@@ -14,6 +14,7 @@ const staticLoaders = {
     chats: () => loadChats(),
     contracts: () => loadContracts(),
     projects: () => loadProjects(),
+    costs: () => loadCosts(),
     settings: () => loadSettings(),
 };
 

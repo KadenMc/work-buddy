@@ -25,6 +25,7 @@ Adding a new tab:
 from __future__ import annotations
 
 from .html import _html
+from .script_costs import _costs_script
 from .script_main import _script
 from .script_notifications import _notification_script
 from .script_palette import _command_palette_script
@@ -61,6 +62,7 @@ def render_page() -> str:
         _settings_script(),
         _thread_chat_script(),
         _command_palette_script(),
+        _costs_script(),
     ])
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -70,6 +72,8 @@ def render_page() -> str:
     <title>work-buddy dashboard</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg">
     <style>{_styles()}</style>
+    <!-- Chart.js v4.4.0, vendored locally — see frontend/vendor/README.md -->
+    <script src="/vendor/chart.umd.min.js"></script>
 </head>
 <body>
     {_html()}

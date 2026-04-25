@@ -52,6 +52,7 @@ def _html() -> str:
         <button class="tab-btn" data-tab="chats">Chats</button>
         <button class="tab-btn" data-tab="contracts">Contracts</button>
         <button class="tab-btn" data-tab="projects">Projects</button>
+        <button class="tab-btn" data-tab="costs">Costs</button>
         <!-- Settings is an off-nav tab reached via the gear icon in the
              header. The panel still lives below (#panel-settings) and
              is still registered in staticLoaders, but it's not part of
@@ -216,6 +217,84 @@ def _html() -> str:
 <!-- CONTRACTS -->
 <div class="tab-panel" id="panel-contracts">
     <div id="contracts-table"><div class="loading">Loading contracts...</div></div>
+</div>
+
+<!-- COSTS -->
+<!-- LLM cost / usage view. Phase 1 backed by data/agents/<session>/llm_costs.jsonl
+     (first-party log written by work_buddy.llm.cost). Phase 2 adds Claude Code
+     transcript-derived usage as a second source. UI inspired by claude-usage. -->
+<div class="tab-panel" id="panel-costs">
+    <div class="costs-toolbar">
+        <div class="costs-toolbar-left">
+            <select id="costs-source" class="chats-select" onchange="costsSourceChanged(this.value)">
+                <option value="internal">Work Buddy log</option>
+                <option value="transcripts">Claude transcripts</option>
+                <option value="all">Both</option>
+            </select>
+            <select id="costs-range" class="chats-select" onchange="costsRangeChanged(this.value)">
+                <option value="7">Last 7 days</option>
+                <option value="30" selected>Last 30 days</option>
+                <option value="90">Last 90 days</option>
+                <option value="all">All time</option>
+            </select>
+            <select id="costs-mode" class="chats-select" onchange="costsModeChanged(this.value)">
+                <option value="all">All execution modes</option>
+                <option value="cloud">Cloud only</option>
+                <option value="local">Local only</option>
+            </select>
+        </div>
+        <div class="costs-toolbar-right">
+            <span id="costs-meta" class="costs-meta"></span>
+            <button class="chats-accent-btn" onclick="loadCosts(true)">Refresh</button>
+        </div>
+    </div>
+
+    <div id="costs-models-filter" class="costs-models-filter"></div>
+
+    <div class="card-grid" id="costs-cards">
+        <div class="loading">Loading costs...</div>
+    </div>
+
+    <div class="costs-charts-row">
+        <div class="costs-chart-card">
+            <div class="section-title">Daily token volume</div>
+            <div class="costs-chart-wrap"><canvas id="costs-daily-chart"></canvas></div>
+        </div>
+        <div class="costs-chart-card">
+            <div class="section-title">Cost by model</div>
+            <div class="costs-chart-wrap"><canvas id="costs-model-chart"></canvas></div>
+        </div>
+    </div>
+
+    <div class="costs-charts-row">
+        <div class="costs-chart-card">
+            <div class="section-title">Top callers (by cost)</div>
+            <div class="costs-chart-wrap"><canvas id="costs-task-chart"></canvas></div>
+        </div>
+        <div class="costs-chart-card">
+            <div class="section-title">Cloud vs Local mix</div>
+            <div class="costs-chart-wrap"><canvas id="costs-mode-chart"></canvas></div>
+        </div>
+    </div>
+
+    <div class="section-title">Cost by model</div>
+    <div id="costs-model-table"></div>
+
+    <div class="section-title" style="margin-top:24px;">Sessions</div>
+    <div class="costs-sessions-toolbar">
+        <input type="text" id="costs-session-filter" class="task-search-input"
+               placeholder="Filter sessions by id or project..." />
+        <span id="costs-sessions-count" class="costs-meta"></span>
+    </div>
+    <div id="costs-sessions-table"></div>
+
+    <div class="costs-footer-note">
+        Cost estimates use Anthropic published rates (April 2026). Local model
+        calls log $0.00 by design.
+        <a href="https://github.com/phuryn/claude-usage" target="_blank" rel="noopener">claude-usage</a>
+        is the inspiration for the layout; vendored bits live under
+        <code>work_buddy/dashboard/frontend/vendor/</code>.
+    </div>
 </div>
 
 <!-- SETTINGS -->

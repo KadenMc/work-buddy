@@ -2938,6 +2938,108 @@ body {
 }
 /* Apply inherits the accent-hover from .settings-fix-btn — no extra
    chrome, just the same visual weight as other fix buttons. */
+
+/* -- Costs tab --------------------------------------------------------- */
+
+.costs-toolbar {
+    display: flex; justify-content: space-between; align-items: center;
+    gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--border);
+    margin-bottom: 16px; flex-wrap: wrap;
+}
+.costs-toolbar-left, .costs-toolbar-right {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+}
+.costs-meta {
+    font-size: 12px; color: var(--text-muted);
+}
+.costs-models-filter {
+    display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+    padding: 8px 0 12px 0; border-bottom: 1px solid var(--border);
+    margin-bottom: 16px;
+}
+.costs-filter-label {
+    font-size: 12px; color: var(--text-muted); margin-right: 6px;
+}
+.costs-filter-pill {
+    background: var(--bg-tertiary); border: 1px solid var(--border);
+    color: var(--text-secondary); padding: 3px 10px; border-radius: 12px;
+    font-size: 11px; cursor: pointer; transition: all 0.12s;
+    font-family: inherit;
+}
+.costs-filter-pill:hover {
+    background: var(--bg-secondary); color: var(--text-primary);
+    border-color: var(--accent);
+}
+.costs-filter-pill.active {
+    background: var(--accent-subtle); border-color: var(--accent);
+    color: var(--accent);
+}
+.costs-filter-pill.costs-filter-action {
+    color: var(--text-muted); background: transparent; border-style: dashed;
+}
+
+.costs-charts-row {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 16px;
+    margin: 16px 0;
+}
+@media (max-width: 980px) {
+    .costs-charts-row { grid-template-columns: 1fr; }
+}
+.costs-chart-card {
+    background: var(--bg-secondary); border: 1px solid var(--border);
+    border-radius: 6px; padding: 12px 16px;
+}
+.costs-chart-card .section-title {
+    font-size: 12px; color: var(--text-secondary); margin-bottom: 8px;
+    text-transform: uppercase; letter-spacing: 0.4px;
+}
+.costs-chart-wrap {
+    position: relative; height: 240px; width: 100%;
+}
+
+.costs-table {
+    width: 100%; font-size: 12px;
+}
+.costs-table th, .costs-table td {
+    padding: 6px 10px; border-bottom: 1px solid var(--border);
+    text-align: left;
+}
+.costs-table th { color: var(--text-secondary); font-weight: 500; }
+.costs-table td.num, .costs-table th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.costs-table tbody tr:hover { background: var(--bg-secondary); }
+.costs-model-name {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+    color: var(--text-primary);
+}
+.costs-model-cell { line-height: 1.7; }
+.costs-model-chip {
+    display: inline-block; font-size: 10px; padding: 1px 6px;
+    margin-right: 4px; border-radius: 8px;
+    background: var(--bg-tertiary); color: var(--text-secondary);
+    border: 1px solid var(--border);
+}
+
+.costs-sessions-toolbar {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px; margin: 8px 0 12px 0;
+}
+.costs-sessions-toolbar input { max-width: 360px; }
+
+.costs-footer-note {
+    font-size: 11px; color: var(--text-muted); padding: 16px 0;
+    border-top: 1px solid var(--border); margin-top: 24px;
+}
+.costs-footer-note a { color: var(--accent); text-decoration: none; }
+.costs-footer-note a:hover { text-decoration: underline; }
+.costs-footer-note code {
+    font-family: ui-monospace, SFMono-Regular, monospace;
+    font-size: 10px; background: var(--bg-tertiary);
+    padding: 1px 4px; border-radius: 3px;
+}
+
+.card-sub {
+    font-size: 11px; color: var(--text-muted); margin-top: 4px;
+}
 """
 
 

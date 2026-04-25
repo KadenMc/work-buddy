@@ -827,6 +827,111 @@ def api_contracts():
 
 
 # ---------------------------------------------------------------------------
+# Costs tab
+# ---------------------------------------------------------------------------
+#
+# Aggregates first-party LLM cost log files written by ``work_buddy.llm.cost``
+# at ``data/agents/<session>/llm_costs.jsonl``. Phase 2 adds Claude Code
+# transcript-derived usage as a second source through the same endpoint.
+
+
+@app.get("/api/costs")
+def api_costs():
+    """Aggregated LLM cost / usage summary across all agent sessions.
+
+    Optional query params:
+        source: ``internal`` (default), ``transcripts``, or ``all``.
+            Phase 1 honors ``internal`` only; ``transcripts`` and
+            ``all`` return Phase 2 dual-source data when the
+            ``claude_usage_scanner`` integration is available.
+    """
+    source = (request.args.get("source") or "internal").lower()
+    try:
+        from work_buddy.dashboard.costs import get_costs_summary
+        internal = get_costs_summary()
+        if source == "internal":
+            return jsonify(internal)
+
+        transcripts: dict | None = None
+        try:
+            from work_buddy.dashboard.costs_transcripts import (
+                get_transcripts_summary,
+            )
+            transcripts = get_transcripts_summary()
+        except ImportError:
+            transcripts = None
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("transcripts cost source failed: %s", exc)
+            transcripts = {"error": str(exc), "source": "claude_transcripts"}
+
+        if source == "transcripts":
+            return jsonify(transcripts or {"source": "claude_transcripts",
+                                            "available": False})
+
+        return jsonify({
+            "internal": internal,
+            "transcripts": transcripts,
+            "source": "all",
+        })
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Cost aggregation failed")
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.post("/api/costs/rescan")
+def api_costs_rescan():
+    """Re-scan Claude Code transcripts to refresh the transcripts source.
+
+    Phase 1 with no transcript source returns ``{"available": False}``.
+    Phase 2 triggers the vendored scanner.
+    """
+    if reject := _reject_read_only():
+        return reject
+    try:
+        from work_buddy.dashboard.costs_transcripts import rescan_transcripts
+    except ImportError:
+        return jsonify({"available": False,
+                        "message": "Transcript scanner not yet wired."})
+    try:
+        result = rescan_transcripts()
+        return jsonify(result)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Cost rescan failed")
+        return jsonify({"error": str(exc)}), 500
+
+
+# ---------------------------------------------------------------------------
+# Vendored static assets (Chart.js)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/vendor/<path:filename>")
+def static_vendor(filename: str):
+    """Serve vendored frontend assets (Chart.js, etc.) from ``frontend/vendor/``.
+
+    Path is ``/vendor/...`` rather than ``/static/...`` because Flask's
+    default static endpoint is registered at ``/static/`` and would
+    shadow this route (first-registered wins on collision).
+    """
+    safe = filename.replace("\\", "/").lstrip("/")
+    if ".." in safe.split("/"):
+        return "", 404
+    vendor_dir = Path(__file__).parent / "frontend" / "vendor"
+    target = vendor_dir / safe
+    if not target.exists() or not target.is_file():
+        return "", 404
+    if safe.endswith(".js"):
+        mime = "application/javascript"
+    elif safe.endswith(".css"):
+        mime = "text/css"
+    elif safe.endswith(".map"):
+        mime = "application/json"
+    else:
+        mime = "application/octet-stream"
+    return send_file(target, mimetype=mime)
+
+
+# ---------------------------------------------------------------------------
 # Background-triage Review tab
 # ---------------------------------------------------------------------------
 #
