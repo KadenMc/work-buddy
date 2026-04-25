@@ -34,33 +34,11 @@ logger = logging.getLogger(__name__)
 _AGENTS_DIR = data_dir("agents")
 
 
-# ---------------------------------------------------------------------------
-# Pricing (mirrors work_buddy.llm.cost._COST_PER_M_TOKENS for re-estimation
-# in scenarios where a log entry omits cost — kept here, not imported, so
-# the dashboard module stays loose-coupled and can re-cost retroactively
-# if rates change.)
-# ---------------------------------------------------------------------------
-
-_PRICING_PER_M: dict[str, dict[str, float]] = {
-    "claude-haiku-4-5-20251001": {"input": 0.80, "output": 4.00},
-    "claude-haiku-4-5":          {"input": 0.80, "output": 4.00},
-    "claude-haiku-4-6":          {"input": 1.00, "output": 5.00},
-    "claude-haiku-4-7":          {"input": 1.00, "output": 5.00},
-    "claude-sonnet-4-5":         {"input": 3.00, "output": 15.00},
-    "claude-sonnet-4-6":         {"input": 3.00, "output": 15.00},
-    "claude-sonnet-4-7":         {"input": 3.00, "output": 15.00},
-    "claude-opus-4-5":           {"input": 15.00, "output": 75.00},
-    "claude-opus-4-6":           {"input": 15.00, "output": 75.00},
-    "claude-opus-4-7":           {"input": 15.00, "output": 75.00},
-}
-
-
-def _is_billable(model: str) -> bool:
-    """A model is billable if its name suggests a frontier Anthropic family."""
-    if not model:
-        return False
-    m = model.lower()
-    return ("opus" in m) or ("sonnet" in m) or ("haiku" in m)
+# Pricing comes from the canonical table at
+# ``work_buddy.llm.transcripts.pricing`` — both the per-call writer
+# (``work_buddy.llm.cost``) and this dashboard aggregator now share one
+# rate source. Re-estimation here only happens when a row is missing
+# ``estimated_cost_usd`` (rare; written for every modern row).
 
 
 # ---------------------------------------------------------------------------
@@ -129,7 +107,7 @@ def _entry_day(entry: dict[str, Any]) -> str:
 
 
 def _entry_cost(entry: dict[str, Any]) -> float:
-    """Cost for a log entry. Re-estimates if the field is missing.
+    """Cost for a log entry. Re-estimates via the canonical table if missing.
 
     Used as a fallback only — rows written by current ``log_call`` always
     carry ``estimated_cost_usd``. The re-estimation path matters for any
@@ -140,19 +118,14 @@ def _entry_cost(entry: dict[str, Any]) -> float:
         return float(cost)
     if entry.get("cached") or entry.get("execution_mode") == "local":
         return 0.0
-    rates = _PRICING_PER_M.get(entry.get("model", ""))
-    if rates is None:
-        return 0.0
-    inp = int(entry.get("input_tokens", 0))
-    out = int(entry.get("output_tokens", 0))
-    cache_r = int(entry.get("cache_read_tokens") or 0)
-    cache_c = int(entry.get("cache_creation_tokens") or 0)
-    return (
-        inp * rates["input"]
-        + out * rates["output"]
-        + cache_r * rates["input"] * 0.10        # 90% off
-        + cache_c * rates["input"] * 1.25        # 25% premium
-    ) / 1_000_000
+    from work_buddy.llm.transcripts.pricing import calc_cost
+    return calc_cost(
+        entry.get("model", ""),
+        int(entry.get("input_tokens", 0)),
+        int(entry.get("output_tokens", 0)),
+        int(entry.get("cache_read_tokens") or 0),
+        int(entry.get("cache_creation_tokens") or 0),
+    )
 
 
 # ---------------------------------------------------------------------------

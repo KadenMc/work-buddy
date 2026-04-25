@@ -90,50 +90,65 @@ def test_log_call_cached_zeros_cost(isolated_log):
 
 
 # ---------------------------------------------------------------------------
-# _estimate_cost
+# Cost computation via log_call (now backed by the canonical
+# work_buddy.llm.transcripts.pricing.calc_cost)
 # ---------------------------------------------------------------------------
 
 
-def test_estimate_cost_no_cache_matches_legacy_arithmetic():
-    """With cache=0, cost equals input*input_rate + output*output_rate."""
-    # Sonnet rates: $3/$15 per million in the legacy compact table.
-    cost = cost_mod._estimate_cost(
-        "claude-sonnet-4-6",
-        input_tokens=1_000_000,
-        output_tokens=1_000_000,
+def test_log_call_cost_no_cache_matches_canonical_table(isolated_log):
+    """Sonnet at $3 input / $15 output per 1M tokens."""
+    cost_mod.log_call(
+        model="claude-sonnet-4-6",
+        input_tokens=1_000_000, output_tokens=1_000_000,
+        task_id="t",
     )
-    assert pytest.approx(cost, abs=1e-6) == 3.0 + 15.0
+    row = _read_rows(isolated_log)[0]
+    assert pytest.approx(row["estimated_cost_usd"], abs=1e-6) == 3.0 + 15.0
 
 
-def test_estimate_cost_applies_cache_read_discount():
-    # Cache reads at 10% of input rate (90% off).
-    cost = cost_mod._estimate_cost(
-        "claude-sonnet-4-6",
+def test_log_call_cost_applies_cache_read_discount(isolated_log):
+    cost_mod.log_call(
+        model="claude-sonnet-4-6",
         input_tokens=0, output_tokens=0,
+        task_id="t",
         cache_read_tokens=1_000_000,
     )
-    # 1M tokens × $3.00 × 0.10 = $0.30
-    assert pytest.approx(cost, abs=1e-6) == 0.30
+    row = _read_rows(isolated_log)[0]
+    # Sonnet cache_read = $0.30 per 1M (10% of $3 input).
+    assert pytest.approx(row["estimated_cost_usd"], abs=1e-6) == 0.30
 
 
-def test_estimate_cost_applies_cache_creation_premium():
-    # Cache writes at 125% of input rate (+25% premium).
-    cost = cost_mod._estimate_cost(
-        "claude-sonnet-4-6",
+def test_log_call_cost_applies_cache_creation_premium(isolated_log):
+    cost_mod.log_call(
+        model="claude-sonnet-4-6",
         input_tokens=0, output_tokens=0,
+        task_id="t",
         cache_creation_tokens=1_000_000,
     )
-    # 1M tokens × $3.00 × 1.25 = $3.75
-    assert pytest.approx(cost, abs=1e-6) == 3.75
+    row = _read_rows(isolated_log)[0]
+    # Sonnet cache_creation = $3.75 per 1M (125% of $3 input).
+    assert pytest.approx(row["estimated_cost_usd"], abs=1e-6) == 3.75
 
 
-def test_estimate_cost_unknown_model_uses_fallback():
-    # Fallback rates: $1 input / $5 output per million.
-    cost = cost_mod._estimate_cost(
-        "totally-made-up-model",
+def test_log_call_unknown_model_returns_zero_cost(isolated_log):
+    """Post-consolidation, non-Anthropic models return $0 (no $1/$5 fallback)."""
+    cost_mod.log_call(
+        model="totally-made-up-model",
         input_tokens=1_000_000, output_tokens=1_000_000,
+        task_id="t",
     )
-    assert pytest.approx(cost, abs=1e-6) == 1.0 + 5.0
+    row = _read_rows(isolated_log)[0]
+    assert row["estimated_cost_usd"] == 0.0
+
+
+def test_log_call_stamps_priced_with_v2(isolated_log):
+    """Every new row carries the current pricing-version stamp."""
+    cost_mod.log_call(
+        model="claude-sonnet-4-6",
+        input_tokens=10, output_tokens=5, task_id="t",
+    )
+    row = _read_rows(isolated_log)[0]
+    assert row["priced_with"] == "v2"
 
 
 # ---------------------------------------------------------------------------

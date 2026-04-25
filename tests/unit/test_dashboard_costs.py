@@ -143,11 +143,11 @@ def test_aggregator_totals_match_entries(agents_dir):
 
 
 def test_aggregator_handles_missing_cost_field(agents_dir):
-    """Legacy entries without ``estimated_cost_usd`` are re-priced from the rate table."""
+    """Legacy entries without ``estimated_cost_usd`` are re-priced via the canonical table."""
     s = costs_mod.get_costs_summary(agents_dir=agents_dir)
     haiku_row = next(r for r in s["by_model"] if r["model"] == "claude-haiku-4-5")
-    # 1M input tokens at $0.80/1M = $0.80
-    assert pytest.approx(haiku_row["cost_usd"], abs=1e-3) == 0.80
+    # Canonical Haiku 4.5 rate: $1.00 input per 1M; 1M input × $1.00 = $1.00.
+    assert pytest.approx(haiku_row["cost_usd"], abs=1e-3) == 1.00
 
 
 def test_aggregator_unknown_model_bucketed_safely(agents_dir):

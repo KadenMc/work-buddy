@@ -3,6 +3,14 @@
 Writes to ``agents/<session>/llm_costs.jsonl`` — one JSON object per line.
 Each entry records: model, tokens, cost, task_id, caller chain, trace_id,
 and cache status. Provides session-level totals and per-task breakdowns.
+
+Cost computation lives in :mod:`work_buddy.llm.transcripts.pricing`
+(:func:`calc_cost`) — one canonical pricing table for the whole repo.
+Rows produced before the consolidation (pre-2026-04-25) are stamped with
+``priced_with: "v1"`` by the migration; rows produced after carry
+``priced_with: "v2"``. The stamp is bookkeeping for future migrations;
+costs themselves did not change because legacy rows lack the cache
+token data needed to apply cache-rate adjustments retroactively.
 """
 
 from __future__ import annotations
@@ -15,14 +23,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from work_buddy.llm.transcripts.pricing import calc_cost
+
 logger = logging.getLogger(__name__)
 
-# Approximate cost per 1M tokens (as of 2026-04)
-_COST_PER_M_TOKENS: dict[str, dict[str, float]] = {
-    "claude-haiku-4-5-20251001": {"input": 0.80, "output": 4.00},
-    "claude-sonnet-4-6": {"input": 3.00, "output": 15.00},
-    "claude-opus-4-6": {"input": 15.00, "output": 75.00},
-}
+
+# Bump this when the cost-computation contract changes in a way that
+# rows can't be re-derived from. The migration writes this value into
+# every existing row so future migrations can detect old shapes.
+_PRICING_VERSION = "v2"
 
 
 def _cost_log_path() -> Path:
@@ -41,32 +50,6 @@ def _cost_log_path() -> Path:
     override = get_originating_session()
     session_dir = get_session_dir(override) if override else get_session_dir()
     return session_dir / "llm_costs.jsonl"
-
-
-def _estimate_cost(
-    model: str,
-    input_tokens: int,
-    output_tokens: int,
-    cache_read_tokens: int = 0,
-    cache_creation_tokens: int = 0,
-) -> float:
-    """Estimate cost in USD.
-
-    Uses input/output rates from the legacy 3-model table when available;
-    falls back to ``$1/$5 per million`` for unknown models. Cache rates
-    are derived as 90% off input (read) and 25% premium (creation) to
-    match Anthropic's published structure — until the pricing-table
-    consolidation lands these are still close enough to be useful.
-    """
-    rates = _COST_PER_M_TOKENS.get(model, {"input": 1.0, "output": 5.0})
-    cache_read_rate = rates["input"] * 0.10       # 90% discount
-    cache_create_rate = rates["input"] * 1.25     # 25% premium
-    return (
-        input_tokens * rates["input"]
-        + output_tokens * rates["output"]
-        + cache_read_tokens * cache_read_rate
-        + cache_creation_tokens * cache_create_rate
-    ) / 1_000_000
 
 
 def _get_caller_chain(skip: int = 2) -> list[str]:
@@ -148,7 +131,7 @@ def log_call(
         est_cost = 0.0
     else:
         est_cost = round(
-            _estimate_cost(
+            calc_cost(
                 model, input_tokens, output_tokens,
                 cache_read_tokens, cache_creation_tokens,
             ),
@@ -166,6 +149,7 @@ def log_call(
         "estimated_cost_usd": est_cost,
         "cached": cached,
         "execution_mode": execution_mode,
+        "priced_with": _PRICING_VERSION,
         "caller": _get_caller_chain(),
     }
     if backend:
