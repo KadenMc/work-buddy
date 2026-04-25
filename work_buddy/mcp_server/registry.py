@@ -3775,19 +3775,92 @@ def _llm_capabilities() -> list[Capability]:
             auto_retry=False,
         ),
         Capability(
-            name="claude_code_usage_summary",
+            name="llm_costs_query",
             description=(
-                "Return the Claude-Code-usage cost / usage read model. "
-                "Same shape consumed by GET /api/costs?source=claude_code."
+                "Aggregate LLM cost / usage across one or both data sources "
+                "(work-buddy's per-call internal log + Claude Code transcripts). "
+                "Smart parameters: time window (named or ISO range), group_by "
+                "(project, model, session, day, tool), source filter, "
+                "min_cost / project / model filters, and previous-window "
+                "comparison. Single capability covering most cost questions."
             ),
             category="llm",
             search_aliases=[
-                "claude usage summary",
-                "claude code spend",
-                "transcript costs",
+                "llm costs",
+                "llm spend",
+                "how much have i spent",
+                "claude api costs",
+                "cost by project",
+                "cost by model",
+                "weekly spend",
+                "monthly spend",
+                "expensive sessions",
+                "burn rate",
+                "cost trend",
+                "spend comparison",
             ],
-            parameters={},
-            callable=_claude_code_usage_summary,
+            parameters={
+                "window": {
+                    "type": "str",
+                    "description": (
+                        "Time window. Named: 'today', 'yesterday', '7d', "
+                        "'30d', '90d', 'month_to_date', 'all'. ISO range: "
+                        "'YYYY-MM-DD..YYYY-MM-DD'. Single day: 'YYYY-MM-DD'. "
+                        "Default '30d'."
+                    ),
+                    "required": False,
+                },
+                "group_by": {
+                    "type": "str",
+                    "description": (
+                        "Optional breakdown: 'project', 'model', 'session', "
+                        "'day', 'tool'. Omit for top-line totals only."
+                    ),
+                    "required": False,
+                },
+                "source": {
+                    "type": "str",
+                    "description": (
+                        "'all' (default), 'internal' (work-buddy's runner "
+                        "calls), or 'claude_code' (Claude Code transcripts)."
+                    ),
+                    "required": False,
+                },
+                "min_cost": {
+                    "type": "float",
+                    "description": "Filter rows where cost_usd < this. Default 0.",
+                    "required": False,
+                },
+                "project": {
+                    "type": "str",
+                    "description": "Substring match on project name / cwd.",
+                    "required": False,
+                },
+                "model": {
+                    "type": "str",
+                    "description": "Exact-match model filter (e.g. 'claude-sonnet-4-6').",
+                    "required": False,
+                },
+                "top_n": {
+                    "type": "int",
+                    "description": "Cap on grouped rows. Default 10. Pass 0 for no cap.",
+                    "required": False,
+                },
+                "include_local": {
+                    "type": "bool",
+                    "description": "Include local-LLM rows? Default true.",
+                    "required": False,
+                },
+                "compare_to_previous": {
+                    "type": "bool",
+                    "description": (
+                        "Include previous-equivalent-window comparison "
+                        "(delta_pct_cost, delta_pct_calls). Default true."
+                    ),
+                    "required": False,
+                },
+            },
+            callable=_llm_costs_query,
         ),
         Capability(
             name="escalation_recent",
@@ -3857,12 +3930,10 @@ def _claude_code_usage_scan(*, full_rebuild: bool = False) -> dict[str, Any]:
     return rescan_claude_code_usage(full_rebuild=full_rebuild)
 
 
-def _claude_code_usage_summary() -> dict[str, Any]:
-    """Return the Claude-Code-usage cost / usage read model."""
-    from work_buddy.dashboard.costs_claude_code_usage import (
-        get_claude_code_usage_summary,
-    )
-    return get_claude_code_usage_summary()
+def _llm_costs_query(**kwargs: Any) -> dict[str, Any]:
+    """Dispatch to the unified cost-query module."""
+    from work_buddy.llm.cost_query import llm_costs_query
+    return llm_costs_query(**kwargs)
 
 
 def _escalation_recent(
