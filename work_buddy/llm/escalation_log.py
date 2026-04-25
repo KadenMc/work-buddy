@@ -65,13 +65,12 @@ logger = logging.getLogger(__name__)
 # runtime when this module is loaded.
 _lock = threading.Lock()
 
-# Soft size cap: when the log exceeds this on first append after a process
-# restart, rename it to ``escalations.log.1`` and start fresh. Tunable at
-# import time by patching this constant before any append. 50 MB ~= a few
-# weeks of dense triage activity at typical record sizes.
-_MAX_LOG_BYTES = 50 * 1024 * 1024
-
-_rotation_checked = False
+# Old-record cleanup is handled by ``work_buddy.artifacts.prune_escalation_log``
+# registered against ``logs/escalations`` in :data:`work_buddy.paths.PRUNERS`.
+# That pruner runs as part of the scheduled artifact-cleanup job and culls
+# records older than ``window_days`` (default 30). No file-level rotation
+# logic lives here on purpose — adding both record-level pruning and
+# size-based rotation would let the two policies disagree.
 
 
 def _log_path() -> Path:
@@ -91,23 +90,6 @@ def _attempt_to_dict(a: TierAttempt | dict[str, Any]) -> dict[str, Any]:
     if ek is not None and not isinstance(ek, str):
         d["error_kind"] = getattr(ek, "value", str(ek))
     return d
-
-
-def _maybe_rotate(path: Path) -> None:
-    """Roll the log to ``.1`` once per process if it has grown too large."""
-    global _rotation_checked
-    if _rotation_checked:
-        return
-    _rotation_checked = True
-    try:
-        if path.exists() and path.stat().st_size > _MAX_LOG_BYTES:
-            backup = path.with_suffix(path.suffix + ".1")
-            if backup.exists():
-                backup.unlink()
-            path.rename(backup)
-            logger.info("Rotated escalation log: %s -> %s", path, backup)
-    except OSError as exc:
-        logger.warning("Escalation log rotation failed: %s", exc)
 
 
 def log_escalation(
@@ -148,7 +130,6 @@ def log_escalation(
     try:
         path = _log_path()
         with _lock:
-            _maybe_rotate(path)
             path.parent.mkdir(parents=True, exist_ok=True)
             with open(path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(record) + "\n")

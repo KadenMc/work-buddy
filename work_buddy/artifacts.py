@@ -555,6 +555,77 @@ def _run_pruners(dry_run: bool = True) -> list[dict[str, Any]]:
     return results
 
 
+def prune_escalation_log(
+    path: Path, config: dict[str, Any], *, dry_run: bool = True
+) -> dict[str, Any]:
+    """Prune LLM escalation records older than the rolling window.
+
+    The escalation log (``data/logs/escalations.log``) is JSONL —
+    one record per resolved LLM job, keyed by ``timestamp``. Same shape
+    as :func:`prune_chrome_ledger` for the Chrome ledger; the
+    difference is the per-line file format and the field name.
+
+    Tolerates malformed lines: anything that doesn't parse as JSON is
+    preserved verbatim through the prune (defensive against partial-line
+    writes). Tolerates lines without ``timestamp``: kept regardless.
+    """
+    window_days = config.get("window_days", 30)
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(days=window_days)
+    ).isoformat(timespec="milliseconds")
+
+    if not path.exists():
+        return {"pruned": 0, "remaining": 0, "bytes_before": 0, "bytes_after": 0}
+
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return {"pruned": 0, "remaining": 0, "bytes_before": 0, "bytes_after": 0}
+
+    bytes_before = path.stat().st_size
+
+    kept_lines: list[str] = []
+    pruned_count = 0
+    for line in raw.splitlines():
+        if not line.strip():
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            # Preserve malformed lines verbatim.
+            kept_lines.append(line)
+            continue
+        ts = rec.get("timestamp", "")
+        if ts and ts < cutoff:
+            pruned_count += 1
+            continue
+        kept_lines.append(line)
+
+    if pruned_count == 0:
+        return {
+            "pruned": 0,
+            "remaining": len(kept_lines),
+            "bytes_before": bytes_before,
+            "bytes_after": bytes_before,
+        }
+
+    if not dry_run:
+        new_text = "\n".join(kept_lines) + ("\n" if kept_lines else "")
+        temp = path.with_suffix(path.suffix + ".tmp")
+        temp.write_text(new_text, encoding="utf-8")
+        temp.replace(path)
+        bytes_after = path.stat().st_size
+    else:
+        bytes_after = len("\n".join(kept_lines).encode("utf-8"))
+
+    return {
+        "pruned": pruned_count,
+        "remaining": len(kept_lines),
+        "bytes_before": bytes_before,
+        "bytes_after": bytes_after,
+    }
+
+
 def prune_chrome_ledger(
     path: Path, config: dict[str, Any], *, dry_run: bool = True
 ) -> dict[str, Any]:

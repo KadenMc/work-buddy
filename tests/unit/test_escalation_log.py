@@ -16,7 +16,6 @@ def isolated_log(monkeypatch, tmp_path):
     """Redirect the log to a temp path so tests don't pollute real data/."""
     log_file = tmp_path / "escalations.log"
     monkeypatch.setattr(elog, "_log_path", lambda: log_file)
-    monkeypatch.setattr(elog, "_rotation_checked", False)
     return log_file
 
 

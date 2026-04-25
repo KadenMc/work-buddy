@@ -90,6 +90,10 @@ PRUNERS: dict[str, tuple[str, dict[str, Any]]] = {
         "work_buddy.artifacts.prune_old_logs",
         {"max_age_days": 7},
     ),
+    "logs/escalations": (
+        "work_buddy.artifacts.prune_escalation_log",
+        {"window_days": 30},
+    ),
 }
 
 
