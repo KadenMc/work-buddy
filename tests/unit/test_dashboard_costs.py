@@ -493,6 +493,109 @@ def test_api_costs_projects_endpoint_pins_workbuddy(monkeypatch, tmp_path):
     assert "zebra-project" in names
 
 
+def test_aggregator_execution_mode_cloud_filters_to_cloud_only(tmp_path):
+    """``execution_mode='cloud'`` excludes local rows entirely (incl. by_model)."""
+    root = tmp_path / "agents"
+    _write_session(
+        root, "2026-04-25T10-00-00_a",
+        manifest={"short_id": "a", "project": "C:\\repo\\work-buddy"},
+        entries=[
+            {"timestamp": "2026-04-25T10:00:00",
+             "model": "claude-sonnet-4-6", "task_id": "t",
+             "input_tokens": 100, "output_tokens": 50,
+             "estimated_cost_usd": 0.001, "cached": False,
+             "execution_mode": "cloud"},
+            {"timestamp": "2026-04-25T10:01:00",
+             "model": "qwen/qwen3-4b", "task_id": "t",
+             "input_tokens": 200, "output_tokens": 100,
+             "estimated_cost_usd": 0.0, "cached": False,
+             "execution_mode": "local"},
+        ],
+    )
+    s_cloud = costs_mod.get_costs_summary(agents_dir=root,
+                                            execution_mode="cloud")
+    s_local = costs_mod.get_costs_summary(agents_dir=root,
+                                            execution_mode="local")
+    s_all = costs_mod.get_costs_summary(agents_dir=root)
+
+    cloud_models = {r["model"] for r in s_cloud["by_model"]}
+    local_models = {r["model"] for r in s_local["by_model"]}
+    assert cloud_models == {"claude-sonnet-4-6"}
+    assert local_models == {"qwen/qwen3-4b"}
+    assert s_all["totals"]["calls"] == 2
+    assert s_cloud["totals"]["calls"] == 1
+    assert s_local["totals"]["calls"] == 1
+
+
+def test_aggregator_execution_mode_invalid_value_treated_as_no_filter(tmp_path):
+    root = tmp_path / "agents"
+    _write_session(
+        root, "2026-04-25T10-00-00_a",
+        manifest={"short_id": "a", "project": "C:\\repo\\work-buddy"},
+        entries=[{"timestamp": "2026-04-25T10:00:00",
+                   "model": "claude-sonnet-4-6", "task_id": "t",
+                   "input_tokens": 1, "output_tokens": 1,
+                   "estimated_cost_usd": 0.001, "cached": False,
+                   "execution_mode": "cloud"}],
+    )
+    # "garbage" → treated as no filter (not as an empty result).
+    s = costs_mod.get_costs_summary(agents_dir=root, execution_mode="garbage")
+    assert s["totals"]["calls"] == 1
+
+
+def test_resolve_project_name_collapses_worktree_to_parent():
+    """The canonical resolver collapses a worktree dir to its parent project.
+
+    This test only runs reliably when ~/.claude/projects/ contains a
+    parent dir whose name is a prefix of the worktree's slug. Skip if
+    that condition isn't met in the host environment.
+    """
+    from pathlib import Path
+    claude_projects = Path.home() / ".claude" / "projects"
+    parent_slugs = []
+    if claude_projects.is_dir():
+        parent_slugs = [d.name for d in claude_projects.iterdir() if d.is_dir()]
+    # Find a slug that has at least one child slug
+    parent = None
+    child = None
+    for s in parent_slugs:
+        for c in parent_slugs:
+            if c != s and c.startswith(s + "-"):
+                parent, child = s, c
+                break
+        if parent:
+            break
+    if not parent or not child:
+        pytest.skip("Host has no parent/child slug pair to verify against.")
+    parent_name = costs_mod._resolve_project_name(parent)
+    child_name = costs_mod._resolve_project_name(child)
+    assert child_name == parent_name
+
+
+def test_resolve_project_name_handles_full_path():
+    """Path-form input gets converted to slug-form before resolving."""
+    name = costs_mod._resolve_project_name("C:\\repo\\example")
+    # Whatever the resolver returns, it should not be empty and should
+    # not contain colons or slashes (those are slug separators).
+    assert name
+    assert ":" not in name
+    assert "\\" not in name
+    assert "/" not in name
+
+
+def test_api_costs_route_threads_execution_mode(monkeypatch, agents_dir):
+    """``/api/costs?execution_mode=local`` filters internal rows to local only."""
+    monkeypatch.setattr(costs_mod, "_AGENTS_DIR", agents_dir)
+    from work_buddy.dashboard.service import app
+    client = app.test_client()
+    resp = client.get("/api/costs?source=internal&execution_mode=local")
+    body = resp.get_json()
+    # Only the local row in fixture matches: local-bbb's qwen entry.
+    models = {r["model"] for r in body["by_model"]}
+    assert "qwen/qwen3-4b" in models
+    assert "claude-sonnet-4-6" not in models
+
+
 def test_vendor_route_serves_chart_js():
     from work_buddy.dashboard.service import app
     client = app.test_client()

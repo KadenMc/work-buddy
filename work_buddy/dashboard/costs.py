@@ -177,24 +177,61 @@ def _round_cost(bucket: dict[str, Any]) -> dict[str, Any]:
     return bucket
 
 
+def _resolve_project_name(path_or_slug: str) -> str:
+    """Canonical project name for a cwd / project path.
+
+    Reuses :func:`work_buddy.collectors.chat_collector.project_name_from_slug`
+    so the Costs tab matches the Chats tab — worktrees and nested
+    feature directories collapse to their parent project (e.g.
+    ``electricrag-fg-clep`` → ``electricrag``).
+
+    The chat collector's function expects a Claude-Code-style slug
+    (``C--repo-foo``); here we accept either a slug or a full path and
+    convert the path form to slug form first.
+    """
+    if not path_or_slug:
+        return ""
+    try:
+        from work_buddy.collectors.chat_collector import project_name_from_slug
+    except Exception:
+        # Fallback: just return the last path component.
+        return (path_or_slug.replace("\\", "/").rstrip("/").split("/")[-1]
+                or path_or_slug)
+    s = path_or_slug
+    # Path → slug: replace separators and the drive-letter colon with '-'
+    if "\\" in s or "/" in s or ":" in s:
+        s = s.replace("\\", "-").replace("/", "-").replace(":", "-")
+    return project_name_from_slug(s)
+
+
 def _project_matches(session_project: str, project_filter: str | None) -> bool:
-    """Substring-match the user's project filter against a session's project path."""
+    """Match the user's project filter against a session's project path.
+
+    Filter values come from the dropdown, which is populated with
+    canonical project names (resolved via :func:`_resolve_project_name`).
+    To make filtering work on freshly-scanned data without requiring a
+    full rescan of historical records, we resolve the session's project
+    on-the-fly and compare the canonical name. Falls back to substring
+    match against the raw path if resolution fails.
+    """
     if not project_filter:
         return True
     if not session_project:
         return False
     pf = project_filter.lower()
+    canonical = _resolve_project_name(session_project).lower()
+    if pf == canonical:
+        return True
     sp = session_project.lower().replace("\\", "/")
-    # Match against the full path and against the last path component
-    # (the conventional "project name" — what the user typically picks).
     last = sp.rstrip("/").split("/")[-1] if sp else ""
-    return pf in sp or pf in last
+    return pf in canonical or pf in sp or pf in last
 
 
 def get_costs_summary(
     *,
     agents_dir: Path | None = None,
     project: str | None = None,
+    execution_mode: str | None = None,
 ) -> dict[str, Any]:
     """Return the full cost summary read model.
 
@@ -220,14 +257,21 @@ def get_costs_summary(
 
     Args:
         agents_dir: Override the default ``data/agents/`` location.
-        project: Optional substring filter. Matches against each session's
-            ``manifest.project`` (full path or last path component, case
-            insensitive). When non-empty, only sessions whose project
-            matches are included in every aggregate.
+        project: Optional substring filter. Matched against each session's
+            canonical project name (resolved via the same logic the Chats
+            tab uses) and falls back to substring against the raw path.
+        execution_mode: Optional row-level filter. ``"cloud"`` = only
+            ``execution_mode == "cloud"`` rows; ``"local"`` = only local;
+            ``None`` / ``"all"`` = no filter. Filters apply at row
+            granularity, so by_model / by_day / sessions / etc. all
+            reflect the filtered slice.
 
     Costs are pre-summed per bucket; the frontend can derive percentages
     or filtered slices client-side without a second round trip.
     """
+    mode_filter = (execution_mode or "").lower()
+    if mode_filter not in ("", "all", "cloud", "local"):
+        mode_filter = ""
     totals = _empty_totals()
     by_day: dict[str, dict[str, Any]] = defaultdict(_empty_totals)
     by_model: dict[str, dict[str, Any]] = defaultdict(_empty_totals)
@@ -261,6 +305,10 @@ def get_costs_summary(
 
         had_any_entry = False
         for entry in _iter_cost_entries(session_dir):
+            # Defaults match the aggregator: missing → cloud.
+            entry_mode = entry.get("execution_mode") or "cloud"
+            if mode_filter in ("cloud", "local") and entry_mode != mode_filter:
+                continue
             had_any_entry = True
             ts = entry.get("timestamp", "") or ""
             if not sess_first_ts or ts < sess_first_ts:

@@ -54,15 +54,25 @@ def _round(bucket: dict[str, Any]) -> dict[str, Any]:
 
 
 def _project_matches(cwd: str, project_filter: str | None) -> bool:
-    """Substring-match the user's project filter against a row's cwd."""
+    """Match the user's project filter against a row's cwd.
+
+    Uses the canonical name resolver (same logic the Chats tab uses) so
+    a worktree at e.g. ``…/electricrag/electricrag-fg-clep`` matches the
+    filter value ``electricrag``. Falls back to substring against the
+    raw path if resolution fails.
+    """
     if not project_filter:
         return True
     if not cwd:
         return False
+    from work_buddy.dashboard.costs import _resolve_project_name
     pf = project_filter.lower()
+    canonical = _resolve_project_name(cwd).lower()
+    if pf == canonical:
+        return True
     sp = cwd.lower().replace("\\", "/")
     last = sp.rstrip("/").split("/")[-1] if sp else ""
-    return pf in sp or pf in last
+    return pf in canonical or pf in sp or pf in last
 
 
 def get_claude_code_usage_summary(
@@ -124,8 +134,10 @@ def get_claude_code_usage_summary(
                 _add_turn(by_day[day], row)
             _add_turn(by_model[row["model"] or "unknown"], row)
             _add_turn(by_tool[row["tool_name"] or "(no tool)"], row)
-            row_project = (cwd.replace("\\", "/").rstrip("/").split("/")[-1]
-                           or "unknown")
+            # Canonical resolver collapses worktrees/feature-dirs back to
+            # their parent project (matches Chats tab + project dropdown).
+            from work_buddy.dashboard.costs import _resolve_project_name
+            row_project = _resolve_project_name(cwd) or "unknown"
             _add_turn(by_project[row_project], row)
 
         sessions = []

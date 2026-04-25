@@ -846,13 +846,15 @@ def api_costs():
     """
     source = (request.args.get("source") or "internal").lower()
     project = request.args.get("project") or None
+    execution_mode = (request.args.get("execution_mode") or "").lower() or None
     # Backwards-compat: the old ``transcripts`` source name still routes
     # to claude_code so any external bookmarks / scripts keep working.
     if source == "transcripts":
         source = "claude_code"
     try:
         from work_buddy.dashboard.costs import get_costs_summary
-        internal = get_costs_summary(project=project)
+        internal = get_costs_summary(project=project,
+                                      execution_mode=execution_mode)
         if source == "internal":
             return jsonify(internal)
 
@@ -904,6 +906,10 @@ def api_costs_projects():
     try:
         projects: dict[str, dict] = {}
 
+        # The same canonical resolver the Chats tab uses — collapses
+        # worktrees/feature-dirs back to their parent project.
+        from work_buddy.dashboard.costs import _resolve_project_name
+
         # Internal source (per-call log) — collect from session manifests.
         try:
             from work_buddy.dashboard.costs import (
@@ -916,7 +922,7 @@ def api_costs_projects():
                 proj_path = m.get("project") or ""
                 if not proj_path:
                     continue
-                name = proj_path.replace("\\", "/").rstrip("/").split("/")[-1]
+                name = _resolve_project_name(proj_path)
                 if not name:
                     continue
                 p = projects.setdefault(name, {
@@ -933,7 +939,10 @@ def api_costs_projects():
         except Exception as exc:  # noqa: BLE001
             logger.debug("Internal-source project scan failed: %s", exc)
 
-        # Claude Code source — query the cache DB.
+        # Claude Code source — query the cache DB. We resolve names from
+        # the per-row ``cwd`` (rather than the stored ``project_name`` on
+        # the sessions table) so the canonical resolver applies even when
+        # the scanner stamped a stale name pre-fix.
         try:
             import sqlite3
             from work_buddy.llm.claude_code_usage import scanner as _scanner
@@ -942,15 +951,16 @@ def api_costs_projects():
                 conn = sqlite3.connect(db)
                 conn.row_factory = sqlite3.Row
                 try:
+                    # One representative cwd per session, with row counts.
                     for s in conn.execute("""
-                        SELECT project_name, COUNT(*) AS n,
-                               MAX(last_timestamp) AS last_seen
-                        FROM sessions
-                        WHERE project_name IS NOT NULL AND project_name != ''
-                        GROUP BY project_name
+                        SELECT t.session_id, t.cwd, COUNT(*) AS n,
+                               MAX(t.timestamp) AS last_seen
+                        FROM turns t
+                        WHERE t.cwd IS NOT NULL AND t.cwd != ''
+                        GROUP BY t.session_id
                     """):
-                        full = s["project_name"]
-                        name = full.replace("\\", "/").rstrip("/").split("/")[-1]
+                        cwd = s["cwd"] or ""
+                        name = _resolve_project_name(cwd)
                         if not name:
                             continue
                         p = projects.setdefault(name, {
@@ -958,7 +968,8 @@ def api_costs_projects():
                             "last_seen": "", "in_internal": False,
                             "in_claude_code": False,
                         })
-                        p["session_count"] += int(s["n"] or 0)
+                        # +1 session per row in the GROUP BY result
+                        p["session_count"] += 1
                         p["in_claude_code"] = True
                         ls = s["last_seen"] or ""
                         if ls > p["last_seen"]:

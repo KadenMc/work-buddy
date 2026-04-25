@@ -244,7 +244,9 @@ def _html() -> str:
         </div>
     </div>
 
-    <!-- Activity pill bar: visible only when project = work-buddy. -->
+    <!-- Activity pill bar: visible only when project = work-buddy. "Programmatic"
+         is the umbrella for everything work-buddy's runner started (cloud + local).
+         API and Local drill into the cloud / local backends individually. -->
     <div id="costs-activity-row" class="costs-activity-row" style="display:none;">
         <span class="costs-filter-label">Activity:</span>
         <div class="costs-activity-pills" id="costs-activity-pills">
@@ -252,6 +254,9 @@ def _html() -> str:
                     onclick="costsActivityChanged('all')">All</button>
             <button class="costs-pill" data-activity="claude_code"
                     onclick="costsActivityChanged('claude_code')">Claude Code</button>
+            <button class="costs-pill" data-activity="programmatic"
+                    onclick="costsActivityChanged('programmatic')"
+                    title="work-buddy's runner activity \u2014 API + Local combined">Programmatic</button>
             <button class="costs-pill" data-activity="api"
                     onclick="costsActivityChanged('api')">API</button>
             <button class="costs-pill" data-activity="local"
@@ -290,13 +295,12 @@ def _html() -> str:
     <div class="section-title">Cost by model</div>
     <div id="costs-model-table"></div>
 
-    <div class="section-title" style="margin-top:24px;">Sessions</div>
-    <div class="costs-sessions-toolbar">
-        <input type="text" id="costs-session-filter" class="task-search-input"
-               placeholder="Filter sessions by id or project..." />
+    <div class="costs-sessions-header">
+        <div class="section-title" style="margin:0;">Sessions</div>
         <span id="costs-sessions-count" class="costs-meta"></span>
     </div>
     <div id="costs-sessions-table"></div>
+    <div id="costs-sessions-pager" class="costs-pager"></div>
 
     <div class="costs-footer-note">
         Cost estimates use Anthropic published rates (April 2026). Local model

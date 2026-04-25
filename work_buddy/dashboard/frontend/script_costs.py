@@ -18,14 +18,17 @@ from __future__ import annotations
 def _costs_script() -> str:
     return r"""
 // ---- Costs tab state ----
+const COSTS_PAGE_SIZE = 60;
+
 let costsState = {
     raw: null,                    // last /api/costs?source=all response
     project: '',                  // '' = all projects, else exact project name
-    activity: 'all',              // 'all' | 'claude_code' | 'api' | 'local'
+    activity: 'all',              // 'all' | 'claude_code' | 'programmatic' | 'api' | 'local'
                                   // (only meaningful when project === 'work-buddy')
     range: '30',                  // 'today' | '7' | '30' | '90' | 'all'
     selectedModels: null,         // null = all selected; Set of strings otherwise
-    sessionFilter: '',
+    sessionPage: 1,
+    sessionSort: { key: 'last', dir: 'desc' },
     charts: {},                   // Chart.js instances keyed by canvas id
     projectsLoaded: false,
 };
@@ -102,6 +105,13 @@ async function loadCosts(force) {
     const params = new URLSearchParams();
     params.set('source', 'all');
     if (costsState.project) params.set('project', costsState.project);
+    // For api / local activity, ask the backend to filter rows by
+    // execution_mode so by_model / sessions / etc. are properly sliced.
+    // Programmatic = work-buddy runner activity (cloud + local) — no
+    // execution_mode filter, but we restrict to internal source on render.
+    if (costsState.activity === 'api')   params.set('execution_mode', 'cloud');
+    if (costsState.activity === 'local') params.set('execution_mode', 'local');
+
     const data = await fetchJSON('/api/costs?' + params.toString());
     if (!data || data.error) {
         document.getElementById('costs-cards').innerHTML =
@@ -113,6 +123,7 @@ async function loadCosts(force) {
 
     costsState.raw = data;
     _costsSyncActivityVisibility();
+    costsState.sessionPage = 1;
 
     // Reset selectedModels to all-known when refetching (new project may
     // expose a different model set).
@@ -135,11 +146,19 @@ function costsRangeChanged(v) {
     costsRenderAll();
 }
 function costsActivityChanged(v) {
+    const prev = costsState.activity;
     costsState.activity = v;
     document.querySelectorAll('#costs-activity-pills .costs-pill').forEach(b => {
         b.classList.toggle('active', b.dataset.activity === v);
     });
-    costsRenderAll();
+    // api / local require a backend refetch (execution_mode filter
+    // applies at row level — by_model / sessions need to be re-aggregated).
+    // Switching back to claude_code / all / programmatic doesn't need a
+    // refetch as long as we already have the all-source response.
+    const needsRefetch = (v === 'api' || v === 'local')
+                       || (prev === 'api' || prev === 'local');
+    if (needsRefetch) loadCosts(true);
+    else costsRenderAll();
 }
 
 function _costsSyncActivityVisibility() {
@@ -166,12 +185,12 @@ async function costsRescanClaudeCode(btn) {
 // read from, plus a ``shape`` discriminator. Per the design notes:
 //   - project='' (All)        → claude_code (the dominant signal)
 //   - project='work-buddy'    → activity-driven:
-//       'all'         → claude_code (Claude Code dominates; internal stats
-//                       still surface as sub-text on cards)
-//       'claude_code' → claude_code
-//       'api'         → internal, with cards filtered to cloud
-//       'local'       → internal, with cards filtered to local
-//   - project=other          → claude_code
+//       'all'          → claude_code primary; internal sidecar card
+//       'claude_code'  → claude_code only
+//       'programmatic' → internal (cloud + local combined; runner activity)
+//       'api'          → internal, backend-filtered to cloud
+//       'local'        → internal, backend-filtered to local
+//   - project=other           → claude_code
 function _costsActiveData() {
     const raw = costsState.raw || {};
     const project = costsState.project || '';
@@ -187,7 +206,10 @@ function _costsActiveData() {
         return { data: raw.claude_code || {}, shape: 'claude_code',
                  activity, sidecar: raw.internal || null };
     }
-    // api / local — internal source.
+    // programmatic / api / local — internal source.
+    // For api / local, the backend has already filtered raw.internal by
+    // execution_mode; we just render it. For programmatic, raw.internal
+    // is unfiltered (cloud + local combined, which is what we want).
     return { data: raw.internal || {}, shape: 'internal', activity };
 }
 
@@ -289,17 +311,23 @@ function costsRenderAll() {
             _costsDestroyChart('mode');
         }
     } else {
-        // shape === 'internal' (work-buddy + activity = api or local)
+        // shape === 'internal' (work-buddy + activity = api/local/programmatic)
         // Top callers chart only meaningful for the work-buddy infra view.
         if (taskCard) taskCard.style.display = isWB ? '' : 'none';
-        if (modeCard) modeCard.style.display = isWB ? '' : 'none';
         if (isWB) {
             if (tt) tt.textContent = 'Top callers (by cost)';
             costsRenderTaskChart(data, activity);
+        } else {
+            _costsDestroyChart('task');
+        }
+        // Cloud-vs-Local mix is meaningless when activity is already
+        // restricted to one side — show only on Programmatic (= both).
+        const showMode = isWB && activity === 'programmatic';
+        if (modeCard) modeCard.style.display = showMode ? '' : 'none';
+        if (showMode) {
             if (mt) mt.textContent = 'Cloud vs Local mix';
             costsRenderModeChart(data, activity);
         } else {
-            _costsDestroyChart('task');
             _costsDestroyChart('mode');
         }
     }
@@ -374,13 +402,9 @@ function costsRenderCards(shape, data, activity, sidecar) {
     const totalSessions = (data.sessions || []).length;
     const { totals } = _costsAggregateByDay(data);
 
-    // Apply activity-mode filtering for the internal shape.
+    // The backend already pre-filtered raw.internal by execution_mode for
+    // activity = api / local. Totals are accurate as-is.
     let displayed = totals;
-    if (shape === 'internal' && activity === 'api') {
-        displayed = _costsFilterTotalsByMode(totals, 'cloud');
-    } else if (shape === 'internal' && activity === 'local') {
-        displayed = _costsFilterTotalsByMode(totals, 'local');
-    }
 
     const totalCalls = (data.totals || {}).calls || (data.totals || {}).turns || 0;
     const filteredCalls = (displayed.calls || displayed.turns || 0);
@@ -395,8 +419,8 @@ function costsRenderCards(shape, data, activity, sidecar) {
     } else {
         // Internal log — split cloud/local in the Calls card sub.
         let sub;
-        if (activity === 'api')   sub = `${displayed.cloud_calls || 0} cloud`;
-        else if (activity === 'local') sub = `${displayed.local_calls || 0} local`;
+        if (activity === 'api')   sub = 'cloud only';
+        else if (activity === 'local') sub = 'local only';
         else sub = `${displayed.cloud_calls || 0} cloud · ${displayed.local_calls || 0} local`;
         cards.push({ label: 'Calls',
                      value: costsFmtN(displayed.calls), sub });
@@ -419,6 +443,7 @@ function costsRenderCards(shape, data, activity, sidecar) {
     let costSub;
     if (shape === 'internal' && activity === 'local') costSub = 'local LLM — no cloud cost';
     else if (shape === 'internal' && activity === 'api') costSub = 'work-buddy API spend';
+    else if (shape === 'internal' && activity === 'programmatic') costSub = 'work-buddy runner — cloud only billable';
     else if (shape === 'claude_code') costSub = 'Claude Code (Anthropic rates)';
     else costSub = 'cloud only; local logs $0';
     cards.push({ label: 'Est. cost',
@@ -443,31 +468,6 @@ function costsRenderCards(shape, data, activity, sidecar) {
             ${c.sub ? `<div class="card-sub">${costsEsc(c.sub)}</div>` : ''}
         </div>
     `).join('');
-}
-
-function _costsFilterTotalsByMode(totals, mode) {
-    // For internal shape: rough activity filter over already-summed
-    // totals. We only know cloud_calls / local_calls; tokens are
-    // mixed. The cards still render, but the displayed numbers are
-    // approximate when activity≠all (the underlying log doesn't track
-    // per-call mode-tagged tokens). Caveat surfaced via the cost-card
-    // sub-text.
-    if (mode === 'cloud') {
-        return {
-            ...totals,
-            calls: totals.cloud_calls || 0,
-            local_calls: 0,
-        };
-    }
-    if (mode === 'local') {
-        return {
-            ...totals,
-            calls: totals.local_calls || 0,
-            cloud_calls: 0,
-            cost_usd: 0,
-        };
-    }
-    return totals;
 }
 
 function _costsDestroyChart(id) {
@@ -725,92 +725,199 @@ function costsRenderModelTable(shape, data) {
     wrap.innerHTML = html;
 }
 
+// Column definitions per shape — drives both the header (with sort
+// indicators) and the per-row rendering. Each column has:
+//   key:   field name on a session row (or null for the action column)
+//   label: visible header text
+//   num:   true → right-aligned number column
+//   sort:  the sort comparator key on the session record (null = unsortable)
+//   render(s) → returns the <td>...</td> string for this column on row ``s``
+function _costsSessionColumns(shape) {
+    const ccCols = [
+        { key: 'short_id',  label: 'Session',  sort: 'short_id',
+          render: s => `<td><code title="${costsEsc(s.session_id)}">${costsEsc(s.short_id)}</code></td>` },
+        { key: 'project',   label: 'Project',  sort: 'project',
+          render: s => `<td title="${costsEsc(s.project)}">${costsEsc(s.project)}</td>` },
+        { key: 'branch',    label: 'Branch',   sort: 'branch',
+          render: s => `<td class="costs-branch-cell" title="${costsEsc(s.branch || '')}">${costsEsc(s.branch || '')}</td>` },
+        { key: 'last',      label: 'Last',     sort: 'last',
+          render: s => `<td>${costsFmtDate(s.last)}</td>` },
+        { key: 'turns',     label: 'Turns', num: true, sort: 'turns',
+          render: s => `<td class="num">${costsFmtN(s.turns)}</td>` },
+        { key: 'input_tokens', label: 'In', num: true, sort: 'input_tokens',
+          render: s => `<td class="num">${costsFmtN(s.input_tokens)}</td>` },
+        { key: 'output_tokens', label: 'Out', num: true, sort: 'output_tokens',
+          render: s => `<td class="num">${costsFmtN(s.output_tokens)}</td>` },
+        { key: 'cache_read_tokens', label: 'Cache R', num: true, sort: 'cache_read_tokens',
+          render: s => `<td class="num">${costsFmtN(s.cache_read_tokens)}</td>` },
+        { key: 'cost_usd',  label: 'Cost', num: true, sort: 'cost_usd',
+          render: s => `<td class="num">${costsFmtCost(s.cost_usd)}</td>` },
+        { key: 'model',     label: 'Model',    sort: null,
+          render: s => `<td class="costs-model-cell">${s.model
+              ? `<span class="costs-model-chip">${costsEsc(s.model)}</span>` : ''}</td>` },
+    ];
+    const intCols = [
+        { key: 'short_id',  label: 'Session',  sort: 'short_id',
+          render: s => `<td><code title="${costsEsc(s.session_id)}">${costsEsc(s.short_id)}</code></td>` },
+        { key: 'project',   label: 'Project',  sort: 'project',
+          render: s => {
+              const p = s.project ? s.project.replace(/^.*[\\\/]/, '') : '';
+              return `<td title="${costsEsc(s.project)}">${costsEsc(p)}</td>`;
+          } },
+        { key: 'last',      label: 'Last',     sort: 'last',
+          render: s => `<td>${costsFmtDate(s.last)}</td>` },
+        { key: 'calls',     label: 'Calls', num: true, sort: 'calls',
+          render: s => `<td class="num">${costsFmtN(s.calls)}</td>` },
+        { key: 'input_tokens', label: 'In', num: true, sort: 'input_tokens',
+          render: s => `<td class="num">${costsFmtN(s.input_tokens)}</td>` },
+        { key: 'output_tokens', label: 'Out', num: true, sort: 'output_tokens',
+          render: s => `<td class="num">${costsFmtN(s.output_tokens)}</td>` },
+        { key: 'cost_usd',  label: 'Cost', num: true, sort: 'cost_usd',
+          render: s => `<td class="num">${costsFmtCost(s.cost_usd)}</td>` },
+        { key: 'models',    label: 'Models',   sort: null,
+          render: s => `<td class="costs-model-cell">${(s.models || []).map(m =>
+              `<span class="costs-model-chip">${costsEsc(m)}</span>`).join('')}</td>` },
+    ];
+    return shape === 'claude_code' ? ccCols : intCols;
+}
+
+function costsSortBy(key) {
+    if (!key) return;
+    const cur = costsState.sessionSort || { key: 'last', dir: 'desc' };
+    if (cur.key === key) {
+        costsState.sessionSort = { key, dir: cur.dir === 'asc' ? 'desc' : 'asc' };
+    } else {
+        // Numeric / date columns default to desc; text columns to asc.
+        const textCols = new Set(['short_id', 'project', 'branch']);
+        costsState.sessionSort = { key, dir: textCols.has(key) ? 'asc' : 'desc' };
+    }
+    costsRenderSessionsTable(
+        costsState.shape || 'internal',
+        _costsActiveData().data,
+    );
+}
+
+function _costsSortSessions(rows) {
+    const { key, dir } = costsState.sessionSort || { key: 'last', dir: 'desc' };
+    const sign = dir === 'asc' ? 1 : -1;
+    return rows.slice().sort((a, b) => {
+        let va = a[key], vb = b[key];
+        if (va == null) va = '';
+        if (vb == null) vb = '';
+        if (typeof va === 'number' && typeof vb === 'number') {
+            return sign * (va - vb);
+        }
+        return sign * String(va).localeCompare(String(vb));
+    });
+}
+
+// Reusable pager renderer.
+//   ariaTotal — total rows.
+//   onPage(n) — global function name (string) called with the new page number.
+function _costsRenderPager(containerId, total, currentPage, pageSize, onPageFn) {
+    const el = document.getElementById(containerId);
+    if (!el) return;
+    if (total <= pageSize) { el.innerHTML = ''; return; }
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    const cur = Math.min(Math.max(currentPage, 1), totalPages);
+    const startIdx = (cur - 1) * pageSize + 1;
+    const endIdx = Math.min(cur * pageSize, total);
+
+    function pageBtn(n, label, opts) {
+        opts = opts || {};
+        const classes = ['costs-pager-btn'];
+        if (opts.current) classes.push('current');
+        const disabled = opts.disabled ? ' disabled' : '';
+        const onClick = opts.disabled ? '' : ` onclick="${onPageFn}(${n})"`;
+        return `<button class="${classes.join(' ')}"${disabled}${onClick}>${costsEsc(label)}</button>`;
+    }
+
+    let html = '';
+    html += pageBtn(cur - 1, '‹', { disabled: cur === 1 });
+
+    // Show first/last and a sliding window of ±2 around current.
+    const pages = new Set([1, totalPages, cur, cur - 1, cur + 1, cur - 2, cur + 2]);
+    const visible = Array.from(pages)
+        .filter(n => n >= 1 && n <= totalPages)
+        .sort((a, b) => a - b);
+    let prev = 0;
+    for (const n of visible) {
+        if (n - prev > 1) html += '<span class="costs-pager-ellipsis">…</span>';
+        html += pageBtn(n, String(n), { current: n === cur });
+        prev = n;
+    }
+    html += pageBtn(cur + 1, '›', { disabled: cur === totalPages });
+    html += `<span class="costs-pager-info">${startIdx}–${endIdx} of ${total}</span>`;
+    el.innerHTML = html;
+}
+
+function costsSessionsGoToPage(n) {
+    costsState.sessionPage = n;
+    costsRenderSessionsTable(
+        costsState.shape || 'internal',
+        _costsActiveData().data,
+    );
+}
+
 function costsRenderSessionsTable(shape, data) {
     const all = (data.sessions || []).filter(_costsFilterSession);
-    const filterStr = (costsState.sessionFilter || '').toLowerCase();
-    const filtered = filterStr ? all.filter(s => {
-        return (s.short_id || '').toLowerCase().includes(filterStr)
-            || (s.session_id || '').toLowerCase().includes(filterStr)
-            || (s.project || '').toLowerCase().includes(filterStr)
-            || (s.directory || '').toLowerCase().includes(filterStr)
-            || (s.branch || '').toLowerCase().includes(filterStr);
-    }) : all;
 
     const countEl = document.getElementById('costs-sessions-count');
-    if (countEl) countEl.textContent = `${filtered.length} of ${all.length} sessions`;
+    if (countEl) countEl.textContent = all.length === 1
+        ? '1 session'
+        : `${all.length} sessions`;
 
     const wrap = document.getElementById('costs-sessions-table');
     if (!wrap) return;
-    if (filtered.length === 0) {
-        wrap.innerHTML = '<div class="empty-state">No sessions match.</div>';
+    if (all.length === 0) {
+        wrap.innerHTML = '<div class="empty-state">No sessions match the current filters.</div>';
+        const pager = document.getElementById('costs-sessions-pager');
+        if (pager) pager.innerHTML = '';
         return;
     }
 
-    let html;
-    if (shape === 'claude_code') {
-        html = '<table class="data-table costs-table"><thead><tr>' +
-            '<th>Session</th><th>Project</th><th>Branch</th><th>Last</th>' +
-            '<th class="num">Turns</th><th class="num">In</th>' +
-            '<th class="num">Out</th><th class="num">Cache R</th>' +
-            '<th class="num">Cost</th><th>Model</th>' +
-            '</tr></thead><tbody>';
-        for (const s of filtered.slice(0, 200)) {
-            html += `<tr>
-                <td><code title="${costsEsc(s.session_id)}">${costsEsc(s.short_id)}</code></td>
-                <td title="${costsEsc(s.project)}">${costsEsc(s.project)}</td>
-                <td>${costsEsc(s.branch || '')}</td>
-                <td>${costsFmtDate(s.last)}</td>
-                <td class="num">${costsFmtN(s.turns)}</td>
-                <td class="num">${costsFmtN(s.input_tokens)}</td>
-                <td class="num">${costsFmtN(s.output_tokens)}</td>
-                <td class="num">${costsFmtN(s.cache_read_tokens)}</td>
-                <td class="num">${costsFmtCost(s.cost_usd)}</td>
-                <td class="costs-model-cell">${s.model ?
-                    `<span class="costs-model-chip">${costsEsc(s.model)}</span>` : ''}</td>
-            </tr>`;
-        }
-        if (filtered.length > 200) {
-            html += `<tr><td colspan="10" class="empty-state">Showing first 200 of ${filtered.length}</td></tr>`;
-        }
-    } else {
-        html = '<table class="data-table costs-table"><thead><tr>' +
-            '<th>Session</th><th>Project</th><th>Last</th>' +
-            '<th class="num">Calls</th><th class="num">In</th>' +
-            '<th class="num">Out</th><th class="num">Cost</th><th>Models</th>' +
-            '</tr></thead><tbody>';
-        for (const s of filtered.slice(0, 200)) {
-            const proj = s.project ? s.project.replace(/^.*[\\\/]/, '') : '';
-            html += `<tr>
-                <td><code title="${costsEsc(s.session_id)}">${costsEsc(s.short_id)}</code></td>
-                <td title="${costsEsc(s.project)}">${costsEsc(proj)}</td>
-                <td>${costsFmtDate(s.last)}</td>
-                <td class="num">${costsFmtN(s.calls)}</td>
-                <td class="num">${costsFmtN(s.input_tokens)}</td>
-                <td class="num">${costsFmtN(s.output_tokens)}</td>
-                <td class="num">${costsFmtCost(s.cost_usd)}</td>
-                <td class="costs-model-cell">${(s.models || []).map(m =>
-                    `<span class="costs-model-chip">${costsEsc(m)}</span>`).join('')}</td>
-            </tr>`;
-        }
-        if (filtered.length > 200) {
-            html += `<tr><td colspan="8" class="empty-state">Showing first 200 of ${filtered.length}</td></tr>`;
-        }
+    const sorted = _costsSortSessions(all);
+    const pageSize = COSTS_PAGE_SIZE;
+    const page = Math.min(Math.max(costsState.sessionPage || 1, 1),
+                          Math.max(1, Math.ceil(sorted.length / pageSize)));
+    const slice = sorted.slice((page - 1) * pageSize, page * pageSize);
+
+    const cols = _costsSessionColumns(shape);
+    const cur = costsState.sessionSort || { key: 'last', dir: 'desc' };
+
+    // Header row with sort affordances.
+    let html = '<table class="data-table costs-table"><thead><tr>';
+    for (const c of cols) {
+        const sortable = c.sort != null;
+        const isActive = sortable && cur.key === c.sort;
+        const arrow = isActive
+            ? (cur.dir === 'asc' ? '▲' : '▼')
+            : '↕';
+        const cls = [
+            sortable ? 'sortable' : '',
+            isActive ? 'sort-active' : '',
+            c.num ? 'num' : '',
+        ].filter(Boolean).join(' ');
+        const onClick = sortable ? ` onclick="costsSortBy('${costsEsc(c.sort)}')"` : '';
+        const arrowSpan = sortable ? `<span class="sort-arrow">${arrow}</span>` : '';
+        html += `<th class="${cls}"${onClick}>${costsEsc(c.label)}${arrowSpan}</th>`;
     }
+    html += '</tr></thead><tbody>';
+
+    for (const s of slice) {
+        html += '<tr>';
+        for (const c of cols) html += c.render(s);
+        html += '</tr>';
+    }
+
     html += '</tbody></table>';
     wrap.innerHTML = html;
+
+    _costsRenderPager('costs-sessions-pager', sorted.length, page, pageSize,
+                       'costsSessionsGoToPage');
+
+    // Reset to page 1 if the current page is now beyond the data.
+    costsState.sessionPage = page;
 }
 
-// ---- Wire-up ----
-document.addEventListener('DOMContentLoaded', function() {
-    const f = document.getElementById('costs-session-filter');
-    if (f) {
-        f.addEventListener('input', function() {
-            costsState.sessionFilter = f.value || '';
-            costsRenderSessionsTable(
-                costsState.shape || 'internal',
-                _costsActiveData().data,
-            );
-        });
-    }
-});
 """

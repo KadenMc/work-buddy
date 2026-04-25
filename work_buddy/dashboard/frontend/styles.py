@@ -2970,6 +2970,56 @@ body {
 .card.card-accent {
     border-left: 2px solid var(--accent);
 }
+
+.costs-sessions-header {
+    display: flex; align-items: baseline; justify-content: space-between;
+    gap: 12px; margin: 24px 0 8px 0;
+}
+
+/* Sortable column headers */
+.costs-table th.sortable {
+    cursor: pointer; user-select: none;
+    position: relative; padding-right: 18px;
+}
+.costs-table th.sortable:hover { color: var(--text-primary); }
+.costs-table th.sortable .sort-arrow {
+    position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+    opacity: 0.4; font-size: 10px;
+}
+.costs-table th.sortable.sort-active .sort-arrow { opacity: 1; color: var(--accent); }
+
+/* Branch cell — long branch names get truncated with ellipsis. */
+.costs-table .costs-branch-cell {
+    max-width: 180px; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; font-family: ui-monospace, SFMono-Regular, monospace;
+    font-size: 11px; color: var(--text-secondary);
+}
+
+/* Reusable pager component (currently scoped to .costs-pager;
+   if a second tab needs pagination, lift the class names to a generic
+   .wb-pager and restyle here.) */
+.costs-pager {
+    display: flex; align-items: center; justify-content: center; gap: 4px;
+    padding: 12px 0 4px 0; flex-wrap: wrap;
+}
+.costs-pager-btn {
+    background: var(--bg-secondary); border: 1px solid var(--border);
+    color: var(--text-secondary); padding: 4px 10px; font-size: 12px;
+    cursor: pointer; border-radius: 4px; min-width: 28px; text-align: center;
+    font-family: inherit;
+}
+.costs-pager-btn:hover { background: var(--bg-tertiary); color: var(--text-primary); }
+.costs-pager-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.costs-pager-btn.current {
+    background: var(--accent-subtle); border-color: var(--accent);
+    color: var(--accent);
+}
+.costs-pager-ellipsis {
+    color: var(--text-muted); padding: 4px 4px;
+}
+.costs-pager-info {
+    color: var(--text-muted); font-size: 11px; margin: 0 8px;
+}
 .costs-toolbar-left, .costs-toolbar-right {
     display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
 }
