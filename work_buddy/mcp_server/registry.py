@@ -3749,6 +3749,47 @@ def _llm_capabilities() -> list[Capability]:
             auto_retry=False,
         ),
         Capability(
+            name="claude_transcripts_scan",
+            description=(
+                "Scan Claude Code's local transcript JSONLs into the cost "
+                "cache (~/.claude/projects/**/*.jsonl). Incremental by default. "
+                "Use full_rebuild=true after a pricing or schema change."
+            ),
+            category="llm",
+            search_aliases=[
+                "claude usage",
+                "transcript scan",
+                "claude code usage",
+                "ingest transcripts",
+                "rescan costs",
+            ],
+            parameters={
+                "full_rebuild": {
+                    "type": "bool",
+                    "description": "Drop and rebuild the cache (default false).",
+                    "required": False,
+                },
+            },
+            callable=_claude_transcripts_scan,
+            mutates_state=True,
+            auto_retry=False,
+        ),
+        Capability(
+            name="claude_transcripts_summary",
+            description=(
+                "Return the transcript-derived cost / usage read model. "
+                "Same shape consumed by GET /api/costs?source=transcripts."
+            ),
+            category="llm",
+            search_aliases=[
+                "claude usage summary",
+                "transcript costs",
+                "claude code spend",
+            ],
+            parameters={},
+            callable=_claude_transcripts_summary,
+        ),
+        Capability(
             name="escalation_recent",
             description=(
                 "Recent LLM-escalation observability records. Each record is "
@@ -3806,6 +3847,18 @@ def _llm_capabilities() -> list[Capability]:
             callable=_escalation_recent,
         ),
     ]
+
+
+def _claude_transcripts_scan(*, full_rebuild: bool = False) -> dict[str, Any]:
+    """Trigger the vendored Claude transcripts scanner."""
+    from work_buddy.dashboard.costs_transcripts import rescan_transcripts
+    return rescan_transcripts(full_rebuild=full_rebuild)
+
+
+def _claude_transcripts_summary() -> dict[str, Any]:
+    """Return the transcript-derived cost/usage read model."""
+    from work_buddy.dashboard.costs_transcripts import get_transcripts_summary
+    return get_transcripts_summary()
 
 
 def _escalation_recent(

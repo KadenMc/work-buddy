@@ -268,11 +268,11 @@ def _html() -> str:
 
     <div class="costs-charts-row">
         <div class="costs-chart-card">
-            <div class="section-title">Top callers (by cost)</div>
+            <div class="section-title" id="costs-task-title">Top callers (by cost)</div>
             <div class="costs-chart-wrap"><canvas id="costs-task-chart"></canvas></div>
         </div>
         <div class="costs-chart-card">
-            <div class="section-title">Cloud vs Local mix</div>
+            <div class="section-title" id="costs-mode-title">Cloud vs Local mix</div>
             <div class="costs-chart-wrap"><canvas id="costs-mode-chart"></canvas></div>
         </div>
     </div>
