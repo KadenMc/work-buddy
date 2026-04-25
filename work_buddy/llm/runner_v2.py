@@ -219,13 +219,19 @@ class LLMRunner:
             )
             elapsed_ms = int((time.time() - t0) * 1000)
 
-            # Record this attempt regardless of outcome for audit.
+            # Classify the outcome of this attempt for the structured log.
+            attempt_outcome = (
+                "backend_error" if resp.error_kind is not None else "success"
+            )
             attempts.append(TierAttempt(
                 tier=attempt_tier.value,
                 model=resp.model,
                 error_kind=resp.error_kind,
                 error=resp.error,
                 elapsed_ms=elapsed_ms,
+                outcome=attempt_outcome,
+                input_tokens=resp.input_tokens,
+                output_tokens=resp.output_tokens,
             ))
 
             # Did this attempt succeed? Re-check empty content here so
@@ -246,10 +252,20 @@ class LLMRunner:
                     error_kind=ErrorKind.EMPTY_CONTENT,
                     error=resp.error,
                     elapsed_ms=elapsed_ms,
+                    outcome="empty_content",
+                    input_tokens=resp.input_tokens,
+                    output_tokens=resp.output_tokens,
                 )
 
             if resp.error_kind is None:
-                # Success — return with the full audit trail.
+                # Success — return with the full audit trail and a
+                # structured log entry.
+                self._log_chain(
+                    attempts=attempts,
+                    final_outcome="success",
+                    final_tier=attempt_tier.value,
+                    trace_id=trace_id,
+                )
                 return _with_attempts(resp, attempts)
 
             # Failed. Escalate?
@@ -261,10 +277,54 @@ class LLMRunner:
                 continue
 
             # No escalation — return the failure with the full trail.
+            final_outcome = (
+                "empty_content" if resp.error_kind == ErrorKind.EMPTY_CONTENT
+                else "backend_error"
+            )
+            self._log_chain(
+                attempts=attempts,
+                final_outcome=final_outcome,
+                final_tier=attempt_tier.value,
+                trace_id=trace_id,
+            )
             return _with_attempts(resp, attempts)
 
         # Every tier in the chain failed. Attach the trail to the last resp.
+        self._log_chain(
+            attempts=attempts,
+            final_outcome="exhausted",
+            final_tier=attempts[-1].tier if attempts else "",
+            trace_id=trace_id,
+        )
         return _with_attempts(resp, attempts)
+
+    @staticmethod
+    def _log_chain(
+        *,
+        attempts: list[TierAttempt],
+        final_outcome: str,
+        final_tier: str,
+        trace_id: str | None,
+    ) -> None:
+        """Best-effort write to the structured escalation log.
+
+        Imported lazily so the runner doesn't pull the log module on
+        cold-start when the log is never read (e.g. tests that don't
+        care about observability).
+        """
+        try:
+            from work_buddy.llm.escalation_log import log_escalation
+            log_escalation(
+                source="llm_runner",
+                attempts=attempts,
+                final_outcome=final_outcome,
+                final_tier=final_tier,
+                trace_id=trace_id,
+            )
+        except Exception:  # noqa: BLE001
+            # The log path is intentionally non-fatal; failures here
+            # must never break a real LLM call.
+            logger.debug("Escalation log write skipped", exc_info=True)
 
     # -- internal -----------------------------------------------------------
 

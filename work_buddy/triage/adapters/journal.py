@@ -100,6 +100,7 @@ def collect_same_day_candidates(
     segment_temperature: float | None = None,
     segment_cache_ttl_minutes: int | None = None,
     tier_chain: list[Any] | None = None,
+    trace_id: str | None = None,
 ) -> tuple[list[TriageItem], str | None]:
     """Return ``(items, content_hash)`` for the producer.
 
@@ -190,6 +191,7 @@ def collect_same_day_candidates(
         temperature=segment_temperature,
         cache_ttl_minutes=segment_cache_ttl_minutes,
         journal_date=journal_date,
+        trace_id=trace_id,
     )
     if threads is None:
         return [], ch
@@ -244,6 +246,7 @@ def _segment_with_escalation(
     temperature: float = 0.0,
     cache_ttl_minutes: int = 60,
     journal_date: str | None = None,
+    trace_id: str | None = None,
 ) -> list[dict[str, Any]] | None:
     """Run segmentation, escalating through ``tier_chain`` on failure.
 
@@ -293,6 +296,14 @@ def _segment_with_escalation(
     numbered, original_lines = number_lines(original_text)
     user_prompt = _segmentation_user_prompt(numbered_text=numbered)
 
+    # Auto-generate a trace_id when the caller didn't supply one so the
+    # escalation log always has a correlation token tying together the
+    # adapter-level chain and the per-tier LLMRunner call records.
+    if trace_id is None:
+        import uuid as _uuid
+        trace_id = (f"journal_segment:{journal_date}:{_uuid.uuid4().hex[:8]}"
+                    if journal_date else f"journal_segment:{_uuid.uuid4().hex[:8]}")
+
     # Content-addressable cache lookup BEFORE any LLM call. Keyed on
     # the system_hash + the content-set of original_lines.
     cached_groups = get_cached_segmentation(
@@ -330,22 +341,55 @@ def _segment_with_escalation(
 
     attempts: list[dict[str, Any]] = []
 
+    def _emit_log(final_outcome: str, final_tier: str) -> None:
+        """Best-effort write to the structured escalation log."""
+        try:
+            from work_buddy.llm.escalation_log import log_escalation
+            log_escalation(
+                source="journal_segmenter",
+                attempts=attempts,
+                final_outcome=final_outcome,
+                final_tier=final_tier,
+                trace_id=trace_id,
+                task_id=(f"journal_segment:{journal_date}"
+                         if journal_date else "journal_segment"),
+                metadata={"journal_date": journal_date},
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug("escalation log write skipped", exc_info=True)
+
     for tier in tier_chain:
-        parsed, failure = _call_segmenter(
+        parsed, failure, attempt_meta = _call_segmenter(
             system=_SYSTEM_PROMPT,
             user=user_prompt,
             tier=tier,
+            trace_id=trace_id,
             **call_kwargs,
         )
+        tier_str = getattr(tier, "value", str(tier))
         if parsed is None:
             attempts.append({
-                "tier": getattr(tier, "value", str(tier)),
+                "tier": tier_str,
+                "model": attempt_meta.get("model", ""),
                 "outcome": failure or "llm_error_or_unparseable",
+                "error_kind": failure,
+                "elapsed_ms": attempt_meta.get("elapsed_ms", 0),
+                "input_tokens": attempt_meta.get("input_tokens", 0),
+                "output_tokens": attempt_meta.get("output_tokens", 0),
             })
             continue
 
         result = validate_line_range_segmentation(parsed, original_lines)
         if result.get("valid"):
+            attempts.append({
+                "tier": tier_str,
+                "model": attempt_meta.get("model", ""),
+                "outcome": "success",
+                "elapsed_ms": attempt_meta.get("elapsed_ms", 0),
+                "input_tokens": attempt_meta.get("input_tokens", 0),
+                "output_tokens": attempt_meta.get("output_tokens", 0),
+            })
+            _emit_log("success", tier_str)
             # Persist to the content-addressable cache so subsequent
             # runs on the same content (any ordering) reuse this work.
             try:
@@ -367,9 +411,13 @@ def _segment_with_escalation(
         errors = result.get("errors", []) or []
         grouped = _group_validation_errors(errors)
         attempts.append({
-            "tier": getattr(tier, "value", str(tier)),
+            "tier": tier_str,
+            "model": attempt_meta.get("model", ""),
             "outcome": "validation_failed",
             "error_kind": "validation_failed",
+            "elapsed_ms": attempt_meta.get("elapsed_ms", 0),
+            "input_tokens": attempt_meta.get("input_tokens", 0),
+            "output_tokens": attempt_meta.get("output_tokens", 0),
             "error_count": len(errors),
             "categories": list(grouped.keys()),
             "sample": [e[:120] for e in errors[:3]],
@@ -381,6 +429,8 @@ def _segment_with_escalation(
         journal_date,
         attempts,
     )
+    _emit_log("exhausted",
+              attempts[-1].get("tier", "") if attempts else "")
     return None
 
 
@@ -420,14 +470,19 @@ def _call_segmenter(
     max_tokens: int,
     temperature: float,
     cache_ttl_minutes: int,
-) -> tuple[dict[str, Any] | None, str | None]:
+    trace_id: str | None = None,
+) -> tuple[dict[str, Any] | None, str | None, dict[str, Any]]:
     """Run one LLM call at ``tier`` and parse the JSON response.
 
-    Returns ``(parsed_json, None)`` on success, or
-    ``(None, failure_kind)`` on any failure. ``failure_kind`` is a
+    Returns ``(parsed_json, None, meta)`` on success, or
+    ``(None, failure_kind, meta)`` on any failure. ``failure_kind`` is a
     short string drawn from ``LLMResponse.error_kind`` when the
     runner reports an error, or a local tag (``"empty_content"``,
     ``"unparseable"``) for adapter-side failures.
+
+    ``meta`` always contains ``model``, ``elapsed_ms``, ``input_tokens``,
+    and ``output_tokens`` so the adapter-level escalation log can record
+    per-tier accounting even when the parse failed.
 
     We DO NOT pass ``output_schema=`` here. Empirically, LM Studio's
     openai-compat ``response_format: json_schema`` path breaks for
@@ -443,6 +498,7 @@ def _call_segmenter(
     ``config.local.yaml`` under ``llm.tiers``.
     """
     from work_buddy.llm import LLMRunner
+    import time as _time
 
     if profile and profile not in ("local_general",):
         logger.debug(
@@ -452,6 +508,7 @@ def _call_segmenter(
             getattr(tier, "value", tier),
         )
 
+    t0 = _time.time()
     resp = LLMRunner().call(
         tier=tier,
         system=system,
@@ -459,7 +516,16 @@ def _call_segmenter(
         max_tokens=max_tokens,
         temperature=temperature,
         cache_ttl_minutes=cache_ttl_minutes,
+        trace_id=trace_id,
     )
+    elapsed_ms = int((_time.time() - t0) * 1000)
+    meta: dict[str, Any] = {
+        "model": resp.model,
+        "elapsed_ms": elapsed_ms,
+        "input_tokens": resp.input_tokens,
+        "output_tokens": resp.output_tokens,
+    }
+
     if resp.is_error():
         kind = resp.error_kind.value if resp.error_kind else "unknown"
         logger.warning(
@@ -467,11 +533,11 @@ def _call_segmenter(
             "kind=%s msg=%s",
             getattr(tier, "value", tier), kind, resp.error,
         )
-        return None, kind
+        return None, kind, meta
 
     content = (resp.content or "").strip()
     if not content:
-        return None, "empty_content"
+        return None, "empty_content", meta
     if content.startswith("```"):
         content = content.split("\n", 1)[1] if "\n" in content else content
         if content.endswith("```"):
@@ -480,13 +546,13 @@ def _call_segmenter(
     # Models sometimes emit leading/trailing prose despite the prompt.
     # Locate the outermost {...} and parse that.
     try:
-        return json.loads(content), None
+        return json.loads(content), None, meta
     except (json.JSONDecodeError, ValueError):
         brace_start = content.find("{")
         brace_end = content.rfind("}")
         if brace_start >= 0 and brace_end > brace_start:
             try:
-                return json.loads(content[brace_start : brace_end + 1]), None
+                return json.loads(content[brace_start : brace_end + 1]), None, meta
             except (json.JSONDecodeError, ValueError):
                 pass
         logger.warning(
@@ -494,7 +560,7 @@ def _call_segmenter(
             "tier=%s (len=%d)",
             getattr(tier, "value", tier), len(content),
         )
-        return None, "unparseable"
+        return None, "unparseable", meta
 
 
 def _derive_label(text: str, *, max_chars: int = 72) -> str:

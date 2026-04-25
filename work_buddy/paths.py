@@ -56,6 +56,7 @@ RESOURCES: dict[str, str] = {
     # Logs
     "logs/gateway-debug":        "logs/gateway_debug.log",
     "logs/search-debug":         "logs/search_debug.log",
+    "logs/escalations":          "logs/escalations.log",
 
     # Telegram
     "runtime/telegram-chat-id":  "runtime/telegram_chat_id",

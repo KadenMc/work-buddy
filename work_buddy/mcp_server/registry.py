@@ -3748,7 +3748,103 @@ def _llm_capabilities() -> list[Capability]:
             # Failures should surface to the caller, not go to the queue.
             auto_retry=False,
         ),
+        Capability(
+            name="escalation_recent",
+            description=(
+                "Recent LLM-escalation observability records. Each record is "
+                "one logical job (one LLMRunner.call OR one adapter-level "
+                "escalation chain across multiple calls) with its full per-tier "
+                "attempt list, final outcome, and trace correlation."
+            ),
+            category="llm",
+            search_aliases=[
+                "tier escalation",
+                "escalation log",
+                "what tier answered",
+                "did this escalate",
+                "fallback chain",
+                "model fallback",
+                "validation failed",
+                "tier observability",
+            ],
+            parameters={
+                "limit": {
+                    "type": "int",
+                    "description": "Max records to return (newest first). Default 50.",
+                    "required": False,
+                },
+                "trace_id": {
+                    "type": "str",
+                    "description": "Filter by exact trace_id correlation token.",
+                    "required": False,
+                },
+                "final_outcome": {
+                    "type": "str",
+                    "description": (
+                        "Filter by final_outcome ('success', 'backend_error', "
+                        "'validation_failed', 'empty_content', 'exhausted')."
+                    ),
+                    "required": False,
+                },
+                "source": {
+                    "type": "str",
+                    "description": (
+                        "Filter by source ('llm_runner', 'journal_segmenter', "
+                        "'verdict_call')."
+                    ),
+                    "required": False,
+                },
+                "summary": {
+                    "type": "bool",
+                    "description": (
+                        "When true, return aggregate counts (by source / outcome / "
+                        "final_tier, plus 'escalated_past_first') instead of records."
+                    ),
+                    "required": False,
+                },
+            },
+            callable=_escalation_recent,
+        ),
     ]
+
+
+def _escalation_recent(
+    *,
+    limit: int = 50,
+    trace_id: str | None = None,
+    final_outcome: str | None = None,
+    source: str | None = None,
+    summary: bool = False,
+) -> dict[str, Any]:
+    """Read recent records from the LLM-escalation log.
+
+    See :mod:`work_buddy.llm.escalation_log` for the record shape.
+    """
+    from work_buddy.llm.escalation_log import (
+        read_escalations,
+        summarize_escalations,
+    )
+    if summary:
+        return {
+            "summary": summarize_escalations(limit=None),
+            "applied_filters": {},
+        }
+    records = read_escalations(
+        limit=limit,
+        trace_id=trace_id,
+        final_outcome=final_outcome,
+        source=source,
+    )
+    return {
+        "records": records,
+        "count": len(records),
+        "applied_filters": {
+            "limit": limit,
+            "trace_id": trace_id,
+            "final_outcome": final_outcome,
+            "source": source,
+        },
+    }
 
 
 def _sidecar_capabilities() -> list[Capability]:
