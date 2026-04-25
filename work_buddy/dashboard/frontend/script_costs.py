@@ -350,10 +350,10 @@ function costsRenderAll(opts) {
     const isAllProjects = !costsState.project;
 
     if (shape === 'claude_code') {
-        // Top tools (always useful for Claude Code).
-        if (taskCard) taskCard.style.display = '';
-        if (tt) tt.textContent = 'Top tools (by turns)';
-        costsRenderToolChart(data);
+        // Top-tools-by-turns was a leftover from claude-usage's design;
+        // not informative in a cost view. Slot is empty for claude_code.
+        if (taskCard) taskCard.style.display = 'none';
+        _costsDestroyChart('task');
 
         // Top projects only makes sense when not already filtered to one project.
         if (modeCard) modeCard.style.display = isAllProjects ? '' : 'none';
@@ -383,6 +383,15 @@ function costsRenderAll(opts) {
         } else {
             _costsDestroyChart('mode');
         }
+    }
+
+    // Hide the secondary chart row entirely when both cards are hidden,
+    // so we don't leave an empty row of margin behind.
+    const secondRow = (taskCard || modeCard)?.parentElement;
+    if (secondRow) {
+        const taskShown = taskCard && taskCard.style.display !== 'none';
+        const modeShown = modeCard && modeCard.style.display !== 'none';
+        secondRow.style.display = (taskShown || modeShown) ? '' : 'none';
     }
 
     costsRenderModelTable(shape, data);
@@ -795,31 +804,6 @@ function costsRenderTaskChart(data, activity) {
             scales: {
                 x: { ticks: { color: '#8b949e',
                               callback: useTokens ? costsFmtN : costsFmtCost },
-                     grid: { color: '#21262d' } },
-                y: { ticks: { color: '#e6edf3' }, grid: { display: false } },
-            },
-        },
-    });
-}
-
-function costsRenderToolChart(data) {
-    const canvas = document.getElementById('costs-task-chart');
-    if (!canvas || typeof Chart === 'undefined') return;
-    _costsDestroyChart('task');
-    const rows = (data.by_tool || []).slice(0, 10);
-    const labels = rows.map(r => r.tool);
-    const data_arr = rows.map(r => r.turns || 0);
-    costsState.charts.task = new Chart(canvas.getContext('2d'), {
-        type: 'bar',
-        data: { labels, datasets: [{
-            label: 'turns', data: data_arr, backgroundColor: '#4f8ef7',
-        }]},
-        options: {
-            indexAxis: 'y', responsive: true, maintainAspectRatio: false,
-            plugins: { legend: { display: false },
-                tooltip: { callbacks: { label: ctx => costsFmtN(ctx.parsed.x) + ' turns' } } },
-            scales: {
-                x: { ticks: { color: '#8b949e', callback: costsFmtN },
                      grid: { color: '#21262d' } },
                 y: { ticks: { color: '#e6edf3' }, grid: { display: false } },
             },
