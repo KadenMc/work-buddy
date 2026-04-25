@@ -43,10 +43,30 @@ def _cost_log_path() -> Path:
     return session_dir / "llm_costs.jsonl"
 
 
-def _estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
-    """Estimate cost in USD."""
+def _estimate_cost(
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    cache_read_tokens: int = 0,
+    cache_creation_tokens: int = 0,
+) -> float:
+    """Estimate cost in USD.
+
+    Uses input/output rates from the legacy 3-model table when available;
+    falls back to ``$1/$5 per million`` for unknown models. Cache rates
+    are derived as 90% off input (read) and 25% premium (creation) to
+    match Anthropic's published structure — until the pricing-table
+    consolidation lands these are still close enough to be useful.
+    """
     rates = _COST_PER_M_TOKENS.get(model, {"input": 1.0, "output": 5.0})
-    return (input_tokens * rates["input"] + output_tokens * rates["output"]) / 1_000_000
+    cache_read_rate = rates["input"] * 0.10       # 90% discount
+    cache_create_rate = rates["input"] * 1.25     # 25% premium
+    return (
+        input_tokens * rates["input"]
+        + output_tokens * rates["output"]
+        + cache_read_tokens * cache_read_rate
+        + cache_creation_tokens * cache_create_rate
+    ) / 1_000_000
 
 
 def _get_caller_chain(skip: int = 2) -> list[str]:
@@ -98,26 +118,42 @@ def log_call(
     cached: bool = False,
     execution_mode: str = "cloud",
     backend: str | None = None,
+    cache_read_tokens: int = 0,
+    cache_creation_tokens: int = 0,
 ) -> None:
     """Append a cost entry to the session log.
 
     Args:
         model: Model name used.
-        input_tokens: Input token count.
+        input_tokens: Fresh-input token count (excludes cache reads/writes).
         output_tokens: Output token count.
         task_id: Identifier for the task (e.g., "chrome_infer:batch").
         trace_id: Optional UUID linking related calls in a single invocation.
-        cached: If True, this was a cache hit (no API call, zero cost).
+        cached: If True, this was a work-buddy-side cache hit (no API call,
+            zero cost). Distinct from ``cache_read_tokens`` which is
+            Anthropic's server-side prompt cache.
         execution_mode: ``"cloud"`` (default) or ``"local"``. Local calls
             log ``estimated_cost_usd: 0.0`` rather than falling back to
             the unknown-model price heuristic.
         backend: Optional backend id (e.g., ``"anthropic_default"``,
             ``"lmstudio_local"``) for per-backend cost breakdowns.
+        cache_read_tokens: Input tokens served from Anthropic's server-side
+            prompt cache (90% off the input rate). Available on every
+            Anthropic response when prompt caching is enabled. Local
+            backends don't have this concept; default 0.
+        cache_creation_tokens: Input tokens being written to the cache
+            (25% premium on the input rate). Same notes as cache_read.
     """
     if cached or execution_mode == "local":
         est_cost = 0.0
     else:
-        est_cost = round(_estimate_cost(model, input_tokens, output_tokens), 6)
+        est_cost = round(
+            _estimate_cost(
+                model, input_tokens, output_tokens,
+                cache_read_tokens, cache_creation_tokens,
+            ),
+            6,
+        )
 
     entry: dict[str, Any] = {
         "timestamp": datetime.now().isoformat(),
@@ -125,6 +161,8 @@ def log_call(
         "task_id": task_id,
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
+        "cache_read_tokens": cache_read_tokens,
+        "cache_creation_tokens": cache_creation_tokens,
         "estimated_cost_usd": est_cost,
         "cached": cached,
         "execution_mode": execution_mode,
@@ -151,6 +189,7 @@ def session_total() -> dict:
         return {
             "total_calls": 0, "api_calls": 0, "cache_hits": 0,
             "total_input_tokens": 0, "total_output_tokens": 0,
+            "total_cache_read_tokens": 0, "total_cache_creation_tokens": 0,
             "estimated_cost_usd": 0,
         }
 
@@ -159,6 +198,8 @@ def session_total() -> dict:
     api_calls = total_calls - cache_hits
     total_input = sum(e.get("input_tokens", 0) for e in entries)
     total_output = sum(e.get("output_tokens", 0) for e in entries)
+    total_cache_read = sum(e.get("cache_read_tokens", 0) for e in entries)
+    total_cache_create = sum(e.get("cache_creation_tokens", 0) for e in entries)
     total_cost = sum(e.get("estimated_cost_usd", 0) for e in entries)
 
     return {
@@ -167,6 +208,8 @@ def session_total() -> dict:
         "cache_hits": cache_hits,
         "total_input_tokens": total_input,
         "total_output_tokens": total_output,
+        "total_cache_read_tokens": total_cache_read,
+        "total_cache_creation_tokens": total_cache_create,
         "estimated_cost_usd": round(total_cost, 6),
     }
 

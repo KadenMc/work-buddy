@@ -328,9 +328,19 @@ function costsRenderCards() {
             sub: `${totals.cloud_calls} cloud · ${totals.local_calls} local` },
         { label: 'Input tokens', value: costsFmtN(totals.input_tokens) },
         { label: 'Output tokens',value: costsFmtN(totals.output_tokens) },
-        { label: 'Est. cost',    value: costsFmtCost(totals.cost_usd),
-            sub: 'cloud only; local logs $0' },
     ];
+    // Show cache cards only when the data is present (rows post-2026-04-25
+    // carry these; legacy rows have them as 0).
+    if ((totals.cache_read_tokens || 0) > 0 || (totals.cache_creation_tokens || 0) > 0) {
+        cards.push(
+            { label: 'Cache read',  value: costsFmtN(totals.cache_read_tokens),
+                sub: '90% off input rate' },
+            { label: 'Cache write', value: costsFmtN(totals.cache_creation_tokens),
+                sub: '+25% premium' },
+        );
+    }
+    cards.push({ label: 'Est. cost',    value: costsFmtCost(totals.cost_usd),
+        sub: 'cloud only; local logs $0' });
     wrap.innerHTML = cards.map(c => `
         <div class="card">
             <div class="card-label">${costsEsc(c.label)}</div>
@@ -358,6 +368,8 @@ function costsRenderDailyChart() {
     const labels = days.map(d => d.day);
     const inputs = days.map(d => d.input_tokens || 0);
     const outputs = days.map(d => d.output_tokens || 0);
+    const cacheRead = days.map(d => d.cache_read_tokens || 0);
+    const cacheCreate = days.map(d => d.cache_creation_tokens || 0);
     const costs = days.map(d => d.cost_usd || 0);
     const datasets = [
         { label: 'Input',  data: inputs,
@@ -365,9 +377,11 @@ function costsRenderDailyChart() {
         { label: 'Output', data: outputs,
           backgroundColor: COSTS_TOKEN_COLORS.output, stack: 'tokens', yAxisID: 'y' },
     ];
-    if (isTr) {
-        const cacheRead = days.map(d => d.cache_read_tokens || 0);
-        const cacheCreate = days.map(d => d.cache_creation_tokens || 0);
+    // Cache datasets render whenever the data is present, not based on source.
+    // Internal-log rows after 2026-04-25 carry cache token splits;
+    // transcript rows always have them.
+    const hasCache = cacheRead.some(v => v > 0) || cacheCreate.some(v => v > 0);
+    if (hasCache) {
         datasets.push(
             { label: 'Cache read',  data: cacheRead,
               backgroundColor: COSTS_TOKEN_COLORS.cache_read, stack: 'tokens', yAxisID: 'y' },
@@ -578,9 +592,12 @@ function costsRenderModelTable() {
         wrap.innerHTML = html;
         return;
     }
+    // "Cache hits" here is the work-buddy-side LLM-cache count
+    // (work_buddy.llm.cache, an in-process result cache). Distinct from
+    // the Anthropic prompt-cache tokens displayed in the cards above.
     html = '<table class="data-table costs-table"><thead><tr>' +
         '<th>Model</th><th class="num">Calls</th><th class="num">API</th>' +
-        '<th class="num">Cache</th><th class="num">Input</th>' +
+        '<th class="num">Cache hits</th><th class="num">Input</th>' +
         '<th class="num">Output</th><th class="num">Cost</th>' +
         '</tr></thead><tbody>';
     for (const r of rows) {

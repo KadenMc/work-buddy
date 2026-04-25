@@ -129,7 +129,12 @@ def _entry_day(entry: dict[str, Any]) -> str:
 
 
 def _entry_cost(entry: dict[str, Any]) -> float:
-    """Cost for a log entry. Re-estimates if the field is missing."""
+    """Cost for a log entry. Re-estimates if the field is missing.
+
+    Used as a fallback only — rows written by current ``log_call`` always
+    carry ``estimated_cost_usd``. The re-estimation path matters for any
+    hand-edited / migrated rows that lose the field.
+    """
     cost = entry.get("estimated_cost_usd")
     if cost is not None:
         return float(cost)
@@ -140,7 +145,14 @@ def _entry_cost(entry: dict[str, Any]) -> float:
         return 0.0
     inp = int(entry.get("input_tokens", 0))
     out = int(entry.get("output_tokens", 0))
-    return (inp * rates["input"] + out * rates["output"]) / 1_000_000
+    cache_r = int(entry.get("cache_read_tokens") or 0)
+    cache_c = int(entry.get("cache_creation_tokens") or 0)
+    return (
+        inp * rates["input"]
+        + out * rates["output"]
+        + cache_r * rates["input"] * 0.10        # 90% off
+        + cache_c * rates["input"] * 1.25        # 25% premium
+    ) / 1_000_000
 
 
 # ---------------------------------------------------------------------------
@@ -157,6 +169,8 @@ def _empty_totals() -> dict[str, Any]:
         "local_calls": 0,
         "input_tokens": 0,
         "output_tokens": 0,
+        "cache_read_tokens": 0,
+        "cache_creation_tokens": 0,
         "cost_usd": 0.0,
     }
 
@@ -177,6 +191,11 @@ def _accumulate(bucket: dict[str, Any], entry: dict[str, Any]) -> None:
         bucket["api_calls"] += 1
     bucket["input_tokens"] += int(entry.get("input_tokens", 0))
     bucket["output_tokens"] += int(entry.get("output_tokens", 0))
+    # cache_read_tokens / cache_creation_tokens were added 2026-04-25.
+    # Older rows lack the fields → ``int(...or 0)`` covers both missing
+    # and explicit-None cases.
+    bucket["cache_read_tokens"] += int(entry.get("cache_read_tokens") or 0)
+    bucket["cache_creation_tokens"] += int(entry.get("cache_creation_tokens") or 0)
     bucket["cost_usd"] += _entry_cost(entry)
 
 

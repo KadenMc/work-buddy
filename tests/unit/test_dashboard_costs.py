@@ -243,6 +243,61 @@ def test_aggregator_legacy_missing_execution_mode_buckets_as_cloud(tmp_path):
     assert s["totals"]["local_calls"] == 0
 
 
+def test_aggregator_sums_cache_token_fields(tmp_path):
+    """cache_read_tokens / cache_creation_tokens roll up into bucket totals."""
+    root = tmp_path / "agents"
+    _write_session(
+        root, "2026-04-25T10-00-00_with-cache",
+        manifest={"short_id": "wc"},
+        entries=[
+            {"timestamp": "2026-04-25T10:00:00",
+             "model": "claude-sonnet-4-6", "task_id": "t1",
+             "input_tokens": 1000, "output_tokens": 500,
+             "cache_read_tokens": 50_000,
+             "cache_creation_tokens": 5_000,
+             "estimated_cost_usd": 0.0125, "cached": False,
+             "execution_mode": "cloud"},
+            {"timestamp": "2026-04-25T10:30:00",
+             "model": "claude-sonnet-4-6", "task_id": "t2",
+             "input_tokens": 200, "output_tokens": 100,
+             "cache_read_tokens": 100_000,
+             "cache_creation_tokens": 0,
+             "estimated_cost_usd": 0.005, "cached": False,
+             "execution_mode": "cloud"},
+        ],
+    )
+    s = costs_mod.get_costs_summary(agents_dir=root)
+    t = s["totals"]
+    assert t["cache_read_tokens"] == 150_000
+    assert t["cache_creation_tokens"] == 5_000
+    # Per-day rolls up too.
+    day = s["by_day"][0]
+    assert day["cache_read_tokens"] == 150_000
+    assert day["cache_creation_tokens"] == 5_000
+
+
+def test_aggregator_treats_missing_cache_fields_as_zero(tmp_path):
+    """Rows written before 2026-04-25 lack the cache fields entirely."""
+    root = tmp_path / "agents"
+    _write_session(
+        root, "2026-04-10T00-00-00_no-cache-field",
+        manifest={"short_id": "ncf"},
+        entries=[{
+            "timestamp": "2026-04-10T08:00:00",
+            "model": "claude-sonnet-4-6", "task_id": "t1",
+            "input_tokens": 100, "output_tokens": 50,
+            "estimated_cost_usd": 0.0011, "cached": False,
+            "execution_mode": "cloud",
+            # No cache_read_tokens / cache_creation_tokens fields.
+        }],
+    )
+    s = costs_mod.get_costs_summary(agents_dir=root)
+    assert s["totals"]["cache_read_tokens"] == 0
+    assert s["totals"]["cache_creation_tokens"] == 0
+    # Aggregator must not crash and must aggregate the call normally.
+    assert s["totals"]["calls"] == 1
+
+
 def test_aggregator_empty_directory(tmp_path):
     s = costs_mod.get_costs_summary(agents_dir=tmp_path / "doesnotexist")
     assert s["totals"]["calls"] == 0

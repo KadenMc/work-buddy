@@ -281,6 +281,15 @@ def run_task(
         content = response.content[0].text if response.content else ""
         input_tokens = response.usage.input_tokens
         output_tokens = response.usage.output_tokens
+        # Anthropic populates these only when prompt caching is active on
+        # the request; absent → treat as 0. Anthropic's SDK ``Usage`` has
+        # them as optional ints, so getattr with a 0 default is safe.
+        cache_read_tokens = getattr(
+            response.usage, "cache_read_input_tokens", 0,
+        ) or 0
+        cache_creation_tokens = getattr(
+            response.usage, "cache_creation_input_tokens", 0,
+        ) or 0
 
         # Parse JSON — guaranteed valid when output_schema was used,
         # best-effort when json_mode=True without a schema
@@ -320,6 +329,8 @@ def run_task(
             trace_id=trace_id,
             execution_mode=execution_mode,
             backend=backend_id,
+            cache_read_tokens=cache_read_tokens,
+            cache_creation_tokens=cache_creation_tokens,
         )
 
         # Cache result
