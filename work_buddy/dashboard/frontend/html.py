@@ -228,7 +228,7 @@ def _html() -> str:
         <div class="costs-toolbar-left">
             <select id="costs-source" class="chats-select" onchange="costsSourceChanged(this.value)">
                 <option value="internal">Work Buddy log</option>
-                <option value="transcripts">Claude transcripts</option>
+                <option value="claude_code">Claude Code</option>
                 <option value="all">Both</option>
             </select>
             <select id="costs-range" class="chats-select" onchange="costsRangeChanged(this.value)">

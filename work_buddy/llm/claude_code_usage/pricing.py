@@ -1,19 +1,26 @@
-"""Anthropic pricing rates used by the transcript-derived cost view.
+"""Anthropic pricing rates — the canonical table for the whole repo.
 
 Vendored verbatim from ``claude-usage`` (MIT, Pawel Huryn, April 2026).
-The structure intentionally splits cache_read / cache_write rates out
-of the generic input/output rate so the transcript view can faithfully
-reproduce Anthropic's published pricing.
+The structure splits cache_read / cache_write rates out of the generic
+input/output rate so cost computation faithfully reproduces Anthropic's
+published pricing.
 
-The rates here describe **dollars per 1 million tokens**. ``calc_cost``
-returns dollars.
+The rates here describe **dollars per 1 million tokens**.
+:func:`calc_cost` returns dollars.
 
-This table is deliberately independent of
-:data:`work_buddy.llm.cost._COST_PER_M_TOKENS` — the first-party log
-historically used a smaller table that ignores cache-read discount and
-cache-write premium. Re-pricing existing log entries against this
-richer table would silently change historical numbers, so Phase 2 keeps
-the two sources separate and lets the user decide whether to reconcile.
+As of the 2026-04-25 pricing consolidation, both consumers share this
+table:
+
+* :func:`work_buddy.llm.cost.log_call` writes ``estimated_cost_usd`` per
+  API call against this table (with cache_read / cache_creation token
+  splits captured from the response).
+* :func:`work_buddy.llm.claude_code_usage.aggregator.get_claude_code_usage_summary`
+  uses it to cost the transcript-derived turn data.
+
+The migration ``scripts/migrate_priced_with_v2.py`` stamped every
+pre-consolidation row with ``priced_with: "v2"``. Cost numbers did not
+change because legacy rows lack the cache_read / cache_creation token
+data needed to apply cache rates retroactively.
 """
 
 from __future__ import annotations
@@ -33,7 +40,7 @@ PRICING: dict[str, dict[str, float]] = {
 
 
 def get_pricing(model: str | None) -> dict[str, float] | None:
-    """Resolve a pricing dict for ``model`` using the claude-usage strategy.
+    """Resolve a pricing dict for ``model`` using the upstream strategy.
 
     1. Exact match.
     2. Prefix match (e.g. ``claude-sonnet-4-6-extended-context`` falls

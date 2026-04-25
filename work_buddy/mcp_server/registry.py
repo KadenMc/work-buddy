@@ -3749,7 +3749,7 @@ def _llm_capabilities() -> list[Capability]:
             auto_retry=False,
         ),
         Capability(
-            name="claude_transcripts_scan",
+            name="claude_code_usage_scan",
             description=(
                 "Scan Claude Code's local transcript JSONLs into the cost "
                 "cache (~/.claude/projects/**/*.jsonl). Incremental by default. "
@@ -3758,9 +3758,9 @@ def _llm_capabilities() -> list[Capability]:
             category="llm",
             search_aliases=[
                 "claude usage",
-                "transcript scan",
                 "claude code usage",
-                "ingest transcripts",
+                "transcript scan",
+                "ingest claude code activity",
                 "rescan costs",
             ],
             parameters={
@@ -3770,24 +3770,24 @@ def _llm_capabilities() -> list[Capability]:
                     "required": False,
                 },
             },
-            callable=_claude_transcripts_scan,
+            callable=_claude_code_usage_scan,
             mutates_state=True,
             auto_retry=False,
         ),
         Capability(
-            name="claude_transcripts_summary",
+            name="claude_code_usage_summary",
             description=(
-                "Return the transcript-derived cost / usage read model. "
-                "Same shape consumed by GET /api/costs?source=transcripts."
+                "Return the Claude-Code-usage cost / usage read model. "
+                "Same shape consumed by GET /api/costs?source=claude_code."
             ),
             category="llm",
             search_aliases=[
                 "claude usage summary",
-                "transcript costs",
                 "claude code spend",
+                "transcript costs",
             ],
             parameters={},
-            callable=_claude_transcripts_summary,
+            callable=_claude_code_usage_summary,
         ),
         Capability(
             name="escalation_recent",
@@ -3849,16 +3849,20 @@ def _llm_capabilities() -> list[Capability]:
     ]
 
 
-def _claude_transcripts_scan(*, full_rebuild: bool = False) -> dict[str, Any]:
-    """Trigger the vendored Claude transcripts scanner."""
-    from work_buddy.dashboard.costs_transcripts import rescan_transcripts
-    return rescan_transcripts(full_rebuild=full_rebuild)
+def _claude_code_usage_scan(*, full_rebuild: bool = False) -> dict[str, Any]:
+    """Trigger the vendored Claude-Code-usage scanner."""
+    from work_buddy.dashboard.costs_claude_code_usage import (
+        rescan_claude_code_usage,
+    )
+    return rescan_claude_code_usage(full_rebuild=full_rebuild)
 
 
-def _claude_transcripts_summary() -> dict[str, Any]:
-    """Return the transcript-derived cost/usage read model."""
-    from work_buddy.dashboard.costs_transcripts import get_transcripts_summary
-    return get_transcripts_summary()
+def _claude_code_usage_summary() -> dict[str, Any]:
+    """Return the Claude-Code-usage cost / usage read model."""
+    from work_buddy.dashboard.costs_claude_code_usage import (
+        get_claude_code_usage_summary,
+    )
+    return get_claude_code_usage_summary()
 
 
 def _escalation_recent(

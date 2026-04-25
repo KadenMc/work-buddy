@@ -840,37 +840,43 @@ def api_costs():
     """Aggregated LLM cost / usage summary across all agent sessions.
 
     Optional query params:
-        source: ``internal`` (default), ``transcripts``, or ``all``.
-            Phase 1 honors ``internal`` only; ``transcripts`` and
-            ``all`` return Phase 2 dual-source data when the
-            ``claude_usage_scanner`` integration is available.
+        source: ``internal`` (default), ``claude_code``, or ``all``.
+            ``internal`` reads the per-call log written by
+            ``work_buddy.llm.cost``. ``claude_code`` reads the
+            transcript-derived cache populated by
+            ``claude_code_usage_scan``. ``all`` returns both keyed under
+            ``internal`` and ``claude_code``.
     """
     source = (request.args.get("source") or "internal").lower()
+    # Backwards-compat: the old ``transcripts`` source name still routes
+    # to claude_code so any external bookmarks / scripts keep working.
+    if source == "transcripts":
+        source = "claude_code"
     try:
         from work_buddy.dashboard.costs import get_costs_summary
         internal = get_costs_summary()
         if source == "internal":
             return jsonify(internal)
 
-        transcripts: dict | None = None
+        claude_code: dict | None = None
         try:
-            from work_buddy.dashboard.costs_transcripts import (
-                get_transcripts_summary,
+            from work_buddy.dashboard.costs_claude_code_usage import (
+                get_claude_code_usage_summary,
             )
-            transcripts = get_transcripts_summary()
+            claude_code = get_claude_code_usage_summary()
         except ImportError:
-            transcripts = None
+            claude_code = None
         except Exception as exc:  # noqa: BLE001
-            logger.warning("transcripts cost source failed: %s", exc)
-            transcripts = {"error": str(exc), "source": "claude_transcripts"}
+            logger.warning("claude_code_usage source failed: %s", exc)
+            claude_code = {"error": str(exc), "source": "claude_code"}
 
-        if source == "transcripts":
-            return jsonify(transcripts or {"source": "claude_transcripts",
+        if source == "claude_code":
+            return jsonify(claude_code or {"source": "claude_code",
                                             "available": False})
 
         return jsonify({
             "internal": internal,
-            "transcripts": transcripts,
+            "claude_code": claude_code,
             "source": "all",
         })
     except Exception as exc:  # noqa: BLE001
@@ -880,20 +886,18 @@ def api_costs():
 
 @app.post("/api/costs/rescan")
 def api_costs_rescan():
-    """Re-scan Claude Code transcripts to refresh the transcripts source.
-
-    Phase 1 with no transcript source returns ``{"available": False}``.
-    Phase 2 triggers the vendored scanner.
-    """
+    """Re-scan Claude Code transcripts to refresh the claude_code source."""
     if reject := _reject_read_only():
         return reject
     try:
-        from work_buddy.dashboard.costs_transcripts import rescan_transcripts
+        from work_buddy.dashboard.costs_claude_code_usage import (
+            rescan_claude_code_usage,
+        )
     except ImportError:
         return jsonify({"available": False,
-                        "message": "Transcript scanner not yet wired."})
+                        "message": "Claude Code usage scanner not available."})
     try:
-        result = rescan_transcripts()
+        result = rescan_claude_code_usage()
         return jsonify(result)
     except Exception as exc:  # noqa: BLE001
         logger.exception("Cost rescan failed")

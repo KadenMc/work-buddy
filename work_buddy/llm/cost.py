@@ -4,7 +4,7 @@ Writes to ``agents/<session>/llm_costs.jsonl`` — one JSON object per line.
 Each entry records: model, tokens, cost, task_id, caller chain, trace_id,
 and cache status. Provides session-level totals and per-task breakdowns.
 
-Cost computation lives in :mod:`work_buddy.llm.transcripts.pricing`
+Cost computation lives in :mod:`work_buddy.llm.claude_code_usage.pricing`
 (:func:`calc_cost`) — one canonical pricing table for the whole repo.
 Rows produced before the consolidation (pre-2026-04-25) are stamped with
 ``priced_with: "v1"`` by the migration; rows produced after carry
@@ -23,7 +23,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from work_buddy.llm.transcripts.pricing import calc_cost
+from work_buddy.llm.claude_code_usage.pricing import calc_cost
 
 logger = logging.getLogger(__name__)
 

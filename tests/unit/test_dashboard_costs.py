@@ -332,16 +332,26 @@ def test_api_costs_route_internal(monkeypatch, agents_dir):
     assert "sessions" in body
 
 
-def test_api_costs_route_transcripts_phase1(monkeypatch, agents_dir):
-    """Phase 1: ``source=transcripts`` returns ``available: false``."""
+def test_api_costs_route_claude_code_source(monkeypatch, agents_dir):
+    """``source=claude_code`` returns either populated data or ``available: false``."""
+    monkeypatch.setattr(costs_mod, "_AGENTS_DIR", agents_dir)
+    from work_buddy.dashboard.service import app
+    client = app.test_client()
+    resp = client.get("/api/costs?source=claude_code")
+    assert resp.status_code == 200
+    body = resp.get_json()
+    # Either an explicit unavailable marker or a populated summary.
+    assert "source" in body or "available" in body
+
+
+def test_api_costs_route_legacy_transcripts_alias(monkeypatch, agents_dir):
+    """``source=transcripts`` (legacy name) still routes to claude_code."""
     monkeypatch.setattr(costs_mod, "_AGENTS_DIR", agents_dir)
     from work_buddy.dashboard.service import app
     client = app.test_client()
     resp = client.get("/api/costs?source=transcripts")
     assert resp.status_code == 200
     body = resp.get_json()
-    # Either an explicit unavailable marker or a populated transcripts
-    # summary if Phase 2 is wired. Both are acceptable here.
     assert "source" in body or "available" in body
 
 
@@ -354,7 +364,7 @@ def test_api_costs_route_all_source_wraps(monkeypatch, agents_dir):
     body = resp.get_json()
     assert body["source"] == "all"
     assert "internal" in body
-    assert "transcripts" in body
+    assert "claude_code" in body
     assert body["internal"]["totals"]["calls"] == 7
 
 

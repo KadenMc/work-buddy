@@ -44,7 +44,7 @@ RESOURCES: dict[str, str] = {
     "cache/chrome-request":      "cache/chrome_tabs_request",
     "cache/knowledge-content":   "cache/knowledge_index/content.npz",
     "cache/knowledge-aliases":   "cache/knowledge_index/aliases.npz",
-    "cache/claude-transcripts":  "cache/claude_transcripts.db",
+    "cache/claude-code-usage":   "cache/claude_code_usage.db",
 
     # Chrome integration — rolling data
     "chrome/ledger":             "chrome/tab_ledger.json",

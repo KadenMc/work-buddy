@@ -1,18 +1,11 @@
-"""Read the transcript SQLite cache into the shape the Costs tab expects.
+"""Read the Claude-Code-usage SQLite cache into the shape the Costs tab expects.
 
 The shape mirrors :func:`work_buddy.dashboard.costs.get_costs_summary`'s
 top-level structure so the frontend can render either source through
-the same renderer with only a per-row remap. The vocabulary differs in
-two places that the consumer has to handle deliberately:
-
-* The transcript view records **cache_read_tokens** and
-  **cache_creation_tokens** as first-class fields. The internal log
-  collapses both into a single ``cache_hits`` boolean. The transcript
-  read model exposes them separately so the UI can show the cache-read
-  discount at work.
-* The transcript view computes cost from the richer pricing table at
-  :mod:`work_buddy.llm.transcripts.pricing` (cache rates included),
-  not the truncated table in :mod:`work_buddy.llm.cost`.
+the same renderer with only a per-row remap. As of the 2026-04-25
+pricing consolidation, both this module and ``work_buddy.llm.cost``
+share the canonical pricing table at
+:mod:`work_buddy.llm.claude_code_usage.pricing`.
 """
 
 from __future__ import annotations
@@ -24,8 +17,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from work_buddy.llm.transcripts import scanner as _scanner
-from work_buddy.llm.transcripts.pricing import calc_cost
+from work_buddy.llm.claude_code_usage import scanner as _scanner
+from work_buddy.llm.claude_code_usage.pricing import calc_cost
 
 logger = logging.getLogger(__name__)
 
@@ -60,21 +53,21 @@ def _round(bucket: dict[str, Any]) -> dict[str, Any]:
     return bucket
 
 
-def get_transcripts_summary(*, db_path: Path | None = None) -> dict[str, Any]:
-    """Return the transcript-derived cost / usage read model.
+def get_claude_code_usage_summary(*, db_path: Path | None = None) -> dict[str, Any]:
+    """Return the Claude-Code-usage cost / usage read model.
 
     When the cache DB has not been populated yet, returns
-    ``{"available": False, "source": "claude_transcripts", ...}`` so the
+    ``{"available": False, "source": "claude_code", ...}`` so the
     UI can render an explicit "scan to populate" CTA.
     """
     p = db_path or _scanner.get_db_path()
     if not p.exists():
         return {
             "available": False,
-            "source": "claude_transcripts",
-            "message": ("No transcripts cache yet. Trigger a scan via "
+            "source": "claude_code",
+            "message": ("No Claude Code usage cache yet. Trigger a scan via "
                         "POST /api/costs/rescan or "
-                        "wb_run('claude_transcripts_scan')."),
+                        "wb_run('claude_code_usage_scan')."),
             "db_path": str(p),
         }
 
@@ -82,8 +75,9 @@ def get_transcripts_summary(*, db_path: Path | None = None) -> dict[str, Any]:
         conn = sqlite3.connect(p)
         conn.row_factory = sqlite3.Row
     except sqlite3.Error as exc:
-        logger.warning("transcripts: cannot open cache db at %s: %s", p, exc)
-        return {"available": False, "source": "claude_transcripts",
+        logger.warning("claude_code_usage: cannot open cache db at %s: %s",
+                       p, exc)
+        return {"available": False, "source": "claude_code",
                 "error": str(exc), "db_path": str(p)}
 
     try:
@@ -161,7 +155,7 @@ def get_transcripts_summary(*, db_path: Path | None = None) -> dict[str, Any]:
 
     return {
         "available": True,
-        "source": "claude_transcripts",
+        "source": "claude_code",
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "totals": _round(totals),
         "by_day": by_day_list,

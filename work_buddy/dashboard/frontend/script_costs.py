@@ -21,7 +21,7 @@ let costsState = {
     selectedModels: null,         // null = all
     range: '30',                  // '7' | '30' | '90' | 'all'
     mode: 'all',                  // 'all' | 'cloud' | 'local'
-    source: 'internal',           // 'internal' | 'transcripts' | 'all'
+    source: 'internal',           // 'internal' | 'claude_code' | 'all'
     sessionFilter: '',
     sessionSort: 'last',
     charts: {},                   // Chart.js instances keyed by canvas id
@@ -85,21 +85,21 @@ async function loadCosts(force) {
 
     // Two response shapes:
     //   source=internal     → the internal shape directly
-    //   source=transcripts  → the transcripts shape directly
-    //   source=all          → {internal, transcripts, source:'all'}
+    //   source=claude_code  → the transcripts shape directly
+    //   source=all          → {internal, claude_code, source:'all'}
     let primary = data;
     let secondary = null;
     if (data.source === 'all') {
         primary = data.internal || {};
-        secondary = data.transcripts || null;
+        secondary = data.claude_code || null;
     }
-    // Detect which shape we got; transcripts shape carries
-    // ``source: 'claude_transcripts'`` and may have ``available: false``.
+    // Detect which shape we got; claude_code shape carries
+    // ``source: 'claude_code'`` and may have ``available: false``.
     costsState.raw = primary;
-    costsState.transcripts = (data.source === 'all') ? secondary :
-        (primary && primary.source === 'claude_transcripts') ? primary : null;
-    costsState.shape = (primary && primary.source === 'claude_transcripts')
-        ? 'transcripts' : 'internal';
+    costsState.claudeCode = (data.source === 'all') ? secondary :
+        (primary && primary.source === 'claude_code') ? primary : null;
+    costsState.shape = (primary && primary.source === 'claude_code')
+        ? 'claude_code' : 'internal';
 
     const allModels = primary && primary.all_models ? primary.all_models : [];
     if (costsState.selectedModels === null) {
@@ -114,14 +114,14 @@ async function loadCosts(force) {
     if (meta) {
         const t = primary.totals || {};
         const sCount = primary.session_count || 0;
-        const callsLabel = costsState.shape === 'transcripts'
+        const callsLabel = costsState.shape === 'claude_code'
             ? (t.turns || 0) + ' turns'
             : (t.calls || 0) + ' calls';
         meta.textContent = `${sCount} sessions · ${callsLabel} · ${costsFmtDate(primary.generated_at)}`;
     }
 }
 
-async function costsRescanTranscripts(btn) {
+async function costsRescanClaudeCode(btn) {
     if (btn) { btn.disabled = true; btn.textContent = 'Scanning...'; }
     try {
         const r = await fetch('/api/costs/rescan', { method: 'POST' });
@@ -129,7 +129,7 @@ async function costsRescanTranscripts(btn) {
     } catch (e) {
         console.error('rescan failed', e);
     }
-    if (btn) { btn.disabled = false; btn.textContent = 'Rescan transcripts'; }
+    if (btn) { btn.disabled = false; btn.textContent = 'Rescan Claude Code'; }
     await loadCosts(true);
 }
 
@@ -190,15 +190,15 @@ function _costsModeMatches(entry) {
 function costsRenderAll() {
     if (!costsState.raw) return;
 
-    // If the user picked the transcripts source but no scan has run yet,
+    // If the user picked the claude_code source but no scan has run yet,
     // surface an explicit "Scan now" prompt instead of empty charts.
-    if (costsState.shape === 'transcripts'
+    if (costsState.shape === 'claude_code'
             && costsState.raw.available === false) {
         document.getElementById('costs-cards').innerHTML =
             `<div class="empty-state" style="padding:24px;text-align:center;">
-                <div style="margin-bottom:12px;">${costsEsc(costsState.raw.message || 'No transcripts cached yet.')}</div>
+                <div style="margin-bottom:12px;">${costsEsc(costsState.raw.message || 'No Claude Code usage cached yet.')}</div>
                 <button class="chats-accent-btn"
-                        onclick="costsRescanTranscripts(this)">Rescan transcripts</button>
+                        onclick="costsRescanClaudeCode(this)">Rescan Claude Code</button>
             </div>`;
         document.getElementById('costs-models-filter').innerHTML = '';
         document.getElementById('costs-model-table').innerHTML = '';
@@ -213,7 +213,7 @@ function costsRenderAll() {
     costsRenderModelChart();
     const tt = document.getElementById('costs-task-title');
     const mt = document.getElementById('costs-mode-title');
-    if (costsState.shape === 'transcripts') {
+    if (costsState.shape === 'claude_code') {
         if (tt) tt.textContent = 'Top tools (by turns)';
         if (mt) mt.textContent = 'Top projects (by cost)';
         costsRenderToolChart();
@@ -295,7 +295,7 @@ function costsRenderCards() {
     const wrap = document.getElementById('costs-cards');
     if (!wrap) return;
 
-    if (costsState.shape === 'transcripts') {
+    if (costsState.shape === 'claude_code') {
         const { totals } = _costsAggregateByDayTranscripts();
         const sessionCount = (costsState.raw.sessions || []).filter(_costsFilterSession).length;
         const cards = [
@@ -362,7 +362,7 @@ function costsRenderDailyChart() {
     if (!canvas || typeof Chart === 'undefined') return;
     _costsDestroyChart('daily');
 
-    const isTr = costsState.shape === 'transcripts';
+    const isTr = costsState.shape === 'claude_code';
     const { days } = isTr ? _costsAggregateByDayTranscripts()
                           : _costsAggregateByDayFiltered();
     const labels = days.map(d => d.day);
@@ -569,7 +569,7 @@ function costsRenderModelTable() {
         wrap.innerHTML = '<div class="empty-state">No model data in this filter.</div>';
         return;
     }
-    const isTr = costsState.shape === 'transcripts';
+    const isTr = costsState.shape === 'claude_code';
     let html;
     if (isTr) {
         html = '<table class="data-table costs-table"><thead><tr>' +
@@ -636,7 +636,7 @@ function costsRenderSessionsTable() {
         return;
     }
 
-    const isTr = costsState.shape === 'transcripts';
+    const isTr = costsState.shape === 'claude_code';
     let html;
     if (isTr) {
         html = '<table class="data-table costs-table"><thead><tr>' +

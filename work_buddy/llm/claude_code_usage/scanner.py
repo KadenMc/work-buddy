@@ -3,10 +3,10 @@
 Vendored from `phuryn/claude-usage <https://github.com/phuryn/claude-usage>`_
 (MIT, Pawel Huryn, April 2026). Adapted for work-buddy:
 
-* The DB lives at ``data/cache/claude_transcripts.db``
-  (registered as ``cache/claude-transcripts``).
-* The transcripts root defaults to ``~/.claude/projects/`` and the
-  Xcode location, but ``llm.transcripts.projects_dirs`` in
+* The DB lives at ``data/cache/claude_code_usage.db``
+  (registered as ``cache/claude-code-usage``).
+* The transcript-source roots default to ``~/.claude/projects/`` and
+  the Xcode location, but ``llm.claude_code_usage.projects_dirs`` in
   ``config.yaml`` can override.
 * ``print()`` calls are routed through the standard logger.
 * Public functions retain their upstream names so a future re-vendor
@@ -55,7 +55,11 @@ def get_projects_dirs() -> list[Path]:
     try:
         from work_buddy.config import load_config
         cfg = load_config()
-        configured = (cfg.get("llm", {}) or {}).get("transcripts", {}).get("projects_dirs")
+        configured = (
+            (cfg.get("llm", {}) or {})
+            .get("claude_code_usage", {})
+            .get("projects_dirs")
+        )
         if configured:
             return [Path(p).expanduser() for p in configured]
     except Exception:
@@ -66,7 +70,7 @@ def get_projects_dirs() -> list[Path]:
 def get_db_path() -> Path:
     """Resolve the SQLite cache location through ``work_buddy.paths``."""
     from work_buddy.paths import resolve
-    return resolve("cache/claude-transcripts")
+    return resolve("cache/claude-code-usage")
 
 
 # --- DB ---------------------------------------------------------------------
@@ -258,7 +262,7 @@ def parse_jsonl_file(filepath: str) -> tuple[list[dict[str, Any]],
                 else:
                     turns_no_id.append(turn)
     except OSError as exc:
-        logger.warning("transcripts: error reading %s: %s", filepath, exc)
+        logger.warning("claude_code_usage: error reading %s: %s", filepath, exc)
 
     turns = turns_no_id + list(seen_messages.values())
     return list(session_meta.values()), turns, line_count
@@ -400,7 +404,7 @@ def scan(
         try:
             db_path.unlink()
         except OSError as exc:
-            logger.warning("transcripts: failed to remove db %s: %s",
+            logger.warning("claude_code_usage: failed to remove db %s: %s",
                            db_path, exc)
 
     conn = get_db(db_path)
@@ -531,7 +535,7 @@ def scan(
                         else:
                             turns_no_id.append(turn)
             except OSError as exc:
-                logger.warning("transcripts: error reading %s: %s",
+                logger.warning("claude_code_usage: error reading %s: %s",
                                filepath, exc)
 
             if line_count <= old_lines:

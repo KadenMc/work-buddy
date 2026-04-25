@@ -4,7 +4,7 @@ Covers:
     * pricing helpers
     * end-to-end scan over a synthetic ``~/.claude/projects/`` tree
     * read-model shape produced by the aggregator
-    * dashboard glue exposed via /api/costs?source=transcripts
+    * dashboard glue exposed via /api/costs?source=claude_code
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from work_buddy.llm.transcripts import pricing, scanner, aggregator
+from work_buddy.llm.claude_code_usage import pricing, scanner, aggregator
 
 
 # ---------------------------------------------------------------------------
@@ -137,7 +137,7 @@ def test_scan_initial_run_counts_files_and_turns(tmp_path, projects_tree):
 def test_scan_dedups_streaming_message_ids(tmp_path, projects_tree):
     db = tmp_path / "tx.db"
     scanner.scan(projects_dirs=[projects_tree], db_path=db)
-    summary = aggregator.get_transcripts_summary(db_path=db)
+    summary = aggregator.get_claude_code_usage_summary(db_path=db)
     s1 = next(s for s in summary["sessions"] if s["session_id"] == "s1")
     # Last record per message_id wins → 500+200 (not 100+10) for m1
     # plus 200+80 for m2.
@@ -166,15 +166,15 @@ def test_full_rebuild_drops_existing_db(tmp_path, projects_tree):
 
 
 def test_aggregator_unavailable_when_no_db(tmp_path):
-    s = aggregator.get_transcripts_summary(db_path=tmp_path / "nope.db")
+    s = aggregator.get_claude_code_usage_summary(db_path=tmp_path / "nope.db")
     assert s["available"] is False
-    assert s["source"] == "claude_transcripts"
+    assert s["source"] == "claude_code"
 
 
 def test_aggregator_shape_after_scan(tmp_path, projects_tree):
     db = tmp_path / "tx.db"
     scanner.scan(projects_dirs=[projects_tree], db_path=db)
-    s = aggregator.get_transcripts_summary(db_path=db)
+    s = aggregator.get_claude_code_usage_summary(db_path=db)
     assert s["available"] is True
     assert s["session_count"] == 2
     # Top-level read model fields the dashboard relies on.
@@ -193,7 +193,7 @@ def test_aggregator_shape_after_scan(tmp_path, projects_tree):
 def test_aggregator_cost_estimates_use_richer_pricing(tmp_path, projects_tree):
     db = tmp_path / "tx.db"
     scanner.scan(projects_dirs=[projects_tree], db_path=db)
-    s = aggregator.get_transcripts_summary(db_path=db)
+    s = aggregator.get_claude_code_usage_summary(db_path=db)
     sonnet = next(r for r in s["by_model"] if r["model"] == "claude-sonnet-4-6")
     # 700 input + 280 output + 50000 cache_read for sonnet:
     expected = (700 * 3.0 + 280 * 15.0 + 50000 * 0.30) / 1_000_000
@@ -205,17 +205,17 @@ def test_aggregator_cost_estimates_use_richer_pricing(tmp_path, projects_tree):
 # ---------------------------------------------------------------------------
 
 
-def test_api_costs_transcripts_unavailable(monkeypatch, tmp_path):
-    """No cache yet → /api/costs?source=transcripts returns ``available: false``."""
+def test_api_costs_claude_code_unavailable(monkeypatch, tmp_path):
+    """No cache yet → /api/costs?source=claude_code returns ``available: false``."""
     monkeypatch.setattr(scanner, "get_db_path",
                          lambda: tmp_path / "missing.db")
     from work_buddy.dashboard.service import app
     client = app.test_client()
-    resp = client.get("/api/costs?source=transcripts")
+    resp = client.get("/api/costs?source=claude_code")
     assert resp.status_code == 200
     body = resp.get_json()
     assert body["available"] is False
-    assert body["source"] == "claude_transcripts"
+    assert body["source"] == "claude_code"
 
 
 def test_api_costs_all_includes_both_sources(monkeypatch, tmp_path,
@@ -230,8 +230,8 @@ def test_api_costs_all_includes_both_sources(monkeypatch, tmp_path,
     body = resp.get_json()
     assert body["source"] == "all"
     assert "internal" in body
-    assert "transcripts" in body
-    assert body["transcripts"]["session_count"] == 2
+    assert "claude_code" in body
+    assert body["claude_code"]["session_count"] == 2
 
 
 def test_api_costs_rescan_route(monkeypatch, tmp_path, projects_tree):
@@ -244,7 +244,7 @@ def test_api_costs_rescan_route(monkeypatch, tmp_path, projects_tree):
             full_rebuild=full_rebuild,
         )
     monkeypatch.setattr(
-        "work_buddy.dashboard.costs_transcripts.rescan_transcripts",
+        "work_buddy.dashboard.costs_claude_code_usage.rescan_claude_code_usage",
         _fake_rescan,
     )
     from work_buddy.dashboard.service import app

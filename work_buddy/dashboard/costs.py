@@ -35,7 +35,7 @@ _AGENTS_DIR = data_dir("agents")
 
 
 # Pricing comes from the canonical table at
-# ``work_buddy.llm.transcripts.pricing`` — both the per-call writer
+# ``work_buddy.llm.claude_code_usage.pricing`` — both the per-call writer
 # (``work_buddy.llm.cost``) and this dashboard aggregator now share one
 # rate source. Re-estimation here only happens when a row is missing
 # ``estimated_cost_usd`` (rare; written for every modern row).
@@ -118,7 +118,7 @@ def _entry_cost(entry: dict[str, Any]) -> float:
         return float(cost)
     if entry.get("cached") or entry.get("execution_mode") == "local":
         return 0.0
-    from work_buddy.llm.transcripts.pricing import calc_cost
+    from work_buddy.llm.claude_code_usage.pricing import calc_cost
     return calc_cost(
         entry.get("model", ""),
         int(entry.get("input_tokens", 0)),
@@ -194,7 +194,7 @@ def get_costs_summary(*, agents_dir: Path | None = None) -> dict[str, Any]:
                            "project": "...", "first": "...", "last": "...",
                            "models": [...], ... _empty_totals ...}, ...],
           "all_models":  ["model-name", ...],          # sorted by token volume desc
-          "source":      "work_buddy_internal",        # phase 2 will add "claude_transcripts"
+          "source":      "work_buddy_internal",        # ``claude_code`` is the parallel source
           "session_count": int,
           "log_files_seen": int,
           "log_files_parsed": int,
