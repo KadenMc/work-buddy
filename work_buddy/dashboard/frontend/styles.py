@@ -2976,7 +2976,10 @@ body {
     gap: 12px; margin: 24px 0 8px 0;
 }
 
-/* Sortable column headers */
+/* Sortable column headers
+   The unsorted sort indicator (↕) sits at the same shade as the column
+   text — visible without being prominent. Active sort flips to the
+   accent color and full opacity. */
 .costs-table th.sortable {
     cursor: pointer; user-select: none;
     position: relative; padding-right: 18px;
@@ -2984,13 +2987,20 @@ body {
 .costs-table th.sortable:hover { color: var(--text-primary); }
 .costs-table th.sortable .sort-arrow {
     position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
-    opacity: 0.4; font-size: 10px;
+    color: var(--text-secondary); font-size: 10px;
 }
-.costs-table th.sortable.sort-active .sort-arrow { opacity: 1; color: var(--accent); }
+.costs-table th.sortable.sort-active .sort-arrow {
+    color: var(--accent);
+}
 
-/* Branch cell — long branch names get truncated with ellipsis. */
+/* Branch column — pinned width so the table doesn't reshuffle every
+   time the visible page's longest branch name changes. */
+.costs-table th.col-branch,
+.costs-table td.costs-branch-cell {
+    width: 180px; max-width: 180px;
+}
 .costs-table .costs-branch-cell {
-    max-width: 180px; overflow: hidden; text-overflow: ellipsis;
+    overflow: hidden; text-overflow: ellipsis;
     white-space: nowrap; font-family: ui-monospace, SFMono-Regular, monospace;
     font-size: 11px; color: var(--text-secondary);
 }

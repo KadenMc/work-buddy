@@ -19,7 +19,7 @@ import inspect
 import json
 import logging
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -139,7 +139,13 @@ def log_call(
         )
 
     entry: dict[str, Any] = {
-        "timestamp": datetime.now().isoformat(),
+        # UTC with explicit tz offset so the frontend's ``new Date(...)``
+        # (which interprets TZ-less ISO as local time) doesn't compare
+        # against the wrong epoch. Also makes cross-machine log files
+        # safely portable. Pre-2026-04-26 rows lacked the offset; the
+        # frontend defensively appends "Z" to TZ-less strings before
+        # parsing, so legacy rows degrade gracefully.
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "model": model,
         "task_id": task_id,
         "input_tokens": input_tokens,

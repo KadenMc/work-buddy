@@ -66,9 +66,37 @@ function costsFmtCost(c) {
     // Past $100, cents are noise; show whole dollars with thousands separator.
     return '$' + Math.round(c).toLocaleString();
 }
+// Parse an ISO timestamp into a Date.
+//
+// Pre-2026-04-26 cost-log rows from work-buddy used ``datetime.now()``
+// which produces TZ-naive ISO strings ("2026-04-25T10:00:00.123456").
+// JavaScript's ``new Date(string)`` treats TZ-less ISO as **local
+// time**, but the writer intended UTC — so any reload on a non-UTC
+// machine would show stale "Last activity" times. From 2026-04-26
+// onward we write UTC with explicit offset; for legacy rows we append
+// "Z" defensively so they parse as UTC.
+function _costsParseTs(s) {
+    if (!s) return null;
+    const hasTz = /([Zz]|[+-]\d{2}:?\d{2})$/.test(s);
+    const d = new Date(hasTz ? s : s + 'Z');
+    return isFinite(d.getTime()) ? d : null;
+}
+
+// Human-readable timestamp formatter — adopted from the Chats tab's
+// ``formatTimestamp`` (script_main.py) so the two views agree on
+// "Today HH:MM / Yesterday HH:MM / Mon DD HH:MM" output.
 function costsFmtDate(s) {
-    if (!s) return '-';
-    return s.slice(0, 16).replace('T', ' ');
+    if (!s) return '\u2014';
+    const d = _costsParseTs(s);
+    if (!d) return s;
+    const now = new Date();
+    const time = d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+    if (d.toDateString() === now.toDateString()) return 'Today ' + time;
+    const yesterday = new Date(now);
+    yesterday.setDate(now.getDate() - 1);
+    if (d.toDateString() === yesterday.toDateString()) return 'Yesterday ' + time;
+    const month = d.toLocaleString('default', {month: 'short'});
+    return month + ' ' + d.getDate() + ' ' + time;
 }
 function costsEsc(s) {
     if (s == null) return '';
@@ -612,10 +640,13 @@ function costsRenderAll(opts) {
 
 function _costsModelFamily(model) {
     if (!model) return 'Other';
-    const claude = model.match(/^claude-(opus|sonnet|haiku)\b/);
-    if (claude) {
-        return 'Anthropic ' + claude[1].charAt(0).toUpperCase() + claude[1].slice(1);
-    }
+    // All Anthropic models collapse to a single "Claude" family — clicking
+    // the family pill toggles every claude-* model in one go. The chip
+    // labels carry the tier name so you can still pick out opus / sonnet /
+    // haiku at a glance. (Earlier design grouped per-tier; reverted because
+    // the per-tier bulk only saved one click anyway, and the user wanted
+    // a one-click "all of Claude" toggle.)
+    if (/^claude-/i.test(model)) return 'Claude';
     const vendor = model.match(/^([^/]+)\//);
     if (vendor) {
         const v = vendor[1];
@@ -627,14 +658,27 @@ function _costsModelFamily(model) {
 function _costsModelShortLabel(model, family) {
     // Strip the family-derived prefix so chips read tighter when the
     // family pill is right next to them.
-    if (family.startsWith('Anthropic ')) {
-        const m = model.match(/^claude-(opus|sonnet|haiku)-(.+)$/);
-        if (m) return m[2];
+    if (family === 'Claude') {
+        // claude-sonnet-4-6 → "sonnet 4-6", claude-haiku-4-5-20251001 → "haiku 4-5-20251001"
+        const m = model.match(/^claude-(opus|sonnet|haiku)-(.+)$/i);
+        if (m) return m[1].toLowerCase() + ' ' + m[2];
+        return model.replace(/^claude-/i, '');
     } else if (family !== 'Other') {
         const m = model.match(/^[^/]+\/(.+)$/);
         if (m) return m[1];
     }
     return model;
+}
+
+// Anthropic-tier sort weight for chip ordering inside the Claude family.
+// Opus first (most capable), then Sonnet, then Haiku.
+const _COSTS_CLAUDE_TIER_RANK = { opus: 0, sonnet: 1, haiku: 2 };
+
+function _costsClaudeChipSortKey(model) {
+    const m = model.match(/^claude-(opus|sonnet|haiku)-(.+)$/i);
+    if (!m) return [99, model];
+    const tier = _COSTS_CLAUDE_TIER_RANK[m[1].toLowerCase()] ?? 99;
+    return [tier, m[2]];
 }
 
 function _costsGroupModelsByFamily(models) {
@@ -644,15 +688,18 @@ function _costsGroupModelsByFamily(models) {
         if (!map.has(fam)) map.set(fam, []);
         map.get(fam).push(m);
     }
-    // Anthropic tiers ordered Opus → Sonnet → Haiku (capability descending);
-    // then vendor families A→Z; "Other" last.
-    const tierOrder = ['Anthropic Opus', 'Anthropic Sonnet', 'Anthropic Haiku'];
+    // Claude family first (with members re-sorted by tier), then vendor
+    // families A→Z; "Other" last.
     const ordered = [];
-    for (const tier of tierOrder) {
-        if (map.has(tier)) {
-            ordered.push({ family: tier, models: map.get(tier) });
-            map.delete(tier);
-        }
+    if (map.has('Claude')) {
+        const claudeModels = map.get('Claude').slice().sort((a, b) => {
+            const ka = _costsClaudeChipSortKey(a);
+            const kb = _costsClaudeChipSortKey(b);
+            if (ka[0] !== kb[0]) return ka[0] - kb[0];
+            return String(ka[1]).localeCompare(String(kb[1]));
+        });
+        ordered.push({ family: 'Claude', models: claudeModels });
+        map.delete('Claude');
     }
     const rest = [...map.entries()]
         .map(([family, models]) => ({ family, models }))
@@ -788,16 +835,18 @@ function _costsAggregateByDay(data) {
 }
 
 // ---- Meta line ----
+//
+// Just the in-range counts. The "X of Y" framing was noise; if the user
+// wants the unfiltered total they switch the range to "All time".
+// Signature still accepts the totals (callers pass them) but they're
+// ignored — keeping the param shape avoids touching every call site.
 function _costsRenderMeta(filteredSessions, filteredCalls,
                           totalSessions, totalCalls) {
     const meta = document.getElementById('costs-meta');
     if (!meta) return;
-    const sLabel = (totalSessions != null && filteredSessions !== totalSessions)
-        ? `${filteredSessions} of ${totalSessions} sessions`
-        : `${filteredSessions} session${filteredSessions === 1 ? '' : 's'}`;
-    const cLabel = (totalCalls != null && filteredCalls !== totalCalls)
-        ? `${filteredCalls} of ${totalCalls} ${costsState.shape === 'claude_code' ? 'turns' : 'calls'}`
-        : `${filteredCalls} ${costsState.shape === 'claude_code' ? 'turn' : 'call'}${filteredCalls === 1 ? '' : 's'}`;
+    const noun = costsState.shape === 'claude_code' ? 'turn' : 'call';
+    const sLabel = `${filteredSessions} session${filteredSessions === 1 ? '' : 's'}`;
+    const cLabel = `${filteredCalls} ${noun}${filteredCalls === 1 ? '' : 's'}`;
     meta.textContent = `${sLabel} · ${cLabel}`;
 }
 
@@ -1120,9 +1169,9 @@ const COSTS_ACTIVE_WINDOW_MS = 60 * 60 * 1000;
 
 function _costsActiveDot(s) {
     if (!s || !s.last) return '';
-    const t = new Date(s.last).getTime();
-    if (!isFinite(t)) return '';
-    if (Date.now() - t > COSTS_ACTIVE_WINDOW_MS) return '';
+    const d = _costsParseTs(s.last);
+    if (!d) return '';
+    if (Date.now() - d.getTime() > COSTS_ACTIVE_WINDOW_MS) return '';
     return '<span class="wb-active-dot" title="Active in the last hour"></span>';
 }
 
@@ -1291,6 +1340,9 @@ function costsRenderSessionsTable(shape, data) {
             sortable ? 'sortable' : '',
             isActive ? 'sort-active' : '',
             c.num ? 'num' : '',
+            // Per-key column class (e.g. col-branch) lets CSS pin widths
+            // for columns whose contents vary widely page-to-page.
+            c.key ? ('col-' + c.key.replace(/_/g, '-')) : '',
         ].filter(Boolean).join(' ');
         const onClick = sortable ? ` onclick="costsSortBy('${costsEsc(c.sort)}')"` : '';
         const arrowSpan = sortable ? `<span class="sort-arrow">${arrow}</span>` : '';
