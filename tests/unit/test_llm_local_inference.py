@@ -788,4 +788,8 @@ def test_cost_log_cloud_mode_uses_price_table(monkeypatch, tmp_path):
 
     entry = json.loads(log_file.read_text().splitlines()[0])
     assert entry["execution_mode"] == "cloud"
-    assert entry["estimated_cost_usd"] == pytest.approx(0.80, rel=1e-3)
+    # 1M input tokens at the Haiku 4.5 rate ($1.00/M, per the canonical
+    # table at work_buddy.llm.claude_code_usage.pricing). The earlier
+    # 0.80 expectation predated the pricing consolidation that retired
+    # the Haiku 3.5 rate.
+    assert entry["estimated_cost_usd"] == pytest.approx(1.00, rel=1e-3)

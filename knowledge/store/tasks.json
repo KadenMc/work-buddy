@@ -3,13 +3,30 @@
     "kind": "directions",
     "name": "Task Triage Directions",
     "description": "How to run interactive task triage — presentation rules, actions, summary format",
-    "aliases": ["triage tasks", "review inbox tasks", "batch task decisions", "inbox review"],
-    "tags": ["tasks", "triage", "inbox", "interactive", "directions"],
-    "parents": ["tasks"],
+    "aliases": [
+      "triage tasks",
+      "review inbox tasks",
+      "batch task decisions",
+      "inbox review"
+    ],
+    "tags": [
+      "tasks",
+      "triage",
+      "inbox",
+      "interactive",
+      "directions"
+    ],
+    "parents": [
+      "tasks"
+    ],
     "trigger": "user wants to triage or review pending inbox tasks",
     "command": "wb-task-triage",
     "workflow": "tasks/task-triage",
-    "capabilities": ["tasks/task_review_inbox", "tasks/task_stale_check", "tasks/task_change_state"],
+    "capabilities": [
+      "tasks/task_review_inbox",
+      "tasks/task_stale_check",
+      "tasks/task_change_state"
+    ],
     "content": {
       "summary": "Present tasks in batches of 5. Actions: mit, focus, snooze, done, kill, skip. Always ask user — don't decide for them. Report breakdown after applying.",
       "full": "Start the task triage workflow via mcp__work-buddy__wb_run(\"task-triage\"). Follow the conductor.\n\n## Presentation rules\n\nPresent tasks in batches of 5 at a time. For each task show:\n- The task description (trimmed, no raw tags)\n- The suggested action and reason\n- Ask user to confirm, override, or skip\n\nAvailable actions:\n- mit: select as Most Important Task for this week\n- focus: promote to actively working on now\n- snooze: defer (set snooze_until date if possible)\n- done: mark as completed\n- kill: archive/remove (for stale tasks beyond saving)\n- skip: leave as-is for now\n\nState changes are stored in the SQLite metadata store (not inline tags).\n\n## Summary format\n\nAfter applying decisions, report:\n- How many tasks were triaged\n- Breakdown by action taken\n- Current state after triage (focused count, inbox count)\n\n## Don'ts\n\n- Don't present all tasks at once -- batches of 5 maximum\n- Don't make decisions for the user -- always ask\n- Don't recommend system reorganization, new tags, or process changes\n- Don't explain the task management philosophy\n- Don't add overhead -- this should take under 5 minutes\n\nBe efficient. Don't explain the system. Just present tasks and collect decisions."
@@ -19,13 +36,28 @@
     "kind": "directions",
     "name": "Inline TODOs Directions",
     "description": "How to triage and execute #wb/TODO vault markers — batch presentation, execution rules, tag cleanup",
-    "aliases": ["process vault todos", "inline todos", "wb todo markers", "handle todos"],
-    "tags": ["tasks", "inline", "todos", "triage", "directions"],
-    "parents": ["tasks"],
+    "aliases": [
+      "process vault todos",
+      "inline todos",
+      "wb todo markers",
+      "handle todos"
+    ],
+    "tags": [
+      "tasks",
+      "inline",
+      "todos",
+      "triage",
+      "directions"
+    ],
+    "parents": [
+      "tasks"
+    ],
     "trigger": "user wants to process #wb/TODO markers from across the vault",
     "command": "wb-inline-todos",
     "workflow": "tasks/inline-todos",
-    "capabilities": ["tasks/task_create"],
+    "capabilities": [
+      "tasks/task_create"
+    ],
     "content": {
       "summary": "Present items in batches of 5. For each: file, full line, parsed instruction (bold), 1-2 lines context. Actions: Handle, Skip, Delete tag. Confirm ambiguous instructions before executing. Never delete lines — only replace #wb/TODO with #wb/DONE.",
       "full": "Start via mcp__work-buddy__wb_run(\"inline-todos\"), then advance with wb_advance.\n\n## Triage rules\n\nPresent items in batches of 5. For each item show:\n1. File: vault path\n2. Line: full line with #wb/TODO highlighted\n3. Instruction: parsed instruction text (bold)\n4. Context: 1-2 lines before/after\n\nActions:\n- Handle -- execute the instruction\n- Skip -- leave for next time\n- Delete tag -- remove tag without executing\n\n## Executing instructions\n\nFor Handle items:\n1. Read the instruction text (freeform natural language)\n2. Use surrounding context to interpret\n3. If clear, execute directly\n4. If ambiguous, ask the user first\n\nReport what was done for each handled item.\n\n## Don'ts\n- Don't execute without showing the user what you'll do\n- Don't modify files outside the cleanup step\n- Don't delete lines -- only replace #wb/TODO with #wb/DONE\n- Don't assume what ambiguous instructions mean -- ask"
@@ -35,13 +67,31 @@
     "kind": "directions",
     "name": "Weekly Review Directions",
     "description": "How to run the weekly task review — MIT drafting, WIP enforcement, constraint validation",
-    "aliases": ["weekly review", "task review", "weekly planning", "strategic review"],
-    "tags": ["tasks", "weekly", "review", "planning", "contracts", "directions"],
-    "parents": ["tasks"],
+    "aliases": [
+      "weekly review",
+      "task review",
+      "weekly planning",
+      "strategic review"
+    ],
+    "tags": [
+      "tasks",
+      "weekly",
+      "review",
+      "planning",
+      "contracts",
+      "directions"
+    ],
+    "parents": [
+      "tasks"
+    ],
     "trigger": "user wants to run their weekly task review and planning session",
     "command": "wb-task-review",
     "workflow": "tasks/weekly-review",
-    "capabilities": ["tasks/task_change_state", "tasks/task_briefing", "contracts/contract_constraints"],
+    "capabilities": [
+      "tasks/task_change_state",
+      "tasks/task_briefing",
+      "contracts/contract_constraints"
+    ],
     "content": {
       "summary": "Agent assembles the picture and proposes; user validates. Under 15 minutes. Every MIT must trace to a contract constraint (max 1 exception). WIP violations require explicit renegotiation.",
       "full": "Start via mcp__work-buddy__wb_run(\"weekly-review\"). Follow the conductor.\n\n## Drafting the plan\n\n1. Review last week's MITs -- which completed? Which didn't? Why?\n2. Check each active contract's constraint -- has it changed? Is it still the real bottleneck?\n3. Propose 3-5 MITs as implementation intentions:\n   Format: \"When [time/trigger], I will [specific action] for [contract]\"\n   Each MIT must trace to a contract constraint. Non-contract tasks get max 1 slot.\n4. Flag issues: WIP violations, no constraint set, snoozed >14 days, inbox needing promotion/kill\n5. Propose state changes: completed -> done, incomplete -> demote/carry, new -> promote\n\n## Validation rules\n\n- Every MIT traces to a contract constraint (max 1 exception for admin/personal)\n- WIP violations require explicit renegotiation -- do NOT silently allow\n- Constraint changes must be specific, not vague\n\nWIP enforcement: If exceeding limit:\n1. State current active contracts\n2. Ask which to pause or complete first\n3. Record the reasoning\n\n## Don'ts\n- Don't present all 50+ tasks -- focus on MITs and flagged items only\n- Don't recommend system changes\n- Don't spend more than 15 minutes\n- Don't create MITs that don't trace to a contract constraint\n- Don't let WIP violations pass without renegotiation\n- Don't make strategic decisions for the user -- propose, don't decide"
@@ -51,13 +101,28 @@
     "kind": "directions",
     "name": "Task Handoff Directions",
     "description": "How to write a structured session handoff prompt and package it as a task note",
-    "aliases": ["handoff task", "session handoff", "pass off work", "create handoff note"],
-    "tags": ["tasks", "handoff", "session", "continuity", "directions"],
-    "parents": ["tasks"],
+    "aliases": [
+      "handoff task",
+      "session handoff",
+      "pass off work",
+      "create handoff note"
+    ],
+    "tags": [
+      "tasks",
+      "handoff",
+      "session",
+      "continuity",
+      "directions"
+    ],
+    "parents": [
+      "tasks"
+    ],
     "trigger": "user wants to hand off in-progress work to a new agent session via a task note",
     "command": "wb-task-handoff",
     "workflow": null,
-    "capabilities": ["tasks/task_create"],
+    "capabilities": [
+      "tasks/task_create"
+    ],
     "content": {
       "summary": "Write from what you already know -- don't search for additional information. Use the exact section structure: Task, Context, What I Already Know, Key Files, System Notes, Suggested Approach. Create via task_create with summary param.",
       "full": "Create a task with a comprehensive handoff prompt as the task note.\n\n## Write the handoff prompt\n\nConsolidate into these exact sections:\n\n> This is a handoff prompt from session {WORK_BUDDY_SESSION_ID}.\n\n## Task -- What needs to be done. One concrete paragraph.\n## Context -- Why this exists. Motivation without needing to ask.\n## What I Already Know -- Decisions, approaches tried/abandoned, edge cases, constraints. Highest-value section.\n## Key Files -- Absolute paths with brief annotations.\n## System Notes -- Non-obvious environmental knowledge. Skip if nothing applies.\n## Suggested Approach -- If you have a clear idea. Omit if not.\n\nBe specific. File paths absolute. Decisions include rationale.\n\n## Create the task\n\nmcp__work-buddy__wb_run(\"task_create\", {\"task_text\": \"<concise summary>\", \"summary\": \"<full handoff prompt>\"})\n\nThe summary parameter triggers creation of a note file.\n\nIf task_create fails or times out, replay with obsidian_retry using the operation_id from its response:\n\nmcp__work-buddy__wb_run(\"obsidian_retry\", {\"operation_id\": \"op_xxx\"})\n\nThe capability and params are loaded from the operation record — do not re-pass them.\n\n<<wb:obsidian/bridge>>\n\n## Confirm\n\nShow: task ID, brief summary, remind about /wb-task-assign <id>."
@@ -67,13 +132,28 @@
     "kind": "directions",
     "name": "Task Assign Directions",
     "description": "How to assign a task — presentation format, completion tracking, state change protocol",
-    "aliases": ["assign task", "claim task", "pick up task"],
-    "tags": ["tasks", "assign", "session", "completion", "directions"],
-    "parents": ["tasks"],
+    "aliases": [
+      "assign task",
+      "claim task",
+      "pick up task"
+    ],
+    "tags": [
+      "tasks",
+      "assign",
+      "session",
+      "completion",
+      "directions"
+    ],
+    "parents": [
+      "tasks"
+    ],
     "trigger": "user runs /wb-task-assign or asks to assign a task to the current session",
     "command": "wb-task-assign",
     "workflow": null,
-    "capabilities": ["tasks/task_assign", "tasks/task_toggle"],
+    "capabilities": [
+      "tasks/task_assign",
+      "tasks/task_toggle"
+    ],
     "content": {
       "summary": "Use MCP tool directly, never Python. task_assign = claim + read; use task_read when you only want to inspect. Present: task text/state/urgency, contract, note preview with path, session count. State NOT changed by assignment. After completing deliverable, proactively ask to mark done — always confirm first.",
       "full": "Assign via mcp__work-buddy__wb_run(\"task_assign\", {\"task_id\": \"<id>\"}). Do NOT use Python code.\n\nIf no argument provided, ask for the task ID.\n\n## Assign vs read\n\n- **task_assign** = read the task AND record the current session against it (claim). Use when the user is starting work.\n- **task_read** = pure read, no session write. Use when you only need to inspect a task (e.g. user is browsing, or an upstream flow wants the payload without implying a claim).\n\nBoth return the same read payload. Internally, task_assign composes task_read with a session-tracker write, so agents can swap call sites without reshaping downstream code.\n\n## Presentation after assignment\n\n1. Task: text and current state/urgency\n2. Contract: which contract it serves (if any)\n3. Note: preview of note content (if exists) + file path\n4. Sessions: how many sessions have worked on this task\n\n## State\n\nTask state is NOT changed by assignment. To mark focused, use task_change_state separately.\n\n## Completion tracking\n\nAfter committing code (or completing the deliverable), proactively ask: \"Task <id> looks complete -- should I mark it done?\"\n\nOn approval: mcp__work-buddy__wb_run(\"task_toggle\", {\"task_id\": \"<id>\", \"done\": true})\n\nDo not silently mark the task done -- always confirm first."
@@ -83,13 +163,28 @@
     "kind": "directions",
     "name": "Task Read Directions",
     "description": "How to read a task without claiming it — inspection-only path that does not write a session assignment",
-    "aliases": ["read task", "view task", "inspect task", "show task", "look at task"],
-    "tags": ["tasks", "read", "inspect", "directions"],
-    "parents": ["tasks"],
+    "aliases": [
+      "read task",
+      "view task",
+      "inspect task",
+      "show task",
+      "look at task"
+    ],
+    "tags": [
+      "tasks",
+      "read",
+      "inspect",
+      "directions"
+    ],
+    "parents": [
+      "tasks"
+    ],
     "trigger": "user runs /wb-task-read or asks to view a task without claiming it for the current session",
     "command": "wb-task-read",
     "workflow": null,
-    "capabilities": ["tasks/task_read"],
+    "capabilities": [
+      "tasks/task_read"
+    ],
     "content": {
       "summary": "Pure-read path. Use task_read when the user wants to inspect a task without claiming it for the current session. No session-tracker write, no state change. Use task_assign instead when the user is starting work.",
       "full": "Read via mcp__work-buddy__wb_run(\"task_read\", {\"task_id\": \"<id>\"}). Do NOT use Python code.\n\nIf no argument provided, ask for the task ID.\n\n## When to use task_read vs task_assign\n\n- **task_read** — pure inspection. No session is recorded against the task. Use when the user is browsing, auditing, or you only need the payload for an upstream flow.\n- **task_assign** — inspection PLUS claims the task for the current session. Use when the user is starting work on it.\n\nBoth return the same read payload (task text, metadata, note content, file + line, existing session list). If you assigned a task earlier in the conversation and only want to re-inspect it now, task_read is fine — assigning again just writes an idempotent duplicate session row.\n\n## Presentation\n\nSame as task_assign:\n\n1. Task: text and current state/urgency\n2. Contract: which contract it serves (if any)\n3. Note: preview of note content (if exists) + file path\n4. Sessions: how many sessions have worked on this task (read-only view)\n\n## Do NOT\n\n- Do not propose marking the task done from a read. Completion tracking belongs to the assign flow — a user who only asked to inspect has not committed to finishing it."
@@ -99,13 +194,27 @@
     "kind": "directions",
     "name": "Task Briefing Directions",
     "description": "How to present the daily task status summary — concise format, required sections, one next action",
-    "aliases": ["task briefing", "daily task summary", "task status"],
-    "tags": ["tasks", "briefing", "daily", "summary", "directions"],
-    "parents": ["tasks"],
+    "aliases": [
+      "task briefing",
+      "daily task summary",
+      "task status"
+    ],
+    "tags": [
+      "tasks",
+      "briefing",
+      "daily",
+      "summary",
+      "directions"
+    ],
+    "parents": [
+      "tasks"
+    ],
     "trigger": "user wants a daily task status summary",
     "command": "wb-task-briefing",
     "workflow": null,
-    "capabilities": ["tasks/task_briefing"],
+    "capabilities": [
+      "tasks/task_briefing"
+    ],
     "content": {
       "summary": "Run task_briefing and present under 15 lines: focused tasks, overdue, stale alerts, inbox count, archive recommendation. End with ONE recommended next action.",
       "full": "Run mcp__work-buddy__wb_run(\"task_briefing\").\n\n## Presentation format\n\nPresent concisely (under 15 lines):\n1. Focused tasks -- list them (or note \"none focused\")\n2. Overdue -- count and list if any\n3. Stale alerts -- inbox needing triage, forgotten snoozed tasks\n4. Inbox count -- how many waiting\n5. Archive recommendation -- if >10 completed tasks clog the master list\n\nEnd with ONE recommended next action.\n\n## Don'ts\n- Do NOT list every task\n- Do NOT recommend process changes\n- Keep it short -- under 15 lines total"
@@ -115,13 +224,26 @@
     "kind": "directions",
     "name": "Task Creation Directions",
     "description": "How to create a task via the task-new workflow — minimal prompting, namespace-tag gate on new namespaces only",
-    "aliases": ["create task", "new task", "add task"],
-    "tags": ["tasks", "create", "new", "directions"],
-    "parents": ["tasks"],
+    "aliases": [
+      "create task",
+      "new task",
+      "add task"
+    ],
+    "tags": [
+      "tasks",
+      "create",
+      "new",
+      "directions"
+    ],
+    "parents": [
+      "tasks"
+    ],
     "trigger": "user asks to create a new task",
     "command": "wb-task-new",
     "workflow": "tasks/task-new",
-    "capabilities": ["tasks/task_create"],
+    "capabilities": [
+      "tasks/task_create"
+    ],
     "content": {
       "summary": "Route user task requests through the task-new workflow. The workflow's DAG enforces plan → enrich → confirm → create; agents don't manually sequence the suggester anymore. Gate only the minting of *new* namespaces, not the application of existing ones.",
       "full": "Start the workflow:\n\n```\nmcp__work-buddy__wb_run(\"task-new\")\n```\n\nThen follow the step instructions the conductor returns. The DAG is:\n\n1. **plan** (you) — emit a structured task plan + proposed_tags.\n2. **enrich** (auto-run) — runs namespace_suggest + namespace_lookup per proposed tag.\n3. **confirm** (you) — present findings to the user. Only interrupt them when you're about to mint a new namespace or when a strong existing match differs from what they (or you) initially proposed. Otherwise proceed silently.\n4. **apply** (auto-run) — calls task_create with the confirmed final_plan.\n5. **report** (you) — one-line confirmation (task ID + short paraphrase).\n\n## Reasoning hints for the plan step\n\nInfer defaults — don't over-prompt:\n- task_text (required): short single-line.\n- urgency: default \"medium\". Only ask if ambiguous.\n- project: infer or skip.\n- due_date: only if user mentioned a date.\n- contract: infer from active contracts if obvious.\n- summary: only if user asked for a linked note.\n- proposed_tags: propose what you think applies given task text + contract + session context. Use nested paths for hierarchy. Reserved prefixes (`projects/`, `todo`, `wb/`, `tasker/`) are not user namespaces.\n\n## Reasoning hints for the confirm step\n\nThe enrich step returns `tag_status` per proposed tag:\n\n- If all proposed tags have `exists: true` and look right → advance with `confirmed: true` without asking.\n- If any proposed tag has `exists: false`, you're about to mint. Show near_matches to the user and ask: use existing / proceed with new / rename.\n- If the enrich step's `suggestions` include a strong match you didn't propose, surface it only if it changes the answer.\n\nIf the user declines, advance with `{\"final_plan\": {}, \"confirmed\": false}`. The apply step no-ops.\n\n## Direct capability use (only when the workflow doesn't fit)\n\nFor purely programmatic callers (e.g., the triage executor creating a task from a Review decision that already carries suggested_namespace_tags), call task_create directly with the tags already resolved. The workflow is for interactive, user-facing creation. If task_create fails or times out, replay with obsidian_retry using the operation_id from its response.\n\n<<wb:obsidian/bridge>>"
@@ -131,16 +253,61 @@
     "kind": "directions",
     "name": "Scattered Tasks Directions",
     "description": "How to present scattered task results and triage into action categories",
-    "aliases": ["find scattered tasks", "orphan tasks", "tasks outside master list"],
-    "tags": ["tasks", "scattered", "triage", "directions"],
-    "parents": ["tasks"],
+    "aliases": [
+      "find scattered tasks",
+      "orphan tasks",
+      "tasks outside master list"
+    ],
+    "tags": [
+      "tasks",
+      "scattered",
+      "triage",
+      "directions"
+    ],
+    "parents": [
+      "tasks"
+    ],
     "trigger": "user asks to find tasks scattered across the vault",
     "command": "wb-task-scattered",
     "workflow": null,
-    "capabilities": ["tasks/task_scattered"],
+    "capabilities": [
+      "tasks/task_scattered"
+    ],
     "content": {
       "summary": "Present results grouped by file. Assess: stale tasks, active project tasks, duplicates. Suggest concrete actions. Keep output concise.",
       "full": "Run mcp__work-buddy__wb_run(\"task_scattered\").\n\nPresent results grouped by file. For each:\n- File path and task count\n- First few task descriptions (truncated)\n- Any project tags\n\nThen assess:\n1. Stale tasks -- in old journal entries, never migrated\n2. Active project tasks -- in project docs, current but untracked\n3. Duplicates -- appear in multiple locations\n\nSuggest:\n- Which to migrate to master list?\n- Which are stale and should close?\n- Which are project-specific and fine where they are?\n\nKeep concise -- quick scan, not a report."
     }
+  },
+  "tasks/task-search-directions": {
+    "kind": "directions",
+    "name": "Task Search Directions",
+    "description": "How to search task notes via hybrid retrieval (BM25 + dense, RRF-fused) — query method choice, source filter, presentation format",
+    "content": {
+      "full": "Search task-note bodies via hybrid retrieval (BM25 + dense vectors, RRF-fused). Covers every task whose `note_uuid` is non-null and whose markdown file exists at `<vault_root>/tasks/notes/<uuid>.md`. The `task-note-index` sidecar job re-indexes every 5 minutes — very recent notes may not yet be searchable.\n\n## Call\n\n```\nmcp__work-buddy__wb_run(\"context_search\", {\n    \"query\": \"$ARGUMENTS\",\n    \"source\": \"task_note\",\n    \"top_k\": 10\n})\n```\n\nDo NOT use Python code or import the underlying scanner directly — the capability is the contract.\n\n## Method choice\n\nThe default method (`keyword,semantic`, RRF fused) is right for most natural-language queries.\n\nFor very short queries (≤3 tokens), prefer `method=\"keyword\"`: the dense model adds noise on tiny inputs, and BM25 over short queries is already well-behaved.\n\nFor exact-string lookups (a UUID, a tag, a code snippet), prefer `method=\"substring\"` — it doesn't require the embedding service and won't hallucinate near-matches.\n\n## Presentation\n\nFor each hit, surface:\n\n1. The matching span (the chunk text the searcher returned).\n2. The `task_id` and `task_state` from the hit's metadata so the user can jump to the task.\n3. The score (or rank) so multiple competing hits are comparable.\n\nIf zero hits return, say so explicitly — don't pad with low-relevance results from a different source.\n\n## Do NOT\n\n- Do not use this for non-task content. The `source=task_note` filter scopes the search; if the user wants to search conversations or web tabs, the right tool is plain `context_search` without that filter.\n- Do not interpret a hit as a task assignment — search returns context only. To claim a task, follow up with `task_assign` (or `/wb-task-assign <task_id>`)."
+    },
+    "tags": [
+      "tasks",
+      "search",
+      "retrieval",
+      "hybrid",
+      "bm25",
+      "dense",
+      "directions"
+    ],
+    "aliases": [
+      "search tasks",
+      "find task",
+      "search task notes",
+      "task search",
+      "hybrid task search"
+    ],
+    "parents": [
+      "tasks"
+    ],
+    "trigger": "user runs /wb-task-search or asks to search task-note bodies for content matching a query",
+    "command": "wb-task-search",
+    "capabilities": [
+      "context_search"
+    ]
   }
 }
