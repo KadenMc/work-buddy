@@ -150,6 +150,19 @@ class WorkflowDefinition:
 
 _REGISTRY: dict[str, Capability | WorkflowDefinition] | None = None
 
+# Stash of full ``Capability`` objects for capabilities filtered out of the
+# live registry by the `_build_registry` filter pass (because their tool
+# requirements aren't met). Populated alongside ``DISABLED_CAPABILITIES``.
+# Used by ``work_buddy.recovery.recheck_disabled_capability`` to restore a
+# capability to the live registry without re-running the full registry
+# build (~6s + sys.modules purge). Keys MUST stay in sync with
+# ``DISABLED_CAPABILITIES`` keys; see invariant tests.
+#
+# Cleared at the top of every ``_build_registry()`` invocation so a stale
+# Capability whose closure references a purged module never survives a
+# reload (mcp_registry_reload purges work_buddy.* from sys.modules).
+_DISABLED_REGISTRY: dict[str, Capability] = {}
+
 
 def get_registry() -> dict[str, Capability | WorkflowDefinition]:
     """Return the registry, building it on first access."""
@@ -157,6 +170,21 @@ def get_registry() -> dict[str, Capability | WorkflowDefinition]:
     if _REGISTRY is None:
         _REGISTRY = _build_registry()
     return _REGISTRY
+
+
+def get_disabled_registry() -> dict[str, Capability]:
+    """Return the stash of full Capability objects for disabled capabilities.
+
+    Read-only access for ``work_buddy.recovery.recheck_disabled_capability``
+    and observability tools. The dict is mutated only inside
+    ``_build_registry()`` (cleared + repopulated) and inside the recovery
+    module under its lock (popped on successful restore). Callers MUST
+    NOT mutate it directly.
+    """
+    # Trigger a build if the registry hasn't been initialised — populates
+    # _DISABLED_REGISTRY as a side effect.
+    get_registry()
+    return _DISABLED_REGISTRY
 
 
 def invalidate_registry() -> None:
@@ -188,20 +216,104 @@ def invalidate_registry() -> None:
 def _disabled_reason(capability_name: str) -> str:
     """Human-readable reason a capability is disabled in the live registry.
 
-    Returns a string like "Dependency unavailable: obsidian" so an agent
-    consuming `wb_search` results can distinguish "backing service is
-    down" from "your session's ACL doesn't allow this" — two very
-    different problems that used to share a single ``unavailable: true``
-    flag and mislead reasoning models into the wrong conclusion.
+    Returns a string like "Dependency unavailable: obsidian (probe says
+    'Bridge unreachable', last probe Ns ago)" so an agent consuming
+    ``wb_search`` results can distinguish "backing service is down"
+    from "your session's ACL doesn't allow this" AND know HOW LONG
+    the dep has been down + WHY — two very different problems that
+    used to share a single ``unavailable: true`` flag and mislead
+    reasoning models into the wrong conclusion.
+
+    Post-CP-A5 the message also distinguishes three states per missing
+    tool:
+
+    1. **Probe still failing** — auto-recovery already tried (CP-A3) or
+       the cool-down hasn't expired; tool is genuinely down. Format:
+       "<tool> probe failed Ns ago: '<reason>'".
+    2. **Probe now passing but cap still in DISABLED_CAPABILITIES** —
+       rare race; suggest mcp_registry_reload. Format: "<tool> probe
+       reports available but capability not yet in registry".
+    3. **No probe data yet** — cold-start race; agent should retry or
+       run mcp_registry_reload. Format: "<tool> probe hasn't completed
+       yet".
     """
     try:
-        from work_buddy.tools import DISABLED_CAPABILITIES
+        from work_buddy.tools import DISABLED_CAPABILITIES, get_tool_status
         deps = DISABLED_CAPABILITIES.get(capability_name)
-        if deps:
-            return f"Dependency unavailable: {', '.join(deps)}"
+        if not deps:
+            return "Not registered in the live capability set"
+
+        # Pull fresh probe state per missing tool. get_tool_status returns
+        # {tools: {tool_id: {available, probe_ms, reason, ...}}, ...}.
+        tool_status = get_tool_status().get("tools", {})
+
+        # Compute probe age once from the tool_status.json mtime. This is
+        # cheaper than per-tool tracking and good enough for a human-
+        # readable diagnostic. Falls back gracefully if the file is
+        # missing or unreadable.
+        probe_age_str = _format_probe_age()
+
+        per_tool: list[str] = []
+        for dep in deps:
+            entry = tool_status.get(dep)
+            if entry is None:
+                # State 3: no probe data yet. Cold start.
+                per_tool.append(
+                    f"{dep} (no probe data yet — wait {probe_age_str} or "
+                    f"run mcp_registry_reload)"
+                )
+                continue
+            if entry.get("available"):
+                # State 2: probe passing but cap still disabled. This
+                # happens if the user calls a disabled cap WITHOUT going
+                # through the wb_run dispatch path (which would auto-
+                # recover via CP-A3) — e.g. wb_search hits.
+                per_tool.append(
+                    f"{dep} (probe reports available — run "
+                    f"mcp_registry_reload to re-enable this capability)"
+                )
+                continue
+            # State 1: probe still failing.
+            reason = entry.get("reason") or "no reason recorded"
+            per_tool.append(
+                f"{dep} (probe failed {probe_age_str}: '{reason}')"
+            )
+
+        return "Dependency unavailable: " + "; ".join(per_tool)
     except Exception:
-        pass
+        # Defensive fallback: if anything in the enriched path fails,
+        # don't crash wb_search — return a usable string.
+        try:
+            from work_buddy.tools import DISABLED_CAPABILITIES
+            deps = DISABLED_CAPABILITIES.get(capability_name)
+            if deps:
+                return f"Dependency unavailable: {', '.join(deps)}"
+        except Exception:
+            pass
     return "Not registered in the live capability set"
+
+
+def _format_probe_age() -> str:
+    """Approximate "Ns ago" label for the most recent probe sweep.
+
+    Reads the mtime of ``data/runtime/tool_status.json`` (written
+    atomically by every ``probe_all`` and ``reprobe_one`` call). Returns
+    a short human-readable interval like ``"3s ago"``, ``"2m ago"``,
+    or ``"unknown"`` if the file is missing or unreadable.
+    """
+    try:
+        import time
+        from work_buddy.tools import _TOOL_STATUS_FILE
+
+        mtime = _TOOL_STATUS_FILE.stat().st_mtime
+        elapsed = max(0.0, time.time() - mtime)
+        if elapsed < 60:
+            return f"{int(elapsed)}s ago"
+        if elapsed < 3600:
+            return f"{int(elapsed / 60)}m ago"
+        return f"{int(elapsed / 3600)}h ago"
+    except Exception:
+        return "(probe age unknown)"
 
 
 def search_registry(
@@ -586,12 +698,20 @@ def _build_registry() -> dict[str, Capability | WorkflowDefinition]:
                 cap.requires = list(inferred)
 
     DISABLED_CAPABILITIES.clear()
+    # CP-A1: also clear the full-Capability stash. Critical for
+    # closure-correctness across mcp_registry_reload (which purges
+    # sys.modules); a Capability stashed during the previous build
+    # would dereference a now-dead module if it survived.
+    _DISABLED_REGISTRY.clear()
     for name in list(registry):
         entry = registry[name]
         if isinstance(entry, Capability) and entry.requires:
             missing = [t_id for t_id in entry.requires if not is_tool_available(t_id)]
             if missing:
                 DISABLED_CAPABILITIES[name] = missing
+                # CP-A1: stash the full Capability object so the recovery
+                # module can restore it without rebuilding the registry.
+                _DISABLED_REGISTRY[name] = entry
                 del registry[name]
 
     if DISABLED_CAPABILITIES:

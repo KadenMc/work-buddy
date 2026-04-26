@@ -1,5 +1,15 @@
 """Unit tests for the @bridge_retry decorator, bridge_failure protocol,
-and obsidian_retry capability."""
+and obsidian_retry capability.
+
+Post-CP7 additions:
+- TestBridgeRetryTypedExceptions: terminal subclasses
+  (ObsidianNotRunning / ObsidianPluginMissing / ObsidianPluginDisabled)
+  short-circuit without sleeping.
+- TestBridgeRetryTypedExhaustion: typed ObsidianError on exhaustion is
+  translated to a bridge_failure dict with error_kind preserved
+  (rather than re-raised, to keep MCP callers happy with structured
+  result shapes).
+"""
 
 from __future__ import annotations
 
@@ -315,3 +325,293 @@ class TestObsidianRetryCapability:
 
         assert result == {"success": True}
         assert len(attempts) == 2
+
+
+# ---------------------------------------------------------------------------
+# CP7 — typed ObsidianError handling in @bridge_retry
+# ---------------------------------------------------------------------------
+
+
+class TestBridgeRetryTypedExceptions:
+    """Terminal ObsidianError subclasses short-circuit without sleeping;
+    transient subclasses retry then translate to bridge_failure dict on
+    exhaustion (rather than re-raise) for MCP-caller-friendly result shape."""
+
+    def test_obsidian_not_running_short_circuits(self):
+        """Sleeping 60s for a closed Obsidian helps nobody — fail fast."""
+        from work_buddy.obsidian.errors import ObsidianNotRunning
+
+        call_count = 0
+
+        @bridge_retry(max_retries=3, wait_seconds=999)
+        def fails():
+            nonlocal call_count
+            call_count += 1
+            raise ObsidianNotRunning()
+
+        with patch("work_buddy.obsidian.bridge.is_available", return_value=True), \
+             patch("work_buddy.obsidian.bridge.get_latency_context", return_value="t"), \
+             patch("work_buddy.obsidian.retry.time.sleep") as sleep_mock:
+            result = fails()
+
+        assert call_count == 1
+        assert sleep_mock.call_count == 0
+        assert is_bridge_failure(result)
+        assert result["error_kind"] == "obsidian_not_running"
+
+    def test_obsidian_plugin_missing_short_circuits(self):
+        from work_buddy.obsidian.errors import ObsidianPluginMissing
+
+        @bridge_retry(max_retries=3, wait_seconds=999)
+        def fails():
+            raise ObsidianPluginMissing()
+
+        with patch("work_buddy.obsidian.bridge.is_available", return_value=True), \
+             patch("work_buddy.obsidian.bridge.get_latency_context", return_value="t"), \
+             patch("work_buddy.obsidian.retry.time.sleep") as sleep_mock:
+            result = fails()
+
+        assert sleep_mock.call_count == 0
+        assert is_bridge_failure(result)
+        assert result["error_kind"] == "obsidian_plugin_missing"
+
+    def test_obsidian_plugin_disabled_short_circuits(self):
+        from work_buddy.obsidian.errors import ObsidianPluginDisabled
+
+        @bridge_retry(max_retries=3, wait_seconds=999)
+        def fails():
+            raise ObsidianPluginDisabled()
+
+        with patch("work_buddy.obsidian.bridge.is_available", return_value=True), \
+             patch("work_buddy.obsidian.bridge.get_latency_context", return_value="t"), \
+             patch("work_buddy.obsidian.retry.time.sleep") as sleep_mock:
+            result = fails()
+
+        assert sleep_mock.call_count == 0
+        assert is_bridge_failure(result)
+        assert result["error_kind"] == "obsidian_plugin_disabled"
+
+    def test_obsidian_startup_race_does_NOT_short_circuit(self):
+        """Startup race is a transient state — Obsidian just started,
+        plugin not loaded yet. Worth retrying after a wait."""
+        from work_buddy.obsidian.errors import ObsidianStartupRace
+
+        call_count = 0
+
+        @bridge_retry(max_retries=2, wait_seconds=0)
+        def fails():
+            nonlocal call_count
+            call_count += 1
+            raise ObsidianStartupRace()
+
+        with patch("work_buddy.obsidian.bridge.is_available", return_value=True), \
+             patch("work_buddy.obsidian.bridge.get_latency_context", return_value="t"):
+            result = fails()
+
+        assert call_count == 2
+        assert is_bridge_failure(result)
+        assert result["error_kind"] == "obsidian_startup_race"
+
+    def test_obsidian_timeout_retries_then_translates(self):
+        """ObsidianTimeout retries; on exhaustion translates to
+        bridge_failure dict (not raised)."""
+        from work_buddy.obsidian.errors import ObsidianTimeout
+
+        call_count = 0
+
+        @bridge_retry(max_retries=2, wait_seconds=0)
+        def fails():
+            nonlocal call_count
+            call_count += 1
+            raise ObsidianTimeout("hung")
+
+        with patch("work_buddy.obsidian.bridge.is_available", return_value=True), \
+             patch("work_buddy.obsidian.bridge.get_latency_context", return_value="t"):
+            result = fails()
+
+        assert call_count == 2
+        assert is_bridge_failure(result)
+        assert result["error_kind"] == "obsidian_timeout"
+
+    def test_obsidian_refused_re_raises_immediately(self):
+        """4xx-other-than-409 is permanent — re-raise so the gateway's
+        classifier sees it (and classifies as permanent)."""
+        from work_buddy.obsidian.errors import ObsidianRefused
+
+        @bridge_retry(max_retries=3, wait_seconds=0)
+        def fails():
+            raise ObsidianRefused(404)
+
+        with patch("work_buddy.obsidian.bridge.is_available", return_value=True), \
+             patch("work_buddy.obsidian.bridge.get_latency_context", return_value="t"):
+            with pytest.raises(ObsidianRefused):
+                fails()
+
+    # CP-A6: post-write-uncertain must NOT be retried inside the decorator.
+    # The bridge sent the body but didn't get an ack — vault state is
+    # uncertain, and blind retry causes double-writes. The exception must
+    # propagate to the gateway so verify_post_write can decide.
+
+    def test_post_write_uncertain_propagates_without_retry(self):
+        """The exception must propagate on the FIRST attempt, not retry."""
+        from work_buddy.obsidian.errors import ObsidianPostWriteUncertain
+
+        call_count = 0
+
+        @bridge_retry(max_retries=3, wait_seconds=999)
+        def writes():
+            nonlocal call_count
+            call_count += 1
+            raise ObsidianPostWriteUncertain(
+                "notes/x.md", content_hint="hello", write_mode="insert",
+            )
+
+        with patch("work_buddy.obsidian.bridge.is_available", return_value=True), \
+             patch("work_buddy.obsidian.bridge.get_latency_context", return_value="t"), \
+             patch("work_buddy.obsidian.retry.time.sleep") as sleep_mock:
+            with pytest.raises(ObsidianPostWriteUncertain) as excinfo:
+                writes()
+
+        # Exactly one call — no retries.
+        assert call_count == 1
+        # No sleeping — we propagated immediately.
+        assert sleep_mock.call_count == 0
+        # The exception's carrier fields survived propagation.
+        assert excinfo.value.path == "notes/x.md"
+        assert excinfo.value.content_hint == "hello"
+        assert excinfo.value.write_mode == "insert"
+
+    def test_post_write_uncertain_propagates_even_with_max_retries_set(self):
+        """max_retries=10 doesn't change behavior — still no retry."""
+        from work_buddy.obsidian.errors import ObsidianPostWriteUncertain
+
+        call_count = 0
+
+        @bridge_retry(max_retries=10, wait_seconds=0)
+        def writes():
+            nonlocal call_count
+            call_count += 1
+            raise ObsidianPostWriteUncertain("x.md")
+
+        with patch("work_buddy.obsidian.bridge.is_available", return_value=True), \
+             patch("work_buddy.obsidian.bridge.get_latency_context", return_value="t"):
+            with pytest.raises(ObsidianPostWriteUncertain):
+                writes()
+
+        assert call_count == 1
+
+
+class TestObsidianRetryTypedExceptions:
+    """Same terminal-state and exhaustion-translation logic in
+    the obsidian_retry capability."""
+
+    @patch("work_buddy.obsidian.bridge.get_latency_context", return_value="t")
+    @patch("work_buddy.obsidian.bridge.is_available", return_value=True)
+    @patch("work_buddy.mcp_server.registry.get_registry")
+    @patch("work_buddy.mcp_server.tools.gateway._load_operation")
+    def test_terminal_state_short_circuits(
+        self, mock_load, mock_registry, mock_avail, mock_latency,
+    ):
+        from work_buddy.obsidian.errors import ObsidianPluginDisabled
+
+        mock_load.return_value = {"name": "my_cap", "params": {}}
+        attempts = []
+
+        def side_effect(**kwargs):
+            attempts.append(1)
+            raise ObsidianPluginDisabled()
+
+        mock_entry = MagicMock()
+        mock_entry.callable = side_effect
+        mock_registry.return_value = {"my_cap": mock_entry}
+
+        with patch("work_buddy.obsidian.retry.time.sleep") as sleep_mock:
+            result = obsidian_retry(
+                operation_id="op_abc", max_retries=3, wait_seconds=999,
+            )
+
+        assert len(attempts) == 1
+        assert sleep_mock.call_count == 0
+        assert is_bridge_failure(result)
+        assert result["error_kind"] == "obsidian_plugin_disabled"
+
+    @patch("work_buddy.obsidian.bridge.get_latency_context", return_value="t")
+    @patch("work_buddy.obsidian.bridge.is_available", return_value=True)
+    @patch("work_buddy.mcp_server.registry.get_registry")
+    @patch("work_buddy.mcp_server.tools.gateway._load_operation")
+    def test_typed_exhaustion_translates_to_bridge_failure(
+        self, mock_load, mock_registry, mock_avail, mock_latency,
+    ):
+        from work_buddy.obsidian.errors import ObsidianTimeout
+
+        mock_load.return_value = {"name": "my_cap", "params": {}}
+        mock_entry = MagicMock()
+        mock_entry.callable = MagicMock(side_effect=ObsidianTimeout("hung"))
+        mock_registry.return_value = {"my_cap": mock_entry}
+
+        result = obsidian_retry(
+            operation_id="op_abc", max_retries=2, wait_seconds=0,
+        )
+
+        assert is_bridge_failure(result)
+        assert result["error_kind"] == "obsidian_timeout"
+
+    @patch("work_buddy.obsidian.bridge.get_latency_context", return_value="t")
+    @patch("work_buddy.obsidian.bridge.is_available", return_value=True)
+    @patch("work_buddy.mcp_server.registry.get_registry")
+    @patch("work_buddy.mcp_server.tools.gateway._load_operation")
+    def test_permanent_obsidian_refused_includes_error_kind(
+        self, mock_load, mock_registry, mock_avail, mock_latency,
+    ):
+        from work_buddy.obsidian.errors import ObsidianRefused
+
+        mock_load.return_value = {"name": "my_cap", "params": {}}
+        mock_entry = MagicMock()
+        mock_entry.callable = MagicMock(side_effect=ObsidianRefused(404))
+        mock_registry.return_value = {"my_cap": mock_entry}
+
+        result = obsidian_retry(
+            operation_id="op_abc", max_retries=3, wait_seconds=0,
+        )
+
+        assert result["success"] is False
+        assert result["error_kind"] == "obsidian_refused"
+
+    # CP-A6: obsidian_retry must also propagate ObsidianPostWriteUncertain
+    # rather than retry. Same rationale as the @bridge_retry decorator.
+
+    @patch("work_buddy.obsidian.bridge.get_latency_context", return_value="t")
+    @patch("work_buddy.obsidian.bridge.is_available", return_value=True)
+    @patch("work_buddy.mcp_server.registry.get_registry")
+    @patch("work_buddy.mcp_server.tools.gateway._load_operation")
+    def test_post_write_uncertain_propagates_without_retry(
+        self, mock_load, mock_registry, mock_avail, mock_latency,
+    ):
+        from work_buddy.obsidian.errors import ObsidianPostWriteUncertain
+
+        mock_load.return_value = {"name": "my_cap", "params": {}}
+        attempts = []
+
+        def side_effect(**kwargs):
+            attempts.append(1)
+            raise ObsidianPostWriteUncertain(
+                "notes/x.md", content_hint="hi", write_mode="insert",
+            )
+
+        mock_entry = MagicMock()
+        mock_entry.callable = side_effect
+        mock_registry.return_value = {"my_cap": mock_entry}
+
+        with patch("work_buddy.obsidian.retry.time.sleep") as sleep_mock:
+            with pytest.raises(ObsidianPostWriteUncertain) as excinfo:
+                obsidian_retry(
+                    operation_id="op_abc", max_retries=5, wait_seconds=999,
+                )
+
+        # Exactly one call — propagated, not retried.
+        assert len(attempts) == 1
+        assert sleep_mock.call_count == 0
+        # Carrier fields survived propagation.
+        assert excinfo.value.path == "notes/x.md"
+        assert excinfo.value.content_hint == "hi"
+        assert excinfo.value.write_mode == "insert"

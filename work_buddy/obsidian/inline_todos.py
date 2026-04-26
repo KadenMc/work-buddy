@@ -13,6 +13,7 @@ import re
 from typing import Any
 
 from work_buddy.obsidian import bridge
+from work_buddy.obsidian.errors import ObsidianError
 from work_buddy.obsidian.tags import search_by_tag, get_file_tags
 from work_buddy.consent import requires_consent
 from work_buddy.logging_config import get_logger
@@ -220,11 +221,15 @@ def cleanup_handled_todos(
 
         if modified:
             new_content = "\n".join(lines)
-            success = bridge.write_file(path, new_content)
-            if success:
+            # Post-CP6: bridge.write_file raises typed ObsidianError on
+            # failure. cleanup_handled_todos is best-effort across many
+            # files (one file's failure shouldn't abort the batch), so
+            # catch typed exceptions per-file and aggregate into errors.
+            try:
+                bridge.write_file(path, new_content)
                 files_modified.append(path)
-            else:
-                errors.append(f"Failed to write {path}")
+            except ObsidianError as exc:
+                errors.append(f"Failed to write {path} ({exc.error_kind})")
 
     return {
         "cleaned": cleaned,

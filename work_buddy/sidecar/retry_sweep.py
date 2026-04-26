@@ -167,12 +167,92 @@ class RetrySweep:
 
         return True
 
+    def _pre_verify_pwu(self, pwu_carrier: dict[str, Any]) -> dict[str, Any] | None:
+        """CP-A7: re-verify a queued PostWriteUncertain BEFORE replaying.
+
+        ``pwu`` is the codebase-wide shorthand for
+        :class:`work_buddy.obsidian.errors.ObsidianPostWriteUncertain`.
+        See that module's docstring for the naming convention.
+
+        Returns a finalised replay-result dict when the original write
+        is confirmed landed (skip the replay), or None when the file
+        still doesn't reflect the write (proceed with normal replay).
+
+        ``pwu_carrier`` shape (set by gateway when enqueuing the retry):
+            ``{"path": str, "content_hint": str | None, "write_mode": str}``
+
+        Reads from FILESYSTEM, not the bridge — same rationale as the
+        gateway-side verify path. The bridge may still be sick; reading
+        through it would just hit another timeout. The file is the
+        source of truth for whether the plugin committed.
+        """
+        try:
+            from work_buddy.obsidian.errors import ObsidianPostWriteUncertain
+            from work_buddy.obsidian.post_write_verify import verify_post_write
+        except ImportError:
+            # Recovery infrastructure not importable — fall through to
+            # normal replay rather than blocking.
+            return None
+
+        try:
+            synthetic = ObsidianPostWriteUncertain(
+                pwu_carrier["path"],
+                content_hint=pwu_carrier.get("content_hint"),
+                write_mode=pwu_carrier.get("write_mode") or "replace",
+            )
+            verdict = verify_post_write(synthetic)
+        except Exception as exc:
+            logger.warning(
+                "_pre_verify_pwu: verify failed (%s); falling through to normal replay",
+                exc,
+            )
+            return None
+
+        if verdict != "verified":
+            # absent / indeterminate → normal replay. Logged at INFO so
+            # the trace is visible without raising warnings.
+            logger.info(
+                "_pre_verify_pwu: %s for path=%r; proceeding with normal replay",
+                verdict, pwu_carrier["path"],
+            )
+            return None
+
+        # verdict == "verified" → original write actually landed. Skip
+        # the replay entirely and surface success-with-warning so the
+        # caller (and the op record) knows recovery happened.
+        logger.info(
+            "_pre_verify_pwu: VERIFIED for path=%r; skipping replay (sweep recovery)",
+            pwu_carrier["path"],
+        )
+        recovery_result = {
+            "status": "ok",
+            "post_write_recovery": True,
+            "warning": (
+                f"Sweep retry skipped: filesystem verify confirms the "
+                f"original write to {pwu_carrier['path']!r} actually "
+                f"landed. No replay needed (CP-A7 pre-verify)."
+            ),
+            "path": pwu_carrier["path"],
+        }
+        return {"success": True, "result": recovery_result}
+
     def _replay(self, record: dict[str, Any]) -> dict[str, Any]:
         """Replay a capability using the registry (direct call, not MCP).
 
         Sets an originating-session context var so artifacts written by
         the callable (e.g. the LLM cost log) land in the requesting
         agent's session directory rather than the sidecar's.
+
+        CP-A7 — pre-verify path
+        -----------------------
+        If the op record carries a ``pwu_carrier`` (set by the gateway
+        when an ObsidianPostWriteUncertain was enqueued because verify
+        said absent/indeterminate), re-run verify_post_write FIRST
+        before invoking the capability. This catches the race where the
+        plugin's late commit lands between the gateway's verify and
+        the sweep's replay. Without this pre-verify, the sweep's read-
+        modify-write capability would re-read the now-late-committed
+        file and add a second insertion → double-write.
         """
         try:
             from work_buddy.mcp_server.registry import get_registry, Capability
@@ -188,6 +268,22 @@ class RetrySweep:
                 return {"success": False, "error": f"Capability '{record['name']}' not found in registry"}
             if not isinstance(entry, Capability):
                 return {"success": False, "error": f"'{record['name']}' is a workflow, not a capability"}
+
+            # CP-A7: pre-verify before invoking the capability when the
+            # op was enqueued from a PostWriteUncertain-absent path.
+            pwu_carrier = record.get("pwu_carrier")
+            if pwu_carrier and isinstance(pwu_carrier, dict) and pwu_carrier.get("path"):
+                pre_verify = self._pre_verify_pwu(pwu_carrier)
+                if pre_verify is not None:
+                    return pre_verify
+                # absent / indeterminate → fall through to normal replay.
+                # Strip the carrier so a NEW PostWriteUncertain on this
+                # attempt's bridge call gets the fresh carrier from the
+                # gateway-style flow rather than the stale one we just
+                # checked. (The sweep doesn't have the gateway-style
+                # exception handler; the carrier is set anew if the
+                # capability raises again, via the except block below.)
+                record.pop("pwu_carrier", None)
 
             originating = record.get("originating_session_id")
             token = set_originating_session(originating) if originating else None
@@ -223,14 +319,73 @@ class RetrySweep:
             return {"success": True, "result": result}
 
         except Exception as exc:
+            # CP5: post-write-verify on retried writes. The retry sweep
+            # re-invokes the capability from scratch — if the underlying
+            # bridge call raises ObsidianPostWriteUncertain, the
+            # filesystem may show the write actually landed this time
+            # (or even from a previous attempt that the user/bridge
+            # never confirmed). Verify before re-enqueuing — same logic
+            # as the gateway's post-write-verify path.
+            try:
+                from work_buddy.obsidian.errors import ObsidianPostWriteUncertain
+            except ImportError:
+                ObsidianPostWriteUncertain = ()  # type-tuple sentinel
+
+            if isinstance(exc, ObsidianPostWriteUncertain):
+                from work_buddy.obsidian.post_write_verify import verify_post_write
+                verdict = verify_post_write(exc)
+                if verdict == "verified":
+                    recovery_result: dict[str, Any] = {
+                        "status": "ok",
+                        "post_write_recovery": True,
+                        "warning": (
+                            f"Retry attempt's bridge call timed out, but "
+                            f"filesystem verify confirms content landed at "
+                            f"{exc.path!r}."
+                        ),
+                        "path": exc.path,
+                    }
+                    record["status"] = "completed"
+                    record["result"] = recovery_result
+                    record["error"] = None
+                    record["completed_at"] = datetime.now(timezone.utc).isoformat()
+                    record["locked_until"] = None
+                    record["queued"] = False
+                    record["queued_for_retry"] = False
+                    _write_record(record)
+                    return {"success": True, "result": recovery_result}
+                # absent / indeterminate — fall through to normal failure path
+
             error_str = f"{type(exc).__name__}: {exc}"
 
             # Classify to decide if we should keep retrying
             from work_buddy.errors import classify_error
             error_class = classify_error(exc)
 
+            # Capture error_kind for typed exceptions so the retry_history
+            # entry the sweep adds can correlate against the original failure.
+            error_kind = getattr(exc, "error_kind", None)
+            if not isinstance(error_kind, str):
+                error_kind = None
+
+            # CP-A7: if this exception is PostWriteUncertain (we got here
+            # because the verify above said absent/indeterminate),
+            # persist the carrier so the NEXT sweep tick can pre-verify
+            # before re-invoking the capability. Without this, the next
+            # sweep would re-run the read-modify-write capability and
+            # potentially double-write (the bug CP-A7 is designed to
+            # prevent end-to-end across sweep ticks).
+            if isinstance(exc, ObsidianPostWriteUncertain):
+                record["pwu_carrier"] = {
+                    "path": exc.path,
+                    "content_hint": exc.content_hint,
+                    "write_mode": exc.write_mode,
+                }
+
             record["status"] = "failed"
             record["error"] = error_str
+            if error_kind is not None:
+                record["error_kind"] = error_kind
             record["locked_until"] = None
             _write_record(record)
 
