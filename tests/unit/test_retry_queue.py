@@ -115,6 +115,93 @@ class TestClassifyError:
         assert classify_error(exc) == "transient"
 
 
+class TestClassifyTypedObsidianErrors:
+    """CP3: typed ObsidianError subclasses get isinstance fast-path
+    classification, bypassing string-pattern matching entirely.
+
+    Permanent: ObsidianRefused (4xx other than 409 — structural).
+    Transient: everything else under ObsidianError.
+    """
+
+    def test_obsidian_not_running_is_transient(self):
+        from work_buddy.obsidian.errors import ObsidianNotRunning
+        assert classify_error(ObsidianNotRunning()) == "transient"
+
+    def test_obsidian_plugin_missing_is_transient(self):
+        from work_buddy.obsidian.errors import ObsidianPluginMissing
+        assert classify_error(ObsidianPluginMissing()) == "transient"
+
+    def test_obsidian_plugin_disabled_is_transient(self):
+        from work_buddy.obsidian.errors import ObsidianPluginDisabled
+        assert classify_error(ObsidianPluginDisabled()) == "transient"
+
+    def test_obsidian_startup_race_is_transient(self):
+        from work_buddy.obsidian.errors import ObsidianStartupRace
+        assert classify_error(ObsidianStartupRace()) == "transient"
+
+    def test_obsidian_unreachable_base_is_transient(self):
+        from work_buddy.obsidian.errors import ObsidianUnreachable
+        assert classify_error(ObsidianUnreachable()) == "transient"
+
+    def test_obsidian_timeout_is_transient(self):
+        from work_buddy.obsidian.errors import ObsidianTimeout
+        assert classify_error(ObsidianTimeout()) == "transient"
+
+    def test_obsidian_post_write_uncertain_is_transient(self):
+        """PostWriteUncertain is transient at the classification layer.
+        The gateway's CP5 verify happens BEFORE classification — by the
+        time classify_error sees this exception, the verify already
+        decided it's a real failure and should be enqueued."""
+        from work_buddy.obsidian.errors import ObsidianPostWriteUncertain
+        assert classify_error(ObsidianPostWriteUncertain("x.md")) == "transient"
+
+    def test_obsidian_editor_conflict_is_transient(self):
+        """The user finishes typing → next retry succeeds. Worth retrying."""
+        from work_buddy.obsidian.errors import ObsidianEditorConflict
+        assert classify_error(ObsidianEditorConflict("x.md")) == "transient"
+
+    def test_obsidian_server_error_is_transient(self):
+        from work_buddy.obsidian.errors import ObsidianServerError
+        assert classify_error(ObsidianServerError(503)) == "transient"
+
+    def test_obsidian_http_error_base_is_transient(self):
+        """Generic HTTPError (shouldn't normally be raised — subclasses
+        cover the meaningful cases) is treated as transient by default."""
+        from work_buddy.obsidian.errors import ObsidianHTTPError
+        assert classify_error(ObsidianHTTPError(599)) == "transient"
+
+    # --- The one permanent type ---
+
+    def test_obsidian_refused_is_permanent(self):
+        """4xx other than 409 — structural refusal, no retry will help."""
+        from work_buddy.obsidian.errors import ObsidianRefused
+        assert classify_error(ObsidianRefused(403)) == "permanent"
+
+    def test_obsidian_refused_404_is_permanent(self):
+        from work_buddy.obsidian.errors import ObsidianRefused
+        assert classify_error(ObsidianRefused(404)) == "permanent"
+
+    # --- isinstance is the fast path, not name-matching ---
+
+    def test_typed_path_wins_over_message_matching(self):
+        """A typed exception whose message DOESN'T contain transient
+        keywords should still be transient (the type wins)."""
+        from work_buddy.obsidian.errors import ObsidianTimeout
+        # Construct with an explicit message that lacks transient keywords.
+        # If isinstance is the resolver, this stays transient regardless.
+        exc = ObsidianTimeout("xyzzy")
+        assert "timeout" not in str(exc).lower()
+        assert "timed" not in str(exc).lower()
+        # isinstance(exc, ObsidianError) wins over the message-pattern path.
+        assert classify_error(exc) == "transient"
+
+    def test_obsidian_error_base_is_transient(self):
+        """Plain ObsidianError (rarely raised) — defaults to transient
+        rather than 'unknown' so retry queues don't drop the signal."""
+        from work_buddy.obsidian.errors import ObsidianError
+        assert classify_error(ObsidianError("generic")) == "transient"
+
+
 class TestIsTransientResult:
     """Test is_transient_result() with various return value patterns."""
 
@@ -156,6 +243,75 @@ class TestIsTransientResult:
 
     def test_dict_no_error_key(self):
         assert is_transient_result({"data": [1, 2, 3]}) is False
+
+
+class TestIsTransientResultErrorKind:
+    """CP3: result dicts can carry an `error_kind` field (set by the
+    gateway in CP4 when an ObsidianError is caught). When present, it
+    wins over any string-pattern matching."""
+
+    @pytest.mark.parametrize("error_kind", [
+        "obsidian_unreachable",
+        "obsidian_not_running",
+        "obsidian_plugin_missing",
+        "obsidian_plugin_disabled",
+        "obsidian_startup_race",
+        "obsidian_timeout",
+        "obsidian_post_write_uncertain",
+        "obsidian_editor_conflict",
+        "obsidian_server_error",
+        "obsidian_http_error",
+        "obsidian_unknown",
+    ])
+    def test_transient_obsidian_kinds(self, error_kind):
+        result = {"error": "anything", "error_kind": error_kind}
+        assert is_transient_result(result) is True
+
+    def test_obsidian_refused_is_permanent_via_kind(self):
+        """The one Obsidian failure that should NOT retry."""
+        result = {"error": "Bad Request", "error_kind": "obsidian_refused"}
+        assert is_transient_result(result) is False
+
+    def test_error_kind_wins_over_transient_message(self):
+        """error_kind=obsidian_refused beats a misleading 'timed out'
+        message — the structured signal is the source of truth."""
+        result = {
+            "error": "operation timed out somewhere upstream",
+            "error_kind": "obsidian_refused",
+        }
+        assert is_transient_result(result) is False
+
+    def test_error_kind_wins_over_permanent_message(self):
+        """error_kind=obsidian_timeout beats a misleading 'Invalid'
+        message — gateway populates kind from the actual exception."""
+        result = {
+            "error": "Invalid foo",  # would match no pattern
+            "error_kind": "obsidian_timeout",
+        }
+        assert is_transient_result(result) is True
+
+    def test_unknown_error_kind_falls_through_to_message(self):
+        """An error_kind value we don't recognize falls back to message
+        matching as a safety net."""
+        result = {
+            "error": "bridge unreachable",
+            "error_kind": "some_future_kind_not_in_lists",
+        }
+        # Falls through to message matching → "bridge" or "unreachable" matches.
+        assert is_transient_result(result) is True
+
+    def test_unknown_error_kind_with_permanent_message(self):
+        result = {
+            "error": "bad input",
+            "error_kind": "some_future_kind",
+        }
+        assert is_transient_result(result) is False
+
+    def test_error_kind_present_but_not_a_string(self):
+        """Defensive: error_kind=42 shouldn't crash; falls through to
+        message matching."""
+        result = {"error": "timed out", "error_kind": 42}
+        assert is_transient_result(result) is True
 
 
 class TestComputeRetryDelay:
