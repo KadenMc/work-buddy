@@ -30,11 +30,19 @@ normalization scheme changes.
 
 Writes use a temp-file-then-rename pattern so a crash mid-write can't
 corrupt an existing cache. Reads are idempotent.
+
+Reads use ``with np.load(...) as data:`` so the underlying ZipFile handle
+is closed before the function returns. On Windows, leaking that handle
+makes the next ``tmp.replace(path)`` fail with ``[WinError 5] Access
+denied`` because the destination still has a live read handle. The
+``_atomic_replace`` helper additionally retries the rename a few times
+with brief backoff to absorb transient locks held by AV / file indexers.
 """
 
 from __future__ import annotations
 
 import hashlib
+import time
 from pathlib import Path
 from typing import Any
 
@@ -51,6 +59,26 @@ CACHE_VERSION = 1
 # 16 hex chars = 8 bytes of SHA-256 prefix. Plenty of collision margin for a
 # corpus of a few hundred units.
 _HASH_LEN = 16
+
+# Brief retry schedule for tmp.replace(path). Windows occasionally refuses
+# the rename when AV / Defender / a file indexer momentarily holds the
+# destination open; backing off a few hundred ms is enough.
+_REPLACE_RETRY_DELAYS_S = (0.05, 0.1, 0.2)
+
+
+def _atomic_replace(tmp: Path, path: Path) -> None:
+    """Rename ``tmp`` over ``path``, retrying briefly on transient locks."""
+    last_err: Exception | None = None
+    for delay in (0.0, *_REPLACE_RETRY_DELAYS_S):
+        if delay:
+            time.sleep(delay)
+        try:
+            tmp.replace(path)
+            return
+        except PermissionError as e:  # WinError 5 surfaces as PermissionError
+            last_err = e
+    assert last_err is not None
+    raise last_err
 
 
 def _content_cache_path() -> Path:
@@ -84,20 +112,24 @@ def load_content_cache(model_key: str) -> dict[str, tuple[str, "np.ndarray"]]:
         return {}
 
     try:
-        data = np.load(path, allow_pickle=True)
-        cache_model = str(data["model_key"]) if "model_key" in data else ""
-        cache_version = int(data["version"]) if "version" in data else 0
-        if cache_model != model_key or cache_version != CACHE_VERSION:
-            logger.info(
-                "Knowledge content cache header mismatch "
-                "(model=%r vs %r, version=%d vs %d). Treating as empty.",
-                cache_model, model_key, cache_version, CACHE_VERSION,
-            )
-            return {}
+        # `with` ensures the underlying ZipFile handle closes before we
+        # return — leaking it makes the next save's tmp.replace fail with
+        # WinError 5 on Windows.
+        with np.load(path, allow_pickle=True) as data:
+            cache_model = str(data["model_key"]) if "model_key" in data else ""
+            cache_version = int(data["version"]) if "version" in data else 0
+            if cache_model != model_key or cache_version != CACHE_VERSION:
+                logger.info(
+                    "Knowledge content cache header mismatch "
+                    "(model=%r vs %r, version=%d vs %d). Treating as empty.",
+                    cache_model, model_key, cache_version, CACHE_VERSION,
+                )
+                return {}
 
-        paths = data["paths"].tolist()
-        hashes = data["hashes"].tolist()
-        vectors = data["vectors"].astype(np.float32)  # upcast from float16
+            paths = data["paths"].tolist()
+            hashes = data["hashes"].tolist()
+            vectors = data["vectors"].astype(np.float32)  # upcast from float16
+
         if not (len(paths) == len(hashes) == vectors.shape[0]):
             logger.warning(
                 "Knowledge content cache shape mismatch (paths=%d hashes=%d "
@@ -150,7 +182,7 @@ def save_content_cache(
         model_key=np.array(model_key),
         version=np.array(CACHE_VERSION),
     )
-    tmp.replace(path)
+    _atomic_replace(tmp, path)
     logger.debug(
         "Saved knowledge content cache: %d units, %.2f MB",
         len(cache), path.stat().st_size / 1024 / 1024,
@@ -176,20 +208,22 @@ def load_alias_cache(model_key: str) -> dict[tuple[str, str], "np.ndarray"]:
         return {}
 
     try:
-        data = np.load(path, allow_pickle=True)
-        cache_model = str(data["model_key"]) if "model_key" in data else ""
-        cache_version = int(data["version"]) if "version" in data else 0
-        if cache_model != model_key or cache_version != CACHE_VERSION:
-            logger.info(
-                "Knowledge alias cache header mismatch "
-                "(model=%r vs %r, version=%d vs %d). Treating as empty.",
-                cache_model, model_key, cache_version, CACHE_VERSION,
-            )
-            return {}
+        # See load_content_cache for the rationale on `with np.load(...)`.
+        with np.load(path, allow_pickle=True) as data:
+            cache_model = str(data["model_key"]) if "model_key" in data else ""
+            cache_version = int(data["version"]) if "version" in data else 0
+            if cache_model != model_key or cache_version != CACHE_VERSION:
+                logger.info(
+                    "Knowledge alias cache header mismatch "
+                    "(model=%r vs %r, version=%d vs %d). Treating as empty.",
+                    cache_model, model_key, cache_version, CACHE_VERSION,
+                )
+                return {}
 
-        paths = data["paths"].tolist()
-        texts = data["alias_texts"].tolist()
-        vectors = data["vectors"].astype(np.float32)
+            paths = data["paths"].tolist()
+            texts = data["alias_texts"].tolist()
+            vectors = data["vectors"].astype(np.float32)
+
         if not (len(paths) == len(texts) == vectors.shape[0]):
             logger.warning(
                 "Knowledge alias cache shape mismatch. Treating as empty.",
@@ -236,7 +270,7 @@ def save_alias_cache(
         model_key=np.array(model_key),
         version=np.array(CACHE_VERSION),
     )
-    tmp.replace(path)
+    _atomic_replace(tmp, path)
     logger.debug(
         "Saved knowledge alias cache: %d aliases, %.2f MB",
         len(cache), path.stat().st_size / 1024 / 1024,
