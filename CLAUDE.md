@@ -109,10 +109,9 @@ Every scope below is browsable with `mcp__work-buddy__wb_run("agent_docs", {"sco
 | `contracts/` | Commitments, health, WIP limits, constraints |
 | `projects/` | Registry, observations, memory bank |
 | `journal/` | Daily note, sign-in, running notes, day planner |
-| `context/` | Collectors (git, chrome, calendar, obsidian, smart, datacore…), bundles |
+| `context/` | Collectors (git, chrome, calendar, obsidian, smart, datacore…), bundles, conversation search, session inspection, knowledge-store editing |
 | `obsidian/` | Bridge, vault writer, tasks plugin, datacore, smart ecosystem |
 | `browser/` | Chrome tab triage |
-| `sessions/` | Conversation search, activity, commits |
 | `threads/` | Multi-turn agent-user threads |
 | `notifications/` | Notify, request, consent, surfaces |
 | `services/` | Messaging, memory (Hindsight), dashboard, sidecar |
