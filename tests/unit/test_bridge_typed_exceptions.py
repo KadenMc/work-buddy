@@ -400,16 +400,11 @@ class TestDashboardContractPreserved:
 
 
 # ---------------------------------------------------------------------------
-# Re-export — EditorConflict alias
+# Re-exports of the typed Obsidian exceptions at the bridge module
 # ---------------------------------------------------------------------------
 
 
 class TestBridgeReExports:
-    def test_editor_conflict_alias_at_bridge_module(self):
-        """``from work_buddy.obsidian.bridge import EditorConflict`` must
-        keep working — the alias preserves un-migrated callers."""
-        assert bridge.EditorConflict is ObsidianEditorConflict
-
     def test_typed_exceptions_re_exported(self):
         for name in [
             "ObsidianError",
@@ -426,3 +421,11 @@ class TestBridgeReExports:
             "ObsidianServerError",
         ]:
             assert hasattr(bridge, name), f"bridge missing re-export of {name}"
+
+    def test_legacy_editor_conflict_alias_removed_in_cp9(self):
+        """The legacy ``bridge.EditorConflict`` alias was removed in CP9.
+        Existing callers must import ``ObsidianEditorConflict`` directly.
+        Re-introducing the alias would muddy the type system."""
+        assert not hasattr(bridge, "EditorConflict"), (
+            "bridge.EditorConflict alias was removed in CP9 — see DECISIONS.md"
+        )

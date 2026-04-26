@@ -32,12 +32,11 @@ from work_buddy.config import load_config
 from work_buddy.consent import requires_consent
 from work_buddy.logging_config import get_logger
 
-# Re-export the typed exceptions at the bridge module level so legacy
-# callers that do ``from work_buddy.obsidian.bridge import EditorConflict``
-# keep working through the transition. ``EditorConflict`` is an alias for
-# ``ObsidianEditorConflict``; CP9 removes the alias.
+# Re-export the typed Obsidian exceptions at the bridge module level so
+# callers can ``from work_buddy.obsidian.bridge import ObsidianEditorConflict``
+# without a separate import from work_buddy.obsidian.errors. The legacy
+# ``EditorConflict`` alias was removed in CP9 — use ``ObsidianEditorConflict``.
 from work_buddy.obsidian.errors import (
-    EditorConflict,  # alias for ObsidianEditorConflict; removed in CP9
     ObsidianEditorConflict,
     ObsidianError,
     ObsidianHTTPError,

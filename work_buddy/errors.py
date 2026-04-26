@@ -20,11 +20,12 @@ from typing import Any
 # Strings that, when found in an error message, indicate a transient failure.
 # Case-insensitive matching.
 #
-# Post-CP3 these patterns are a FALLBACK for non-Obsidian capabilities and
-# legacy callers that haven't migrated to typed exceptions / structured
-# error_kind. Obsidian failures take the typed-exception fast-path
-# (isinstance check) and never reach the pattern list. CP9 trims the
-# Obsidian-specific patterns out of this list once the migration is done.
+# Post-CP9 this list is purely a fallback for NON-Obsidian transient failures
+# (LM Studio, embedding service, sidecar HTTP, etc.). Obsidian failures
+# take the typed-exception fast-path (isinstance check on ObsidianError);
+# nothing inside this list is needed for the Obsidian bridge anymore.
+# Removed in CP9: "bridge", "editor_dirty", "urlopen error", "winerror 10061"
+# — all subsumed by the typed-exception path.
 
 _TRANSIENT_PATTERNS: tuple[str, ...] = (
     "timed out",
@@ -35,12 +36,8 @@ _TRANSIENT_PATTERNS: tuple[str, ...] = (
     "temporarily unavailable",
     "service unavailable",
     "unreachable",
-    "bridge",            # Obsidian bridge failures (legacy; CP9 removes)
-    "urlopen error",     # urllib failures
-    "winerror 10061",    # Windows connection refused
     "errno 111",         # Linux connection refused
     "errno 104",         # Linux connection reset
-    "editor_dirty",      # Obsidian editor-conflict (legacy; CP9 removes)
 )
 
 # Error-kind values (the structured signal carried by ObsidianError
@@ -65,13 +62,13 @@ _PERMANENT_OBSIDIAN_KINDS: frozenset[str] = frozenset({
     "obsidian_refused",  # 4xx other than 409 — structural refusal
 })
 
-# Exception class names (not types) that are always transient. Name-based
-# matching keeps this fallback path dependency-free for non-Obsidian callers.
-# Both the legacy "EditorConflict" name and the new "ObsidianEditorConflict"
-# are listed during the transition (CP9 removes the legacy entry).
+# Exception class names (not types) that are always transient. The
+# typed-exception fast-path (isinstance check on ObsidianError) at the
+# top of classify_error covers the Obsidian hierarchy; this list is for
+# any legacy non-Obsidian named exceptions that should classify transient
+# without needing a type import.
 _TRANSIENT_EXCEPTION_NAMES: tuple[str, ...] = (
-    "EditorConflict",            # legacy alias (removed in CP9)
-    "ObsidianEditorConflict",    # new typed name
+    "ObsidianEditorConflict",    # safety-net if isinstance check skipped
 )
 
 # Exception types that are always transient (regardless of message).
@@ -155,6 +152,13 @@ def classify_error(exc: Exception) -> str:
     if exc_type_name == "URLError":
         reason = getattr(exc, "reason", None)
         if reason is not None:
+            # CP9: also check whether the inner exception is itself a
+            # transient type (ConnectionRefusedError, TimeoutError, ...).
+            # Pre-CP9 the trimmed _TRANSIENT_PATTERNS list contained
+            # 'urlopen error' so the OUTER message matched; with that
+            # gone, we need to recurse into the inner exception properly.
+            if isinstance(reason, _TRANSIENT_EXCEPTION_TYPES):
+                return "transient"
             inner_msg = str(reason).lower()
             for pattern in _TRANSIENT_PATTERNS:
                 if pattern in inner_msg:

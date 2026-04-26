@@ -1,18 +1,22 @@
-"""Unit tests for EditorConflict + write_file_raw behavior.
+"""Unit tests for ObsidianEditorConflict + write_file_raw behavior.
 
 Covers:
-- ObsidianEditorConflict (legacy alias: EditorConflict) is classified as transient
+- ObsidianEditorConflict is classified as transient
 - write_file_raw raises ObsidianEditorConflict immediately on 409
 - write_file_raw raises ObsidianPostWriteUncertain on PUT timeout (port open)
-  to close the latent double-write hazard (CP2)
-- write_file_raw returns False on bridge unreachable / 4xx-other-than-409 / 5xx
-  (transitional shim for legacy TRANSLATE-pattern callers; CP6 unwraps)
-- vault_write does NOT fall back on EditorConflict
+  to close the latent double-write hazard (CP2/CP5)
+- write_file_raw raises typed ObsidianError on bridge unreachable /
+  4xx-other-than-409 / 5xx (post-CP6 — no more bool shim)
+- vault_write does NOT fall back on ObsidianEditorConflict
 
 After CP2 the mock pattern shifted: ``_request_with_status`` raises
 typed exceptions instead of returning ``(None, None)`` for failure, so
 mocks use ``side_effect=<exception>`` for failure cases and
 ``return_value=(status, body)`` for success.
+
+The legacy ``EditorConflict`` alias was removed in CP9. All new code
+imports ``ObsidianEditorConflict`` directly from
+:mod:`work_buddy.obsidian.errors`.
 """
 from __future__ import annotations
 
@@ -20,7 +24,7 @@ from unittest.mock import patch
 import pytest
 
 from work_buddy.errors import classify_error
-from work_buddy.obsidian.bridge import EditorConflict, write_file_raw
+from work_buddy.obsidian.bridge import write_file_raw
 from work_buddy.obsidian.errors import (
     ObsidianEditorConflict,
     ObsidianNotRunning,
@@ -34,14 +38,15 @@ from work_buddy.obsidian.errors import (
 class TestEditorConflictClassification:
     def test_editor_conflict_is_transient(self):
         """The retry queue's auto-enqueue depends on this."""
-        exc = EditorConflict("foo/bar.md")
+        exc = ObsidianEditorConflict("foo/bar.md")
         assert classify_error(exc) == "transient"
 
-    def test_editor_conflict_message_pattern_also_caught(self):
-        """Defense-in-depth: even a generic exception with the marker
-        in its message should classify as transient."""
-        exc = RuntimeError("editor_dirty: tasks/master-task-list.md")
-        assert classify_error(exc) == "transient"
+    def test_editor_conflict_message_format_preserved(self):
+        """The legacy 'editor_dirty: <path>' message format survives
+        for log scrapers — CP1 preserved this by overriding the
+        HTTPError message format in ObsidianEditorConflict.__init__."""
+        exc = ObsidianEditorConflict("tasks/master-task-list.md")
+        assert "editor_dirty: tasks/master-task-list.md" in str(exc)
 
 
 class TestWriteFileRawBehavior:
@@ -74,23 +79,11 @@ class TestWriteFileRawBehavior:
         from scratch so each attempt re-reads the source file."""
         with patch("work_buddy.obsidian.bridge.time.sleep") as mock_sleep, \
              self._patch_status_raises(ObsidianEditorConflict("x.md")):
-            with pytest.raises(EditorConflict) as excinfo:
+            with pytest.raises(ObsidianEditorConflict) as excinfo:
                 write_file_raw("x.md", "content")
             assert excinfo.value.path == "x.md"
             # No sleep should have been called — we don't wait, we surface.
             mock_sleep.assert_not_called()
-
-    def test_legacy_alias_catches_typed_instance(self):
-        """``except EditorConflict`` must continue catching
-        ObsidianEditorConflict instances raised internally — the alias
-        keeps un-migrated callers working through the transition."""
-        with self._patch_status_raises(ObsidianEditorConflict("x.md")):
-            try:
-                write_file_raw("x.md", "content")
-            except EditorConflict:
-                pass  # caught via the alias — good
-            else:
-                pytest.fail("EditorConflict alias did not catch ObsidianEditorConflict")
 
     def test_unreachable_raises_typed(self):
         """Post-CP6: bridge unreachable raises ObsidianUnreachable
@@ -157,9 +150,9 @@ class TestVaultWriteDoesNotFallBackOnConflict:
             "work_buddy.obsidian.bridge.is_available", return_value=True
         ), patch(
             "work_buddy.obsidian.bridge.write_file_raw",
-            side_effect=EditorConflict("x.md"),
+            side_effect=ObsidianEditorConflict("x.md"),
         ):
-            with pytest.raises(EditorConflict):
+            with pytest.raises(ObsidianEditorConflict):
                 vault_writer.vault_write(
                     "x.md", Path("/tmp/x.md"), "new content"
                 )

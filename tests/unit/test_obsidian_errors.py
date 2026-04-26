@@ -6,14 +6,15 @@ Covers:
 - Carrier fields populated correctly (path, content_hint, write_mode, status, body)
 - ObsidianEditorConflict constructor preserves the legacy
   EditorConflict(path, reason="editor_dirty") signature for backward compat
-- Module exposes EditorConflict as an alias of ObsidianEditorConflict
+  (the standalone class was removed in CP9; the constructor signature
+  and message format survive on ObsidianEditorConflict so log scrapers
+  and historical raise sites still work)
 """
 from __future__ import annotations
 
 import pytest
 
 from work_buddy.obsidian.errors import (
-    EditorConflict,  # alias under test
     ObsidianEditorConflict,
     ObsidianError,
     ObsidianHTTPError,
@@ -194,25 +195,20 @@ class TestEditorConflictBackwardCompat:
         exc = ObsidianEditorConflict("foo.md", "user_typing")
         assert str(exc) == "user_typing: foo.md"
 
-    def test_alias_is_same_class(self):
-        """`from work_buddy.obsidian.errors import EditorConflict` resolves
-        to ObsidianEditorConflict — the alias preserves call sites that
-        haven't migrated yet."""
-        assert EditorConflict is ObsidianEditorConflict
-
-    def test_alias_can_construct(self):
-        exc = EditorConflict("x.md")
-        assert isinstance(exc, ObsidianEditorConflict)
-        assert exc.path == "x.md"
-
-    def test_alias_can_catch(self):
-        """except EditorConflict catches ObsidianEditorConflict instances."""
-        try:
-            raise ObsidianEditorConflict("x.md")
-        except EditorConflict as exc:
-            assert exc.path == "x.md"
-        else:
-            pytest.fail("should have caught via alias")
+    def test_alias_removed_in_cp9(self):
+        """The legacy ``EditorConflict`` alias was removed in CP9.
+        Callers must import ``ObsidianEditorConflict`` directly. This
+        test exists to catch any accidental re-introduction of the
+        alias (which would muddy the type system)."""
+        from work_buddy.obsidian import errors as _errors
+        assert not hasattr(_errors, "EditorConflict"), (
+            "EditorConflict alias was removed in CP9 — re-introducing it "
+            "would re-introduce the type-system muddiness it was removed to fix"
+        )
+        from work_buddy.obsidian import bridge as _bridge
+        assert not hasattr(_bridge, "EditorConflict"), (
+            "bridge.EditorConflict alias was removed in CP9 — see above"
+        )
 
 
 class TestRaiseAndCatchPolymorphism:

@@ -199,11 +199,12 @@ class ObsidianEditorConflict(ObsidianHTTPError):
     would clobber the user's saved typing. The retry sweep re-invokes
     the whole capability, which performs a fresh read-modify-write.
 
-    Backward compat: this class replaces the standalone
-    ``EditorConflict`` from :mod:`work_buddy.obsidian.bridge`. Constructor
-    signature is preserved (``path, reason="editor_dirty"``) so existing
-    raise sites and ``except EditorConflict`` patterns continue to work
-    via the alias.
+    Replaces the standalone ``EditorConflict`` exception that lived
+    in :mod:`work_buddy.obsidian.bridge` before CP1. Constructor
+    signature is preserved (``path, reason="editor_dirty"``) and the
+    legacy ``editor_dirty: <path>`` message format is reproduced
+    byte-for-byte for log scrapers and existing test assertions. The
+    backwards-compat alias was removed in CP9.
     """
 
     error_kind: str = "obsidian_editor_conflict"
@@ -246,16 +247,6 @@ class ObsidianServerError(ObsidianHTTPError):
     error_kind: str = "obsidian_server_error"
 
 
-# ---------------------------------------------------------------------------
-# Backward-compat alias for legacy callers
-# ---------------------------------------------------------------------------
-# Some code imports ``EditorConflict`` from ``work_buddy.obsidian.bridge``.
-# Bridge re-exports the alias from there; this module also exposes it for
-# any caller that imports directly from ``work_buddy.obsidian.errors``.
-
-EditorConflict = ObsidianEditorConflict
-
-
 __all__ = [
     "ObsidianError",
     "ObsidianUnreachable",
@@ -269,5 +260,4 @@ __all__ = [
     "ObsidianEditorConflict",
     "ObsidianRefused",
     "ObsidianServerError",
-    "EditorConflict",  # alias
 ]

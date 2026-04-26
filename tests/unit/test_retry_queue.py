@@ -47,7 +47,10 @@ class TestClassifyError:
         assert classify_error(ConnectionAbortedError()) == "transient"
 
     # --- Transient by message pattern ---
-    def test_runtime_error_bridge(self):
+    def test_runtime_error_bridge_via_runtime_pattern(self):
+        """RuntimeError with 'not available' message — caught by the
+        RuntimeError-specific 'not available' / 'not running' pattern,
+        NOT by the legacy 'bridge' string match (which CP9 removed)."""
         assert classify_error(RuntimeError("Obsidian bridge not available")) == "transient"
 
     def test_runtime_error_timeout(self):
@@ -62,10 +65,17 @@ class TestClassifyError:
     def test_runtime_error_unreachable(self):
         assert classify_error(RuntimeError("Service unreachable")) == "transient"
 
-    def test_oserror_winerror(self):
+    def test_oserror_winerror_via_connection_refused(self):
+        """WinError 10061 surfaces as 'connection refused' in the message —
+        caught by the 'connection refused' pattern; the bare 'winerror 10061'
+        pattern was removed in CP9 (subsumed by the typed-exception path
+        for Obsidian and by 'connection refused' for non-Obsidian)."""
         assert classify_error(OSError("WinError 10061: connection refused")) == "transient"
 
-    def test_urlopen_error_message(self):
+    def test_urlopen_error_via_timeout(self):
+        """'urlopen error: timed out' matches the 'timed out' pattern;
+        the bare 'urlopen error' pattern was removed in CP9 (Obsidian's
+        urllib failures now come through the typed-exception path)."""
         assert classify_error(RuntimeError("urlopen error: timed out")) == "transient"
 
     # --- Permanent by type ---
@@ -217,8 +227,12 @@ class TestIsTransientResult:
     def test_error_unreachable(self):
         assert is_transient_result({"error": "Service unreachable"}) is True
 
-    def test_error_bridge(self):
-        assert is_transient_result({"error": "bridge request failed"}) is True
+    def test_error_bridge_via_unreachable(self):
+        """Pre-CP9 the bare 'bridge' string was a transient pattern.
+        Post-CP9 it isn't — Obsidian failures use error_kind instead.
+        A non-Obsidian message containing 'unreachable' still matches
+        though, which covers most legacy bridge-failure-style messages."""
+        assert is_transient_result({"error": "bridge unreachable"}) is True
 
     def test_error_permanent(self):
         assert is_transient_result({"error": "Invalid parameter: foo"}) is False
