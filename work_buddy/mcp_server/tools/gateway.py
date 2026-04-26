@@ -184,8 +184,21 @@ def _result_error(result: Any) -> str | None:
     return None
 
 
-def _complete_operation(op_id: str, *, result: Any = None, error: str | None = None) -> None:
-    """Mark an operation as completed (success or failure)."""
+def _complete_operation(
+    op_id: str,
+    *,
+    result: Any = None,
+    error: str | None = None,
+    error_kind: str | None = None,
+) -> None:
+    """Mark an operation as completed (success or failure).
+
+    ``error_kind`` is the structured signal carried by typed
+    ObsidianError instances (set by the gateway when an ObsidianError
+    is caught). Stored on the op record so post-incident analysis can
+    grep ``error_kind: "obsidian_post_write_uncertain"`` across
+    ``data/agents/operations/op_*.json`` to count occurrences.
+    """
     path = _get_operations_dir() / f"{op_id}.json"
     if not path.exists():
         return
@@ -193,6 +206,8 @@ def _complete_operation(op_id: str, *, result: Any = None, error: str | None = N
     record["status"] = "completed" if error is None else "failed"
     record["result"] = result
     record["error"] = error
+    if error_kind is not None:
+        record["error_kind"] = error_kind
     record["completed_at"] = datetime.now(timezone.utc).isoformat()
     record["locked_until"] = None
     tmp = path.with_suffix(".tmp")
@@ -474,6 +489,7 @@ def _enqueue_for_retry(
     backoff_strategy: str | None = None,
     originating_session_id: str | None = None,
     workflow_context: dict[str, Any] | None = None,
+    error_kind: str | None = None,
 ) -> None:
     """Mark a failed operation for background retry by the sidecar.
 
@@ -482,6 +498,13 @@ def _enqueue_for_retry(
 
     If delay/max_retries/backoff are not provided, defaults come from
     config.yaml ``sidecar.retry_queue`` (or hardcoded fallbacks).
+
+    ``error_kind`` is the structured signal carried by typed
+    ObsidianError instances. When provided, it's stored on the op
+    record AND on each retry_history entry so the sweep can correlate
+    failures across attempts (e.g. ``did the kind change between
+    attempts? from obsidian_timeout to obsidian_unreachable would
+    indicate Obsidian crashed mid-retry``).
     """
     # Load config defaults (lightweight — cached after first load)
     try:
@@ -505,6 +528,8 @@ def _enqueue_for_retry(
     now = datetime.now(timezone.utc)
     record["status"] = "failed"
     record["error"] = error
+    if error_kind is not None:
+        record["error_kind"] = error_kind
     record["completed_at"] = now.isoformat()
     record["locked_until"] = None
 
@@ -521,12 +546,15 @@ def _enqueue_for_retry(
     record["originating_session_id"] = originating_session_id or record.get("session_id")
     record["workflow_context"] = workflow_context
     record.setdefault("retry_history", [])
-    record["retry_history"].append({
+    history_entry: dict[str, Any] = {
         "attempt": record.get("attempt", 1),
         "error": error,
         "error_class": error_class,
         "timestamp": now.isoformat(),
-    })
+    }
+    if error_kind is not None:
+        history_entry["error_kind"] = error_kind
+    record["retry_history"].append(history_entry)
 
     _update_operation(record)
 
@@ -1019,7 +1047,16 @@ def register_tools(mcp: FastMCP) -> None:
                 })
             except Exception as exc:
                 error_str = f"{type(exc).__name__}: {exc}"
-                _complete_operation(op_id, error=error_str)
+
+                # Extract the structured error_kind from typed ObsidianError
+                # instances so it survives serialization into the op record,
+                # the result dict returned to the caller, and notification
+                # surfaces. Non-Obsidian exceptions don't carry one.
+                error_kind = getattr(exc, "error_kind", None)
+                if not isinstance(error_kind, str):
+                    error_kind = None
+
+                _complete_operation(op_id, error=error_str, error_kind=error_kind)
                 record_capability(capability, entry.category, op_id, parsed_params,
                                   entry.mutates_state, _t0, None,
                                   error_str, False, **_ledger_kw)
@@ -1034,8 +1071,9 @@ def register_tools(mcp: FastMCP) -> None:
                     _enqueue_for_retry(
                         op_id, error_str, error_class,
                         originating_session_id=_agent_sid,
+                        error_kind=error_kind,
                     )
-                    return _prepare({
+                    response: dict[str, Any] = {
                         "error": f"Transient failure: {error_str}",
                         "operation_id": op_id,
                         "queued_for_retry": True,
@@ -1045,30 +1083,49 @@ def register_tools(mcp: FastMCP) -> None:
                             "You will be notified when it succeeds. "
                             "Move on to other work."
                         ),
-                    })
+                    }
+                    if error_kind is not None:
+                        response["error_kind"] = error_kind
+                    return _prepare(response)
 
-                return _prepare({
+                response: dict[str, Any] = {
                     "error": f"Execution failed: {error_str}",
                     "operation_id": op_id,
-                })
+                }
+                if error_kind is not None:
+                    response["error_kind"] = error_kind
+                return _prepare(response)
 
         # --- Check for soft transient failures in the result ---
         result_err = _result_error(result)
         if result_err:
             from work_buddy.errors import is_transient_result as _is_transient
+            # Propagate result["error_kind"] (set by capabilities that
+            # catch typed exceptions and translate to result dicts) into
+            # the persisted op record + downstream response.
+            result_error_kind = (
+                result.get("error_kind") if isinstance(result, dict) else None
+            )
+            if not isinstance(result_error_kind, str):
+                result_error_kind = None
+
             if (
                 _is_transient(result)
                 and retry_policy in ("replay", "verify_first")
             ):
-                _complete_operation(op_id, result=result, error=result_err)
+                _complete_operation(
+                    op_id, result=result, error=result_err,
+                    error_kind=result_error_kind,
+                )
                 record_capability(capability, entry.category, op_id, parsed_params,
                                   entry.mutates_state, _t0, result,
                                   result_err, False, **_ledger_kw)
                 _enqueue_for_retry(
                     op_id, result_err, "transient",
                     originating_session_id=_agent_sid,
+                    error_kind=result_error_kind,
                 )
-                return _prepare({
+                response: dict[str, Any] = {
                     "error": f"Transient failure: {result_err}",
                     "operation_id": op_id,
                     "queued_for_retry": True,
@@ -1078,7 +1135,10 @@ def register_tools(mcp: FastMCP) -> None:
                         "You will be notified when it succeeds. "
                         "Move on to other work."
                     ),
-                })
+                }
+                if result_error_kind is not None:
+                    response["error_kind"] = result_error_kind
+                return _prepare(response)
 
         _complete_operation(op_id, result=result, error=result_err)
         record_capability(capability, entry.category, op_id, parsed_params,
@@ -1431,7 +1491,12 @@ def retry_operation(operation_id: str) -> dict[str, Any]:
             }
         except Exception as exc:
             error_str = f"{type(exc).__name__}: {exc}"
-            _complete_operation(operation_id, error=error_str)
+            error_kind = getattr(exc, "error_kind", None)
+            if not isinstance(error_kind, str):
+                error_kind = None
+            _complete_operation(
+                operation_id, error=error_str, error_kind=error_kind,
+            )
 
             # Enqueue transient failures for sidecar retry
             retry_policy = record.get("retry_policy", "replay")
@@ -1445,8 +1510,9 @@ def retry_operation(operation_id: str) -> dict[str, Any]:
                     operation_id, error_str, error_class,
                     originating_session_id=record.get("originating_session_id")
                         or record.get("session_id"),
+                    error_kind=error_kind,
                 )
-                return {
+                response: dict[str, Any] = {
                     "error": f"Transient failure: {error_str}",
                     "operation_id": operation_id,
                     "queued_for_retry": True,
@@ -1455,28 +1521,43 @@ def retry_operation(operation_id: str) -> dict[str, Any]:
                         "and has been re-queued for automatic background retry."
                     ),
                 }
+                if error_kind is not None:
+                    response["error_kind"] = error_kind
+                return response
 
-            return {
+            response = {
                 "error": f"Retry failed: {error_str}",
                 "operation_id": operation_id,
             }
+            if error_kind is not None:
+                response["error_kind"] = error_kind
+            return response
 
     # Check for soft transient failures in the result
     result_err = _result_error(result)
     if result_err:
         retry_policy = record.get("retry_policy", "replay")
         from work_buddy.errors import is_transient_result as _is_transient
+        result_error_kind = (
+            result.get("error_kind") if isinstance(result, dict) else None
+        )
+        if not isinstance(result_error_kind, str):
+            result_error_kind = None
         if (
             _is_transient(result)
             and retry_policy in ("replay", "verify_first")
         ):
-            _complete_operation(operation_id, result=result, error=result_err)
+            _complete_operation(
+                operation_id, result=result, error=result_err,
+                error_kind=result_error_kind,
+            )
             _enqueue_for_retry(
                 operation_id, result_err, "transient",
                 originating_session_id=record.get("originating_session_id")
                     or record.get("session_id"),
+                error_kind=result_error_kind,
             )
-            return {
+            response: dict[str, Any] = {
                 "error": f"Transient failure: {result_err}",
                 "operation_id": operation_id,
                 "queued_for_retry": True,
@@ -1486,6 +1567,9 @@ def retry_operation(operation_id: str) -> dict[str, Any]:
                     "and has been re-queued for automatic background retry."
                 ),
             }
+            if result_error_kind is not None:
+                response["error_kind"] = result_error_kind
+            return response
 
     _complete_operation(operation_id, result=result, error=result_err)
     return {

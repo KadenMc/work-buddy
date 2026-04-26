@@ -416,6 +416,46 @@ class TestEnqueueForRetry:
             assert len(updated["retry_history"]) == 1
             assert updated["retry_history"][0]["error_class"] == "transient"
 
+    def test_enqueue_with_error_kind_persists(self, tmp_ops_dir):
+        """CP4: error_kind is stored on op record + retry_history entry."""
+        from work_buddy.mcp_server.tools.gateway import _enqueue_for_retry
+
+        with patch("work_buddy.mcp_server.tools.gateway._load_operation") as mock_load, \
+             patch("work_buddy.mcp_server.tools.gateway._update_operation") as mock_update:
+            record = self._make_op_record(tmp_ops_dir)
+            mock_load.return_value = record.copy()
+
+            _enqueue_for_retry(
+                "op_test123", "ObsidianTimeout: HTTP hung", "transient",
+                originating_session_id="session-abc",
+                error_kind="obsidian_timeout",
+            )
+
+            updated = mock_update.call_args[0][0]
+            assert updated["error_kind"] == "obsidian_timeout"
+            # Stored on retry_history too so cross-attempt diffing works.
+            assert updated["retry_history"][0]["error_kind"] == "obsidian_timeout"
+
+    def test_enqueue_without_error_kind_omits_field(self, tmp_ops_dir):
+        """Non-Obsidian failures don't carry error_kind — field should
+        not be added at all (vs being added with value None)."""
+        from work_buddy.mcp_server.tools.gateway import _enqueue_for_retry
+
+        with patch("work_buddy.mcp_server.tools.gateway._load_operation") as mock_load, \
+             patch("work_buddy.mcp_server.tools.gateway._update_operation") as mock_update:
+            record = self._make_op_record(tmp_ops_dir)
+            mock_load.return_value = record.copy()
+
+            _enqueue_for_retry(
+                "op_test123", "Generic timeout", "transient",
+                originating_session_id="session-abc",
+                # no error_kind kwarg
+            )
+
+            updated = mock_update.call_args[0][0]
+            assert "error_kind" not in updated
+            assert "error_kind" not in updated["retry_history"][0]
+
     def test_enqueue_nonexistent_op_is_noop(self, tmp_ops_dir):
         from work_buddy.mcp_server.tools.gateway import _enqueue_for_retry
 
@@ -437,6 +477,91 @@ class TestEnqueueForRetry:
             updated = mock_update.call_args[0][0]
             assert updated["max_retries"] == 7
             assert updated["backoff_strategy"] == "exponential"
+
+
+class TestCompleteOperationErrorKind:
+    """CP4: _complete_operation persists error_kind alongside the error string.
+
+    Lives in its own class because it tests _complete_operation, not
+    _enqueue_for_retry. (Tests for _enqueue's error_kind support are
+    in TestEnqueueForRetry above.)
+    """
+
+    def test_complete_with_error_kind(self, tmp_path):
+        from work_buddy.mcp_server.tools.gateway import _complete_operation
+
+        ops_dir = tmp_path / "operations"
+        ops_dir.mkdir()
+        op_id = "op_test_kind"
+        record = {
+            "operation_id": op_id,
+            "type": "capability",
+            "name": "test_cap",
+            "status": "running",
+        }
+        (ops_dir / f"{op_id}.json").write_text(json.dumps(record))
+
+        with patch(
+            "work_buddy.mcp_server.tools.gateway._get_operations_dir",
+            return_value=ops_dir,
+        ):
+            _complete_operation(
+                op_id, error="ObsidianTimeout: x",
+                error_kind="obsidian_timeout",
+            )
+
+        loaded = json.loads((ops_dir / f"{op_id}.json").read_text())
+        assert loaded["status"] == "failed"
+        assert loaded["error"] == "ObsidianTimeout: x"
+        assert loaded["error_kind"] == "obsidian_timeout"
+
+    def test_complete_without_error_kind_omits_field(self, tmp_path):
+        from work_buddy.mcp_server.tools.gateway import _complete_operation
+
+        ops_dir = tmp_path / "operations"
+        ops_dir.mkdir()
+        op_id = "op_test_no_kind"
+        record = {
+            "operation_id": op_id,
+            "type": "capability",
+            "name": "test_cap",
+            "status": "running",
+        }
+        (ops_dir / f"{op_id}.json").write_text(json.dumps(record))
+
+        with patch(
+            "work_buddy.mcp_server.tools.gateway._get_operations_dir",
+            return_value=ops_dir,
+        ):
+            _complete_operation(op_id, error="Generic")  # no error_kind
+
+        loaded = json.loads((ops_dir / f"{op_id}.json").read_text())
+        assert "error_kind" not in loaded
+
+    def test_complete_success_no_error_kind(self, tmp_path):
+        """Success path doesn't add error_kind."""
+        from work_buddy.mcp_server.tools.gateway import _complete_operation
+
+        ops_dir = tmp_path / "operations"
+        ops_dir.mkdir()
+        op_id = "op_test_success"
+        record = {
+            "operation_id": op_id,
+            "type": "capability",
+            "name": "test_cap",
+            "status": "running",
+        }
+        (ops_dir / f"{op_id}.json").write_text(json.dumps(record))
+
+        with patch(
+            "work_buddy.mcp_server.tools.gateway._get_operations_dir",
+            return_value=ops_dir,
+        ):
+            _complete_operation(op_id, result={"data": "ok"})
+
+        loaded = json.loads((ops_dir / f"{op_id}.json").read_text())
+        assert loaded["status"] == "completed"
+        assert "error_kind" not in loaded
 
 
 class TestPruneOldOperations:
