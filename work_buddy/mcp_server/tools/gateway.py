@@ -1211,6 +1211,65 @@ def register_tools(mcp: FastMCP) -> None:
             if not isinstance(result_error_kind, str):
                 result_error_kind = None
 
+            # CP-A6 defense-in-depth: if a result dict carries
+            # error_kind="obsidian_post_write_uncertain" AND embeds the
+            # carrier fields (path, content_hint, write_mode), run verify-
+            # then-decide here too. This handles any caller path that
+            # catches ObsidianPostWriteUncertain and translates to a dict
+            # before the gateway sees it. The exception path above
+            # (Fix 1's let-it-propagate discipline) is the primary hook;
+            # this is a safety net that only triggers when the carrier
+            # fields are present in the dict.
+            if (
+                result_error_kind == "obsidian_post_write_uncertain"
+                and isinstance(result, dict)
+                and result.get("path")
+            ):
+                try:
+                    from work_buddy.obsidian.errors import (
+                        ObsidianPostWriteUncertain,
+                    )
+                    from work_buddy.obsidian.post_write_verify import (
+                        verify_post_write,
+                    )
+                    synthetic = ObsidianPostWriteUncertain(
+                        result["path"],
+                        content_hint=result.get("content_hint"),
+                        write_mode=result.get("write_mode") or "replace",
+                    )
+                    verdict = verify_post_write(synthetic)
+                except Exception:
+                    verdict = "indeterminate"
+                if verdict == "verified":
+                    recovery_result: dict[str, Any] = {
+                        "status": "ok",
+                        "post_write_recovery": True,
+                        "warning": (
+                            f"Result dict reported "
+                            f"obsidian_post_write_uncertain for "
+                            f"{result['path']!r}, but filesystem verify "
+                            f"confirms content landed. No retry."
+                        ),
+                        "path": result["path"],
+                    }
+                    _complete_operation(op_id, result=recovery_result)
+                    record_capability(
+                        capability, entry.category, op_id, parsed_params,
+                        entry.mutates_state, _t0, recovery_result,
+                        None, False, **_ledger_kw,
+                    )
+                    post_write_response: dict[str, Any] = {
+                        "type": "result",
+                        "capability": capability,
+                        "result": recovery_result,
+                        "operation_id": op_id,
+                        "post_write_recovery": True,
+                    }
+                    if _registry_auto_recovered:
+                        post_write_response["registry_auto_recovered"] = True
+                    return _prepare(post_write_response)
+                # absent / indeterminate → fall through to enqueue retry
+
             if (
                 _is_transient(result)
                 and retry_policy in ("replay", "verify_first")

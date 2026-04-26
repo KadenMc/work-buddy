@@ -447,6 +447,59 @@ class TestBridgeRetryTypedExceptions:
             with pytest.raises(ObsidianRefused):
                 fails()
 
+    # CP-A6: post-write-uncertain must NOT be retried inside the decorator.
+    # The bridge sent the body but didn't get an ack — vault state is
+    # uncertain, and blind retry causes double-writes. The exception must
+    # propagate to the gateway so verify_post_write can decide.
+
+    def test_post_write_uncertain_propagates_without_retry(self):
+        """The exception must propagate on the FIRST attempt, not retry."""
+        from work_buddy.obsidian.errors import ObsidianPostWriteUncertain
+
+        call_count = 0
+
+        @bridge_retry(max_retries=3, wait_seconds=999)
+        def writes():
+            nonlocal call_count
+            call_count += 1
+            raise ObsidianPostWriteUncertain(
+                "notes/x.md", content_hint="hello", write_mode="insert",
+            )
+
+        with patch("work_buddy.obsidian.bridge.is_available", return_value=True), \
+             patch("work_buddy.obsidian.bridge.get_latency_context", return_value="t"), \
+             patch("work_buddy.obsidian.retry.time.sleep") as sleep_mock:
+            with pytest.raises(ObsidianPostWriteUncertain) as excinfo:
+                writes()
+
+        # Exactly one call — no retries.
+        assert call_count == 1
+        # No sleeping — we propagated immediately.
+        assert sleep_mock.call_count == 0
+        # The exception's carrier fields survived propagation.
+        assert excinfo.value.path == "notes/x.md"
+        assert excinfo.value.content_hint == "hello"
+        assert excinfo.value.write_mode == "insert"
+
+    def test_post_write_uncertain_propagates_even_with_max_retries_set(self):
+        """max_retries=10 doesn't change behavior — still no retry."""
+        from work_buddy.obsidian.errors import ObsidianPostWriteUncertain
+
+        call_count = 0
+
+        @bridge_retry(max_retries=10, wait_seconds=0)
+        def writes():
+            nonlocal call_count
+            call_count += 1
+            raise ObsidianPostWriteUncertain("x.md")
+
+        with patch("work_buddy.obsidian.bridge.is_available", return_value=True), \
+             patch("work_buddy.obsidian.bridge.get_latency_context", return_value="t"):
+            with pytest.raises(ObsidianPostWriteUncertain):
+                writes()
+
+        assert call_count == 1
+
 
 class TestObsidianRetryTypedExceptions:
     """Same terminal-state and exhaustion-translation logic in
@@ -523,3 +576,42 @@ class TestObsidianRetryTypedExceptions:
 
         assert result["success"] is False
         assert result["error_kind"] == "obsidian_refused"
+
+    # CP-A6: obsidian_retry must also propagate ObsidianPostWriteUncertain
+    # rather than retry. Same rationale as the @bridge_retry decorator.
+
+    @patch("work_buddy.obsidian.bridge.get_latency_context", return_value="t")
+    @patch("work_buddy.obsidian.bridge.is_available", return_value=True)
+    @patch("work_buddy.mcp_server.registry.get_registry")
+    @patch("work_buddy.mcp_server.tools.gateway._load_operation")
+    def test_post_write_uncertain_propagates_without_retry(
+        self, mock_load, mock_registry, mock_avail, mock_latency,
+    ):
+        from work_buddy.obsidian.errors import ObsidianPostWriteUncertain
+
+        mock_load.return_value = {"name": "my_cap", "params": {}}
+        attempts = []
+
+        def side_effect(**kwargs):
+            attempts.append(1)
+            raise ObsidianPostWriteUncertain(
+                "notes/x.md", content_hint="hi", write_mode="insert",
+            )
+
+        mock_entry = MagicMock()
+        mock_entry.callable = side_effect
+        mock_registry.return_value = {"my_cap": mock_entry}
+
+        with patch("work_buddy.obsidian.retry.time.sleep") as sleep_mock:
+            with pytest.raises(ObsidianPostWriteUncertain) as excinfo:
+                obsidian_retry(
+                    operation_id="op_abc", max_retries=5, wait_seconds=999,
+                )
+
+        # Exactly one call — propagated, not retried.
+        assert len(attempts) == 1
+        assert sleep_mock.call_count == 0
+        # Carrier fields survived propagation.
+        assert excinfo.value.path == "notes/x.md"
+        assert excinfo.value.content_hint == "hi"
+        assert excinfo.value.write_mode == "insert"

@@ -262,6 +262,31 @@ def bridge_retry(
                 try:
                     result = fn(*args, **kwargs)
                 except Exception as exc:
+                    # CP-A6: ObsidianPostWriteUncertain demands verify-then-
+                    # decide, not blind retry. The bridge sent the body but
+                    # didn't get an ack — vault state is uncertain.
+                    # Retrying without verification can cause double-writes
+                    # (each attempt re-reads the file post-server-commit and
+                    # inserts another copy). Propagate the exception so the
+                    # gateway's CP5 verify path can read filesystem and
+                    # decide. The decorator MUST NOT swallow this.
+                    try:
+                        from work_buddy.obsidian.errors import (
+                            ObsidianPostWriteUncertain,
+                        )
+                    except ImportError:
+                        ObsidianPostWriteUncertain = ()  # type: ignore[misc,assignment]
+                    if isinstance(exc, ObsidianPostWriteUncertain):
+                        logger.info(
+                            "bridge_retry(%s): propagating "
+                            "ObsidianPostWriteUncertain (path=%r, "
+                            "write_mode=%r) to gateway for verify-then-decide.",
+                            fn.__name__,
+                            getattr(exc, "path", "?"),
+                            getattr(exc, "write_mode", "?"),
+                        )
+                        raise
+
                     # CP7: terminal ObsidianError subclasses short-circuit
                     # without sleeping. Sleeping 60s for a missing plugin
                     # or a Obsidian-not-running state is pure waste — the
@@ -447,6 +472,24 @@ def obsidian_retry(
         try:
             result = entry.callable(**params)
         except Exception as exc:
+            # CP-A6: ObsidianPostWriteUncertain demands verify-then-decide,
+            # not blind retry. Propagate so the gateway's CP5 verify path
+            # decides whether the underlying write actually landed.
+            try:
+                from work_buddy.obsidian.errors import ObsidianPostWriteUncertain
+            except ImportError:
+                ObsidianPostWriteUncertain = ()  # type: ignore[misc,assignment]
+            if isinstance(exc, ObsidianPostWriteUncertain):
+                logger.info(
+                    "obsidian_retry(%s): propagating "
+                    "ObsidianPostWriteUncertain (path=%r, write_mode=%r) "
+                    "to gateway for verify-then-decide.",
+                    capability,
+                    getattr(exc, "path", "?"),
+                    getattr(exc, "write_mode", "?"),
+                )
+                raise
+
             # CP7: terminal ObsidianError subclasses short-circuit. Same
             # rationale as the @bridge_retry decorator above.
             if _is_terminal_obsidian_error(exc):
