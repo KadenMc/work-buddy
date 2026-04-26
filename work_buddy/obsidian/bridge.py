@@ -2,8 +2,23 @@
 
 Talks to the HTTP server running inside Obsidian via the Work Buddy plugin.
 Follows the same pattern as work_buddy.messaging.client.
+
+Failure model
+-------------
+Bridge calls raise typed exceptions from
+:mod:`work_buddy.obsidian.errors` (``ObsidianError`` and subclasses) on
+failure. The gateway classifies them via ``isinstance`` rather than
+substring-matching error strings; the dashboard sparkline reads the
+module-level ``_last_failure_kind`` (preserved as the legacy strings
+``"timeout" | "unreachable" | "http_error" | ""`` for backward compat).
+
+``write_file_raw`` keeps its boolean return contract for the
+transitional CP1-CP5 window — TRANSLATE-pattern callers will be
+migrated in CP6, after which the function returns to its native
+typed-exception contract.
 """
 
+import hashlib
 import json
 import platform
 import subprocess
@@ -13,31 +28,29 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-
-class EditorConflict(Exception):
-    """Bridge refused a write because an open editor has unsaved changes.
-
-    Raised by ``write_file_raw`` after the in-bridge retry schedule
-    (5s / 10s / 20s) is exhausted and the target file's editor still
-    has uncommitted typing. Callers should treat this as a "retry
-    later" signal — pushing to the existing retry queue is the right
-    response for programmatic writes; agents can choose to surface it
-    via ``wb_notify``.
-
-    Critically: callers MUST NOT fall back to direct filesystem writes
-    when this is raised. The whole point is that the user has unsaved
-    work in their editor; a direct write would still be clobbered the
-    moment they save.
-    """
-
-    def __init__(self, path: str, reason: str = "editor_dirty"):
-        self.path = path
-        self.reason = reason
-        super().__init__(f"editor_dirty: {path}")
-
 from work_buddy.config import load_config
 from work_buddy.consent import requires_consent
 from work_buddy.logging_config import get_logger
+
+# Re-export the typed exceptions at the bridge module level so legacy
+# callers that do ``from work_buddy.obsidian.bridge import EditorConflict``
+# keep working through the transition. ``EditorConflict`` is an alias for
+# ``ObsidianEditorConflict``; CP9 removes the alias.
+from work_buddy.obsidian.errors import (
+    EditorConflict,  # alias for ObsidianEditorConflict; removed in CP9
+    ObsidianEditorConflict,
+    ObsidianError,
+    ObsidianHTTPError,
+    ObsidianNotRunning,
+    ObsidianPluginDisabled,
+    ObsidianPluginMissing,
+    ObsidianPostWriteUncertain,
+    ObsidianRefused,
+    ObsidianServerError,
+    ObsidianStartupRace,
+    ObsidianTimeout,
+    ObsidianUnreachable,
+)
 
 logger = get_logger(__name__)
 
@@ -520,36 +533,179 @@ def read_file(path: str) -> str | None:
     return result.get("content")
 
 
+# ---------------------------------------------------------------------------
+# Failure-class helpers (typed-exception construction)
+# ---------------------------------------------------------------------------
+
+
+def _http_status_to_exception_type(status: int) -> type[ObsidianHTTPError]:
+    """Map an HTTP status code to the right ObsidianHTTPError subclass."""
+    if status == 409:
+        return ObsidianEditorConflict
+    if 400 <= status < 500:
+        return ObsidianRefused
+    if status >= 500:
+        return ObsidianServerError
+    # Anything else with status set (1xx, 3xx) — keep generic, shouldn't happen.
+    return ObsidianHTTPError
+
+
+def _refine_unreachable_kind() -> type[ObsidianUnreachable]:
+    """Pick the most specific ObsidianUnreachable subclass for the current state.
+
+    Mirrors the disambiguation in :func:`get_last_bridge_state` (state
+    1/3/4 + startup race). The cost of process + filesystem checks is
+    paid only on connection failures, so the slow-path is fine.
+
+    Returns the base ``ObsidianUnreachable`` if the disambiguation
+    helpers themselves error — better to raise a less-specific type
+    than to mask the original failure with a secondary one.
+    """
+    try:
+        if not is_obsidian_running():
+            return ObsidianNotRunning
+    except Exception:
+        return ObsidianUnreachable
+
+    try:
+        from work_buddy.health.requirement_checks import get_work_buddy_plugin_state
+        plugin_state, _detail = get_work_buddy_plugin_state()
+    except Exception:
+        return ObsidianUnreachable
+
+    if plugin_state == "not_installed":
+        return ObsidianPluginMissing
+    if plugin_state == "disabled":
+        return ObsidianPluginDisabled
+    if plugin_state == "ok":
+        # Plugin enabled but port still refused — startup race window
+        # (Obsidian just started, plugin not loaded yet) or a bind error.
+        return ObsidianStartupRace
+    # plugin_state == "unknown" or anything else — generic unreachable.
+    return ObsidianUnreachable
+
+
+def _make_content_hint(content: str, write_mode: str) -> str:
+    """Compute the verification hint for a write payload.
+
+    For ``write_mode="replace"`` the verifier needs to confirm the
+    *full* content matches — sha256 is the right shape. For
+    ``insert`` / ``append`` the verifier needs only to confirm a
+    unique fragment landed; first 256 chars is enough for inserted
+    addendums (which carry timestamped or otherwise unique markers).
+
+    The 256-char prefix is intentionally generous: short enough that
+    the post-write read-back can do an in-memory substring check
+    cheaply, long enough that two different inserts at the same path
+    won't collide.
+    """
+    if write_mode == "replace":
+        return f"sha256:{hashlib.sha256(content.encode('utf-8')).hexdigest()}"
+    return content[:256]
+
+
+def _classify_request_failure(exc: BaseException) -> type[ObsidianError]:
+    """Decide the right typed-exception class for a urllib failure.
+
+    Pure classifier — no side effects. The caller is responsible for
+    setting ``_last_failure_kind`` / ``_last_failure_status`` and
+    raising the actual instance.
+
+    On Windows, urllib wraps ``ConnectionRefusedError`` inside ``URLError``
+    and the stringification often contains "timed out" even though the
+    socket was refused — so we inspect the underlying exception class
+    via ``.reason``, not the message.
+    """
+    underlying: BaseException = exc
+    if isinstance(exc, URLError) and exc.reason is not None:
+        if isinstance(exc.reason, BaseException):
+            underlying = exc.reason
+
+    if isinstance(underlying, ConnectionError):
+        # TCP refused — definitely state 1/3/4. Refine.
+        return _refine_unreachable_kind()
+
+    if isinstance(underlying, TimeoutError):
+        # Ambiguous: HTTP hung (state 2) vs TCP-connect timeout (state
+        # 1/3/4 surfaced as socket.timeout on Windows). TCP probe.
+        if _probe_port_open():
+            return ObsidianTimeout
+        return _refine_unreachable_kind()
+
+    # Last-resort disambiguation: TCP probe.
+    if _probe_port_open():
+        return ObsidianTimeout
+    return _refine_unreachable_kind()
+
+
+def _exception_to_failure_kind(exc_cls: type[ObsidianError]) -> tuple[str, int | None]:
+    """Map a typed exception class to (legacy `_last_failure_kind`, status).
+
+    Preserves the dashboard sparkline contract: it consumes
+    ``_last_failure_kind`` strings ``"timeout" | "unreachable" |
+    "http_error" | ""`` to pick bar classes (``bar-fail``, ``bar-unreachable``,
+    etc.) — see ``work_buddy/dashboard/api.py::get_bridge_status``.
+
+    All ObsidianUnreachable subclasses → "unreachable".
+    All ObsidianHTTPError subclasses → "http_error".
+    All ObsidianTimeout subclasses → "timeout" (PostWriteUncertain
+    included — the dashboard treats it as a regular timeout).
+    """
+    if issubclass(exc_cls, ObsidianHTTPError):
+        return "http_error", None  # status filled in by caller
+    if issubclass(exc_cls, ObsidianUnreachable):
+        return "unreachable", None
+    if issubclass(exc_cls, ObsidianTimeout):
+        return "timeout", None
+    return "", None  # generic ObsidianError — shouldn't happen at raise sites
+
+
+# ---------------------------------------------------------------------------
+# Internal request helpers
+# ---------------------------------------------------------------------------
+
+
 def _request_with_status(
     method: str,
     path: str,
     data: dict | str | None = None,
     timeout: int = 10,
-) -> tuple[int | None, dict | None]:
-    """Make a bridge request returning (status_code, body).
+) -> tuple[int, dict | None]:
+    """Make a bridge request, raising typed exceptions on failure.
+
+    Returns ``(status, body)`` for 2xx success — body is the parsed JSON
+    response, or None for 204 No Content / empty bodies.
+
+    Raises:
+      ``ObsidianEditorConflict`` — on 409 (file open with unsaved typing)
+      ``ObsidianRefused`` — on 4xx other than 409 (structural refusal)
+      ``ObsidianServerError`` — on 5xx (plugin-side fault)
+      ``ObsidianTimeout`` — port open, HTTP hung past ``timeout``
+      ``ObsidianUnreachable`` (or specific subclass) — TCP refused
 
     Distinct from ``_request`` because some callers — namely
     ``write_file_raw`` — need to distinguish HTTP status codes
-    (specifically 409 Conflict) rather than collapsing every
-    non-2xx response into ``None``.
+    (specifically 409) and post-write timeouts. No retries; caller
+    orchestrates them.
 
-    Returns ``(None, None)`` on network failure (bridge down,
-    socket timeout). Returns ``(status, body_or_None)`` for any
-    HTTP response — caller is responsible for status handling.
-    No retries; caller orchestrates them.
+    Side effects:
+      - Updates the module-level latency / failure counters.
+      - Sets ``_last_failure_kind`` and ``_last_failure_status`` from
+        the typed exception class BEFORE raising — preserves the
+        dashboard sparkline contract.
     """
     url = f"{_base_url()}{path}"
-    body = None
+    payload_bytes: bytes | None = None
     if data is not None:
         if isinstance(data, dict):
-            body = json.dumps(data).encode("utf-8")
+            payload_bytes = json.dumps(data).encode("utf-8")
         else:
-            body = data.encode("utf-8")
+            payload_bytes = data.encode("utf-8")
 
     global _last_success_ts, _last_success_ms, _consecutive_failures
     global _last_failure_reason, _last_failure_kind, _last_failure_status
 
-    req = Request(url, data=body, method=method)
+    req = Request(url, data=payload_bytes, method=method)
     req.add_header("Content-Type", "application/json")
 
     t0 = time.time()
@@ -563,56 +719,63 @@ def _request_with_status(
             _last_failure_status = None
             if resp.status == 204:
                 return resp.status, None
-            payload = resp.read().decode("utf-8")
-            return resp.status, json.loads(payload) if payload else None
+            response_payload = resp.read().decode("utf-8")
+            return resp.status, json.loads(response_payload) if response_payload else None
     except HTTPError as exc:
-        # 4xx/5xx — server reachable, structured response. Read the
-        # body if any so the caller can act on the error reason.
+        # 4xx/5xx — server reachable, structured response. Read the body
+        # so the typed exception carries it for downstream consumers.
         try:
-            payload = exc.read().decode("utf-8")
-            err_body = json.loads(payload) if payload else None
+            err_payload = exc.read().decode("utf-8")
+            err_body = json.loads(err_payload) if err_payload else None
         except Exception:
             err_body = None
+
         # 4xx is a structured refusal, not a bridge fault — don't bump
         # _consecutive_failures (latency tracking is for connectivity,
         # not application-level conflict).
         _last_failure_kind = "http_error"
         _last_failure_status = exc.code
-        return exc.code, err_body
+
+        exc_cls = _http_status_to_exception_type(exc.code)
+        # ObsidianEditorConflict has a custom signature — handle separately
+        # so the legacy "editor_dirty: <path>" message format is preserved.
+        if exc_cls is ObsidianEditorConflict:
+            # ``path`` is the URL path here (already decoded); strip the
+            # ``/files/`` prefix for the EditorConflict.path field.
+            file_path = path
+            if file_path.startswith("/files/"):
+                file_path = urllib.parse.unquote(file_path[len("/files/"):])
+            raise ObsidianEditorConflict(file_path, body=err_body) from exc
+        raise exc_cls(exc.code, body=err_body) from exc
+
     except (TimeoutError, URLError, OSError) as exc:
         _consecutive_failures += 1
         _last_failure_reason = type(exc).__name__
-        # Classify for the four-state taxonomy.
-        #   TIMEOUT (state 2: bridge lagging)   — TCP connected, HTTP hung.
-        #   UNREACHABLE (states 1/3/4)          — TCP never connected.
-        # On Windows, urllib wraps ConnectionRefusedError inside URLError
-        # and the stringification often contains the word "timed out"
-        # even though the socket was refused — so we inspect the
-        # underlying exception class via .reason, not the message.
-        underlying: BaseException = exc
-        if isinstance(exc, URLError) and exc.reason is not None:
-            underlying = exc.reason if isinstance(exc.reason, BaseException) else exc
-        if isinstance(underlying, ConnectionError):
-            _last_failure_kind = "unreachable"
-        elif isinstance(underlying, TimeoutError):
-            # Ambiguous: could be (a) HTTP hung while TCP is open (real
-            # state-2 timeout) or (b) the TCP connect itself timed out
-            # because the port isn't listening (states 1/3/4 — Windows
-            # often surfaces closed ports as socket timeouts rather
-            # than ECONNREFUSED). Probe the TCP layer to disambiguate.
-            _last_failure_kind = "timeout" if _probe_port_open() else "unreachable"
-        else:
-            # Last-resort disambiguation via TCP probe.
-            _last_failure_kind = "unreachable" if not _probe_port_open() else "timeout"
+
+        exc_cls = _classify_request_failure(exc)
+        kind, _status = _exception_to_failure_kind(exc_cls)
+        _last_failure_kind = kind
         _last_failure_status = None
+
         logger.warning(
             "Bridge request failed: %s %s — %s [%s]",
             method, path, exc, get_latency_context(),
         )
-        return None, None
+
+        # Build the right instance. ObsidianUnreachable subclasses and
+        # ObsidianTimeout take no constructor args; ObsidianHTTPError
+        # subclasses won't reach here (they go through the HTTPError
+        # branch above).
+        raise exc_cls() from exc
 
 
-def write_file_raw(path: str, content: str) -> bool:
+def write_file_raw(
+    path: str,
+    content: str,
+    *,
+    write_mode: str = "replace",
+    content_hint: str | None = None,
+) -> bool:
     """Write or create a vault file (bridge-only, no consent check, no fallback).
 
     For internal callers that handle consent at a higher level (e.g.,
@@ -626,55 +789,114 @@ def write_file_raw(path: str, content: str) -> bool:
     ------------------------
     The plugin returns ``409 Conflict`` if the target file is open in a
     MarkdownView with unsaved typing — writing would silently clobber
-    the user's in-flight edits. We raise ``EditorConflict`` immediately
-    on the first 409 instead of retrying inside this function: the
-    payload we'd send on retry is the *same* bytes the caller composed
-    minutes ago, so even after the user's typing auto-saves to disk,
-    a bridge-level retry would clobber the saved typing with stale
-    content. Re-doing the read-modify-write is the caller's job.
+    the user's in-flight edits. We raise :class:`ObsidianEditorConflict`
+    immediately on the first 409 instead of retrying inside this
+    function: the payload we'd send on retry is the *same* bytes the
+    caller composed minutes ago, so even after the user's typing
+    auto-saves to disk, a bridge-level retry would clobber the saved
+    typing with stale content. Re-doing the read-modify-write is the
+    caller's job.
 
     The right place for that retry is the gateway's transient-error
-    auto-enqueue: ``EditorConflict`` is classified transient, and any
-    capability with ``retry_policy`` ``replay`` or ``verify_first``
-    will be re-invoked from scratch by the sidecar's retry sweep
-    (work_buddy/sidecar/retry_sweep.py) on adaptive backoff. Each
-    re-invocation reads the file fresh and recomputes the payload.
+    auto-enqueue: ``ObsidianEditorConflict`` is classified transient,
+    and any capability with ``retry_policy`` ``replay`` or
+    ``verify_first`` will be re-invoked from scratch by the sidecar's
+    retry sweep (work_buddy/sidecar/retry_sweep.py) on adaptive
+    backoff. Each re-invocation reads the file fresh and recomputes
+    the payload.
 
-    Callers MUST NOT swallow ``EditorConflict`` into a direct filesystem
-    write — see the ``EditorConflict`` docstring.
+    Callers MUST NOT swallow ``ObsidianEditorConflict`` into a direct
+    filesystem write — see the ``ObsidianEditorConflict`` docstring.
 
-    Returns
-    -------
-    True on success. False on transport failure (bridge down, timeout,
-    server-side 5xx). Raises ``EditorConflict`` on a 409 from the plugin.
+    Post-write uncertainty
+    ----------------------
+    A client-side timeout AFTER the PUT body has been sent is
+    ambiguous: the plugin may have committed the write before the
+    response failed to arrive. Returning ``False`` for this case
+    (the legacy behavior) silently double-writes on retry — the
+    capability sees "failure", caller retries, plugin processes the
+    second PUT, file ends up with two copies of the inserted content.
+
+    To prevent this we raise :class:`ObsidianPostWriteUncertain`,
+    carrying ``(path, content_hint, write_mode)`` so the gateway
+    can call :func:`work_buddy.obsidian.post_write_verify.verify_post_write`
+    and decide whether the write actually landed. ``content_hint`` is
+    used to fingerprint the write — for ``insert``/``append`` modes
+    pass the unique inserted fragment; for ``replace`` (the default
+    for full-file writes through this function) we compute a sha256
+    of the full payload automatically.
+
+    Args:
+        path: Vault-relative file path.
+        content: The full file content to write.
+        write_mode: ``"replace"`` (default — full-file PUT),
+            ``"insert"`` or ``"append"`` (when the caller is doing a
+            section-aware modification and wants a substring-witness
+            verification rather than a full-content sha256). Affects
+            only the post-write-uncertain hint shape; the actual PUT
+            sends the full file content regardless.
+        content_hint: Optional override for the verification witness
+            string. Defaults to a sha256 hash for ``replace`` mode and
+            the first 256 chars of ``content`` otherwise.
+
+    Returns:
+        True on success.
+
+        False on:
+          - Bridge unreachable (port refused — write definitely did NOT happen).
+          - HTTP 4xx other than 409 / HTTP 5xx (logged with status).
+
+        This bool return is a transitional shim for legacy TRANSLATE-pattern
+        callers; CP6 unwraps it and the function returns to its native
+        typed-exception contract.
+
+    Raises:
+        :class:`ObsidianEditorConflict` on 409.
+        :class:`ObsidianPostWriteUncertain` on PUT timeout (port open).
 
     Bridge latency: uses a 15s per-request timeout (bridge has documented
     multi-second latency spikes especially on creates with large payloads).
     """
     encoded = urllib.parse.quote(path, safe="/")
+    hint = content_hint if content_hint is not None else _make_content_hint(content, write_mode)
 
-    status, body = _request_with_status(
-        "PUT", f"/files/{encoded}", {"content": content}, timeout=15,
-    )
-
-    if status is None:
-        # Network/timeout failure — different failure mode from editor
-        # conflict. Surface as False so the existing fallback / retry
-        # machinery can handle it.
+    try:
+        status, _body = _request_with_status(
+            "PUT", f"/files/{encoded}", {"content": content}, timeout=15,
+        )
+        # _request_with_status returns only on 2xx; status here is 200/201/204.
+        return status in (200, 201, 204)
+    except ObsidianEditorConflict:
+        # 409 — re-raise. Caller (or the gateway's retry queue) handles it.
+        # The exception already carries `path` (set inside _request_with_status
+        # from the URL path); but bridge.write_file_raw was invoked with a
+        # bare vault-relative path, so prefer that for downstream consumers
+        # that key on it.
+        raise
+    except ObsidianTimeout as exc:
+        # Body may have been sent — translate to post-write-uncertain so
+        # the gateway-side verifier can decide whether the write landed.
+        # This closes the latent double-write hazard: a real-but-unacked
+        # write is verified and returned as success; a never-sent write
+        # is recognised as absent and re-enqueued.
+        raise ObsidianPostWriteUncertain(
+            path, content_hint=hint, write_mode=write_mode,
+        ) from exc
+    except ObsidianHTTPError as exc:
+        # 4xx other than 409, or 5xx. Transitional: log + return False so
+        # legacy TRANSLATE-pattern callers continue to work. CP6 removes
+        # this shim and re-raises typed.
+        logger.warning(
+            "Bridge write failed: status=%d body=%r path=%s",
+            exc.status, exc.body, path,
+        )
         return False
-
-    if status in (200, 201):
-        return True
-
-    if status == 409:
-        raise EditorConflict(path)
-
-    # Other 4xx/5xx — structural failure.
-    logger.warning(
-        "Bridge write failed: status=%d body=%r path=%s",
-        status, body, path,
-    )
-    return False
+    except ObsidianUnreachable:
+        # Connection refused / not running. Body was NOT sent — safe to
+        # return False (no double-write risk). Caller's fallback (e.g.
+        # vault_write's filesystem path) takes over. CP6 removes this
+        # shim too.
+        return False
 
 
 @requires_consent(
