@@ -471,7 +471,29 @@ def _build_response(
         step_requires = meta.get("requires", [])
         if step_requires:
             from work_buddy.tools import is_tool_available
-            missing_tools = [t for t in step_requires if not is_tool_available(t)]
+
+            # CP-A4: lazy auto-recovery for stale-unavailable tools.
+            # If the cached _TOOL_STATUS reports a tool as unavailable,
+            # re-probe it before failing the step. The recheck honours
+            # a per-tool cool-down (default 30s) so a workflow with N
+            # steps all requiring the same tool only pays the probe
+            # cost once. Closes the bootstrap-race papercut for
+            # workflows: at sidecar startup the obsidian probe may
+            # briefly fail and stale-disable every workflow step that
+            # needs it; without recheck, those steps fail forever
+            # until a manual mcp_registry_reload.
+            #
+            # Conditional: only recheck tools currently reporting
+            # unavailable. Healthy paths pay no latency cost.
+            from work_buddy.recovery import recheck_tool
+
+            missing_tools: list[str] = []
+            for t in step_requires:
+                if not is_tool_available(t):
+                    recheck_tool(t)
+                    if not is_tool_available(t):
+                        missing_tools.append(t)
+
             if missing_tools:
                 is_optional = meta.get("optional", False)
                 if is_optional:
