@@ -797,34 +797,15 @@ def write_file_raw(
     typing with stale content. Re-doing the read-modify-write is the
     caller's job.
 
-    The right place for that retry is the gateway's transient-error
-    auto-enqueue: ``ObsidianEditorConflict`` is classified transient,
-    and any capability with ``retry_policy`` ``replay`` or
-    ``verify_first`` will be re-invoked from scratch by the sidecar's
-    retry sweep (work_buddy/sidecar/retry_sweep.py) on adaptive
-    backoff. Each re-invocation reads the file fresh and recomputes
-    the payload.
-
-    Callers MUST NOT swallow ``ObsidianEditorConflict`` into a direct
-    filesystem write — see the ``ObsidianEditorConflict`` docstring.
-
     Post-write uncertainty
     ----------------------
     A client-side timeout AFTER the PUT body has been sent is
     ambiguous: the plugin may have committed the write before the
-    response failed to arrive. Returning ``False`` for this case
-    (the legacy behavior) silently double-writes on retry — the
-    capability sees "failure", caller retries, plugin processes the
-    second PUT, file ends up with two copies of the inserted content.
-
-    To prevent this we raise :class:`ObsidianPostWriteUncertain`,
-    carrying ``(path, content_hint, write_mode)`` so the gateway
-    can call :func:`work_buddy.obsidian.post_write_verify.verify_post_write`
-    and decide whether the write actually landed. ``content_hint`` is
-    used to fingerprint the write — for ``insert``/``append`` modes
-    pass the unique inserted fragment; for ``replace`` (the default
-    for full-file writes through this function) we compute a sha256
-    of the full payload automatically.
+    response failed to arrive. We raise :class:`ObsidianPostWriteUncertain`,
+    carrying ``(path, content_hint, write_mode)`` so the gateway can
+    verify-then-decide via :func:`work_buddy.obsidian.post_write_verify.verify_post_write`.
+    This closes the latent double-write hazard: replaying a successful-
+    but-unacknowledged write would silently insert content twice.
 
     Args:
         path: Vault-relative file path.
@@ -840,19 +821,23 @@ def write_file_raw(
             the first 256 chars of ``content`` otherwise.
 
     Returns:
-        True on success.
-
-        False on:
-          - Bridge unreachable (port refused — write definitely did NOT happen).
-          - HTTP 4xx other than 409 / HTTP 5xx (logged with status).
-
-        This bool return is a transitional shim for legacy TRANSLATE-pattern
-        callers; CP6 unwraps it and the function returns to its native
-        typed-exception contract.
+        True on 2xx success. The bool return is preserved (rather than
+        ``None``) for backward compatibility with callers that
+        ``if write_file_raw(...): ...``-pattern check the return.
 
     Raises:
-        :class:`ObsidianEditorConflict` on 409.
+        :class:`ObsidianEditorConflict` on 409 (file open with unsaved typing).
         :class:`ObsidianPostWriteUncertain` on PUT timeout (port open).
+        :class:`ObsidianRefused` on 4xx other than 409.
+        :class:`ObsidianServerError` on 5xx.
+        :class:`ObsidianUnreachable` (or specific subclass) on TCP refused.
+
+    Post-CP6 the bool/exception split is final: success returns True;
+    every failure raises a typed exception. The transitional shim from
+    CP2 (which translated 4xx/5xx/unreachable to ``False``) is gone.
+    Callers must either handle the typed exceptions explicitly or be
+    wrapped by :func:`work_buddy.obsidian.retry.bridge_retry`, which
+    catches typed exceptions and translates them at exhaustion.
 
     Bridge latency: uses a 15s per-request timeout (bridge has documented
     multi-second latency spikes especially on creates with large payloads).
@@ -866,37 +851,23 @@ def write_file_raw(
         )
         # _request_with_status returns only on 2xx; status here is 200/201/204.
         return status in (200, 201, 204)
-    except ObsidianEditorConflict:
-        # 409 — re-raise. Caller (or the gateway's retry queue) handles it.
-        # The exception already carries `path` (set inside _request_with_status
-        # from the URL path); but bridge.write_file_raw was invoked with a
-        # bare vault-relative path, so prefer that for downstream consumers
-        # that key on it.
-        raise
     except ObsidianTimeout as exc:
         # Body may have been sent — translate to post-write-uncertain so
         # the gateway-side verifier can decide whether the write landed.
-        # This closes the latent double-write hazard: a real-but-unacked
-        # write is verified and returned as success; a never-sent write
-        # is recognised as absent and re-enqueued.
+        # ObsidianPostWriteUncertain inherits from ObsidianTimeout, so
+        # this catch matches plain timeouts AND post-write-uncertain
+        # subclasses; we always wrap into the post-write variant here
+        # because we have the (path, content_hint, write_mode) context.
         raise ObsidianPostWriteUncertain(
             path, content_hint=hint, write_mode=write_mode,
         ) from exc
-    except ObsidianHTTPError as exc:
-        # 4xx other than 409, or 5xx. Transitional: log + return False so
-        # legacy TRANSLATE-pattern callers continue to work. CP6 removes
-        # this shim and re-raises typed.
-        logger.warning(
-            "Bridge write failed: status=%d body=%r path=%s",
-            exc.status, exc.body, path,
-        )
-        return False
-    except ObsidianUnreachable:
-        # Connection refused / not running. Body was NOT sent — safe to
-        # return False (no double-write risk). Caller's fallback (e.g.
-        # vault_write's filesystem path) takes over. CP6 removes this
-        # shim too.
-        return False
+    # Other ObsidianError subclasses (ObsidianEditorConflict,
+    # ObsidianRefused, ObsidianServerError, ObsidianUnreachable and
+    # subclasses) propagate unchanged. Callers are responsible — either
+    # they have a domain-specific recovery (vault_write's filesystem
+    # fallback for ObsidianUnreachable on reads), or they're inside
+    # @bridge_retry which translates at exhaustion, or the gateway's
+    # outer try/except classifies and enqueues.
 
 
 @requires_consent(

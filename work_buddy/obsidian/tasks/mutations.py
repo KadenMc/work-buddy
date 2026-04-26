@@ -19,6 +19,7 @@ from typing import Any, Callable
 from work_buddy.consent import requires_consent
 from work_buddy.logging_config import get_logger
 from work_buddy.obsidian import bridge
+from work_buddy.obsidian.errors import ObsidianError
 from work_buddy.obsidian.retry import bridge_failure, bridge_retry
 from work_buddy.obsidian.tasks.env import _escape_js, _run_js
 from work_buddy.obsidian.tasks import store
@@ -201,9 +202,12 @@ def _find_and_replace_task_line(
     lines[idx] = new_line
     new_content = "\n".join(lines)
 
-    success = bridge.write_file(file_path, new_content)
-    if not success:
-        return bridge_failure(f"Failed to write {file_path}")
+    # Post-CP6: bridge.write_file raises typed ObsidianError on failure
+    # (instead of returning False). The @bridge_retry decorator on the
+    # caller catches transient subclasses (ObsidianTimeout,
+    # ObsidianUnreachable) and retries; other types propagate to the
+    # gateway's classifier.
+    bridge.write_file(file_path, new_content)
 
     logger.info("Task line mutated in %s:%d", file_path, idx + 1)
     return {
@@ -577,15 +581,17 @@ def archive_completed(older_than_days: int = 0) -> dict[str, Any]:
     else:
         new_archive = f"# Task Archive\n{archive_content}"
 
-    if not bridge.write_file(ARCHIVE_FILE, new_archive):
-        return bridge_failure(f"Failed to write {ARCHIVE_FILE}")
+    # Post-CP6: bridge.write_file raises typed exceptions on failure.
+    # The @bridge_retry decorator catches transients and retries the
+    # whole function — note that this means the archive file may end
+    # up with duplicated rows on retry (same risk as the pre-CP6 code:
+    # both writes have to succeed for the result to be consistent).
+    # Acceptable today; future hardening could move both writes into
+    # an atomic markdown transaction if the bridge gains one.
+    bridge.write_file(ARCHIVE_FILE, new_archive)
 
     new_master = "\n".join(keep_lines)
-    if not bridge.write_file(MASTER_TASK_FILE, new_master):
-        return {
-            "success": False,
-            "message": f"Archived to {ARCHIVE_FILE} but failed to update master list!",
-        }
+    bridge.write_file(MASTER_TASK_FILE, new_master)
 
     # Mark archived in store
     for tid in archived_ids:
@@ -659,7 +665,7 @@ def create_task(
             note_content = (
                 f"---\ntype: task-note\ncreated: {today}\nstatus: open\n---\n"
                 f"# {task_text}\n\n## Summary\n{summary}\n\n"
-                f"## Details\n\n## Subtasks\n- [ ] Step 1\n\n## Artifacts & References\n"
+                f"## Details\n\n## Action items\n\n## Artifacts & References\n"
             )
 
         if "A one-paragraph description." in note_content:
@@ -674,8 +680,9 @@ def create_task(
             "---\n\n#", f"---\n{' '.join(note_tags)}\n\n#", 1
         )
 
-        if not bridge.write_file(note_path, note_content):
-            return bridge_failure(f"Failed to write note: {note_path}")
+        # Post-CP6: bridge.write_file raises typed exceptions on failure;
+        # @bridge_retry catches transients and replays the whole function.
+        bridge.write_file(note_path, note_content)
 
     # --- Task line ---
     parts = [f"- [ ] #todo {task_text}"]
@@ -697,8 +704,8 @@ def create_task(
     # Idempotent: skip prepend if task_id already present (retry safety)
     if task_id not in content:
         content = _prepend_task(content, task_line)
-        if not bridge.write_file(MASTER_TASK_FILE, content):
-            return bridge_failure(f"Failed to write {MASTER_TASK_FILE}")
+        # Post-CP6: bridge.write_file raises on failure (see above).
+        bridge.write_file(MASTER_TASK_FILE, content)
 
     # --- Store record ---
     if store.get(task_id) is None:
@@ -837,8 +844,9 @@ def toggle_task(
                 toggled = toggled.rstrip() + f" ✅ {date.today().isoformat()}"
 
     lines[idx] = toggled
-    if not bridge.write_file(fp, "\n".join(lines)):
-        return bridge_failure(f"Failed to write {fp}")
+    # Post-CP6: bridge.write_file raises typed exceptions on failure;
+    # @bridge_retry catches transients and replays.
+    bridge.write_file(fp, "\n".join(lines))
 
     new_state = "done" if not is_done else "inbox"
     if store.get(task_id):
@@ -881,10 +889,20 @@ def delete_task(
         if result is not None:
             idx, _ = result
             del lines[idx]
-            if bridge.write_file(MASTER_TASK_FILE, "\n".join(lines)):
+            # Post-CP6: bridge.write_file raises on failure. delete_task
+            # is best-effort across multiple sub-deletes (line, note,
+            # store record) so we catch the typed exception here and
+            # record the partial state rather than aborting the whole
+            # function (which would leave the user with no signal about
+            # which parts succeeded).
+            try:
+                bridge.write_file(MASTER_TASK_FILE, "\n".join(lines))
                 removed["task_line"] = True
-            else:
-                logger.error("delete_task: bridge.write_file failed for %s", task_id)
+            except ObsidianError as exc:
+                logger.error(
+                    "delete_task: bridge.write_file failed for %s (%s)",
+                    task_id, exc.error_kind,
+                )
                 removed["task_line"] = False
         else:
             removed["task_line"] = False

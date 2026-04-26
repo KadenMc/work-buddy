@@ -92,14 +92,14 @@ class TestWriteFileRawBehavior:
             else:
                 pytest.fail("EditorConflict alias did not catch ObsidianEditorConflict")
 
-    def test_unreachable_returns_false(self):
-        """Bridge unreachable (port refused) → write definitely did NOT
-        happen. Safe to return False so the existing higher-layer
-        fallback (vault_write's direct-fs path) can run.
-
-        Transitional shim — CP6 changes this to re-raise typed."""
+    def test_unreachable_raises_typed(self):
+        """Post-CP6: bridge unreachable raises ObsidianUnreachable
+        (or subclass) directly. Callers either catch typed (e.g.
+        vault_write's filesystem fallback) or let the @bridge_retry
+        decorator / gateway exception handler classify."""
         with self._patch_status_raises(ObsidianNotRunning()):
-            assert write_file_raw("x.md", "content") is False
+            with pytest.raises(ObsidianNotRunning):
+                write_file_raw("x.md", "content")
 
     def test_post_write_timeout_raises_uncertain(self):
         """Bridge timeout AFTER PUT body sent → vault state may or may
@@ -127,22 +127,22 @@ class TestWriteFileRawBehavior:
             assert excinfo.value.write_mode == "insert"
             assert excinfo.value.content_hint == "my unique inserted line"
 
-    def test_other_4xx_returns_false(self):
-        """A 400 / 404 isn't a transient conflict — don't raise
-        EditorConflict, return False so callers don't think they have
-        a recoverable conflict.
-
-        Transitional shim — CP6 changes this to re-raise typed."""
+    def test_other_4xx_raises_typed(self):
+        """Post-CP6: 4xx other than 409 raises ObsidianRefused.
+        classify_error returns 'permanent' for this — gateway won't
+        enqueue (no retry will help a structural refusal)."""
         with self._patch_status_raises(ObsidianRefused(400)):
-            assert write_file_raw("x.md", "content") is False
+            with pytest.raises(ObsidianRefused) as excinfo:
+                write_file_raw("x.md", "content")
+            assert excinfo.value.status == 400
 
-    def test_5xx_returns_false(self):
-        """5xx is plugin-side error — return False so the bool
-        contract callers see consistent failure shape.
-
-        Transitional shim — CP6 changes this to re-raise typed."""
+    def test_5xx_raises_typed(self):
+        """Post-CP6: 5xx raises ObsidianServerError.
+        classify_error returns 'transient' — gateway enqueues for retry."""
         with self._patch_status_raises(ObsidianServerError(503)):
-            assert write_file_raw("x.md", "content") is False
+            with pytest.raises(ObsidianServerError) as excinfo:
+                write_file_raw("x.md", "content")
+            assert excinfo.value.status == 503
 
 
 class TestVaultWriteDoesNotFallBackOnConflict:

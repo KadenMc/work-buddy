@@ -677,19 +677,58 @@ def _append_to_journal_locked(
 
     # Write via Obsidian bridge if available (avoids Obsidian auto-save
     # clobbering direct writes), fall back to direct file I/O.
+    #
+    # Post-CP6 typed-exception policy:
+    #   ObsidianUnreachable -> filesystem fallback (body not sent, safe).
+    #   ObsidianPostWriteUncertain -> RE-RAISE (gateway verifies; falling
+    #     back here would risk overwriting a successful write).
+    #   ObsidianEditorConflict -> RE-RAISE (filesystem write would
+    #     clobber the user's typing).
+    #   Other ObsidianError (Refused / ServerError) -> RE-RAISE.
+    #   Generic Exception -> log + filesystem fallback (legacy behavior;
+    #     keeps the journal write robust against transient non-bridge
+    #     issues).
     vault_rel_path = f"journal/{date_str}.md"
     write_method = "direct"
     try:
         from work_buddy.obsidian.bridge import write_file_raw, is_available
+        from work_buddy.obsidian.errors import (
+            ObsidianEditorConflict,
+            ObsidianHTTPError,
+            ObsidianPostWriteUncertain,
+            ObsidianUnreachable,
+        )
         if is_available():
-            ok = write_file_raw(vault_rel_path, file_content)
-            if ok:
-                write_method = "bridge"
-            else:
-                logger.warning("Bridge write returned False, falling back to direct write")
+            try:
+                ok = write_file_raw(vault_rel_path, file_content)
+            except ObsidianUnreachable as exc:
+                logger.info(
+                    "Bridge unreachable (%s); falling back to direct write",
+                    exc.error_kind,
+                )
                 journal_file.write_text(file_content, encoding="utf-8")
+            except (ObsidianEditorConflict, ObsidianPostWriteUncertain, ObsidianHTTPError):
+                # Re-raise — see policy comment above. The gateway/retry
+                # queue / verify-path handles each correctly.
+                raise
+            else:
+                if ok:
+                    write_method = "bridge"
+                else:
+                    # write_file_raw returned False without raising — should
+                    # not happen post-CP6 (failure paths all raise), but
+                    # keep the fallback as a defensive measure.
+                    logger.warning(
+                        "Bridge write returned False unexpectedly; "
+                        "falling back to direct write"
+                    )
+                    journal_file.write_text(file_content, encoding="utf-8")
         else:
             journal_file.write_text(file_content, encoding="utf-8")
+    except (
+        ObsidianEditorConflict, ObsidianPostWriteUncertain, ObsidianHTTPError,
+    ):
+        raise  # Outer re-raise — see policy.
     except Exception as exc:
         logger.warning("Bridge write failed (%s), falling back to direct write", exc)
         journal_file.write_text(file_content, encoding="utf-8")

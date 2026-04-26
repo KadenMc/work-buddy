@@ -225,11 +225,22 @@ def write_at_location(
     new_lines = lines[:insert_idx] + insert_lines + lines[insert_idx:]
     new_content = "\n".join(new_lines)
 
-    # Write via bridge if available, fall back to direct file write
+    # Write via bridge if available, fall back to direct file write.
+    # ConsentRequired propagates to the gateway's consent flow handler.
+    # ObsidianError subclasses propagate to the gateway exception path
+    # (where post-write-verify catches ObsidianPostWriteUncertain via
+    # the insert_text witness, and other types classify normally).
     from work_buddy.consent import ConsentRequired
 
     try:
-        ok = vault_write(note_rel_str, note_abs, new_content)
+        ok = vault_write(
+            note_rel_str, note_abs, new_content,
+            # Section-aware insert: hint is the inserted text itself, so
+            # post-write-verify's substring search will match if the write
+            # actually landed even if the bridge timed out client-side.
+            write_mode="insert",
+            content_hint=insert_text,
+        )
     except ConsentRequired as exc:
         return {
             "status": "consent_required",
@@ -240,6 +251,9 @@ def write_at_location(
         }
 
     if not ok:
+        # vault_write returns False only for direct-filesystem-fallback OSError
+        # (post-CP6). All other failure modes raise typed exceptions that
+        # propagate to the gateway. So this path is exceptional and rare.
         return {"status": "error", "error": f"Failed to write note: {note_rel_str}"}
 
     return {
@@ -274,7 +288,14 @@ def _read_note(vault_rel_path: str, abs_path: Path) -> str | None:
         return None
 
 
-def vault_write(vault_rel_path: str, abs_path: Path, content: str) -> bool:
+def vault_write(
+    vault_rel_path: str,
+    abs_path: Path,
+    content: str,
+    *,
+    write_mode: str = "replace",
+    content_hint: str | None = None,
+) -> bool:
     """Write a note, preferring Obsidian bridge, falling back to direct write.
 
     The "safe" vault write entry point for callers that don't own the file
@@ -287,18 +308,44 @@ def vault_write(vault_rel_path: str, abs_path: Path, content: str) -> bool:
     the ``obsidian/vault-write-decision`` knowledge unit for the picking
     rule.
 
-    Re-raises:
-      - ``ConsentRequired`` — caller must handle consent flow.
-      - ``EditorConflict`` — bridge refused because the file is open with
-        unsaved typing. We DO NOT fall back to a direct write here:
-        clobbering the user's editor by writing to disk is exactly what
-        the conflict signal exists to prevent. Caller (or the gateway's
-        retry queue) should retry later when the user finishes editing.
+    Post-CP6 fallback policy
+    ------------------------
+    The bridge layer raises typed exceptions per the
+    ``work_buddy.obsidian.errors`` hierarchy. Different failure types
+    take different recovery paths:
+
+      ObsidianUnreachable (and subclasses)
+          Bridge can't be reached — body was NOT sent. Filesystem
+          fallback is safe (no double-write risk). FALL BACK.
+      ObsidianPostWriteUncertain
+          Body MAY have been sent and the plugin MAY have committed.
+          Filesystem fallback would overwrite the plugin's write if
+          it landed. RE-RAISE so the gateway's verify path runs.
+      ObsidianEditorConflict
+          User has unsaved typing. Filesystem write would clobber it.
+          RE-RAISE — the retry queue handles re-attempt later.
+      ObsidianRefused
+          Structural refusal (4xx). No retry will help. RE-RAISE.
+      ObsidianServerError
+          5xx — plugin-side fault. Filesystem fallback would bypass
+          the plugin's state machine, risking cache divergence.
+          RE-RAISE so the retry queue waits for the plugin to recover.
+      ConsentRequired
+          Consent gate. RE-RAISE — caller handles the consent flow.
+
+    Returns True on success (bridge or fallback). False only when the
+    direct filesystem write itself fails (OSError on the tmp.write).
     """
     import logging
     log = logging.getLogger(__name__)
     from work_buddy.consent import ConsentRequired
-    from work_buddy.obsidian.bridge import EditorConflict
+    from work_buddy.obsidian.errors import (
+        ObsidianEditorConflict,
+        ObsidianPostWriteUncertain,
+        ObsidianRefused,
+        ObsidianServerError,
+        ObsidianUnreachable,
+    )
 
     # Normalize path separators — bridge expects forward slashes
     vault_rel_path = vault_rel_path.replace("\\", "/")
@@ -307,21 +354,34 @@ def vault_write(vault_rel_path: str, abs_path: Path, content: str) -> bool:
         from work_buddy.obsidian.bridge import write_file_raw, is_available
         if is_available():
             log.info("Writing via bridge: %s", vault_rel_path)
-            result = write_file_raw(vault_rel_path, content)
+            result = write_file_raw(
+                vault_rel_path, content,
+                write_mode=write_mode, content_hint=content_hint,
+            )
             log.info("Bridge write result: %s", result)
             return result
         else:
             log.info("Bridge not available, falling back to direct write")
     except ConsentRequired:
-        raise  # Caller must handle consent flow
-    except EditorConflict:
-        # Don't fall back. Direct disk write would still be clobbered by
-        # the user's next save. Surface the conflict to the caller.
         raise
-    except Exception as exc:
-        log.warning("Bridge write failed: %s: %s", type(exc).__name__, exc)
+    except ObsidianEditorConflict:
+        raise  # Don't fall back — would clobber the user's typing.
+    except ObsidianPostWriteUncertain:
+        raise  # Don't fall back — gateway's verify path runs first.
+    except ObsidianRefused:
+        raise  # Structural refusal — no point falling back.
+    except ObsidianServerError:
+        raise  # Plugin-side fault — filesystem would bypass plugin state.
+    except ObsidianUnreachable as exc:
+        # Body not sent (port refused / Obsidian not running). Filesystem
+        # fallback is safe — no double-write risk.
+        log.warning(
+            "Bridge unreachable (%s); falling back to direct filesystem write",
+            exc.error_kind,
+        )
 
-    # Direct fallback (atomic)
+    # Direct fallback (atomic). Reached only when bridge.is_available()
+    # returned False at the top, OR ObsidianUnreachable was caught above.
     try:
         log.info("Direct write: %s", abs_path)
         tmp = abs_path.with_suffix(".tmp")

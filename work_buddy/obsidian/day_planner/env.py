@@ -198,9 +198,12 @@ def write_plan(
     # Replace section body
     new_content = content[:section_start] + new_body + content[section_end:]
 
-    ok = bridge.write_file(journal_path, new_content)
-    if not ok:
-        return {"success": False, "reason": "bridge.write_file failed"}
+    # Post-CP6: bridge.write_file raises typed ObsidianError on failure.
+    # This function is called from a capability that's typically wrapped
+    # by retry policy; let exceptions propagate to the gateway exception
+    # handler (which classifies + enqueues + verifies post-write
+    # uncertain).
+    bridge.write_file(journal_path, new_content)
 
     logger.info("Wrote %d plan entries to %s", len(entries), journal_path)
     return {

@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 
 from work_buddy.inline.models import InlineContext
 from work_buddy.obsidian.bridge import read_file, write_file
+from work_buddy.obsidian.errors import ObsidianError
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +89,22 @@ def apply(mode: str, ctx: InlineContext, result: dict | None) -> dict:
 
     tag_token = _tag_token((ctx.tag or {}).get("name", "")) if ctx.tag else ""
 
+    # Helper: post-CP6 write_file raises typed ObsidianError on failure.
+    # consume.apply is a fire-and-forget post-execution mutator — it
+    # should NOT propagate bridge failures into the calling agent's
+    # workflow (the user's command already succeeded; the consume step
+    # is cosmetic). Catch typed exceptions and report mutated=False.
+    def _safe_write(file_path: str, new_content: str) -> tuple[bool, str | None]:
+        try:
+            write_file(file_path, new_content)
+            return True, None
+        except ObsidianError as exc:
+            logger.warning(
+                "inline.consume: write failed for %s (%s)",
+                file_path, exc.error_kind,
+            )
+            return False, exc.error_kind
+
     if effective == "strip":
         if not tag_token:
             return {"mutated": False, "note": "no_tag", "mode": effective}
@@ -102,10 +119,10 @@ def apply(mode: str, ctx: InlineContext, result: dict | None) -> dict:
         new_content = "\n".join(lines)
         if content.endswith("\n"):
             new_content += "\n"
-        ok = write_file(ctx.file_path, new_content)
+        ok, err_kind = _safe_write(ctx.file_path, new_content)
         return {
-            "mutated": bool(ok),
-            "note": "stripped",
+            "mutated": ok,
+            "note": "stripped" if ok else f"write_failed:{err_kind}",
             "mode": effective,
             "tag": tag_token,
         }
@@ -123,10 +140,10 @@ def apply(mode: str, ctx: InlineContext, result: dict | None) -> dict:
         new_content = "\n".join(lines)
         if content.endswith("\n"):
             new_content += "\n"
-        ok = write_file(ctx.file_path, new_content)
+        ok, err_kind = _safe_write(ctx.file_path, new_content)
         return {
-            "mutated": bool(ok),
-            "note": "replaced",
+            "mutated": ok,
+            "note": "replaced" if ok else f"write_failed:{err_kind}",
             "mode": effective,
             "tag": tag_token,
         }
@@ -143,10 +160,10 @@ def apply(mode: str, ctx: InlineContext, result: dict | None) -> dict:
         new_content = "\n".join(new_lines)
         if content.endswith("\n"):
             new_content += "\n"
-        ok = write_file(ctx.file_path, new_content)
+        ok, err_kind = _safe_write(ctx.file_path, new_content)
         return {
-            "mutated": bool(ok),
-            "note": "annotated",
+            "mutated": ok,
+            "note": "annotated" if ok else f"write_failed:{err_kind}",
             "mode": effective,
         }
 
