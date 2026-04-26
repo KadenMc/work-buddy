@@ -852,6 +852,12 @@ def api_costs():
     # cards / tables / charts agree.
     start_date = request.args.get("start_date") or None
     end_date = request.args.get("end_date") or None
+    # Comma-separated list of model names from the chip filter. Empty /
+    # missing → no filter. Same row-level filtering rationale as the
+    # date-range params: keeps cards / charts / top-callers in sync with
+    # the user's chip selection.
+    models_raw = request.args.get("models") or ""
+    models = [m for m in (s.strip() for s in models_raw.split(",")) if m] or None
     # Backwards-compat: the old ``transcripts`` source name still routes
     # to claude_code so any external bookmarks / scripts keep working.
     if source == "transcripts":
@@ -861,7 +867,8 @@ def api_costs():
         internal = get_costs_summary(project=project,
                                       execution_mode=execution_mode,
                                       start_date=start_date,
-                                      end_date=end_date)
+                                      end_date=end_date,
+                                      models=models)
         if source == "internal":
             return jsonify(internal)
 
@@ -874,6 +881,7 @@ def api_costs():
                 project=project,
                 start_date=start_date,
                 end_date=end_date,
+                models=models,
             )
         except ImportError:
             claude_code = None

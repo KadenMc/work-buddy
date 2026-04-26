@@ -27,6 +27,10 @@ let costsState = {
                                   // (only meaningful when project === 'work-buddy')
     range: '30',                  // 'today' | '7' | '30' | '90' | 'all'
     selectedModels: null,         // null = all selected; Set of strings otherwise
+    knownModels: [],              // full model list captured on the most recent
+                                  // unfiltered fetch — survives refetches that
+                                  // include a ``models`` filter (which would
+                                  // otherwise shrink ``data.all_models``).
     sessionPage: 1,
     sessionSort: { key: 'last', dir: 'desc' },
     charts: {},                   // Chart.js instances keyed by canvas id
@@ -145,18 +149,9 @@ async function loadCosts(force) {
     const meta = document.getElementById('costs-meta');
     if (meta) meta.textContent = 'loading...';
 
-    const params = new URLSearchParams();
-    params.set('source', 'all');
-    if (costsState.project) params.set('project', costsState.project);
-    // For api / local activity, ask the backend to filter rows by
-    // execution_mode so by_model / sessions / etc. are properly sliced.
-    // Programmatic = work-buddy runner activity (cloud + local) — no
-    // execution_mode filter, but we restrict to internal source on render.
-    if (costsState.activity === 'api')   params.set('execution_mode', 'cloud');
-    if (costsState.activity === 'local') params.set('execution_mode', 'local');
-    // Date range as a backend filter — keeps every aggregate consistent.
-    const _startIso = _costsRangeStartIso();
-    if (_startIso) params.set('start_date', _startIso);
+    // Initial load uses no models filter — we need the full model list
+    // back so the chip rail can be built.
+    const params = _costsBuildParams({includeModels: false});
 
     const data = await fetchJSON('/api/costs?' + params.toString());
     if (!data || data.error) {
@@ -171,9 +166,14 @@ async function loadCosts(force) {
     _costsSyncActivityVisibility();
     costsState.sessionPage = 1;
 
+    // Capture the full unfiltered model list so chip rendering survives
+    // future refetches that include a ``models`` filter (which would
+    // shrink ``data.all_models`` to the narrowed subset).
+    const all = _costsCurrentModelsFromActiveData();
+    costsState.knownModels = all.slice();
+
     // Reset selectedModels to all-known when refetching (new project may
     // expose a different model set).
-    const all = _costsCurrentModels();
     costsState.selectedModels = new Set(all);
 
     costsRenderAll();
@@ -310,9 +310,52 @@ function _costsFilterModelRow(r) {
     return true;
 }
 
-function _costsCurrentModels() {
+// Active-data view of all_models — used by loadCosts to seed
+// ``knownModels`` from the response and as a fallback when no snapshot
+// has been taken yet.
+function _costsCurrentModelsFromActiveData() {
     const { data } = _costsActiveData();
     return data.all_models || [];
+}
+
+// Stable list for chip rendering / family grouping. Prefers the
+// snapshot taken on the last unfiltered fetch (so chips don't shrink
+// when we refetch with a ``models`` filter). Falls back to the active
+// response's all_models when no snapshot exists yet.
+function _costsCurrentModels() {
+    if (costsState.knownModels && costsState.knownModels.length > 0) {
+        return costsState.knownModels;
+    }
+    return _costsCurrentModelsFromActiveData();
+}
+
+// Shared URL-params builder for /api/costs fetches.
+//
+// ``includeModels``: when true and the user's chip selection narrows
+// the known set, attach a comma-separated ``models`` query param so
+// the backend filters every aggregate (cards, charts, top-callers,
+// sessions). When false (initial load), we want the full all_models
+// list back, so we omit the filter.
+function _costsBuildParams(opts) {
+    const params = new URLSearchParams();
+    params.set('source', 'all');
+    if (costsState.project) params.set('project', costsState.project);
+    // For api / local activity, ask the backend to filter rows by
+    // execution_mode so by_model / sessions / etc. are properly sliced.
+    if (costsState.activity === 'api')   params.set('execution_mode', 'cloud');
+    if (costsState.activity === 'local') params.set('execution_mode', 'local');
+    const _startIso = _costsRangeStartIso();
+    if (_startIso) params.set('start_date', _startIso);
+    if (opts && opts.includeModels && costsState.selectedModels) {
+        const known = costsState.knownModels || [];
+        const sel = costsState.selectedModels;
+        // Only attach when narrowed — sending the full set is wasted bytes
+        // and pollutes the access log.
+        if (known.length > 0 && sel.size > 0 && sel.size < known.length) {
+            params.set('models', [...sel].join(','));
+        }
+    }
+    return params;
 }
 
 // ---- Data-only refresh (Decision 1(b)) ----
@@ -331,13 +374,9 @@ async function refreshCostsData() {
     // calls between dashboard interactions.
     _costsLoadRateLimits();
 
-    const params = new URLSearchParams();
-    params.set('source', 'all');
-    if (costsState.project) params.set('project', costsState.project);
-    if (costsState.activity === 'api')   params.set('execution_mode', 'cloud');
-    if (costsState.activity === 'local') params.set('execution_mode', 'local');
-    const _startIso = _costsRangeStartIso();
-    if (_startIso) params.set('start_date', _startIso);
+    // includeModels=true so an active chip narrowing propagates to
+    // every backend aggregate (cards, charts, top-callers, sessions).
+    const params = _costsBuildParams({includeModels: true});
 
     const data = await fetchJSON('/api/costs?' + params.toString());
     if (!data || data.error) {
@@ -347,7 +386,9 @@ async function refreshCostsData() {
     costsState.raw = data;
     _costsSyncActivityVisibility();
     // Note: do NOT reset costsState.selectedModels — the user's chip
-    // selection is sticky across auto-refreshes.
+    // selection is sticky across auto-refreshes. Don't update
+    // ``knownModels`` either: when the request had a ``models`` filter,
+    // the response's all_models is narrowed.
     costsRenderAll({skipModelsFilter: true});
 }
 
@@ -773,18 +814,27 @@ function costsModelClick(ev, model) {
     else costsModelToggle(model);
 }
 
+// After mutating costsState.selectedModels, re-render the chip rail
+// (so the ``active`` class flips and the Reset link appears) and
+// refetch /api/costs so cards / charts / top-callers / sessions all
+// re-aggregate against the narrowed model set.
+function _costsAfterModelChipChange() {
+    costsRenderModelsFilter();
+    refreshCostsData();
+}
+
 function costsModelToggle(m) {
     if (!costsState.selectedModels) {
         costsState.selectedModels = new Set(_costsCurrentModels());
     }
     if (costsState.selectedModels.has(m)) costsState.selectedModels.delete(m);
     else costsState.selectedModels.add(m);
-    costsRenderAll();
+    _costsAfterModelChipChange();
 }
 
 function costsModelSolo(m) {
     costsState.selectedModels = new Set([m]);
-    costsRenderAll();
+    _costsAfterModelChipChange();
 }
 
 function costsModelFamilyClick(ev, family) {
@@ -807,7 +857,7 @@ function costsModelFamilyToggle(family) {
         // Partial or none → toggle all on.
         for (const m of grp.models) costsState.selectedModels.add(m);
     }
-    costsRenderAll();
+    _costsAfterModelChipChange();
 }
 
 function costsModelFamilySolo(family) {
@@ -815,12 +865,12 @@ function costsModelFamilySolo(family) {
     const grp = groups.find(g => g.family === family);
     if (!grp) return;
     costsState.selectedModels = new Set(grp.models);
-    costsRenderAll();
+    _costsAfterModelChipChange();
 }
 
 function costsModelsReset() {
     costsState.selectedModels = new Set(_costsCurrentModels());
-    costsRenderAll();
+    _costsAfterModelChipChange();
 }
 
 // ---- Aggregation helpers (range-filtered) ----

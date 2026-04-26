@@ -234,6 +234,7 @@ def get_costs_summary(
     execution_mode: str | None = None,
     start_date: str | None = None,
     end_date: str | None = None,
+    models: list[str] | set[str] | tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     """Return the full cost summary read model.
 
@@ -267,6 +268,11 @@ def get_costs_summary(
             from every aggregate. ``None`` = no lower bound.
         end_date: Optional ``"YYYY-MM-DD"`` upper bound (inclusive).
             Same shape as ``start_date``. ``None`` = no upper bound.
+        models: Optional iterable of model names. When non-empty, only
+            rows whose ``model`` is in the set are included in every
+            aggregate. ``None`` or empty = no filter. Same use case as
+            ``start_date``/``end_date``: keeps cards/charts/tables in
+            sync when the user narrows via the chip filter.
         execution_mode: Optional row-level filter. ``"cloud"`` = only
             ``execution_mode == "cloud"`` rows; ``"local"`` = only local;
             ``None`` / ``"all"`` = no filter. Filters apply at row
@@ -279,6 +285,7 @@ def get_costs_summary(
     mode_filter = (execution_mode or "").lower()
     if mode_filter not in ("", "all", "cloud", "local"):
         mode_filter = ""
+    model_filter = set(models) if models else None
     totals = _empty_totals()
     by_day: dict[str, dict[str, Any]] = defaultdict(_empty_totals)
     by_model: dict[str, dict[str, Any]] = defaultdict(_empty_totals)
@@ -328,6 +335,12 @@ def get_costs_summary(
                         continue
                     if end_date and day_str > end_date:
                         continue
+            # Model filter at row level — same rationale as the
+            # date-range filter: keeps cards/charts/tables in sync
+            # when the user narrows via the chip filter.
+            if model_filter is not None:
+                if (entry.get("model") or "") not in model_filter:
+                    continue
             had_any_entry = True
             ts = entry.get("timestamp", "") or ""
             if not sess_first_ts or ts < sess_first_ts:

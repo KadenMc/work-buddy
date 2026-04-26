@@ -81,6 +81,7 @@ def get_claude_code_usage_summary(
     project: str | None = None,
     start_date: str | None = None,
     end_date: str | None = None,
+    models: list[str] | set[str] | tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     """Return the Claude-Code-usage cost / usage read model.
 
@@ -93,6 +94,9 @@ def get_claude_code_usage_summary(
             applied to the turn-level ``timestamp``. When set, every
             aggregate respects this window.
         end_date: Optional ``"YYYY-MM-DD"`` upper bound (inclusive).
+        models: Optional iterable of model names. When non-empty, only
+            rows whose ``model`` is in the set are included in every
+            aggregate (turns + sessions). ``None`` or empty = no filter.
 
     When the cache DB has not been populated yet, returns
     ``{"available": False, "source": "claude_code", ...}`` so the
@@ -118,6 +122,8 @@ def get_claude_code_usage_summary(
         return {"available": False, "source": "claude_code",
                 "error": str(exc), "db_path": str(p)}
 
+    model_list = sorted(set(models)) if models else None
+
     try:
         totals = _empty_totals()
         by_day: dict[str, dict[str, Any]] = defaultdict(_empty_totals)
@@ -139,6 +145,10 @@ def get_claude_code_usage_summary(
         if end_date:
             turns_clauses.append("substr(timestamp, 1, 10) <= ?")
             turns_params.append(end_date)
+        if model_list:
+            placeholders = ",".join("?" * len(model_list))
+            turns_clauses.append(f"model IN ({placeholders})")
+            turns_params.extend(model_list)
         if turns_clauses:
             turns_sql += " WHERE " + " AND ".join(turns_clauses)
 
@@ -176,6 +186,10 @@ def get_claude_code_usage_summary(
         if end_date:
             sessions_clauses.append("substr(first_timestamp, 1, 10) <= ?")
             sessions_params.append(end_date)
+        if model_list:
+            placeholders = ",".join("?" * len(model_list))
+            sessions_clauses.append(f"model IN ({placeholders})")
+            sessions_params.extend(model_list)
         if sessions_clauses:
             sessions_sql += " WHERE " + " AND ".join(sessions_clauses)
         sessions_sql += " ORDER BY last_timestamp DESC"

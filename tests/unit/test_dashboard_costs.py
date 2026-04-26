@@ -684,6 +684,120 @@ def test_api_costs_route_threads_execution_mode(monkeypatch, agents_dir):
     assert "claude-sonnet-4-6" not in models
 
 
+def test_aggregator_models_filter_excludes_other_models(tmp_path):
+    """``models=[...]`` excludes rows whose model isn't in the set, at every aggregate."""
+    root = tmp_path / "agents"
+    _write_session(
+        root, "2026-04-25T10-00-00_a",
+        manifest={"short_id": "a", "project": "C:\\repo\\one"},
+        entries=[
+            {"timestamp": "2026-04-25T10:00:00",
+             "model": "claude-sonnet-4-6", "task_id": "keep",
+             "input_tokens": 100, "output_tokens": 50,
+             "estimated_cost_usd": 0.005, "cached": False,
+             "execution_mode": "cloud"},
+            {"timestamp": "2026-04-25T10:01:00",
+             "model": "claude-opus-4-7", "task_id": "drop",
+             "input_tokens": 1000, "output_tokens": 500,
+             "estimated_cost_usd": 0.500, "cached": False,
+             "execution_mode": "cloud"},
+        ],
+    )
+    s = costs_mod.get_costs_summary(
+        agents_dir=root, models=["claude-sonnet-4-6"],
+    )
+    # Only the sonnet row survives in every aggregate.
+    models = {r["model"] for r in s["by_model"]}
+    assert models == {"claude-sonnet-4-6"}
+    tasks = {r["task"] for r in s["by_task"]}
+    assert tasks == {"keep"}
+    # Top caller cost <= totals cost — the synchronization invariant.
+    top = max((r["cost_usd"] for r in s["by_task"]), default=0.0)
+    assert top <= s["totals"]["cost_usd"] + 1e-9
+
+
+def test_aggregator_models_filter_none_means_no_filter(tmp_path):
+    """``models=None`` and ``models=[]`` both behave as no filter."""
+    root = tmp_path / "agents"
+    _write_session(
+        root, "2026-04-25T10-00-00_a",
+        manifest={"short_id": "a", "project": "C:\\repo\\one"},
+        entries=[
+            {"timestamp": "2026-04-25T10:00:00",
+             "model": "claude-sonnet-4-6", "task_id": "t1",
+             "input_tokens": 100, "output_tokens": 50,
+             "estimated_cost_usd": 0.005, "cached": False,
+             "execution_mode": "cloud"},
+            {"timestamp": "2026-04-25T10:01:00",
+             "model": "claude-opus-4-7", "task_id": "t2",
+             "input_tokens": 1, "output_tokens": 1,
+             "estimated_cost_usd": 0.001, "cached": False,
+             "execution_mode": "cloud"},
+        ],
+    )
+    s_none = costs_mod.get_costs_summary(agents_dir=root, models=None)
+    s_empty = costs_mod.get_costs_summary(agents_dir=root, models=[])
+    for s in (s_none, s_empty):
+        models = {r["model"] for r in s["by_model"]}
+        assert models == {"claude-sonnet-4-6", "claude-opus-4-7"}
+
+
+def test_api_costs_route_threads_models(monkeypatch, tmp_path):
+    """``GET /api/costs?models=a,b`` reaches the aggregator and filters."""
+    root = tmp_path / "agents"
+    _write_session(
+        root, "2026-04-25T10-00-00_a",
+        manifest={"short_id": "a", "project": "C:\\repo\\one"},
+        entries=[
+            {"timestamp": "2026-04-25T10:00:00",
+             "model": "claude-sonnet-4-6", "task_id": "keep",
+             "input_tokens": 100, "output_tokens": 50,
+             "estimated_cost_usd": 0.005, "cached": False,
+             "execution_mode": "cloud"},
+            {"timestamp": "2026-04-25T10:01:00",
+             "model": "claude-opus-4-7", "task_id": "drop",
+             "input_tokens": 1, "output_tokens": 1,
+             "estimated_cost_usd": 0.001, "cached": False,
+             "execution_mode": "cloud"},
+        ],
+    )
+    monkeypatch.setattr(costs_mod, "_AGENTS_DIR", root)
+    from work_buddy.dashboard.service import app
+    client = app.test_client()
+    resp = client.get("/api/costs?source=internal&models=claude-sonnet-4-6")
+    body = resp.get_json()
+    assert {r["model"] for r in body["by_model"]} == {"claude-sonnet-4-6"}
+    assert {r["task"] for r in body["by_task"]} == {"keep"}
+
+
+def test_api_costs_route_models_empty_string_is_no_filter(monkeypatch, tmp_path):
+    """``models=`` (empty) should not narrow — distinct from a missing param."""
+    root = tmp_path / "agents"
+    _write_session(
+        root, "2026-04-25T10-00-00_a",
+        manifest={"short_id": "a", "project": "C:\\repo\\one"},
+        entries=[
+            {"timestamp": "2026-04-25T10:00:00",
+             "model": "claude-sonnet-4-6", "task_id": "t1",
+             "input_tokens": 100, "output_tokens": 50,
+             "estimated_cost_usd": 0.005, "cached": False,
+             "execution_mode": "cloud"},
+            {"timestamp": "2026-04-25T10:01:00",
+             "model": "claude-opus-4-7", "task_id": "t2",
+             "input_tokens": 1, "output_tokens": 1,
+             "estimated_cost_usd": 0.001, "cached": False,
+             "execution_mode": "cloud"},
+        ],
+    )
+    monkeypatch.setattr(costs_mod, "_AGENTS_DIR", root)
+    from work_buddy.dashboard.service import app
+    client = app.test_client()
+    resp = client.get("/api/costs?source=internal&models=")
+    body = resp.get_json()
+    assert {r["model"] for r in body["by_model"]} \
+        == {"claude-sonnet-4-6", "claude-opus-4-7"}
+
+
 def test_vendor_route_serves_chart_js():
     from work_buddy.dashboard.service import app
     client = app.test_client()
