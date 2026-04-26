@@ -825,6 +825,12 @@ def register_tools(mcp: FastMCP) -> None:
                 ),
             })
 
+        # CP-A3: track whether this dispatch hit the lazy auto-recovery
+        # path so the success response can advertise it. Initialised to
+        # False; set True inside the disabled-capability branch when
+        # recheck_disabled_capability restored the cap to the registry.
+        _registry_auto_recovered = False
+
         # Offload: first call materializes the registry (~19s of tool
         # probes + workflow loading). See wb_search for the full rationale.
         entry = await asyncio.to_thread(registry.get_entry, capability)
@@ -850,17 +856,51 @@ def register_tools(mcp: FastMCP) -> None:
                         "opted_out": opted_out,
                         "requires": missing_deps,
                     })
-                return _prepare({
-                    "error": (
-                        f"Capability {capability!r} is unavailable: "
-                        f"requires {', '.join(missing_deps)}. "
-                        f"Run /wb-setup to diagnose, or start the missing "
-                        f"dependencies and reload the registry."
-                    ),
-                    "disabled": True,
-                    "requires": missing_deps,
-                })
-            return _prepare({"error": f"Unknown capability: {capability!r}. Use wb_search to find available capabilities."})
+
+                # CP-A3: lazy auto-recovery. Re-probe the missing tools
+                # and, if all are now available, restore the capability
+                # to the live registry transparently. This closes the
+                # bootstrap-race papercut (capabilities marked disabled
+                # at sidecar startup stay disabled even after the probe
+                # recovers, until somebody runs mcp_registry_reload).
+                # Cool-down inside recheck_disabled_capability prevents
+                # tight-loop hammering on a genuinely-down tool.
+                from work_buddy.recovery import recheck_disabled_capability
+                recovered = await asyncio.to_thread(
+                    recheck_disabled_capability, capability,
+                )
+                if recovered:
+                    # Capability is now in the live registry. Re-fetch
+                    # the entry and fall through to normal dispatch.
+                    entry = await asyncio.to_thread(
+                        registry.get_entry, capability,
+                    )
+                    if entry is not None:
+                        # Mark this dispatch as auto-recovered so the
+                        # success response carries it (set just before
+                        # _prepare returns at the bottom of this function).
+                        _registry_auto_recovered = True
+                # If recovery returned False, fall through to the
+                # disabled-error path. CP-A5 will enrich this message
+                # with fresh probe state (probe age, reason).
+                if entry is None:
+                    # Re-read missing_deps in case recheck shrank it.
+                    missing_deps = DISABLED_CAPABILITIES.get(capability, missing_deps)
+                    return _prepare({
+                        "error": (
+                            f"Capability {capability!r} is unavailable: "
+                            f"requires {', '.join(missing_deps)}. "
+                            f"Auto-recovery attempted on this call but did "
+                            f"not succeed (probe still reports unavailable). "
+                            f"Run /wb-setup to diagnose, or start the missing "
+                            f"dependencies and reload the registry."
+                        ),
+                        "disabled": True,
+                        "requires": missing_deps,
+                        "auto_recovery_attempted": True,
+                    })
+            else:
+                return _prepare({"error": f"Unknown capability: {capability!r}. Use wb_search to find available capabilities."})
 
         # Determine operation type and retry policy
         if isinstance(entry, registry.WorkflowDefinition):
@@ -1089,13 +1129,20 @@ def register_tools(mcp: FastMCP) -> None:
                             entry.mutates_state, _t0, recovery_result,
                             None, False, **_ledger_kw,
                         )
-                        return _prepare({
+                        post_write_response: dict[str, Any] = {
                             "type": "result",
                             "capability": capability,
                             "result": recovery_result,
                             "operation_id": op_id,
                             "post_write_recovery": True,
-                        })
+                        }
+                        if _registry_auto_recovered:
+                            # Both recoveries can happen on the same call —
+                            # auto-restored capability that then hit a
+                            # post-write timeout that the verifier
+                            # successfully rescued.
+                            post_write_response["registry_auto_recovered"] = True
+                        return _prepare(post_write_response)
                     # "absent" or "indeterminate" — fall through to the
                     # normal failure path. The exception still has its
                     # ObsidianTimeout ancestry so classify_error returns
@@ -1199,12 +1246,20 @@ def register_tools(mcp: FastMCP) -> None:
         record_capability(capability, entry.category, op_id, parsed_params,
                           entry.mutates_state, _t0, result,
                           result_err, False, **_ledger_kw)
-        return _prepare({
+        success_response: dict[str, Any] = {
             "type": "result",
             "capability": capability,
             "result": result,
             "operation_id": op_id,
-        })
+        }
+        if _registry_auto_recovered:
+            # CP-A3: tell the agent (and downstream telemetry) that this
+            # call succeeded only because the gateway transparently
+            # restored the capability from DISABLED_CAPABILITIES via
+            # lazy re-probe. Useful for diagnosing how often the
+            # bootstrap-race papercut fires in production.
+            success_response["registry_auto_recovered"] = True
+        return _prepare(success_response)
 
     @mcp.tool()
     async def wb_advance(workflow_run_id: str, step_result: str | dict | None = None, ctx: Context = None) -> dict:
