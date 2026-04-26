@@ -490,6 +490,7 @@ def _enqueue_for_retry(
     originating_session_id: str | None = None,
     workflow_context: dict[str, Any] | None = None,
     error_kind: str | None = None,
+    pwu_carrier: dict[str, Any] | None = None,
 ) -> None:
     """Mark a failed operation for background retry by the sidecar.
 
@@ -505,6 +506,14 @@ def _enqueue_for_retry(
     failures across attempts (e.g. ``did the kind change between
     attempts? from obsidian_timeout to obsidian_unreachable would
     indicate Obsidian crashed mid-retry``).
+
+    ``pwu_carrier`` is the ObsidianPostWriteUncertain carrier that
+    triggered this enqueue: ``{path, content_hint, write_mode}``.
+    Persisted on the op record so the retry sweep can pre-verify
+    BEFORE replaying the capability — catching late commits that
+    landed between the original verify-said-absent and the sweep's
+    replay attempt. Without this pre-verify, the sweep's read-modify-
+    write replay can produce double-writes (CP-A7).
     """
     # Load config defaults (lightweight — cached after first load)
     try:
@@ -545,6 +554,12 @@ def _enqueue_for_retry(
     record["error_class"] = error_class
     record["originating_session_id"] = originating_session_id or record.get("session_id")
     record["workflow_context"] = workflow_context
+    if pwu_carrier is not None:
+        # CP-A7: persist the post-write-uncertain carrier so retry_sweep
+        # can pre-verify before replaying. Stored at the top level rather
+        # than inside retry_history so the sweep can find it without
+        # parsing the history list.
+        record["pwu_carrier"] = pwu_carrier
     record.setdefault("retry_history", [])
     history_entry: dict[str, Any] = {
         "attempt": record.get("attempt", 1),
@@ -1158,6 +1173,20 @@ def register_tools(mcp: FastMCP) -> None:
                 if not isinstance(error_kind, str):
                     error_kind = None
 
+                # CP-A7: if this exception is ObsidianPostWriteUncertain
+                # (the CP5 verify above said absent/indeterminate, which
+                # is why we're here), capture its carrier so the retry
+                # sweep can pre-verify before replaying. Closes the
+                # window where the plugin commits between the gateway's
+                # verify and the sweep's replay.
+                pwu_carrier: dict[str, Any] | None = None
+                if isinstance(exc, ObsidianPostWriteUncertain):
+                    pwu_carrier = {
+                        "path": exc.path,
+                        "content_hint": exc.content_hint,
+                        "write_mode": exc.write_mode,
+                    }
+
                 _complete_operation(op_id, error=error_str, error_kind=error_kind)
                 record_capability(capability, entry.category, op_id, parsed_params,
                                   entry.mutates_state, _t0, None,
@@ -1174,6 +1203,7 @@ def register_tools(mcp: FastMCP) -> None:
                         op_id, error_str, error_class,
                         originating_session_id=_agent_sid,
                         error_kind=error_kind,
+                        pwu_carrier=pwu_carrier,
                     )
                     response: dict[str, Any] = {
                         "error": f"Transient failure: {error_str}",
@@ -1188,6 +1218,12 @@ def register_tools(mcp: FastMCP) -> None:
                     }
                     if error_kind is not None:
                         response["error_kind"] = error_kind
+                    if _registry_auto_recovered:
+                        # Minor fix paired with CP-A7: the capability got
+                        # auto-recovered, dispatched, then hit a PWU.
+                        # Surface that auto-recovery still happened so
+                        # telemetry can attribute the call correctly.
+                        response["registry_auto_recovered"] = True
                     return _prepare(response)
 
                 response: dict[str, Any] = {
@@ -1196,6 +1232,8 @@ def register_tools(mcp: FastMCP) -> None:
                 }
                 if error_kind is not None:
                     response["error_kind"] = error_kind
+                if _registry_auto_recovered:
+                    response["registry_auto_recovered"] = True
                 return _prepare(response)
 
         # --- Check for soft transient failures in the result ---
@@ -1274,6 +1312,24 @@ def register_tools(mcp: FastMCP) -> None:
                 _is_transient(result)
                 and retry_policy in ("replay", "verify_first")
             ):
+                # CP-A7: if the result dict carries the PWU carrier
+                # fields (path / content_hint / write_mode), persist them
+                # so retry_sweep can pre-verify before the replay. Same
+                # safety net as the dispatch-path persist; only fires
+                # when a caller bypassed the typed-exception path and
+                # translated to a dict that includes the carrier.
+                soft_pwu_carrier: dict[str, Any] | None = None
+                if (
+                    result_error_kind == "obsidian_post_write_uncertain"
+                    and isinstance(result, dict)
+                    and result.get("path")
+                ):
+                    soft_pwu_carrier = {
+                        "path": result["path"],
+                        "content_hint": result.get("content_hint"),
+                        "write_mode": result.get("write_mode") or "replace",
+                    }
+
                 _complete_operation(
                     op_id, result=result, error=result_err,
                     error_kind=result_error_kind,
@@ -1285,6 +1341,7 @@ def register_tools(mcp: FastMCP) -> None:
                     op_id, result_err, "transient",
                     originating_session_id=_agent_sid,
                     error_kind=result_error_kind,
+                    pwu_carrier=soft_pwu_carrier,
                 )
                 response: dict[str, Any] = {
                     "error": f"Transient failure: {result_err}",
@@ -1299,6 +1356,8 @@ def register_tools(mcp: FastMCP) -> None:
                 }
                 if result_error_kind is not None:
                     response["error_kind"] = result_error_kind
+                if _registry_auto_recovered:
+                    response["registry_auto_recovered"] = True
                 return _prepare(response)
 
         _complete_operation(op_id, result=result, error=result_err)
@@ -1697,6 +1756,20 @@ def retry_operation(operation_id: str) -> dict[str, Any]:
             error_kind = getattr(exc, "error_kind", None)
             if not isinstance(error_kind, str):
                 error_kind = None
+
+            # CP-A7: capture PWU carrier for the next sweep retry's
+            # pre-verify path. Same pattern as the wb_run dispatch site
+            # above. Only set when this exception is PostWriteUncertain
+            # AND the verify above said absent/indeterminate (we got here
+            # by falling through from the if isinstance(exc, ...) block).
+            pwu_carrier: dict[str, Any] | None = None
+            if isinstance(exc, ObsidianPostWriteUncertain):
+                pwu_carrier = {
+                    "path": exc.path,
+                    "content_hint": exc.content_hint,
+                    "write_mode": exc.write_mode,
+                }
+
             _complete_operation(
                 operation_id, error=error_str, error_kind=error_kind,
             )
@@ -1714,6 +1787,7 @@ def retry_operation(operation_id: str) -> dict[str, Any]:
                     originating_session_id=record.get("originating_session_id")
                         or record.get("session_id"),
                     error_kind=error_kind,
+                    pwu_carrier=pwu_carrier,
                 )
                 response: dict[str, Any] = {
                     "error": f"Transient failure: {error_str}",

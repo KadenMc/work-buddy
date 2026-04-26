@@ -470,6 +470,51 @@ class TestEnqueueForRetry:
             assert "error_kind" not in updated
             assert "error_kind" not in updated["retry_history"][0]
 
+    # CP-A7: persist the PostWriteUncertain carrier so the retry sweep
+    # can pre-verify before replaying the read-modify-write capability.
+
+    def test_enqueue_persists_pwu_carrier(self, tmp_ops_dir):
+        from work_buddy.mcp_server.tools.gateway import _enqueue_for_retry
+
+        carrier = {
+            "path": "notes/x.md",
+            "content_hint": "hello world",
+            "write_mode": "insert",
+        }
+        with patch("work_buddy.mcp_server.tools.gateway._load_operation") as mock_load, \
+             patch("work_buddy.mcp_server.tools.gateway._update_operation") as mock_update:
+            record = self._make_op_record(tmp_ops_dir)
+            mock_load.return_value = record.copy()
+
+            _enqueue_for_retry(
+                "op_test123",
+                "ObsidianPostWriteUncertain: ...",
+                "transient",
+                error_kind="obsidian_post_write_uncertain",
+                pwu_carrier=carrier,
+            )
+
+            updated = mock_update.call_args[0][0]
+            assert updated["pwu_carrier"] == carrier
+
+    def test_enqueue_without_pwu_carrier_omits_field(self, tmp_ops_dir):
+        """Non-PWU failures don't carry pwu_carrier — field absent."""
+        from work_buddy.mcp_server.tools.gateway import _enqueue_for_retry
+
+        with patch("work_buddy.mcp_server.tools.gateway._load_operation") as mock_load, \
+             patch("work_buddy.mcp_server.tools.gateway._update_operation") as mock_update:
+            record = self._make_op_record(tmp_ops_dir)
+            mock_load.return_value = record.copy()
+
+            _enqueue_for_retry(
+                "op_test123", "ObsidianTimeout: ...", "transient",
+                error_kind="obsidian_timeout",
+                # no pwu_carrier kwarg
+            )
+
+            updated = mock_update.call_args[0][0]
+            assert "pwu_carrier" not in updated
+
     def test_enqueue_nonexistent_op_is_noop(self, tmp_ops_dir):
         from work_buddy.mcp_server.tools.gateway import _enqueue_for_retry
 
@@ -794,6 +839,161 @@ class TestRetrySweepReplay:
 
         assert result["success"] is False
         assert result["transient"] is True
+
+
+class TestRetrySweepCPA7PreVerify:
+    """CP-A7: when an op record carries pwu_carrier, _replay must
+    pre-verify BEFORE invoking the capability. Skips replay on verified
+    (avoids double-write); falls through on absent/indeterminate."""
+
+    def test_pre_verify_skips_replay_when_verified(self, sweep_ops_dir):
+        """Verified-by-filesystem → mark complete, capability NEVER called."""
+        from work_buddy.sidecar.retry_sweep import RetrySweep
+        sweep = RetrySweep()
+        record, _ = _make_queued_op(sweep_ops_dir, name="vault_write_at_location")
+        record["pwu_carrier"] = {
+            "path": "notes/x.md",
+            "content_hint": "hello world",
+            "write_mode": "insert",
+        }
+
+        mock_entry = MagicMock()
+        mock_entry.callable = MagicMock(return_value={"status": "ok"})
+
+        from work_buddy.mcp_server.registry import Capability
+        with patch(
+            "work_buddy.mcp_server.registry.get_registry",
+            return_value={"vault_write_at_location": mock_entry},
+        ), patch(
+            "work_buddy.obsidian.post_write_verify.verify_post_write",
+            return_value="verified",
+        ):
+            mock_entry.__class__ = Capability
+            result = sweep._replay(record)
+
+        # The capability MUST NOT have been called.
+        mock_entry.callable.assert_not_called()
+        assert result["success"] is True
+        assert result["result"]["status"] == "ok"
+        assert result["result"]["post_write_recovery"] is True
+        assert "CP-A7 pre-verify" in result["result"]["warning"]
+
+    def test_pre_verify_falls_through_when_absent(self, sweep_ops_dir):
+        """Absent → capability runs as normal (no skip)."""
+        from work_buddy.sidecar.retry_sweep import RetrySweep
+        sweep = RetrySweep()
+        record, _ = _make_queued_op(sweep_ops_dir, name="vault_write_at_location")
+        record["pwu_carrier"] = {
+            "path": "notes/x.md",
+            "content_hint": "missing fragment",
+            "write_mode": "insert",
+        }
+
+        mock_entry = MagicMock()
+        mock_entry.callable = MagicMock(return_value={"status": "ok"})
+
+        from work_buddy.mcp_server.registry import Capability
+        with patch(
+            "work_buddy.mcp_server.registry.get_registry",
+            return_value={"vault_write_at_location": mock_entry},
+        ), patch(
+            "work_buddy.obsidian.post_write_verify.verify_post_write",
+            return_value="absent",
+        ):
+            mock_entry.__class__ = Capability
+            result = sweep._replay(record)
+
+        # Capability WAS called (verify said absent → normal replay).
+        mock_entry.callable.assert_called_once()
+        assert result["success"] is True
+
+    def test_pre_verify_falls_through_when_indeterminate(self, sweep_ops_dir):
+        from work_buddy.sidecar.retry_sweep import RetrySweep
+        sweep = RetrySweep()
+        record, _ = _make_queued_op(sweep_ops_dir, name="vault_write_at_location")
+        record["pwu_carrier"] = {
+            "path": "notes/x.md",
+            "content_hint": "anything",
+            "write_mode": "insert",
+        }
+
+        mock_entry = MagicMock()
+        mock_entry.callable = MagicMock(return_value={"status": "ok"})
+
+        from work_buddy.mcp_server.registry import Capability
+        with patch(
+            "work_buddy.mcp_server.registry.get_registry",
+            return_value={"vault_write_at_location": mock_entry},
+        ), patch(
+            "work_buddy.obsidian.post_write_verify.verify_post_write",
+            return_value="indeterminate",
+        ):
+            mock_entry.__class__ = Capability
+            result = sweep._replay(record)
+
+        mock_entry.callable.assert_called_once()
+        assert result["success"] is True
+
+    def test_no_pre_verify_when_no_carrier(self, sweep_ops_dir):
+        """Op records without pwu_carrier never call verify_post_write."""
+        from work_buddy.sidecar.retry_sweep import RetrySweep
+        sweep = RetrySweep()
+        record, _ = _make_queued_op(sweep_ops_dir, name="vault_write_at_location")
+        # No pwu_carrier set.
+
+        mock_entry = MagicMock()
+        mock_entry.callable = MagicMock(return_value={"status": "ok"})
+
+        from work_buddy.mcp_server.registry import Capability
+        with patch(
+            "work_buddy.mcp_server.registry.get_registry",
+            return_value={"vault_write_at_location": mock_entry},
+        ), patch(
+            "work_buddy.obsidian.post_write_verify.verify_post_write",
+        ) as mock_verify:
+            mock_entry.__class__ = Capability
+            sweep._replay(record)
+
+        # verify_post_write must not have been called for non-PWU ops.
+        mock_verify.assert_not_called()
+        mock_entry.callable.assert_called_once()
+
+    def test_replay_persists_pwu_carrier_on_post_write_uncertain(self, sweep_ops_dir):
+        """When the sweep's own bridge call raises PWU and verify says
+        absent, the carrier MUST be persisted on the record so the NEXT
+        sweep tick can pre-verify."""
+        from work_buddy.obsidian.errors import ObsidianPostWriteUncertain
+        from work_buddy.sidecar.retry_sweep import RetrySweep, _write_record
+
+        sweep = RetrySweep()
+        record, path = _make_queued_op(sweep_ops_dir, name="vault_write_at_location")
+
+        mock_entry = MagicMock()
+        mock_entry.callable = MagicMock(side_effect=ObsidianPostWriteUncertain(
+            "notes/y.md", content_hint="fresh hint", write_mode="insert",
+        ))
+
+        from work_buddy.mcp_server.registry import Capability
+        with patch(
+            "work_buddy.mcp_server.registry.get_registry",
+            return_value={"vault_write_at_location": mock_entry},
+        ), patch(
+            "work_buddy.obsidian.post_write_verify.verify_post_write",
+            return_value="absent",  # Force fall-through to failure path
+        ):
+            mock_entry.__class__ = Capability
+            result = sweep._replay(record)
+
+        assert result["success"] is False
+
+        # The persisted record must now carry pwu_carrier with the
+        # exception's fields, so the NEXT sweep tick can pre-verify.
+        persisted = json.loads(path.read_text())
+        assert persisted["pwu_carrier"] == {
+            "path": "notes/y.md",
+            "content_hint": "fresh hint",
+            "write_mode": "insert",
+        }
 
 
 class TestRetrySweepScheduleNext:
