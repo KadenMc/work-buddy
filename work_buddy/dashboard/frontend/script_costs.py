@@ -1009,27 +1009,62 @@ function costsRenderDailyChart(shape, data) {
 }
 
 // ---- Model donut ----
+//
+// Default measure: cost. For shape='internal' we switch to call counts —
+// local-LLM rows cost $0 by design, and a cost donut would invisibly
+// drop them and misrepresent the work distribution. The title flips
+// to match.
 function costsRenderModelChart(shape, data) {
     const canvas = document.getElementById('costs-model-chart');
+    const titleEl = document.getElementById('costs-model-chart-title');
     if (!canvas || typeof Chart === 'undefined') return;
     _costsDestroyChart('model');
     const rows = (data.by_model || []).filter(_costsFilterModelRow);
     const labels = rows.map(r => r.model);
-    const data_arr = rows.map(r => r.cost_usd || 0);
-    const useTokens = labels.length === 0 || data_arr.every(v => v === 0);
-    const tokens = rows.map(r => (r.input_tokens || 0) + (r.output_tokens || 0));
+
+    // Pick the measure for this view.
+    //   shape='claude_code' (Claude Code transcripts) → cost (default)
+    //   shape='internal'    (work-buddy runner activity) → calls
+    //                       (local LLMs cost $0; cost would drop them)
+    //   Fallback when every value is 0 → token volume, so an empty
+    //   donut isn't shown for filtered windows that all happen to be
+    //   $0 / 0 calls.
+    const isInternal = shape === 'internal';
+    const callsArr = rows.map(r => r.calls || r.turns || 0);
+    const costArr = rows.map(r => r.cost_usd || 0);
+    const tokensArr = rows.map(r => (r.input_tokens || 0) + (r.output_tokens || 0));
+
+    let measure, values, fmt, title;
+    if (isInternal) {
+        measure = 'calls';
+        values = callsArr;
+        fmt = v => costsFmtN(v) + ' calls';
+        title = 'Calls by model';
+    } else {
+        measure = 'cost';
+        values = costArr;
+        fmt = v => costsFmtCost(v);
+        title = 'Cost by model';
+    }
+    if (values.every(v => v === 0)) {
+        measure = 'tokens';
+        values = tokensArr;
+        fmt = v => costsFmtN(v) + ' tokens';
+        // Don't change the title — keep the user's mental model anchored;
+        // the tooltip shows tokens which makes the empty-cost case obvious.
+    }
+    if (titleEl) titleEl.textContent = title;
+
     costsState.charts.model = new Chart(canvas.getContext('2d'), {
         type: 'doughnut',
         data: { labels, datasets: [{
-            data: useTokens ? tokens : data_arr,
+            data: values,
             backgroundColor: labels.map((_, i) => COSTS_MODEL_PALETTE[i % COSTS_MODEL_PALETTE.length]),
         }]},
         options: { responsive: true, maintainAspectRatio: false,
             plugins: { legend: { position: 'right',
                 labels: { color: '#e6edf3', boxWidth: 12 } },
-                tooltip: { callbacks: { label: ctx => ctx.label + ': ' +
-                    (useTokens ? costsFmtN(ctx.parsed) + ' tokens'
-                                : costsFmtCost(ctx.parsed)) } } } },
+                tooltip: { callbacks: { label: ctx => ctx.label + ': ' + fmt(ctx.parsed) } } } },
     });
 }
 

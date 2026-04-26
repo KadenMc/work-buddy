@@ -286,7 +286,7 @@ def _html() -> str:
             <div class="costs-chart-wrap"><canvas id="costs-daily-chart"></canvas></div>
         </div>
         <div class="costs-chart-card">
-            <div class="section-title">Cost by model</div>
+            <div class="section-title" id="costs-model-chart-title">Cost by model</div>
             <div class="costs-chart-wrap"><canvas id="costs-model-chart"></canvas></div>
         </div>
     </div>
@@ -315,9 +315,6 @@ def _html() -> str:
     <div class="costs-footer-note">
         Cost estimates use Anthropic published rates (April 2026). Local model
         calls log $0.00 by design.
-        <a href="https://github.com/phuryn/claude-usage" target="_blank" rel="noopener">claude-usage</a>
-        is the inspiration for the layout; vendored bits live under
-        <code>work_buddy/dashboard/frontend/vendor/</code>.
     </div>
 </div>
 
