@@ -5,6 +5,27 @@ signal failures. The gateway classifies them via ``isinstance`` rather than
 substring-matching error strings; the dashboard, op records, and notification
 surfaces consume the structured ``error_kind`` carried on each instance.
 
+Naming conventions
+------------------
+Throughout the codebase (variable names, log messages, op record fields,
+test class names, comments) the abbreviation ``pwu`` (lowercase) and
+``PWU`` (uppercase) refers to :class:`ObsidianPostWriteUncertain`. You'll
+see it in places like:
+
+  - ``pwu_carrier`` on op records — ``{path, content_hint, write_mode}``
+    persisted by the gateway when an ObsidianPostWriteUncertain was
+    enqueued for sweep retry, so the sweep can pre-verify before
+    replaying the read-modify-write capability.
+  - ``_pre_verify_pwu`` in ``work_buddy.sidecar.retry_sweep`` — the
+    helper that re-reads the file before each sweep replay attempt.
+  - Log lines like ``_pre_verify_pwu: VERIFIED for path=...``.
+
+The shorthand exists because :class:`ObsidianPostWriteUncertain` is one
+of the most-referenced types in the recovery infrastructure (CP5 + CP-A6
++ CP-A7) and writing it out everywhere makes lines unwieldy. It's NOT
+a term of art outside this codebase; if you're new to the system, read
+the class docstring below for the full semantics.
+
 Hierarchy mirrors the four-state taxonomy in
 :func:`work_buddy.obsidian.bridge.get_last_bridge_state`:
 

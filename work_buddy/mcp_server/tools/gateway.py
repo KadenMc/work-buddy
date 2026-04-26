@@ -514,6 +514,10 @@ def _enqueue_for_retry(
     landed between the original verify-said-absent and the sweep's
     replay attempt. Without this pre-verify, the sweep's read-modify-
     write replay can produce double-writes (CP-A7).
+
+    Note: ``pwu`` is the codebase-wide shorthand for
+    :class:`work_buddy.obsidian.errors.ObsidianPostWriteUncertain`.
+    See that module's docstring for the naming convention.
     """
     # Load config defaults (lightweight — cached after first load)
     try:

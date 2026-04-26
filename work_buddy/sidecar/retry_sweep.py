@@ -170,9 +170,16 @@ class RetrySweep:
     def _pre_verify_pwu(self, pwu_carrier: dict[str, Any]) -> dict[str, Any] | None:
         """CP-A7: re-verify a queued PostWriteUncertain BEFORE replaying.
 
+        ``pwu`` is the codebase-wide shorthand for
+        :class:`work_buddy.obsidian.errors.ObsidianPostWriteUncertain`.
+        See that module's docstring for the naming convention.
+
         Returns a finalised replay-result dict when the original write
         is confirmed landed (skip the replay), or None when the file
         still doesn't reflect the write (proceed with normal replay).
+
+        ``pwu_carrier`` shape (set by gateway when enqueuing the retry):
+            ``{"path": str, "content_hint": str | None, "write_mode": str}``
 
         Reads from FILESYSTEM, not the bridge — same rationale as the
         gateway-side verify path. The bridge may still be sick; reading
