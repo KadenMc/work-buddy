@@ -1046,6 +1046,61 @@ def register_tools(mcp: FastMCP) -> None:
                     ),
                 })
             except Exception as exc:
+                # CP5: post-write-verify recovery. ObsidianPostWriteUncertain
+                # signals "PUT body sent then client timeout — vault state
+                # may or may not reflect the write." Read filesystem to
+                # decide. If the write actually landed, return success-with-
+                # warning and DO NOT enqueue (avoiding double-write on
+                # retry). If absent, fall through to the normal failure
+                # path which classifies + enqueues.
+                #
+                # The check imports lazily to avoid pulling obsidian
+                # dependencies into gateway boot, and to keep the import
+                # surface narrow during testing.
+                try:
+                    from work_buddy.obsidian.errors import ObsidianPostWriteUncertain
+                except ImportError:
+                    ObsidianPostWriteUncertain = ()  # noqa: N806 — typed-tuple sentinel
+
+                if isinstance(exc, ObsidianPostWriteUncertain):
+                    from work_buddy.obsidian.post_write_verify import verify_post_write
+                    verdict = verify_post_write(exc)
+                    if verdict == "verified":
+                        # Write actually landed — close the loop. Op is
+                        # success (with a warning marker), no retry.
+                        recovery_result: dict[str, Any] = {
+                            "status": "ok",
+                            "post_write_recovery": True,
+                            "warning": (
+                                f"Bridge timed out after PUT body was sent, "
+                                f"but filesystem verify confirms content "
+                                f"landed at {exc.path!r}. No retry needed."
+                            ),
+                            "path": exc.path,
+                        }
+                        _complete_operation(
+                            op_id, result=recovery_result,
+                            # No error_kind — this is a successful recovery,
+                            # not a failure. Caller sees success with a
+                            # warning flag they can act on if desired.
+                        )
+                        record_capability(
+                            capability, entry.category, op_id, parsed_params,
+                            entry.mutates_state, _t0, recovery_result,
+                            None, False, **_ledger_kw,
+                        )
+                        return _prepare({
+                            "type": "result",
+                            "capability": capability,
+                            "result": recovery_result,
+                            "operation_id": op_id,
+                            "post_write_recovery": True,
+                        })
+                    # "absent" or "indeterminate" — fall through to the
+                    # normal failure path. The exception still has its
+                    # ObsidianTimeout ancestry so classify_error returns
+                    # "transient" and the gateway enqueues a retry.
+
                 error_str = f"{type(exc).__name__}: {exc}"
 
                 # Extract the structured error_kind from typed ObsidianError
@@ -1490,6 +1545,40 @@ def retry_operation(operation_id: str) -> dict[str, Any]:
                 "operation_id": operation_id,
             }
         except Exception as exc:
+            # CP5: post-write-verify on retried writes too. If a retried
+            # write capability raises ObsidianPostWriteUncertain, the
+            # filesystem may show the second-attempt write actually
+            # landed (the plugin processed it but lagged on the
+            # response). Don't re-enqueue; surface success-with-warning.
+            try:
+                from work_buddy.obsidian.errors import ObsidianPostWriteUncertain
+            except ImportError:
+                ObsidianPostWriteUncertain = ()  # noqa: N806
+
+            if isinstance(exc, ObsidianPostWriteUncertain):
+                from work_buddy.obsidian.post_write_verify import verify_post_write
+                verdict = verify_post_write(exc)
+                if verdict == "verified":
+                    recovery_result: dict[str, Any] = {
+                        "status": "ok",
+                        "post_write_recovery": True,
+                        "warning": (
+                            f"Bridge timed out on retry attempt but "
+                            f"filesystem verify confirms content landed "
+                            f"at {exc.path!r}."
+                        ),
+                        "path": exc.path,
+                    }
+                    _complete_operation(operation_id, result=recovery_result)
+                    return {
+                        "type": "result",
+                        "capability": record["name"],
+                        "result": recovery_result,
+                        "operation_id": operation_id,
+                        "attempt": record["attempt"],
+                        "post_write_recovery": True,
+                    }
+
             error_str = f"{type(exc).__name__}: {exc}"
             error_kind = getattr(exc, "error_kind", None)
             if not isinstance(error_kind, str):

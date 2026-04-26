@@ -223,14 +223,59 @@ class RetrySweep:
             return {"success": True, "result": result}
 
         except Exception as exc:
+            # CP5: post-write-verify on retried writes. The retry sweep
+            # re-invokes the capability from scratch — if the underlying
+            # bridge call raises ObsidianPostWriteUncertain, the
+            # filesystem may show the write actually landed this time
+            # (or even from a previous attempt that the user/bridge
+            # never confirmed). Verify before re-enqueuing — same logic
+            # as the gateway's post-write-verify path.
+            try:
+                from work_buddy.obsidian.errors import ObsidianPostWriteUncertain
+            except ImportError:
+                ObsidianPostWriteUncertain = ()  # type-tuple sentinel
+
+            if isinstance(exc, ObsidianPostWriteUncertain):
+                from work_buddy.obsidian.post_write_verify import verify_post_write
+                verdict = verify_post_write(exc)
+                if verdict == "verified":
+                    recovery_result: dict[str, Any] = {
+                        "status": "ok",
+                        "post_write_recovery": True,
+                        "warning": (
+                            f"Retry attempt's bridge call timed out, but "
+                            f"filesystem verify confirms content landed at "
+                            f"{exc.path!r}."
+                        ),
+                        "path": exc.path,
+                    }
+                    record["status"] = "completed"
+                    record["result"] = recovery_result
+                    record["error"] = None
+                    record["completed_at"] = datetime.now(timezone.utc).isoformat()
+                    record["locked_until"] = None
+                    record["queued"] = False
+                    record["queued_for_retry"] = False
+                    _write_record(record)
+                    return {"success": True, "result": recovery_result}
+                # absent / indeterminate — fall through to normal failure path
+
             error_str = f"{type(exc).__name__}: {exc}"
 
             # Classify to decide if we should keep retrying
             from work_buddy.errors import classify_error
             error_class = classify_error(exc)
 
+            # Capture error_kind for typed exceptions so the retry_history
+            # entry the sweep adds can correlate against the original failure.
+            error_kind = getattr(exc, "error_kind", None)
+            if not isinstance(error_kind, str):
+                error_kind = None
+
             record["status"] = "failed"
             record["error"] = error_str
+            if error_kind is not None:
+                record["error_kind"] = error_kind
             record["locked_until"] = None
             _write_record(record)
 
