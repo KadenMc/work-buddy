@@ -13,26 +13,28 @@ Two mechanisms:
 Both check bridge health before each attempt, wait between retries,
 and log latency context per attempt.
 
-Standard bridge failure protocol
----------------------------------
+Failure detection (post-CP7)
+----------------------------
 
-Functions decorated with ``@bridge_retry`` signal retriable failures by
-returning ``bridge_failure("reason")``.  This produces a dict with a
-``_bridge_transient`` marker that the decorator checks definitively —
-no string matching, no heuristics.
+The decorator catches two kinds of failures:
 
-::
+1. **Typed ObsidianError exceptions** — raised by the bridge layer
+   (``write_file_raw``, ``_request_with_status``). The decorator
+   classifies via ``isinstance``: terminal subclasses
+   (``ObsidianNotRunning``, ``ObsidianPluginMissing``,
+   ``ObsidianPluginDisabled``) short-circuit immediately —
+   sleeping 60s for a disabled plugin is pure waste. Other typed
+   subclasses retry per the wait schedule. On exhaustion the
+   decorator translates to a ``bridge_failure(...)`` dict so MCP
+   callers see a structured failure rather than a raw exception.
 
-    @bridge_retry()
-    def my_function():
-        content = bridge.read_file(fp)
-        if content is None:
-            return bridge_failure(f"Could not read {fp}")
-        ...
+2. **bridge_failure() returns** — legacy protocol where decorated
+   functions return a result dict with a ``_bridge_transient`` marker.
+   Predates the typed-exception system; supported indefinitely so
+   any function that prefers explicit-return over let-it-raise can
+   coexist.
 
-The decorator retries on ``bridge_failure`` returns and on transient
-exceptions (ConnectionError, TimeoutError, etc.).  On exhaustion it
-returns the last failure result — never raises for bridge issues.
+Both paths converge on the same retry / short-circuit logic.
 """
 
 from __future__ import annotations
@@ -54,11 +56,55 @@ _BRIDGE_TRANSIENT_KEY = "_bridge_transient"
 # States that are NOT recoverable by waiting / retrying. When the bridge
 # state is one of these, @bridge_retry short-circuits after the first
 # attempt — sleeping 60s for a disabled plugin helps nobody.
+#
+# String-form for the legacy bridge_failure() dict path. The typed-
+# exception path uses _TERMINAL_OBSIDIAN_ERROR_KINDS below.
 _TERMINAL_STATES = frozenset({
     "obsidian_not_running",
     "plugin_not_installed",
     "plugin_disabled",
 })
+
+# Same set, in error_kind form. Matched against ObsidianError.error_kind
+# to short-circuit the decorator on terminal types raised by the bridge.
+_TERMINAL_OBSIDIAN_ERROR_KINDS = frozenset({
+    "obsidian_not_running",
+    "obsidian_plugin_missing",
+    "obsidian_plugin_disabled",
+})
+
+
+def _is_terminal_obsidian_error(exc: BaseException) -> bool:
+    """True if the exception represents a state retrying can't fix.
+
+    Imports lazily so this module's import surface stays narrow and
+    doesn't pull obsidian.errors during early bootstrap.
+    """
+    try:
+        from work_buddy.obsidian.errors import ObsidianError
+    except ImportError:
+        return False
+    if not isinstance(exc, ObsidianError):
+        return False
+    return getattr(exc, "error_kind", "") in _TERMINAL_OBSIDIAN_ERROR_KINDS
+
+
+def _exception_to_bridge_failure(exc: BaseException, fn_name: str) -> dict[str, Any]:
+    """Translate a typed ObsidianError to a bridge_failure() dict.
+
+    Used on retry exhaustion to give MCP callers a structured result
+    rather than letting the raw exception propagate. Carries the
+    error_kind so consumers can distinguish failure categories.
+    """
+    error_kind = getattr(exc, "error_kind", "obsidian_unknown")
+    message = f"{fn_name}: {type(exc).__name__}: {exc}"
+    failure = bridge_failure(message)
+    # bridge_failure already populates _bridge_state from
+    # get_last_bridge_state(); also surface the typed error_kind so
+    # downstream consumers (gateway, dashboard, retry queue) can key
+    # off the structured signal directly.
+    failure["error_kind"] = error_kind
+    return failure
 
 
 # ---------------------------------------------------------------------------
@@ -216,6 +262,21 @@ def bridge_retry(
                 try:
                     result = fn(*args, **kwargs)
                 except Exception as exc:
+                    # CP7: terminal ObsidianError subclasses short-circuit
+                    # without sleeping. Sleeping 60s for a missing plugin
+                    # or a Obsidian-not-running state is pure waste — the
+                    # user must act out of band (open Obsidian, install/
+                    # enable the plugin) before any retry could succeed.
+                    if _is_terminal_obsidian_error(exc):
+                        logger.info(
+                            "bridge_retry(%s): terminal ObsidianError '%s' "
+                            "on attempt %d/%d — short-circuiting "
+                            "(translating to bridge_failure dict).",
+                            fn.__name__, getattr(exc, "error_kind", ""),
+                            attempt, max_retries,
+                        )
+                        return _exception_to_bridge_failure(exc, fn.__name__)
+
                     error_class = classify_error(exc)
                     latency = get_latency_context()
                     logger.warning(
@@ -231,6 +292,17 @@ def bridge_retry(
                     if attempt < max_retries:
                         time.sleep(wait_seconds)
                     else:
+                        # CP7: on exhaustion of a typed ObsidianError,
+                        # translate to bridge_failure dict so MCP
+                        # callers see structured failure shape rather
+                        # than a raw exception. Non-Obsidian transient
+                        # exceptions still raise (gateway classifies).
+                        try:
+                            from work_buddy.obsidian.errors import ObsidianError
+                        except ImportError:
+                            ObsidianError = ()  # type: ignore[assignment]
+                        if isinstance(exc, ObsidianError):
+                            return _exception_to_bridge_failure(exc, fn.__name__)
                         raise  # exhausted — let gateway handle it
                     continue
 
@@ -375,6 +447,17 @@ def obsidian_retry(
         try:
             result = entry.callable(**params)
         except Exception as exc:
+            # CP7: terminal ObsidianError subclasses short-circuit. Same
+            # rationale as the @bridge_retry decorator above.
+            if _is_terminal_obsidian_error(exc):
+                logger.info(
+                    "obsidian_retry(%s): terminal ObsidianError '%s' "
+                    "on attempt %d/%d — short-circuiting.",
+                    capability, getattr(exc, "error_kind", ""),
+                    attempt, max_retries,
+                )
+                return _exception_to_bridge_failure(exc, capability)
+
             error_class = classify_error(exc)
             latency = get_latency_context()
             logger.warning(
@@ -385,11 +468,28 @@ def obsidian_retry(
             last_exc = exc
 
             if error_class != "transient":
-                return {"success": False, "error": str(exc)}
+                # Build a structured response — include error_kind for
+                # typed exceptions so the dashboard / consumer keys off
+                # the structured signal rather than the message.
+                resp: dict[str, Any] = {"success": False, "error": str(exc)}
+                kind = getattr(exc, "error_kind", None)
+                if isinstance(kind, str):
+                    resp["error_kind"] = kind
+                return resp
 
             if attempt < max_retries:
                 time.sleep(wait_seconds)
             else:
+                # Translate typed exceptions to bridge_failure dict for
+                # consistency with the @bridge_retry decorator's exhaustion
+                # path; non-Obsidian transient exceptions stay as a basic
+                # error dict.
+                try:
+                    from work_buddy.obsidian.errors import ObsidianError
+                except ImportError:
+                    ObsidianError = ()  # type: ignore[assignment]
+                if isinstance(exc, ObsidianError):
+                    return _exception_to_bridge_failure(exc, capability)
                 return {"success": False, "error": str(exc)}
             continue
 
