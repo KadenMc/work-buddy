@@ -10,12 +10,17 @@ from __future__ import annotations
 from typing import Any
 
 
-def get_claude_code_usage_summary(*, project: str | None = None) -> dict[str, Any]:
+def get_claude_code_usage_summary(
+    *,
+    project: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> dict[str, Any]:
     """Read the Claude-Code-usage cache into the Costs-tab read model."""
     from work_buddy.llm.claude_code_usage.aggregator import (
         get_claude_code_usage_summary as _impl,
     )
-    return _impl(project=project)
+    return _impl(project=project, start_date=start_date, end_date=end_date)
 
 
 def rescan_claude_code_usage(*, full_rebuild: bool = False) -> dict[str, Any]:

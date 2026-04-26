@@ -415,6 +415,94 @@ def test_aggregator_project_filter_no_match_returns_empty(tmp_path):
     assert s["totals"]["calls"] == 0
 
 
+def test_aggregator_start_date_excludes_older_rows(tmp_path):
+    """``start_date`` filters every aggregate, not just by_day."""
+    root = tmp_path / "agents"
+    _write_session(
+        root, "2026-04-10T00-00-00_old",
+        manifest={"short_id": "old", "project": "C:\\repo\\one"},
+        entries=[{"timestamp": "2026-04-10T08:00:00",
+                   "model": "claude-sonnet-4-6", "task_id": "outside_window",
+                   "input_tokens": 1000, "output_tokens": 500,
+                   "estimated_cost_usd": 0.05, "cached": False,
+                   "execution_mode": "cloud"}],
+    )
+    _write_session(
+        root, "2026-04-25T10-00-00_new",
+        manifest={"short_id": "new", "project": "C:\\repo\\one"},
+        entries=[{"timestamp": "2026-04-25T10:00:00",
+                   "model": "claude-sonnet-4-6", "task_id": "in_window",
+                   "input_tokens": 100, "output_tokens": 50,
+                   "estimated_cost_usd": 0.005, "cached": False,
+                   "execution_mode": "cloud"}],
+    )
+    s = costs_mod.get_costs_summary(agents_dir=root, start_date="2026-04-20")
+    # Old session must be excluded from EVERY aggregate.
+    assert s["session_count"] == 1
+    assert s["sessions"][0]["short_id"] == "new"
+    tasks = {r["task"] for r in s["by_task"]}
+    assert "outside_window" not in tasks
+    assert "in_window" in tasks
+    # Top caller cost <= totals cost — the bug we were fixing.
+    top = max((r["cost_usd"] for r in s["by_task"]), default=0.0)
+    assert top <= s["totals"]["cost_usd"] + 1e-9
+
+
+def test_aggregator_end_date_excludes_newer_rows(tmp_path):
+    """``end_date`` upper bound, inclusive."""
+    root = tmp_path / "agents"
+    _write_session(
+        root, "2026-04-25T10-00-00_a",
+        manifest={"short_id": "a", "project": "C:\\repo\\one"},
+        entries=[
+            {"timestamp": "2026-04-20T10:00:00",
+             "model": "claude-sonnet-4-6", "task_id": "before",
+             "input_tokens": 1, "output_tokens": 1,
+             "estimated_cost_usd": 0.001, "cached": False,
+             "execution_mode": "cloud"},
+            {"timestamp": "2026-04-26T10:00:00",
+             "model": "claude-sonnet-4-6", "task_id": "after",
+             "input_tokens": 1, "output_tokens": 1,
+             "estimated_cost_usd": 0.001, "cached": False,
+             "execution_mode": "cloud"},
+        ],
+    )
+    s = costs_mod.get_costs_summary(agents_dir=root, end_date="2026-04-25")
+    tasks = {r["task"] for r in s["by_task"]}
+    assert "before" in tasks
+    assert "after" not in tasks
+
+
+def test_api_costs_route_threads_start_date(monkeypatch, tmp_path):
+    """``GET /api/costs?start_date=...`` reaches the aggregator."""
+    root = tmp_path / "agents"
+    _write_session(
+        root, "2026-04-25T10-00-00_a",
+        manifest={"short_id": "a", "project": "C:\\repo\\one"},
+        entries=[{"timestamp": "2026-04-25T10:00:00",
+                   "model": "claude-sonnet-4-6", "task_id": "t",
+                   "input_tokens": 1, "output_tokens": 1,
+                   "estimated_cost_usd": 0.001, "cached": False,
+                   "execution_mode": "cloud"}],
+    )
+    _write_session(
+        root, "2026-04-10T10-00-00_b",
+        manifest={"short_id": "b", "project": "C:\\repo\\one"},
+        entries=[{"timestamp": "2026-04-10T10:00:00",
+                   "model": "claude-sonnet-4-6", "task_id": "t",
+                   "input_tokens": 1, "output_tokens": 1,
+                   "estimated_cost_usd": 0.001, "cached": False,
+                   "execution_mode": "cloud"}],
+    )
+    monkeypatch.setattr(costs_mod, "_AGENTS_DIR", root)
+    from work_buddy.dashboard.service import app
+    client = app.test_client()
+    resp = client.get("/api/costs?source=internal&start_date=2026-04-20")
+    body = resp.get_json()
+    assert body["session_count"] == 1
+    assert body["sessions"][0]["short_id"] == "a"
+
+
 def test_aggregator_project_filter_matches_path_or_basename(tmp_path):
     """Filter should match against the full path OR the last component."""
     root = tmp_path / "agents"

@@ -79,6 +79,8 @@ def get_claude_code_usage_summary(
     *,
     db_path: Path | None = None,
     project: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
 ) -> dict[str, Any]:
     """Return the Claude-Code-usage cost / usage read model.
 
@@ -87,6 +89,10 @@ def get_claude_code_usage_summary(
         project: Optional substring filter against each row's ``cwd``
             (matches full path or last component). When non-empty, only
             matching rows / sessions are included in the read model.
+        start_date: Optional ``"YYYY-MM-DD"`` lower bound (inclusive)
+            applied to the turn-level ``timestamp``. When set, every
+            aggregate respects this window.
+        end_date: Optional ``"YYYY-MM-DD"`` upper bound (inclusive).
 
     When the cache DB has not been populated yet, returns
     ``{"available": False, "source": "claude_code", ...}`` so the
@@ -119,12 +125,24 @@ def get_claude_code_usage_summary(
         by_tool: dict[str, dict[str, Any]] = defaultdict(_empty_totals)
         by_project: dict[str, dict[str, Any]] = defaultdict(_empty_totals)
 
-        for row in conn.execute("""
-            SELECT timestamp, model, input_tokens, output_tokens,
-                   cache_read_tokens, cache_creation_tokens, tool_name, cwd,
-                   session_id
-            FROM turns
-        """):
+        # Date-range filter applied at row level so every aggregate
+        # respects the window. ISO timestamps sort lexicographically, so
+        # a plain string comparison works against ``YYYY-MM-DD`` bounds.
+        turns_sql = ("SELECT timestamp, model, input_tokens, output_tokens, "
+                     "cache_read_tokens, cache_creation_tokens, tool_name, "
+                     "cwd, session_id FROM turns")
+        turns_clauses: list[str] = []
+        turns_params: list[Any] = []
+        if start_date:
+            turns_clauses.append("substr(timestamp, 1, 10) >= ?")
+            turns_params.append(start_date)
+        if end_date:
+            turns_clauses.append("substr(timestamp, 1, 10) <= ?")
+            turns_params.append(end_date)
+        if turns_clauses:
+            turns_sql += " WHERE " + " AND ".join(turns_clauses)
+
+        for row in conn.execute(turns_sql, turns_params):
             cwd = row["cwd"] or ""
             if not _project_matches(cwd, project):
                 continue
@@ -140,14 +158,30 @@ def get_claude_code_usage_summary(
             row_project = _resolve_project_name(cwd) or "unknown"
             _add_turn(by_project[row_project], row)
 
+        # Sessions: filter on ``last_timestamp`` so a session with any
+        # turn in the range stays. Session-level token / cost columns
+        # remain all-time-per-session — see "edge case" note in the
+        # range-filter design doc; per-range session costs would
+        # require a per-day per-session join we deliberately skip.
+        sessions_sql = ("SELECT session_id, project_name, first_timestamp, "
+                        "last_timestamp, git_branch, total_input_tokens, "
+                        "total_output_tokens, total_cache_read, "
+                        "total_cache_creation, model, turn_count "
+                        "FROM sessions")
+        sessions_clauses: list[str] = []
+        sessions_params: list[Any] = []
+        if start_date:
+            sessions_clauses.append("substr(last_timestamp, 1, 10) >= ?")
+            sessions_params.append(start_date)
+        if end_date:
+            sessions_clauses.append("substr(first_timestamp, 1, 10) <= ?")
+            sessions_params.append(end_date)
+        if sessions_clauses:
+            sessions_sql += " WHERE " + " AND ".join(sessions_clauses)
+        sessions_sql += " ORDER BY last_timestamp DESC"
+
         sessions = []
-        for s in conn.execute("""
-            SELECT session_id, project_name, first_timestamp, last_timestamp,
-                   git_branch, total_input_tokens, total_output_tokens,
-                   total_cache_read, total_cache_creation, model, turn_count
-            FROM sessions
-            ORDER BY last_timestamp DESC
-        """):
+        for s in conn.execute(sessions_sql, sessions_params):
             sess_proj = s["project_name"] or ""
             if not _project_matches(sess_proj, project):
                 continue

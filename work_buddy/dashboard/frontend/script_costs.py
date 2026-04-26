@@ -154,6 +154,9 @@ async function loadCosts(force) {
     // execution_mode filter, but we restrict to internal source on render.
     if (costsState.activity === 'api')   params.set('execution_mode', 'cloud');
     if (costsState.activity === 'local') params.set('execution_mode', 'local');
+    // Date range as a backend filter — keeps every aggregate consistent.
+    const _startIso = _costsRangeStartIso();
+    if (_startIso) params.set('start_date', _startIso);
 
     const data = await fetchJSON('/api/costs?' + params.toString());
     if (!data || data.error) {
@@ -188,7 +191,10 @@ function costsProjectChanged(v) {
 function costsRangeChanged(v) {
     costsState.range = v;
     if (typeof _persistHash === 'function') _persistHash();
-    costsRenderAll();
+    // Range now applies at the backend so every aggregate (by_task,
+    // by_model, sessions, totals, ...) reflects the same window.
+    // Refetching is the right call.
+    loadCosts(true);
 }
 function costsActivityChanged(v) {
     const prev = costsState.activity;
@@ -330,6 +336,8 @@ async function refreshCostsData() {
     if (costsState.project) params.set('project', costsState.project);
     if (costsState.activity === 'api')   params.set('execution_mode', 'cloud');
     if (costsState.activity === 'local') params.set('execution_mode', 'local');
+    const _startIso = _costsRangeStartIso();
+    if (_startIso) params.set('start_date', _startIso);
 
     const data = await fetchJSON('/api/costs?' + params.toString());
     if (!data || data.error) {

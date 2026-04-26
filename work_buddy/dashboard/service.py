@@ -847,6 +847,11 @@ def api_costs():
     source = (request.args.get("source") or "internal").lower()
     project = request.args.get("project") or None
     execution_mode = (request.args.get("execution_mode") or "").lower() or None
+    # Date range — frontend passes ``YYYY-MM-DD`` strings derived from the
+    # range pill. The backend filters every aggregate by this window so
+    # cards / tables / charts agree.
+    start_date = request.args.get("start_date") or None
+    end_date = request.args.get("end_date") or None
     # Backwards-compat: the old ``transcripts`` source name still routes
     # to claude_code so any external bookmarks / scripts keep working.
     if source == "transcripts":
@@ -854,7 +859,9 @@ def api_costs():
     try:
         from work_buddy.dashboard.costs import get_costs_summary
         internal = get_costs_summary(project=project,
-                                      execution_mode=execution_mode)
+                                      execution_mode=execution_mode,
+                                      start_date=start_date,
+                                      end_date=end_date)
         if source == "internal":
             return jsonify(internal)
 
@@ -863,7 +870,11 @@ def api_costs():
             from work_buddy.dashboard.costs_claude_code_usage import (
                 get_claude_code_usage_summary,
             )
-            claude_code = get_claude_code_usage_summary(project=project)
+            claude_code = get_claude_code_usage_summary(
+                project=project,
+                start_date=start_date,
+                end_date=end_date,
+            )
         except ImportError:
             claude_code = None
         except Exception as exc:  # noqa: BLE001

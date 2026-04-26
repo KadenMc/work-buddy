@@ -232,6 +232,8 @@ def get_costs_summary(
     agents_dir: Path | None = None,
     project: str | None = None,
     execution_mode: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
 ) -> dict[str, Any]:
     """Return the full cost summary read model.
 
@@ -260,6 +262,11 @@ def get_costs_summary(
         project: Optional substring filter. Matched against each session's
             canonical project name (resolved via the same logic the Chats
             tab uses) and falls back to substring against the raw path.
+        start_date: Optional ``"YYYY-MM-DD"`` lower bound (inclusive).
+            Rows whose ``timestamp[:10]`` is before this are excluded
+            from every aggregate. ``None`` = no lower bound.
+        end_date: Optional ``"YYYY-MM-DD"`` upper bound (inclusive).
+            Same shape as ``start_date``. ``None`` = no upper bound.
         execution_mode: Optional row-level filter. ``"cloud"`` = only
             ``execution_mode == "cloud"`` rows; ``"local"`` = only local;
             ``None`` / ``"all"`` = no filter. Filters apply at row
@@ -309,6 +316,18 @@ def get_costs_summary(
             entry_mode = entry.get("execution_mode") or "cloud"
             if mode_filter in ("cloud", "local") and entry_mode != mode_filter:
                 continue
+            # Date-range filter at row level so every aggregate
+            # (totals, by_model, by_task, by_backend, sessions, ...)
+            # respects the same window. Without this, the cards (which
+            # used to slice ``by_day`` client-side) disagreed with
+            # ``by_task`` and ``by_model`` (still all-time).
+            if start_date or end_date:
+                day_str = _entry_day(entry)
+                if day_str:
+                    if start_date and day_str < start_date:
+                        continue
+                    if end_date and day_str > end_date:
+                        continue
             had_any_entry = True
             ts = entry.get("timestamp", "") or ""
             if not sess_first_ts or ts < sess_first_ts:
