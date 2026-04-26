@@ -207,3 +207,121 @@ def test_morning_routine_requires_includes_core_components(registry):
     assert "google_calendar" in wf.requires, (
         f"morning-routine.requires lost 'google_calendar'. Current: {wf.requires}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Invariant 5 (CP-A1) — _DISABLED_REGISTRY stays in sync with DISABLED_CAPABILITIES
+# ---------------------------------------------------------------------------
+
+
+class TestDisabledRegistryInvariants:
+    """The full Capability stash and the (name -> missing tools) dict must
+    stay in lockstep so :func:`work_buddy.recovery.recheck_disabled_capability`
+    can restore a disabled capability without re-running ``_build_registry``.
+    """
+
+    def _build_with_unavailable(self, unavailable_tools: list[str]):
+        """Force a registry rebuild where the named tools probe as unavailable."""
+        from unittest.mock import patch
+        from work_buddy.mcp_server import registry as reg_mod
+
+        def fake_is_available(tool_id: str) -> bool:
+            return tool_id not in unavailable_tools
+
+        reg_mod._REGISTRY = None
+        with patch("work_buddy.tools.is_tool_available", side_effect=fake_is_available):
+            reg = reg_mod.get_registry()
+        return reg, reg_mod
+
+    def test_disabled_keys_match_when_obsidian_unavailable(self):
+        """Forcing obsidian unavailable: every disabled cap appears in BOTH
+        DISABLED_CAPABILITIES and _DISABLED_REGISTRY with matching keys."""
+        from work_buddy.tools import DISABLED_CAPABILITIES
+
+        try:
+            _, reg_mod = self._build_with_unavailable(["obsidian"])
+            assert set(reg_mod._DISABLED_REGISTRY.keys()) == set(DISABLED_CAPABILITIES.keys()), (
+                "_DISABLED_REGISTRY keys diverged from DISABLED_CAPABILITIES"
+            )
+            # And the set should be non-empty for the test to be meaningful.
+            assert DISABLED_CAPABILITIES, (
+                "Test setup expected at least one obsidian-requiring capability "
+                "to land in DISABLED_CAPABILITIES — none did. Did the registry "
+                "change such that no capability requires obsidian?"
+            )
+        finally:
+            reg_mod._REGISTRY = None
+
+    def test_disabled_and_live_registries_disjoint(self):
+        """A capability cannot simultaneously be in _REGISTRY and _DISABLED_REGISTRY."""
+        try:
+            reg, reg_mod = self._build_with_unavailable(["obsidian"])
+            overlap = set(reg.keys()) & set(reg_mod._DISABLED_REGISTRY.keys())
+            assert not overlap, (
+                f"Capability(ies) appear in both _REGISTRY and _DISABLED_REGISTRY: {overlap}"
+            )
+        finally:
+            reg_mod._REGISTRY = None
+
+    def test_stash_holds_full_capability_objects(self):
+        """The stash must contain the actual Capability instance (not just metadata)
+        so recovery can restore it with its callable intact."""
+        from work_buddy.mcp_server.registry import Capability
+
+        try:
+            _, reg_mod = self._build_with_unavailable(["obsidian"])
+            for name, entry in reg_mod._DISABLED_REGISTRY.items():
+                assert isinstance(entry, Capability), (
+                    f"_DISABLED_REGISTRY[{name!r}] is {type(entry).__name__}, "
+                    f"expected Capability"
+                )
+                assert callable(entry.callable), (
+                    f"_DISABLED_REGISTRY[{name!r}].callable is not callable"
+                )
+        finally:
+            reg_mod._REGISTRY = None
+
+    def test_stash_cleared_on_rebuild_no_leak(self):
+        """_DISABLED_REGISTRY must be cleared at the top of every _build_registry()
+        invocation so a stale Capability whose closure references a purged
+        module never survives a reload."""
+        from work_buddy.tools import DISABLED_CAPABILITIES
+
+        try:
+            # Build 1: obsidian unavailable -> populate stash.
+            _, reg_mod = self._build_with_unavailable(["obsidian"])
+            stash_after_build_1 = dict(reg_mod._DISABLED_REGISTRY)
+            assert stash_after_build_1, "Test setup needs at least one stash entry"
+
+            # Build 2: everything available -> stash should be EMPTY.
+            reg_mod._REGISTRY = None
+            from unittest.mock import patch
+            with patch("work_buddy.tools.is_tool_available", return_value=True):
+                reg_mod.get_registry()
+
+            assert not reg_mod._DISABLED_REGISTRY, (
+                "_DISABLED_REGISTRY leaked stale entries across rebuild: "
+                f"{list(reg_mod._DISABLED_REGISTRY.keys())}"
+            )
+            assert not DISABLED_CAPABILITIES, (
+                "DISABLED_CAPABILITIES leaked across rebuild: "
+                f"{list(DISABLED_CAPABILITIES.keys())}"
+            )
+        finally:
+            reg_mod._REGISTRY = None
+
+    def test_get_disabled_registry_returns_sync_view(self):
+        """The public accessor ``get_disabled_registry()`` must return the
+        same dict that the filter pass populates — not a copy or empty dict."""
+        from work_buddy.mcp_server.registry import get_disabled_registry
+
+        try:
+            _, reg_mod = self._build_with_unavailable(["obsidian"])
+            view = get_disabled_registry()
+            assert view is reg_mod._DISABLED_REGISTRY, (
+                "get_disabled_registry() returned a different dict than the "
+                "module-level _DISABLED_REGISTRY — the recovery module needs "
+                "the live one to mutate."
+            )
+        finally:
+            reg_mod._REGISTRY = None

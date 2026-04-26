@@ -150,6 +150,19 @@ class WorkflowDefinition:
 
 _REGISTRY: dict[str, Capability | WorkflowDefinition] | None = None
 
+# Stash of full ``Capability`` objects for capabilities filtered out of the
+# live registry by the `_build_registry` filter pass (because their tool
+# requirements aren't met). Populated alongside ``DISABLED_CAPABILITIES``.
+# Used by ``work_buddy.recovery.recheck_disabled_capability`` to restore a
+# capability to the live registry without re-running the full registry
+# build (~6s + sys.modules purge). Keys MUST stay in sync with
+# ``DISABLED_CAPABILITIES`` keys; see invariant tests.
+#
+# Cleared at the top of every ``_build_registry()`` invocation so a stale
+# Capability whose closure references a purged module never survives a
+# reload (mcp_registry_reload purges work_buddy.* from sys.modules).
+_DISABLED_REGISTRY: dict[str, Capability] = {}
+
 
 def get_registry() -> dict[str, Capability | WorkflowDefinition]:
     """Return the registry, building it on first access."""
@@ -157,6 +170,21 @@ def get_registry() -> dict[str, Capability | WorkflowDefinition]:
     if _REGISTRY is None:
         _REGISTRY = _build_registry()
     return _REGISTRY
+
+
+def get_disabled_registry() -> dict[str, Capability]:
+    """Return the stash of full Capability objects for disabled capabilities.
+
+    Read-only access for ``work_buddy.recovery.recheck_disabled_capability``
+    and observability tools. The dict is mutated only inside
+    ``_build_registry()`` (cleared + repopulated) and inside the recovery
+    module under its lock (popped on successful restore). Callers MUST
+    NOT mutate it directly.
+    """
+    # Trigger a build if the registry hasn't been initialised — populates
+    # _DISABLED_REGISTRY as a side effect.
+    get_registry()
+    return _DISABLED_REGISTRY
 
 
 def invalidate_registry() -> None:
@@ -586,12 +614,20 @@ def _build_registry() -> dict[str, Capability | WorkflowDefinition]:
                 cap.requires = list(inferred)
 
     DISABLED_CAPABILITIES.clear()
+    # CP-A1: also clear the full-Capability stash. Critical for
+    # closure-correctness across mcp_registry_reload (which purges
+    # sys.modules); a Capability stashed during the previous build
+    # would dereference a now-dead module if it survived.
+    _DISABLED_REGISTRY.clear()
     for name in list(registry):
         entry = registry[name]
         if isinstance(entry, Capability) and entry.requires:
             missing = [t_id for t_id in entry.requires if not is_tool_available(t_id)]
             if missing:
                 DISABLED_CAPABILITIES[name] = missing
+                # CP-A1: stash the full Capability object so the recovery
+                # module can restore it without rebuilding the registry.
+                _DISABLED_REGISTRY[name] = entry
                 del registry[name]
 
     if DISABLED_CAPABILITIES:
