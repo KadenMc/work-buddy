@@ -52,6 +52,7 @@ def _html() -> str:
         <button class="tab-btn" data-tab="chats">Chats</button>
         <button class="tab-btn" data-tab="contracts">Contracts</button>
         <button class="tab-btn" data-tab="projects">Projects</button>
+        <button class="tab-btn" data-tab="costs">Costs</button>
         <!-- Settings is an off-nav tab reached via the gear icon in the
              header. The panel still lives below (#panel-settings) and
              is still registered in staticLoaders, but it's not part of
@@ -216,6 +217,105 @@ def _html() -> str:
 <!-- CONTRACTS -->
 <div class="tab-panel" id="panel-contracts">
     <div id="contracts-table"><div class="loading">Loading contracts...</div></div>
+</div>
+
+<!-- COSTS -->
+<!-- LLM cost / usage view. Two complementary data sources behind the
+     scenes — work-buddy's per-call log + Claude Code session transcripts.
+     The user picks a project; the UI decides which data is relevant. -->
+<div class="tab-panel" id="panel-costs">
+    <div class="costs-toolbar">
+        <div class="costs-toolbar-left">
+            <select id="costs-project" class="chats-select chats-project-select"
+                    onchange="costsProjectChanged(this.value)">
+                <option value="">All projects</option>
+            </select>
+            <select id="costs-range" class="chats-select" onchange="costsRangeChanged(this.value)">
+                <option value="today">Today</option>
+                <option value="7">Last 7 days</option>
+                <option value="30" selected>Last 30 days</option>
+                <option value="90">Last 90 days</option>
+                <option value="all">All time</option>
+            </select>
+        </div>
+        <div class="costs-toolbar-right">
+            <!-- Rate-limit headroom chip + popover. Hidden until we have
+                 at least one observation. Click expands; click outside
+                 collapses. See script_costs.py for behaviour. -->
+            <span id="costs-rate-chip" class="costs-rate-chip"
+                  style="display: none;"
+                  onclick="costsToggleRateLimitPopover(event)"
+                  title="Click for per-model breakdown">
+                Limits: <span id="costs-rate-pct">—</span>
+            </span>
+            <div id="costs-rate-popover" class="costs-rate-popover" style="display: none;"></div>
+            <span id="costs-meta" class="costs-meta"></span>
+            <button class="chats-accent-btn" onclick="loadCosts(true)">Refresh</button>
+        </div>
+    </div>
+
+    <!-- Activity pill bar: visible only when project = work-buddy. "Programmatic"
+         is the umbrella for everything work-buddy's runner started (cloud + local).
+         API and Local drill into the cloud / local backends individually. -->
+    <div id="costs-activity-row" class="costs-activity-row" style="display:none;">
+        <span class="costs-filter-label">Activity:</span>
+        <div class="costs-activity-pills" id="costs-activity-pills">
+            <button class="costs-pill active" data-activity="all"
+                    onclick="costsActivityChanged('all')">All</button>
+            <button class="costs-pill" data-activity="claude_code"
+                    onclick="costsActivityChanged('claude_code')">Claude Code</button>
+            <button class="costs-pill" data-activity="programmatic"
+                    onclick="costsActivityChanged('programmatic')"
+                    title="work-buddy's runner activity \u2014 API + Local combined">Programmatic</button>
+            <button class="costs-pill" data-activity="api"
+                    onclick="costsActivityChanged('api')">API</button>
+            <button class="costs-pill" data-activity="local"
+                    onclick="costsActivityChanged('local')">Local</button>
+        </div>
+    </div>
+
+    <div id="costs-models-filter" class="costs-models-filter"></div>
+
+    <div class="card-grid" id="costs-cards">
+        <div class="loading">Loading costs...</div>
+    </div>
+
+    <div class="costs-charts-row">
+        <div class="costs-chart-card">
+            <div class="section-title">Daily token volume</div>
+            <div class="costs-chart-wrap"><canvas id="costs-daily-chart"></canvas></div>
+        </div>
+        <div class="costs-chart-card">
+            <div class="section-title" id="costs-model-chart-title">Cost by model</div>
+            <div class="costs-chart-wrap"><canvas id="costs-model-chart"></canvas></div>
+        </div>
+    </div>
+
+    <div class="costs-charts-row">
+        <div class="costs-chart-card">
+            <div class="section-title" id="costs-task-title">Top callers (by cost)</div>
+            <div class="costs-chart-wrap"><canvas id="costs-task-chart"></canvas></div>
+        </div>
+        <div class="costs-chart-card">
+            <div class="section-title" id="costs-mode-title">Cloud vs Local mix</div>
+            <div class="costs-chart-wrap"><canvas id="costs-mode-chart"></canvas></div>
+        </div>
+    </div>
+
+    <div class="section-title">Cost by model</div>
+    <div id="costs-model-table"></div>
+
+    <div class="costs-sessions-header">
+        <div class="section-title" style="margin:0;">Sessions</div>
+        <span id="costs-sessions-count" class="costs-meta"></span>
+    </div>
+    <div id="costs-sessions-table"></div>
+    <div id="costs-sessions-pager" class="costs-pager"></div>
+
+    <div class="costs-footer-note">
+        Cost estimates use Anthropic published rates (April 2026). Local model
+        calls log $0.00 by design.
+    </div>
 </div>
 
 <!-- SETTINGS -->

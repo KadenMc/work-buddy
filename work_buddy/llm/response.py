@@ -73,6 +73,23 @@ class TierAttempt:
 
     The full sequence lives in :attr:`LLMResponse.tier_attempts` so
     callers can reconstruct why a particular tier ended up answering.
+
+    The ``outcome`` field is the structured outcome discriminator:
+
+    * ``"success"`` — backend returned, schema/content checks (if any)
+      passed at this tier.
+    * ``"backend_error"`` — :class:`ErrorKind` was set by the backend
+      (TIMEOUT, BACKEND_UNAVAILABLE, AUTH, RATE_LIMITED, ...).
+    * ``"empty_content"`` — backend returned 200 OK but no content,
+      structured output, or tool calls. The runner promotes this to a
+      backend-style escalation trigger.
+    * ``"validation_failed"`` — content parsed but failed a downstream
+      semantic check (used by adapter-level escalation loops).
+    * ``"llm_error_or_unparseable"`` — a catch-all for adapter-side
+      JSON parse failures and other locally-detected garbage.
+
+    Token counts default to 0 when the backend does not report them
+    (e.g. an early failure that never reached the model).
     """
 
     tier: str                     # ModelTier value; stored as str to avoid cycles
@@ -80,6 +97,9 @@ class TierAttempt:
     error_kind: ErrorKind | None
     error: str | None
     elapsed_ms: int
+    outcome: str = "success"
+    input_tokens: int = 0
+    output_tokens: int = 0
 
 
 @dataclass(frozen=True)

@@ -3748,7 +3748,231 @@ def _llm_capabilities() -> list[Capability]:
             # Failures should surface to the caller, not go to the queue.
             auto_retry=False,
         ),
+        Capability(
+            name="claude_code_usage_scan",
+            description=(
+                "Scan Claude Code's local transcript JSONLs into the cost "
+                "cache (~/.claude/projects/**/*.jsonl). Incremental by default. "
+                "Use full_rebuild=true after a pricing or schema change."
+            ),
+            category="llm",
+            search_aliases=[
+                "claude usage",
+                "claude code usage",
+                "transcript scan",
+                "ingest claude code activity",
+                "rescan costs",
+            ],
+            parameters={
+                "full_rebuild": {
+                    "type": "bool",
+                    "description": "Drop and rebuild the cache (default false).",
+                    "required": False,
+                },
+            },
+            callable=_claude_code_usage_scan,
+            mutates_state=True,
+            auto_retry=False,
+        ),
+        Capability(
+            name="llm_costs_query",
+            description=(
+                "Aggregate LLM cost / usage across one or both data sources "
+                "(work-buddy's per-call internal log + Claude Code transcripts). "
+                "Smart parameters: time window (named or ISO range), group_by "
+                "(project, model, session, day, tool), source filter, "
+                "min_cost / project / model filters, and previous-window "
+                "comparison. Single capability covering most cost questions."
+            ),
+            category="llm",
+            search_aliases=[
+                "llm costs",
+                "llm spend",
+                "how much have i spent",
+                "claude api costs",
+                "cost by project",
+                "cost by model",
+                "weekly spend",
+                "monthly spend",
+                "expensive sessions",
+                "burn rate",
+                "cost trend",
+                "spend comparison",
+            ],
+            parameters={
+                "window": {
+                    "type": "str",
+                    "description": (
+                        "Time window. Named: 'today', 'yesterday', '7d', "
+                        "'30d', '90d', 'month_to_date', 'all'. ISO range: "
+                        "'YYYY-MM-DD..YYYY-MM-DD'. Single day: 'YYYY-MM-DD'. "
+                        "Default '30d'."
+                    ),
+                    "required": False,
+                },
+                "group_by": {
+                    "type": "str",
+                    "description": (
+                        "Optional breakdown: 'project', 'model', 'session', "
+                        "'day', 'tool'. Omit for top-line totals only."
+                    ),
+                    "required": False,
+                },
+                "source": {
+                    "type": "str",
+                    "description": (
+                        "'all' (default), 'internal' (work-buddy's runner "
+                        "calls), or 'claude_code' (Claude Code transcripts)."
+                    ),
+                    "required": False,
+                },
+                "min_cost": {
+                    "type": "float",
+                    "description": "Filter rows where cost_usd < this. Default 0.",
+                    "required": False,
+                },
+                "project": {
+                    "type": "str",
+                    "description": "Substring match on project name / cwd.",
+                    "required": False,
+                },
+                "model": {
+                    "type": "str",
+                    "description": "Exact-match model filter (e.g. 'claude-sonnet-4-6').",
+                    "required": False,
+                },
+                "top_n": {
+                    "type": "int",
+                    "description": "Cap on grouped rows. Default 10. Pass 0 for no cap.",
+                    "required": False,
+                },
+                "include_local": {
+                    "type": "bool",
+                    "description": "Include local-LLM rows? Default true.",
+                    "required": False,
+                },
+                "compare_to_previous": {
+                    "type": "bool",
+                    "description": (
+                        "Include previous-equivalent-window comparison "
+                        "(delta_pct_cost, delta_pct_calls). Default true."
+                    ),
+                    "required": False,
+                },
+            },
+            callable=_llm_costs_query,
+        ),
+        Capability(
+            name="escalation_recent",
+            description=(
+                "Recent LLM-escalation observability records. Each record is "
+                "one logical job (one LLMRunner.call OR one adapter-level "
+                "escalation chain across multiple calls) with its full per-tier "
+                "attempt list, final outcome, and trace correlation."
+            ),
+            category="llm",
+            search_aliases=[
+                "tier escalation",
+                "escalation log",
+                "what tier answered",
+                "did this escalate",
+                "fallback chain",
+                "model fallback",
+                "validation failed",
+                "tier observability",
+            ],
+            parameters={
+                "limit": {
+                    "type": "int",
+                    "description": "Max records to return (newest first). Default 50.",
+                    "required": False,
+                },
+                "trace_id": {
+                    "type": "str",
+                    "description": "Filter by exact trace_id correlation token.",
+                    "required": False,
+                },
+                "final_outcome": {
+                    "type": "str",
+                    "description": (
+                        "Filter by final_outcome ('success', 'backend_error', "
+                        "'validation_failed', 'empty_content', 'exhausted')."
+                    ),
+                    "required": False,
+                },
+                "source": {
+                    "type": "str",
+                    "description": (
+                        "Filter by source ('llm_runner', 'journal_segmenter', "
+                        "'verdict_call')."
+                    ),
+                    "required": False,
+                },
+                "summary": {
+                    "type": "bool",
+                    "description": (
+                        "When true, return aggregate counts (by source / outcome / "
+                        "final_tier, plus 'escalated_past_first') instead of records."
+                    ),
+                    "required": False,
+                },
+            },
+            callable=_escalation_recent,
+        ),
     ]
+
+
+def _claude_code_usage_scan(*, full_rebuild: bool = False) -> dict[str, Any]:
+    """Trigger the vendored Claude-Code-usage scanner."""
+    from work_buddy.dashboard.costs_claude_code_usage import (
+        rescan_claude_code_usage,
+    )
+    return rescan_claude_code_usage(full_rebuild=full_rebuild)
+
+
+def _llm_costs_query(**kwargs: Any) -> dict[str, Any]:
+    """Dispatch to the unified cost-query module."""
+    from work_buddy.llm.cost_query import llm_costs_query
+    return llm_costs_query(**kwargs)
+
+
+def _escalation_recent(
+    *,
+    limit: int = 50,
+    trace_id: str | None = None,
+    final_outcome: str | None = None,
+    source: str | None = None,
+    summary: bool = False,
+) -> dict[str, Any]:
+    """Read recent records from the LLM-escalation log.
+
+    See :mod:`work_buddy.llm.escalation_log` for the record shape.
+    """
+    from work_buddy.llm.escalation_log import (
+        read_escalations,
+        summarize_escalations,
+    )
+    if summary:
+        return {
+            "summary": summarize_escalations(limit=None),
+            "applied_filters": {},
+        }
+    records = read_escalations(
+        limit=limit,
+        trace_id=trace_id,
+        final_outcome=final_outcome,
+        source=source,
+    )
+    return {
+        "records": records,
+        "count": len(records),
+        "applied_filters": {
+            "limit": limit,
+            "trace_id": trace_id,
+            "final_outcome": final_outcome,
+            "source": source,
+        },
+    }
 
 
 def _sidecar_capabilities() -> list[Capability]:

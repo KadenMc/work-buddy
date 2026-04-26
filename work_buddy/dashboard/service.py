@@ -827,6 +827,267 @@ def api_contracts():
 
 
 # ---------------------------------------------------------------------------
+# Costs tab
+# ---------------------------------------------------------------------------
+#
+# Aggregates first-party LLM cost log files written by ``work_buddy.llm.cost``
+# at ``data/agents/<session>/llm_costs.jsonl``. Phase 2 adds Claude Code
+# transcript-derived usage as a second source through the same endpoint.
+
+
+@app.get("/api/costs")
+def api_costs():
+    """Aggregated LLM cost / usage summary across all agent sessions.
+
+    Optional query params:
+        source: ``internal`` (default), ``claude_code``, or ``all``.
+        project: substring match on project name / cwd. When set, every
+            aggregate is computed only over matching sessions/turns.
+    """
+    source = (request.args.get("source") or "internal").lower()
+    project = request.args.get("project") or None
+    execution_mode = (request.args.get("execution_mode") or "").lower() or None
+    # Date range — frontend passes ``YYYY-MM-DD`` strings derived from the
+    # range pill. The backend filters every aggregate by this window so
+    # cards / tables / charts agree.
+    start_date = request.args.get("start_date") or None
+    end_date = request.args.get("end_date") or None
+    # Comma-separated list of model names from the chip filter.
+    #   missing      → ``None``  (no filter)
+    #   ``models=``  → ``[]``    (match nothing; user de-selected every chip)
+    #   ``models=a,b`` → ``["a","b"]``
+    # The missing-vs-empty distinction matters: without it, de-selecting
+    # every chip silently falls back to all-time data.
+    if "models" in request.args:
+        models_raw = request.args.get("models") or ""
+        models: list[str] | None = [
+            m for m in (s.strip() for s in models_raw.split(",")) if m
+        ]
+    else:
+        models = None
+    # Backwards-compat: the old ``transcripts`` source name still routes
+    # to claude_code so any external bookmarks / scripts keep working.
+    if source == "transcripts":
+        source = "claude_code"
+    try:
+        from work_buddy.dashboard.costs import get_costs_summary
+        internal = get_costs_summary(project=project,
+                                      execution_mode=execution_mode,
+                                      start_date=start_date,
+                                      end_date=end_date,
+                                      models=models)
+        if source == "internal":
+            return jsonify(internal)
+
+        claude_code: dict | None = None
+        try:
+            from work_buddy.dashboard.costs_claude_code_usage import (
+                get_claude_code_usage_summary,
+            )
+            claude_code = get_claude_code_usage_summary(
+                project=project,
+                start_date=start_date,
+                end_date=end_date,
+                models=models,
+            )
+        except ImportError:
+            claude_code = None
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("claude_code_usage source failed: %s", exc)
+            claude_code = {"error": str(exc), "source": "claude_code"}
+
+        if source == "claude_code":
+            return jsonify(claude_code or {"source": "claude_code",
+                                            "available": False})
+
+        return jsonify({
+            "internal": internal,
+            "claude_code": claude_code,
+            "source": "all",
+        })
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Cost aggregation failed")
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.get("/api/costs/projects")
+def api_costs_projects():
+    """List of projects that have cost data, with counts and recency.
+
+    Pinning order in the response:
+      1. ``__all__`` placeholder ("All projects" pseudo-project).
+      2. ``work-buddy`` if it has any data.
+      3. Other projects, sorted by ``last_seen`` desc.
+
+    Each entry has::
+
+        {
+          "name": "work-buddy",
+          "session_count": 42,
+          "last_seen": "2026-04-25T20:14:00",
+          "in_internal": true,    # has rows in the per-call log
+          "in_claude_code": true, # has rows in the transcripts cache
+        }
+    """
+    try:
+        projects: dict[str, dict] = {}
+
+        # The same canonical resolver the Chats tab uses — collapses
+        # worktrees/feature-dirs back to their parent project.
+        from work_buddy.dashboard.costs import _resolve_project_name
+
+        # Internal source (per-call log) — collect from session manifests.
+        try:
+            from work_buddy.dashboard.costs import (
+                _iter_session_dirs, _read_session_manifest,
+            )
+            for sd in _iter_session_dirs():
+                if not (sd / "llm_costs.jsonl").exists():
+                    continue
+                m = _read_session_manifest(sd)
+                proj_path = m.get("project") or ""
+                if not proj_path:
+                    continue
+                name = _resolve_project_name(proj_path)
+                if not name:
+                    continue
+                p = projects.setdefault(name, {
+                    "name": name, "session_count": 0,
+                    "last_seen": "", "in_internal": False,
+                    "in_claude_code": False,
+                })
+                p["session_count"] += 1
+                p["in_internal"] = True
+                # Use the manifest's created_at as the recency proxy.
+                created = m.get("created_at") or ""
+                if created > p["last_seen"]:
+                    p["last_seen"] = created
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Internal-source project scan failed: %s", exc)
+
+        # Claude Code source — query the cache DB. We resolve names from
+        # the per-row ``cwd`` (rather than the stored ``project_name`` on
+        # the sessions table) so the canonical resolver applies even when
+        # the scanner stamped a stale name pre-fix.
+        try:
+            import sqlite3
+            from work_buddy.llm.claude_code_usage import scanner as _scanner
+            db = _scanner.get_db_path()
+            if db.exists():
+                conn = sqlite3.connect(db)
+                conn.row_factory = sqlite3.Row
+                try:
+                    # One representative cwd per session, with row counts.
+                    for s in conn.execute("""
+                        SELECT t.session_id, t.cwd, COUNT(*) AS n,
+                               MAX(t.timestamp) AS last_seen
+                        FROM turns t
+                        WHERE t.cwd IS NOT NULL AND t.cwd != ''
+                        GROUP BY t.session_id
+                    """):
+                        cwd = s["cwd"] or ""
+                        name = _resolve_project_name(cwd)
+                        if not name:
+                            continue
+                        p = projects.setdefault(name, {
+                            "name": name, "session_count": 0,
+                            "last_seen": "", "in_internal": False,
+                            "in_claude_code": False,
+                        })
+                        # +1 session per row in the GROUP BY result
+                        p["session_count"] += 1
+                        p["in_claude_code"] = True
+                        ls = s["last_seen"] or ""
+                        if ls > p["last_seen"]:
+                            p["last_seen"] = ls
+                finally:
+                    conn.close()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Claude-Code-source project scan failed: %s", exc)
+
+        # Pin "work-buddy" first, then sort rest by recency.
+        rest = [p for p in projects.values() if p["name"].lower() != "work-buddy"]
+        rest.sort(key=lambda p: p["last_seen"], reverse=True)
+        ordered: list[dict] = []
+        wb = projects.get("work-buddy")
+        if wb:
+            ordered.append(wb)
+        ordered.extend(rest)
+
+        return jsonify({"projects": ordered, "count": len(ordered)})
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Project list failed")
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.get("/api/costs/rate-limits")
+def api_costs_rate_limits():
+    """Return the most-recent Anthropic rate-limit observations per model.
+
+    Read-only view of ``data/runtime/rate_limits.json``, populated by
+    the runner whenever it makes a successful Anthropic API call.
+    Empty ``observations`` when no calls have been recorded yet.
+    """
+    try:
+        from work_buddy.llm.rate_limits import read_observations
+        return jsonify({"observations": read_observations()})
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Rate-limit fetch failed")
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.post("/api/costs/rescan")
+def api_costs_rescan():
+    """Re-scan Claude Code transcripts to refresh the claude_code source."""
+    if reject := _reject_read_only():
+        return reject
+    try:
+        from work_buddy.dashboard.costs_claude_code_usage import (
+            rescan_claude_code_usage,
+        )
+    except ImportError:
+        return jsonify({"available": False,
+                        "message": "Claude Code usage scanner not available."})
+    try:
+        result = rescan_claude_code_usage()
+        return jsonify(result)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Cost rescan failed")
+        return jsonify({"error": str(exc)}), 500
+
+
+# ---------------------------------------------------------------------------
+# Vendored static assets (Chart.js)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/vendor/<path:filename>")
+def static_vendor(filename: str):
+    """Serve vendored frontend assets (Chart.js, etc.) from ``frontend/vendor/``.
+
+    Path is ``/vendor/...`` rather than ``/static/...`` because Flask's
+    default static endpoint is registered at ``/static/`` and would
+    shadow this route (first-registered wins on collision).
+    """
+    safe = filename.replace("\\", "/").lstrip("/")
+    if ".." in safe.split("/"):
+        return "", 404
+    vendor_dir = Path(__file__).parent / "frontend" / "vendor"
+    target = vendor_dir / safe
+    if not target.exists() or not target.is_file():
+        return "", 404
+    if safe.endswith(".js"):
+        mime = "application/javascript"
+    elif safe.endswith(".css"):
+        mime = "text/css"
+    elif safe.endswith(".map"):
+        mime = "application/json"
+    else:
+        mime = "application/octet-stream"
+    return send_file(target, mimetype=mime)
+
+
+# ---------------------------------------------------------------------------
 # Background-triage Review tab
 # ---------------------------------------------------------------------------
 #

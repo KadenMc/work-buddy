@@ -2938,6 +2938,382 @@ body {
 }
 /* Apply inherits the accent-hover from .settings-fix-btn — no extra
    chrome, just the same visual weight as other fix buttons. */
+
+/* -- Costs tab --------------------------------------------------------- */
+
+.costs-toolbar {
+    display: flex; justify-content: space-between; align-items: center;
+    gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--border);
+    margin-bottom: 12px; flex-wrap: wrap;
+}
+
+.costs-activity-row {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 0 12px 0;
+}
+.costs-activity-pills {
+    display: inline-flex; gap: 4px;
+    background: var(--bg-secondary); border: 1px solid var(--border);
+    border-radius: 16px; padding: 3px;
+}
+.costs-pill {
+    background: transparent; border: none; color: var(--text-secondary);
+    padding: 4px 14px; font-size: 12px; cursor: pointer; border-radius: 12px;
+    font-family: inherit; transition: background 0.12s, color 0.12s;
+}
+.costs-pill:hover { color: var(--text-primary); }
+.costs-pill.active {
+    background: var(--accent-subtle); color: var(--accent);
+    font-weight: 500;
+}
+
+.card.card-accent {
+    border-left: 2px solid var(--accent);
+}
+
+.costs-sessions-header {
+    display: flex; align-items: baseline; justify-content: space-between;
+    gap: 12px; margin: 24px 0 8px 0;
+}
+
+/* Sortable column headers
+   The unsorted sort indicator (↕) sits at the same shade as the column
+   text — visible without being prominent. Active sort flips to the
+   accent color and full opacity. */
+.costs-table th.sortable {
+    cursor: pointer; user-select: none;
+    position: relative; padding-right: 18px;
+}
+.costs-table th.sortable:hover { color: var(--text-primary); }
+.costs-table th.sortable .sort-arrow {
+    position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+    color: var(--text-secondary); font-size: 10px;
+}
+.costs-table th.sortable.sort-active .sort-arrow {
+    color: var(--accent);
+}
+
+/* Branch column — pinned width so the table doesn't reshuffle every
+   time the visible page's longest branch name changes. */
+.costs-table th.col-branch,
+.costs-table td.costs-branch-cell {
+    width: 180px; max-width: 180px;
+}
+.costs-table .costs-branch-cell {
+    overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; font-family: ui-monospace, SFMono-Regular, monospace;
+    font-size: 11px; color: var(--text-secondary);
+}
+
+/* Reusable pager component (currently scoped to .costs-pager;
+   if a second tab needs pagination, lift the class names to a generic
+   .wb-pager and restyle here.) */
+.costs-pager {
+    display: flex; align-items: center; justify-content: center; gap: 4px;
+    padding: 12px 0 4px 0; flex-wrap: wrap;
+}
+.costs-pager-btn {
+    background: var(--bg-secondary); border: 1px solid var(--border);
+    color: var(--text-secondary); padding: 4px 10px; font-size: 12px;
+    cursor: pointer; border-radius: 4px; min-width: 28px; text-align: center;
+    font-family: inherit;
+}
+.costs-pager-btn:hover { background: var(--bg-tertiary); color: var(--text-primary); }
+.costs-pager-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.costs-pager-btn.current {
+    background: var(--accent-subtle); border-color: var(--accent);
+    color: var(--accent);
+}
+.costs-pager-ellipsis {
+    color: var(--text-muted); padding: 4px 4px;
+}
+.costs-pager-info {
+    color: var(--text-muted); font-size: 11px; margin: 0 8px;
+}
+.costs-toolbar-left, .costs-toolbar-right {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+}
+.costs-meta {
+    font-size: 12px; color: var(--text-muted);
+}
+.costs-models-filter {
+    display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+    padding: 8px 0 12px 0; border-bottom: 1px solid var(--border);
+    margin-bottom: 16px;
+}
+.costs-filter-label {
+    font-size: 12px; color: var(--text-muted); margin-right: 6px;
+}
+.costs-filter-pill {
+    background: var(--bg-tertiary); border: 1px solid var(--border);
+    color: var(--text-secondary); padding: 3px 10px; border-radius: 12px;
+    font-size: 11px; cursor: pointer; transition: all 0.12s;
+    font-family: inherit;
+}
+.costs-filter-pill:hover {
+    background: var(--bg-secondary); color: var(--text-primary);
+    border-color: var(--accent);
+}
+.costs-filter-pill.active {
+    background: var(--accent-subtle); border-color: var(--accent);
+    color: var(--accent);
+}
+.costs-filter-pill.costs-filter-action {
+    color: var(--text-muted); background: transparent; border-style: dashed;
+}
+
+/* Model-family grouping
+   Each family gets a subtle bordered container holding [family pill] +
+   [member chips]. The family pill is visually heavier so it reads as a
+   header, and a third "indeterminate" state covers the partial-on case. */
+.costs-family-group {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 3px 6px; margin-right: 4px;
+    background: rgba(255,255,255,0.015);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+}
+.costs-family-pill {
+    background: var(--bg-tertiary); border: 1px solid var(--border);
+    color: var(--text-primary); padding: 3px 10px; border-radius: 12px;
+    font-size: 11px; font-weight: 600; cursor: pointer;
+    transition: all 0.12s; font-family: inherit;
+}
+.costs-family-pill:hover {
+    background: var(--accent-subtle); color: var(--accent);
+    border-color: var(--accent);
+}
+.costs-family-pill.active {
+    background: var(--accent); color: #fff; border-color: var(--accent);
+}
+/* Indeterminate = some members on, some off. Striped fill makes it
+   read as "in between" without a competing color. */
+.costs-family-pill.indeterminate {
+    background: var(--accent-subtle);
+    color: var(--accent); border-color: var(--accent);
+    background-image: repeating-linear-gradient(
+        45deg,
+        transparent 0,
+        transparent 3px,
+        rgba(216, 120, 87, 0.15) 3px,
+        rgba(216, 120, 87, 0.15) 6px
+    );
+}
+.costs-models-reset {
+    background: transparent; border: 1px dashed var(--border);
+    color: var(--text-muted); padding: 3px 10px; border-radius: 12px;
+    font-size: 11px; cursor: pointer; font-family: inherit;
+    margin-left: 8px;
+}
+.costs-models-reset:hover {
+    color: var(--accent); border-color: var(--accent);
+}
+
+/* Rate-limit chip + popover ---------------------------------------- */
+
+.costs-rate-chip {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    padding: 3px 10px;
+    border-radius: 12px;
+    font-size: 11px;
+    cursor: pointer;
+    font-family: inherit;
+    transition: all 0.12s;
+    user-select: none;
+}
+.costs-rate-chip:hover {
+    color: var(--text-primary); border-color: var(--accent);
+}
+.costs-rate-chip.warn {
+    background: rgba(210, 153, 34, 0.15);
+    border-color: var(--yellow);
+    color: var(--yellow);
+}
+.costs-rate-chip.hot {
+    background: rgba(248, 81, 73, 0.15);
+    border-color: var(--red);
+    color: var(--red);
+}
+.costs-rate-chip.stale { opacity: 0.55; }
+
+.costs-rate-popover {
+    position: absolute;
+    top: 100%; right: 0; margin-top: 6px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 14px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+    width: 420px; max-width: 92vw;
+    max-height: 70vh; overflow-y: auto;
+    z-index: 100;
+    font-size: 12px;
+}
+
+/* The toolbar-right needs position:relative so the popover anchors. */
+.costs-toolbar-right { position: relative; }
+
+.costs-rate-pop-header {
+    font-weight: 600; color: var(--text-primary);
+    display: flex; justify-content: space-between; align-items: baseline;
+    padding-bottom: 8px; border-bottom: 1px solid var(--border); margin-bottom: 10px;
+}
+.costs-rate-pop-sub {
+    font-weight: 400; font-size: 11px; color: var(--text-muted);
+}
+
+.costs-rate-model {
+    padding: 8px 0; border-bottom: 1px solid var(--border);
+}
+.costs-rate-model:last-of-type { border-bottom: none; }
+.costs-rate-model-row {
+    display: flex; justify-content: space-between; align-items: baseline;
+    margin-bottom: 6px;
+}
+.costs-rate-model code {
+    font-family: ui-monospace, SFMono-Regular, monospace;
+    font-size: 11px; color: var(--text-primary);
+}
+.costs-rate-state { font-size: 11px; }
+.costs-rate-model.state-healthy .costs-rate-state { color: var(--green); }
+.costs-rate-model.state-warn    .costs-rate-state { color: var(--yellow); }
+.costs-rate-model.state-hot     .costs-rate-state { color: var(--red); }
+.costs-rate-model.state-stale   .costs-rate-state { color: var(--text-muted); }
+.costs-rate-model.state-stale code { color: var(--text-muted); }
+
+.costs-rate-bar-row {
+    display: grid;
+    grid-template-columns: 110px 1fr auto;
+    gap: 8px; align-items: center;
+    margin: 3px 0; font-size: 11px;
+}
+.costs-rate-bar-label { color: var(--text-secondary); }
+.costs-rate-bar {
+    background: var(--bg-tertiary); border: 1px solid var(--border);
+    border-radius: 4px; height: 8px; overflow: hidden;
+}
+.costs-rate-bar-fill {
+    height: 100%; background: var(--green); transition: width 0.2s;
+}
+.costs-rate-model.state-warn .costs-rate-bar-fill { background: var(--yellow); }
+.costs-rate-model.state-hot  .costs-rate-bar-fill { background: var(--red); }
+.costs-rate-model.state-stale .costs-rate-bar-fill { background: var(--text-muted); }
+.costs-rate-bar-value {
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+    font-size: 10px;
+}
+
+.costs-rate-meta {
+    color: var(--text-muted); font-size: 10px; margin-top: 6px;
+}
+
+/* Help section in the popover */
+.costs-rate-help {
+    margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border);
+}
+.costs-rate-help-toggle {
+    background: transparent; border: none;
+    color: var(--text-secondary); cursor: pointer; font-size: 11px;
+    padding: 0; font-family: inherit; display: inline-flex;
+    align-items: center; gap: 6px;
+}
+.costs-rate-help-toggle:hover { color: var(--accent); }
+.costs-rate-help-icon {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 14px; height: 14px; border-radius: 50%;
+    border: 1px solid currentColor; font-size: 9px; font-style: italic;
+    font-weight: 700;
+}
+.costs-rate-help-body {
+    margin-top: 8px; color: var(--text-secondary); font-size: 11px;
+    line-height: 1.5;
+}
+.costs-rate-help-body p { margin: 6px 0; }
+.costs-rate-help-body ul { margin: 4px 0 8px 20px; padding: 0; }
+.costs-rate-help-body li { margin: 3px 0; }
+.costs-rate-help-body strong { color: var(--text-primary); }
+
+/* "Active in the last hour" dot — reusable across views.
+   Currently used by the Costs Sessions table and the Chats list. Lift
+   to its own .css-snippet module if a third consumer appears. */
+.wb-active-dot {
+    display: inline-block;
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--green);
+    margin-right: 6px; vertical-align: middle;
+    box-shadow: 0 0 0 2px rgba(63, 185, 80, 0.18);
+    animation: wb-active-pulse 2.4s ease-in-out infinite;
+}
+@keyframes wb-active-pulse {
+    0%, 100% { opacity: 1.0; box-shadow: 0 0 0 2px rgba(63, 185, 80, 0.18); }
+    50%      { opacity: 0.6; box-shadow: 0 0 0 4px rgba(63, 185, 80, 0.10); }
+}
+
+.costs-charts-row {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 16px;
+    margin: 16px 0;
+}
+@media (max-width: 980px) {
+    .costs-charts-row { grid-template-columns: 1fr; }
+}
+.costs-chart-card {
+    background: var(--bg-secondary); border: 1px solid var(--border);
+    border-radius: 6px; padding: 12px 16px;
+}
+.costs-chart-card .section-title {
+    font-size: 12px; color: var(--text-secondary); margin-bottom: 8px;
+    text-transform: uppercase; letter-spacing: 0.4px;
+}
+.costs-chart-wrap {
+    position: relative; height: 240px; width: 100%;
+}
+
+.costs-table {
+    width: 100%; font-size: 12px;
+}
+.costs-table th, .costs-table td {
+    padding: 6px 10px; border-bottom: 1px solid var(--border);
+    text-align: left;
+}
+.costs-table th { color: var(--text-secondary); font-weight: 500; }
+.costs-table td.num, .costs-table th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.costs-table tbody tr:hover { background: var(--bg-secondary); }
+.costs-model-name {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+    color: var(--text-primary);
+}
+.costs-model-cell { line-height: 1.7; }
+.costs-model-chip {
+    display: inline-block; font-size: 10px; padding: 1px 6px;
+    margin-right: 4px; border-radius: 8px;
+    background: var(--bg-tertiary); color: var(--text-secondary);
+    border: 1px solid var(--border);
+}
+
+.costs-sessions-toolbar {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px; margin: 8px 0 12px 0;
+}
+.costs-sessions-toolbar input { max-width: 360px; }
+
+.costs-footer-note {
+    font-size: 11px; color: var(--text-muted); padding: 16px 0;
+    border-top: 1px solid var(--border); margin-top: 24px;
+}
+.costs-footer-note a { color: var(--accent); text-decoration: none; }
+.costs-footer-note a:hover { text-decoration: underline; }
+.costs-footer-note code {
+    font-family: ui-monospace, SFMono-Regular, monospace;
+    font-size: 10px; background: var(--bg-tertiary);
+    padding: 1px 4px; border-radius: 3px;
+}
+
+.card-sub {
+    font-size: 11px; color: var(--text-muted); margin-top: 4px;
+}
 """
 
 

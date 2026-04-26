@@ -3,6 +3,14 @@
 Writes to ``agents/<session>/llm_costs.jsonl`` — one JSON object per line.
 Each entry records: model, tokens, cost, task_id, caller chain, trace_id,
 and cache status. Provides session-level totals and per-task breakdowns.
+
+Cost computation lives in :mod:`work_buddy.llm.claude_code_usage.pricing`
+(:func:`calc_cost`) — one canonical pricing table for the whole repo.
+Rows produced before the consolidation (pre-2026-04-25) are stamped with
+``priced_with: "v1"`` by the migration; rows produced after carry
+``priced_with: "v2"``. The stamp is bookkeeping for future migrations;
+costs themselves did not change because legacy rows lack the cache
+token data needed to apply cache-rate adjustments retroactively.
 """
 
 from __future__ import annotations
@@ -11,18 +19,19 @@ import inspect
 import json
 import logging
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from work_buddy.llm.claude_code_usage.pricing import calc_cost
+
 logger = logging.getLogger(__name__)
 
-# Approximate cost per 1M tokens (as of 2026-04)
-_COST_PER_M_TOKENS: dict[str, dict[str, float]] = {
-    "claude-haiku-4-5-20251001": {"input": 0.80, "output": 4.00},
-    "claude-sonnet-4-6": {"input": 3.00, "output": 15.00},
-    "claude-opus-4-6": {"input": 15.00, "output": 75.00},
-}
+
+# Bump this when the cost-computation contract changes in a way that
+# rows can't be re-derived from. The migration writes this value into
+# every existing row so future migrations can detect old shapes.
+_PRICING_VERSION = "v2"
 
 
 def _cost_log_path() -> Path:
@@ -41,12 +50,6 @@ def _cost_log_path() -> Path:
     override = get_originating_session()
     session_dir = get_session_dir(override) if override else get_session_dir()
     return session_dir / "llm_costs.jsonl"
-
-
-def _estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
-    """Estimate cost in USD."""
-    rates = _COST_PER_M_TOKENS.get(model, {"input": 1.0, "output": 5.0})
-    return (input_tokens * rates["input"] + output_tokens * rates["output"]) / 1_000_000
 
 
 def _get_caller_chain(skip: int = 2) -> list[str]:
@@ -98,36 +101,61 @@ def log_call(
     cached: bool = False,
     execution_mode: str = "cloud",
     backend: str | None = None,
+    cache_read_tokens: int = 0,
+    cache_creation_tokens: int = 0,
 ) -> None:
     """Append a cost entry to the session log.
 
     Args:
         model: Model name used.
-        input_tokens: Input token count.
+        input_tokens: Fresh-input token count (excludes cache reads/writes).
         output_tokens: Output token count.
         task_id: Identifier for the task (e.g., "chrome_infer:batch").
         trace_id: Optional UUID linking related calls in a single invocation.
-        cached: If True, this was a cache hit (no API call, zero cost).
+        cached: If True, this was a work-buddy-side cache hit (no API call,
+            zero cost). Distinct from ``cache_read_tokens`` which is
+            Anthropic's server-side prompt cache.
         execution_mode: ``"cloud"`` (default) or ``"local"``. Local calls
             log ``estimated_cost_usd: 0.0`` rather than falling back to
             the unknown-model price heuristic.
         backend: Optional backend id (e.g., ``"anthropic_default"``,
             ``"lmstudio_local"``) for per-backend cost breakdowns.
+        cache_read_tokens: Input tokens served from Anthropic's server-side
+            prompt cache (90% off the input rate). Available on every
+            Anthropic response when prompt caching is enabled. Local
+            backends don't have this concept; default 0.
+        cache_creation_tokens: Input tokens being written to the cache
+            (25% premium on the input rate). Same notes as cache_read.
     """
     if cached or execution_mode == "local":
         est_cost = 0.0
     else:
-        est_cost = round(_estimate_cost(model, input_tokens, output_tokens), 6)
+        est_cost = round(
+            calc_cost(
+                model, input_tokens, output_tokens,
+                cache_read_tokens, cache_creation_tokens,
+            ),
+            6,
+        )
 
     entry: dict[str, Any] = {
-        "timestamp": datetime.now().isoformat(),
+        # UTC with explicit tz offset so the frontend's ``new Date(...)``
+        # (which interprets TZ-less ISO as local time) doesn't compare
+        # against the wrong epoch. Also makes cross-machine log files
+        # safely portable. Pre-2026-04-26 rows lacked the offset; the
+        # frontend defensively appends "Z" to TZ-less strings before
+        # parsing, so legacy rows degrade gracefully.
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "model": model,
         "task_id": task_id,
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
+        "cache_read_tokens": cache_read_tokens,
+        "cache_creation_tokens": cache_creation_tokens,
         "estimated_cost_usd": est_cost,
         "cached": cached,
         "execution_mode": execution_mode,
+        "priced_with": _PRICING_VERSION,
         "caller": _get_caller_chain(),
     }
     if backend:
@@ -151,6 +179,7 @@ def session_total() -> dict:
         return {
             "total_calls": 0, "api_calls": 0, "cache_hits": 0,
             "total_input_tokens": 0, "total_output_tokens": 0,
+            "total_cache_read_tokens": 0, "total_cache_creation_tokens": 0,
             "estimated_cost_usd": 0,
         }
 
@@ -159,6 +188,8 @@ def session_total() -> dict:
     api_calls = total_calls - cache_hits
     total_input = sum(e.get("input_tokens", 0) for e in entries)
     total_output = sum(e.get("output_tokens", 0) for e in entries)
+    total_cache_read = sum(e.get("cache_read_tokens", 0) for e in entries)
+    total_cache_create = sum(e.get("cache_creation_tokens", 0) for e in entries)
     total_cost = sum(e.get("estimated_cost_usd", 0) for e in entries)
 
     return {
@@ -167,6 +198,8 @@ def session_total() -> dict:
         "cache_hits": cache_hits,
         "total_input_tokens": total_input,
         "total_output_tokens": total_output,
+        "total_cache_read_tokens": total_cache_read,
+        "total_cache_creation_tokens": total_cache_create,
         "estimated_cost_usd": round(total_cost, 6),
     }
 

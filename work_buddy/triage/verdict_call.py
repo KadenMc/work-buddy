@@ -52,6 +52,7 @@ def call_for_verdict(
     required_fields: tuple[str, ...] = ("recommended_action",),
     caller: str = "triage",
     item_id: str = "",
+    trace_id: str | None = None,
 ) -> LLMResponse:
     """Run a verdict call with backend + validation escalation.
 
@@ -81,6 +82,41 @@ def call_for_verdict(
         On backend failure ``error_kind`` carries the backend's kind.
         On validation failure ``error_kind == ErrorKind.VALIDATION_FAILED``.
     """
+    if trace_id is None:
+        import uuid as _uuid
+        suffix = _uuid.uuid4().hex[:8]
+        trace_id = f"{caller}:{item_id}:{suffix}" if item_id else f"{caller}:{suffix}"
+
+    adapter_attempts: list[dict[str, Any]] = []
+
+    def _record(resp_obj: LLMResponse, outcome: str) -> None:
+        adapter_attempts.append({
+            "tier": resp_obj.tier_used or "",
+            "model": resp_obj.model,
+            "outcome": outcome,
+            "error_kind": (resp_obj.error_kind.value
+                           if resp_obj.error_kind else None),
+            "error": resp_obj.error,
+            "elapsed_ms": 0,  # timing of the LLMRunner call already logged separately
+            "input_tokens": resp_obj.input_tokens,
+            "output_tokens": resp_obj.output_tokens,
+        })
+
+    def _emit(final_outcome: str, final_tier: str) -> None:
+        try:
+            from work_buddy.llm.escalation_log import log_escalation
+            log_escalation(
+                source="verdict_call",
+                attempts=adapter_attempts,
+                final_outcome=final_outcome,
+                final_tier=final_tier,
+                trace_id=trace_id,
+                task_id=f"{caller}:{item_id}" if item_id else caller,
+                metadata={"required_fields": list(required_fields)},
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug("escalation log write skipped", exc_info=True)
+
     internal_esc_to: list[ModelTier] = (
         [ModelTier.FRONTIER_BEST] if tier != ModelTier.FRONTIER_BEST else []
     )
@@ -91,14 +127,20 @@ def call_for_verdict(
         output_schema=output_schema,
         escalate_on=_BACKEND_ESCALATE_ON,
         escalate_to=internal_esc_to,
+        trace_id=trace_id,
     )
     if resp.is_error():
+        _record(resp, "backend_error")
+        _emit("backend_error", resp.tier_used or tier.value)
         return resp
 
     missing = _missing_fields(resp, required_fields)
     if not missing:
+        _record(resp, "success")
+        _emit("success", resp.tier_used or tier.value)
         return resp
 
+    _record(resp, "validation_failed")
     used = resp.tier_used or tier.value
     if used == ModelTier.FRONTIER_BEST.value:
         # Already at top tier — no further escalation possible.
@@ -106,6 +148,7 @@ def call_for_verdict(
             "%s: verdict missing %s at final tier=%s (item=%s)",
             caller, missing, used, item_id,
         )
+        _emit("validation_failed", used)
         return _as_validation_failed(resp, missing)
 
     logger.warning(
@@ -120,19 +163,26 @@ def call_for_verdict(
         output_schema=output_schema,
         escalate_on=_BACKEND_ESCALATE_ON,
         escalate_to=[],
+        trace_id=trace_id,
     )
     if retry.is_error():
+        _record(retry, "backend_error")
+        _emit("backend_error", retry.tier_used or ModelTier.FRONTIER_BEST.value)
         return retry
 
     retry_missing = _missing_fields(retry, required_fields)
     if not retry_missing:
+        _record(retry, "success")
+        _emit("success", retry.tier_used or ModelTier.FRONTIER_BEST.value)
         return retry
 
+    _record(retry, "validation_failed")
     logger.warning(
         "%s: verdict missing %s at FRONTIER_BEST after validation retry "
         "(item=%s)",
         caller, retry_missing, item_id,
     )
+    _emit("validation_failed", retry.tier_used or ModelTier.FRONTIER_BEST.value)
     return _as_validation_failed(retry, retry_missing)
 
 

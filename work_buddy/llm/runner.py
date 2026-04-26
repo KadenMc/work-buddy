@@ -276,11 +276,39 @@ def run_task(
                 }
             }
 
-        response = client.messages.create(**api_kwargs)
+        # Use ``with_raw_response`` when available so we can read the
+        # ``anthropic-ratelimit-*`` headers from the response. Falls back
+        # to the direct call shape on older SDK versions; the only cost
+        # of fallback is no rate-limit observability for that call.
+        _rl_headers: Any = None
+        try:
+            _raw = client.messages.with_raw_response.create(**api_kwargs)
+            response = _raw.parse()
+            _rl_headers = _raw.headers
+        except (AttributeError, TypeError):
+            response = client.messages.create(**api_kwargs)
+
+        # Best-effort capture of the rate-limit observation. Never lets a
+        # write failure break the actual LLM call.
+        if _rl_headers is not None:
+            try:
+                from work_buddy.llm.rate_limits import record_observation
+                record_observation(resolved_model, _rl_headers)
+            except Exception:  # noqa: BLE001
+                logger.debug("rate_limits: capture skipped", exc_info=True)
 
         content = response.content[0].text if response.content else ""
         input_tokens = response.usage.input_tokens
         output_tokens = response.usage.output_tokens
+        # Anthropic populates these only when prompt caching is active on
+        # the request; absent → treat as 0. Anthropic's SDK ``Usage`` has
+        # them as optional ints, so getattr with a 0 default is safe.
+        cache_read_tokens = getattr(
+            response.usage, "cache_read_input_tokens", 0,
+        ) or 0
+        cache_creation_tokens = getattr(
+            response.usage, "cache_creation_input_tokens", 0,
+        ) or 0
 
         # Parse JSON — guaranteed valid when output_schema was used,
         # best-effort when json_mode=True without a schema
@@ -320,6 +348,8 @@ def run_task(
             trace_id=trace_id,
             execution_mode=execution_mode,
             backend=backend_id,
+            cache_read_tokens=cache_read_tokens,
+            cache_creation_tokens=cache_creation_tokens,
         )
 
         # Cache result

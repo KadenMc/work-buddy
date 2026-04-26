@@ -44,6 +44,7 @@ RESOURCES: dict[str, str] = {
     "cache/chrome-request":      "cache/chrome_tabs_request",
     "cache/knowledge-content":   "cache/knowledge_index/content.npz",
     "cache/knowledge-aliases":   "cache/knowledge_index/aliases.npz",
+    "cache/claude-code-usage":   "cache/claude_code_usage.db",
 
     # Chrome integration — rolling data
     "chrome/ledger":             "chrome/tab_ledger.json",
@@ -56,6 +57,10 @@ RESOURCES: dict[str, str] = {
     # Logs
     "logs/gateway-debug":        "logs/gateway_debug.log",
     "logs/search-debug":         "logs/search_debug.log",
+    "logs/escalations":          "logs/escalations.log",
+
+    # Anthropic rate-limit observations (latest snapshot per model).
+    "runtime/rate-limits":       "runtime/rate_limits.json",
 
     # Telegram
     "runtime/telegram-chat-id":  "runtime/telegram_chat_id",
@@ -87,6 +92,10 @@ PRUNERS: dict[str, tuple[str, dict[str, Any]]] = {
     "logs/global": (
         "work_buddy.artifacts.prune_old_logs",
         {"max_age_days": 7},
+    ),
+    "logs/escalations": (
+        "work_buddy.artifacts.prune_escalation_log",
+        {"window_days": 30},
     ),
 }
 
