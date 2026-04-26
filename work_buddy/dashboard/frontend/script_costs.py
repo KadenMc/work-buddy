@@ -349,9 +349,10 @@ function _costsBuildParams(opts) {
     if (opts && opts.includeModels && costsState.selectedModels) {
         const known = costsState.knownModels || [];
         const sel = costsState.selectedModels;
-        // Only attach when narrowed — sending the full set is wasted bytes
-        // and pollutes the access log.
-        if (known.length > 0 && sel.size > 0 && sel.size < known.length) {
+        // Attach when narrowed — including the all-deselected case
+        // (``models=`` with no value), which the backend reads as
+        // "match nothing." Skipping it would silently revert to all-time.
+        if (known.length > 0 && sel.size < known.length) {
             params.set('models', [...sel].join(','));
         }
     }

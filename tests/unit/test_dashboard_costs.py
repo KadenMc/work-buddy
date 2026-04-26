@@ -716,8 +716,8 @@ def test_aggregator_models_filter_excludes_other_models(tmp_path):
     assert top <= s["totals"]["cost_usd"] + 1e-9
 
 
-def test_aggregator_models_filter_none_means_no_filter(tmp_path):
-    """``models=None`` and ``models=[]`` both behave as no filter."""
+def test_aggregator_models_none_means_no_filter(tmp_path):
+    """``models=None`` is the no-filter sentinel; ``[]`` matches nothing."""
     root = tmp_path / "agents"
     _write_session(
         root, "2026-04-25T10-00-00_a",
@@ -736,10 +736,29 @@ def test_aggregator_models_filter_none_means_no_filter(tmp_path):
         ],
     )
     s_none = costs_mod.get_costs_summary(agents_dir=root, models=None)
-    s_empty = costs_mod.get_costs_summary(agents_dir=root, models=[])
-    for s in (s_none, s_empty):
-        models = {r["model"] for r in s["by_model"]}
-        assert models == {"claude-sonnet-4-6", "claude-opus-4-7"}
+    assert {r["model"] for r in s_none["by_model"]} \
+        == {"claude-sonnet-4-6", "claude-opus-4-7"}
+
+
+def test_aggregator_models_empty_list_matches_nothing(tmp_path):
+    """``models=[]`` (user de-selected every chip) returns zero rows."""
+    root = tmp_path / "agents"
+    _write_session(
+        root, "2026-04-25T10-00-00_a",
+        manifest={"short_id": "a", "project": "C:\\repo\\one"},
+        entries=[
+            {"timestamp": "2026-04-25T10:00:00",
+             "model": "claude-sonnet-4-6", "task_id": "t1",
+             "input_tokens": 100, "output_tokens": 50,
+             "estimated_cost_usd": 0.005, "cached": False,
+             "execution_mode": "cloud"},
+        ],
+    )
+    s = costs_mod.get_costs_summary(agents_dir=root, models=[])
+    assert s["totals"]["calls"] == 0
+    assert s["by_model"] == []
+    assert s["by_task"] == []
+    assert s["session_count"] == 0
 
 
 def test_api_costs_route_threads_models(monkeypatch, tmp_path):
@@ -770,8 +789,12 @@ def test_api_costs_route_threads_models(monkeypatch, tmp_path):
     assert {r["task"] for r in body["by_task"]} == {"keep"}
 
 
-def test_api_costs_route_models_empty_string_is_no_filter(monkeypatch, tmp_path):
-    """``models=`` (empty) should not narrow — distinct from a missing param."""
+def test_api_costs_route_models_empty_string_matches_nothing(monkeypatch, tmp_path):
+    """``models=`` (param present, empty value) matches no rows.
+
+    Distinct from a missing ``models`` param: empty means "every chip
+    de-selected"; missing means "no filter applied at all."
+    """
     root = tmp_path / "agents"
     _write_session(
         root, "2026-04-25T10-00-00_a",
@@ -782,20 +805,19 @@ def test_api_costs_route_models_empty_string_is_no_filter(monkeypatch, tmp_path)
              "input_tokens": 100, "output_tokens": 50,
              "estimated_cost_usd": 0.005, "cached": False,
              "execution_mode": "cloud"},
-            {"timestamp": "2026-04-25T10:01:00",
-             "model": "claude-opus-4-7", "task_id": "t2",
-             "input_tokens": 1, "output_tokens": 1,
-             "estimated_cost_usd": 0.001, "cached": False,
-             "execution_mode": "cloud"},
         ],
     )
     monkeypatch.setattr(costs_mod, "_AGENTS_DIR", root)
     from work_buddy.dashboard.service import app
     client = app.test_client()
-    resp = client.get("/api/costs?source=internal&models=")
-    body = resp.get_json()
-    assert {r["model"] for r in body["by_model"]} \
-        == {"claude-sonnet-4-6", "claude-opus-4-7"}
+    # Missing param → no filter, all rows.
+    resp_missing = client.get("/api/costs?source=internal")
+    assert resp_missing.get_json()["totals"]["calls"] == 1
+    # Present-but-empty → match nothing.
+    resp_empty = client.get("/api/costs?source=internal&models=")
+    body = resp_empty.get_json()
+    assert body["totals"]["calls"] == 0
+    assert body["by_model"] == []
 
 
 def test_vendor_route_serves_chart_js():

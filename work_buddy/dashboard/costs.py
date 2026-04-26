@@ -285,7 +285,11 @@ def get_costs_summary(
     mode_filter = (execution_mode or "").lower()
     if mode_filter not in ("", "all", "cloud", "local"):
         mode_filter = ""
-    model_filter = set(models) if models else None
+    # ``None`` = no filter; empty set = filter to nothing (every row drops).
+    # The empty case matters: the chip rail lets the user de-select every
+    # model, and we want cards / charts / sessions to reflect that
+    # explicitly rather than silently fall back to all-time.
+    model_filter = set(models) if models is not None else None
     totals = _empty_totals()
     by_day: dict[str, dict[str, Any]] = defaultdict(_empty_totals)
     by_model: dict[str, dict[str, Any]] = defaultdict(_empty_totals)

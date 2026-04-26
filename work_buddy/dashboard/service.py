@@ -852,12 +852,19 @@ def api_costs():
     # cards / tables / charts agree.
     start_date = request.args.get("start_date") or None
     end_date = request.args.get("end_date") or None
-    # Comma-separated list of model names from the chip filter. Empty /
-    # missing → no filter. Same row-level filtering rationale as the
-    # date-range params: keeps cards / charts / top-callers in sync with
-    # the user's chip selection.
-    models_raw = request.args.get("models") or ""
-    models = [m for m in (s.strip() for s in models_raw.split(",")) if m] or None
+    # Comma-separated list of model names from the chip filter.
+    #   missing      → ``None``  (no filter)
+    #   ``models=``  → ``[]``    (match nothing; user de-selected every chip)
+    #   ``models=a,b`` → ``["a","b"]``
+    # The missing-vs-empty distinction matters: without it, de-selecting
+    # every chip silently falls back to all-time data.
+    if "models" in request.args:
+        models_raw = request.args.get("models") or ""
+        models: list[str] | None = [
+            m for m in (s.strip() for s in models_raw.split(",")) if m
+        ]
+    else:
+        models = None
     # Backwards-compat: the old ``transcripts`` source name still routes
     # to claude_code so any external bookmarks / scripts keep working.
     if source == "transcripts":

@@ -122,7 +122,9 @@ def get_claude_code_usage_summary(
         return {"available": False, "source": "claude_code",
                 "error": str(exc), "db_path": str(p)}
 
-    model_list = sorted(set(models)) if models else None
+    # ``None`` = no filter; ``[]`` = match nothing (frontend sends this
+    # when the user de-selects every chip).
+    model_list = sorted(set(models)) if models is not None else None
 
     try:
         totals = _empty_totals()
@@ -145,10 +147,14 @@ def get_claude_code_usage_summary(
         if end_date:
             turns_clauses.append("substr(timestamp, 1, 10) <= ?")
             turns_params.append(end_date)
-        if model_list:
-            placeholders = ",".join("?" * len(model_list))
-            turns_clauses.append(f"model IN ({placeholders})")
-            turns_params.extend(model_list)
+        if model_list is not None:
+            if model_list:
+                placeholders = ",".join("?" * len(model_list))
+                turns_clauses.append(f"model IN ({placeholders})")
+                turns_params.extend(model_list)
+            else:
+                # Empty allowed-set → match nothing.
+                turns_clauses.append("0")
         if turns_clauses:
             turns_sql += " WHERE " + " AND ".join(turns_clauses)
 
@@ -186,10 +192,13 @@ def get_claude_code_usage_summary(
         if end_date:
             sessions_clauses.append("substr(first_timestamp, 1, 10) <= ?")
             sessions_params.append(end_date)
-        if model_list:
-            placeholders = ",".join("?" * len(model_list))
-            sessions_clauses.append(f"model IN ({placeholders})")
-            sessions_params.extend(model_list)
+        if model_list is not None:
+            if model_list:
+                placeholders = ",".join("?" * len(model_list))
+                sessions_clauses.append(f"model IN ({placeholders})")
+                sessions_params.extend(model_list)
+            else:
+                sessions_clauses.append("0")
         if sessions_clauses:
             sessions_sql += " WHERE " + " AND ".join(sessions_clauses)
         sessions_sql += " ORDER BY last_timestamp DESC"
