@@ -52,6 +52,62 @@ TASK_ID_RE = re.compile(r"🆔\s*(t-[0-9a-f]+)")
 NAMESPACE_TAG_RE = re.compile(r"^[a-z0-9][a-z0-9_/-]*$", re.IGNORECASE)
 
 
+# ── Description extraction ──────────────────────────────────────
+#
+# Slice 3: derive a clean human-readable description from a task line by
+# stripping the structural noise (checkbox, hashtags, wikilinks, plugin
+# emojis, 🆔). The resulting text is what gets stored in
+# ``task_metadata.description`` and what ``task_search`` queries against.
+#
+# The same regex chain was previously inlined inside
+# ``_load_task_payload`` (line ~1046 prior to Slice 3) — moved here so
+# ``task_sync``, ``task_update_description``, and ``_load_task_payload``
+# share a single canonical extractor.
+
+# Wikilinks like [[uuid|📓]] embedded in the line.
+_DESC_WIKILINK_RE = re.compile(r"\[\[[^\]]+\]\]")
+# Any remaining hashtag (#todo, #projects/x, #foo, etc.).
+_DESC_HASHTAG_RE = re.compile(r"#\S+")
+# Leading checkbox marker.
+_DESC_CHECKBOX_RE = re.compile(r"^\s*-\s*\[.\]\s*")
+# Plugin emojis with their adjacent payload tokens. Each gets its own
+# pattern so adjacent emojis (e.g. ``🔼 🆔 t-...``) all get stripped
+# rather than the first one greedily consuming the second.
+# Match any `t-<alphanumeric>` after 🆔 — production IDs are hex via
+# generate_task_id(), but the regex is permissive so a malformed legacy
+# ID still gets stripped from the description.
+_DESC_TASK_ID_RE = re.compile(r"🆔\s*t-[a-z0-9]+", re.IGNORECASE)
+_DESC_DUE_DATE_RE = re.compile(r"📅\s*\d{4}-\d{2}-\d{2}")
+_DESC_DONE_DATE_RE = re.compile(r"✅\s*\d{4}-\d{2}-\d{2}")
+_DESC_URGENCY_EMOJI_RE = re.compile(r"[🔼⏫]")
+
+
+def extract_description_from_line(line: str) -> str:
+    """Pull the clean human-readable description out of a task line.
+
+    Strips: checkbox, all hashtags, wikilinks (including the
+    ``[[uuid|📓]]`` task-note link), the 🆔 + ID, 📅 + due date, ✅ + done
+    date, and urgency emojis. Collapses whitespace and trims.
+
+    Returns an empty string for lines that aren't task lines or that
+    contain no text after stripping. Used by ``task_sync`` to populate
+    ``task_metadata.description``, by ``task_update_description`` to
+    derive the new description after rewrite, and by
+    ``_load_task_payload`` for legacy fallback.
+    """
+    if not line:
+        return ""
+    text = _DESC_CHECKBOX_RE.sub("", line)
+    text = _DESC_WIKILINK_RE.sub("", text)
+    text = _DESC_HASHTAG_RE.sub("", text)
+    text = _DESC_TASK_ID_RE.sub("", text)
+    text = _DESC_DUE_DATE_RE.sub("", text)
+    text = _DESC_DONE_DATE_RE.sub("", text)
+    text = _DESC_URGENCY_EMOJI_RE.sub("", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
 def _normalize_tags(tags: list[str] | None) -> list[str]:
     """Accept a list of tag strings with or without leading '#'.
 
@@ -738,6 +794,13 @@ def create_task(
 
     # --- Store record ---
     if store.get(task_id) is None:
+        # Slice 3: derive the description from the just-built task line
+        # so the store's text column is populated immediately. Without
+        # this, the description would stay NULL until the next
+        # task_sync run (~30 minute window). The line we built above is
+        # authoritative for what the file now contains, so deriving from
+        # it locally is consistent with the file-source-of-truth rule.
+        derived_description = extract_description_from_line(task_line)
         store.create(
             task_id=task_id,
             state="inbox",
@@ -756,6 +819,7 @@ def create_task(
             deadline_date=deadline_date,
             has_dependency=has_dependency,
             dependency_hint=dependency_hint,
+            description=derived_description,
         )
 
     # --- Seed tag cache ---
@@ -1042,12 +1106,7 @@ def _load_task_payload(task_id: str) -> dict[str, Any]:
                 idx, line = found
                 original_markdown = line.strip()
                 line_number = idx + 1
-                # Extract description: strip checkbox, tags, emojis
-                desc = re.sub(r"^- \[.\]\s*", "", line)
-                desc = re.sub(r"#\S+", "", desc)
-                desc = re.sub(r"\[\[[^\]]+\]\]", "", desc)
-                desc = re.sub(r"[🆔📅✅🔼⏫]\s*\S*", "", desc)
-                task_text = re.sub(r"\s+", " ", desc).strip()
+                task_text = extract_description_from_line(line)
 
     # Read note if one exists
     note_path = None
