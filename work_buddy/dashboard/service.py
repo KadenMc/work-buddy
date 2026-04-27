@@ -1162,13 +1162,24 @@ def api_review_execute():
         logger.exception("api_review_execute: execute failed")
         return jsonify({"status": "error", "error": str(exc)}), 500
 
-    # Stamp the affected pool entries reviewed. Identify them by the
-    # ``pool_run_id`` + item ids in the presentation's groups (the
-    # review-pool builder puts ``pool_run_id`` on every group for
-    # exactly this purpose).
+    # Slice 1 fix (data-loss bug): only mark reviewed the entries
+    # whose groups actually had decisions submitted. Previously this
+    # walked the entire presentation and stamped every entry —
+    # disastrous when the frontend uses per-group submit (each card
+    # has its own button), because submitting one card would mark all
+    # cards reviewed and they'd vanish from the Review tab on next
+    # load.
+    decided_indices: set[int] = set()
+    for gd in (decisions.get("group_decisions") or []):
+        idx = gd.get("group_index")
+        if isinstance(idx, int):
+            decided_indices.add(idx)
+
     keys: list[tuple[str, str]] = []
     for action_groups in presentation.get("groups_by_action", {}).values():
         for group in action_groups:
+            if group.get("index") not in decided_indices:
+                continue
             run_id = group.get("pool_run_id")
             if not run_id:
                 continue
@@ -1193,10 +1204,20 @@ def api_review_execute():
                 "pool_error": str(exc),
             })
 
+    # Slice 1 fix (silent-failure bug): surface per-operation errors
+    # at the top level so the frontend can show "Action failed:
+    # consent required" rather than swallowing them. ``executed``
+    # comes from ``triage_execute.execute_triage_decisions`` which
+    # catches per-op exceptions into ``details.errors``; the user
+    # had no way to see those before this surfacing.
+    op_errors = (executed or {}).get("details", {}).get("errors") or []
+    response_status = "partial" if op_errors else "ok"
+
     return jsonify({
-        "status": "ok",
+        "status": response_status,
         "executed": executed,
         "pool_updates": stamped,
+        "operation_errors": op_errors,  # explicit top-level surfacing
     })
 
 
