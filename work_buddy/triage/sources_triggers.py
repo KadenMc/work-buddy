@@ -151,10 +151,13 @@ def trigger_source_removed(
         return None
 
     if source == "journal_thread":
-        # Journal entries record source_dates as a list (e.g. ["2026-04-19"]).
-        # If the entry has multiple, only quarantine when ALL are gone —
-        # rare, but the conservative call.
-        dates = meta.get("source_dates") or []
+        # Journal entries record source_dates as a list (e.g.
+        # ["2026-04-19"]) but legacy entries often left it empty
+        # and stored ``journal_date`` (singular) instead. Accept
+        # both. If neither is present, can't decide → leave alone.
+        dates = list(meta.get("source_dates") or [])
+        if not dates and meta.get("journal_date"):
+            dates = [meta["journal_date"]]
         if not dates:
             return None
         journal_dir = _journal_dir()
@@ -233,7 +236,9 @@ def trigger_source_edited_beyond_match(
         (descriptor.config or {}).get("edit_match_threshold", 0.85)
     )
 
-    dates = meta.get("source_dates") or []
+    dates = list(meta.get("source_dates") or [])
+    if not dates and meta.get("journal_date"):
+        dates = [meta["journal_date"]]
     if not dates:
         return None
 
