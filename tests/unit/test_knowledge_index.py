@@ -433,7 +433,7 @@ class TestCacheIntegration:
 
         calls: list[int] = []  # number of texts embedded per call
 
-        def fake_embed_for_ir(texts, role="query"):
+        def fake_embed_for_ir(texts, role="query", **kwargs):
             calls.append(len(texts))
             return [np.random.default_rng(hash(t) & 0xFFFF).normal(size=768).tolist()
                     for t in texts]
@@ -498,7 +498,7 @@ class TestCacheIntegration:
 
         calls: list[list[str]] = []  # remember the actual texts embedded
 
-        def fake_embed_for_ir(texts, role="query"):
+        def fake_embed_for_ir(texts, role="query", **kwargs):
             calls.append(list(texts))
             return [np.random.default_rng(hash(t) & 0xFFFF).normal(size=768).tolist()
                     for t in texts]
