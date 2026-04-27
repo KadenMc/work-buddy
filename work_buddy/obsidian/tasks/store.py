@@ -34,7 +34,20 @@ CREATE TABLE IF NOT EXISTS task_metadata (
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL,
     completed_at    TEXT,               -- ISO timestamp when state became 'done'
-    archived_at     TEXT                -- ISO timestamp when moved to archive
+    archived_at     TEXT,               -- ISO timestamp when moved to archive
+    -- Slice 2: GTD vocabulary additions ---------------------------
+    task_kind       TEXT NOT NULL DEFAULT 'task',  -- 'task' | 'periodic' | 'habit'
+    density         TEXT NOT NULL DEFAULT 'sparse',-- 'sparse' | 'developed' | 'dense'
+    outcome_text    TEXT,               -- desired end-state for developed tasks
+    next_action_text TEXT,              -- specific physical action for developed tasks
+    definition_of_done TEXT,            -- closing signal
+    creation_effort TEXT NOT NULL DEFAULT 'developed',  -- 'sparse' | 'medium' | 'developed'
+    user_involvement TEXT NOT NULL DEFAULT 'high',      -- 'low' | 'medium' | 'high'
+    creation_provenance TEXT NOT NULL DEFAULT 'manual', -- 'manual' | 'agent_inferred_from_journal' | …
+    has_deadline    INTEGER NOT NULL DEFAULT 0,
+    deadline_date   TEXT,               -- ISO date when has_deadline=1
+    has_dependency  INTEGER NOT NULL DEFAULT 0,
+    dependency_hint TEXT                -- free-text hint when has_dependency=1
 );
 
 CREATE TABLE IF NOT EXISTS task_state_history (
@@ -84,6 +97,44 @@ VALID_STATES = {"inbox", "mit", "focused", "snoozed", "done"}
 VALID_URGENCIES = {"low", "medium", "high"}
 VALID_COMPLEXITIES = {"simple", "moderate", "complex", None}
 
+# Slice 2 enums --------------------------------------------------------------
+# task_kind enum. 'periodic' and 'habit' ship as forward-compat values
+# (Slice 9 wires up the reminder system that drives them); 'task' is the
+# Slice 2 default.
+VALID_TASK_KINDS = {"task", "periodic", "habit"}
+
+# density enum. 'dense' is forward-compat for Slice 7+; not used in Slice 2.
+VALID_DENSITIES = {"sparse", "developed", "dense"}
+
+# creation_effort: how informed was the agent that wrote this task?
+VALID_CREATION_EFFORTS = {"sparse", "medium", "developed"}
+
+# user_involvement: was the user actively engaged or did the agent infer it?
+VALID_USER_INVOLVEMENTS = {"low", "medium", "high"}
+
+# creation_provenance is intentionally OPEN (no validator) — new sources
+# (telegram, calendar, smart-source, …) get to register their own
+# provenance string without a code change. The starter set is documented
+# in Slice 2's task note. Convention: 'manual' or 'agent_inferred_from_*'.
+
+# Slice 2 column descriptors used by the idempotent migration. Keep this
+# in sync with the Slice 2 columns in _SCHEMA above. Format:
+#   (column_name, sqlite_type, default_sql_literal_or_None, not_null_bool)
+_SLICE_2_COLUMNS: list[tuple[str, str, str | None, bool]] = [
+    ("task_kind", "TEXT", "'task'", True),
+    ("density", "TEXT", "'sparse'", True),
+    ("outcome_text", "TEXT", None, False),
+    ("next_action_text", "TEXT", None, False),
+    ("definition_of_done", "TEXT", None, False),
+    ("creation_effort", "TEXT", "'developed'", True),
+    ("user_involvement", "TEXT", "'high'", True),
+    ("creation_provenance", "TEXT", "'manual'", True),
+    ("has_deadline", "INTEGER", "0", True),
+    ("deadline_date", "TEXT", None, False),
+    ("has_dependency", "INTEGER", "0", True),
+    ("dependency_hint", "TEXT", None, False),
+]
+
 
 def _db_path() -> Path:
     """Resolve the task metadata database path from config."""
@@ -100,13 +151,57 @@ def _db_path() -> Path:
 
 
 def get_connection() -> sqlite3.Connection:
-    """Open (or create) the task metadata database with WAL mode."""
+    """Open (or create) the task metadata database with WAL mode.
+
+    On every open we run :func:`_migrate_schema` — the migration is
+    idempotent (PRAGMA table_info gate) so the cost is one sqlite query
+    when columns already exist. This keeps the repo's "schema is what
+    you see in _SCHEMA" promise without requiring a separate migration
+    runner.
+    """
     path = _db_path()
     conn = sqlite3.connect(str(path), timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(_SCHEMA)
+    _migrate_schema(conn)
     return conn
+
+
+def _migrate_schema(conn: sqlite3.Connection) -> None:
+    """Idempotent ALTER TABLE migration for schema additions.
+
+    SQLite's ``CREATE TABLE IF NOT EXISTS`` doesn't add columns to an
+    existing table. For every Slice-N column we want, check
+    ``PRAGMA table_info(task_metadata)`` and ``ALTER TABLE ADD COLUMN``
+    if missing. Defaults in the ALTER clause backfill existing rows.
+
+    Slice 2 columns added: task_kind, density, outcome_text,
+    next_action_text, definition_of_done, creation_effort,
+    user_involvement, creation_provenance, has_deadline,
+    deadline_date, has_dependency, dependency_hint.
+
+    Adding more columns later: append to ``_SLICE_2_COLUMNS`` (or a
+    new ``_SLICE_N_COLUMNS`` list) and they'll get migrated on the
+    next connection open.
+    """
+    existing = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(task_metadata)")
+    }
+    for col_name, sql_type, default_sql, not_null in _SLICE_2_COLUMNS:
+        if col_name in existing:
+            continue
+        clause = f"{col_name} {sql_type}"
+        if default_sql is not None:
+            clause += f" DEFAULT {default_sql}"
+            if not_null:
+                clause += " NOT NULL"
+        # Skipping NOT NULL when no default — SQLite allows this for
+        # nullable additions, which is what the descriptor signals.
+        conn.execute(f"ALTER TABLE task_metadata ADD COLUMN {clause}")
+        logger.info("task_metadata: added column %s", col_name)
+    conn.commit()
 
 
 def _now_iso() -> str:
@@ -131,15 +226,44 @@ def create(
     complexity: str | None = None,
     contract: str | None = None,
     note_uuid: str | None = None,
+    *,
+    # Slice 2 additions ----------------------------------------------
+    task_kind: str = "task",
+    density: str = "sparse",
+    outcome_text: str | None = None,
+    next_action_text: str | None = None,
+    definition_of_done: str | None = None,
+    creation_effort: str = "developed",
+    user_involvement: str = "high",
+    creation_provenance: str = "manual",
+    has_deadline: bool = False,
+    deadline_date: str | None = None,
+    has_dependency: bool = False,
+    dependency_hint: str | None = None,
 ) -> dict[str, Any]:
     """Create a metadata record for a new task.
 
     Called when create_task() generates a new 🆔.
+
+    Slice 2 fields default to the "legacy task" assumption:
+    ``task_kind='task'``, ``density='sparse'``, ``creation_effort=
+    'developed'``, ``user_involvement='high'``, ``creation_provenance=
+    'manual'``. This matches the migration backfill so newly-created
+    tasks look identical to legacy tasks unless callers explicitly
+    pass different values.
     """
     if state not in VALID_STATES:
         raise ValueError(f"Invalid state {state!r}")
     if urgency not in VALID_URGENCIES:
         raise ValueError(f"Invalid urgency {urgency!r}")
+    if task_kind not in VALID_TASK_KINDS:
+        raise ValueError(f"Invalid task_kind {task_kind!r}")
+    if density not in VALID_DENSITIES:
+        raise ValueError(f"Invalid density {density!r}")
+    if creation_effort not in VALID_CREATION_EFFORTS:
+        raise ValueError(f"Invalid creation_effort {creation_effort!r}")
+    if user_involvement not in VALID_USER_INVOLVEMENTS:
+        raise ValueError(f"Invalid user_involvement {user_involvement!r}")
 
     now = _now_iso()
     conn = get_connection()
@@ -147,9 +271,22 @@ def create(
         conn.execute(
             """INSERT INTO task_metadata
                (task_id, state, urgency, complexity, contract, note_uuid,
-                created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (task_id, state, urgency, complexity, contract, note_uuid, now, now),
+                created_at, updated_at,
+                task_kind, density, outcome_text, next_action_text,
+                definition_of_done, creation_effort, user_involvement,
+                creation_provenance, has_deadline, deadline_date,
+                has_dependency, dependency_hint)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?,
+                       ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                task_id, state, urgency, complexity, contract, note_uuid,
+                now, now,
+                task_kind, density, outcome_text, next_action_text,
+                definition_of_done, creation_effort, user_involvement,
+                creation_provenance,
+                int(bool(has_deadline)), deadline_date,
+                int(bool(has_dependency)), dependency_hint,
+            ),
         )
         conn.execute(
             """INSERT INTO task_state_history
@@ -187,10 +324,28 @@ def update(
     snooze_until: str | None = _SENTINEL,
     note_uuid: str | None = _SENTINEL,
     reason: str | None = None,
+    # Slice 2 additions ----------------------------------------------
+    task_kind: str | None = None,
+    density: str | None = None,
+    outcome_text: str | None = _SENTINEL,
+    next_action_text: str | None = _SENTINEL,
+    definition_of_done: str | None = _SENTINEL,
+    creation_effort: str | None = None,
+    user_involvement: str | None = None,
+    creation_provenance: str | None = None,
+    has_deadline: bool | None = None,
+    deadline_date: str | None = _SENTINEL,
+    has_dependency: bool | None = None,
+    dependency_hint: str | None = _SENTINEL,
 ) -> dict[str, Any]:
     """Update metadata fields for a task. Only provided fields change.
 
     State changes are recorded in task_state_history with optional reason.
+
+    Sentinel discipline: nullable text fields use _SENTINEL so callers
+    can explicitly pass ``None`` to clear a value (vs. "not provided").
+    Enum-validated fields use ``None`` for "not provided" since their
+    valid values are non-None strings.
     """
     sets: list[str] = []
     params: list[Any] = []
@@ -225,6 +380,63 @@ def update(
     if note_uuid is not _SENTINEL:
         sets.append("note_uuid = ?")
         params.append(note_uuid)
+
+    # Slice 2 fields -------------------------------------------------
+    if task_kind is not None:
+        if task_kind not in VALID_TASK_KINDS:
+            raise ValueError(f"Invalid task_kind {task_kind!r}")
+        sets.append("task_kind = ?")
+        params.append(task_kind)
+
+    if density is not None:
+        if density not in VALID_DENSITIES:
+            raise ValueError(f"Invalid density {density!r}")
+        sets.append("density = ?")
+        params.append(density)
+
+    if outcome_text is not _SENTINEL:
+        sets.append("outcome_text = ?")
+        params.append(outcome_text)
+
+    if next_action_text is not _SENTINEL:
+        sets.append("next_action_text = ?")
+        params.append(next_action_text)
+
+    if definition_of_done is not _SENTINEL:
+        sets.append("definition_of_done = ?")
+        params.append(definition_of_done)
+
+    if creation_effort is not None:
+        if creation_effort not in VALID_CREATION_EFFORTS:
+            raise ValueError(f"Invalid creation_effort {creation_effort!r}")
+        sets.append("creation_effort = ?")
+        params.append(creation_effort)
+
+    if user_involvement is not None:
+        if user_involvement not in VALID_USER_INVOLVEMENTS:
+            raise ValueError(f"Invalid user_involvement {user_involvement!r}")
+        sets.append("user_involvement = ?")
+        params.append(user_involvement)
+
+    if creation_provenance is not None:
+        sets.append("creation_provenance = ?")
+        params.append(creation_provenance)
+
+    if has_deadline is not None:
+        sets.append("has_deadline = ?")
+        params.append(int(bool(has_deadline)))
+
+    if deadline_date is not _SENTINEL:
+        sets.append("deadline_date = ?")
+        params.append(deadline_date)
+
+    if has_dependency is not None:
+        sets.append("has_dependency = ?")
+        params.append(int(bool(has_dependency)))
+
+    if dependency_hint is not _SENTINEL:
+        sets.append("dependency_hint = ?")
+        params.append(dependency_hint)
 
     if not sets:
         return {"task_id": task_id, "changed": False}

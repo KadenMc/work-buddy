@@ -625,13 +625,27 @@ def create_task(
     contract: str | None = None,
     summary: str | None = None,
     tags: list[str] | None = None,
+    *,
+    # Slice 2 GTD vocabulary (optional; defaults match a legacy task) ---
+    task_kind: str = "task",
+    density: str = "sparse",
+    outcome_text: str | None = None,
+    next_action_text: str | None = None,
+    definition_of_done: str | None = None,
+    creation_effort: str = "developed",
+    user_involvement: str = "high",
+    creation_provenance: str = "manual",
+    has_deadline: bool = False,
+    deadline_date: str | None = None,
+    has_dependency: bool = False,
+    dependency_hint: str | None = None,
 ) -> dict[str, Any]:
     """Create a new task with an auto-generated ID, optionally with a linked note.
 
     If ``summary`` is provided, a note file is created and linked to the task.
-    Metadata (state, urgency, contract) goes to the SQLite store.
-    The task line has: #todo, text, note link, #projects/*, user namespace tags,
-    🆔, plugin emojis.
+    Metadata (state, urgency, contract, plus Slice 2 GTD vocabulary) goes
+    to the SQLite store. The task line has: #todo, text, note link,
+    #projects/*, user namespace tags, 🆔, plugin emojis.
 
     ``tags`` is a list of user-defined namespace tags (without leading '#'),
     e.g. ``["paper/ecg-classifier", "experiment/augmentation"]``. The tokens
@@ -639,12 +653,27 @@ def create_task(
     up by the next ``task_sync`` into the ``task_tags`` cache and classified
     according to the reserved-prefix / opt-in / discovery-threshold rules.
 
+    Slice 2 args (kind / density / outcome_text / next_action_text /
+    definition_of_done / creation_effort / user_involvement /
+    creation_provenance / deadline / dependency) are optional and default
+    to "looks like a legacy manually-authored task." Agent-driven creators
+    should set ``creation_provenance`` (e.g.
+    ``agent_inferred_from_journal``) and lower ``user_involvement``.
+
     This function is idempotent on retry: it checks for existing note files
     and task lines before writing, so the retry capability can safely replay it.
     """
     task_text = _validate_task_text(task_text)
     if urgency not in store.VALID_URGENCIES:
         raise ValueError(f"Invalid urgency {urgency!r}")
+    if task_kind not in store.VALID_TASK_KINDS:
+        raise ValueError(f"Invalid task_kind {task_kind!r}")
+    if density not in store.VALID_DENSITIES:
+        raise ValueError(f"Invalid density {density!r}")
+    if creation_effort not in store.VALID_CREATION_EFFORTS:
+        raise ValueError(f"Invalid creation_effort {creation_effort!r}")
+    if user_involvement not in store.VALID_USER_INVOLVEMENTS:
+        raise ValueError(f"Invalid user_involvement {user_involvement!r}")
     namespace_tags = _normalize_tags(tags)
 
     task_id = generate_task_id()
@@ -715,6 +744,18 @@ def create_task(
             urgency=urgency,
             contract=contract,
             note_uuid=note_uuid,
+            task_kind=task_kind,
+            density=density,
+            outcome_text=outcome_text,
+            next_action_text=next_action_text,
+            definition_of_done=definition_of_done,
+            creation_effort=creation_effort,
+            user_involvement=user_involvement,
+            creation_provenance=creation_provenance,
+            has_deadline=has_deadline,
+            deadline_date=deadline_date,
+            has_dependency=has_dependency,
+            dependency_hint=dependency_hint,
         )
 
     # --- Seed tag cache ---

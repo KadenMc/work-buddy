@@ -33,5 +33,44 @@
       "work_buddy.triage.sources",
       "work_buddy.triage.sources_triggers"
     ]
+  },
+  "triage/pool-entry-lifecycle": {
+    "kind": "system",
+    "name": "PoolEntry Lifecycle",
+    "description": "PoolEntry lifecycle in the triage pool — state enum, expires_at, sweep transitions",
+    "content": {
+      "full": "# PoolEntry Lifecycle\n\nEvery entry in the triage pool carries a `state` enum describing where it sits in the review lifecycle. Slice 1 added this; before Slice 1, entries had only a `reviewed_at` timestamp (None or stamped) and no explicit lifecycle marker.\n\n## States\n\n| State | Meaning | Visible in Review tab? | Set by |\n|---|---|---|---|\n| `pending` | Waiting for human review (default at creation) | Yes | `TriagePool.submit` / `submit_raw` |\n| `stale` | Past `expires_at` per source descriptor's TTL. Soft signal, non-destructive | No | `triage_pool_sweep` (daily) |\n| `quarantined` | The source no longer resolves (file deleted, journal text drifted, capture-tag removed). `quarantine_reason` records which trigger fired | No | `triage_pool_sweep` (daily) |\n| `reviewed` | Human acted on it via the dashboard's Review tab | No | `TriagePool.mark_reviewed` (when `dashboard.review_submit` succeeds) |\n| `dropped` | Explicitly removed (rare; reserved for manual intervention) | No | not yet wired |\n\nQuarantine takes precedence over stale: if an entry is both expired AND has a quarantine trigger firing, the sweep marks it quarantined (more specific signal — the source is GONE, not just OLD).\n\n## Lifecycle fields on PoolEntry\n\n```python\n@dataclass\nclass PoolEntry:\n    # ... pre-Slice-1 fields ...\n    state: str = STATE_PENDING                  # canonical lifecycle marker\n    expires_at: str | None = None               # ISO8601, set from descriptor TTL\n    quarantine_reason: str | None = None        # e.g. \"source_removed\"\n    state_changed_at: str | None = None         # ISO8601, stamped on every transition\n```\n\n`expires_at` is computed at creation time from the source descriptor's `ttl_days` (see `triage/source-descriptors`). `None` means no auto-expiry — inline captures use this because they're user-affirmative.\n\n## Backwards compatibility\n\nLegacy entries (pre-Slice-1) lack a `state` field on disk. `PoolEntry.from_dict` infers it from `reviewed_at`: stamped → `reviewed`, None → `pending`. So existing pool snapshots load without a migration; the field gets persisted on the next mutation through `TriagePool.submit` / `mark_reviewed` / etc.\n\n## How transitions fire\n\n- `pending → stale`: daily sweep, `expires_at < now`.\n- `pending → quarantined`: daily sweep, source descriptor's quarantine triggers fire (per-trigger logic in `work_buddy.triage.sources_triggers`).\n- `pending → reviewed`: user submits a decision via the dashboard's Review tab, **and** the executor reports the operation succeeded. Failed ops keep the entry pending so the user can retry.\n- `* → dropped`: not wired in Slice 1; reserved for future explicit-removal flows.\n\n## How to query\n\n```python\nfrom work_buddy.triage.background import get_pool, STATE_QUARANTINED\n\npool = get_pool()\npending = pool.pending()                                      # state == \"pending\" + legacy\nquarantined = pool.entries_in_state(STATE_QUARANTINED)        # exact match\nall_entries = pool.all_entries()                              # any state\n```\n\n`pool.pending()` is what the dashboard's Review tab uses; it filters to `state == pending` AND falls back to the legacy `reviewed_at IS NULL` check for entries that predate the field.\n\n## What user-facing surfaces show\n\nThe Review tab shows ONLY pending entries (Slice 1 default). Stale and quarantined entries persist on disk for audit but are hidden from the active surface. The user can inspect them via `pool.entries_in_state(...)` from a script."
+    },
+    "tags": [
+      "triage",
+      "pool",
+      "lifecycle",
+      "state",
+      "sweep",
+      "expires_at",
+      "quarantine",
+      "reviewed",
+      "stale"
+    ],
+    "aliases": [
+      "PoolEntry",
+      "pool entry state",
+      "STATE_PENDING",
+      "STATE_STALE",
+      "STATE_QUARANTINED",
+      "STATE_REVIEWED",
+      "STATE_DROPPED",
+      "POOL_ENTRY_STATES",
+      "quarantine_reason",
+      "state_changed_at",
+      "entry lifecycle"
+    ],
+    "parents": [
+      "triage"
+    ],
+    "dev_notes": "**State enum constants.** `STATE_PENDING`, `STATE_STALE`, `STATE_QUARANTINED`, `STATE_REVIEWED`, `STATE_DROPPED` and the `POOL_ENTRY_STATES` frozenset are exported from `work_buddy.triage.background`. Always import the constants, never hardcode the strings.\n\n**`mark_state` vs `mark_reviewed`.** The reviewed transition stamps `reviewed_at` + `review_outcome` AND sets `state=reviewed`; the generic `mark_state` does NOT touch reviewed_at. Calling `mark_state(..., state=STATE_REVIEWED)` raises ValueError on purpose — the path is `mark_reviewed`.\n\n**Idempotence.** `mark_state` is no-op if the entry is already in the target state (won't double-stamp `state_changed_at`).\n\n**Backwards-compat read path.** `PoolEntry.from_dict` infers state from reviewed_at; this means **never write a state field with a None value to disk**, or you'll defeat the inference for legacy readers. The dataclass default makes this hard to do accidentally.\n\n**Stale state-changed-at on legacy entries.** Existing reviewed entries got `state=reviewed` inferred but their `state_changed_at` was unset until the migration script (`scripts/migrate_pool_slice_1.py`) backfilled it from `reviewed_at`. After the migration, all entries have a `state_changed_at`; new entries get one stamped on creation.\n\n**Adding a new state value.** Append to the enum, add to `POOL_ENTRY_STATES`, decide the transition rules, update `mark_state` validation. Don't repurpose existing values — `from_dict`'s legacy inference would break.\n\n**The `dropped` state is reserved.** Slice 1 doesn't wire a transition into it. Future use case: explicit user action \"this entry should never come back\" (vs stale which can theoretically be revived if conditions change). Until that wires up, the constant exists but no code writes to it.",
+    "entry_points": [
+      "work_buddy.triage.background"
+    ]
   }
 }
