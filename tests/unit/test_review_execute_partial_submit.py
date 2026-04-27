@@ -15,7 +15,11 @@ the full Flask app.
 from __future__ import annotations
 
 
-def _filter_keys(presentation: dict, decisions: dict) -> list[tuple[str, str]]:
+def _filter_keys(
+    presentation: dict,
+    decisions: dict,
+    executed: dict | None = None,
+) -> list[tuple[str, str]]:
     """Inline copy of the fixed filter logic so the test is hermetic.
 
     Mirrors the production logic in ``api_review_execute``; if the
@@ -27,6 +31,21 @@ def _filter_keys(presentation: dict, decisions: dict) -> list[tuple[str, str]]:
         if isinstance(idx, int):
             decided_indices.add(idx)
 
+    # Collect item_ids of successful ops from the executor result.
+    # When ``executed`` is omitted, treat all decided items as
+    # succeeded (legacy callers without success-tracking).
+    succeeded_item_ids: set[str] | None = None
+    if executed is not None:
+        succeeded_item_ids = set()
+        details = (executed or {}).get("details", {}) or {}
+        for bucket_name in (
+            "closed", "tasks_created", "tasks_recorded", "grouped", "left",
+        ):
+            for entry in details.get(bucket_name, []) or []:
+                for iid in entry.get("item_ids", []) or []:
+                    if iid:
+                        succeeded_item_ids.add(iid)
+
     keys: list[tuple[str, str]] = []
     for action_groups in presentation.get("groups_by_action", {}).values():
         for group in action_groups:
@@ -37,8 +56,14 @@ def _filter_keys(presentation: dict, decisions: dict) -> list[tuple[str, str]]:
                 continue
             for item in group.get("items", []) or []:
                 iid = item.get("id")
-                if iid:
-                    keys.append((run_id, iid))
+                if not iid:
+                    continue
+                if (
+                    succeeded_item_ids is not None
+                    and iid not in succeeded_item_ids
+                ):
+                    continue
+                keys.append((run_id, iid))
     return keys
 
 
@@ -191,3 +216,87 @@ def test_group_with_multiple_items() -> None:
     decisions = {"group_decisions": [{"group_index": 0, "action": "leave"}]}
     keys = _filter_keys(pres, decisions)
     assert sorted(keys) == [("bgt_TEST", "a"), ("bgt_TEST", "b"), ("bgt_TEST", "c")]
+
+
+# ---------------------------------------------------------------------------
+# Success-only filter (the second-fix gap)
+# ---------------------------------------------------------------------------
+
+
+def test_failed_op_does_not_mark_reviewed() -> None:
+    """When the executor reports a failure for an item, that item must
+    NOT be marked reviewed — it stays pending so the user can retry.
+
+    This is the bug that caused the user's "This is a test task!"
+    submit to silently disappear: the bridge timed out writing the
+    note, create_task raised ObsidianPostWriteUncertain, the executor
+    caught it into errors[]; but the dashboard still stamped the
+    entry reviewed because it didn't check success.
+    """
+    pres = _make_presentation(2)
+    decisions = {
+        "group_decisions": [
+            {"group_index": 0, "action": "create_task"},
+            {"group_index": 1, "action": "leave"},
+        ],
+    }
+    # Executor result: group 0's create_task failed (not in any
+    # success bucket; only in errors). Group 1's leave succeeded.
+    executed = {
+        "details": {
+            "left": [{"item_ids": ["j_001"]}],
+            "tasks_created": [],  # failed, no entry here
+            "errors": [
+                {"action": "create_task", "task_text": "...", "error": "bridge timed out"},
+            ],
+        }
+    }
+    keys = _filter_keys(pres, decisions, executed=executed)
+    # j_000 (the failed create_task) should NOT be stamped.
+    # j_001 (the successful leave) should be stamped.
+    assert keys == [("bgt_TEST", "j_001")]
+
+
+def test_successful_create_task_marks_reviewed() -> None:
+    """Sanity: when create_task succeeds, the item IS stamped reviewed."""
+    pres = _make_presentation(1)
+    decisions = {
+        "group_decisions": [{"group_index": 0, "action": "create_task"}],
+    }
+    executed = {
+        "details": {
+            "tasks_created": [
+                {"item_ids": ["j_000"], "task_id": "t-NEW", "task_text": "..."},
+            ],
+            "errors": [],
+        }
+    }
+    keys = _filter_keys(pres, decisions, executed=executed)
+    assert keys == [("bgt_TEST", "j_000")]
+
+
+def test_partial_success_only_marks_succeeded_items() -> None:
+    """A submit covering 3 cards: 2 succeed, 1 fails. Only the 2
+    successes get marked reviewed."""
+    pres = _make_presentation(3)
+    decisions = {
+        "group_decisions": [
+            {"group_index": 0, "action": "leave"},
+            {"group_index": 1, "action": "create_task"},
+            {"group_index": 2, "action": "leave"},
+        ],
+    }
+    executed = {
+        "details": {
+            "left": [
+                {"item_ids": ["j_000"]},
+                {"item_ids": ["j_002"]},
+            ],
+            "tasks_created": [],  # group 1's create_task failed
+            "errors": [
+                {"action": "create_task", "error": "consent denied"},
+            ],
+        }
+    }
+    keys = _filter_keys(pres, decisions, executed=executed)
+    assert sorted(keys) == [("bgt_TEST", "j_000"), ("bgt_TEST", "j_002")]

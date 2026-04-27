@@ -1170,18 +1170,39 @@ def api_review_execute():
         logger.exception("api_review_execute: execute failed")
         return jsonify({"status": "error", "error": str(exc)}), 500
 
-    # Slice 1 fix (data-loss bug): only mark reviewed the entries
-    # whose groups actually had decisions submitted. Previously this
-    # walked the entire presentation and stamped every entry —
-    # disastrous when the frontend uses per-group submit (each card
-    # has its own button), because submitting one card would mark all
-    # cards reviewed and they'd vanish from the Review tab on next
-    # load.
+    # Slice 1 fix (data-loss bug): only mark reviewed entries that
+    # were (a) decided on by this submit AND (b) whose op actually
+    # succeeded. The original code walked the entire presentation
+    # and stamped every entry — so submitting one card via the
+    # per-group-submit frontend marked all cards reviewed.
+    #
+    # The first fix narrowed by ``group_index in decided_indices``,
+    # but missed a second case: an op can FAIL (bridge timeout,
+    # consent denial, EditorConflict) and still get stamped, so the
+    # user sees the card disappear with no task created. The second
+    # filter — ``item_ids appears in a successful-op bucket`` —
+    # closes that gap. Failed entries stay pending so the user can
+    # retry.
     decided_indices: set[int] = set()
     for gd in (decisions.get("group_decisions") or []):
         idx = gd.get("group_index")
         if isinstance(idx, int):
             decided_indices.add(idx)
+
+    # Walk the executor's per-action success buckets and collect every
+    # item_id that landed in one. Buckets the executor populates on
+    # success: closed, tasks_created, tasks_recorded, grouped, left.
+    # Failed ops only live in ``details.errors`` (not in any success
+    # bucket), so they're naturally excluded.
+    succeeded_item_ids: set[str] = set()
+    details = (executed or {}).get("details", {}) or {}
+    for bucket_name in (
+        "closed", "tasks_created", "tasks_recorded", "grouped", "left",
+    ):
+        for entry in details.get(bucket_name, []) or []:
+            for iid in entry.get("item_ids", []) or []:
+                if iid:
+                    succeeded_item_ids.add(iid)
 
     keys: list[tuple[str, str]] = []
     for action_groups in presentation.get("groups_by_action", {}).values():
@@ -1193,8 +1214,11 @@ def api_review_execute():
                 continue
             for item in group.get("items", []) or []:
                 iid = item.get("id")
-                if iid:
-                    keys.append((run_id, iid))
+                if not iid:
+                    continue
+                if iid not in succeeded_item_ids:
+                    continue  # op failed for this item — keep pending
+                keys.append((run_id, iid))
 
     stamped = 0
     if keys:
