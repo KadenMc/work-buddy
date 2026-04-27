@@ -2093,6 +2093,37 @@ def _context_capabilities() -> list[Capability]:
             mutates_state=True,
             auto_retry=False,
         ),
+        Capability(
+            name="triage_pool_sweep",
+            description=(
+                "Daily liveness pass over the triage pool (Slice 1). Walks every "
+                "pending PoolEntry: marks expired entries as 'stale' (TTL from "
+                "the source descriptor) and quarantines entries whose source no "
+                "longer resolves (file deleted, journal text drifted beyond the "
+                "match threshold, etc.). Source-specific behavior lives in the "
+                "source descriptor registry (work_buddy/triage/sources.py). "
+                "Non-destructive: state changes only; entries stay on disk."
+            ),
+            category="context",
+            search_aliases=[
+                "sweep triage pool",
+                "quarantine stale triage",
+                "triage liveness check",
+                "drop ghost pool entries",
+                "purge stale triage",
+            ],
+            parameters={
+                "dry_run": {"type": "bool", "description": "When true, computes what would change but does not write back. Useful for rehearsal.", "required": False},
+                "source": {"type": "str", "description": "Optional source filter (e.g. 'journal_thread', 'inline'). Other sources untouched.", "required": False},
+                "max_entries": {"type": "int", "description": "Safety cap on entries inspected per pass.", "required": False},
+            },
+            callable=(lambda **kw: __import__(
+                "work_buddy.triage.capabilities.triage_pool_sweep",
+                fromlist=["triage_pool_sweep"],
+            ).triage_pool_sweep(**kw)),
+            mutates_state=True,
+            auto_retry=False,
+        ),
 
         # ── Chrome tab mutations ────────────────────────────────
         Capability(
