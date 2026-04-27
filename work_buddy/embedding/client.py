@@ -69,6 +69,7 @@ def embed(
     *,
     model: str | None = None,
     prompt_name: str | None = None,
+    timeout_s: int | None = None,
 ) -> list[list[float]] | None:
     """Embed texts via the shared service. Returns None if unavailable.
 
@@ -76,14 +77,23 @@ def embed(
         texts: Texts to embed.
         model: Model key (e.g. "leaf-mt", "leaf-ir"). Defaults to service default.
         prompt_name: Prompt name for asymmetric models (e.g. "query", "document").
+        timeout_s: Override the per-request timeout in seconds. When None,
+            uses ``max(30, len(texts) * 2)``. Indexing callers should pass a
+            larger value when targeting a lazy-loaded model — the first
+            request triggers a SentenceTransformer instantiation that for
+            large passage encoders runs into the tens of seconds, well past
+            the default 30s floor for small cache-miss batches.
     """
     payload: dict[str, Any] = {"texts": texts}
     if model:
         payload["model"] = model
     if prompt_name:
         payload["prompt_name"] = prompt_name
-    # Larger batches need more time (especially leaf-ir doc encoding on CPU/GPU)
-    timeout = max(30, len(texts) * 2)
+    if timeout_s is None:
+        # Larger batches need more time (especially leaf-ir doc encoding on CPU/GPU)
+        timeout = max(30, len(texts) * 2)
+    else:
+        timeout = timeout_s
     result = _request("POST", "/embed", payload, timeout=timeout)
     if result is None:
         return None
@@ -93,6 +103,8 @@ def embed(
 def embed_for_ir(
     texts: list[str],
     role: str = "document",
+    *,
+    timeout_s: int | None = None,
 ) -> list[list[float]] | None:
     """Convenience wrapper for IR encoding.
 
@@ -105,12 +117,18 @@ def embed_for_ir(
     Args:
         texts: Texts to embed.
         role: "query" for search queries, "document" for indexing documents.
+        timeout_s: Override the per-request timeout. Indexing callers using
+            ``role="document"`` should pass a value large enough to absorb a
+            cold ``leaf-ir`` SentenceTransformer load. See ``embed()`` for
+            the underlying rationale; see
+            ``work_buddy.knowledge.index._CONTENT_COLD_LOAD_TIMEOUT_S`` for a
+            tuned reference value.
     """
     if role not in ("query", "document"):
         raise ValueError(f"role must be 'query' or 'document', got '{role}'")
     if role == "query":
-        return embed(texts, model="leaf-ir-query", prompt_name="query")
-    return embed(texts, model="leaf-ir", prompt_name="document")
+        return embed(texts, model="leaf-ir-query", prompt_name="query", timeout_s=timeout_s)
+    return embed(texts, model="leaf-ir", prompt_name="document", timeout_s=timeout_s)
 
 
 def ir_search(

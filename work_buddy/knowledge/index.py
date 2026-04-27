@@ -32,6 +32,19 @@ logger = get_logger(__name__)
 # Batch size for embedding requests (matches embedding service batch_size)
 _EMBED_BATCH_SIZE = 32
 
+# Per-batch timeout floor for the content-vector build (only). The first
+# document-encode request after a sidecar boot triggers a lazy load of the
+# ``leaf-ir`` SentenceTransformer, which can run into the tens of seconds.
+# The client's default ``max(30, len(texts) * 2)`` formula yields 30s for
+# typical small cache-miss batches — too short, so the first build would
+# time out and silently leave ``has_content_vectors=False`` until something
+# triggered another rebuild. Tune this floor by measuring the cold-load
+# time of the current encoder on representative hardware and adding margin;
+# once the model is warm, subsequent batches finish fast and never come
+# close to it. See ``architecture/embedding-service`` (dev_notes, "Lazy
+# models: cold-load timeout tolerance") for the full rationale.
+_CONTENT_COLD_LOAD_TIMEOUT_S = 120
+
 # Default RRF constant (Cormack/Clarke/Buettcher 2009). Higher = flatter fusion.
 _RRF_K = 60
 
@@ -431,7 +444,11 @@ class KnowledgeIndex:
                 texts = [t for _, t in to_embed]
                 new_vecs = self._embed_in_batches(
                     texts,
-                    embed_fn=lambda batch: embed_for_ir(batch, role="document"),
+                    embed_fn=lambda batch: embed_for_ir(
+                        batch,
+                        role="document",
+                        timeout_s=max(_CONTENT_COLD_LOAD_TIMEOUT_S, len(batch) * 2),
+                    ),
                     label="content dense",
                     expected_generation=expected_generation,
                 )
