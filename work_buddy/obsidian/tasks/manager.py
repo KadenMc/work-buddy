@@ -448,6 +448,56 @@ def get_tasks_by_state(target_state: str) -> list[dict[str, Any]]:
     return matched
 
 
+def task_search(
+    query: str,
+    *,
+    limit: int = 50,
+    include_archived: bool = False,
+    include_done: bool = True,
+) -> dict[str, Any]:
+    """Search tasks by description text via the SQLite store.
+
+    Bridge-independent: the description column on ``task_metadata`` is
+    backfilled by ``task_sync`` from the master task list, so a stale
+    bridge or an Obsidian that isn't running doesn't block this lookup.
+    Useful precisely when the bridge IS unavailable — the dashboard,
+    a sidecar job, or the agent recovering from an outage all benefit
+    from a store-only path to find tasks by text.
+
+    Returns task records (full ``task_metadata`` rows) ordered by most
+    recently updated first. Each record includes ``task_id``,
+    ``state``, ``urgency``, ``description``, the Slice 2 GTD vocabulary
+    fields, plus the timestamp triplet (created/updated/completed).
+
+    Args:
+        query: Substring to search for. Empty string returns nothing.
+        limit: Maximum results (default 50).
+        include_archived: Include rows with ``archived_at`` set.
+        include_done: Include rows with ``state='done'``.
+
+    Returns:
+        Dict with ``query``, ``count``, and ``tasks`` keys.
+
+    Note: this is the dedicated *task-line description* search — for
+    full-text search over task NOTES (the `[[uuid|📓]]`-linked detail
+    files), use ``context_search(source="task_note")`` which is hybrid
+    BM25+embedding retrieval over note bodies. The two are
+    complementary: this surfaces tasks by their headline text, that
+    one surfaces them by note content.
+    """
+    rows = store.search_by_description(
+        query,
+        limit=limit,
+        include_archived=include_archived,
+        include_done=include_done,
+    )
+    return {
+        "query": query,
+        "count": len(rows),
+        "tasks": rows,
+    }
+
+
 def get_inbox_count() -> int:
     """Get total inbox task count from both store and inline tags."""
     return len(get_tasks_by_state("inbox"))

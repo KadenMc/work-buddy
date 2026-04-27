@@ -3289,6 +3289,7 @@ def _task_capabilities() -> list[Capability]:
         daily_briefing,
         review_inbox,
         stale_check,
+        task_search,
         update_task,
         archive_completed,
         weekly_review_data,
@@ -3580,6 +3581,38 @@ def _task_capabilities() -> list[Capability]:
                 "update task wording",
                 "rephrase task",
                 "rewrite task line",
+            ],
+        ),
+        Capability(
+            name="task_search",
+            description=(
+                "Search tasks by description text via the SQLite store. "
+                "Bridge-independent — works even when Obsidian isn't "
+                "running. Returns task records (full task_metadata "
+                "rows) ordered most-recently-updated first. For "
+                "full-text search over task NOTE bodies (the "
+                "[[uuid|📓]]-linked detail files), use "
+                "context_search(source='task_note') instead — that's "
+                "hybrid retrieval over note content; this is exact-text "
+                "search over the line description."
+            ),
+            category="tasks",
+            parameters={
+                "query": {"type": "str", "description": "Substring to search for in task description text. Empty string returns nothing.", "required": True},
+                "limit": {"type": "int", "description": "Max results (default 50)", "required": False},
+                "include_archived": {"type": "bool", "description": "Include archived tasks (default False)", "required": False},
+                "include_done": {"type": "bool", "description": "Include completed tasks (default True)", "required": False},
+            },
+            callable=task_search,
+            requires=[],  # SQLite-only — no bridge needed
+            search_aliases=[
+                "find task",
+                "search tasks",
+                "find a task by name",
+                "look up task",
+                "task by description",
+                "tasks containing",
+                "search task descriptions",
             ],
         ),
         Capability(
