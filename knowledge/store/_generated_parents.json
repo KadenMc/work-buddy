@@ -105,13 +105,14 @@
       "context/session_wb_activity",
       "context/triage_execute",
       "context/triage_item_detail",
+      "context/triage_pool_sweep",
       "context/triage_review_pool",
       "context/triage_submit",
       "context/workflow_create",
       "context/workflow_update"
     ],
     "content": {
-      "summary": "Container for 60 capabilities and workflows."
+      "summary": "Container for 61 capabilities and workflows."
     }
   },
   "artifacts": {
@@ -141,10 +142,13 @@
       "status"
     ],
     "children": [
+      "status/claude_code_usage_scan",
+      "status/escalation_recent",
       "status/feature_status",
       "status/list_sessions",
       "status/llm_call",
       "status/llm_costs",
+      "status/llm_costs_query",
       "status/llm_submit",
       "status/llm_with_tools",
       "status/mcp_registry_reload",
@@ -161,7 +165,7 @@
       "status/tailscale_status"
     ],
     "content": {
-      "summary": "Container for 18 capabilities and workflows."
+      "summary": "Container for 21 capabilities and workflows."
     }
   },
   "messaging": {

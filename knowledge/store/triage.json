@@ -1,0 +1,37 @@
+{
+  "triage/source-descriptors": {
+    "kind": "system",
+    "name": "Source Descriptors (Triage Pool)",
+    "description": "Per-source lifecycle declarations driving TTL and quarantine triggers in the daily pool sweep",
+    "content": {
+      "full": "# Source Descriptors\n\nEvery entry in the triage pool was captured from some **source** — a journal\nthread, a Chrome tab, an inline Obsidian selection, etc. Sources differ in\nlifecycle expectations:\n\n- A journal thread might be re-edited by the user as the day's running notes\n  evolve; the original captured text might no longer reflect the user's intent.\n- A Chrome tab can be closed; once gone, the captured page text is a ghost.\n- An inline `send-to-agent` selection is the user's affirmative capture;\n  treating it as transient would erode trust (V2a — capture promise integrity).\n\nRather than hard-coding per-source TTLs and quarantine rules in the sweeper,\neach source declares a `SourceDescriptor`. The daily sweep dispatches on the\ndescriptor; new sources register their own descriptor and inherit the sweep\nmachinery for free.\n\n## Anatomy of a descriptor\n\n```python\nSourceDescriptor(\n    name=\"journal_thread\",\n    ttl_days=5,\n    quarantine_triggers=[\n        \"source_removed\",\n        \"source_edited_beyond_match\",\n    ],\n    config={\n        \"edit_match_threshold\": 0.85,\n    },\n)\n```\n\n- `name` — the source identifier (matches `PoolEntry.source`).\n- `ttl_days` — soft expiry in days, or `None` for no auto-expiry. After this\n  many days, the sweep transitions `state` from `pending` to `stale`.\n- `quarantine_triggers` — ordered list of trigger names. The sweep evaluates\n  each in order; the first one that fires sets `quarantine_reason` and\n  transitions `state` to `quarantined`.\n- `config` — open dict of source-specific knobs the trigger functions read\n  (e.g. inline's `capture_tag`, journal's `edit_match_threshold`).\n\n## Defaults shipped (Slice 1)\n\n| Source            | TTL  | Triggers                                           |\n|-------------------|------|----------------------------------------------------|\n| `journal_thread`  | 5d   | `source_removed`, `source_edited_beyond_match`     |\n| `chrome_tab`      | 2d   | `source_removed`                                   |\n| `inline`          | null | `source_removed`                                   |\n\nInline TTL is intentionally `null`. User-affirmative captures should not\nauto-expire — see Slice 1's design discussion.\n\n## Override path\n\nUsers override per-source under `triage.pool.sources.<name>` in\n`config.local.yaml`. Deep-merges on top of code defaults; missing keys\ninherit:\n\n```yaml\ntriage:\n  pool:\n    sources:\n      journal_thread:\n        ttl_days: 14   # extend journal TTL; everything else inherits\n      inline:\n        config:\n          capture_tag: \"wb/saved\"   # override one config key, others inherit\n```\n\nNew sources register a fresh descriptor (any keys not specified default to\nempty / null).\n\n## Trigger functions\n\nLive in `work_buddy/triage/sources_triggers.py`. Dispatched by name from\nthe descriptor's `quarantine_triggers` list. Contract:\n\n```python\ndef trigger_<name>(\n    entry: PoolEntry,\n    descriptor: SourceDescriptor,\n) -> str | None\n```\n\nReturn `None` for \"did not fire\"; return a non-empty string for the\nhuman-readable reason that gets persisted to `quarantine_reason`.\n\n**Triggers MUST be defensive.** The sweep runs daily, unattended, against\nevery pending entry. A trigger that raises kills the whole pass. Catch\ntransport / filesystem failures and return `None` (treat ambiguous as\n\"still live\"); never raise.\n\nCurrently shipped:\n\n- `source_removed` — file / tab / journal-date no longer resolves.\n- `source_edited_beyond_match` — captured text no longer found in source\n  (difflib.SequenceMatcher.ratio < threshold; default 0.85).\n- `tag_removed` — placeholder for the future inline tag-write flow.\n  Currently a no-op.\n\n## Why this lives separate from `triage/config.py`\n\nThe config file holds *stage-shape* config — profile names, max_tokens,\nthe escalation chain. Knobs about HOW the LLM call runs.\n\nThe source registry holds *lifecycle* config — TTLs, quarantine triggers.\nKnobs about how entries AGE in the pool.\n\nDifferent concerns, different override surfaces, different consumers.\nKeeping them in separate files lets the migration script and the daily\nsweep import the lifecycle config without pulling in the LLM stack."
+    },
+    "tags": [
+      "triage",
+      "pool",
+      "sources",
+      "lifecycle",
+      "sweep",
+      "ttl",
+      "quarantine",
+      "registry"
+    ],
+    "aliases": [
+      "source descriptor",
+      "pool source registry",
+      "SOURCE_REGISTRY",
+      "source registry",
+      "quarantine triggers",
+      "pool TTL",
+      "per-source TTL"
+    ],
+    "parents": [
+      "triage"
+    ],
+    "dev_notes": "Naming: descriptor data lives in `sources.py`; trigger functions in `sources_triggers.py`. Keep these split — `sources.py` is data-only and importable from migration scripts without paying for bridge / vault helpers. Importing it must NOT pull in obsidian.bridge.\n\nAdding a trigger: append the name to `KNOWN_TRIGGERS` in `sources.py`, write the function in `sources_triggers.py` with signature `(entry, descriptor) -> str | None`, register in `_TRIGGER_DISPATCH`. Triggers MUST be defensive — return None on any failure (transport, ambiguity); never raise. The sweep is unattended, one bad trigger poisons the whole pass otherwise.\n\nDescriptors validate at construction: unknown trigger names raise. This is intentional — typos in user config should fail loudly at load, not silently leave entries un-quarantined forever.\n\nThe registry is cached at module level (`_REGISTRY_CACHE`); call `reset_for_tests()` between tests if you monkeypatch config. The pool's `_compute_expires_at` soft-imports this module to avoid an import cycle (sources imports background for type hints).\n\nWhy not put this in `triage/config.py`: that file holds stage-shape config (profile names, max_tokens, escalation chain) — knobs about HOW the LLM call runs. This file holds lifecycle config (TTLs, quarantine triggers) — knobs about how entries AGE in the pool. Different concerns; keep them split.",
+    "entry_points": [
+      "work_buddy.triage.sources",
+      "work_buddy.triage.sources_triggers"
+    ]
+  }
+}
