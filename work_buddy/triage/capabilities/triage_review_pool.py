@@ -158,6 +158,15 @@ def _build_presentation_from_pool(
 
     all_item_ids: list[str] = []
     for i, pe in enumerate(entries):
+        # Slice 1: raw entries (verdict_pass gated off) carry no
+        # ``recommended_action``, no rationale, no group_intent. The
+        # default verdicted-card layout puts IR-context plumbing in the
+        # spotlight and buries the user's captured text. Render them
+        # differently: lead with the captured text, drop the IR
+        # context, mark them clearly as needing triage. Slice 3 brings
+        # GTD-shaped verdicts back; until then this is the right shape.
+        is_raw = bool(pe.verdict.get("raw"))
+
         action = pe.verdict.get("recommended_action", "leave")
         if action not in groups_by_action:
             action = "leave"
@@ -178,30 +187,49 @@ def _build_presentation_from_pool(
         if url:
             modal_item["url"] = url
 
-        # Prefer the agent-supplied group_intent (short, noun-phrase
-        # naming the *intent*). Fall back ladder:
-        #   1. explicit group_intent field (best)
-        #   2. suggested_task_text (agents emit this reliably for
-        #      create_task; it's usually a clean noun-phrase and
-        #      beats a rationale excerpt for a card title)
-        #   3. rationale first 120 chars (last resort; keeps
-        #      backwards compat with pre-group_intent pool entries)
-        intent = (
-            pe.verdict.get("group_intent")
-            or pe.verdict.get("suggested_task_text")
-            or _short(pe.verdict.get("rationale", ""), 120)
-        )
+        if is_raw:
+            # Card title = first ~80 chars of the captured text, with
+            # any leading capture-marker prose stripped so the user's
+            # actual thought is what shows up.
+            intent = _raw_intent_from_text(text)
+            rationale = (
+                "Raw capture — verdict pending. "
+                "Slice 3 will revisit with the new GTD-shaped schema; "
+                "for now, pick an action manually."
+            )
+            # Drop IR-context display: it's pre-LLM enrichment, not
+            # content. Showing it dominates the visual without value.
+            context_block = ""
+        else:
+            # Verdicted entry — original presentation. Prefer the
+            # agent-supplied group_intent (short, noun-phrase naming
+            # the *intent*). Fall back ladder:
+            #   1. explicit group_intent field (best)
+            #   2. suggested_task_text (agents emit this reliably for
+            #      create_task; it's usually a clean noun-phrase and
+            #      beats a rationale excerpt for a card title)
+            #   3. rationale first 120 chars (last resort; keeps
+            #      backwards compat with pre-group_intent pool entries)
+            intent = (
+                pe.verdict.get("group_intent")
+                or pe.verdict.get("suggested_task_text")
+                or _short(pe.verdict.get("rationale", ""), 120)
+            )
+            rationale = pe.verdict.get("rationale", "")
+            context_block = _render_context_block(ir_ctx)
+
         presentation_group: dict[str, Any] = {
             "index": i,
             "intent": intent,
             "confidence": _confidence_label(pe.verdict.get("confidence")),
             "items": [modal_item],
-            "rationale": pe.verdict.get("rationale", ""),
-            "context": _render_context_block(ir_ctx),
+            "rationale": rationale,
+            "context": context_block,
             "ambiguities": [],
             "likely_task_id": pe.verdict.get("target_task_id", "") or "",
             "suggested_action": action,
             "pool_run_id": pe.run_id,  # non-UI; used for mark_reviewed
+            "is_raw": is_raw,          # non-UI; lets renderers tag the card
         }
         if action == "create_task":
             presentation_group["suggested_task_text"] = (
@@ -227,6 +255,35 @@ def _build_presentation_from_pool(
         "has_clarifying_questions": False,
         "revisions": 0,
     }
+
+
+def _raw_intent_from_text(text: str, max_chars: int = 80) -> str:
+    """Build a card-title intent string for a raw entry.
+
+    The captured text often leads with a Telegram-capture marker like::
+
+        > #wb/capture/mobile from Kaden McKeen (@kadenmckeen) at 2026-04-27 10:17
+        GTD: he has a nice sort of is this thing 2 minutes? ...
+
+    Stripping the marker exposes the user's actual thought, which is
+    what makes a useful card title. The strip is conservative — if no
+    marker pattern is matched, return the leading ``max_chars`` of the
+    raw text as-is.
+    """
+    if not text:
+        return "(empty capture — needs triage)"
+    cleaned = text.strip()
+    # Drop a leading blockquote line (the ``> #wb/capture/...`` marker).
+    # If the next line starts with a "topic prefix" like ``GTD:`` or
+    # ``Idea:``, keep the topic prefix — it's content the user wrote.
+    if cleaned.startswith(">"):
+        nl = cleaned.find("\n")
+        if nl >= 0:
+            cleaned = cleaned[nl + 1:].lstrip()
+    cleaned = cleaned.replace("\n", " ").strip()
+    if not cleaned:
+        return "(empty capture — needs triage)"
+    return _short(cleaned, max_chars)
 
 
 def _short(text: str, n: int) -> str:
