@@ -82,6 +82,66 @@ _DESC_DONE_DATE_RE = re.compile(r"✅\s*\d{4}-\d{2}-\d{2}")
 _DESC_URGENCY_EMOJI_RE = re.compile(r"[🔼⏫]")
 
 
+# Lookahead-only pattern for the FIRST structural boundary that ends
+# the human-readable description portion of a task line. Lookaheads so
+# the boundary itself isn't consumed — we want the position, not the
+# token.
+#
+# Boundaries:
+#   - ``[[`` — a wikilink (the task-note link in particular)
+#   - ``#\S`` — any hashtag (the leading ``#todo`` is stripped by the
+#     prefix match before this regex runs)
+#   - 🆔 / 📅 / ✅ — plugin emojis with adjacent payloads
+#   - 🔼 / ⏫ — urgency emojis
+_DESC_BOUNDARY_LOOKAHEAD = re.compile(r"(?=\[\[|#\S|🆔|📅|✅|🔼|⏫)")
+
+# Match the line prefix that precedes the description.
+_DESC_LINE_PREFIX_RE = re.compile(r"^(\s*-\s*\[.\]\s*#todo\s+)")
+
+
+def replace_description_in_line(line: str, new_description: str) -> str:
+    """Rewrite the description text in-place on a task line.
+
+    Preserves: checkbox state, the ``#todo`` marker, all hashtags
+    (``#projects/*``, namespace tags), wikilinks (note links and any
+    others the user has added), the 🆔 marker and ID, plugin emojis
+    (📅 due date, ✅ done date, 🔼/⏫ urgency).
+
+    Boundary detection: the description is the run between ``#todo``
+    and the first structural marker (``[[``, ``#<non-space>``, plugin
+    emoji). For tasks created via ``create_task`` the description never
+    contains these characters, so the boundary is unambiguous. For
+    user-hand-edited tasks where the description contains a ``#`` (e.g.
+    issue references like "fix #123") or ``[[``, the rewrite boundary
+    will be earlier than expected — those tokens get pushed into the
+    "metadata suffix" and end up appearing after the new description.
+    Document this caveat in ``task_update_description``'s docstring.
+
+    If ``line`` doesn't match the standard task-line shape, returns
+    the line unchanged. Callers should treat that as a no-op.
+    """
+    prefix_match = _DESC_LINE_PREFIX_RE.match(line)
+    if not prefix_match:
+        return line
+
+    prefix = prefix_match.group(1)
+    rest = line[prefix_match.end():]
+
+    boundary = _DESC_BOUNDARY_LOOKAHEAD.search(rest)
+    if boundary is None:
+        # Description-only line (no metadata after — unusual but fine).
+        suffix = ""
+    else:
+        suffix = rest[boundary.start():]
+
+    new_desc = new_description.strip().replace("\n", " ").replace("\r", " ")
+    new_desc = re.sub(r"\s+", " ", new_desc)
+
+    if suffix:
+        return f"{prefix}{new_desc} {suffix}".rstrip()
+    return f"{prefix}{new_desc}".rstrip()
+
+
 def extract_description_from_line(line: str) -> str:
     """Pull the clean human-readable description out of a task line.
 
@@ -1050,6 +1110,142 @@ def delete_task(
         "success": removed["task_line"],
         "task_id": task_id,
         "removed": removed,
+    }
+
+
+@requires_consent(
+    operation="tasks.update_task",
+    reason="Rewrite the description text on a task line.",
+    risk="moderate",
+    default_ttl=30,
+)
+@bridge_retry()
+def update_task_description(
+    task_id: str,
+    new_description: str,
+    *,
+    file_path: str | None = None,
+) -> dict[str, Any]:
+    """Rewrite the description text on a task line.
+
+    Replaces the human-readable text portion of the task line — the
+    span between ``#todo`` and the first structural marker (wikilink,
+    hashtag, plugin emoji). All structural tokens are preserved:
+    checkbox state, ``#todo``, ``#projects/*``, namespace tags,
+    wikilinks (including the task-note link ``[[uuid|📓]]``), 🆔 + ID,
+    plugin emojis (📅 due date, ✅ done date, 🔼/⏫ urgency).
+
+    The SQLite store's description column is updated in lockstep — file
+    first, store second (same ordering as ``update_task``). If the file
+    write fails, the store is not touched.
+
+    This capability exists to give agents a safe way to rewrite task
+    text without filesystem-direct ``Edit`` on master-task-list.md, which
+    is the read-modify-write race that Slice C addresses. Once Slice C
+    ships, this routes through the atomic ``app.vault.process()`` path
+    automatically; pre-Slice-C, it goes through the same
+    ``_find_and_replace_task_line`` engine that the other mutations
+    use.
+
+    Args:
+        task_id: Task ID (e.g., 't-a3f8c1e2'). Required.
+        new_description: New description text. Whitespace is collapsed
+            to single spaces; newlines are stripped (task lines are
+            single-line by construction).
+        file_path: Vault-relative path. Default:
+            ``tasks/master-task-list.md``.
+
+    Returns:
+        Dict with ``success``, ``task_id``, ``old_description``,
+        ``new_description``, ``file``, ``line_number``, and
+        ``store_updated`` keys.
+
+    Caveat: if the *current* description on the line contains a ``#``
+    (e.g. issue references like "fix #123") or ``[[``, the rewrite
+    boundary detection will treat that as a metadata token. The new
+    description still ends up in the description position; the
+    "metadata" portion that follows just contains those tokens. In
+    practice this is benign — the task line still parses correctly and
+    the next ``task_sync`` reclassifies cleanly.
+    """
+    if not task_id:
+        raise ValueError("task_id is required for update_task_description")
+
+    cleaned = (new_description or "").strip()
+    if not cleaned:
+        return {
+            "success": False,
+            "task_id": task_id,
+            "message": "new_description must not be empty after stripping",
+        }
+
+    # Reject newlines — task lines are single-line by construction.
+    if "\n" in cleaned or "\r" in cleaned:
+        # The replace helper would already collapse these; fail loudly
+        # so the caller knows their multiline input got flattened.
+        return {
+            "success": False,
+            "task_id": task_id,
+            "message": (
+                "new_description must be a single line. Use the linked "
+                "task-note for multi-line / detailed content."
+            ),
+        }
+
+    fp = file_path or MASTER_TASK_FILE
+
+    captured_old: dict[str, str] = {}
+
+    def _transform(old_line: str) -> str:
+        captured_old["line"] = old_line
+        captured_old["description"] = extract_description_from_line(old_line)
+        return replace_description_in_line(old_line, cleaned)
+
+    file_result = _find_and_replace_task_line(
+        file_path=fp,
+        task_id=task_id,
+        description_match=None,
+        transform_fn=_transform,
+    )
+
+    if not file_result.get("success"):
+        return file_result
+
+    # Update the store description to match. File-first, store-second
+    # mirrors update_task's ordering: if the file write failed we'd
+    # have returned above; if it succeeded we keep the store consistent.
+    store_updated = False
+    try:
+        if store.get(task_id) is not None:
+            update_result = store.update(
+                task_id,
+                description=cleaned,
+                reason="task_update_description",
+            )
+            store_updated = bool(update_result.get("changed"))
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.warning(
+            "update_task_description: store update failed for %s: %s",
+            task_id, exc,
+        )
+
+    logger.info(
+        "Description updated: %s (%r -> %r)",
+        task_id,
+        captured_old.get("description", ""),
+        cleaned,
+    )
+
+    return {
+        "success": True,
+        "task_id": task_id,
+        "old_description": captured_old.get("description", ""),
+        "new_description": cleaned,
+        "file": file_result.get("file", fp),
+        "line_number": file_result.get("line_number"),
+        "old_line": file_result.get("old_line"),
+        "new_line": file_result.get("new_line"),
+        "store_updated": store_updated,
     }
 
 

@@ -3300,6 +3300,7 @@ def _task_capabilities() -> list[Capability]:
         read_task,
         set_task_tags_on_line,
         toggle_task,
+        update_task_description,
     )
     from work_buddy.obsidian.tasks.sync import task_sync
     from work_buddy.obsidian.tasks.namespace_suggest import (
@@ -3546,6 +3547,39 @@ def _task_capabilities() -> list[Capability]:
                 "change due date",
                 "promote task to MIT",
                 "move task to inbox",
+            ],
+        ),
+        Capability(
+            name="task_update_description",
+            description=(
+                "Rewrite the description text on a task line. Preserves "
+                "checkbox, #todo, #projects/*, namespace tags, wikilinks, "
+                "🆔 + ID, plugin emojis (📅, ✅, urgency). Updates the "
+                "store's description column in lockstep. Use this instead "
+                "of filesystem-direct edits — it routes through the same "
+                "consent-aware, retry-aware path as the other mutations "
+                "and avoids the read-modify-write race on the master "
+                "task list."
+            ),
+            category="tasks",
+            parameters={
+                "task_id": {"type": "str", "description": "Task ID (e.g., 't-a3f8c1e2')", "required": True},
+                "new_description": {"type": "str", "description": "New description text. Single line; whitespace is collapsed.", "required": True},
+                "file_path": {"type": "str", "description": "Vault-relative path. Default: tasks/master-task-list.md", "required": False},
+            },
+            callable=update_task_description,
+            requires=["obsidian"],
+            mutates_state=True,
+            retry_policy="verify_first",
+            consent_operations=["tasks.update_task", "obsidian.write_file"],
+            search_aliases=[
+                "rename task",
+                "rewrite task",
+                "edit task description",
+                "change task text",
+                "update task wording",
+                "rephrase task",
+                "rewrite task line",
             ],
         ),
         Capability(
