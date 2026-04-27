@@ -1190,19 +1190,31 @@ def api_review_execute():
             decided_indices.add(idx)
 
     # Walk the executor's per-action success buckets and collect every
-    # item_id that landed in one. Buckets the executor populates on
-    # success: closed, tasks_created, tasks_recorded, grouped, left.
-    # Failed ops only live in ``details.errors`` (not in any success
-    # bucket), so they're naturally excluded.
+    # item_id that landed in one. Failed ops only live in
+    # ``details.errors`` (not in any success bucket), so they're
+    # naturally excluded.
+    #
+    # The executor's bucket shapes are historically inconsistent: some
+    # buckets carry an ``item_ids`` list (tasks_created, tasks_recorded,
+    # grouped — naturally multi-item) and others carry a singular
+    # ``item_id`` (closed, left — naturally per-item). Handle both.
+    # ``skipped_stale`` is excluded so the user can re-decide stale
+    # entries instead of having them silently disappear.
     succeeded_item_ids: set[str] = set()
     details = (executed or {}).get("details", {}) or {}
     for bucket_name in (
-        "closed", "tasks_created", "tasks_recorded", "grouped", "left",
+        "tasks_created", "tasks_recorded", "grouped",
+        "closed", "left",
     ):
         for entry in details.get(bucket_name, []) or []:
+            # Plural form: item_ids list
             for iid in entry.get("item_ids", []) or []:
                 if iid:
                     succeeded_item_ids.add(iid)
+            # Singular form: item_id scalar
+            single = entry.get("item_id")
+            if single:
+                succeeded_item_ids.add(single)
 
     keys: list[tuple[str, str]] = []
     for action_groups in presentation.get("groups_by_action", {}).values():

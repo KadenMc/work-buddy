@@ -39,12 +39,16 @@ def _filter_keys(
         succeeded_item_ids = set()
         details = (executed or {}).get("details", {}) or {}
         for bucket_name in (
-            "closed", "tasks_created", "tasks_recorded", "grouped", "left",
+            "tasks_created", "tasks_recorded", "grouped",
+            "closed", "left",
         ):
             for entry in details.get(bucket_name, []) or []:
                 for iid in entry.get("item_ids", []) or []:
                     if iid:
                         succeeded_item_ids.add(iid)
+                single = entry.get("item_id")
+                if single:
+                    succeeded_item_ids.add(single)
 
     keys: list[tuple[str, str]] = []
     for action_groups in presentation.get("groups_by_action", {}).values():
@@ -273,6 +277,59 @@ def test_successful_create_task_marks_reviewed() -> None:
     }
     keys = _filter_keys(pres, decisions, executed=executed)
     assert keys == [("bgt_TEST", "j_000")]
+
+
+def test_leave_action_marks_reviewed_singular_item_id() -> None:
+    """The 'leave' bucket uses singular ``item_id`` (not ``item_ids``).
+    The success-filter must accept that form, otherwise every Leave-As-Is
+    submit would silently fail to mark the entry reviewed."""
+    pres = _make_presentation(1)
+    decisions = {"group_decisions": [{"group_index": 0, "action": "leave"}]}
+    executed = {
+        "details": {
+            "left": [
+                {"item_id": "j_000", "label": "..."},  # singular form!
+            ],
+            "errors": [],
+        }
+    }
+    keys = _filter_keys(pres, decisions, executed=executed)
+    assert keys == [("bgt_TEST", "j_000")]
+
+
+def test_close_action_marks_reviewed_singular_item_id() -> None:
+    """The 'closed' bucket also uses singular ``item_id`` (Chrome path)."""
+    pres = _make_presentation(1)
+    decisions = {"group_decisions": [{"group_index": 0, "action": "close"}]}
+    executed = {
+        "details": {
+            "closed": [
+                {"item_id": "j_000", "tab_id": 42, "label": "..."},
+            ],
+            "errors": [],
+        }
+    }
+    keys = _filter_keys(pres, decisions, executed=executed)
+    assert keys == [("bgt_TEST", "j_000")]
+
+
+def test_skipped_stale_does_not_mark_reviewed() -> None:
+    """``skipped_stale`` is intentionally excluded — the user should
+    have a chance to re-decide stale entries instead of having them
+    silently disappear."""
+    pres = _make_presentation(1)
+    decisions = {"group_decisions": [{"group_index": 0, "action": "close"}]}
+    executed = {
+        "details": {
+            "closed": [],
+            "skipped_stale": [
+                {"item_id": "j_000", "tab_id": 42, "reason": "URL changed"},
+            ],
+            "errors": [],
+        }
+    }
+    keys = _filter_keys(pres, decisions, executed=executed)
+    assert keys == []
 
 
 def test_partial_success_only_marks_succeeded_items() -> None:
