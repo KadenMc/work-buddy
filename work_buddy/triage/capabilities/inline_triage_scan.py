@@ -134,23 +134,44 @@ def inline_triage_scan(
             "items": [it.to_dict() for it in items],
         }
 
-    # Build the user-context packet once per pass. Sonnet's context
-    # window comfortably fits the full packet so we don't truncate —
-    # Sonnet can weigh all tasks/projects/commits itself rather than
-    # relying on a state-priority prefilter like the local path did.
-    from work_buddy.triage.recommend import build_triage_context
-    triage_context = build_triage_context() if enrich else {}
+    # Slice 1 verdict-pass gate. Even though inline is user-affirmative
+    # (right-click or tag), the verdict is throwaway during the
+    # Slice 1→3 interregnum — Slice 3 replaces the verdict schema.
+    # Gate uniformly with journal_triage_scan; capture still lands in
+    # the pool as a raw entry.
+    from work_buddy.triage.config import load_triage_config
+    cfg = load_triage_config()
+    verdict_pass_enabled = bool(
+        cfg.get("verdict_pass", {}).get("enabled", False)
+    )
 
-    runner = LLMRunner()
+    # Build the user-context packet once per pass when the verdict
+    # pass IS enabled. When disabled, we skip the build (no LLM call
+    # will need it) — saves an unnecessary tasks/contracts/commits
+    # collect on every invocation.
+    if verdict_pass_enabled:
+        from work_buddy.triage.recommend import build_triage_context
+        triage_context = build_triage_context() if enrich else {}
 
-    def _agent(item: TriageItem, run_id: str) -> dict[str, Any]:
-        return _invoke_agent(
-            runner=runner,
-            item=item,
-            run_id=run_id,
-            context=triage_context,
-            tier=tier,
-        )
+        runner = LLMRunner()
+
+        def _agent(item: TriageItem, run_id: str) -> dict[str, Any]:
+            return _invoke_agent(
+                runner=runner,
+                item=item,
+                run_id=run_id,
+                context=triage_context,
+                tier=tier,
+            )
+    else:
+        def _agent(item: TriageItem, run_id: str) -> dict[str, Any]:
+            return {
+                "content": "",
+                "error": (
+                    "verdict_pass disabled but agent invoked — this is a bug"
+                ),
+                "error_kind": "verdict_pass_disabled",
+            }
 
     # ``enrich=False`` on the producer disables IR enrichment — inline
     # uses the ``build_triage_context`` packet above instead, so per-item
@@ -161,6 +182,7 @@ def inline_triage_scan(
         collect=_collect,
         agent=_agent,
         enrich=False,
+        verdict_pass_enabled=verdict_pass_enabled,
     )
     return producer.run(force=force).to_dict()
 

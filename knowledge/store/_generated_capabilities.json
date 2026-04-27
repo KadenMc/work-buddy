@@ -711,6 +711,39 @@
       "context"
     ]
   },
+  "status/claude_code_usage_scan": {
+    "kind": "capability",
+    "name": "Claude Code Usage Scan",
+    "description": "Scan Claude Code's local transcript JSONLs into the cost cache (~/.claude/projects/**/*.jsonl). Incremental by default. Use full_rebuild=true after a pricing or schema change.",
+    "capability_name": "claude_code_usage_scan",
+    "category": "llm",
+    "aliases": [
+      "claude usage",
+      "claude code usage",
+      "transcript scan",
+      "ingest claude code activity",
+      "rescan costs"
+    ],
+    "parameters": {
+      "full_rebuild": {
+        "type": "bool",
+        "description": "Drop and rebuild the cache (default false).",
+        "required": false
+      }
+    },
+    "mutates_state": true,
+    "retry_policy": "manual",
+    "tags": [
+      "llm",
+      "claude",
+      "code",
+      "usage",
+      "scan"
+    ],
+    "parents": [
+      "status"
+    ]
+  },
   "artifacts/commit_record": {
     "kind": "capability",
     "name": "Commit Record",
@@ -2480,6 +2513,58 @@
       "context"
     ]
   },
+  "status/escalation_recent": {
+    "kind": "capability",
+    "name": "Escalation Recent",
+    "description": "Recent LLM-escalation observability records. Each record is one logical job (one LLMRunner.call OR one adapter-level escalation chain across multiple calls) with its full per-tier attempt list, final outcome, and trace correlation.",
+    "capability_name": "escalation_recent",
+    "category": "llm",
+    "aliases": [
+      "tier escalation",
+      "escalation log",
+      "what tier answered",
+      "did this escalate",
+      "fallback chain",
+      "model fallback",
+      "validation failed",
+      "tier observability"
+    ],
+    "parameters": {
+      "limit": {
+        "type": "int",
+        "description": "Max records to return (newest first). Default 50.",
+        "required": false
+      },
+      "trace_id": {
+        "type": "str",
+        "description": "Filter by exact trace_id correlation token.",
+        "required": false
+      },
+      "final_outcome": {
+        "type": "str",
+        "description": "Filter by final_outcome ('success', 'backend_error', 'validation_failed', 'empty_content', 'exhausted').",
+        "required": false
+      },
+      "source": {
+        "type": "str",
+        "description": "Filter by source ('llm_runner', 'journal_segmenter', 'verdict_call').",
+        "required": false
+      },
+      "summary": {
+        "type": "bool",
+        "description": "When true, return aggregate counts (by source / outcome / final_tier, plus 'escalated_past_first') instead of records.",
+        "required": false
+      }
+    },
+    "tags": [
+      "llm",
+      "escalation",
+      "recent"
+    ],
+    "parents": [
+      "status"
+    ]
+  },
   "status/feature_status": {
     "kind": "capability",
     "name": "Feature Status",
@@ -2591,7 +2676,7 @@
   "triage/inline_triage_scan": {
     "kind": "capability",
     "name": "Inline Triage Scan",
-    "description": "Run one triage pass over a single user-sent Obsidian selection (from the 'Send to agent' right-click command). Builds one TriageItem with source='inline', collects the user-context packet (active tasks / contracts / projects / recent commits), and asks Sonnet for a constrained-JSON verdict — parsed and written directly into the Review pool. Escalates to Opus on timeout / context-exceeded / empty content / rate-limited. User-initiated, so force=True by default.",
+    "description": "Run one triage pass over a single user-sent Obsidian selection (from the 'Send to agent' right-click or tag). Builds one TriageItem with source='inline'. When triage.verdict_pass.enabled=true, collects the user-context packet and asks Sonnet for a constrained-JSON verdict (escalates to Opus on timeout / context-exceeded / empty content / rate-limited). Slice 1 default is verdict_pass off — captures land in the pool as raw entries (verdict={raw: true}) until Slice 3 brings the GTD-shaped multi-record schema back. User-initiated, so force=True by default.",
     "capability_name": "inline_triage_scan",
     "category": "triage",
     "aliases": [
@@ -2780,7 +2865,7 @@
   "journal/journal_triage_scan": {
     "kind": "capability",
     "name": "Journal Triage Scan",
-    "description": "Run one background-triage pass over today's Running Notes section. Segments the same-day content into threads via the local LLM, enriches each with hybrid-IR context, and asks Sonnet (escalating to Opus on failure) for a constrained-JSON verdict per thread — written directly into the Review pool. Never mutates the vault. Idempotent on unchanged content. Cadence is a sidecar-job concern; safe to call manually for testing.",
+    "description": "Run one background-triage pass over today's Running Notes section. Segments the same-day content into threads via the local LLM, enriches each with hybrid-IR context, and (when triage.verdict_pass.enabled=true) asks Sonnet (escalating to Opus on failure) for a constrained-JSON verdict per thread. Slice 1 default is verdict_pass off — captures land in the pool as raw entries (verdict={raw: true}) until Slice 3 brings GTD-shaped verdicts back. Never mutates the vault. Idempotent on unchanged content. Cadence is a sidecar-job concern; safe to call manually for testing.",
     "capability_name": "journal_triage_scan",
     "category": "journal",
     "aliases": [
@@ -3281,6 +3366,82 @@
       "status",
       "llm",
       "costs"
+    ],
+    "parents": [
+      "status"
+    ]
+  },
+  "status/llm_costs_query": {
+    "kind": "capability",
+    "name": "Llm Costs Query",
+    "description": "Aggregate LLM cost / usage across one or both data sources (work-buddy's per-call internal log + Claude Code transcripts). Smart parameters: time window (named or ISO range), group_by (project, model, session, day, tool), source filter, min_cost / project / model filters, and previous-window comparison. Single capability covering most cost questions.",
+    "capability_name": "llm_costs_query",
+    "category": "llm",
+    "aliases": [
+      "llm costs",
+      "llm spend",
+      "how much have i spent",
+      "claude api costs",
+      "cost by project",
+      "cost by model",
+      "weekly spend",
+      "monthly spend",
+      "expensive sessions",
+      "burn rate",
+      "cost trend",
+      "spend comparison"
+    ],
+    "parameters": {
+      "window": {
+        "type": "str",
+        "description": "Time window. Named: 'today', 'yesterday', '7d', '30d', '90d', 'month_to_date', 'all'. ISO range: 'YYYY-MM-DD..YYYY-MM-DD'. Single day: 'YYYY-MM-DD'. Default '30d'.",
+        "required": false
+      },
+      "group_by": {
+        "type": "str",
+        "description": "Optional breakdown: 'project', 'model', 'session', 'day', 'tool'. Omit for top-line totals only.",
+        "required": false
+      },
+      "source": {
+        "type": "str",
+        "description": "'all' (default), 'internal' (work-buddy's runner calls), or 'claude_code' (Claude Code transcripts).",
+        "required": false
+      },
+      "min_cost": {
+        "type": "float",
+        "description": "Filter rows where cost_usd < this. Default 0.",
+        "required": false
+      },
+      "project": {
+        "type": "str",
+        "description": "Substring match on project name / cwd.",
+        "required": false
+      },
+      "model": {
+        "type": "str",
+        "description": "Exact-match model filter (e.g. 'claude-sonnet-4-6').",
+        "required": false
+      },
+      "top_n": {
+        "type": "int",
+        "description": "Cap on grouped rows. Default 10. Pass 0 for no cap.",
+        "required": false
+      },
+      "include_local": {
+        "type": "bool",
+        "description": "Include local-LLM rows? Default true.",
+        "required": false
+      },
+      "compare_to_previous": {
+        "type": "bool",
+        "description": "Include previous-equivalent-window comparison (delta_pct_cost, delta_pct_calls). Default true.",
+        "required": false
+      }
+    },
+    "tags": [
+      "llm",
+      "costs",
+      "query"
     ],
     "parents": [
       "status"
@@ -6056,6 +6217,48 @@
       "triage",
       "item",
       "detail"
+    ],
+    "parents": [
+      "context"
+    ]
+  },
+  "context/triage_pool_sweep": {
+    "kind": "capability",
+    "name": "Triage Pool Sweep",
+    "description": "Daily liveness pass over the triage pool (Slice 1). Walks every pending PoolEntry: marks expired entries as 'stale' (TTL from the source descriptor) and quarantines entries whose source no longer resolves (file deleted, journal text drifted beyond the match threshold, etc.). Source-specific behavior lives in the source descriptor registry (work_buddy/triage/sources.py). Non-destructive: state changes only; entries stay on disk.",
+    "capability_name": "triage_pool_sweep",
+    "category": "context",
+    "aliases": [
+      "sweep triage pool",
+      "quarantine stale triage",
+      "triage liveness check",
+      "drop ghost pool entries",
+      "purge stale triage"
+    ],
+    "parameters": {
+      "dry_run": {
+        "type": "bool",
+        "description": "When true, computes what would change but does not write back. Useful for rehearsal.",
+        "required": false
+      },
+      "source": {
+        "type": "str",
+        "description": "Optional source filter (e.g. 'journal_thread', 'inline'). Other sources untouched.",
+        "required": false
+      },
+      "max_entries": {
+        "type": "int",
+        "description": "Safety cap on entries inspected per pass.",
+        "required": false
+      }
+    },
+    "mutates_state": true,
+    "retry_policy": "manual",
+    "tags": [
+      "context",
+      "triage",
+      "pool",
+      "sweep"
     ],
     "parents": [
       "context"

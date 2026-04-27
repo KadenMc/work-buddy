@@ -2093,6 +2093,37 @@ def _context_capabilities() -> list[Capability]:
             mutates_state=True,
             auto_retry=False,
         ),
+        Capability(
+            name="triage_pool_sweep",
+            description=(
+                "Daily liveness pass over the triage pool (Slice 1). Walks every "
+                "pending PoolEntry: marks expired entries as 'stale' (TTL from "
+                "the source descriptor) and quarantines entries whose source no "
+                "longer resolves (file deleted, journal text drifted beyond the "
+                "match threshold, etc.). Source-specific behavior lives in the "
+                "source descriptor registry (work_buddy/triage/sources.py). "
+                "Non-destructive: state changes only; entries stay on disk."
+            ),
+            category="context",
+            search_aliases=[
+                "sweep triage pool",
+                "quarantine stale triage",
+                "triage liveness check",
+                "drop ghost pool entries",
+                "purge stale triage",
+            ],
+            parameters={
+                "dry_run": {"type": "bool", "description": "When true, computes what would change but does not write back. Useful for rehearsal.", "required": False},
+                "source": {"type": "str", "description": "Optional source filter (e.g. 'journal_thread', 'inline'). Other sources untouched.", "required": False},
+                "max_entries": {"type": "int", "description": "Safety cap on entries inspected per pass.", "required": False},
+            },
+            callable=(lambda **kw: __import__(
+                "work_buddy.triage.capabilities.triage_pool_sweep",
+                fromlist=["triage_pool_sweep"],
+            ).triage_pool_sweep(**kw)),
+            mutates_state=True,
+            auto_retry=False,
+        ),
 
         # ── Chrome tab mutations ────────────────────────────────
         Capability(
@@ -3025,11 +3056,14 @@ def _journal_capabilities() -> list[Capability]:
                 "Run one background-triage pass over today's Running Notes "
                 "section. Segments the same-day content into threads via "
                 "the local LLM, enriches each with hybrid-IR context, and "
-                "asks Sonnet (escalating to Opus on failure) for a "
-                "constrained-JSON verdict per thread — written directly "
-                "into the Review pool. Never mutates the vault. Idempotent "
-                "on unchanged content. Cadence is a sidecar-job concern; "
-                "safe to call manually for testing."
+                "(when triage.verdict_pass.enabled=true) asks Sonnet "
+                "(escalating to Opus on failure) for a constrained-JSON "
+                "verdict per thread. Slice 1 default is verdict_pass off — "
+                "captures land in the pool as raw entries (verdict={raw: "
+                "true}) until Slice 3 brings GTD-shaped verdicts back. "
+                "Never mutates the vault. Idempotent on unchanged content. "
+                "Cadence is a sidecar-job concern; safe to call manually "
+                "for testing."
             ),
             category="journal",
             search_aliases=[
@@ -3062,13 +3096,16 @@ def _journal_capabilities() -> list[Capability]:
             name="inline_triage_scan",
             description=(
                 "Run one triage pass over a single user-sent Obsidian "
-                "selection (from the 'Send to agent' right-click command). "
-                "Builds one TriageItem with source='inline', collects the "
-                "user-context packet (active tasks / contracts / projects / "
-                "recent commits), and asks Sonnet for a constrained-JSON "
-                "verdict — parsed and written directly into the Review pool. "
-                "Escalates to Opus on timeout / context-exceeded / empty "
-                "content / rate-limited. User-initiated, so force=True by default."
+                "selection (from the 'Send to agent' right-click or tag). "
+                "Builds one TriageItem with source='inline'. When "
+                "triage.verdict_pass.enabled=true, collects the "
+                "user-context packet and asks Sonnet for a constrained-JSON "
+                "verdict (escalates to Opus on timeout / context-exceeded / "
+                "empty content / rate-limited). Slice 1 default is "
+                "verdict_pass off — captures land in the pool as raw "
+                "entries (verdict={raw: true}) until Slice 3 brings the "
+                "GTD-shaped multi-record schema back. User-initiated, "
+                "so force=True by default."
             ),
             category="triage",
             search_aliases=[

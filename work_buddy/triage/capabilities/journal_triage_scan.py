@@ -204,16 +204,38 @@ def journal_triage_scan(
             "items": [it.to_dict() for it in items],
         }
 
-    runner = LLMRunner()
+    # Slice 1 verdict-pass gate. When disabled (the default until
+    # Slice 3 ships the new schema), skip the LLM agent entirely;
+    # the producer writes raw entries (``verdict={"raw": True}``).
+    # Capture is preserved; the verdict is not.
+    verdict_pass_enabled = bool(
+        cfg.get("verdict_pass", {}).get("enabled", False)
+    )
 
-    def _agent(item: TriageItem, run_id: str) -> dict[str, Any]:
-        return _invoke_agent(
-            runner=runner,
-            item=item,
-            run_id=run_id,
-            tier=tier,
-            triage_context_block=triage_context_block,
-        )
+    if verdict_pass_enabled:
+        runner = LLMRunner()
+
+        def _agent(item: TriageItem, run_id: str) -> dict[str, Any]:
+            return _invoke_agent(
+                runner=runner,
+                item=item,
+                run_id=run_id,
+                tier=tier,
+                triage_context_block=triage_context_block,
+            )
+    else:
+        # No-op agent — the producer never calls it when the gate is off,
+        # but BackgroundTriageProducer requires a callable so we provide
+        # a stub. If someone ever turns the gate on mid-run, the stub
+        # surfaces the misconfiguration instead of silently 500'ing.
+        def _agent(item: TriageItem, run_id: str) -> dict[str, Any]:
+            return {
+                "content": "",
+                "error": (
+                    "verdict_pass disabled but agent invoked — this is a bug"
+                ),
+                "error_kind": "verdict_pass_disabled",
+            }
 
     producer = BackgroundTriageProducer(
         adapter_name="journal_triage",
@@ -222,6 +244,7 @@ def journal_triage_scan(
         agent=_agent,
         enrich=enrich and enrich_cfg.get("enabled", True),
         ir_top_k=enrich_cfg.get("top_k", 5),
+        verdict_pass_enabled=verdict_pass_enabled,
     )
     return producer.run(force=force).to_dict()
 

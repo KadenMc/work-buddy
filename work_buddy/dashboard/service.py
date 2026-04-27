@@ -1155,27 +1155,82 @@ def api_review_execute():
 
     from work_buddy.triage.execute import execute_triage_decisions
     from work_buddy.triage.background import get_pool
+    from work_buddy.consent import user_initiated
 
+    # The user clicked Submit on a Review-tab card. That click IS the
+    # consent — pre-emptively prompting for ``tasks.create_task`` /
+    # ``obsidian.write_file`` would be redundant ceremony. Wrap the
+    # execute in a user_initiated context so nested @requires_consent
+    # gates pass through, with an audit-log entry distinguishing
+    # UI-driven actions from autonomous ones.
     try:
-        executed = execute_triage_decisions(decisions, presentation)
+        with user_initiated("dashboard.review_submit"):
+            executed = execute_triage_decisions(decisions, presentation)
     except Exception as exc:
         logger.exception("api_review_execute: execute failed")
         return jsonify({"status": "error", "error": str(exc)}), 500
 
-    # Stamp the affected pool entries reviewed. Identify them by the
-    # ``pool_run_id`` + item ids in the presentation's groups (the
-    # review-pool builder puts ``pool_run_id`` on every group for
-    # exactly this purpose).
+    # Slice 1 fix (data-loss bug): only mark reviewed entries that
+    # were (a) decided on by this submit AND (b) whose op actually
+    # succeeded. The original code walked the entire presentation
+    # and stamped every entry — so submitting one card via the
+    # per-group-submit frontend marked all cards reviewed.
+    #
+    # The first fix narrowed by ``group_index in decided_indices``,
+    # but missed a second case: an op can FAIL (bridge timeout,
+    # consent denial, EditorConflict) and still get stamped, so the
+    # user sees the card disappear with no task created. The second
+    # filter — ``item_ids appears in a successful-op bucket`` —
+    # closes that gap. Failed entries stay pending so the user can
+    # retry.
+    decided_indices: set[int] = set()
+    for gd in (decisions.get("group_decisions") or []):
+        idx = gd.get("group_index")
+        if isinstance(idx, int):
+            decided_indices.add(idx)
+
+    # Walk the executor's per-action success buckets and collect every
+    # item_id that landed in one. Failed ops only live in
+    # ``details.errors`` (not in any success bucket), so they're
+    # naturally excluded.
+    #
+    # The executor's bucket shapes are historically inconsistent: some
+    # buckets carry an ``item_ids`` list (tasks_created, tasks_recorded,
+    # grouped — naturally multi-item) and others carry a singular
+    # ``item_id`` (closed, left — naturally per-item). Handle both.
+    # ``skipped_stale`` is excluded so the user can re-decide stale
+    # entries instead of having them silently disappear.
+    succeeded_item_ids: set[str] = set()
+    details = (executed or {}).get("details", {}) or {}
+    for bucket_name in (
+        "tasks_created", "tasks_recorded", "grouped",
+        "closed", "left",
+    ):
+        for entry in details.get(bucket_name, []) or []:
+            # Plural form: item_ids list
+            for iid in entry.get("item_ids", []) or []:
+                if iid:
+                    succeeded_item_ids.add(iid)
+            # Singular form: item_id scalar
+            single = entry.get("item_id")
+            if single:
+                succeeded_item_ids.add(single)
+
     keys: list[tuple[str, str]] = []
     for action_groups in presentation.get("groups_by_action", {}).values():
         for group in action_groups:
+            if group.get("index") not in decided_indices:
+                continue
             run_id = group.get("pool_run_id")
             if not run_id:
                 continue
             for item in group.get("items", []) or []:
                 iid = item.get("id")
-                if iid:
-                    keys.append((run_id, iid))
+                if not iid:
+                    continue
+                if iid not in succeeded_item_ids:
+                    continue  # op failed for this item — keep pending
+                keys.append((run_id, iid))
 
     stamped = 0
     if keys:
@@ -1193,10 +1248,20 @@ def api_review_execute():
                 "pool_error": str(exc),
             })
 
+    # Slice 1 fix (silent-failure bug): surface per-operation errors
+    # at the top level so the frontend can show "Action failed:
+    # consent required" rather than swallowing them. ``executed``
+    # comes from ``triage_execute.execute_triage_decisions`` which
+    # catches per-op exceptions into ``details.errors``; the user
+    # had no way to see those before this surfacing.
+    op_errors = (executed or {}).get("details", {}).get("errors") or []
+    response_status = "partial" if op_errors else "ok"
+
     return jsonify({
-        "status": "ok",
+        "status": response_status,
         "executed": executed,
         "pool_updates": stamped,
+        "operation_errors": op_errors,  # explicit top-level surfacing
     })
 
 
