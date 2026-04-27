@@ -925,12 +925,147 @@ def eval_js(code: str, timeout: int = 15) -> Any:
 
     Returns the result value, or None on failure.
     """
+    return eval_js_internal(code, timeout=timeout)
+
+
+def eval_js_internal(code: str, timeout: int = 15) -> Any:
+    """Internal eval_js without the human-consent gate.
+
+    For use only by bridge-internal helpers (e.g. atomic vault-write paths)
+    whose calling capability ALREADY holds an equivalent or stronger
+    consent (typically ``obsidian.write_file`` — the atomic-write helper
+    is semantically a write, not arbitrary JS execution). Skipping a
+    second ``obsidian.eval_js`` prompt avoids double-consenting the user
+    for what is effectively one operation.
+
+    Mirrors :func:`eval_js`'s return contract: the value the JS produced,
+    or None on bridge failure. Raises :class:`RuntimeError` if the JS
+    threw.
+
+    Args:
+        code: JavaScript code to execute.
+        timeout: HTTP request timeout in seconds.
+    """
     result = _request("POST", "/eval", {"code": code}, timeout=timeout)
     if result is None:
         return None
     if "error" in result:
         raise RuntimeError(f"Eval error: {result['error']}")
     return result.get("result")
+
+
+def atomic_replace_line_by_task_id(
+    file_path: str,
+    task_id: str,
+    expected_old_line: str,
+    new_line: str,
+    *,
+    timeout: int = 15,
+) -> dict[str, Any]:
+    """Atomically rewrite the task line for ``task_id`` via app.vault.process().
+
+    Uses Obsidian's ``app.vault.process(file, callback)`` — the canonical
+    atomic read-modify-write API. The callback runs against the
+    *current* file content (as Obsidian sees it, not Python's stale
+    read), so the read-modify-write race in the legacy bridge.read_file
+    + bridge.write_file pair is closed.
+
+    Conflict detection: ``expected_old_line`` is what the caller read.
+    If the line matching ``task_id`` in the *fresh* content differs (user
+    edited between Python's read and this call), the JS callback returns
+    the data unchanged and surfaces ``conflict=True`` in the response.
+    The caller decides whether to retry, surface to user, or accept.
+
+    Args:
+        file_path: Vault-relative file path.
+        task_id: Task ID to locate (matched by ``🆔 <task_id>`` substring).
+        expected_old_line: Line content the caller read. Empty string
+            disables conflict detection (use cautiously).
+        new_line: Replacement line content.
+        timeout: HTTP timeout in seconds.
+
+    Returns:
+        Dict with:
+          - ``found`` (bool): True if the task_id was located in the file.
+          - ``conflict`` (bool): True if the located line differed from
+            ``expected_old_line`` (caller's read was stale).
+          - ``replaced`` (bool): True iff the file was actually modified.
+          - ``line_number`` (int | None): 1-indexed line of the match.
+          - ``old_line`` (str | None): The line as it was *just before*
+            the atomic write (the version JS saw, not the version
+            Python read).
+          - ``new_line`` (str | None): The line as written. Only set
+            when ``replaced=True``.
+
+    Raises the same typed Obsidian exceptions as ``eval_js_internal``
+    on bridge failure (timeout, unreachable, plugin not loaded). The
+    caller is responsible for fallback decisions — typically falling
+    back to the legacy read-modify-write path if the atomic write
+    fails for connectivity reasons.
+
+    Consent: bypasses ``obsidian.eval_js`` consent. Callers must hold
+    ``obsidian.write_file`` consent (or higher) — semantically this IS
+    a write_file with a transform attached.
+    """
+    payload = json.dumps({
+        "path": file_path,
+        "task_id": task_id,
+        "expected_old_line": expected_old_line or "",
+        "new_line": new_line,
+    })
+    # Raw f-string so the `\u` JS escape isn't interpreted as a Python
+    # unicode escape during parse. The JS body uses `\u{1F194}` (the 🆔
+    # character) as a literal escape that the JS engine resolves.
+    js = rf"""
+return (async () => {{
+    const params = {payload};
+    const file = app.vault.getAbstractFileByPath(params.path);
+    if (!file) {{
+        return {{found: false, conflict: false, replaced: false, error: "file_not_found"}};
+    }}
+    const id_pattern = "\u{{1F194}} " + params.task_id;
+    let result = {{found: false, conflict: false, replaced: false, line_number: null, old_line: null, new_line: null}};
+
+    await app.vault.process(file, (data) => {{
+        const lines = data.split("\n");
+        for (let i = 0; i < lines.length; i++) {{
+            if (lines[i].includes(id_pattern)) {{
+                result.found = true;
+                result.line_number = i + 1;
+                result.old_line = lines[i];
+                // Conflict check: caller's expected_old_line vs. fresh content.
+                if (params.expected_old_line && lines[i] !== params.expected_old_line) {{
+                    result.conflict = true;
+                    return data;  // unchanged
+                }}
+                if (lines[i] === params.new_line) {{
+                    // No-op rewrite; don't dirty the file.
+                    return data;
+                }}
+                lines[i] = params.new_line;
+                result.replaced = true;
+                result.new_line = params.new_line;
+                return lines.join("\n");
+            }}
+        }}
+        return data;  // not found — unchanged
+    }});
+    return result;
+}})()
+"""
+
+    result = eval_js_internal(js, timeout=timeout)
+    if result is None:
+        # Bridge call returned None — translate to the standard
+        # "atomic write failed" structured response. The caller will
+        # typically fall back to the legacy path.
+        return {
+            "found": False,
+            "conflict": False,
+            "replaced": False,
+            "error": "bridge_returned_none",
+        }
+    return result
 
 
 # ── Workspace ──────────────────────────────────────────────────

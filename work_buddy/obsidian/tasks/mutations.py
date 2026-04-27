@@ -288,7 +288,29 @@ def _find_and_replace_task_line(
     description_match: str | None,
     transform_fn: Callable[[str], str],
 ) -> dict[str, Any]:
-    """Core file mutation engine. Read file, find task, transform, write back."""
+    """Core file mutation engine. Read file, find task, transform, write back.
+
+    Slice C: when ``task_id`` is provided, the write goes through
+    :func:`bridge.atomic_replace_line_by_task_id` — Obsidian's
+    ``app.vault.process()`` atomic API — closing the read-modify-write
+    race against concurrent user edits. The legacy
+    ``bridge.read_file`` + ``bridge.write_file`` pair is the fallback
+    when the atomic path fails for connectivity reasons OR when only
+    ``description_match`` is provided (the atomic path needs an ID to
+    locate the line in fresh content).
+
+    Conflict semantics:
+      - Atomic write detects ``conflict`` (user edited the line between
+        our read and the write). On conflict, we re-read the fresh
+        line, re-apply the transform, and retry the atomic write ONCE.
+        If the second attempt still conflicts, we surface the conflict
+        as a structured result (``success=False, message="..."``) — the
+        caller decides whether to escalate.
+      - The atomic write is preferred over the legacy path even when
+        the file is not currently open in an editor (no downside —
+        same disk write either way; up-side is correctness when the
+        editor IS open).
+    """
     _resolve_task_identity(task_id, description_match)
 
     content = bridge.read_file(file_path)
@@ -296,13 +318,13 @@ def _find_and_replace_task_line(
         return bridge_failure(f"Could not read {file_path}")
 
     lines = content.split("\n")
-    result = _find_task_line(lines, task_id, description_match)
+    found = _find_task_line(lines, task_id, description_match)
 
-    if result is None:
+    if found is None:
         identifier = task_id or description_match
         return {"success": False, "message": f"Task not found: {identifier}"}
 
-    idx, old_line = result
+    idx, old_line = found
     new_line = transform_fn(old_line)
 
     if old_line == new_line:
@@ -315,6 +337,28 @@ def _find_and_replace_task_line(
             "line_number": idx + 1,
         }
 
+    # Slice C: atomic path when task_id is known.
+    if task_id:
+        atomic_result = _atomic_write_with_conflict_retry(
+            file_path=file_path,
+            task_id=task_id,
+            expected_old_line=old_line,
+            new_line=new_line,
+            transform_fn=transform_fn,
+            initial_idx=idx,
+        )
+        if atomic_result is not None:
+            return atomic_result
+        # atomic_result is None → fall back to legacy below.
+        logger.info(
+            "atomic_write fell through for %s:%s — using legacy "
+            "read-modify-write (race risk surfaced)",
+            file_path, task_id,
+        )
+
+    # Legacy fallback path: read-modify-write via bridge.write_file.
+    # Race-vulnerable; used only when (a) only description_match was
+    # given, or (b) the atomic path was unreachable.
     lines[idx] = new_line
     new_content = "\n".join(lines)
 
@@ -325,13 +369,181 @@ def _find_and_replace_task_line(
     # gateway's classifier.
     bridge.write_file(file_path, new_content)
 
-    logger.info("Task line mutated in %s:%d", file_path, idx + 1)
+    logger.info("Task line mutated (legacy path) in %s:%d", file_path, idx + 1)
     return {
         "success": True,
         "old_line": old_line.strip(),
         "new_line": new_line.strip(),
         "file": file_path,
         "line_number": idx + 1,
+        "atomic": False,
+    }
+
+
+def _atomic_write_with_conflict_retry(
+    *,
+    file_path: str,
+    task_id: str,
+    expected_old_line: str,
+    new_line: str,
+    transform_fn: Callable[[str], str],
+    initial_idx: int,
+) -> dict[str, Any] | None:
+    """Run the atomic write with a single conflict-retry attempt.
+
+    Returns:
+      - dict on success or definitive conflict (caller surfaces directly)
+      - None if the atomic path itself failed for connectivity reasons —
+        caller falls back to legacy read-modify-write.
+    """
+    from work_buddy.obsidian.errors import (
+        ObsidianError,
+        ObsidianPostWriteUncertain,
+    )
+
+    try:
+        atomic = bridge.atomic_replace_line_by_task_id(
+            file_path=file_path,
+            task_id=task_id,
+            expected_old_line=expected_old_line,
+            new_line=new_line,
+        )
+    except ObsidianPostWriteUncertain:
+        # The /eval timed out client-side after sending the body. The
+        # vault state is uncertain — propagate so the gateway's
+        # verify-then-decide path runs.
+        raise
+    except ObsidianError as exc:
+        # Connectivity / plugin / refused — fall back to legacy.
+        logger.info(
+            "atomic_replace_line_by_task_id raised %s; falling back to legacy path",
+            type(exc).__name__,
+        )
+        return None
+    except RuntimeError as exc:
+        # eval threw inside Obsidian — fall back to legacy.
+        logger.warning(
+            "atomic_replace_line_by_task_id JS error: %s; falling back to legacy path",
+            exc,
+        )
+        return None
+
+    if atomic.get("error") == "bridge_returned_none":
+        return None
+
+    if atomic.get("error") == "file_not_found":
+        return {
+            "success": False,
+            "message": f"File not found in vault: {file_path}",
+            "file": file_path,
+        }
+
+    if not atomic.get("found"):
+        # Task no longer in the file (deleted between our read and the
+        # atomic write). Surface as not-found rather than retrying.
+        return {
+            "success": False,
+            "message": f"Task not found: {task_id}",
+            "file": file_path,
+        }
+
+    if atomic.get("conflict"):
+        # User edited the line between our read and the atomic write.
+        # Re-read, re-apply the transform, retry once.
+        fresh_old = atomic.get("old_line") or ""
+        fresh_new = transform_fn(fresh_old)
+        if fresh_old == fresh_new:
+            # Transform is now a no-op against the fresh content.
+            return {
+                "success": True,
+                "message": "No changes needed (after conflict-resolve)",
+                "old_line": fresh_old.strip(),
+                "new_line": fresh_new.strip(),
+                "file": file_path,
+                "line_number": atomic.get("line_number"),
+                "atomic": True,
+                "conflict_resolved": True,
+            }
+        try:
+            retry = bridge.atomic_replace_line_by_task_id(
+                file_path=file_path,
+                task_id=task_id,
+                expected_old_line=fresh_old,
+                new_line=fresh_new,
+            )
+        except ObsidianError as exc:
+            logger.warning(
+                "atomic conflict-retry raised %s; falling back to legacy path",
+                type(exc).__name__,
+            )
+            return None
+        if retry.get("conflict"):
+            # Two consecutive conflicts — escalate. The user is editing
+            # the line concurrently; we shouldn't keep stomping.
+            return {
+                "success": False,
+                "message": (
+                    f"Concurrent edit detected on task line for {task_id}. "
+                    f"User-edited the line during our atomic write retry. "
+                    f"Try again."
+                ),
+                "file": file_path,
+                "line_number": retry.get("line_number"),
+                "old_line": (retry.get("old_line") or "").strip(),
+                "atomic": True,
+                "conflict": True,
+            }
+        if not retry.get("replaced"):
+            # Retry didn't actually write — likely the line vanished or
+            # transformed equality. Surface what we know.
+            return {
+                "success": True,
+                "message": "No changes needed (after conflict-resolve)",
+                "old_line": fresh_old.strip(),
+                "new_line": fresh_new.strip(),
+                "file": file_path,
+                "line_number": retry.get("line_number"),
+                "atomic": True,
+                "conflict_resolved": True,
+            }
+        logger.info(
+            "Atomic conflict-retry resolved for %s:%s",
+            file_path, task_id,
+        )
+        return {
+            "success": True,
+            "old_line": fresh_old.strip(),
+            "new_line": fresh_new.strip(),
+            "file": file_path,
+            "line_number": retry.get("line_number"),
+            "atomic": True,
+            "conflict_resolved": True,
+        }
+
+    if not atomic.get("replaced"):
+        # Found, no conflict, no replace — line was already equal to
+        # new_line on the fresh read.
+        return {
+            "success": True,
+            "message": "No changes needed",
+            "old_line": (atomic.get("old_line") or "").strip(),
+            "new_line": new_line.strip(),
+            "file": file_path,
+            "line_number": atomic.get("line_number"),
+            "atomic": True,
+        }
+
+    logger.info(
+        "Task line mutated (atomic) in %s:%d",
+        file_path, atomic.get("line_number") or initial_idx + 1,
+    )
+    return {
+        "success": True,
+        "old_line": (atomic.get("old_line") or "").strip(),
+        "new_line": new_line.strip(),
+        "file": file_path,
+        "line_number": atomic.get("line_number") or (initial_idx + 1),
+        "atomic": True,
     }
 
 
@@ -1236,7 +1448,7 @@ def update_task_description(
         cleaned,
     )
 
-    return {
+    response: dict[str, Any] = {
         "success": True,
         "task_id": task_id,
         "old_description": captured_old.get("description", ""),
@@ -1247,6 +1459,16 @@ def update_task_description(
         "new_line": file_result.get("new_line"),
         "store_updated": store_updated,
     }
+    # Surface Slice-C provenance flags so callers/tests can tell
+    # which write path landed (atomic vs legacy fallback) and whether
+    # a conflict was resolved.
+    if "atomic" in file_result:
+        response["atomic"] = file_result["atomic"]
+    if file_result.get("conflict_resolved"):
+        response["conflict_resolved"] = True
+    if file_result.get("message"):
+        response["message"] = file_result["message"]
+    return response
 
 
 def strip_legacy_tags_from_line(line: str) -> str:

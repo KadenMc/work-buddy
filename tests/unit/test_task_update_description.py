@@ -119,6 +119,13 @@ def _patch_bridge_and_store():
          patch.object(mutations, "store") as mock_store:
         mock_bridge.read_file.return_value = UNCHECKED
         mock_bridge.write_file.return_value = True
+        # Slice C: force atomic path to fall through to legacy by
+        # default so these legacy-path tests keep testing the same
+        # write_file code path. Atomic-path coverage lives in the
+        # dedicated atomic-write test file.
+        mock_bridge.atomic_replace_line_by_task_id.return_value = {
+            "error": "bridge_returned_none",
+        }
         mock_store.update.return_value = {"changed": True}
         mock_store.get.return_value = {
             "task_id": "t-abc123",
