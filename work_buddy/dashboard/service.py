@@ -1155,9 +1155,17 @@ def api_review_execute():
 
     from work_buddy.triage.execute import execute_triage_decisions
     from work_buddy.triage.background import get_pool
+    from work_buddy.consent import user_initiated
 
+    # The user clicked Submit on a Review-tab card. That click IS the
+    # consent — pre-emptively prompting for ``tasks.create_task`` /
+    # ``obsidian.write_file`` would be redundant ceremony. Wrap the
+    # execute in a user_initiated context so nested @requires_consent
+    # gates pass through, with an audit-log entry distinguishing
+    # UI-driven actions from autonomous ones.
     try:
-        executed = execute_triage_decisions(decisions, presentation)
+        with user_initiated("dashboard.review_submit"):
+            executed = execute_triage_decisions(decisions, presentation)
     except Exception as exc:
         logger.exception("api_review_execute: execute failed")
         return jsonify({"status": "error", "error": str(exc)}), 500

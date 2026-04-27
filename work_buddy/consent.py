@@ -223,6 +223,88 @@ def get_consent_context_info() -> dict[str, Any] | None:
     }
 
 
+# ---------------------------------------------------------------------------
+# User-initiated consent context — the click IS the consent
+# ---------------------------------------------------------------------------
+#
+# Most ``@requires_consent`` gates exist because work-buddy's agents act
+# autonomously: cron-fired LLM calls, sidecar scans, background workflows.
+# The user isn't watching, so a moderate/high-risk operation needs explicit
+# permission before it fires.
+#
+# But UI endpoints are the inverse case: the user just clicked Submit on a
+# form. Pre-emptively prompting them to grant consent for the action they
+# explicitly initiated is bureaucratic UX — they already consented by
+# clicking. The endpoint is the consent boundary.
+#
+# ``user_initiated`` is the context manager for that case. Wrap the
+# critical section of a UI-driven Flask endpoint (or any code path
+# directly attributable to a user action) and nested ``@requires_consent``
+# calls pass through, with an audit-log entry recording the originating
+# action. It does NOT lower risk for OTHER threads or background workers
+# — the context is thread-local.
+#
+# Use sparingly. The right callers are: dashboard POST handlers that the
+# user reached via a button click; CLI scripts the user invoked
+# explicitly; slash-command handlers. Do NOT use this in code that an
+# agent can reach without a user click — that defeats the consent model.
+
+from contextlib import contextmanager
+
+
+@contextmanager
+def user_initiated(operation: str):
+    """Mark a block as a user-initiated consent boundary.
+
+    Inside the block, ``@requires_consent``-gated calls pass through:
+    the user's UI action (button click, slash-command invocation, …) is
+    the consent. The audit log records ``USER_INITIATED`` with the
+    operation name and the inner operations that passed through.
+
+    Args:
+        operation: A short identifier for the user action — e.g.
+            ``"dashboard.review_submit"``, ``"cli.flag_density"``.
+            Shows up in audit logs so operations triggered through
+            this path are distinguishable from autonomous ones.
+
+    Example::
+
+        @app.post("/api/review/execute")
+        def api_review_execute():
+            decisions = request.get_json()
+            with user_initiated("dashboard.review_submit"):
+                executed = execute_triage_decisions(decisions, presentation)
+            return jsonify(executed)
+
+    Reentrant: nested ``user_initiated`` blocks are fine; each adds a
+    layer to the depth counter. Only the outermost frame writes the
+    summary audit entry.
+    """
+    prev_depth = _consent_ctx.depth
+    prev_outer = _consent_ctx.outer_operation
+    prev_covered = _consent_ctx.covered_operations
+
+    _consent_ctx.depth = prev_depth + 1
+    _consent_ctx.outer_operation = operation
+    _consent_ctx.covered_operations = []
+    _audit_log(
+        "USER_INITIATED", operation,
+        "ui_action_treated_as_consent",
+    )
+    try:
+        yield
+    finally:
+        covered = list(_consent_ctx.covered_operations)
+        if covered:
+            _audit_log(
+                "USER_INITIATED_COVERED", operation,
+                f"inner_ops={','.join(covered)}",
+            )
+        _consent_ctx.depth = prev_depth
+        _consent_ctx.outer_operation = prev_outer
+        _consent_ctx.covered_operations = prev_covered
+
+
 class Risk(str, Enum):
     """Risk levels for consent-gated operations."""
     LOW = "low"
