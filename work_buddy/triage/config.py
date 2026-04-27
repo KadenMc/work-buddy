@@ -41,6 +41,19 @@ from typing import Any
 # ---------------------------------------------------------------------------
 
 TRIAGE_DEFAULTS: dict[str, Any] = {
+    # Slice 1 verdict-pass gate. When ``enabled=False`` (the default
+    # post-Slice-1, pre-Slice-3), the producer skips the LLM agent
+    # invocation entirely and writes ``verdict={"raw": True}``
+    # entries via :meth:`TriagePool.submit_raw`. Slice 3 brings
+    # GTD-shaped verdicts back; until then full silence beats noisy
+    # stub verdicts.
+    #
+    # Override: set ``triage.verdict_pass.enabled: true`` in
+    # ``config.local.yaml`` to re-enable the legacy verdict pass.
+    "verdict_pass": {
+        "enabled": False,
+    },
+
     # Profile used by the per-item agent loop (llm_with_tools).
     # The agent is expected to call `triage_submit` exactly once.
     "agent_profile": "local_general",
