@@ -251,6 +251,38 @@ def _resolve_task_identity(
         raise ValueError("Must provide either task_id or description_match")
 
 
+def _resolve_task_id_from_description(description_match: str) -> str | None:
+    """Look up a task_id by description via the store (Slice E).
+
+    Bridge-independent: queries ``store.search_by_description`` directly,
+    so callers using ``description_match=`` get the atomic-write path
+    (Slice C) automatically once we promote them to a task_id.
+
+    Returns:
+        task_id on a unique match, or None if zero matches OR multiple
+        matches. Ambiguous matches are surfaced as None — callers can
+        fall back to the file-scan engine which raises a structured
+        ambiguity error.
+
+    Pre-Slice-3 store rows may have NULL descriptions; those are
+    filtered out by ``search_by_description`` so the file-scan
+    fallback path picks them up.
+    """
+    if not description_match:
+        return None
+    try:
+        rows = store.search_by_description(description_match, limit=2)
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.warning(
+            "_resolve_task_id_from_description: store query failed: %s",
+            exc,
+        )
+        return None
+    if len(rows) != 1:
+        return None
+    return rows[0]["task_id"]
+
+
 def _find_task_line(
     lines: list[str],
     task_id: str | None = None,
@@ -312,6 +344,16 @@ def _find_and_replace_task_line(
         editor IS open).
     """
     _resolve_task_identity(task_id, description_match)
+
+    # Slice E: if only description_match was given, try store-resolve
+    # first. Promotes the call to a task_id-aware path (which can use
+    # the atomic write of Slice C), and short-circuits the file scan
+    # for tasks that the store knows about. Falls through to the
+    # legacy scan below for store-NULL / ambiguous / unknown cases.
+    if not task_id and description_match:
+        store_resolved = _resolve_task_id_from_description(description_match)
+        if store_resolved:
+            task_id = store_resolved
 
     content = bridge.read_file(file_path)
     if content is None:
@@ -786,7 +828,16 @@ def update_task(
 
     result: dict[str, Any] = {"success": True}
 
-    # Resolve task_id from file if only description_match given
+    # Slice E: try the store first to resolve description_match → task_id.
+    # Bridge-independent and gives the atomic write path (Slice C) a
+    # task_id to work with. Falls through to the legacy file-scan
+    # below if the store has no unique hit (NULL description, ambiguous
+    # match, or pre-Slice-3 row).
+    if not task_id and description_match:
+        task_id = _resolve_task_id_from_description(description_match)
+
+    # Resolve task_id from file if still not known after store lookup
+    # (legacy task with NULL description, or no store record at all).
     if not task_id:
         fp = file_path or MASTER_TASK_FILE
         content = bridge.read_file(fp)
