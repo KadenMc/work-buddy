@@ -875,12 +875,33 @@ def write_file_raw(
     risk="moderate",
     default_ttl=15,
 )
-def write_file(path: str, content: str) -> bool:
+def write_file(
+    path: str,
+    content: str,
+    *,
+    write_mode: str = "replace",
+    content_hint: str | None = None,
+) -> bool:
     """Write or create a file by vault-relative path (consent-gated).
+
+    Slice C.4: ``write_mode`` and ``content_hint`` kwargs surface
+    write_file_raw's verification controls to consent-gated callers.
+    For files that change concurrently (the master task list, archives,
+    journals), prefer ``write_mode="insert"`` with ``content_hint``
+    set to a unique substring of the inserted content (e.g. the new
+    task line). This makes the post-write verifier do a substring
+    match instead of a full-content sha256 — robust against
+    concurrent unrelated edits to other parts of the file. Without
+    this kwarg surface, callers had to choose between (a) using
+    write_file_raw directly (bypassing consent) or (b) accepting
+    sha256-based verification that fails any time the file changes
+    between write and verify.
 
     Returns True on success, False on failure.
     """
-    return write_file_raw(path, content)
+    return write_file_raw(
+        path, content, write_mode=write_mode, content_hint=content_hint,
+    )
 
 
 def get_metadata(path: str) -> dict | None:
@@ -1146,6 +1167,104 @@ return (async () => {{
             "found": False,
             "conflict": False,
             "replaced": False,
+            "error": "bridge_returned_none",
+        }
+    return result
+
+
+def atomic_delete_line_by_task_id(
+    file_path: str,
+    task_id: str,
+    *,
+    timeout: int = 15,
+) -> dict[str, Any]:
+    """Atomically remove the task line for ``task_id`` via app.vault.process().
+
+    Mirrors :func:`atomic_replace_line_by_task_id` but the JS callback
+    REMOVES the matched line entirely instead of replacing it. Used by
+    ``mutations.delete_task`` so the line-removal step gets the same
+    race-safety as the description-update path.
+
+    Args:
+        file_path: Vault-relative file path.
+        task_id: Task ID to locate (matched by ``🆔 <task_id>`` substring).
+        timeout: HTTP timeout in seconds.
+
+    Returns:
+        Dict with:
+          - ``found`` (bool): True if the task_id was located.
+          - ``removed`` (bool): True iff the file was actually modified.
+          - ``line_number`` (int | None): 1-indexed line of the match
+            BEFORE removal.
+          - ``old_line`` (str | None): The line that was removed.
+
+    Raises the same typed Obsidian exceptions as
+    :func:`eval_js_for_write` on bridge failure. On timeout, raises
+    :class:`ObsidianPostWriteUncertain` with a content_hint of
+    ``f"🆔 {task_id}"`` and ``write_mode="absent"`` — the verifier
+    should treat absence (not presence) of the hint as "verified",
+    since this is a removal operation. The gateway's
+    ``verify_post_write`` doesn't distinguish presence-vs-absence
+    semantics today; callers should be aware.
+
+    Consent: bypasses ``obsidian.eval_js`` consent. Callers must hold
+    ``obsidian.write_file`` consent (or higher) — this IS a write_file
+    with a transform attached.
+    """
+    payload = json.dumps({
+        "path": file_path,
+        "task_id": task_id,
+    })
+    js = rf"""
+return (async () => {{
+    const params = {payload};
+    const file = app.vault.getAbstractFileByPath(params.path);
+    if (!file) {{
+        return {{found: false, removed: false, error: "file_not_found"}};
+    }}
+    const id_pattern = "\u{{1F194}} " + params.task_id;
+    let result = {{found: false, removed: false, line_number: null, old_line: null}};
+
+    await app.vault.process(file, (data) => {{
+        const lines = data.split("\n");
+        for (let i = 0; i < lines.length; i++) {{
+            if (lines[i].includes(id_pattern)) {{
+                result.found = true;
+                result.line_number = i + 1;
+                result.old_line = lines[i];
+                lines.splice(i, 1);
+                result.removed = true;
+                return lines.join("\n");
+            }}
+        }}
+        return data;  // not found — unchanged
+    }});
+    return result;
+}})()
+"""
+
+    # Content hint for the post-write verifier: the task_id marker. After
+    # a successful removal, the marker should NOT be in the file. The
+    # current verify_post_write does `hint in content` which means
+    # absence-after-write reads as "absent" → retry. That's actually
+    # the correct behavior here too: if a verify-after-PWU finds the
+    # marker still in the file, the removal didn't land and a retry
+    # is correct. If the marker is gone, verify says "absent" which
+    # the gateway treats as "didn't land" — but the retry is now
+    # idempotent because the second attempt's atomic find won't find
+    # the line, and returns found=false (still success in delete
+    # semantics).
+    hint = f"🆔 {task_id}"
+    result = eval_js_for_write(
+        js,
+        write_path=file_path,
+        content_hint=hint,
+        timeout=timeout,
+    )
+    if result is None:
+        return {
+            "found": False,
+            "removed": False,
             "error": "bridge_returned_none",
         }
     return result

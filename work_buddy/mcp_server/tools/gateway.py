@@ -1216,8 +1216,14 @@ def register_tools(mcp: FastMCP) -> None:
                         "retry_hint": (
                             "This operation failed due to a transient error "
                             "and has been queued for automatic background retry. "
-                            "You will be notified when it succeeds. "
-                            "Move on to other work."
+                            "DO NOT treat this as success — wait for either a "
+                            "retry_success or retry_exhausted notification "
+                            "before assuming the operation completed. The "
+                            "retry can also fail (e.g. on persistent bridge "
+                            "issues or consent that doesn't propagate to the "
+                            "sidecar). For mutating ops, verify the side "
+                            "effect landed (file content, store record) "
+                            "before marking the work done."
                         ),
                     }
                     if error_kind is not None:
@@ -1354,8 +1360,12 @@ def register_tools(mcp: FastMCP) -> None:
                     "retry_hint": (
                         "This operation returned a transient error "
                         "and has been queued for automatic background retry. "
-                        "You will be notified when it succeeds. "
-                        "Move on to other work."
+                        "DO NOT treat this as success — wait for either a "
+                        "retry_success or retry_exhausted notification "
+                        "before assuming the operation completed. The "
+                        "retry can also fail. For mutating ops, verify the "
+                        "side effect landed (file content, store record) "
+                        "before marking the work done."
                     ),
                 }
                 if result_error_kind is not None:

@@ -532,7 +532,16 @@ def _find_and_replace_task_line(
     # caller catches transient subclasses (ObsidianTimeout,
     # ObsidianUnreachable) and retries; other types propagate to the
     # gateway's classifier.
-    bridge.write_file(file_path, new_content)
+    #
+    # Slice C.4: write_mode="insert" + content_hint=new_line so the
+    # post-write verifier does substring witness instead of full-file
+    # sha256. Master-task-list.md changes frequently; sha256 verify
+    # gives false negatives when any unrelated change happens between
+    # write and verify, leading to spurious retry-exhausted alarms.
+    bridge.write_file(
+        file_path, new_content,
+        write_mode="insert", content_hint=new_line,
+    )
 
     logger.info("Task line mutated (legacy path) in %s:%d", file_path, idx + 1)
     return {
@@ -1278,8 +1287,20 @@ def create_task(
     # Idempotent: skip prepend if task_id already present (retry safety)
     if task_id not in content:
         content = _prepend_task(content, task_line)
-        # Post-CP6: bridge.write_file raises on failure (see above).
-        bridge.write_file(MASTER_TASK_FILE, content)
+        # Slice C.4: pass write_mode="insert" + content_hint=task_line
+        # so the post-write verifier does substring witness instead of
+        # sha256 of the full content. Master-task-list.md changes
+        # frequently (other agents, sidecar jobs, user edits), and a
+        # full-file sha256 fails verification any time anything else
+        # touched the file between our PUT and the verify read. With
+        # substring match the verify only asks "is my new task line in
+        # the file?" — robust against concurrent unrelated edits.
+        bridge.write_file(
+            MASTER_TASK_FILE,
+            content,
+            write_mode="insert",
+            content_hint=task_line,
+        )
 
     # --- Store record ---
     if store.get(task_id) is None:
@@ -1440,7 +1461,12 @@ def toggle_task(
     lines[idx] = toggled
     # Post-CP6: bridge.write_file raises typed exceptions on failure;
     # @bridge_retry catches transients and replays.
-    bridge.write_file(fp, "\n".join(lines))
+    # Slice C.4: substring witness (the toggled line itself) so verify
+    # is robust against concurrent unrelated writes to the same file.
+    bridge.write_file(
+        fp, "\n".join(lines),
+        write_mode="insert", content_hint=toggled,
+    )
 
     new_state = "done" if not is_done else "inbox"
     if store.get(task_id):
@@ -1472,23 +1498,76 @@ def delete_task(
 
     This is destructive and consent-gated. For normal workflow, use
     complete_task + archive instead.
+
+    Slice C.3: rewritten to use the atomic line-removal path (mirrors
+    Slice C's atomic update) AND to return ``bridge_failure(...)`` when
+    the bridge can't read the master list, instead of silently
+    returning ``success: false``. The latter caused @bridge_retry to
+    NOT retry on read timeouts (the function returned a normal dict,
+    not the failure-marker dict), which is why earlier ``task_delete``
+    calls reliably failed with ``removed: {all-false}`` on this user's
+    machine — the read-timeout path was a dead end.
     """
     removed: dict[str, bool] = {}
 
-    # 1. Remove task line from master list
-    content = bridge.read_file(MASTER_TASK_FILE)
-    if content is not None:
+    # 1. Remove task line from master list (atomic path).
+    #
+    # Try atomic delete first; on bridge-down or RuntimeError, fall back
+    # to the legacy read-modify-write. On bridge.read_file timeout in
+    # the legacy path, return bridge_failure so @bridge_retry sees a
+    # transient marker and retries the whole function.
+    atomic_result: dict[str, Any] | None = None
+    try:
+        atomic_result = bridge.atomic_delete_line_by_task_id(
+            file_path=MASTER_TASK_FILE,
+            task_id=task_id,
+        )
+    except ObsidianError as exc:
+        # Connectivity / plugin / refused — fall back to legacy.
+        logger.info(
+            "delete_task: atomic_delete raised %s; falling back to legacy "
+            "read-modify-write for line removal.",
+            type(exc).__name__,
+        )
+        atomic_result = None
+    except RuntimeError as exc:
+        # JS body raised inside Obsidian — fall back to legacy.
+        logger.warning(
+            "delete_task: atomic_delete JS error: %s; falling back to legacy.",
+            exc,
+        )
+        atomic_result = None
+
+    if atomic_result is not None and atomic_result.get("error") not in (
+        "bridge_returned_none",
+        "file_not_found",
+    ):
+        # Atomic path produced a meaningful result.
+        removed["task_line"] = bool(atomic_result.get("removed", False))
+        if not atomic_result.get("found"):
+            # Task wasn't in the file. Could be a stale store record
+            # for a manually-deleted task line. Don't error — let the
+            # store-cleanup step (#3) decide whether to remove the
+            # store record (it skips when task_line=False).
+            logger.info(
+                "delete_task: atomic_delete reported task %s not in file "
+                "(may have been manually removed already)",
+                task_id,
+            )
+    else:
+        # Legacy fallback path. Use bridge_failure when read fails so
+        # the bridge_retry decorator activates on transient timeouts.
+        content = bridge.read_file(MASTER_TASK_FILE)
+        if content is None:
+            return bridge_failure(
+                f"delete_task: could not read {MASTER_TASK_FILE} "
+                f"(bridge timeout) — retry will replay this operation."
+            )
         lines = content.split("\n")
-        result = _find_task_line(lines, task_id, None)
-        if result is not None:
-            idx, _ = result
+        find_result = _find_task_line(lines, task_id, None)
+        if find_result is not None:
+            idx, _ = find_result
             del lines[idx]
-            # Post-CP6: bridge.write_file raises on failure. delete_task
-            # is best-effort across multiple sub-deletes (line, note,
-            # store record) so we catch the typed exception here and
-            # record the partial state rather than aborting the whole
-            # function (which would leave the user with no signal about
-            # which parts succeeded).
             try:
                 bridge.write_file(MASTER_TASK_FILE, "\n".join(lines))
                 removed["task_line"] = True
@@ -1499,25 +1578,43 @@ def delete_task(
                 )
                 removed["task_line"] = False
         else:
+            # Task wasn't in the file — same as atomic-not-found path.
             removed["task_line"] = False
-    else:
-        removed["task_line"] = False
 
-    # 2. Delete note file (if linked)
+    # 2. Delete note file (if linked).
+    #
+    # Slice C.3: previously this was wrapped in a bare `except Exception`
+    # which swallowed ObsidianError and prevented @bridge_retry from
+    # retrying transient bridge failures. Now we let typed
+    # ObsidianTimeout / ObsidianUnreachable propagate so the retry
+    # decorator can recover; only suppress non-Obsidian exceptions
+    # (which represent JS errors or unexpected shapes).
     meta = store.get(task_id)
     note_uuid = meta.get("note_uuid") if meta else None
     if note_uuid:
         note_path = f"{TASK_NOTES_DIR}/{note_uuid}.md"
-        # Use eval_js to delete via Obsidian (bridge has no delete endpoint)
         try:
-            from work_buddy.obsidian.bridge import eval_js
+            # Use the internal (non-consent-gated) eval since the
+            # outer task_delete already holds tasks.delete_task
+            # consent which covers note removal.
             js = (
                 f'const f = app.vault.getAbstractFileByPath("{note_path}");'
-                f'if (f) {{ await app.vault.delete(f); return "deleted"; }} else {{ return "not_found"; }}'
+                f'if (f) {{ await app.vault.delete(f); return "deleted"; }} '
+                f'else {{ return "not_found"; }}'
             )
-            del_result = eval_js(js)
+            del_result = bridge.eval_js_internal(js)
             removed["note"] = del_result == "deleted"
-        except Exception:
+        except ObsidianError:
+            # Transient bridge issue — don't silently mark False.
+            # Re-raise so @bridge_retry can retry.
+            raise
+        except RuntimeError as exc:
+            # JS body errored — record as not deleted but don't
+            # block store cleanup.
+            logger.warning(
+                "delete_task: note delete JS error for %s: %s",
+                task_id, exc,
+            )
             removed["note"] = False
     else:
         removed["note"] = False
@@ -1529,8 +1626,8 @@ def delete_task(
     else:
         removed["store"] = False
         logger.warning(
-            "delete_task: skipping store deletion for %s — file line not removed, "
-            "store.delete would be undone by task_sync",
+            "delete_task: skipping store deletion for %s — file line not "
+            "removed, store.delete would be undone by task_sync",
             task_id,
         )
 
