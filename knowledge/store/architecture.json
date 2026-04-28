@@ -498,5 +498,38 @@
       "work_buddy.inference.broker",
       "work_buddy.inference"
     ]
+  },
+  "architecture/capability-registry": {
+    "kind": "system",
+    "name": "Capability Registry",
+    "description": "How capabilities are registered, probed for tool availability, disabled when a probe fails, and recovered cheaply via per-capability re-probe (CP-A3) instead of a full registry rebuild",
+    "tags": [
+      "capability",
+      "registry",
+      "tool-probe",
+      "disabled",
+      "recovery",
+      "cp-a3",
+      "per-capability",
+      "reload"
+    ],
+    "aliases": [
+      "registry",
+      "capability registry",
+      "tool probes",
+      "disabled capability",
+      "recover capability",
+      "reload capability",
+      "recheck capability",
+      "registry recovery"
+    ],
+    "parents": [
+      "architecture"
+    ],
+    "scope": "system",
+    "content": {
+      "summary": "Capabilities depending on tool probes (e.g. obsidian, chrome_extension) are filtered into DISABLED_CAPABILITIES at registry-build time when their probes fail. They stay disabled until something restores them. Two paths: (1) full registry rebuild via mcp_registry_reload (~6-8s, re-probes everything, purges sys.modules), or (2) per-capability re-probe via work_buddy.recovery.recheck_disabled_capability (cheap, single-tool, cool-down-gated). Use (2) by default; (1) only when code changed.",
+      "full": "## What\n\nThe capability registry (`work_buddy/mcp_server/registry.py`) holds two maps: `_REGISTRY` (active capabilities, directly callable via the MCP gateway) and `_DISABLED_REGISTRY` (capabilities whose `requires=[...]` tool probe failed at build time, stashed but not callable). At build-time, the registry filter pass moves any capability whose tool probe failed from `_REGISTRY` to `_DISABLED_REGISTRY` and adds a row to `work_buddy.tools.DISABLED_CAPABILITIES` listing the missing tools.\n\nDisabled state is cached. A capability disabled by a transient probe failure (e.g. obsidian unreachable for 200ms during sidecar startup) stays disabled until something explicitly re-probes it.\n\n## Two recovery paths - use the right one\n\n### Per-capability re-probe (preferred for runtime recovery)\n\n**`work_buddy.recovery.recheck_disabled_capability(name, *, force=False)`** re-probes ONLY the capability's missing tools, with per-tool cool-down (default 30s, env-overridable via `WB_RECHECK_COOLDOWN_SECS`), single `_RECOVERY_LOCK` (RLock) for concurrent-caller safety. On success, mutates `_REGISTRY` in place to restore the capability. No rebuild, no module purge.\n\nReturns `True` if the capability is now in the live registry, `False` if it remains disabled (with `DISABLED_CAPABILITIES[name]` updated to reflect any partially-recovered tools).\n\nCompanion: **`recheck_tool(tool_id, *, force=False)`** for re-probing a single tool without scoping to a capability. Same cool-down, same lock.\n\nUsed by:\n- The gateway's wb_run dispatch path (`work_buddy/mcp_server/tools/gateway.py:887`). On hitting a disabled capability, the gateway calls `recheck_disabled_capability` before returning the disabled-error.\n- The sidecar's retry sweep `_replay` (`work_buddy/sidecar/retry_sweep.py`). On hitting a disabled capability during a queued retry, the sweep calls `recheck_disabled_capability` rather than reporting \"not found in registry\". Falls back to invoking the disabled entry's callable when recheck still says no, since the bridge call inside raises a typed transient exception and the operation re-queues correctly.\n\n### Full registry rebuild (only when code changed)\n\n**`mcp_registry_reload`** capability (calls `invalidate_registry()` in `registry.py`) clears `_REGISTRY` AND purges all `work_buddy.*` from `sys.modules` so the next `get_registry()` rebuilds from current source. Costs ~6-8 seconds (tool_probes ~5s + capability registration ~2s) on a typical machine and re-probes every tool.\n\nUse only when:\n- You changed capability code mid-session and want the running gateway to pick it up without a sidecar restart\n- You suspect the entire registry is stale (e.g. a workflow / knowledge unit was added)\n\n**Do NOT use `mcp_registry_reload` for transient probe failures.** It's a sledgehammer where a per-capability re-probe is the right tool. The 8-second rebuild blocks `/health` and slows down the gateway for the duration.\n\n## Decision tree\n\n```\nCapability is disabled / not found in active registry\n  - Code changed -> mcp_registry_reload\n  - Probe transient-failed -> recheck_disabled_capability(name)\n      - Returns True -> capability is back in _REGISTRY, proceed\n      - Returns False -> tools still down\n          - Caller wants to retry later -> re-queue / surface\n          - Caller can run the capability anyway ->\n              invoke disabled_entry.callable(...)\n              (typed bridge exception -> @bridge_retry handles)\n```\n\n## Key files\n\n- `work_buddy/mcp_server/registry.py` - `_REGISTRY`, `_DISABLED_REGISTRY`, `get_registry`, `get_disabled_registry`, `invalidate_registry`\n- `work_buddy/recovery.py` - `recheck_disabled_capability`, `recheck_tool`, `_RECOVERY_LOCK`, `_LAST_RECHECK_AT`\n- `work_buddy/tools/__init__.py` (or similar) - `DISABLED_CAPABILITIES`, `is_tool_available`, `reprobe_one`\n- `work_buddy/mcp_server/tools/gateway.py:887` - example usage from the dispatch path\n- `work_buddy/sidecar/retry_sweep.py` - example usage from the retry-sweep path (Slice C.5)\n\n## When in doubt\n\nPer-capability is almost always right at runtime. Full reload is for code changes, full inventory rebuilds, or panic-mode diagnosis. The 30s cool-down on per-capability is your friend - it stops aggressive callers from hammering a genuinely-down tool."
+    }
   }
 }
