@@ -1122,9 +1122,41 @@ def register_tools(mcp: FastMCP) -> None:
                     ObsidianPostWriteUncertain = ()  # noqa: N806 — typed-tuple sentinel
 
                 if isinstance(exc, ObsidianPostWriteUncertain):
-                    from work_buddy.obsidian.post_write_verify import verify_post_write
-                    verdict = verify_post_write(exc)
-                    if verdict == "verified":
+                    # Fix-(b) effect-graph-aware verify: capabilities with
+                    # a declared effects manifest get the multi-effect
+                    # verifier, which can detect "some effects landed,
+                    # some didn't" partial states. Without this, a PWU
+                    # on the FIRST of multiple effects would single-effect-
+                    # verify as "landed" → success-with-warning → no
+                    # retry → silent half-finished state. Capabilities
+                    # without a manifest fall back to the single-effect
+                    # verifier (existing behavior preserved).
+                    declared_effects = getattr(entry, "effects", None) or []
+                    if declared_effects:
+                        from work_buddy.obsidian.post_write_verify import (
+                            verify_post_write_effects,
+                        )
+                        verdict = verify_post_write_effects(
+                            declared_effects, params=parsed_params,
+                        )
+                        # "partial" / "absent" / "indeterminate" all
+                        # mean the recovery isn't a success — fall
+                        # through to the normal failure path so the
+                        # retry queue picks it up. The retry replays
+                        # the full capability; the capability is
+                        # required to be idempotent on retry (declared
+                        # in architecture/capability-registry).
+                        verified = verdict == "verified"
+                        verify_warning_path = (
+                            f"all {len(declared_effects)} declared effects"
+                        )
+                    else:
+                        from work_buddy.obsidian.post_write_verify import verify_post_write
+                        verdict = verify_post_write(exc)
+                        verified = verdict == "verified"
+                        verify_warning_path = repr(exc.path)
+
+                    if verified:
                         # Write actually landed — close the loop. Op is
                         # success (with a warning marker), no retry.
                         recovery_result: dict[str, Any] = {
@@ -1133,10 +1165,12 @@ def register_tools(mcp: FastMCP) -> None:
                             "warning": (
                                 f"Bridge timed out after PUT body was sent, "
                                 f"but filesystem verify confirms content "
-                                f"landed at {exc.path!r}. No retry needed."
+                                f"landed at {verify_warning_path}. No retry needed."
                             ),
                             "path": exc.path,
                         }
+                        if declared_effects:
+                            recovery_result["effects_verified"] = len(declared_effects)
                         _complete_operation(
                             op_id, result=recovery_result,
                             # No error_kind — this is a successful recovery,
@@ -1162,10 +1196,13 @@ def register_tools(mcp: FastMCP) -> None:
                             # successfully rescued.
                             post_write_response["registry_auto_recovered"] = True
                         return _prepare(post_write_response)
-                    # "absent" or "indeterminate" — fall through to the
-                    # normal failure path. The exception still has its
-                    # ObsidianTimeout ancestry so classify_error returns
-                    # "transient" and the gateway enqueues a retry.
+                    # "partial" / "absent" / "indeterminate" — fall through
+                    # to the normal failure path. The exception still has
+                    # its ObsidianTimeout ancestry so classify_error
+                    # returns "transient" and the gateway enqueues a retry.
+                    # For "partial", the retry runs the full capability
+                    # (idempotent by contract for capabilities with
+                    # declared effects).
 
                 error_str = f"{type(exc).__name__}: {exc}"
 

@@ -301,6 +301,41 @@ def _resolve_idempotent_create_ids(
     return cached.get("task_id"), cached.get("note_uuid")
 
 
+def create_task_effects_resolver(
+    params: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Effect-manifest resolver for ``task_create``.
+
+    Recomputes the idempotency key from the params and looks up the
+    cached (task_id, note_uuid). Returns a dict of generated values
+    for path/witness template substitution.
+
+    Returns None when the cache lookup misses — the verifier will
+    treat the corresponding effect as indeterminate, which falls
+    through to single-effect verify behavior (the existing path).
+    The cache is populated as soon as ``create_task`` decides on its
+    IDs (right at the top of the function), so any time create_task
+    has gotten far enough to PWU, the cache should be populated.
+    """
+    namespace_tags = _normalize_tags(params.get("tags") or [])
+    key = _create_task_idempotency_key(
+        task_text=params.get("task_text", ""),
+        summary=params.get("summary"),
+        project=params.get("project"),
+        urgency=params.get("urgency", "medium"),
+        contract=params.get("contract"),
+        tags=namespace_tags,
+        due_date=params.get("due_date"),
+    )
+    task_id, note_uuid = _resolve_idempotent_create_ids(key)
+    if task_id is None:
+        return None
+    out = {"task_id": task_id}
+    if note_uuid is not None:
+        out["note_uuid"] = note_uuid
+    return out
+
+
 def _record_idempotent_create_ids(
     key: str,
     task_id: str,

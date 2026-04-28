@@ -59,6 +59,15 @@ class Capability:
     auto_retry: bool = True
     slash_command: str | None = None  # e.g. "wb-journal-update"
     consent_operations: list[str] = field(default_factory=list)  # @requires_consent op IDs this capability may trigger
+    # Effect manifest for multi-effect capabilities — used by
+    # ``verify_post_write_effects`` to detect "some effects landed,
+    # some didn't" partial states after a PostWriteUncertain. Capabilities
+    # WITHOUT a manifest fall back to single-effect verify (the existing
+    # behavior). See ``work_buddy.obsidian.effects.EffectSpec`` for the
+    # schema and ``architecture/capability-registry`` for the picking
+    # rule. Capabilities with a manifest MUST be idempotent on retry —
+    # the partial-state recovery path retries the full capability.
+    effects: list[Any] = field(default_factory=list)  # list[EffectSpec]
 
 
 @dataclass
@@ -3306,12 +3315,14 @@ def _task_capabilities() -> list[Capability]:
     from work_buddy.obsidian.tasks.mutations import (
         assign_task,
         create_task,
+        create_task_effects_resolver as _create_task_effects_resolver,
         delete_task,
         read_task,
         set_task_tags_on_line,
         toggle_task,
         update_task_description,
     )
+    from work_buddy.obsidian.effects import EffectSpec as _EffectSpec
     from work_buddy.obsidian.tasks.sync import task_sync
     from work_buddy.obsidian.tasks.namespace_suggest import (
         namespace_lookup,
@@ -3415,6 +3426,29 @@ def _task_capabilities() -> list[Capability]:
             mutates_state=True,
             retry_policy="verify_first",
             consent_operations=["tasks.create_task", "obsidian.write_file"],
+            # Fix-(b): multi-effect manifest. ``task_create`` writes a
+            # note file (if summary provided) AND appends a line to
+            # the master task list. Without this manifest, the PWU
+            # verifier sees only the path on the exception (whichever
+            # write happened first) and could declare "verified" while
+            # the second effect is missing. Resolver pulls task_id /
+            # note_uuid from the C.2 idempotency cache.
+            effects=[
+                _EffectSpec(
+                    kind="file_write",
+                    path_template="tasks/notes/{note_uuid}.md",
+                    witness_template="{task_text}",
+                    witness_mode="substring",
+                    resolver=_create_task_effects_resolver,
+                ),
+                _EffectSpec(
+                    kind="line_append",
+                    path="tasks/master-task-list.md",
+                    witness_template="🆔 {task_id}",
+                    witness_mode="substring",
+                    resolver=_create_task_effects_resolver,
+                ),
+            ],
         ),
         Capability(
             name="task_set_tags",
