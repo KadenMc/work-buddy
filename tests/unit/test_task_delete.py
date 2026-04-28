@@ -76,17 +76,22 @@ def test_delete_uses_atomic_path(patched_bridge_store):
     mock_bridge.write_file.assert_not_called()
 
 
-def test_delete_atomic_not_found_skips_store(patched_bridge_store):
+def test_delete_atomic_not_found_is_idempotent_success(patched_bridge_store):
+    """Slice C.3 follow-up: when the atomic path reports the task is
+    not in the file, the desired post-delete state is already
+    achieved. Treat as idempotent success and run store cleanup so
+    any orphan store record gets removed too."""
     mock_bridge, mock_store = patched_bridge_store
     mock_bridge.atomic_delete_line_by_task_id.return_value = {
         "found": False, "removed": False,
     }
 
     result = mutations.delete_task(task_id="t-deadbeef")
-    assert result["success"] is False
-    assert result["removed"]["task_line"] is False
-    # store.delete should NOT have run because file removal didn't happen.
-    mock_store.delete.assert_not_called()
+    assert result["success"] is True
+    assert result["removed"]["task_line"] is True
+    assert result["removed"].get("file_already_clean") is True
+    # Store cleanup runs even when file already clean.
+    mock_store.delete.assert_called_once_with("t-deadbeef")
 
 
 # ---------------------------------------------------------------------------

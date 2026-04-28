@@ -1545,13 +1545,19 @@ def delete_task(
         # Atomic path produced a meaningful result.
         removed["task_line"] = bool(atomic_result.get("removed", False))
         if not atomic_result.get("found"):
-            # Task wasn't in the file. Could be a stale store record
-            # for a manually-deleted task line. Don't error — let the
-            # store-cleanup step (#3) decide whether to remove the
-            # store record (it skips when task_line=False).
+            # Task wasn't in the file. Either it was already removed
+            # by a previous (possibly silently-successful) attempt, or
+            # the user removed it manually. Either way: file is in the
+            # desired post-delete state. Treat as "no work needed" for
+            # the file step but DO run store cleanup so the store
+            # doesn't keep an orphan record. We use a sentinel
+            # ("file_already_clean") so step 3 can run store.delete
+            # without confusing it with a truly-failed file write.
+            removed["task_line"] = True  # idempotent: already-clean ⇒ success
+            removed["file_already_clean"] = True
             logger.info(
                 "delete_task: atomic_delete reported task %s not in file "
-                "(may have been manually removed already)",
+                "(already removed); proceeding to store cleanup",
                 task_id,
             )
     else:
@@ -1578,8 +1584,16 @@ def delete_task(
                 )
                 removed["task_line"] = False
         else:
-            # Task wasn't in the file — same as atomic-not-found path.
-            removed["task_line"] = False
+            # Task wasn't in the file — already in desired state.
+            # Match the atomic-path semantics: idempotent success,
+            # file_already_clean sentinel for step 3.
+            removed["task_line"] = True
+            removed["file_already_clean"] = True
+            logger.info(
+                "delete_task: legacy path found task %s already absent "
+                "from file; proceeding to store cleanup",
+                task_id,
+            )
 
     # 2. Delete note file (if linked).
     #
