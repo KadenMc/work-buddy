@@ -255,7 +255,11 @@ class RetrySweep:
         file and add a second insertion → double-write.
         """
         try:
-            from work_buddy.mcp_server.registry import get_registry, Capability
+            from work_buddy.mcp_server.registry import (
+                Capability,
+                get_disabled_registry,
+                get_registry,
+            )
             from work_buddy.agent_session import (
                 set_originating_session,
                 reset_originating_session,
@@ -263,6 +267,65 @@ class RetrySweep:
 
             reg = get_registry()
             entry = reg.get(record["name"])
+
+            if entry is None:
+                # Slice C.5: a capability may be DISABLED (not "missing")
+                # because its tool probe failed at registry-build time.
+                # On a flaky bridge that recovers, transient probe
+                # failures permanently disable capabilities until the
+                # next manual reload — and the sidecar's retry sweep
+                # then misreports the disabled state as "not found in
+                # registry", which exhausts retries for ops that would
+                # otherwise succeed.
+                #
+                # Recovery uses the existing CP-A3 lazy auto-recovery
+                # mechanism (work_buddy.recovery.recheck_disabled_capability)
+                # — re-probes ONLY the capability's missing tools (per-
+                # tool cool-down, single _RECOVERY_LOCK), and on success
+                # mutates _REGISTRY in place to restore the capability.
+                # Strictly cheaper than a full registry rebuild, and
+                # this is the same path the gateway uses (gateway.py:887).
+                disabled = get_disabled_registry()
+                disabled_entry = disabled.get(record["name"])
+                if disabled_entry is not None:
+                    logger.info(
+                        "_replay: capability %r is disabled; calling "
+                        "recheck_disabled_capability to re-probe its tools "
+                        "(without rebuilding the whole registry)",
+                        record["name"],
+                    )
+                    try:
+                        from work_buddy.recovery import (
+                            recheck_disabled_capability,
+                        )
+                        recovered = recheck_disabled_capability(record["name"])
+                    except Exception as exc:  # noqa: BLE001 — defensive
+                        logger.warning(
+                            "_replay: recheck_disabled_capability(%s) "
+                            "raised: %s — falling through to disabled-entry "
+                            "fallback",
+                            record["name"], exc,
+                        )
+                        recovered = False
+
+                    if recovered:
+                        # Recovery restored the capability to the live
+                        # registry. Re-fetch.
+                        reg = get_registry()
+                        entry = reg.get(record["name"])
+                    if entry is None:
+                        # Probe still failing OR recovery didn't run. Use
+                        # the disabled entry — the bridge call inside
+                        # will raise a typed transient exception, and
+                        # our exception handler re-queues correctly
+                        # rather than reporting permanent failure.
+                        entry = disabled_entry
+                        logger.info(
+                            "_replay: probe still failing for %r; invoking "
+                            "disabled entry — transient bridge errors will "
+                            "re-queue normally",
+                            record["name"],
+                        )
 
             if entry is None:
                 return {"success": False, "error": f"Capability '{record['name']}' not found in registry"}

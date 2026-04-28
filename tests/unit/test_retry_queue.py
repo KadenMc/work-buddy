@@ -816,11 +816,101 @@ class TestRetrySweepReplay:
         sweep = RetrySweep()
         record, _ = _make_queued_op(sweep_ops_dir, name="nonexistent_cap")
 
-        with patch("work_buddy.mcp_server.registry.get_registry", return_value={}):
+        with patch("work_buddy.mcp_server.registry.get_registry", return_value={}), \
+             patch("work_buddy.mcp_server.registry.get_disabled_registry", return_value={}):
             result = sweep._replay(record)
 
         assert result["success"] is False
         assert "not found" in result["error"]
+
+    def test_replay_disabled_capability_recovers_via_recheck(self, sweep_ops_dir):
+        """Slice C.5 regression test: when a capability is in the disabled
+        registry (transient probe failure), the sidecar must re-probe
+        via the existing CP-A3 ``recheck_disabled_capability`` mechanism
+        (per-capability re-probe, NOT a full registry invalidation).
+
+        Live failure 2026-04-28: a `task_create` retry exhausted with
+        "Capability 'task_create' not found in registry" because the
+        sidecar's cached registry had task_create disabled (obsidian
+        probe transient-failed at build time). The original write had
+        landed; the sidecar's failure mode just looked dramatic.
+
+        Post-fix: detect the disabled-state, call
+        ``recheck_disabled_capability(name)`` (which re-probes only
+        that capability's missing tools), and on success the active
+        registry has the capability and replay proceeds normally."""
+        from work_buddy.sidecar.retry_sweep import RetrySweep
+        from work_buddy.mcp_server.registry import Capability
+        sweep = RetrySweep()
+        record, _ = _make_queued_op(sweep_ops_dir, name="task_create")
+
+        good_entry = Capability(
+            name="task_create",
+            description="real",
+            category="tasks",
+            parameters={},
+            callable=MagicMock(return_value={"success": True, "task_id": "t-abc"}),
+        )
+        # Initial registry state: empty. After recheck_disabled_capability
+        # runs and returns True (recovery succeeded), the registry has
+        # the capability.
+        active_registry_states = [{}, {"task_create": good_entry}]
+        recheck_calls: list[str] = []
+
+        def _get_registry_side():
+            # First call (before recheck) returns empty; second call
+            # (after recheck claims True) returns populated.
+            return active_registry_states[min(len(recheck_calls), 1)]
+
+        def _recheck_side(name, *, force=False):
+            recheck_calls.append(name)
+            return True
+
+        with patch("work_buddy.mcp_server.registry.get_registry",
+                   side_effect=_get_registry_side), \
+             patch("work_buddy.mcp_server.registry.get_disabled_registry",
+                   return_value={"task_create": good_entry}), \
+             patch("work_buddy.recovery.recheck_disabled_capability",
+                   side_effect=_recheck_side):
+            result = sweep._replay(record)
+
+        assert result["success"] is True
+        assert recheck_calls == ["task_create"], (
+            "recheck_disabled_capability should have been called once "
+            "for the disabled capability"
+        )
+
+    def test_replay_disabled_capability_falls_back_when_recheck_fails(
+        self, sweep_ops_dir,
+    ):
+        """When recheck_disabled_capability returns False (probe still
+        failing), fall back to the disabled entry's callable. The
+        bridge call inside should raise a typed transient exception,
+        which @bridge_retry treats correctly. This avoids the
+        misleading not-found-in-registry path."""
+        from work_buddy.sidecar.retry_sweep import RetrySweep
+        from work_buddy.mcp_server.registry import Capability
+        sweep = RetrySweep()
+        record, _ = _make_queued_op(sweep_ops_dir, name="task_create")
+
+        disabled_entry = Capability(
+            name="task_create",
+            description="disabled placeholder",
+            category="tasks",
+            parameters={},
+            callable=MagicMock(return_value={"success": True, "task_id": "t-x"}),
+        )
+
+        with patch("work_buddy.mcp_server.registry.get_registry", return_value={}), \
+             patch("work_buddy.mcp_server.registry.get_disabled_registry",
+                   return_value={"task_create": disabled_entry}), \
+             patch("work_buddy.recovery.recheck_disabled_capability",
+                   return_value=False):
+            result = sweep._replay(record)
+
+        # Disabled entry's callable was invoked.
+        assert result["success"] is True
+        disabled_entry.callable.assert_called_once()
 
     def test_replay_soft_transient_failure(self, sweep_ops_dir):
         from work_buddy.sidecar.retry_sweep import RetrySweep
