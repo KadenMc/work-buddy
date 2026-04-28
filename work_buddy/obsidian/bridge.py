@@ -954,6 +954,78 @@ def eval_js_internal(code: str, timeout: int = 15) -> Any:
     return result.get("result")
 
 
+def eval_js_for_write(
+    code: str,
+    *,
+    write_path: str,
+    content_hint: str,
+    timeout: int = 15,
+) -> Any:
+    """eval_js for atomic-write paths — translates timeouts to PWU.
+
+    Difference from :func:`eval_js_internal`: routes through
+    :func:`_request_with_status` (typed exceptions) instead of
+    :func:`_request` (silent None). On HTTP timeout, raises
+    :class:`ObsidianPostWriteUncertain` carrying the write_path and a
+    content_hint so the gateway's CP-A7 verify-then-decide path can
+    determine whether the JS callback successfully mutated the vault.
+
+    Why this matters: the JS body inside ``code`` typically calls
+    ``app.vault.process(...)`` which CAN have committed the modify
+    callback before the bridge's HTTP response failed to arrive. Without
+    this translation, eval_js_internal silently returns None on
+    timeout, the atomic-write helper falls through to the legacy
+    ``bridge.write_file`` path, and the conflict-detection / atomic
+    semantics are bypassed — exactly the regression Slice C was meant
+    to prevent.
+
+    Mirrors :func:`write_file_raw`'s post-write-uncertain handling.
+
+    Args:
+        code: JavaScript body to execute.
+        write_path: Vault-relative path the JS is mutating. Used by the
+            verify-from-filesystem recovery to pick the file to inspect.
+        content_hint: Substring witness — text the verifier expects to
+            find in the file *if* the JS callback ran successfully. For
+            line-replace operations, the new line itself is the natural
+            hint (unique by task_id).
+        timeout: HTTP request timeout in seconds.
+
+    Returns:
+        The value the JS produced.
+
+    Raises:
+        :class:`ObsidianPostWriteUncertain` on HTTP timeout — carries
+            (write_path, content_hint, write_mode='insert') so
+            verify_post_write does substring detection.
+        :class:`ObsidianTimeout` if the bridge port was open but no
+            data was sent (callable picks this up as a regular
+            transient failure).
+        :class:`ObsidianUnreachable` (or specific subclass) on TCP
+            refused.
+        :class:`RuntimeError` if the JS body threw inside Obsidian.
+    """
+    try:
+        status, body = _request_with_status(
+            "POST", "/eval", {"code": code}, timeout=timeout,
+        )
+    except ObsidianTimeout as exc:
+        # The eval body was sent; the JS callback may have committed
+        # the vault.process() write before the response failed to
+        # arrive. Translate to PWU so the gateway can verify-then-decide
+        # whether to retry.
+        raise ObsidianPostWriteUncertain(
+            write_path,
+            content_hint=content_hint,
+            write_mode="insert",
+        ) from exc
+    if body is None:
+        return None
+    if "error" in body:
+        raise RuntimeError(f"Eval error: {body['error']}")
+    return body.get("result")
+
+
 def atomic_replace_line_by_task_id(
     file_path: str,
     task_id: str,
@@ -1054,11 +1126,22 @@ return (async () => {{
 }})()
 """
 
-    result = eval_js_internal(js, timeout=timeout)
+    # Route through the write-aware eval path so HTTP timeouts translate
+    # into ObsidianPostWriteUncertain (with content_hint=new_line) instead
+    # of silently returning None. Without this, the silent-None on
+    # timeout caused atomic_replace to fall through to the legacy
+    # bridge.write_file path, defeating Slice C's whole purpose. The
+    # gateway's CP-A7 verify-then-decide path picks up the PWU and
+    # checks whether the new_line is in the on-disk file.
+    result = eval_js_for_write(
+        js,
+        write_path=file_path,
+        content_hint=new_line,
+        timeout=timeout,
+    )
     if result is None:
-        # Bridge call returned None — translate to the standard
-        # "atomic write failed" structured response. The caller will
-        # typically fall back to the legacy path.
+        # Genuinely None (eval body returned undefined / null) —
+        # treat as bridge_returned_none for fallback purposes.
         return {
             "found": False,
             "conflict": False,

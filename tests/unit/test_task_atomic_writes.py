@@ -189,6 +189,40 @@ def test_atomic_bridge_returned_none_falls_back_to_legacy(patched_bridge_store):
 # ---------------------------------------------------------------------------
 
 
+def test_atomic_pwu_propagates_for_gateway_recovery(patched_bridge_store):
+    """Critical regression test: ObsidianPostWriteUncertain raised by the
+    atomic eval must propagate up to the gateway's CP-A7 recovery path,
+    NOT trigger the legacy fallback. Without this, the atomic-write
+    semantics are silently bypassed when the bridge ack times out.
+
+    Live-test failure 2026-04-28: a `task_update_description` PWU was
+    coming from the LEGACY bridge.write_file (PUT path), not the eval
+    POST path — meaning the atomic helper had silently fallen through
+    to legacy. This test pins the new behavior.
+    """
+    from work_buddy.obsidian.errors import ObsidianPostWriteUncertain
+    mock_bridge, _ = patched_bridge_store
+    mock_bridge.atomic_replace_line_by_task_id.side_effect = (
+        ObsidianPostWriteUncertain(
+            "tasks/master-task-list.md",
+            content_hint="- [ ] #todo Fix the auth bug 🆔 t-abc123",
+            write_mode="insert",
+        )
+    )
+
+    # PWU must propagate up — gateway's CP-A7 layer (above this code)
+    # is what verifies and decides. The retry decorator explicitly
+    # propagates PWU instead of swallowing it.
+    with pytest.raises(ObsidianPostWriteUncertain):
+        mutations.update_task_description(
+            task_id="t-abc123",
+            new_description="Fix the auth bug",
+        )
+
+    # Crucially: the legacy write_file path must NOT have run.
+    mock_bridge.write_file.assert_not_called()
+
+
 def test_atomic_obsidian_error_falls_back_to_legacy(patched_bridge_store):
     from work_buddy.obsidian.errors import ObsidianUnreachable
     mock_bridge, _ = patched_bridge_store
