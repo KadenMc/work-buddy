@@ -1325,7 +1325,16 @@ def _status_capabilities() -> list[Capability]:
         ),
         Capability(
             name="mcp_registry_reload",
-            description="Invalidate and rebuild the capability registry. Use after code changes to pick up new capabilities without restarting the MCP server.",
+            description=(
+                "HEAVY: invalidate and rebuild the capability registry. "
+                "Re-probes every tool, purges work_buddy.* from sys.modules, "
+                "rebuilds every capability (~6-8s). Use ONLY after code "
+                "changes to existing capability callables. For transient "
+                "tool-probe failures (capability stuck in disabled state), "
+                "use work_buddy.recovery.recheck_disabled_capability(name) "
+                "instead — it re-probes only the relevant tools with a "
+                "30s cool-down. See architecture/capability-registry."
+            ),
             category="status",
             parameters={},
             callable=invalidate_registry,
