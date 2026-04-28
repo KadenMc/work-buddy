@@ -11,9 +11,13 @@ All categorical metadata that was previously in #tasker/* tags now lives in the 
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
+import time
 import uuid
 from datetime import date
+from pathlib import Path
 from typing import Any, Callable
 
 from work_buddy.consent import requires_consent
@@ -206,6 +210,125 @@ def _normalize_tags(tags: list[str] | None) -> list[str]:
 def generate_task_id() -> str:
     """Generate a short unique task ID (e.g., 't-a3f8c1e2')."""
     return "t-" + uuid.uuid4().hex[:8]
+
+
+# ── create_task idempotency cache (Slice C.2 fix) ────────────────
+#
+# Background: prior to this cache, ``create_task`` called
+# ``generate_task_id()`` and ``uuid.uuid4()`` fresh on every invocation.
+# When a write timed out with ``ObsidianPostWriteUncertain`` and the
+# gateway/sidecar replayed the operation, the replay generated NEW
+# IDs — orphaning the previous attempt's note file (if it had landed)
+# AND making the function's own "skip if task_id already in content"
+# idempotency check meaningless (the new task_id never matched the
+# previous attempt's).
+#
+# Live impact (2026-04-28): one stuck task spawned 5 orphan note files
+# across 5 retry attempts before manual cancellation, with the master
+# task list never receiving a corresponding line.
+#
+# Fix: hash the natural input parameters of ``create_task`` into a
+# stable key, persist the freshly-generated IDs under that key with a
+# short TTL, and reuse them when the same key is seen again. Retries
+# within the TTL window get the SAME IDs and the existing
+# "skip if already there" guards finally do their job. Legitimate
+# distinct calls (e.g. user creates "Buy milk" twice on different
+# days) still get fresh IDs once the TTL window passes.
+
+_IDEMPOTENCY_TTL_SEC = 300  # 5 minutes — long enough for bridge-retry sweep
+
+
+def _idempotency_dir() -> Path:
+    """Resolve the create_task idempotency cache dir. Lazily-imported
+    so unit tests can monkey-patch ``data_dir`` without touching the
+    real cache."""
+    from work_buddy.paths import data_dir
+    return data_dir("create_task_idempotency")
+
+
+def _create_task_idempotency_key(
+    task_text: str,
+    summary: str | None,
+    project: str | None,
+    urgency: str,
+    contract: str | None,
+    tags: list[str],
+    due_date: str | None,
+) -> str:
+    """Stable hash of natural input parameters.
+
+    Includes the user-facing fields that distinguish one create from
+    another. Excludes Slice 2 GTD vocabulary fields (kind / density /
+    creation_effort etc.) because they're typically derived from the
+    other inputs and including them would produce gratuitous cache-key
+    differences. Two calls that differ only on, say, ``creation_effort``
+    are still "the same task" for retry purposes.
+    """
+    payload = json.dumps(
+        {
+            "task_text": task_text or "",
+            "summary": summary or "",
+            "project": project or "",
+            "urgency": urgency or "medium",
+            "contract": contract or "",
+            "tags": sorted(tags or []),
+            "due_date": due_date or "",
+        },
+        sort_keys=True,
+        ensure_ascii=False,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def _resolve_idempotent_create_ids(
+    key: str,
+) -> tuple[str | None, str | None]:
+    """Return (cached_task_id, cached_note_uuid) for a recent matching call.
+
+    Returns (None, None) if no cache entry exists, the entry has expired,
+    or the file is malformed. Either field may be None individually
+    (e.g. a previous call without a summary cached only task_id).
+    """
+    cache_path = _idempotency_dir() / f"{key}.json"
+    if not cache_path.exists():
+        return None, None
+    try:
+        cached = json.loads(cache_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None, None
+    if time.time() - float(cached.get("ts", 0)) > _IDEMPOTENCY_TTL_SEC:
+        return None, None
+    return cached.get("task_id"), cached.get("note_uuid")
+
+
+def _record_idempotent_create_ids(
+    key: str,
+    task_id: str,
+    note_uuid: str | None,
+) -> None:
+    """Persist (task_id, note_uuid) under ``key`` with current timestamp."""
+    cache_dir = _idempotency_dir()
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:  # pragma: no cover — defensive
+        logger.warning(
+            "create_task idempotency cache dir creation failed: %s", exc,
+        )
+        return
+    cache_path = cache_dir / f"{key}.json"
+    try:
+        cache_path.write_text(
+            json.dumps({
+                "task_id": task_id,
+                "note_uuid": note_uuid,
+                "ts": time.time(),
+            }),
+            encoding="utf-8",
+        )
+    except OSError as exc:  # pragma: no cover — defensive
+        logger.warning(
+            "create_task idempotency cache write failed: %s", exc,
+        )
 
 
 def _prepend_task(content: str, task_line: str) -> str:
@@ -1055,42 +1178,85 @@ def create_task(
         raise ValueError(f"Invalid user_involvement {user_involvement!r}")
     namespace_tags = _normalize_tags(tags)
 
-    task_id = generate_task_id()
+    # Slice C.2: idempotent ID resolution. On retry of a recent identical
+    # call (within _IDEMPOTENCY_TTL_SEC), reuse the previously-generated
+    # task_id and note_uuid so existing-content checks below actually
+    # match. See `_resolve_idempotent_create_ids` for rationale.
+    idem_key = _create_task_idempotency_key(
+        task_text=task_text,
+        summary=summary,
+        project=project,
+        urgency=urgency,
+        contract=contract,
+        tags=namespace_tags,
+        due_date=due_date,
+    )
+    cached_task_id, cached_note_uuid = _resolve_idempotent_create_ids(idem_key)
+
+    task_id = cached_task_id or generate_task_id()
     note_uuid: str | None = None
     note_path: str | None = None
 
     # --- Note creation (optional) ---
     if summary:
-        note_uuid = str(uuid.uuid4())
+        note_uuid = cached_note_uuid or str(uuid.uuid4())
         note_path = f"{TASK_NOTES_DIR}/{note_uuid}.md"
         today = date.today().isoformat()
 
-        template = bridge.read_file(TASK_NOTE_TEMPLATE)
-        if template:
-            note_content = template.replace("{{VALUE:Title}}", task_text)
-            note_content = note_content.replace("created: 2025-10-08", f"created: {today}")
-        else:
-            note_content = (
-                f"---\ntype: task-note\ncreated: {today}\nstatus: open\n---\n"
-                f"# {task_text}\n\n## Summary\n{summary}\n\n"
-                f"## Details\n\n## Action items\n\n## Artifacts & References\n"
+        # Stash IDs immediately after deciding on them so a PWU mid-write
+        # still leaves a cache entry for the gateway-replay to pick up.
+        # Idempotent: subsequent identical calls within the TTL window
+        # see these same IDs.
+        _record_idempotent_create_ids(idem_key, task_id, note_uuid)
+
+        # Idempotency check: if a previous attempt already wrote the
+        # note (PWU body landed before timeout), skip the rewrite. The
+        # bridge.read_file call here is cheap relative to a wasted write.
+        existing_note = bridge.read_file(note_path)
+        if existing_note is None:
+            template = bridge.read_file(TASK_NOTE_TEMPLATE)
+            if template:
+                note_content = template.replace("{{VALUE:Title}}", task_text)
+                note_content = note_content.replace(
+                    "created: 2025-10-08", f"created: {today}"
+                )
+            else:
+                note_content = (
+                    f"---\ntype: task-note\ncreated: {today}\nstatus: open\n---\n"
+                    f"# {task_text}\n\n## Summary\n{summary}\n\n"
+                    f"## Details\n\n## Action items\n\n## Artifacts & References\n"
+                )
+
+            if "A one-paragraph description." in note_content:
+                note_content = note_content.replace(
+                    "A one-paragraph description.", summary,
+                )
+
+            note_tags = ["#todo"]
+            if project:
+                note_tags.append(f"#projects/{project}")
+            for t in namespace_tags:
+                note_tags.append(f"#{t}")
+            note_content = note_content.replace(
+                "---\n\n#", f"---\n{' '.join(note_tags)}\n\n#", 1
             )
 
-        if "A one-paragraph description." in note_content:
-            note_content = note_content.replace("A one-paragraph description.", summary)
-
-        note_tags = ["#todo"]
-        if project:
-            note_tags.append(f"#projects/{project}")
-        for t in namespace_tags:
-            note_tags.append(f"#{t}")
-        note_content = note_content.replace(
-            "---\n\n#", f"---\n{' '.join(note_tags)}\n\n#", 1
-        )
-
-        # Post-CP6: bridge.write_file raises typed exceptions on failure;
-        # @bridge_retry catches transients and replays the whole function.
-        bridge.write_file(note_path, note_content)
+            # Post-CP6: bridge.write_file raises typed exceptions on failure;
+            # @bridge_retry catches transients and replays the whole function.
+            # Slice C.2: on retry, the cache_key + existing-note check
+            # above means we reach this write only when the note isn't
+            # already on disk — no orphan-note proliferation.
+            bridge.write_file(note_path, note_content)
+        else:
+            logger.info(
+                "create_task: note %s already exists on disk — skipping "
+                "write (retry-safety idempotency)",
+                note_path,
+            )
+    else:
+        # No summary → no note, but still record the task_id for retry
+        # idempotency on the master-list write that follows.
+        _record_idempotent_create_ids(idem_key, task_id, None)
 
     # --- Task line ---
     parts = [f"- [ ] #todo {task_text}"]
