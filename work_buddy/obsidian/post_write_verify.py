@@ -106,6 +106,16 @@ def verify_post_write(exc: ObsidianPostWriteUncertain) -> VerifyResult:
 
     if exc.write_mode == "replace":
         landed = _verify_replace(content, hint)
+    elif exc.write_mode == "absent":
+        # Delete-style operation: verified iff the witness is NO
+        # LONGER in the file. Used by atomic-delete paths where the
+        # hint identifies the content that should be GONE (e.g.
+        # ``f"🆔 {task_id}"`` for atomic-delete-line-by-task-id).
+        # Without this branch, delete operations using substring
+        # semantics get the verdict inverted: a successful delete
+        # leaves the witness absent, which "insert"-style verify
+        # reads as "didn't land" → spurious retry.
+        landed = not _verify_substring(content, hint)
     else:
         # insert / append / anything else with a substring witness.
         landed = _verify_substring(content, hint)

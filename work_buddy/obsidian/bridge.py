@@ -980,6 +980,7 @@ def eval_js_for_write(
     *,
     write_path: str,
     content_hint: str,
+    write_mode: str = "insert",
     timeout: int = 15,
 ) -> Any:
     """eval_js for atomic-write paths — translates timeouts to PWU.
@@ -1007,9 +1008,24 @@ def eval_js_for_write(
         write_path: Vault-relative path the JS is mutating. Used by the
             verify-from-filesystem recovery to pick the file to inspect.
         content_hint: Substring witness — text the verifier expects to
-            find in the file *if* the JS callback ran successfully. For
-            line-replace operations, the new line itself is the natural
-            hint (unique by task_id).
+            find (or NOT find, for ``write_mode="absent"``) in the file
+            after the JS callback runs successfully. For line-replace
+            operations the new line itself is the natural hint (unique
+            by task_id). For line-delete operations use the unique
+            substring of the line being removed (e.g. the task_id
+            marker).
+        write_mode: Verification semantics for the post-write recovery
+            path:
+            - ``"insert"`` (default) — verified iff hint IS present
+              (line-replace, line-insert, append).
+            - ``"absent"`` — verified iff hint IS NOT present
+              (line-delete and other "make this go away"
+              operations). Without this, a successful delete reads
+              as "didn't land" via insert-mode substring verify.
+            - ``"replace"`` — full sha256 match (rare for atomic
+              eval-driven writes since JS computes the new content;
+              caller would need to know the post-callback content
+              ahead of time).
         timeout: HTTP request timeout in seconds.
 
     Returns:
@@ -1017,8 +1033,8 @@ def eval_js_for_write(
 
     Raises:
         :class:`ObsidianPostWriteUncertain` on HTTP timeout — carries
-            (write_path, content_hint, write_mode='insert') so
-            verify_post_write does substring detection.
+            (write_path, content_hint, write_mode) so verify_post_write
+            applies the right detection mode.
         :class:`ObsidianTimeout` if the bridge port was open but no
             data was sent (callable picks this up as a regular
             transient failure).
@@ -1038,7 +1054,7 @@ def eval_js_for_write(
         raise ObsidianPostWriteUncertain(
             write_path,
             content_hint=content_hint,
-            write_mode="insert",
+            write_mode=write_mode,
         ) from exc
     if body is None:
         return None
@@ -1200,12 +1216,13 @@ def atomic_delete_line_by_task_id(
 
     Raises the same typed Obsidian exceptions as
     :func:`eval_js_for_write` on bridge failure. On timeout, raises
-    :class:`ObsidianPostWriteUncertain` with a content_hint of
-    ``f"🆔 {task_id}"`` and ``write_mode="absent"`` — the verifier
-    should treat absence (not presence) of the hint as "verified",
-    since this is a removal operation. The gateway's
-    ``verify_post_write`` doesn't distinguish presence-vs-absence
-    semantics today; callers should be aware.
+    :class:`ObsidianPostWriteUncertain` with content_hint of
+    ``f"🆔 {task_id}"`` and ``write_mode="absent"``. The verifier's
+    "absent" mode treats hint-NOT-present as verified (since this is
+    a removal operation) — without it, a successful delete would
+    read as "didn't land" via the default insert/substring semantics
+    and trigger spurious retries. See :func:`verify_post_write`'s
+    "absent" branch.
 
     Consent: bypasses ``obsidian.eval_js`` consent. Callers must hold
     ``obsidian.write_file`` consent (or higher) — this IS a write_file
@@ -1259,6 +1276,7 @@ return (async () => {{
         js,
         write_path=file_path,
         content_hint=hint,
+        write_mode="absent",  # delete: verified iff hint NOT in content
         timeout=timeout,
     )
     if result is None:

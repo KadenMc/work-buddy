@@ -1087,22 +1087,60 @@ def archive_completed(older_than_days: int = 0) -> dict[str, Any]:
     archive_content = archive_header + "\n".join(archive_lines) + "\n"
 
     existing_archive = bridge.read_file(ARCHIVE_FILE)
-    if existing_archive:
-        new_archive = existing_archive.rstrip() + "\n" + archive_content
-    else:
-        new_archive = f"# Task Archive\n{archive_content}"
 
-    # Post-CP6: bridge.write_file raises typed exceptions on failure.
-    # The @bridge_retry decorator catches transients and retries the
-    # whole function — note that this means the archive file may end
-    # up with duplicated rows on retry (same risk as the pre-CP6 code:
-    # both writes have to succeed for the result to be consistent).
-    # Acceptable today; future hardening could move both writes into
-    # an atomic markdown transaction if the bridge gains one.
-    bridge.write_file(ARCHIVE_FILE, new_archive)
+    # Slice C.6: idempotency guard against partial-retry double-archiving.
+    # Pre-fix risk (acknowledged in the previous comment): if the
+    # ARCHIVE_FILE write succeeded but the MASTER_TASK_FILE write hit
+    # PWU and the retry replayed the whole function, we'd append a
+    # second copy of the same archived block. Now: skip the archive
+    # write when the existing archive already contains every task_id
+    # we were about to add. Re-extraction is cheap relative to a
+    # wasted write, and the check is unique-enough (task_ids are
+    # globally unique by construction).
+    if existing_archive and all(tid in existing_archive for tid in archived_ids):
+        logger.info(
+            "archive_completed: all %d task_ids already in archive; "
+            "skipping archive-file write (idempotent retry safety)",
+            len(archived_ids),
+        )
+        new_archive = existing_archive  # marker: no actual write needed
+        archive_write_skipped = True
+    else:
+        if existing_archive:
+            new_archive = existing_archive.rstrip() + "\n" + archive_content
+        else:
+            new_archive = f"# Task Archive\n{archive_content}"
+        archive_write_skipped = False
+
+    if not archive_write_skipped:
+        # Post-CP6: bridge.write_file raises typed exceptions on failure.
+        # Slice C.4 substring witness: the archive_header is unique to
+        # this date AND we just confirmed it's not already in the
+        # file. So substring-verify "did our header land?" is robust
+        # against concurrent writes from elsewhere.
+        bridge.write_file(
+            ARCHIVE_FILE, new_archive,
+            write_mode="insert",
+            content_hint=archive_header.strip(),
+        )
 
     new_master = "\n".join(keep_lines)
-    bridge.write_file(MASTER_TASK_FILE, new_master)
+    # Slice C.4 substring witness for the master-list rewrite. The
+    # archived-task IDs should NOT be in the new master (we just
+    # removed them). Use write_mode="absent" with the FIRST archived
+    # task_id as the witness — verified iff that task_id is gone from
+    # the master list. Same robustness as atomic_delete_line_by_task_id.
+    if archived_ids:
+        master_hint = f"🆔 {archived_ids[0]}"
+        bridge.write_file(
+            MASTER_TASK_FILE, new_master,
+            write_mode="absent",
+            content_hint=master_hint,
+        )
+    else:
+        # Defensive: no archived_ids means we somehow archived only
+        # ID-less lines. Fall back to default replace+sha256.
+        bridge.write_file(MASTER_TASK_FILE, new_master)
 
     # Mark archived in store
     for tid in archived_ids:
