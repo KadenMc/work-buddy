@@ -11,12 +11,36 @@ Surface:
   - ``email_triage_run``     One BackgroundTriageProducer pass over recent mail.
   - ``email_get``            Fetch one message by stable handle.
   - ``email_display``        Open a message in the user's mail UI.
+
+Slice 2 — verdict pass
+----------------------
+``email_triage_run`` honours ``triage.verdict_pass.enabled`` from config.
+When True it instantiates an :class:`LLMRunner`, builds the active-tasks /
+contracts / projects context block, and asks the agent for a structured
+verdict per message (mapping into the existing :data:`TRIAGE_ACTIONS`).
+When False, behavior is unchanged from Slice 1: items land in the pool as
+raw captures (``verdict={"raw": True}``) for human review.
+
+Email-specific verdict mapping (stricter than the journal capability's
+defaults because emails skew heavily toward "low-signal newsletter":
+
+- ``close``            — newsletters, promotional, automated notifications
+                          you've already acted on, safe to drop.
+- ``create_task``      — clearly action-required (a question for you,
+                          a deadline, a meeting to confirm).
+- ``record_into_task`` — context for an active task — only when the
+                          email's subject / sender / content is
+                          UNAMBIGUOUSLY about the same work. Loose
+                          keyword overlap is NOT enough.
+- ``leave``            — ambiguous; default when uncertain.
+- ``group``            — only when the email is part of a thread already
+                          in the same triage run.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Optional
 
 from work_buddy.email.errors import EmailError, EmailMessageNotFound
 from work_buddy.email.models import EmailMessageHandle
@@ -26,8 +50,17 @@ from work_buddy.email.triage_adapter import (
     EMAIL_TRIAGE_SOURCE,
     collect_email_candidates,
 )
+from work_buddy.triage.items import TriageItem
 
 log = logging.getLogger(__name__)
+
+
+# Default body-char budget when the verdict pass is enabled. The LLM needs
+# enough body to discriminate "newsletter" from "action-required". 1500
+# chars covers the visible portion of most personal/work emails after
+# stripping signatures (which Slice 1's adapter doesn't do — sharp edge
+# noted in DECISIONS.md).
+_DEFAULT_VERDICT_BODY_CHARS = 1500
 
 
 def _provider_or_error() -> tuple[Any, dict | None]:
@@ -83,22 +116,61 @@ def email_triage_run(
     unread_only: bool = True,
     folder_path: str | None = None,
     account_id: str | None = None,
-    include_body_chars: int = 0,
+    include_body_chars: int | None = None,
     force: bool = False,
     dry_run: bool = False,
+    tier: str | None = None,
 ) -> dict:
     """Collect recent email candidates and run one BackgroundTriageProducer pass.
 
-    In v1 the producer is configured with ``verdict_pass_enabled=False`` —
-    candidates land in the pool as raw entries (``verdict={"raw": True}``)
-    so the user can review them in the dashboard. The LLM-driven verdict
-    pass over emails is a follow-up.
+    Verdict-pass behavior is gated by ``triage.verdict_pass.enabled`` in
+    config:
+
+    - When ``False`` (Slice 1 default): items land in the pool as raw
+      captures (``verdict={"raw": True}``) for human review.
+    - When ``True`` (Slice 2): an :class:`LLMRunner`-backed agent
+      classifies each message into one of the existing
+      :data:`TRIAGE_ACTIONS` (close / create_task / record_into_task /
+      leave / group) and the structured verdict is written to the pool
+      via :func:`triage_submit`.
+
+    Args:
+        days_back: How far back to scan for unread mail.
+        max_messages: Cap on candidates per run after dedup.
+        unread_only: Skip already-read messages (default True).
+        folder_path: Limit to a specific folder URI.
+        account_id: Limit to a specific account.
+        include_body_chars: Body-char budget per message. ``None`` (default)
+            auto-picks: 0 when verdict pass is off (headers-only is plenty
+            for raw capture), :data:`_DEFAULT_VERDICT_BODY_CHARS` when on
+            (the LLM needs body content to discriminate newsletter vs
+            action-required).
+        force: Ignore the unchanged-content idempotence gate.
+        dry_run: Collect candidates but don't write to the pool.
+        tier: Override starting :class:`ModelTier` for the verdict agent
+            (e.g. ``"local_fast"``, ``"frontier_balanced"``,
+            ``"frontier_best"``). ``None`` defaults to FRONTIER_BALANCED,
+            matching the journal capability.
     """
     from work_buddy.triage.background import BackgroundTriageProducer
+    from work_buddy.triage.config import load_triage_config
 
     provider, err = _provider_or_error()
     if err:
         return err
+
+    cfg = load_triage_config()
+    verdict_pass_enabled = bool(
+        cfg.get("verdict_pass", {}).get("enabled", False)
+    )
+
+    # Auto-pick body budget if caller didn't override:
+    #   - verdict pass off: 0 (headers-only — what Slice 1 shipped with)
+    #   - verdict pass on:  _DEFAULT_VERDICT_BODY_CHARS (LLM needs content)
+    effective_body_chars = (
+        include_body_chars if include_body_chars is not None
+        else (_DEFAULT_VERDICT_BODY_CHARS if verdict_pass_enabled else 0)
+    )
 
     def _collect():
         return collect_email_candidates(
@@ -108,7 +180,7 @@ def email_triage_run(
             unread_only=unread_only,
             folder_path=folder_path,
             account_id=account_id,
-            include_body_chars=include_body_chars,
+            include_body_chars=effective_body_chars,
         )
 
     if dry_run:
@@ -118,22 +190,307 @@ def email_triage_run(
             "item_count": len(items),
             "content_hash": ch,
             "items": [it.to_dict() for it in items],
+            "verdict_pass_enabled": verdict_pass_enabled,
         }
 
-    def _agent_stub(item, run_id):
-        # verdict_pass disabled in v1
-        return {"content": "", "error": "verdict_pass disabled in v1",
-                "error_kind": "verdict_pass_disabled"}
+    if verdict_pass_enabled:
+        agent_callable = _build_verdict_agent(cfg=cfg, tier_override=tier)
+    else:
+        # Producer never invokes when verdict_pass_enabled=False, but the
+        # constructor demands a callable. Surface a clear error if anyone
+        # ever tries to invoke it directly.
+        def agent_callable(item, run_id):
+            return {
+                "content": "",
+                "error": "verdict_pass disabled — agent must not be invoked",
+                "error_kind": "verdict_pass_disabled",
+            }
 
     producer = BackgroundTriageProducer(
         adapter_name=EMAIL_TRIAGE_ADAPTER_NAME,
         source=EMAIL_TRIAGE_SOURCE,
         collect=_collect,
-        agent=_agent_stub,
+        agent=agent_callable,
         enrich=False,
-        verdict_pass_enabled=False,
+        verdict_pass_enabled=verdict_pass_enabled,
     )
-    return producer.run(force=force).to_dict()
+    result = producer.run(force=force).to_dict()
+    result["verdict_pass_enabled"] = verdict_pass_enabled
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Slice 2 — verdict-pass agent
+# ---------------------------------------------------------------------------
+
+
+_AGENT_SYSTEM_PROMPT = """\
+You are triaging one email from the user's inbox. Given the message, the
+user's current-context block, and the available actions, decide the single
+best next action and fill in the verdict schema.
+
+## Action selection
+
+  - close              — newsletters, promotional, automated notifications,
+                          things the user has already acted on. The bias
+                          here is GENEROUS: most inbox traffic is low-signal
+                          and safe to drop. If the message looks like a
+                          mailing list / digest / notification with no
+                          direct ask of the user, choose close.
+  - create_task        — there is a clear ACTION REQUIRED FROM THE USER:
+                          a direct question, an explicit deadline, an
+                          invitation that needs a yes/no, a manual
+                          follow-up the user has to do. Include
+                          ``suggested_task_text`` — a concise task title
+                          (≤80 chars) that names the action the user must
+                          take, NOT a description of the email.
+  - record_into_task   — the email is UNAMBIGUOUSLY about an active task
+                          already in the user's context block. Same
+                          system, same project, same subject. Include
+                          ``target_task_id`` — copy it VERBATIM from the
+                          Active Tasks list. Loose keyword overlap is
+                          NOT enough; quote the matching task title in
+                          the rationale. NEVER invent a task_id.
+  - leave              — ambiguous; the user might want to look at it.
+                          The conservative default when uncertain.
+                          Personal mail from named individuals where
+                          you can't tell the intent → prefer leave.
+  - group              — RARE for emails. Only when this message
+                          obviously clusters with another item already
+                          in the SAME triage run (e.g., the third reply
+                          in an active thread that's also being triaged).
+                          Include ``related_item_ids``. If the related
+                          items aren't in the run, do NOT use group;
+                          choose another action.
+
+If you are uncertain between two options, pick ``leave``.
+
+## Context
+
+The user message includes a ``## User's Current Context`` block with
+active tasks, contracts, and projects. READ IT BEFORE DECIDING.
+- If the email references an Active Contract or Project, say so in
+  the rationale and prefer ``record_into_task`` if there's a matching
+  task. If there's a clearly-related contract/project but no specific
+  task, ``create_task`` with a suggested_task_text that mentions the
+  contract is appropriate.
+- If the email is from a known recurring sender (a mailing list the
+  user has explicitly engaged with) AND the user's context shows no
+  related work, prefer ``close``.
+
+## group_intent (required)
+
+A short noun-phrase (3–8 words) naming the underlying intent — NOT
+the action name, NOT a restatement of the subject line. Shown as the
+card title in the review UI.
+
+Good:
+  subject: "RE: Discussion on UHN ECG Data Extraction Experience"
+    → group_intent: "UHN ECG data extraction follow-up"
+  subject: "You are invited to join Vector Community Day on May 14, 2026!"
+    → group_intent: "Vector Community Day invite"
+
+Bad:
+  - "Create task"             (that's the action)
+  - "Email asks about X"      (that's the rationale)
+  - the subject line verbatim
+  - empty
+
+## Rationale
+
+One to three sentences. Cite specific email content (sender role,
+subject phrasing, concrete asks) so the reviewer can verify your
+reasoning.
+"""
+
+
+def _build_verdict_agent(
+    *,
+    cfg: dict,
+    tier_override: str | None,
+):
+    """Construct the per-item agent callable.
+
+    Builds the active-tasks / contracts / projects context block once
+    per run, instantiates a single :class:`LLMRunner`, and returns a
+    closure that the producer will invoke per :class:`TriageItem`.
+
+    Mirrors the structure of
+    :func:`work_buddy.triage.capabilities.journal_triage_scan.journal_triage_scan`.
+    """
+    from work_buddy.llm import LLMRunner, ModelTier
+
+    # Resolve tier
+    if tier_override:
+        try:
+            tier = ModelTier(tier_override)
+        except ValueError as exc:
+            raise ValueError(
+                f"Unknown tier {tier_override!r}. "
+                f"Valid: {[t.value for t in ModelTier]}"
+            ) from exc
+    else:
+        tier = ModelTier.FRONTIER_BALANCED
+
+    # Build active-tasks context block once per run
+    triage_context_block = _build_context_block(cfg)
+    runner = LLMRunner()
+
+    def _agent(item: TriageItem, run_id: str) -> dict[str, Any]:
+        return _invoke_email_agent(
+            runner=runner,
+            item=item,
+            run_id=run_id,
+            tier=tier,
+            triage_context_block=triage_context_block,
+        )
+
+    return _agent
+
+
+def _build_context_block(cfg: dict) -> str:
+    """Render the user's current-context block for injection into the
+    per-item prompt. Best-effort: failures yield an empty string."""
+    ctx_cfg = cfg.get("triage_context", {}) or {}
+    try:
+        from work_buddy.triage.recommend import (
+            build_triage_context, render_triage_context_block,
+        )
+        triage_context = build_triage_context(
+            task_states=ctx_cfg.get(
+                "task_states", ["focused", "mit", "inbox"],
+            ),
+            max_tasks=ctx_cfg.get("max_tasks", 12),
+        )
+        # Drop recent_commits — not useful for email classification, eats
+        # tokens. Same call the journal capability makes.
+        if not ctx_cfg.get("include_recent_commits", False):
+            triage_context.pop("recent_commits", None)
+        return render_triage_context_block(triage_context)
+    except Exception as exc:
+        log.warning("email_triage: build_triage_context failed: %s", exc)
+        return ""
+
+
+def _invoke_email_agent(
+    *,
+    runner: Any,                 # LLMRunner; not type-hinted to keep imports light
+    item: TriageItem,
+    run_id: str,
+    tier: Any,                   # ModelTier
+    triage_context_block: str = "",
+) -> dict[str, Any]:
+    """Call the unified runner with a constrained verdict schema.
+
+    On success, parses the structured output, calls :func:`triage_submit`
+    to write the pool entry, and returns a dict shaped the way
+    :class:`BackgroundTriageProducer` expects (``content`` / ``error`` /
+    ``error_kind``) so its submission-check path works unchanged.
+    """
+    from work_buddy.llm import ErrorKind
+    from work_buddy.triage.capabilities.triage_submit import triage_submit
+    from work_buddy.triage.verdict_call import call_for_verdict
+    from work_buddy.triage.verdict_schema import VERDICT_SCHEMA, verdict_to_submit_kwargs
+
+    user_prompt = _render_email_prompt(
+        item=item, run_id=run_id, triage_context_block=triage_context_block,
+    )
+
+    resp = call_for_verdict(
+        runner=runner,
+        tier=tier,
+        system=_AGENT_SYSTEM_PROMPT,
+        user=user_prompt,
+        output_schema=VERDICT_SCHEMA,
+        caller="email_triage",
+        item_id=item.id,
+    )
+
+    if resp.is_error():
+        log.warning(
+            "email_triage: LLM failed for item %s on tier %s (%s): %s",
+            item.id, resp.tier_used, resp.error_kind, resp.error,
+        )
+        return {
+            "content": resp.content,
+            "error": resp.error,
+            "error_kind": resp.error_kind.value if resp.error_kind else None,
+        }
+
+    verdict = resp.structured_output or {}
+    submit_kwargs = verdict_to_submit_kwargs(verdict)
+    submit_result = triage_submit(
+        run_id=run_id,
+        item_id=item.id,
+        **submit_kwargs,
+    )
+
+    if submit_result.get("status") != "ok":
+        log.warning(
+            "email_triage: triage_submit rejected verdict for item %s: %s",
+            item.id, submit_result,
+        )
+        return {
+            "content": resp.content,
+            "error": f"triage_submit rejected: {submit_result.get('error', 'unknown')}",
+            "error_kind": ErrorKind.BAD_REQUEST.value,
+        }
+
+    return {
+        "content": resp.content or "",
+        "verdict": verdict,
+        "tier_used": resp.tier_used,
+    }
+
+
+def _render_email_prompt(
+    *,
+    item: TriageItem,
+    run_id: str,
+    triage_context_block: str = "",
+) -> str:
+    """Compose the per-item user prompt for the email verdict agent.
+
+    Layout:
+      1. Item id + run id (so the agent doesn't need to copy them anywhere
+         — they're populated by the dispatch path, but visible for trace).
+      2. Email-specific metadata (sender, recipients, date, folder).
+      3. Global "User's Current Context" block.
+      4. Email content (subject + from + body if present).
+      5. Closing instruction.
+    """
+    meta = item.metadata or {}
+    sender = meta.get("sender") or "(unknown sender)"
+    recipients = meta.get("recipients") or ""
+    date = meta.get("date") or ""
+    folder = meta.get("folder") or ""
+    folder_type = meta.get("folder_type") or ""
+
+    meta_lines = [
+        f"From: {sender}",
+    ]
+    if recipients:
+        meta_lines.append(f"To: {recipients}")
+    if date:
+        meta_lines.append(f"Date: {date}")
+    if folder or folder_type:
+        ft = f"{folder} ({folder_type})" if folder_type else folder
+        meta_lines.append(f"Folder: {ft}")
+    meta_block = "\n".join(meta_lines)
+
+    ctx_block = f"\n{triage_context_block}\n" if triage_context_block else ""
+
+    return (
+        f"Item id: {item.id}\n"
+        f"\n--- Email metadata ---\n"
+        f"{meta_block}\n"
+        f"--- End metadata ---\n"
+        f"{ctx_block}"
+        f"\n--- Email content ---\n"
+        f"{item.text.strip()}\n"
+        f"--- End email ---\n"
+        f"\nReturn ONLY the JSON verdict object. No prose, no markdown fences."
+    )
 
 
 # ---------------------------------------------------------------------------
