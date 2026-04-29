@@ -78,3 +78,10 @@ def test_summary_from_dict_handles_missing_optional_fields():
     assert s.tags == []
     assert s.preview == ""
     assert s.rfc_message_id == ""
+    assert s.folder_type == ""
+
+
+def test_summary_to_dict_roundtrip_with_folder_type():
+    s = _summary(folder_type="inbox")
+    s2 = EmailSummary.from_dict(s.to_dict())
+    assert s2.folder_type == "inbox"

@@ -62,6 +62,7 @@ class _BridgeState:
                     "cc": "",
                     "date": "2026-04-28T12:00:00Z",
                     "folder": "Inbox",
+                    "folder_type": "inbox",
                     "folder_path": "imap://acct1/INBOX",
                     "account_id": "acct1",
                     "read": False,
@@ -236,6 +237,10 @@ def test_recent_messages_maps_to_summary_with_stable_key(tmp_path, monkeypatch):
     assert s.handle.folder_path == "imap://acct1/INBOX"
     # rfc message id present → stable key uses it
     assert s.stable_key == "mid:m1@host"
+    # folder_type + account_id come through from the bridge
+    assert s.folder_type == "inbox"
+    assert s.account_id == "acct1"
+    assert s.folder == "Inbox"
 
 
 def test_get_message_unknown_id_raises_not_found(tmp_path, monkeypatch):

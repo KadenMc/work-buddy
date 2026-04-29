@@ -70,6 +70,7 @@ def _summary_to_item(summary: EmailSummary, *, body_preview: str = "") -> Triage
             "provider_message_id": summary.handle.provider_message_id,
             "folder_path": summary.handle.folder_path,
             "folder": summary.folder,
+            "folder_type": summary.folder_type,
             "account_id": summary.account_id,
             "sender": summary.sender,
             "recipients": summary.recipients,
@@ -81,6 +82,50 @@ def _summary_to_item(summary: EmailSummary, *, body_preview: str = "") -> Triage
             "flagged": summary.flagged,
         },
     )
+
+
+# Folder-type ranking for within-run dedup. Lower = preferred. Gmail's
+# labels-as-folders surfaces the same RFC Message-ID under multiple
+# folder URIs (INBOX, [Gmail]/All Mail, [Gmail]/Important, plus any
+# user labels). When we see duplicates, we want the operational handle
+# the user thinks of as "the canonical place this message lives" —
+# which for nearly all interactive triage is the inbox view.
+_FOLDER_TYPE_PRIORITY = {
+    "inbox": 0,
+    "drafts": 1,
+    "sent": 2,
+    "archive": 3,
+    "templates": 4,
+    "folder": 5,         # user folder / label
+    "queue": 6,
+    "junk": 7,
+    "trash": 8,
+}
+
+
+def _dedup_by_stable_key(summaries: list[EmailSummary]) -> list[EmailSummary]:
+    """Drop within-run duplicates, keeping the best operational handle.
+
+    Order of preference:
+      1. lowest ``_FOLDER_TYPE_PRIORITY`` (inbox > archive > trash, etc.);
+         unknown types fall to the bottom.
+      2. ties broken by first-seen order (preserves the provider's natural
+         folder-walk order so explicit folder filters still feel
+         deterministic).
+
+    The ordering is stable in the sense that re-running on the same input
+    yields the same handle for each stable_key — important for triage
+    idempotence.
+    """
+    best_for: dict[str, tuple[int, int, EmailSummary]] = {}  # key → (priority, original_index, summary)
+    for idx, s in enumerate(summaries):
+        prio = _FOLDER_TYPE_PRIORITY.get(s.folder_type, 99)
+        existing = best_for.get(s.stable_key)
+        if existing is None or prio < existing[0]:
+            best_for[s.stable_key] = (prio, idx, s)
+    # Restore the first-seen order so callers' downstream sorts (recent_messages
+    # already sorts by date desc) aren't disturbed.
+    return [v[2] for v in sorted(best_for.values(), key=lambda t: t[1])]
 
 
 def collect_email_candidates(
@@ -114,7 +159,11 @@ def collect_email_candidates(
     try:
         summaries = provider.recent_messages(
             days_back=days_back,
-            max_results=max_messages,
+            # Over-fetch by 3× then dedup-and-cap so Gmail's
+            # labels-as-folders duplicates don't eat the user's max_messages
+            # budget. The bridge already caps at MAX_RESULTS_CAP=200 so
+            # this can't run away.
+            max_results=max_messages * 3,
             unread_only=unread_only,
             folder_path=folder_path,
             account_id=account_id,
@@ -125,6 +174,18 @@ def collect_email_candidates(
     except EmailError as exc:
         log.warning("email_triage: provider error: %s", exc)
         return [], None
+
+    # Within-run dedup before any body fetch — saves work_buddy.email.get
+    # round-trips for messages we'd then drop.
+    pre_dedup = len(summaries)
+    summaries = _dedup_by_stable_key(summaries)
+    if len(summaries) < pre_dedup:
+        log.info(
+            "email_triage: deduped %d/%d duplicate folder hits "
+            "(Gmail labels-as-folders)",
+            pre_dedup - len(summaries), pre_dedup,
+        )
+    summaries = summaries[:max_messages]
 
     items: list[TriageItem] = []
     for s in summaries:

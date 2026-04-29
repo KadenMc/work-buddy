@@ -70,6 +70,12 @@ class EmailSummary:
     tags: list[str] = field(default_factory=list)
     preview: str = ""
     rfc_message_id: str = ""
+    # Provider-side folder type ("inbox" | "sent" | "drafts" | "trash" |
+    # "junk" | "archive" | "templates" | "queue" | "folder" | …). Used by
+    # the triage adapter's within-run dedup heuristic to prefer the user's
+    # primary view of a message when Gmail's labels-as-folders model
+    # surfaces the same RFC Message-ID under multiple folder URIs.
+    folder_type: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -97,6 +103,7 @@ class EmailSummary:
             tags=list(d.get("tags") or []),
             preview=d.get("preview", ""),
             rfc_message_id=d.get("rfc_message_id", ""),
+            folder_type=d.get("folder_type", ""),
         )
 
 

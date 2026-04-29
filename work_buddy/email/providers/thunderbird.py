@@ -323,6 +323,7 @@ class ThunderbirdEmailProvider:
             tags=list(d.get("tags") or []),
             preview=d.get("preview") or "",
             rfc_message_id=rfc_id,
+            folder_type=d.get("folder_type") or "",
         )
 
 
