@@ -11,9 +11,13 @@ All categorical metadata that was previously in #tasker/* tags now lives in the 
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
+import time
 import uuid
 from datetime import date
+from pathlib import Path
 from typing import Any, Callable
 
 from work_buddy.consent import requires_consent
@@ -50,6 +54,122 @@ TASK_ID_RE = re.compile(r"🆔\s*(t-[0-9a-f]+)")
 # User-supplied namespace tags must match this shape (no leading '#').
 # Mirrors sync.TAG_RE but as an anchored full-match pattern.
 NAMESPACE_TAG_RE = re.compile(r"^[a-z0-9][a-z0-9_/-]*$", re.IGNORECASE)
+
+
+# ── Description extraction ──────────────────────────────────────
+#
+# Slice 3: derive a clean human-readable description from a task line by
+# stripping the structural noise (checkbox, hashtags, wikilinks, plugin
+# emojis, 🆔). The resulting text is what gets stored in
+# ``task_metadata.description`` and what ``task_search`` queries against.
+#
+# The same regex chain was previously inlined inside
+# ``_load_task_payload`` (line ~1046 prior to Slice 3) — moved here so
+# ``task_sync``, ``task_update_description``, and ``_load_task_payload``
+# share a single canonical extractor.
+
+# Wikilinks like [[uuid|📓]] embedded in the line.
+_DESC_WIKILINK_RE = re.compile(r"\[\[[^\]]+\]\]")
+# Any remaining hashtag (#todo, #projects/x, #foo, etc.).
+_DESC_HASHTAG_RE = re.compile(r"#\S+")
+# Leading checkbox marker.
+_DESC_CHECKBOX_RE = re.compile(r"^\s*-\s*\[.\]\s*")
+# Plugin emojis with their adjacent payload tokens. Each gets its own
+# pattern so adjacent emojis (e.g. ``🔼 🆔 t-...``) all get stripped
+# rather than the first one greedily consuming the second.
+# Match any `t-<alphanumeric>` after 🆔 — production IDs are hex via
+# generate_task_id(), but the regex is permissive so a malformed legacy
+# ID still gets stripped from the description.
+_DESC_TASK_ID_RE = re.compile(r"🆔\s*t-[a-z0-9]+", re.IGNORECASE)
+_DESC_DUE_DATE_RE = re.compile(r"📅\s*\d{4}-\d{2}-\d{2}")
+_DESC_DONE_DATE_RE = re.compile(r"✅\s*\d{4}-\d{2}-\d{2}")
+_DESC_URGENCY_EMOJI_RE = re.compile(r"[🔼⏫]")
+
+
+# Lookahead-only pattern for the FIRST structural boundary that ends
+# the human-readable description portion of a task line. Lookaheads so
+# the boundary itself isn't consumed — we want the position, not the
+# token.
+#
+# Boundaries:
+#   - ``[[`` — a wikilink (the task-note link in particular)
+#   - ``#\S`` — any hashtag (the leading ``#todo`` is stripped by the
+#     prefix match before this regex runs)
+#   - 🆔 / 📅 / ✅ — plugin emojis with adjacent payloads
+#   - 🔼 / ⏫ — urgency emojis
+_DESC_BOUNDARY_LOOKAHEAD = re.compile(r"(?=\[\[|#\S|🆔|📅|✅|🔼|⏫)")
+
+# Match the line prefix that precedes the description.
+_DESC_LINE_PREFIX_RE = re.compile(r"^(\s*-\s*\[.\]\s*#todo\s+)")
+
+
+def replace_description_in_line(line: str, new_description: str) -> str:
+    """Rewrite the description text in-place on a task line.
+
+    Preserves: checkbox state, the ``#todo`` marker, all hashtags
+    (``#projects/*``, namespace tags), wikilinks (note links and any
+    others the user has added), the 🆔 marker and ID, plugin emojis
+    (📅 due date, ✅ done date, 🔼/⏫ urgency).
+
+    Boundary detection: the description is the run between ``#todo``
+    and the first structural marker (``[[``, ``#<non-space>``, plugin
+    emoji). For tasks created via ``create_task`` the description never
+    contains these characters, so the boundary is unambiguous. For
+    user-hand-edited tasks where the description contains a ``#`` (e.g.
+    issue references like "fix #123") or ``[[``, the rewrite boundary
+    will be earlier than expected — those tokens get pushed into the
+    "metadata suffix" and end up appearing after the new description.
+    Document this caveat in ``task_update_description``'s docstring.
+
+    If ``line`` doesn't match the standard task-line shape, returns
+    the line unchanged. Callers should treat that as a no-op.
+    """
+    prefix_match = _DESC_LINE_PREFIX_RE.match(line)
+    if not prefix_match:
+        return line
+
+    prefix = prefix_match.group(1)
+    rest = line[prefix_match.end():]
+
+    boundary = _DESC_BOUNDARY_LOOKAHEAD.search(rest)
+    if boundary is None:
+        # Description-only line (no metadata after — unusual but fine).
+        suffix = ""
+    else:
+        suffix = rest[boundary.start():]
+
+    new_desc = new_description.strip().replace("\n", " ").replace("\r", " ")
+    new_desc = re.sub(r"\s+", " ", new_desc)
+
+    if suffix:
+        return f"{prefix}{new_desc} {suffix}".rstrip()
+    return f"{prefix}{new_desc}".rstrip()
+
+
+def extract_description_from_line(line: str) -> str:
+    """Pull the clean human-readable description out of a task line.
+
+    Strips: checkbox, all hashtags, wikilinks (including the
+    ``[[uuid|📓]]`` task-note link), the 🆔 + ID, 📅 + due date, ✅ + done
+    date, and urgency emojis. Collapses whitespace and trims.
+
+    Returns an empty string for lines that aren't task lines or that
+    contain no text after stripping. Used by ``task_sync`` to populate
+    ``task_metadata.description``, by ``task_update_description`` to
+    derive the new description after rewrite, and by
+    ``_load_task_payload`` for legacy fallback.
+    """
+    if not line:
+        return ""
+    text = _DESC_CHECKBOX_RE.sub("", line)
+    text = _DESC_WIKILINK_RE.sub("", text)
+    text = _DESC_HASHTAG_RE.sub("", text)
+    text = _DESC_TASK_ID_RE.sub("", text)
+    text = _DESC_DUE_DATE_RE.sub("", text)
+    text = _DESC_DONE_DATE_RE.sub("", text)
+    text = _DESC_URGENCY_EMOJI_RE.sub("", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
 
 
 def _normalize_tags(tags: list[str] | None) -> list[str]:
@@ -90,6 +210,160 @@ def _normalize_tags(tags: list[str] | None) -> list[str]:
 def generate_task_id() -> str:
     """Generate a short unique task ID (e.g., 't-a3f8c1e2')."""
     return "t-" + uuid.uuid4().hex[:8]
+
+
+# ── create_task idempotency cache (Slice C.2 fix) ────────────────
+#
+# Background: prior to this cache, ``create_task`` called
+# ``generate_task_id()`` and ``uuid.uuid4()`` fresh on every invocation.
+# When a write timed out with ``ObsidianPostWriteUncertain`` and the
+# gateway/sidecar replayed the operation, the replay generated NEW
+# IDs — orphaning the previous attempt's note file (if it had landed)
+# AND making the function's own "skip if task_id already in content"
+# idempotency check meaningless (the new task_id never matched the
+# previous attempt's).
+#
+# Live impact (2026-04-28): one stuck task spawned 5 orphan note files
+# across 5 retry attempts before manual cancellation, with the master
+# task list never receiving a corresponding line.
+#
+# Fix: hash the natural input parameters of ``create_task`` into a
+# stable key, persist the freshly-generated IDs under that key with a
+# short TTL, and reuse them when the same key is seen again. Retries
+# within the TTL window get the SAME IDs and the existing
+# "skip if already there" guards finally do their job. Legitimate
+# distinct calls (e.g. user creates "Buy milk" twice on different
+# days) still get fresh IDs once the TTL window passes.
+
+_IDEMPOTENCY_TTL_SEC = 300  # 5 minutes — long enough for bridge-retry sweep
+
+
+def _idempotency_dir() -> Path:
+    """Resolve the create_task idempotency cache dir. Lazily-imported
+    so unit tests can monkey-patch ``data_dir`` without touching the
+    real cache."""
+    from work_buddy.paths import data_dir
+    return data_dir("create_task_idempotency")
+
+
+def _create_task_idempotency_key(
+    task_text: str,
+    summary: str | None,
+    project: str | None,
+    urgency: str,
+    contract: str | None,
+    tags: list[str],
+    due_date: str | None,
+) -> str:
+    """Stable hash of natural input parameters.
+
+    Includes the user-facing fields that distinguish one create from
+    another. Excludes Slice 2 GTD vocabulary fields (kind / density /
+    creation_effort etc.) because they're typically derived from the
+    other inputs and including them would produce gratuitous cache-key
+    differences. Two calls that differ only on, say, ``creation_effort``
+    are still "the same task" for retry purposes.
+    """
+    payload = json.dumps(
+        {
+            "task_text": task_text or "",
+            "summary": summary or "",
+            "project": project or "",
+            "urgency": urgency or "medium",
+            "contract": contract or "",
+            "tags": sorted(tags or []),
+            "due_date": due_date or "",
+        },
+        sort_keys=True,
+        ensure_ascii=False,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def _resolve_idempotent_create_ids(
+    key: str,
+) -> tuple[str | None, str | None]:
+    """Return (cached_task_id, cached_note_uuid) for a recent matching call.
+
+    Returns (None, None) if no cache entry exists, the entry has expired,
+    or the file is malformed. Either field may be None individually
+    (e.g. a previous call without a summary cached only task_id).
+    """
+    cache_path = _idempotency_dir() / f"{key}.json"
+    if not cache_path.exists():
+        return None, None
+    try:
+        cached = json.loads(cache_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None, None
+    if time.time() - float(cached.get("ts", 0)) > _IDEMPOTENCY_TTL_SEC:
+        return None, None
+    return cached.get("task_id"), cached.get("note_uuid")
+
+
+def create_task_effects_resolver(
+    params: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Effect-manifest resolver for ``task_create``.
+
+    Recomputes the idempotency key from the params and looks up the
+    cached (task_id, note_uuid). Returns a dict of generated values
+    for path/witness template substitution.
+
+    Returns None when the cache lookup misses — the verifier will
+    treat the corresponding effect as indeterminate, which falls
+    through to single-effect verify behavior (the existing path).
+    The cache is populated as soon as ``create_task`` decides on its
+    IDs (right at the top of the function), so any time create_task
+    has gotten far enough to PWU, the cache should be populated.
+    """
+    namespace_tags = _normalize_tags(params.get("tags") or [])
+    key = _create_task_idempotency_key(
+        task_text=params.get("task_text", ""),
+        summary=params.get("summary"),
+        project=params.get("project"),
+        urgency=params.get("urgency", "medium"),
+        contract=params.get("contract"),
+        tags=namespace_tags,
+        due_date=params.get("due_date"),
+    )
+    task_id, note_uuid = _resolve_idempotent_create_ids(key)
+    if task_id is None:
+        return None
+    out = {"task_id": task_id}
+    if note_uuid is not None:
+        out["note_uuid"] = note_uuid
+    return out
+
+
+def _record_idempotent_create_ids(
+    key: str,
+    task_id: str,
+    note_uuid: str | None,
+) -> None:
+    """Persist (task_id, note_uuid) under ``key`` with current timestamp."""
+    cache_dir = _idempotency_dir()
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:  # pragma: no cover — defensive
+        logger.warning(
+            "create_task idempotency cache dir creation failed: %s", exc,
+        )
+        return
+    cache_path = cache_dir / f"{key}.json"
+    try:
+        cache_path.write_text(
+            json.dumps({
+                "task_id": task_id,
+                "note_uuid": note_uuid,
+                "ts": time.time(),
+            }),
+            encoding="utf-8",
+        )
+    except OSError as exc:  # pragma: no cover — defensive
+        logger.warning(
+            "create_task idempotency cache write failed: %s", exc,
+        )
 
 
 def _prepend_task(content: str, task_line: str) -> str:
@@ -135,6 +409,38 @@ def _resolve_task_identity(
         raise ValueError("Must provide either task_id or description_match")
 
 
+def _resolve_task_id_from_description(description_match: str) -> str | None:
+    """Look up a task_id by description via the store (Slice E).
+
+    Bridge-independent: queries ``store.search_by_description`` directly,
+    so callers using ``description_match=`` get the atomic-write path
+    (Slice C) automatically once we promote them to a task_id.
+
+    Returns:
+        task_id on a unique match, or None if zero matches OR multiple
+        matches. Ambiguous matches are surfaced as None — callers can
+        fall back to the file-scan engine which raises a structured
+        ambiguity error.
+
+    Pre-Slice-3 store rows may have NULL descriptions; those are
+    filtered out by ``search_by_description`` so the file-scan
+    fallback path picks them up.
+    """
+    if not description_match:
+        return None
+    try:
+        rows = store.search_by_description(description_match, limit=2)
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.warning(
+            "_resolve_task_id_from_description: store query failed: %s",
+            exc,
+        )
+        return None
+    if len(rows) != 1:
+        return None
+    return rows[0]["task_id"]
+
+
 def _find_task_line(
     lines: list[str],
     task_id: str | None = None,
@@ -172,21 +478,53 @@ def _find_and_replace_task_line(
     description_match: str | None,
     transform_fn: Callable[[str], str],
 ) -> dict[str, Any]:
-    """Core file mutation engine. Read file, find task, transform, write back."""
+    """Core file mutation engine. Read file, find task, transform, write back.
+
+    Slice C: when ``task_id`` is provided, the write goes through
+    :func:`bridge.atomic_replace_line_by_task_id` — Obsidian's
+    ``app.vault.process()`` atomic API — closing the read-modify-write
+    race against concurrent user edits. The legacy
+    ``bridge.read_file`` + ``bridge.write_file`` pair is the fallback
+    when the atomic path fails for connectivity reasons OR when only
+    ``description_match`` is provided (the atomic path needs an ID to
+    locate the line in fresh content).
+
+    Conflict semantics:
+      - Atomic write detects ``conflict`` (user edited the line between
+        our read and the write). On conflict, we re-read the fresh
+        line, re-apply the transform, and retry the atomic write ONCE.
+        If the second attempt still conflicts, we surface the conflict
+        as a structured result (``success=False, message="..."``) — the
+        caller decides whether to escalate.
+      - The atomic write is preferred over the legacy path even when
+        the file is not currently open in an editor (no downside —
+        same disk write either way; up-side is correctness when the
+        editor IS open).
+    """
     _resolve_task_identity(task_id, description_match)
+
+    # Slice E: if only description_match was given, try store-resolve
+    # first. Promotes the call to a task_id-aware path (which can use
+    # the atomic write of Slice C), and short-circuits the file scan
+    # for tasks that the store knows about. Falls through to the
+    # legacy scan below for store-NULL / ambiguous / unknown cases.
+    if not task_id and description_match:
+        store_resolved = _resolve_task_id_from_description(description_match)
+        if store_resolved:
+            task_id = store_resolved
 
     content = bridge.read_file(file_path)
     if content is None:
         return bridge_failure(f"Could not read {file_path}")
 
     lines = content.split("\n")
-    result = _find_task_line(lines, task_id, description_match)
+    found = _find_task_line(lines, task_id, description_match)
 
-    if result is None:
+    if found is None:
         identifier = task_id or description_match
         return {"success": False, "message": f"Task not found: {identifier}"}
 
-    idx, old_line = result
+    idx, old_line = found
     new_line = transform_fn(old_line)
 
     if old_line == new_line:
@@ -199,6 +537,28 @@ def _find_and_replace_task_line(
             "line_number": idx + 1,
         }
 
+    # Slice C: atomic path when task_id is known.
+    if task_id:
+        atomic_result = _atomic_write_with_conflict_retry(
+            file_path=file_path,
+            task_id=task_id,
+            expected_old_line=old_line,
+            new_line=new_line,
+            transform_fn=transform_fn,
+            initial_idx=idx,
+        )
+        if atomic_result is not None:
+            return atomic_result
+        # atomic_result is None → fall back to legacy below.
+        logger.info(
+            "atomic_write fell through for %s:%s — using legacy "
+            "read-modify-write (race risk surfaced)",
+            file_path, task_id,
+        )
+
+    # Legacy fallback path: read-modify-write via bridge.write_file.
+    # Race-vulnerable; used only when (a) only description_match was
+    # given, or (b) the atomic path was unreachable.
     lines[idx] = new_line
     new_content = "\n".join(lines)
 
@@ -207,15 +567,192 @@ def _find_and_replace_task_line(
     # caller catches transient subclasses (ObsidianTimeout,
     # ObsidianUnreachable) and retries; other types propagate to the
     # gateway's classifier.
-    bridge.write_file(file_path, new_content)
+    #
+    # Slice C.4: write_mode="insert" + content_hint=new_line so the
+    # post-write verifier does substring witness instead of full-file
+    # sha256. Master-task-list.md changes frequently; sha256 verify
+    # gives false negatives when any unrelated change happens between
+    # write and verify, leading to spurious retry-exhausted alarms.
+    bridge.write_file(
+        file_path, new_content,
+        write_mode="insert", content_hint=new_line,
+    )
 
-    logger.info("Task line mutated in %s:%d", file_path, idx + 1)
+    logger.info("Task line mutated (legacy path) in %s:%d", file_path, idx + 1)
     return {
         "success": True,
         "old_line": old_line.strip(),
         "new_line": new_line.strip(),
         "file": file_path,
         "line_number": idx + 1,
+        "atomic": False,
+    }
+
+
+def _atomic_write_with_conflict_retry(
+    *,
+    file_path: str,
+    task_id: str,
+    expected_old_line: str,
+    new_line: str,
+    transform_fn: Callable[[str], str],
+    initial_idx: int,
+) -> dict[str, Any] | None:
+    """Run the atomic write with a single conflict-retry attempt.
+
+    Returns:
+      - dict on success or definitive conflict (caller surfaces directly)
+      - None if the atomic path itself failed for connectivity reasons —
+        caller falls back to legacy read-modify-write.
+    """
+    from work_buddy.obsidian.errors import (
+        ObsidianError,
+        ObsidianPostWriteUncertain,
+    )
+
+    try:
+        atomic = bridge.atomic_replace_line_by_task_id(
+            file_path=file_path,
+            task_id=task_id,
+            expected_old_line=expected_old_line,
+            new_line=new_line,
+        )
+    except ObsidianPostWriteUncertain:
+        # The /eval timed out client-side after sending the body. The
+        # vault state is uncertain — propagate so the gateway's
+        # verify-then-decide path runs.
+        raise
+    except ObsidianError as exc:
+        # Connectivity / plugin / refused — fall back to legacy.
+        logger.info(
+            "atomic_replace_line_by_task_id raised %s; falling back to legacy path",
+            type(exc).__name__,
+        )
+        return None
+    except RuntimeError as exc:
+        # eval threw inside Obsidian — fall back to legacy.
+        logger.warning(
+            "atomic_replace_line_by_task_id JS error: %s; falling back to legacy path",
+            exc,
+        )
+        return None
+
+    if atomic.get("error") == "bridge_returned_none":
+        return None
+
+    if atomic.get("error") == "file_not_found":
+        return {
+            "success": False,
+            "message": f"File not found in vault: {file_path}",
+            "file": file_path,
+        }
+
+    if not atomic.get("found"):
+        # Task no longer in the file (deleted between our read and the
+        # atomic write). Surface as not-found rather than retrying.
+        return {
+            "success": False,
+            "message": f"Task not found: {task_id}",
+            "file": file_path,
+        }
+
+    if atomic.get("conflict"):
+        # User edited the line between our read and the atomic write.
+        # Re-read, re-apply the transform, retry once.
+        fresh_old = atomic.get("old_line") or ""
+        fresh_new = transform_fn(fresh_old)
+        if fresh_old == fresh_new:
+            # Transform is now a no-op against the fresh content.
+            return {
+                "success": True,
+                "message": "No changes needed (after conflict-resolve)",
+                "old_line": fresh_old.strip(),
+                "new_line": fresh_new.strip(),
+                "file": file_path,
+                "line_number": atomic.get("line_number"),
+                "atomic": True,
+                "conflict_resolved": True,
+            }
+        try:
+            retry = bridge.atomic_replace_line_by_task_id(
+                file_path=file_path,
+                task_id=task_id,
+                expected_old_line=fresh_old,
+                new_line=fresh_new,
+            )
+        except ObsidianError as exc:
+            logger.warning(
+                "atomic conflict-retry raised %s; falling back to legacy path",
+                type(exc).__name__,
+            )
+            return None
+        if retry.get("conflict"):
+            # Two consecutive conflicts — escalate. The user is editing
+            # the line concurrently; we shouldn't keep stomping.
+            return {
+                "success": False,
+                "message": (
+                    f"Concurrent edit detected on task line for {task_id}. "
+                    f"User-edited the line during our atomic write retry. "
+                    f"Try again."
+                ),
+                "file": file_path,
+                "line_number": retry.get("line_number"),
+                "old_line": (retry.get("old_line") or "").strip(),
+                "atomic": True,
+                "conflict": True,
+            }
+        if not retry.get("replaced"):
+            # Retry didn't actually write — likely the line vanished or
+            # transformed equality. Surface what we know.
+            return {
+                "success": True,
+                "message": "No changes needed (after conflict-resolve)",
+                "old_line": fresh_old.strip(),
+                "new_line": fresh_new.strip(),
+                "file": file_path,
+                "line_number": retry.get("line_number"),
+                "atomic": True,
+                "conflict_resolved": True,
+            }
+        logger.info(
+            "Atomic conflict-retry resolved for %s:%s",
+            file_path, task_id,
+        )
+        return {
+            "success": True,
+            "old_line": fresh_old.strip(),
+            "new_line": fresh_new.strip(),
+            "file": file_path,
+            "line_number": retry.get("line_number"),
+            "atomic": True,
+            "conflict_resolved": True,
+        }
+
+    if not atomic.get("replaced"):
+        # Found, no conflict, no replace — line was already equal to
+        # new_line on the fresh read.
+        return {
+            "success": True,
+            "message": "No changes needed",
+            "old_line": (atomic.get("old_line") or "").strip(),
+            "new_line": new_line.strip(),
+            "file": file_path,
+            "line_number": atomic.get("line_number"),
+            "atomic": True,
+        }
+
+    logger.info(
+        "Task line mutated (atomic) in %s:%d",
+        file_path, atomic.get("line_number") or initial_idx + 1,
+    )
+    return {
+        "success": True,
+        "old_line": (atomic.get("old_line") or "").strip(),
+        "new_line": new_line.strip(),
+        "file": file_path,
+        "line_number": atomic.get("line_number") or (initial_idx + 1),
+        "atomic": True,
     }
 
 
@@ -458,7 +995,16 @@ def update_task(
 
     result: dict[str, Any] = {"success": True}
 
-    # Resolve task_id from file if only description_match given
+    # Slice E: try the store first to resolve description_match → task_id.
+    # Bridge-independent and gives the atomic write path (Slice C) a
+    # task_id to work with. Falls through to the legacy file-scan
+    # below if the store has no unique hit (NULL description, ambiguous
+    # match, or pre-Slice-3 row).
+    if not task_id and description_match:
+        task_id = _resolve_task_id_from_description(description_match)
+
+    # Resolve task_id from file if still not known after store lookup
+    # (legacy task with NULL description, or no store record at all).
     if not task_id:
         fp = file_path or MASTER_TASK_FILE
         content = bridge.read_file(fp)
@@ -576,22 +1122,60 @@ def archive_completed(older_than_days: int = 0) -> dict[str, Any]:
     archive_content = archive_header + "\n".join(archive_lines) + "\n"
 
     existing_archive = bridge.read_file(ARCHIVE_FILE)
-    if existing_archive:
-        new_archive = existing_archive.rstrip() + "\n" + archive_content
-    else:
-        new_archive = f"# Task Archive\n{archive_content}"
 
-    # Post-CP6: bridge.write_file raises typed exceptions on failure.
-    # The @bridge_retry decorator catches transients and retries the
-    # whole function — note that this means the archive file may end
-    # up with duplicated rows on retry (same risk as the pre-CP6 code:
-    # both writes have to succeed for the result to be consistent).
-    # Acceptable today; future hardening could move both writes into
-    # an atomic markdown transaction if the bridge gains one.
-    bridge.write_file(ARCHIVE_FILE, new_archive)
+    # Slice C.6: idempotency guard against partial-retry double-archiving.
+    # Pre-fix risk (acknowledged in the previous comment): if the
+    # ARCHIVE_FILE write succeeded but the MASTER_TASK_FILE write hit
+    # PWU and the retry replayed the whole function, we'd append a
+    # second copy of the same archived block. Now: skip the archive
+    # write when the existing archive already contains every task_id
+    # we were about to add. Re-extraction is cheap relative to a
+    # wasted write, and the check is unique-enough (task_ids are
+    # globally unique by construction).
+    if existing_archive and all(tid in existing_archive for tid in archived_ids):
+        logger.info(
+            "archive_completed: all %d task_ids already in archive; "
+            "skipping archive-file write (idempotent retry safety)",
+            len(archived_ids),
+        )
+        new_archive = existing_archive  # marker: no actual write needed
+        archive_write_skipped = True
+    else:
+        if existing_archive:
+            new_archive = existing_archive.rstrip() + "\n" + archive_content
+        else:
+            new_archive = f"# Task Archive\n{archive_content}"
+        archive_write_skipped = False
+
+    if not archive_write_skipped:
+        # Post-CP6: bridge.write_file raises typed exceptions on failure.
+        # Slice C.4 substring witness: the archive_header is unique to
+        # this date AND we just confirmed it's not already in the
+        # file. So substring-verify "did our header land?" is robust
+        # against concurrent writes from elsewhere.
+        bridge.write_file(
+            ARCHIVE_FILE, new_archive,
+            write_mode="insert",
+            content_hint=archive_header.strip(),
+        )
 
     new_master = "\n".join(keep_lines)
-    bridge.write_file(MASTER_TASK_FILE, new_master)
+    # Slice C.4 substring witness for the master-list rewrite. The
+    # archived-task IDs should NOT be in the new master (we just
+    # removed them). Use write_mode="absent" with the FIRST archived
+    # task_id as the witness — verified iff that task_id is gone from
+    # the master list. Same robustness as atomic_delete_line_by_task_id.
+    if archived_ids:
+        master_hint = f"🆔 {archived_ids[0]}"
+        bridge.write_file(
+            MASTER_TASK_FILE, new_master,
+            write_mode="absent",
+            content_hint=master_hint,
+        )
+    else:
+        # Defensive: no archived_ids means we somehow archived only
+        # ID-less lines. Fall back to default replace+sha256.
+        bridge.write_file(MASTER_TASK_FILE, new_master)
 
     # Mark archived in store
     for tid in archived_ids:
@@ -676,42 +1260,85 @@ def create_task(
         raise ValueError(f"Invalid user_involvement {user_involvement!r}")
     namespace_tags = _normalize_tags(tags)
 
-    task_id = generate_task_id()
+    # Slice C.2: idempotent ID resolution. On retry of a recent identical
+    # call (within _IDEMPOTENCY_TTL_SEC), reuse the previously-generated
+    # task_id and note_uuid so existing-content checks below actually
+    # match. See `_resolve_idempotent_create_ids` for rationale.
+    idem_key = _create_task_idempotency_key(
+        task_text=task_text,
+        summary=summary,
+        project=project,
+        urgency=urgency,
+        contract=contract,
+        tags=namespace_tags,
+        due_date=due_date,
+    )
+    cached_task_id, cached_note_uuid = _resolve_idempotent_create_ids(idem_key)
+
+    task_id = cached_task_id or generate_task_id()
     note_uuid: str | None = None
     note_path: str | None = None
 
     # --- Note creation (optional) ---
     if summary:
-        note_uuid = str(uuid.uuid4())
+        note_uuid = cached_note_uuid or str(uuid.uuid4())
         note_path = f"{TASK_NOTES_DIR}/{note_uuid}.md"
         today = date.today().isoformat()
 
-        template = bridge.read_file(TASK_NOTE_TEMPLATE)
-        if template:
-            note_content = template.replace("{{VALUE:Title}}", task_text)
-            note_content = note_content.replace("created: 2025-10-08", f"created: {today}")
-        else:
-            note_content = (
-                f"---\ntype: task-note\ncreated: {today}\nstatus: open\n---\n"
-                f"# {task_text}\n\n## Summary\n{summary}\n\n"
-                f"## Details\n\n## Action items\n\n## Artifacts & References\n"
+        # Stash IDs immediately after deciding on them so a PWU mid-write
+        # still leaves a cache entry for the gateway-replay to pick up.
+        # Idempotent: subsequent identical calls within the TTL window
+        # see these same IDs.
+        _record_idempotent_create_ids(idem_key, task_id, note_uuid)
+
+        # Idempotency check: if a previous attempt already wrote the
+        # note (PWU body landed before timeout), skip the rewrite. The
+        # bridge.read_file call here is cheap relative to a wasted write.
+        existing_note = bridge.read_file(note_path)
+        if existing_note is None:
+            template = bridge.read_file(TASK_NOTE_TEMPLATE)
+            if template:
+                note_content = template.replace("{{VALUE:Title}}", task_text)
+                note_content = note_content.replace(
+                    "created: 2025-10-08", f"created: {today}"
+                )
+            else:
+                note_content = (
+                    f"---\ntype: task-note\ncreated: {today}\nstatus: open\n---\n"
+                    f"# {task_text}\n\n## Summary\n{summary}\n\n"
+                    f"## Details\n\n## Action items\n\n## Artifacts & References\n"
+                )
+
+            if "A one-paragraph description." in note_content:
+                note_content = note_content.replace(
+                    "A one-paragraph description.", summary,
+                )
+
+            note_tags = ["#todo"]
+            if project:
+                note_tags.append(f"#projects/{project}")
+            for t in namespace_tags:
+                note_tags.append(f"#{t}")
+            note_content = note_content.replace(
+                "---\n\n#", f"---\n{' '.join(note_tags)}\n\n#", 1
             )
 
-        if "A one-paragraph description." in note_content:
-            note_content = note_content.replace("A one-paragraph description.", summary)
-
-        note_tags = ["#todo"]
-        if project:
-            note_tags.append(f"#projects/{project}")
-        for t in namespace_tags:
-            note_tags.append(f"#{t}")
-        note_content = note_content.replace(
-            "---\n\n#", f"---\n{' '.join(note_tags)}\n\n#", 1
-        )
-
-        # Post-CP6: bridge.write_file raises typed exceptions on failure;
-        # @bridge_retry catches transients and replays the whole function.
-        bridge.write_file(note_path, note_content)
+            # Post-CP6: bridge.write_file raises typed exceptions on failure;
+            # @bridge_retry catches transients and replays the whole function.
+            # Slice C.2: on retry, the cache_key + existing-note check
+            # above means we reach this write only when the note isn't
+            # already on disk — no orphan-note proliferation.
+            bridge.write_file(note_path, note_content)
+        else:
+            logger.info(
+                "create_task: note %s already exists on disk — skipping "
+                "write (retry-safety idempotency)",
+                note_path,
+            )
+    else:
+        # No summary → no note, but still record the task_id for retry
+        # idempotency on the master-list write that follows.
+        _record_idempotent_create_ids(idem_key, task_id, None)
 
     # --- Task line ---
     parts = [f"- [ ] #todo {task_text}"]
@@ -733,11 +1360,30 @@ def create_task(
     # Idempotent: skip prepend if task_id already present (retry safety)
     if task_id not in content:
         content = _prepend_task(content, task_line)
-        # Post-CP6: bridge.write_file raises on failure (see above).
-        bridge.write_file(MASTER_TASK_FILE, content)
+        # Slice C.4: pass write_mode="insert" + content_hint=task_line
+        # so the post-write verifier does substring witness instead of
+        # sha256 of the full content. Master-task-list.md changes
+        # frequently (other agents, sidecar jobs, user edits), and a
+        # full-file sha256 fails verification any time anything else
+        # touched the file between our PUT and the verify read. With
+        # substring match the verify only asks "is my new task line in
+        # the file?" — robust against concurrent unrelated edits.
+        bridge.write_file(
+            MASTER_TASK_FILE,
+            content,
+            write_mode="insert",
+            content_hint=task_line,
+        )
 
     # --- Store record ---
     if store.get(task_id) is None:
+        # Slice 3: derive the description from the just-built task line
+        # so the store's text column is populated immediately. Without
+        # this, the description would stay NULL until the next
+        # task_sync run (~30 minute window). The line we built above is
+        # authoritative for what the file now contains, so deriving from
+        # it locally is consistent with the file-source-of-truth rule.
+        derived_description = extract_description_from_line(task_line)
         store.create(
             task_id=task_id,
             state="inbox",
@@ -756,6 +1402,7 @@ def create_task(
             deadline_date=deadline_date,
             has_dependency=has_dependency,
             dependency_hint=dependency_hint,
+            description=derived_description,
         )
 
     # --- Seed tag cache ---
@@ -887,7 +1534,12 @@ def toggle_task(
     lines[idx] = toggled
     # Post-CP6: bridge.write_file raises typed exceptions on failure;
     # @bridge_retry catches transients and replays.
-    bridge.write_file(fp, "\n".join(lines))
+    # Slice C.4: substring witness (the toggled line itself) so verify
+    # is robust against concurrent unrelated writes to the same file.
+    bridge.write_file(
+        fp, "\n".join(lines),
+        write_mode="insert", content_hint=toggled,
+    )
 
     new_state = "done" if not is_done else "inbox"
     if store.get(task_id):
@@ -919,23 +1571,82 @@ def delete_task(
 
     This is destructive and consent-gated. For normal workflow, use
     complete_task + archive instead.
+
+    Slice C.3: rewritten to use the atomic line-removal path (mirrors
+    Slice C's atomic update) AND to return ``bridge_failure(...)`` when
+    the bridge can't read the master list, instead of silently
+    returning ``success: false``. The latter caused @bridge_retry to
+    NOT retry on read timeouts (the function returned a normal dict,
+    not the failure-marker dict), which is why earlier ``task_delete``
+    calls reliably failed with ``removed: {all-false}`` on this user's
+    machine — the read-timeout path was a dead end.
     """
     removed: dict[str, bool] = {}
 
-    # 1. Remove task line from master list
-    content = bridge.read_file(MASTER_TASK_FILE)
-    if content is not None:
+    # 1. Remove task line from master list (atomic path).
+    #
+    # Try atomic delete first; on bridge-down or RuntimeError, fall back
+    # to the legacy read-modify-write. On bridge.read_file timeout in
+    # the legacy path, return bridge_failure so @bridge_retry sees a
+    # transient marker and retries the whole function.
+    atomic_result: dict[str, Any] | None = None
+    try:
+        atomic_result = bridge.atomic_delete_line_by_task_id(
+            file_path=MASTER_TASK_FILE,
+            task_id=task_id,
+        )
+    except ObsidianError as exc:
+        # Connectivity / plugin / refused — fall back to legacy.
+        logger.info(
+            "delete_task: atomic_delete raised %s; falling back to legacy "
+            "read-modify-write for line removal.",
+            type(exc).__name__,
+        )
+        atomic_result = None
+    except RuntimeError as exc:
+        # JS body raised inside Obsidian — fall back to legacy.
+        logger.warning(
+            "delete_task: atomic_delete JS error: %s; falling back to legacy.",
+            exc,
+        )
+        atomic_result = None
+
+    if atomic_result is not None and atomic_result.get("error") not in (
+        "bridge_returned_none",
+        "file_not_found",
+    ):
+        # Atomic path produced a meaningful result.
+        removed["task_line"] = bool(atomic_result.get("removed", False))
+        if not atomic_result.get("found"):
+            # Task wasn't in the file. Either it was already removed
+            # by a previous (possibly silently-successful) attempt, or
+            # the user removed it manually. Either way: file is in the
+            # desired post-delete state. Treat as "no work needed" for
+            # the file step but DO run store cleanup so the store
+            # doesn't keep an orphan record. We use a sentinel
+            # ("file_already_clean") so step 3 can run store.delete
+            # without confusing it with a truly-failed file write.
+            removed["task_line"] = True  # idempotent: already-clean ⇒ success
+            removed["file_already_clean"] = True
+            logger.info(
+                "delete_task: atomic_delete reported task %s not in file "
+                "(already removed); proceeding to store cleanup",
+                task_id,
+            )
+    else:
+        # Legacy fallback path. Use bridge_failure when read fails so
+        # the bridge_retry decorator activates on transient timeouts.
+        content = bridge.read_file(MASTER_TASK_FILE)
+        if content is None:
+            return bridge_failure(
+                f"delete_task: could not read {MASTER_TASK_FILE} "
+                f"(bridge timeout) — retry will replay this operation."
+            )
         lines = content.split("\n")
-        result = _find_task_line(lines, task_id, None)
-        if result is not None:
-            idx, _ = result
+        find_result = _find_task_line(lines, task_id, None)
+        if find_result is not None:
+            idx, _ = find_result
             del lines[idx]
-            # Post-CP6: bridge.write_file raises on failure. delete_task
-            # is best-effort across multiple sub-deletes (line, note,
-            # store record) so we catch the typed exception here and
-            # record the partial state rather than aborting the whole
-            # function (which would leave the user with no signal about
-            # which parts succeeded).
             try:
                 bridge.write_file(MASTER_TASK_FILE, "\n".join(lines))
                 removed["task_line"] = True
@@ -946,25 +1657,51 @@ def delete_task(
                 )
                 removed["task_line"] = False
         else:
-            removed["task_line"] = False
-    else:
-        removed["task_line"] = False
+            # Task wasn't in the file — already in desired state.
+            # Match the atomic-path semantics: idempotent success,
+            # file_already_clean sentinel for step 3.
+            removed["task_line"] = True
+            removed["file_already_clean"] = True
+            logger.info(
+                "delete_task: legacy path found task %s already absent "
+                "from file; proceeding to store cleanup",
+                task_id,
+            )
 
-    # 2. Delete note file (if linked)
+    # 2. Delete note file (if linked).
+    #
+    # Slice C.3: previously this was wrapped in a bare `except Exception`
+    # which swallowed ObsidianError and prevented @bridge_retry from
+    # retrying transient bridge failures. Now we let typed
+    # ObsidianTimeout / ObsidianUnreachable propagate so the retry
+    # decorator can recover; only suppress non-Obsidian exceptions
+    # (which represent JS errors or unexpected shapes).
     meta = store.get(task_id)
     note_uuid = meta.get("note_uuid") if meta else None
     if note_uuid:
         note_path = f"{TASK_NOTES_DIR}/{note_uuid}.md"
-        # Use eval_js to delete via Obsidian (bridge has no delete endpoint)
         try:
-            from work_buddy.obsidian.bridge import eval_js
+            # Use the internal (non-consent-gated) eval since the
+            # outer task_delete already holds tasks.delete_task
+            # consent which covers note removal.
             js = (
                 f'const f = app.vault.getAbstractFileByPath("{note_path}");'
-                f'if (f) {{ await app.vault.delete(f); return "deleted"; }} else {{ return "not_found"; }}'
+                f'if (f) {{ await app.vault.delete(f); return "deleted"; }} '
+                f'else {{ return "not_found"; }}'
             )
-            del_result = eval_js(js)
+            del_result = bridge.eval_js_internal(js)
             removed["note"] = del_result == "deleted"
-        except Exception:
+        except ObsidianError:
+            # Transient bridge issue — don't silently mark False.
+            # Re-raise so @bridge_retry can retry.
+            raise
+        except RuntimeError as exc:
+            # JS body errored — record as not deleted but don't
+            # block store cleanup.
+            logger.warning(
+                "delete_task: note delete JS error for %s: %s",
+                task_id, exc,
+            )
             removed["note"] = False
     else:
         removed["note"] = False
@@ -976,8 +1713,8 @@ def delete_task(
     else:
         removed["store"] = False
         logger.warning(
-            "delete_task: skipping store deletion for %s — file line not removed, "
-            "store.delete would be undone by task_sync",
+            "delete_task: skipping store deletion for %s — file line not "
+            "removed, store.delete would be undone by task_sync",
             task_id,
         )
 
@@ -987,6 +1724,152 @@ def delete_task(
         "task_id": task_id,
         "removed": removed,
     }
+
+
+@requires_consent(
+    operation="tasks.update_task",
+    reason="Rewrite the description text on a task line.",
+    risk="moderate",
+    default_ttl=30,
+)
+@bridge_retry()
+def update_task_description(
+    task_id: str,
+    new_description: str,
+    *,
+    file_path: str | None = None,
+) -> dict[str, Any]:
+    """Rewrite the description text on a task line.
+
+    Replaces the human-readable text portion of the task line — the
+    span between ``#todo`` and the first structural marker (wikilink,
+    hashtag, plugin emoji). All structural tokens are preserved:
+    checkbox state, ``#todo``, ``#projects/*``, namespace tags,
+    wikilinks (including the task-note link ``[[uuid|📓]]``), 🆔 + ID,
+    plugin emojis (📅 due date, ✅ done date, 🔼/⏫ urgency).
+
+    The SQLite store's description column is updated in lockstep — file
+    first, store second (same ordering as ``update_task``). If the file
+    write fails, the store is not touched.
+
+    This capability exists to give agents a safe way to rewrite task
+    text without filesystem-direct ``Edit`` on master-task-list.md, which
+    is the read-modify-write race that Slice C addresses. Once Slice C
+    ships, this routes through the atomic ``app.vault.process()`` path
+    automatically; pre-Slice-C, it goes through the same
+    ``_find_and_replace_task_line`` engine that the other mutations
+    use.
+
+    Args:
+        task_id: Task ID (e.g., 't-a3f8c1e2'). Required.
+        new_description: New description text. Whitespace is collapsed
+            to single spaces; newlines are stripped (task lines are
+            single-line by construction).
+        file_path: Vault-relative path. Default:
+            ``tasks/master-task-list.md``.
+
+    Returns:
+        Dict with ``success``, ``task_id``, ``old_description``,
+        ``new_description``, ``file``, ``line_number``, and
+        ``store_updated`` keys.
+
+    Caveat: if the *current* description on the line contains a ``#``
+    (e.g. issue references like "fix #123") or ``[[``, the rewrite
+    boundary detection will treat that as a metadata token. The new
+    description still ends up in the description position; the
+    "metadata" portion that follows just contains those tokens. In
+    practice this is benign — the task line still parses correctly and
+    the next ``task_sync`` reclassifies cleanly.
+    """
+    if not task_id:
+        raise ValueError("task_id is required for update_task_description")
+
+    cleaned = (new_description or "").strip()
+    if not cleaned:
+        return {
+            "success": False,
+            "task_id": task_id,
+            "message": "new_description must not be empty after stripping",
+        }
+
+    # Reject newlines — task lines are single-line by construction.
+    if "\n" in cleaned or "\r" in cleaned:
+        # The replace helper would already collapse these; fail loudly
+        # so the caller knows their multiline input got flattened.
+        return {
+            "success": False,
+            "task_id": task_id,
+            "message": (
+                "new_description must be a single line. Use the linked "
+                "task-note for multi-line / detailed content."
+            ),
+        }
+
+    fp = file_path or MASTER_TASK_FILE
+
+    captured_old: dict[str, str] = {}
+
+    def _transform(old_line: str) -> str:
+        captured_old["line"] = old_line
+        captured_old["description"] = extract_description_from_line(old_line)
+        return replace_description_in_line(old_line, cleaned)
+
+    file_result = _find_and_replace_task_line(
+        file_path=fp,
+        task_id=task_id,
+        description_match=None,
+        transform_fn=_transform,
+    )
+
+    if not file_result.get("success"):
+        return file_result
+
+    # Update the store description to match. File-first, store-second
+    # mirrors update_task's ordering: if the file write failed we'd
+    # have returned above; if it succeeded we keep the store consistent.
+    store_updated = False
+    try:
+        if store.get(task_id) is not None:
+            update_result = store.update(
+                task_id,
+                description=cleaned,
+                reason="task_update_description",
+            )
+            store_updated = bool(update_result.get("changed"))
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.warning(
+            "update_task_description: store update failed for %s: %s",
+            task_id, exc,
+        )
+
+    logger.info(
+        "Description updated: %s (%r -> %r)",
+        task_id,
+        captured_old.get("description", ""),
+        cleaned,
+    )
+
+    response: dict[str, Any] = {
+        "success": True,
+        "task_id": task_id,
+        "old_description": captured_old.get("description", ""),
+        "new_description": cleaned,
+        "file": file_result.get("file", fp),
+        "line_number": file_result.get("line_number"),
+        "old_line": file_result.get("old_line"),
+        "new_line": file_result.get("new_line"),
+        "store_updated": store_updated,
+    }
+    # Surface Slice-C provenance flags so callers/tests can tell
+    # which write path landed (atomic vs legacy fallback) and whether
+    # a conflict was resolved.
+    if "atomic" in file_result:
+        response["atomic"] = file_result["atomic"]
+    if file_result.get("conflict_resolved"):
+        response["conflict_resolved"] = True
+    if file_result.get("message"):
+        response["message"] = file_result["message"]
+    return response
 
 
 def strip_legacy_tags_from_line(line: str) -> str:
@@ -1042,12 +1925,7 @@ def _load_task_payload(task_id: str) -> dict[str, Any]:
                 idx, line = found
                 original_markdown = line.strip()
                 line_number = idx + 1
-                # Extract description: strip checkbox, tags, emojis
-                desc = re.sub(r"^- \[.\]\s*", "", line)
-                desc = re.sub(r"#\S+", "", desc)
-                desc = re.sub(r"\[\[[^\]]+\]\]", "", desc)
-                desc = re.sub(r"[🆔📅✅🔼⏫]\s*\S*", "", desc)
-                task_text = re.sub(r"\s+", " ", desc).strip()
+                task_text = extract_description_from_line(line)
 
     # Read note if one exists
     note_path = None

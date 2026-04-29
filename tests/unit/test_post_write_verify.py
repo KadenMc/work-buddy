@@ -155,6 +155,49 @@ class TestVerifyPostWriteVerified:
         )
         assert verify_post_write(exc) == "verified"
 
+    def test_absent_mode_verified_when_hint_not_present(self, vault):
+        """write_mode='absent' inverts substring semantics for delete-style
+        operations: verified iff hint is NOT in the file. Slice C.5
+        regression test — without this, atomic_delete_line_by_task_id
+        gets verdict-flipped (a successful delete reads as 'absent ==
+        didn't land')."""
+        path = vault / "tasks" / "master-task-list.md"
+        path.parent.mkdir(parents=True)
+        # File has SOME content but NOT the deleted-task marker.
+        path.write_text(
+            "- [ ] #todo Other task 🆔 t-keepme\n",
+            encoding="utf-8",
+        )
+
+        exc = ObsidianPostWriteUncertain(
+            "tasks/master-task-list.md",
+            content_hint="🆔 t-deletedtask",  # we just deleted this
+            write_mode="absent",
+        )
+        # Verified: the deleted marker is NOT in the file.
+        assert verify_post_write(exc) == "verified"
+
+    def test_absent_mode_absent_when_hint_still_present(self, vault):
+        """write_mode='absent' returns absent when the hint IS still in
+        the file — meaning the delete didn't land and a retry is
+        appropriate."""
+        path = vault / "tasks" / "master-task-list.md"
+        path.parent.mkdir(parents=True)
+        # File still has the task we tried to delete.
+        path.write_text(
+            "- [ ] #todo Other task 🆔 t-keepme\n"
+            "- [ ] #todo Stuck 🆔 t-stillhere\n",
+            encoding="utf-8",
+        )
+
+        exc = ObsidianPostWriteUncertain(
+            "tasks/master-task-list.md",
+            content_hint="🆔 t-stillhere",
+            write_mode="absent",
+        )
+        # Not verified: the marker is still there, so the delete didn't land.
+        assert verify_post_write(exc) == "absent"
+
     def test_windows_path_separator_normalized(self, vault):
         """Bridge stores forward-slash paths; on Windows the actual
         file is at backslash-path. The helper must normalize."""

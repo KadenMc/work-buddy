@@ -281,9 +281,9 @@
   "tasks/task-search-directions": {
     "kind": "directions",
     "name": "Task Search Directions",
-    "description": "How to search task notes via hybrid retrieval (BM25 + dense, RRF-fused) — query method choice, source filter, presentation format",
+    "description": "How to search tasks - distinguish description-text search (task_search, store-only) from note-body hybrid retrieval (context_search source=task_note)",
     "content": {
-      "full": "Search task-note bodies via hybrid retrieval (BM25 + dense vectors, RRF-fused). Covers every task whose `note_uuid` is non-null and whose markdown file exists at `<vault_root>/tasks/notes/<uuid>.md`. The `task-note-index` sidecar job re-indexes every 5 minutes — very recent notes may not yet be searchable.\n\n## Call\n\n```\nmcp__work-buddy__wb_run(\"context_search\", {\n    \"query\": \"$ARGUMENTS\",\n    \"source\": \"task_note\",\n    \"top_k\": 10\n})\n```\n\nDo NOT use Python code or import the underlying scanner directly — the capability is the contract.\n\n## Method choice\n\nThe default method (`keyword,semantic`, RRF fused) is right for most natural-language queries.\n\nFor very short queries (≤3 tokens), prefer `method=\"keyword\"`: the dense model adds noise on tiny inputs, and BM25 over short queries is already well-behaved.\n\nFor exact-string lookups (a UUID, a tag, a code snippet), prefer `method=\"substring\"` — it doesn't require the embedding service and won't hallucinate near-matches.\n\n## Presentation\n\nFor each hit, surface:\n\n1. The matching span (the chunk text the searcher returned).\n2. The `task_id` and `task_state` from the hit's metadata so the user can jump to the task.\n3. The score (or rank) so multiple competing hits are comparable.\n\nIf zero hits return, say so explicitly — don't pad with low-relevance results from a different source.\n\n## Do NOT\n\n- Do not use this for non-task content. The `source=task_note` filter scopes the search; if the user wants to search conversations or web tabs, the right tool is plain `context_search` without that filter.\n- Do not interpret a hit as a task assignment — search returns context only. To claim a task, follow up with `task_assign` (or `/wb-task-assign <task_id>`)."
+      "full": "There are TWO ways to search tasks. Pick by what you want to find.\n\n## task_search - search by description text (Slice 3, store-only)\n\nLooks at the `description` column of `task_metadata` - the human-readable task line text (`Fix the auth bug`, `Refactor the dashboard`, ...). Bridge-independent: works even when Obsidian isn't running. Cheap, deterministic, no embedding service.\n\n```\nmcp__work-buddy__wb_run(\"task_search\", {\"query\": \"$ARGUMENTS\"})\n```\n\nUse this when:\n  - The user asked \"do I have a task about X?\" and X is a phrase from the task description, not the note body.\n  - You need to look up a task ID from a description.\n  - The bridge is down and you still need to find a task.\n\nReturns task records (full task_metadata rows) ordered most-recently-updated first. Description column was added in Slice 3 - pre-Slice-3 tasks may have NULL description and won't surface here until task_sync runs (<=30 min).\n\n## context_search(source=\"task_note\") - search by note body (hybrid)\n\nHybrid retrieval (BM25 + dense vectors, RRF-fused) over the linked task-note BODIES (the `[[uuid|✍]]`-linked detail files). Doesn't see tasks without notes (the majority of lightweight tasks).\n\n```\nmcp__work-buddy__wb_run(\"context_search\", {\n    \"query\": \"$ARGUMENTS\",\n    \"source\": \"task_note\",\n    \"top_k\": 10\n})\n```\n\nUse this when:\n  - The user is looking for a task by its note content (decisions, context, subtask details).\n  - You want semantic / fuzzy matches, not exact-substring.\n  - The query is natural-language and longer than a few words.\n\n## Method choice on context_search\n\nThe default method (`keyword,semantic`, RRF fused) is right for most natural-language queries.\n\nFor very short queries (<=3 tokens), prefer `method=\"keyword\"`: the dense model adds noise on tiny inputs.\n\nFor exact-string lookups (a UUID, a tag, a code snippet), prefer `method=\"substring\"` - no embedding service required.\n\n## Presentation\n\nFor each hit, surface:\n1. The matching span (description for task_search; chunk text for context_search).\n2. The `task_id` and `task_state` so the user can jump to the task.\n3. Score / rank so multiple competing hits are comparable.\n\nIf zero hits, say so explicitly. If zero hits on `task_search`, consider falling back to `context_search(source=\"task_note\")` - the task may have a note that mentions the query even if the description doesn't.\n\n## Do NOT\n\n- Don't use task_search when the user wants semantic search - it's exact-substring only.\n- Don't use context_search(source=\"task_note\") when the bridge is down - task_search is the bridge-independent path.\n- Don't interpret a hit as a task assignment. Search returns context only. To claim a task, follow up with `task_assign` (or `/wb-task-assign <task_id>`)."
     },
     "tags": [
       "tasks",
@@ -307,7 +307,39 @@
     "trigger": "user runs /wb-task-search or asks to search task-note bodies for content matching a query",
     "command": "wb-task-search",
     "capabilities": [
+      "task_search",
       "context_search"
     ]
+  },
+  "tasks/task-update-description-directions": {
+    "kind": "directions",
+    "name": "Task Update Description Directions",
+    "description": "How to rewrite a task's description text safely - preferred over filesystem-direct edits, atomic against concurrent user edits",
+    "tags": [
+      "tasks",
+      "update",
+      "description",
+      "atomic",
+      "directions"
+    ],
+    "aliases": [
+      "rewrite task",
+      "rename task",
+      "edit task description",
+      "change task wording",
+      "rephrase task"
+    ],
+    "parents": [
+      "tasks"
+    ],
+    "trigger": "agent or user wants to change the description text of an existing task line",
+    "command": null,
+    "capabilities": [
+      "tasks/task_update_description"
+    ],
+    "content": {
+      "summary": "Use task_update_description, NOT filesystem-direct Edit. It routes through the atomic app.vault.process() write path, so concurrent user typing in Obsidian doesn't get clobbered.",
+      "full": "## When to use\n\nWhenever a task's description text needs to change - typo fix, scope sharpening, mid-flight rephrase. Examples:\n  - User asks \"can you rename that task to X\"\n  - You're consolidating two scope-shifted tasks and the description needs to reflect the new scope\n  - You spot a typo and want to correct it without deleting + recreating the task (preserves task_id, history, sessions)\n\n## Call\n\n```\nmcp__work-buddy__wb_run(\"task_update_description\", {\n    \"task_id\": \"t-...\",\n    \"new_description\": \"Rewritten task text\"\n})\n```\n\nReturns:\n  - `success`, `task_id`, `old_description`, `new_description`\n  - `old_line` / `new_line` - the full markdown line\n  - `store_updated` - whether the SQLite description column was kept in sync\n  - `atomic` - True when the write went through the atomic `app.vault.process()` path; False / absent when the legacy fallback ran (bridge unreachable)\n  - `conflict_resolved` - True when a concurrent-edit conflict was detected and the retry succeeded\n\n## What it preserves\n\nCheckbox state, the `#todo` marker, all hashtags (`#projects/*`, namespace tags), wikilinks (including the task-note link `[[uuid|📓]]`), the 🆔 marker and ID, plugin emojis (📅 due date, ✅ done date, 🔼/⏫ urgency).\n\n## What it does NOT do\n\n- It will not change the task's state, urgency, due date, or completion. Use `task_change_state` / `task_toggle` for those.\n- It will not add or remove tags. Use `task_set_tags` for tag rewrites.\n- It rejects multi-line descriptions. Task lines are single-line by construction; put detail in the `[[uuid|📓]]`-linked note.\n\n## Why NOT to use filesystem-direct Edit\n\nThe master-task-list.md has a documented read-modify-write race. Pre-Slice-3 the only path for description rewrites was `Edit` on `master-task-list.md`, which can clobber concurrent user typing in Obsidian. The Slice-C atomic write path (`app.vault.process()`) closes that race - but only if you go through `task_update_description`. Filesystem-direct edits bypass it.\n\nIf `task_update_description` returns `success=False, conflict=True`, the user is actively editing the task line in Obsidian. Surface the conflict to the user; don't keep retrying."
+    }
   }
 }

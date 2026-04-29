@@ -167,7 +167,9 @@ class RetrySweep:
 
         return True
 
-    def _pre_verify_pwu(self, pwu_carrier: dict[str, Any]) -> dict[str, Any] | None:
+    def _pre_verify_pwu(
+        self, pwu_carrier: dict[str, Any], record: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
         """CP-A7: re-verify a queued PostWriteUncertain BEFORE replaying.
 
         ``pwu`` is the codebase-wide shorthand for
@@ -181,6 +183,14 @@ class RetrySweep:
         ``pwu_carrier`` shape (set by gateway when enqueuing the retry):
             ``{"path": str, "content_hint": str | None, "write_mode": str}``
 
+        ``record`` is the operation record. When the capability has a
+        declared effects manifest (Fix-(b)), the verifier walks ALL
+        declared effects rather than just the path on the PWU
+        exception. This catches partial-state failures (some effects
+        landed, some didn't) that single-effect verify would
+        misclassify as "verified" → skip-replay → silent half-finished
+        state.
+
         Reads from FILESYSTEM, not the bridge — same rationale as the
         gateway-side verify path. The bridge may still be sick; reading
         through it would just hit another timeout. The file is the
@@ -188,32 +198,66 @@ class RetrySweep:
         """
         try:
             from work_buddy.obsidian.errors import ObsidianPostWriteUncertain
-            from work_buddy.obsidian.post_write_verify import verify_post_write
+            from work_buddy.obsidian.post_write_verify import (
+                verify_post_write,
+                verify_post_write_effects,
+            )
         except ImportError:
             # Recovery infrastructure not importable — fall through to
             # normal replay rather than blocking.
             return None
 
+        # Fix-(b): effect-graph-aware verify when the capability has a
+        # manifest. Otherwise fall back to single-effect.
+        declared_effects = []
+        if record is not None:
+            try:
+                from work_buddy.mcp_server.registry import get_registry
+                reg = get_registry()
+                entry = reg.get(record.get("name"))
+                declared_effects = list(getattr(entry, "effects", None) or [])
+            except Exception:
+                declared_effects = []
+
         try:
-            synthetic = ObsidianPostWriteUncertain(
-                pwu_carrier["path"],
-                content_hint=pwu_carrier.get("content_hint"),
-                write_mode=pwu_carrier.get("write_mode") or "replace",
-            )
-            verdict = verify_post_write(synthetic)
+            if declared_effects:
+                verdict = verify_post_write_effects(
+                    declared_effects,
+                    params=record.get("params") if record else None,
+                )
+                # "partial", "absent", "indeterminate" → normal replay.
+                # Only "verified" (all effects landed) skips the replay.
+                if verdict != "verified":
+                    logger.info(
+                        "_pre_verify_pwu (effects): %s for capability=%r "
+                        "(%d effects); proceeding with normal replay",
+                        verdict, record.get("name") if record else "?",
+                        len(declared_effects),
+                    )
+                    return None
+                logger.info(
+                    "_pre_verify_pwu (effects): VERIFIED for capability=%r "
+                    "(%d effects); skipping replay",
+                    record.get("name") if record else "?",
+                    len(declared_effects),
+                )
+            else:
+                synthetic = ObsidianPostWriteUncertain(
+                    pwu_carrier["path"],
+                    content_hint=pwu_carrier.get("content_hint"),
+                    write_mode=pwu_carrier.get("write_mode") or "replace",
+                )
+                verdict = verify_post_write(synthetic)
+                if verdict != "verified":
+                    logger.info(
+                        "_pre_verify_pwu: %s for path=%r; proceeding with normal replay",
+                        verdict, pwu_carrier["path"],
+                    )
+                    return None
         except Exception as exc:
             logger.warning(
                 "_pre_verify_pwu: verify failed (%s); falling through to normal replay",
                 exc,
-            )
-            return None
-
-        if verdict != "verified":
-            # absent / indeterminate → normal replay. Logged at INFO so
-            # the trace is visible without raising warnings.
-            logger.info(
-                "_pre_verify_pwu: %s for path=%r; proceeding with normal replay",
-                verdict, pwu_carrier["path"],
             )
             return None
 
@@ -255,7 +299,11 @@ class RetrySweep:
         file and add a second insertion → double-write.
         """
         try:
-            from work_buddy.mcp_server.registry import get_registry, Capability
+            from work_buddy.mcp_server.registry import (
+                Capability,
+                get_disabled_registry,
+                get_registry,
+            )
             from work_buddy.agent_session import (
                 set_originating_session,
                 reset_originating_session,
@@ -263,6 +311,65 @@ class RetrySweep:
 
             reg = get_registry()
             entry = reg.get(record["name"])
+
+            if entry is None:
+                # Slice C.5: a capability may be DISABLED (not "missing")
+                # because its tool probe failed at registry-build time.
+                # On a flaky bridge that recovers, transient probe
+                # failures permanently disable capabilities until the
+                # next manual reload — and the sidecar's retry sweep
+                # then misreports the disabled state as "not found in
+                # registry", which exhausts retries for ops that would
+                # otherwise succeed.
+                #
+                # Recovery uses the existing CP-A3 lazy auto-recovery
+                # mechanism (work_buddy.recovery.recheck_disabled_capability)
+                # — re-probes ONLY the capability's missing tools (per-
+                # tool cool-down, single _RECOVERY_LOCK), and on success
+                # mutates _REGISTRY in place to restore the capability.
+                # Strictly cheaper than a full registry rebuild, and
+                # this is the same path the gateway uses (gateway.py:887).
+                disabled = get_disabled_registry()
+                disabled_entry = disabled.get(record["name"])
+                if disabled_entry is not None:
+                    logger.info(
+                        "_replay: capability %r is disabled; calling "
+                        "recheck_disabled_capability to re-probe its tools "
+                        "(without rebuilding the whole registry)",
+                        record["name"],
+                    )
+                    try:
+                        from work_buddy.recovery import (
+                            recheck_disabled_capability,
+                        )
+                        recovered = recheck_disabled_capability(record["name"])
+                    except Exception as exc:  # noqa: BLE001 — defensive
+                        logger.warning(
+                            "_replay: recheck_disabled_capability(%s) "
+                            "raised: %s — falling through to disabled-entry "
+                            "fallback",
+                            record["name"], exc,
+                        )
+                        recovered = False
+
+                    if recovered:
+                        # Recovery restored the capability to the live
+                        # registry. Re-fetch.
+                        reg = get_registry()
+                        entry = reg.get(record["name"])
+                    if entry is None:
+                        # Probe still failing OR recovery didn't run. Use
+                        # the disabled entry — the bridge call inside
+                        # will raise a typed transient exception, and
+                        # our exception handler re-queues correctly
+                        # rather than reporting permanent failure.
+                        entry = disabled_entry
+                        logger.info(
+                            "_replay: probe still failing for %r; invoking "
+                            "disabled entry — transient bridge errors will "
+                            "re-queue normally",
+                            record["name"],
+                        )
 
             if entry is None:
                 return {"success": False, "error": f"Capability '{record['name']}' not found in registry"}
@@ -273,7 +380,10 @@ class RetrySweep:
             # op was enqueued from a PostWriteUncertain-absent path.
             pwu_carrier = record.get("pwu_carrier")
             if pwu_carrier and isinstance(pwu_carrier, dict) and pwu_carrier.get("path"):
-                pre_verify = self._pre_verify_pwu(pwu_carrier)
+                # Pass the record so _pre_verify_pwu can look up the
+                # capability's effects manifest (Fix-(b)) and walk all
+                # declared effects rather than just the path on the PWU.
+                pre_verify = self._pre_verify_pwu(pwu_carrier, record=record)
                 if pre_verify is not None:
                     return pre_verify
                 # absent / indeterminate → fall through to normal replay.

@@ -47,7 +47,14 @@ CREATE TABLE IF NOT EXISTS task_metadata (
     has_deadline    INTEGER NOT NULL DEFAULT 0,
     deadline_date   TEXT,               -- ISO date when has_deadline=1
     has_dependency  INTEGER NOT NULL DEFAULT 0,
-    dependency_hint TEXT                -- free-text hint when has_dependency=1
+    dependency_hint TEXT,               -- free-text hint when has_dependency=1
+    -- Slice 3: description column ---------------------------------
+    -- Human-readable task text extracted from the master-list line
+    -- (checkbox / tags / wikilink / plugin emojis / 🆔 stripped).
+    -- NULL on initial migration; backfilled by task_sync from the
+    -- file. Source of truth: the markdown line. Store follows file
+    -- (same precedent as the checkbox/note_uuid reconciliation paths).
+    description     TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_state_history (
@@ -135,6 +142,23 @@ _SLICE_2_COLUMNS: list[tuple[str, str, str | None, bool]] = [
     ("dependency_hint", "TEXT", None, False),
 ]
 
+# Slice 3 column descriptors: human-readable task description text.
+# Nullable on initial migration; task_sync backfills from the master
+# task list on its next run. Adding more columns later: append a new
+# ``_SLICE_N_COLUMNS`` list and extend the tuple consumed by
+# ``_migrate_schema``.
+_SLICE_3_COLUMNS: list[tuple[str, str, str | None, bool]] = [
+    ("description", "TEXT", None, False),
+]
+
+# All slice-N column lists, in migration order. Append new lists here
+# rather than modifying historical ones — the comment headers above each
+# list are reading material for future-you ("when did this column
+# appear and why").
+_ALL_MIGRATED_COLUMNS: list[tuple[str, str, str | None, bool]] = (
+    _SLICE_2_COLUMNS + _SLICE_3_COLUMNS
+)
+
 
 def _db_path() -> Path:
     """Resolve the task metadata database path from config."""
@@ -181,15 +205,17 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     user_involvement, creation_provenance, has_deadline,
     deadline_date, has_dependency, dependency_hint.
 
-    Adding more columns later: append to ``_SLICE_2_COLUMNS`` (or a
-    new ``_SLICE_N_COLUMNS`` list) and they'll get migrated on the
+    Slice 3 columns added: description.
+
+    Adding more columns later: append a new ``_SLICE_N_COLUMNS`` list
+    and extend ``_ALL_MIGRATED_COLUMNS``. They'll get migrated on the
     next connection open.
     """
     existing = {
         row["name"]
         for row in conn.execute("PRAGMA table_info(task_metadata)")
     }
-    for col_name, sql_type, default_sql, not_null in _SLICE_2_COLUMNS:
+    for col_name, sql_type, default_sql, not_null in _ALL_MIGRATED_COLUMNS:
         if col_name in existing:
             continue
         clause = f"{col_name} {sql_type}"
@@ -240,6 +266,8 @@ def create(
     deadline_date: str | None = None,
     has_dependency: bool = False,
     dependency_hint: str | None = None,
+    # Slice 3 addition -----------------------------------------------
+    description: str | None = None,
 ) -> dict[str, Any]:
     """Create a metadata record for a new task.
 
@@ -275,9 +303,11 @@ def create(
                 task_kind, density, outcome_text, next_action_text,
                 definition_of_done, creation_effort, user_involvement,
                 creation_provenance, has_deadline, deadline_date,
-                has_dependency, dependency_hint)
+                has_dependency, dependency_hint,
+                description)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?,
-                       ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                       ?)""",
             (
                 task_id, state, urgency, complexity, contract, note_uuid,
                 now, now,
@@ -286,6 +316,7 @@ def create(
                 creation_provenance,
                 int(bool(has_deadline)), deadline_date,
                 int(bool(has_dependency)), dependency_hint,
+                description,
             ),
         )
         conn.execute(
@@ -337,6 +368,8 @@ def update(
     deadline_date: str | None = _SENTINEL,
     has_dependency: bool | None = None,
     dependency_hint: str | None = _SENTINEL,
+    # Slice 3 addition -----------------------------------------------
+    description: str | None = _SENTINEL,
 ) -> dict[str, Any]:
     """Update metadata fields for a task. Only provided fields change.
 
@@ -438,6 +471,10 @@ def update(
         sets.append("dependency_hint = ?")
         params.append(dependency_hint)
 
+    if description is not _SENTINEL:
+        sets.append("description = ?")
+        params.append(description)
+
     if not sets:
         return {"task_id": task_id, "changed": False}
 
@@ -533,6 +570,69 @@ def query(
         rows = conn.execute(
             f"SELECT * FROM task_metadata WHERE {where} ORDER BY updated_at DESC",
             params,
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def search_by_description(
+    query_text: str,
+    *,
+    limit: int = 50,
+    include_archived: bool = False,
+    include_done: bool = True,
+) -> list[dict[str, Any]]:
+    """Case-insensitive substring search over the description column.
+
+    Returns task records whose ``description`` contains ``query_text``
+    (LIKE '%...%' with SQL LIKE escaping). Ordered by most recently
+    updated first.
+
+    Args:
+        query_text: Substring to search for. Empty string returns nothing
+            (we don't want a "search for nothing" call to return the whole
+            store).
+        limit: Maximum results (default 50). The store is small enough
+            that LIKE without an index is microseconds; the limit is
+            mainly for consumers to keep result sizes manageable.
+        include_archived: Include rows with ``archived_at`` set.
+        include_done: Include rows with ``state='done'``.
+
+    NULL descriptions (legacy rows not yet backfilled by ``task_sync``)
+    are excluded automatically since SQLite ``LIKE`` against NULL is
+    NULL/false.
+    """
+    if not query_text or not query_text.strip():
+        return []
+
+    # Escape LIKE wildcards so a query containing '%' or '_' doesn't
+    # silently broaden the match. Standard LIKE-with-ESCAPE pattern.
+    escaped = (
+        query_text.replace("\\", "\\\\")
+        .replace("%", "\\%")
+        .replace("_", "\\_")
+    )
+
+    clauses: list[str] = ["description IS NOT NULL"]
+    params: list[Any] = []
+
+    clauses.append("LOWER(description) LIKE LOWER(?) ESCAPE '\\'")
+    params.append(f"%{escaped}%")
+
+    if not include_archived:
+        clauses.append("archived_at IS NULL")
+    if not include_done:
+        clauses.append("state != 'done'")
+
+    where = " AND ".join(clauses)
+
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            f"""SELECT * FROM task_metadata WHERE {where}
+                ORDER BY updated_at DESC LIMIT ?""",
+            params + [int(limit)],
         ).fetchall()
         return [dict(r) for r in rows]
     finally:

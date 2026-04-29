@@ -146,7 +146,7 @@
   "dev/mcp-reload": {
     "kind": "directions",
     "name": "MCP Registry Reload",
-    "description": "Reload the MCP gateway capability registry without restarting the server to pick up code changes",
+    "description": "When and how to reload the MCP gateway capability registry. Two paths: heavy full rebuild (mcp_registry_reload) and light per-capability re-probe (recheck_disabled_capability). Picks the right one for the situation.",
     "aliases": [
       "reload registry",
       "mcp reload",
@@ -159,7 +159,10 @@
       "developmental",
       "mcp",
       "registry",
-      "reload"
+      "reload",
+      "recheck",
+      "cp-a3",
+      "recovery"
     ],
     "parents": [
       "dev"
@@ -171,8 +174,8 @@
       "mcp_registry_reload"
     ],
     "content": {
-      "summary": "Reloads the MCP gateway capability registry in-place without restarting the server. Run after modifying capability code to pick up changes, then verify the target capability is discoverable.",
-      "full": "Reload the MCP gateway capability registry without restarting the server.\n\nRun `mcp__work-buddy__wb_run(\"mcp_registry_reload\")` to invalidate and rebuild the registry. This picks up new or modified capabilities from code changes made during this session.\n\nAfter the reload, confirm it worked by running `mcp__work-buddy__wb_search(\"session\")` (or whatever capability was just added/changed) and verifying the results."
+      "summary": "Slash command /wb-dev-mcp-reload calls the heavy mcp_registry_reload — only correct after CODE CHANGES to existing capability callables. For transient probe failures (capability disabled despite working tool), use recheck_disabled_capability instead. See architecture/capability-registry for the full picture.",
+      "full": "There are TWO ways to refresh the registry. Pick by situation.\n\n## /wb-dev-mcp-reload — heavy full rebuild\n\nUse when:\n  - You changed code inside an existing capability callable AND want the running gateway to pick up the change without a sidecar restart.\n  - You suspect the entire registry is stale (rare).\n\nCost: ~6-8s on a typical machine (re-probes every tool, purges work_buddy.* from sys.modules, rebuilds every capability). Blocks /health for the duration.\n\nCall:\n```\nmcp__work-buddy__wb_run(\"mcp_registry_reload\")\n```\n\nVerify a specific capability is now in the active registry:\n```\nmcp__work-buddy__wb_run(\"agent_docs\", {\"query\": \"<capability_name>\", \"depth\": \"summary\"})\n```\n\nNote: agent_docs is the right discovery tool here — wb_search is for capability-only discovery and may miss directions/system units that describe the capability.\n\nCaveats:\n  - This does NOT register newly-added Capability entries or new workflow names. Those require a sidecar restart.\n  - If your goal is ONLY to recover a disabled capability (transient tool probe failure), this is the wrong tool — see below.\n\n## recheck_disabled_capability(name) — light per-capability re-probe\n\nUse when:\n  - A capability is in the disabled registry because its tool probe transient-failed (e.g. obsidian unreachable for 200ms during sidecar startup) but the underlying tool is now healthy.\n  - You want to recover ONE capability without rebuilding the whole registry.\n\nCost: one tool probe (or zero if within the 30s cool-down). Mutates _REGISTRY in place on success — no sys.modules purge, no rebuild step. Used by the gateway dispatch path (gateway.py) and the sidecar retry sweep (retry_sweep.py).\n\nCall (from Python):\n```\nfrom work_buddy.recovery import recheck_disabled_capability\nrecovered = recheck_disabled_capability(\"task_create\")\n# True  — capability is now in the active registry\n# False — tool still probing as down; capability stays disabled\n```\n\nThere is no MCP capability wrapper — it's an internal recovery function called automatically by the dispatch and retry paths. Agents normally don't call it directly; if you find yourself reaching for it, check whether mcp_registry_reload is genuinely what you want first.\n\n## Decision tree\n\n```\nWhy am I reloading?\n  - Code changed (existing callable) ......... mcp_registry_reload\n  - New Capability / workflow added .......... sidecar restart (reload alone won't register it)\n  - Capability stuck disabled (transient) .... recheck_disabled_capability(name) — usually automatic\n  - Knowledge unit edited .................... agent_docs_rebuild\n  - Just want to verify discovery ............ agent_docs(query=...) — no reload needed\n```\n\nSee architecture/capability-registry for the deep reference."
     }
   },
   "dev/documentation-architecture": {

@@ -875,12 +875,33 @@ def write_file_raw(
     risk="moderate",
     default_ttl=15,
 )
-def write_file(path: str, content: str) -> bool:
+def write_file(
+    path: str,
+    content: str,
+    *,
+    write_mode: str = "replace",
+    content_hint: str | None = None,
+) -> bool:
     """Write or create a file by vault-relative path (consent-gated).
+
+    Slice C.4: ``write_mode`` and ``content_hint`` kwargs surface
+    write_file_raw's verification controls to consent-gated callers.
+    For files that change concurrently (the master task list, archives,
+    journals), prefer ``write_mode="insert"`` with ``content_hint``
+    set to a unique substring of the inserted content (e.g. the new
+    task line). This makes the post-write verifier do a substring
+    match instead of a full-content sha256 — robust against
+    concurrent unrelated edits to other parts of the file. Without
+    this kwarg surface, callers had to choose between (a) using
+    write_file_raw directly (bypassing consent) or (b) accepting
+    sha256-based verification that fails any time the file changes
+    between write and verify.
 
     Returns True on success, False on failure.
     """
-    return write_file_raw(path, content)
+    return write_file_raw(
+        path, content, write_mode=write_mode, content_hint=content_hint,
+    )
 
 
 def get_metadata(path: str) -> dict | None:
@@ -925,12 +946,346 @@ def eval_js(code: str, timeout: int = 15) -> Any:
 
     Returns the result value, or None on failure.
     """
+    return eval_js_internal(code, timeout=timeout)
+
+
+def eval_js_internal(code: str, timeout: int = 15) -> Any:
+    """Internal eval_js without the human-consent gate.
+
+    For use only by bridge-internal helpers (e.g. atomic vault-write paths)
+    whose calling capability ALREADY holds an equivalent or stronger
+    consent (typically ``obsidian.write_file`` — the atomic-write helper
+    is semantically a write, not arbitrary JS execution). Skipping a
+    second ``obsidian.eval_js`` prompt avoids double-consenting the user
+    for what is effectively one operation.
+
+    Mirrors :func:`eval_js`'s return contract: the value the JS produced,
+    or None on bridge failure. Raises :class:`RuntimeError` if the JS
+    threw.
+
+    Args:
+        code: JavaScript code to execute.
+        timeout: HTTP request timeout in seconds.
+    """
     result = _request("POST", "/eval", {"code": code}, timeout=timeout)
     if result is None:
         return None
     if "error" in result:
         raise RuntimeError(f"Eval error: {result['error']}")
     return result.get("result")
+
+
+def eval_js_for_write(
+    code: str,
+    *,
+    write_path: str,
+    content_hint: str,
+    write_mode: str = "insert",
+    timeout: int = 15,
+) -> Any:
+    """eval_js for atomic-write paths — translates timeouts to PWU.
+
+    Difference from :func:`eval_js_internal`: routes through
+    :func:`_request_with_status` (typed exceptions) instead of
+    :func:`_request` (silent None). On HTTP timeout, raises
+    :class:`ObsidianPostWriteUncertain` carrying the write_path and a
+    content_hint so the gateway's CP-A7 verify-then-decide path can
+    determine whether the JS callback successfully mutated the vault.
+
+    Why this matters: the JS body inside ``code`` typically calls
+    ``app.vault.process(...)`` which CAN have committed the modify
+    callback before the bridge's HTTP response failed to arrive. Without
+    this translation, eval_js_internal silently returns None on
+    timeout, the atomic-write helper falls through to the legacy
+    ``bridge.write_file`` path, and the conflict-detection / atomic
+    semantics are bypassed — exactly the regression Slice C was meant
+    to prevent.
+
+    Mirrors :func:`write_file_raw`'s post-write-uncertain handling.
+
+    Args:
+        code: JavaScript body to execute.
+        write_path: Vault-relative path the JS is mutating. Used by the
+            verify-from-filesystem recovery to pick the file to inspect.
+        content_hint: Substring witness — text the verifier expects to
+            find (or NOT find, for ``write_mode="absent"``) in the file
+            after the JS callback runs successfully. For line-replace
+            operations the new line itself is the natural hint (unique
+            by task_id). For line-delete operations use the unique
+            substring of the line being removed (e.g. the task_id
+            marker).
+        write_mode: Verification semantics for the post-write recovery
+            path:
+            - ``"insert"`` (default) — verified iff hint IS present
+              (line-replace, line-insert, append).
+            - ``"absent"`` — verified iff hint IS NOT present
+              (line-delete and other "make this go away"
+              operations). Without this, a successful delete reads
+              as "didn't land" via insert-mode substring verify.
+            - ``"replace"`` — full sha256 match (rare for atomic
+              eval-driven writes since JS computes the new content;
+              caller would need to know the post-callback content
+              ahead of time).
+        timeout: HTTP request timeout in seconds.
+
+    Returns:
+        The value the JS produced.
+
+    Raises:
+        :class:`ObsidianPostWriteUncertain` on HTTP timeout — carries
+            (write_path, content_hint, write_mode) so verify_post_write
+            applies the right detection mode.
+        :class:`ObsidianTimeout` if the bridge port was open but no
+            data was sent (callable picks this up as a regular
+            transient failure).
+        :class:`ObsidianUnreachable` (or specific subclass) on TCP
+            refused.
+        :class:`RuntimeError` if the JS body threw inside Obsidian.
+    """
+    try:
+        status, body = _request_with_status(
+            "POST", "/eval", {"code": code}, timeout=timeout,
+        )
+    except ObsidianTimeout as exc:
+        # The eval body was sent; the JS callback may have committed
+        # the vault.process() write before the response failed to
+        # arrive. Translate to PWU so the gateway can verify-then-decide
+        # whether to retry.
+        raise ObsidianPostWriteUncertain(
+            write_path,
+            content_hint=content_hint,
+            write_mode=write_mode,
+        ) from exc
+    if body is None:
+        return None
+    if "error" in body:
+        raise RuntimeError(f"Eval error: {body['error']}")
+    return body.get("result")
+
+
+def atomic_replace_line_by_task_id(
+    file_path: str,
+    task_id: str,
+    expected_old_line: str,
+    new_line: str,
+    *,
+    timeout: int = 15,
+) -> dict[str, Any]:
+    """Atomically rewrite the task line for ``task_id`` via app.vault.process().
+
+    Uses Obsidian's ``app.vault.process(file, callback)`` — the canonical
+    atomic read-modify-write API. The callback runs against the
+    *current* file content (as Obsidian sees it, not Python's stale
+    read), so the read-modify-write race in the legacy bridge.read_file
+    + bridge.write_file pair is closed.
+
+    Conflict detection: ``expected_old_line`` is what the caller read.
+    If the line matching ``task_id`` in the *fresh* content differs (user
+    edited between Python's read and this call), the JS callback returns
+    the data unchanged and surfaces ``conflict=True`` in the response.
+    The caller decides whether to retry, surface to user, or accept.
+
+    Args:
+        file_path: Vault-relative file path.
+        task_id: Task ID to locate (matched by ``🆔 <task_id>`` substring).
+        expected_old_line: Line content the caller read. Empty string
+            disables conflict detection (use cautiously).
+        new_line: Replacement line content.
+        timeout: HTTP timeout in seconds.
+
+    Returns:
+        Dict with:
+          - ``found`` (bool): True if the task_id was located in the file.
+          - ``conflict`` (bool): True if the located line differed from
+            ``expected_old_line`` (caller's read was stale).
+          - ``replaced`` (bool): True iff the file was actually modified.
+          - ``line_number`` (int | None): 1-indexed line of the match.
+          - ``old_line`` (str | None): The line as it was *just before*
+            the atomic write (the version JS saw, not the version
+            Python read).
+          - ``new_line`` (str | None): The line as written. Only set
+            when ``replaced=True``.
+
+    Raises the same typed Obsidian exceptions as ``eval_js_internal``
+    on bridge failure (timeout, unreachable, plugin not loaded). The
+    caller is responsible for fallback decisions — typically falling
+    back to the legacy read-modify-write path if the atomic write
+    fails for connectivity reasons.
+
+    Consent: bypasses ``obsidian.eval_js`` consent. Callers must hold
+    ``obsidian.write_file`` consent (or higher) — semantically this IS
+    a write_file with a transform attached.
+    """
+    payload = json.dumps({
+        "path": file_path,
+        "task_id": task_id,
+        "expected_old_line": expected_old_line or "",
+        "new_line": new_line,
+    })
+    # Raw f-string so the `\u` JS escape isn't interpreted as a Python
+    # unicode escape during parse. The JS body uses `\u{1F194}` (the 🆔
+    # character) as a literal escape that the JS engine resolves.
+    js = rf"""
+return (async () => {{
+    const params = {payload};
+    const file = app.vault.getAbstractFileByPath(params.path);
+    if (!file) {{
+        return {{found: false, conflict: false, replaced: false, error: "file_not_found"}};
+    }}
+    const id_pattern = "\u{{1F194}} " + params.task_id;
+    let result = {{found: false, conflict: false, replaced: false, line_number: null, old_line: null, new_line: null}};
+
+    await app.vault.process(file, (data) => {{
+        const lines = data.split("\n");
+        for (let i = 0; i < lines.length; i++) {{
+            if (lines[i].includes(id_pattern)) {{
+                result.found = true;
+                result.line_number = i + 1;
+                result.old_line = lines[i];
+                // Conflict check: caller's expected_old_line vs. fresh content.
+                if (params.expected_old_line && lines[i] !== params.expected_old_line) {{
+                    result.conflict = true;
+                    return data;  // unchanged
+                }}
+                if (lines[i] === params.new_line) {{
+                    // No-op rewrite; don't dirty the file.
+                    return data;
+                }}
+                lines[i] = params.new_line;
+                result.replaced = true;
+                result.new_line = params.new_line;
+                return lines.join("\n");
+            }}
+        }}
+        return data;  // not found — unchanged
+    }});
+    return result;
+}})()
+"""
+
+    # Route through the write-aware eval path so HTTP timeouts translate
+    # into ObsidianPostWriteUncertain (with content_hint=new_line) instead
+    # of silently returning None. Without this, the silent-None on
+    # timeout caused atomic_replace to fall through to the legacy
+    # bridge.write_file path, defeating Slice C's whole purpose. The
+    # gateway's CP-A7 verify-then-decide path picks up the PWU and
+    # checks whether the new_line is in the on-disk file.
+    result = eval_js_for_write(
+        js,
+        write_path=file_path,
+        content_hint=new_line,
+        timeout=timeout,
+    )
+    if result is None:
+        # Genuinely None (eval body returned undefined / null) —
+        # treat as bridge_returned_none for fallback purposes.
+        return {
+            "found": False,
+            "conflict": False,
+            "replaced": False,
+            "error": "bridge_returned_none",
+        }
+    return result
+
+
+def atomic_delete_line_by_task_id(
+    file_path: str,
+    task_id: str,
+    *,
+    timeout: int = 15,
+) -> dict[str, Any]:
+    """Atomically remove the task line for ``task_id`` via app.vault.process().
+
+    Mirrors :func:`atomic_replace_line_by_task_id` but the JS callback
+    REMOVES the matched line entirely instead of replacing it. Used by
+    ``mutations.delete_task`` so the line-removal step gets the same
+    race-safety as the description-update path.
+
+    Args:
+        file_path: Vault-relative file path.
+        task_id: Task ID to locate (matched by ``🆔 <task_id>`` substring).
+        timeout: HTTP timeout in seconds.
+
+    Returns:
+        Dict with:
+          - ``found`` (bool): True if the task_id was located.
+          - ``removed`` (bool): True iff the file was actually modified.
+          - ``line_number`` (int | None): 1-indexed line of the match
+            BEFORE removal.
+          - ``old_line`` (str | None): The line that was removed.
+
+    Raises the same typed Obsidian exceptions as
+    :func:`eval_js_for_write` on bridge failure. On timeout, raises
+    :class:`ObsidianPostWriteUncertain` with content_hint of
+    ``f"🆔 {task_id}"`` and ``write_mode="absent"``. The verifier's
+    "absent" mode treats hint-NOT-present as verified (since this is
+    a removal operation) — without it, a successful delete would
+    read as "didn't land" via the default insert/substring semantics
+    and trigger spurious retries. See :func:`verify_post_write`'s
+    "absent" branch.
+
+    Consent: bypasses ``obsidian.eval_js`` consent. Callers must hold
+    ``obsidian.write_file`` consent (or higher) — this IS a write_file
+    with a transform attached.
+    """
+    payload = json.dumps({
+        "path": file_path,
+        "task_id": task_id,
+    })
+    js = rf"""
+return (async () => {{
+    const params = {payload};
+    const file = app.vault.getAbstractFileByPath(params.path);
+    if (!file) {{
+        return {{found: false, removed: false, error: "file_not_found"}};
+    }}
+    const id_pattern = "\u{{1F194}} " + params.task_id;
+    let result = {{found: false, removed: false, line_number: null, old_line: null}};
+
+    await app.vault.process(file, (data) => {{
+        const lines = data.split("\n");
+        for (let i = 0; i < lines.length; i++) {{
+            if (lines[i].includes(id_pattern)) {{
+                result.found = true;
+                result.line_number = i + 1;
+                result.old_line = lines[i];
+                lines.splice(i, 1);
+                result.removed = true;
+                return lines.join("\n");
+            }}
+        }}
+        return data;  // not found — unchanged
+    }});
+    return result;
+}})()
+"""
+
+    # Content hint for the post-write verifier: the task_id marker. After
+    # a successful removal, the marker should NOT be in the file. The
+    # current verify_post_write does `hint in content` which means
+    # absence-after-write reads as "absent" → retry. That's actually
+    # the correct behavior here too: if a verify-after-PWU finds the
+    # marker still in the file, the removal didn't land and a retry
+    # is correct. If the marker is gone, verify says "absent" which
+    # the gateway treats as "didn't land" — but the retry is now
+    # idempotent because the second attempt's atomic find won't find
+    # the line, and returns found=false (still success in delete
+    # semantics).
+    hint = f"🆔 {task_id}"
+    result = eval_js_for_write(
+        js,
+        write_path=file_path,
+        content_hint=hint,
+        write_mode="absent",  # delete: verified iff hint NOT in content
+        timeout=timeout,
+    )
+    if result is None:
+        return {
+            "found": False,
+            "removed": False,
+            "error": "bridge_returned_none",
+        }
+    return result
 
 
 # ── Workspace ──────────────────────────────────────────────────

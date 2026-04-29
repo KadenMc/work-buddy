@@ -59,6 +59,15 @@ class Capability:
     auto_retry: bool = True
     slash_command: str | None = None  # e.g. "wb-journal-update"
     consent_operations: list[str] = field(default_factory=list)  # @requires_consent op IDs this capability may trigger
+    # Effect manifest for multi-effect capabilities — used by
+    # ``verify_post_write_effects`` to detect "some effects landed,
+    # some didn't" partial states after a PostWriteUncertain. Capabilities
+    # WITHOUT a manifest fall back to single-effect verify (the existing
+    # behavior). See ``work_buddy.obsidian.effects.EffectSpec`` for the
+    # schema and ``architecture/capability-registry`` for the picking
+    # rule. Capabilities with a manifest MUST be idempotent on retry —
+    # the partial-state recovery path retries the full capability.
+    effects: list[Any] = field(default_factory=list)  # list[EffectSpec]
 
 
 @dataclass
@@ -1325,7 +1334,16 @@ def _status_capabilities() -> list[Capability]:
         ),
         Capability(
             name="mcp_registry_reload",
-            description="Invalidate and rebuild the capability registry. Use after code changes to pick up new capabilities without restarting the MCP server.",
+            description=(
+                "HEAVY: invalidate and rebuild the capability registry. "
+                "Re-probes every tool, purges work_buddy.* from sys.modules, "
+                "rebuilds every capability (~6-8s). Use ONLY after code "
+                "changes to existing capability callables. For transient "
+                "tool-probe failures (capability stuck in disabled state), "
+                "use work_buddy.recovery.recheck_disabled_capability(name) "
+                "instead — it re-probes only the relevant tools with a "
+                "30s cool-down. See architecture/capability-registry."
+            ),
             category="status",
             parameters={},
             callable=invalidate_registry,
@@ -3289,6 +3307,7 @@ def _task_capabilities() -> list[Capability]:
         daily_briefing,
         review_inbox,
         stale_check,
+        task_search,
         update_task,
         archive_completed,
         weekly_review_data,
@@ -3296,11 +3315,14 @@ def _task_capabilities() -> list[Capability]:
     from work_buddy.obsidian.tasks.mutations import (
         assign_task,
         create_task,
+        create_task_effects_resolver as _create_task_effects_resolver,
         delete_task,
         read_task,
         set_task_tags_on_line,
         toggle_task,
+        update_task_description,
     )
+    from work_buddy.obsidian.effects import EffectSpec as _EffectSpec
     from work_buddy.obsidian.tasks.sync import task_sync
     from work_buddy.obsidian.tasks.namespace_suggest import (
         namespace_lookup,
@@ -3404,6 +3426,29 @@ def _task_capabilities() -> list[Capability]:
             mutates_state=True,
             retry_policy="verify_first",
             consent_operations=["tasks.create_task", "obsidian.write_file"],
+            # Fix-(b): multi-effect manifest. ``task_create`` writes a
+            # note file (if summary provided) AND appends a line to
+            # the master task list. Without this manifest, the PWU
+            # verifier sees only the path on the exception (whichever
+            # write happened first) and could declare "verified" while
+            # the second effect is missing. Resolver pulls task_id /
+            # note_uuid from the C.2 idempotency cache.
+            effects=[
+                _EffectSpec(
+                    kind="file_write",
+                    path_template="tasks/notes/{note_uuid}.md",
+                    witness_template="{task_text}",
+                    witness_mode="substring",
+                    resolver=_create_task_effects_resolver,
+                ),
+                _EffectSpec(
+                    kind="line_append",
+                    path="tasks/master-task-list.md",
+                    witness_template="🆔 {task_id}",
+                    witness_mode="substring",
+                    resolver=_create_task_effects_resolver,
+                ),
+            ],
         ),
         Capability(
             name="task_set_tags",
@@ -3546,6 +3591,71 @@ def _task_capabilities() -> list[Capability]:
                 "change due date",
                 "promote task to MIT",
                 "move task to inbox",
+            ],
+        ),
+        Capability(
+            name="task_update_description",
+            description=(
+                "Rewrite the description text on a task line. Preserves "
+                "checkbox, #todo, #projects/*, namespace tags, wikilinks, "
+                "🆔 + ID, plugin emojis (📅, ✅, urgency). Updates the "
+                "store's description column in lockstep. Use this instead "
+                "of filesystem-direct edits — it routes through the same "
+                "consent-aware, retry-aware path as the other mutations "
+                "and avoids the read-modify-write race on the master "
+                "task list."
+            ),
+            category="tasks",
+            parameters={
+                "task_id": {"type": "str", "description": "Task ID (e.g., 't-a3f8c1e2')", "required": True},
+                "new_description": {"type": "str", "description": "New description text. Single line; whitespace is collapsed.", "required": True},
+                "file_path": {"type": "str", "description": "Vault-relative path. Default: tasks/master-task-list.md", "required": False},
+            },
+            callable=update_task_description,
+            requires=["obsidian"],
+            mutates_state=True,
+            retry_policy="verify_first",
+            consent_operations=["tasks.update_task", "obsidian.write_file"],
+            search_aliases=[
+                "rename task",
+                "rewrite task",
+                "edit task description",
+                "change task text",
+                "update task wording",
+                "rephrase task",
+                "rewrite task line",
+            ],
+        ),
+        Capability(
+            name="task_search",
+            description=(
+                "Search tasks by description text via the SQLite store. "
+                "Bridge-independent — works even when Obsidian isn't "
+                "running. Returns task records (full task_metadata "
+                "rows) ordered most-recently-updated first. For "
+                "full-text search over task NOTE bodies (the "
+                "[[uuid|📓]]-linked detail files), use "
+                "context_search(source='task_note') instead — that's "
+                "hybrid retrieval over note content; this is exact-text "
+                "search over the line description."
+            ),
+            category="tasks",
+            parameters={
+                "query": {"type": "str", "description": "Substring to search for in task description text. Empty string returns nothing.", "required": True},
+                "limit": {"type": "int", "description": "Max results (default 50)", "required": False},
+                "include_archived": {"type": "bool", "description": "Include archived tasks (default False)", "required": False},
+                "include_done": {"type": "bool", "description": "Include completed tasks (default True)", "required": False},
+            },
+            callable=task_search,
+            requires=[],  # SQLite-only — no bridge needed
+            search_aliases=[
+                "find task",
+                "search tasks",
+                "find a task by name",
+                "look up task",
+                "task by description",
+                "tasks containing",
+                "search task descriptions",
             ],
         ),
         Capability(

@@ -415,12 +415,73 @@ class ConsentCache:
 
         Checks in order:
         1. Per-operation grant (explicit consent for this exact operation)
-        2. Workflow blanket grant (active workflow implies consent for all ops)
+           in the CURRENT session's DB
+        2. Workflow blanket grant in the CURRENT session's DB
+        3. (Fix-a) If neither found AND
+           ``work_buddy.agent_session.get_originating_session()`` returns
+           a session ID different from the current one, repeat steps 1-2
+           against THAT session's DB.
+
+        Step 3 closes the cross-session-replay gap (`t-e2f1a8c4`):
+        when the sidecar replays a PWU'd operation, the user's
+        consent grant lives in their session's DB, not the
+        sidecar's. Honoring the originating-session reference lets
+        the replay proceed without forcing a fresh consent prompt
+        for an operation the user already authorized.
+
+        Revocation semantics preserved: if the user revokes the grant
+        in their session, the originating-session lookup also finds
+        nothing → returns False → caller gets ConsentRequired.
         """
-        conn = self._connect()
+        # Step 1+2: current session.
+        if self._is_granted_in_session(operation, session_id=None):
+            return True
+
+        # Step 3: originating session, if set and different.
+        try:
+            from work_buddy.agent_session import (
+                get_originating_session, _get_session_id,
+            )
+            originating = get_originating_session()
+        except ImportError:  # pragma: no cover — defensive
+            return False
+        if not originating:
+            return False
+        # Don't re-check the same DB.
+        try:
+            current_sid = _get_session_id()
+        except Exception:
+            current_sid = None
+        if originating == current_sid:
+            return False
+
+        try:
+            granted = self._is_granted_in_session(
+                operation, session_id=originating,
+            )
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.warning(
+                "is_granted: originating-session lookup failed for "
+                "operation=%r session=%r: %s",
+                operation, originating[:8], exc,
+            )
+            return False
+        if granted:
+            _audit_log(
+                "GRANT_FROM_ORIGINATING", operation,
+                f"originating_session={originating[:8]}",
+            )
+        return granted
+
+    def _is_granted_in_session(
+        self, operation: str, *, session_id: str | None,
+    ) -> bool:
+        """Same logic as is_granted's first two checks, scoped to
+        ``session_id`` (or current session when None). Extracted so the
+        originating-session fallback can reuse it cleanly."""
+        conn = self._connect(session_id=session_id)
         try:
             now = datetime.now(timezone.utc).isoformat()
-            # 1. Check per-operation grant
             row = conn.execute(
                 """SELECT 1 FROM grants
                    WHERE operation = ?
@@ -430,7 +491,6 @@ class ConsentCache:
             if row:
                 return True
 
-            # 2. Check workflow blanket (unless operation explicitly excluded)
             if operation != self.WORKFLOW_CONSENT_OP:
                 wf_row = conn.execute(
                     """SELECT 1 FROM grants
@@ -441,19 +501,60 @@ class ConsentCache:
                 if wf_row:
                     return True
 
-            # Clean up expired entries lazily
-            conn.execute(
-                "DELETE FROM grants WHERE expires_at IS NOT NULL AND expires_at <= ?",
-                (now,),
-            )
-            conn.commit()
+            # Clean up expired entries lazily — only on the current
+            # session's DB (don't mutate other sessions' state).
+            if session_id is None:
+                conn.execute(
+                    "DELETE FROM grants WHERE expires_at IS NOT NULL AND expires_at <= ?",
+                    (now,),
+                )
+                conn.commit()
             return False
         finally:
             conn.close()
 
     def get_mode(self, operation: str) -> str | None:
-        """Return the mode of a grant, or None if not found/expired."""
-        conn = self._connect()
+        """Return the mode of a grant, or None if not found/expired.
+
+        Mirrors :meth:`is_granted`'s originating-session fallback so the
+        retry-replay path can correctly distinguish ``"once"`` /
+        ``"temporary"`` / ``"always"`` modes when the grant lives in
+        the originating session's DB.
+        """
+        mode = self._get_mode_in_session(operation, session_id=None)
+        if mode is not None:
+            return mode
+
+        try:
+            from work_buddy.agent_session import (
+                get_originating_session, _get_session_id,
+            )
+            originating = get_originating_session()
+        except ImportError:  # pragma: no cover — defensive
+            return None
+        if not originating:
+            return None
+        try:
+            current_sid = _get_session_id()
+        except Exception:
+            current_sid = None
+        if originating == current_sid:
+            return None
+        try:
+            return self._get_mode_in_session(
+                operation, session_id=originating,
+            )
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.warning(
+                "get_mode: originating-session lookup failed: %s", exc,
+            )
+            return None
+
+    def _get_mode_in_session(
+        self, operation: str, *, session_id: str | None,
+    ) -> str | None:
+        """``get_mode`` scoped to a specific session (or current when None)."""
+        conn = self._connect(session_id=session_id)
         try:
             now = datetime.now(timezone.utc).isoformat()
             row = conn.execute(

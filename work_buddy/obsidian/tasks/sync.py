@@ -29,7 +29,11 @@ from typing import Any
 from work_buddy.config import load_config
 from work_buddy.logging_config import get_logger
 from work_buddy.obsidian.tasks import store
-from work_buddy.obsidian.tasks.mutations import TASK_ID_RE, MASTER_TASK_FILE
+from work_buddy.obsidian.tasks.mutations import (
+    MASTER_TASK_FILE,
+    TASK_ID_RE,
+    extract_description_from_line,
+)
 
 # Matches the task-note wikilink embedded in a task line, e.g. [[<uuid>|📓]].
 # The 📓 alias keeps this distinct from ordinary wikilinks on the same line.
@@ -222,6 +226,7 @@ def _parse_file_tasks(content: str) -> dict[str, dict[str, Any]]:
         note_uuid = note_match.group(1) if note_match else None
 
         raw_tags = extract_tags_from_line(line_stripped)
+        description = extract_description_from_line(line_stripped)
 
         tasks[task_id] = {
             "line_number": i + 1,
@@ -229,6 +234,7 @@ def _parse_file_tasks(content: str) -> dict[str, dict[str, Any]]:
             "line": line_stripped,
             "note_uuid": note_uuid,
             "raw_tags": raw_tags,
+            "description": description,
         }
 
     return tasks
@@ -316,6 +322,7 @@ def task_sync() -> dict[str, Any]:
                 state=initial_state,
                 urgency="medium",
                 note_uuid=info.get("note_uuid"),
+                description=info.get("description") or None,
             )
             created.append(task_id)
             logger.info(
@@ -409,6 +416,47 @@ def task_sync() -> dict[str, Any]:
                     "task_sync: failed to reconcile note_uuid %s: %s", task_id, exc,
                 )
 
+    # 5. description drift → file is source of truth.
+    #    Backfills NULL descriptions for legacy rows AND updates rows
+    #    whose stored description has drifted from the file (e.g. user
+    #    manually edited the task text in Obsidian). Empty-string
+    #    descriptions are skipped — those represent task lines we
+    #    couldn't extract text from (malformed, all-emoji, etc.) and
+    #    we'd rather keep the previous value than overwrite with empty.
+    resolved_descriptions: list[dict[str, Any]] = []
+    for task_id in file_ids & store_ids:
+        file_info = file_tasks[task_id]
+        store_record = store_by_id[task_id]
+
+        file_desc = file_info.get("description") or ""
+        store_desc = store_record.get("description")
+
+        # Only act when the file has a real description AND it differs
+        # from the store. NULL → file value is a backfill; non-NULL
+        # mismatch is a drift correction.
+        if file_desc and file_desc != store_desc:
+            try:
+                store.update(
+                    task_id,
+                    description=file_desc,
+                    reason="task_sync: description drift from file",
+                )
+                resolved_descriptions.append({
+                    "task_id": task_id,
+                    "old_description": store_desc,
+                    "new_description": file_desc,
+                    "line_number": file_info["line_number"],
+                })
+                logger.info(
+                    "task_sync: reconciled description %s — line %d",
+                    task_id, file_info["line_number"],
+                )
+            except Exception as exc:
+                logger.warning(
+                    "task_sync: failed to reconcile description %s: %s",
+                    task_id, exc,
+                )
+
     # --- Tag cache rebuild ---
     # Survivors: everything in the file that also has (or now has) a store
     # record. Excludes records just tombstone-deleted.
@@ -425,6 +473,7 @@ def task_sync() -> dict[str, Any]:
         + len(deleted_from_store)
         + len(resolved_mismatches)
         + len(resolved_note_uuids)
+        + len(resolved_descriptions)
     )
     status = "ok" if total_actions == 0 else "synced"
 
@@ -436,6 +485,7 @@ def task_sync() -> dict[str, Any]:
         "deleted": len(deleted_from_store),
         "resolved_mismatches": len(resolved_mismatches),
         "resolved_note_uuids": len(resolved_note_uuids),
+        "resolved_descriptions": len(resolved_descriptions),
         "tag_rows_written": tag_rows_written,
     }
 
@@ -448,13 +498,17 @@ def task_sync() -> dict[str, Any]:
         result["mismatch_details"] = resolved_mismatches
     if resolved_note_uuids:
         result["note_uuid_details"] = resolved_note_uuids
+    if resolved_descriptions:
+        result["description_details"] = resolved_descriptions
 
     if total_actions > 0:
         logger.info(
             "task_sync: %d actions — %d created, %d deleted, "
-            "%d mismatches resolved, %d note_uuids reconciled",
+            "%d mismatches resolved, %d note_uuids reconciled, "
+            "%d descriptions reconciled",
             total_actions, len(created), len(deleted_from_store),
             len(resolved_mismatches), len(resolved_note_uuids),
+            len(resolved_descriptions),
         )
     else:
         logger.debug("task_sync: all clean (%d file, %d store)", len(file_ids), len(store_ids))

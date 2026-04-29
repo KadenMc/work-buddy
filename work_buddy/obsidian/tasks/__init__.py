@@ -52,5 +52,6 @@ from work_buddy.obsidian.tasks.manager import (  # noqa: F401
     review_inbox,
     stale_check,
     suggest_focus,
+    task_search,
     weekly_review_data,
 )

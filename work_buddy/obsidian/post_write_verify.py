@@ -39,11 +39,16 @@ from typing import Literal
 
 from work_buddy.config import load_config
 from work_buddy.logging_config import get_logger
+from work_buddy.obsidian.effects import EffectSpec
 from work_buddy.obsidian.errors import ObsidianPostWriteUncertain
 
 logger = get_logger(__name__)
 
 VerifyResult = Literal["verified", "absent", "indeterminate"]
+# Multi-effect verdict — adds "partial" for "some effects landed,
+# some didn't" (the failure mode that single-effect verify would
+# misclassify as "verified" today). Same vocabulary otherwise.
+EffectsVerifyResult = Literal["verified", "partial", "absent", "indeterminate"]
 
 
 def verify_post_write(exc: ObsidianPostWriteUncertain) -> VerifyResult:
@@ -106,6 +111,16 @@ def verify_post_write(exc: ObsidianPostWriteUncertain) -> VerifyResult:
 
     if exc.write_mode == "replace":
         landed = _verify_replace(content, hint)
+    elif exc.write_mode == "absent":
+        # Delete-style operation: verified iff the witness is NO
+        # LONGER in the file. Used by atomic-delete paths where the
+        # hint identifies the content that should be GONE (e.g.
+        # ``f"🆔 {task_id}"`` for atomic-delete-line-by-task-id).
+        # Without this branch, delete operations using substring
+        # semantics get the verdict inverted: a successful delete
+        # leaves the witness absent, which "insert"-style verify
+        # reads as "didn't land" → spurious retry.
+        landed = not _verify_substring(content, hint)
     else:
         # insert / append / anything else with a substring witness.
         landed = _verify_substring(content, hint)
@@ -148,6 +163,159 @@ def _verify_substring(content: str, hint: str) -> bool:
     verification.
     """
     return hint in content
+
+
+def verify_post_write_effects(
+    effects: list[EffectSpec],
+    *,
+    params: dict | None = None,
+) -> EffectsVerifyResult:
+    """Walk a multi-effect manifest, return the overall verdict.
+
+    Closes the multi-effect blind spot in :func:`verify_post_write`
+    (single-effect verifier). For capabilities that produce multiple
+    external effects (e.g. ``task_create`` writes a note file AND
+    appends a master-list line), the gateway's PWU recovery path
+    invokes THIS function instead of the single-effect one when the
+    capability has a non-empty ``effects`` manifest registered.
+
+    Args:
+        effects: The capability's declared effect manifest.
+        params: The capability's invocation params (used for path /
+            witness template substitution and for the optional
+            per-effect resolver to look up generated values from
+            the capability's idempotency cache).
+
+    Returns:
+        ``"verified"``     — every declared effect is present on disk.
+        ``"partial"``      — some effects landed, some didn't. Caller
+                             enqueues a retry of the FULL capability;
+                             the capability is required to be
+                             idempotent under retry (``task_create``'s
+                             C.2 cache is the canonical example).
+        ``"absent"``       — no effects landed. Same as today's
+                             single-effect "absent": enqueue retry.
+        ``"indeterminate"``— couldn't resolve effect paths/witnesses
+                             (capability cache miss / template values
+                             missing). Caller treats as absent
+                             (conservative).
+
+    Reads from FILESYSTEM only (same rationale as the single-effect
+    verifier — the bridge is sick when this runs).
+    """
+    if not effects:
+        # Empty manifest is a programming error at the registration
+        # layer, but be defensive — treat as indeterminate so the
+        # caller falls back to single-effect behavior.
+        logger.warning("verify_post_write_effects: empty effects list")
+        return "indeterminate"
+
+    statuses: list[VerifyResult] = []
+    for i, effect in enumerate(effects):
+        # Resolve any generated values via the optional resolver.
+        generated = effect.call_resolver(params or {})
+        if generated is None:
+            # Resolver couldn't resolve (cache miss or partial values).
+            # That effect is indeterminate.
+            statuses.append("indeterminate")
+            logger.info(
+                "verify_post_write_effects: effect %d/%d resolver "
+                "returned None — marking indeterminate",
+                i + 1, len(effects),
+            )
+            continue
+
+        path = effect.resolve_path(params or {}, generated)
+        if path is None:
+            statuses.append("indeterminate")
+            logger.warning(
+                "verify_post_write_effects: effect %d/%d path templating "
+                "failed (kind=%s, path=%r, path_template=%r)",
+                i + 1, len(effects), effect.kind, effect.path,
+                effect.path_template,
+            )
+            continue
+
+        witness = effect.resolve_witness(params or {}, generated)
+
+        statuses.append(_verify_one_effect(
+            path=path,
+            witness=witness,
+            mode=effect.witness_mode,
+        ))
+
+    # Aggregate to a single verdict.
+    return _aggregate_effect_verdicts(statuses)
+
+
+def _verify_one_effect(
+    *,
+    path: str,
+    witness: str | None,
+    mode: str,
+) -> VerifyResult:
+    """Verify a single effect by reading the file and checking the witness.
+
+    Mirrors the single-effect ``verify_post_write`` body but as a pure
+    function over (path, witness, mode) so it can be reused by the
+    multi-effect walker.
+    """
+    abs_path = _resolve_vault_path(path)
+    if abs_path is None:
+        return "indeterminate"
+
+    if not abs_path.exists():
+        # No file on disk → for "absent" mode, that COUNTS as verified
+        # (the absence-of-content test trivially passes for an absent
+        # file). For substring/sha256 modes, the write didn't land.
+        if mode == "absent":
+            return "verified"
+        return "absent"
+
+    try:
+        content = abs_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return "indeterminate"
+
+    # No witness → just confirms the file exists, which it does.
+    if witness is None:
+        return "verified"
+
+    if mode == "sha256":
+        landed = _verify_replace(content, witness)
+    elif mode == "absent":
+        landed = not _verify_substring(content, witness)
+    else:
+        # substring / insert / append — substring witness present.
+        landed = _verify_substring(content, witness)
+
+    return "verified" if landed else "absent"
+
+
+def _aggregate_effect_verdicts(
+    statuses: list[VerifyResult],
+) -> EffectsVerifyResult:
+    """Reduce a list of per-effect statuses to a single verdict.
+
+    Decision matrix:
+      - all verified                 → "verified"
+      - any verified, any other      → "partial"
+      - all indeterminate            → "indeterminate"
+      - some indeterminate, some absent (no verified) → "absent"
+        (conservative — schedule a retry; if it was actually verified,
+        the retry will see the same end state and the idempotent
+        capability won't double-write)
+      - all absent                   → "absent"
+    """
+    if not statuses:
+        return "indeterminate"
+    if all(s == "verified" for s in statuses):
+        return "verified"
+    if any(s == "verified" for s in statuses):
+        return "partial"
+    if all(s == "indeterminate" for s in statuses):
+        return "indeterminate"
+    return "absent"
 
 
 def _resolve_vault_path(vault_relative: str) -> Path | None:
