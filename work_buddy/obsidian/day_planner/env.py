@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from work_buddy.obsidian import bridge
+from work_buddy.consent import reduces_risk_for
 from work_buddy.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -64,6 +65,7 @@ def _run_js(
 # ── Readiness ───────────────────────────────────────────────────
 
 
+@reduces_risk_for("obsidian.eval_js", "low")
 def check_ready() -> dict[str, Any]:
     """Check if the Day Planner plugin is loaded and return key settings.
 
@@ -73,6 +75,10 @@ def check_ready() -> dict[str, Any]:
     - plannerHeading, startHour, snapStepMinutes, etc. — plugin settings
     - hasRemoteCalendars: bool — whether iCal feeds are configured
     - reason: str — explanation if not ready
+
+    Consent: read-only — executes a fixed snippet from _js/ with no
+    caller-supplied JS, so it auto-passes the obsidian.eval_js gate via
+    @reduces_risk_for("obsidian.eval_js", "low").
     """
     bridge.require_available()
     result = bridge.eval_js(_load_js("check_ready.js"), timeout=15)
@@ -216,9 +222,14 @@ def write_plan(
 # ── Resync ──────────────────────────────────────────────────────
 
 
+@reduces_risk_for("obsidian.eval_js", "low")
 def trigger_resync() -> dict[str, Any]:
     """Trigger Day Planner's re-sync command to refresh the timeline.
 
     Call this after writing plan entries so the visual timeline updates.
+
+    Consent: executes a fixed snippet from _js/ that invokes the plugin's
+    own resync command (no caller-supplied JS), so it auto-passes the
+    obsidian.eval_js gate via @reduces_risk_for("obsidian.eval_js", "low").
     """
     return _run_js("trigger_resync.js")

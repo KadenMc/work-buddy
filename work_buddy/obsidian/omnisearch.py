@@ -9,10 +9,12 @@ from pathlib import Path
 from typing import Any
 
 from work_buddy.obsidian import bridge
+from work_buddy.consent import reduces_risk_for
 
 _JS_DIR = Path(__file__).parent / "_js"
 
 
+@reduces_risk_for("obsidian.eval_js", "low")
 def search(query: str, limit: int = 20) -> list[dict[str, Any]]:
     """BM25 lexical search over the vault via Omnisearch.
 

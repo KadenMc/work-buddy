@@ -12,6 +12,7 @@ from typing import Any
 
 from work_buddy.obsidian import bridge
 from work_buddy.config import load_config
+from work_buddy.consent import reduces_risk_for
 from work_buddy.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -140,6 +141,7 @@ def detect_restarts(since_hours: int = 24) -> list[dict[str, Any]]:
 # ── Plugin Inventory ─────────────────────────────────────────────
 
 
+@reduces_risk_for("obsidian.eval_js", "low")
 def plugin_inventory_runtime() -> list[dict[str, str]]:
     """List all loaded Obsidian plugins with versions via the live runtime.
 
@@ -229,6 +231,7 @@ def crash_detection_heuristic() -> dict[str, Any]:
 # ── Unified Health Report ────────────────────────────────────────
 
 
+@reduces_risk_for("obsidian.eval_js", "low")
 def obsidian_health_report() -> str:
     """Generate a unified markdown health report for Obsidian.
 

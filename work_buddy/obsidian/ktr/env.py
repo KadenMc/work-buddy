@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from work_buddy.obsidian import bridge
+from work_buddy.consent import reduces_risk_for
 from work_buddy.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -62,6 +63,7 @@ def _escape_js(text: str) -> str:
 # ── Readiness ───────────────────────────────────────────────────
 
 
+@reduces_risk_for("obsidian.eval_js", "low")
 def check_ready() -> dict[str, Any]:
     """Check if Keep the Rhythm plugin is loaded and has activity data.
 
@@ -86,6 +88,7 @@ def check_ready() -> dict[str, Any]:
 # ── Query Operations ────────────────────────────────────────────
 
 
+@reduces_risk_for("obsidian.eval_js", "low")
 def get_hot_files(
     since_date: str,
     until_date: str | None = None,
@@ -125,6 +128,7 @@ def get_hot_files(
     }, timeout=20)
 
 
+@reduces_risk_for("obsidian.eval_js", "low")
 def get_file_activity(
     file_path: str,
     since_date: str,
