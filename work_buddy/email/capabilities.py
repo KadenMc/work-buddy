@@ -153,16 +153,17 @@ def email_triage_run(
             matching the journal capability.
     """
     from work_buddy.triage.background import BackgroundTriageProducer
-    from work_buddy.triage.config import load_triage_config
+    from work_buddy.triage.config import is_verdict_pass_enabled_for, load_triage_config
 
     provider, err = _provider_or_error()
     if err:
         return err
 
     cfg = load_triage_config()
-    verdict_pass_enabled = bool(
-        cfg.get("verdict_pass", {}).get("enabled", False)
-    )
+    # Per-source override via ``triage.verdict_pass.sources.email.enabled``
+    # wins over the global default. See
+    # :func:`work_buddy.triage.config.is_verdict_pass_enabled_for`.
+    verdict_pass_enabled = is_verdict_pass_enabled_for(cfg, "email")
 
     # Auto-pick body budget if caller didn't override:
     #   - verdict pass off: 0 (headers-only — what Slice 1 shipped with)

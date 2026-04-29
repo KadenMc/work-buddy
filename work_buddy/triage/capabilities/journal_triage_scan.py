@@ -126,7 +126,9 @@ def journal_triage_scan(
     Returns:
         Status dict (see :class:`ProducerResult.to_dict`).
     """
-    from work_buddy.triage.config import load_triage_config, resolve_profile
+    from work_buddy.triage.config import (
+        is_verdict_pass_enabled_for, load_triage_config, resolve_profile,
+    )
 
     # Accept raw-string tier from MCP callers; enum callers pass through.
     if isinstance(tier, str) and not isinstance(tier, ModelTier):
@@ -207,10 +209,10 @@ def journal_triage_scan(
     # Slice 1 verdict-pass gate. When disabled (the default until
     # Slice 3 ships the new schema), skip the LLM agent entirely;
     # the producer writes raw entries (``verdict={"raw": True}``).
-    # Capture is preserved; the verdict is not.
-    verdict_pass_enabled = bool(
-        cfg.get("verdict_pass", {}).get("enabled", False)
-    )
+    # Capture is preserved; the verdict is not. Per-source override
+    # via ``triage.verdict_pass.sources.journal.enabled`` wins over the
+    # global default; see :func:`is_verdict_pass_enabled_for`.
+    verdict_pass_enabled = is_verdict_pass_enabled_for(cfg, "journal")
 
     if verdict_pass_enabled:
         runner = LLMRunner()

@@ -137,13 +137,12 @@ def inline_triage_scan(
     # Slice 1 verdict-pass gate. Even though inline is user-affirmative
     # (right-click or tag), the verdict is throwaway during the
     # Slice 1→3 interregnum — Slice 3 replaces the verdict schema.
-    # Gate uniformly with journal_triage_scan; capture still lands in
-    # the pool as a raw entry.
-    from work_buddy.triage.config import load_triage_config
+    # Per-source override via
+    # ``triage.verdict_pass.sources.inline.enabled`` wins over the
+    # global default; see :func:`is_verdict_pass_enabled_for`.
+    from work_buddy.triage.config import is_verdict_pass_enabled_for, load_triage_config
     cfg = load_triage_config()
-    verdict_pass_enabled = bool(
-        cfg.get("verdict_pass", {}).get("enabled", False)
-    )
+    verdict_pass_enabled = is_verdict_pass_enabled_for(cfg, "inline")
 
     # Build the user-context packet once per pass when the verdict
     # pass IS enabled. When disabled, we skip the build (no LLM call

@@ -204,6 +204,21 @@ telegram:
 #     enrich:
 #       enabled: false                      # skip IR context pre-fetch
 #
+#     # Verdict-pass gating. Per-source overrides win over the global
+#     # default. See work_buddy/triage/config.py:KNOWN_VERDICT_PASS_SOURCES
+#     # for the current key set.
+#     verdict_pass:
+#       enabled: false                      # global default for all sources
+#       sources:
+#         journal:                          # journal_triage_scan (Obsidian Running Notes)
+#           enabled: false
+#         inline:                           # inline_triage_scan (send-to-agent captures)
+#           enabled: false
+#         email:                            # email_triage_run (Thunderbird companion bridge)
+#           enabled: false
+#         web_browser:                      # chrome_triage_scan (Chrome tabs) — future
+#           enabled: false
+#
 # triage: {}
 
 sidecar:
