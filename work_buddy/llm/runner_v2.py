@@ -70,6 +70,13 @@ def _classify_error(error: str | None, kind_str: str | None) -> ErrorKind | None
     Prefers the structured ``kind`` string when present; falls back to
     substring heuristics on the raw message. Returns ``None`` when
     there is no error to classify.
+
+    Rule ordering note (2026-04 fix): CONTEXT_EXCEEDED checks run BEFORE
+    SCHEMA_VIOLATION because LM Studio's context-overflow error includes
+    a fallback hint mentioning "schema may have changed", which used to
+    fire the SCHEMA_VIOLATION rule and mask the real (escalatable)
+    cause. CONTEXT_EXCEEDED is in the call_for_verdict escalate list;
+    SCHEMA_VIOLATION isn't.
     """
     if not error and not kind_str:
         return None
@@ -78,7 +85,20 @@ def _classify_error(error: str | None, kind_str: str | None) -> ErrorKind | None
     # Heuristic fallback for errors from ``run_task`` which has a bare
     # ``error`` string with no kind discriminator.
     lower = (error or "").lower()
-    if "context" in lower and ("exceed" in lower or "too long" in lower):
+    # CONTEXT_EXCEEDED first — must beat the SCHEMA_VIOLATION rule because
+    # LM Studio's overflow message mentions "schema" in its fallback hint.
+    # The rule expanded in 2026-04 to cover newer LM Studio phrasings:
+    #   - "is greater than the context length"
+    #   - "load the model with a larger context length"
+    #   - structured tokens "n_keep" / "n_ctx" (dispositive on their own)
+    if (
+        ("context" in lower and ("exceed" in lower or "too long" in lower))
+        or "n_keep" in lower
+        or "n_ctx" in lower
+        or ("context length" in lower and ("greater than" in lower or "larger context" in lower))
+        or "prompt is too long" in lower
+        or "input is too long" in lower
+    ):
         return ErrorKind.CONTEXT_EXCEEDED
     if "timeout" in lower or "timed out" in lower:
         return ErrorKind.TIMEOUT
@@ -86,7 +106,16 @@ def _classify_error(error: str | None, kind_str: str | None) -> ErrorKind | None
         return ErrorKind.RATE_LIMITED
     if "authentication" in lower or "api key" in lower or "401" in lower:
         return ErrorKind.AUTH
-    if "schema" in lower or "json" in lower and "invalid" in lower:
+    # SCHEMA_VIOLATION last — narrowed to require schema/JSON context AND
+    # an actual violation/invalid signal. Was: ``"schema" in lower or
+    # "json" in lower and "invalid" in lower`` which triggered on any
+    # error message that happened to mention "schema" (e.g. LM Studio's
+    # "the native-endpoint schema may have changed" hint, fired even
+    # when the real cause was context overflow).
+    if (
+        ("schema" in lower and ("violat" in lower or "invalid" in lower or "mismatch" in lower or "unexpected" in lower))
+        or ("json" in lower and "invalid" in lower)
+    ):
         return ErrorKind.SCHEMA_VIOLATION
     return ErrorKind.UNKNOWN
 

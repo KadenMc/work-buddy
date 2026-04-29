@@ -50,6 +50,58 @@ class TestClassifyError:
         # Unknown text → UNKNOWN
         assert _classify_error("something weird", None) is ErrorKind.UNKNOWN
 
+    def test_lm_studio_n_keep_n_ctx_phrasing_is_context_exceeded(self):
+        """LM Studio's newer phrasing — no 'exceed', no 'too long', just
+        'is greater than the context length' + n_keep/n_ctx tokens. The
+        old classifier missed this and fell through to UNKNOWN (or worse,
+        SCHEMA_VIOLATION when LM Studio's hint mentioned 'schema'); now
+        we match the structured tokens directly."""
+        msg = (
+            "LM Studio rejected the request at /v1/chat/completions "
+            "(HTTP 400): The number of tokens to keep from the initial "
+            "prompt is greater than the context length "
+            "(n_keep: 4103 >= n_ctx: 4096). Try to load the model with a "
+            "larger context length, or provide a shorter input."
+        )
+        assert _classify_error(msg, None) is ErrorKind.CONTEXT_EXCEEDED
+
+    def test_context_exceeded_beats_schema_when_both_words_present(self):
+        """LM Studio's overflow error includes a fallback hint mentioning
+        "the native-endpoint schema may have changed" — this used to win
+        over the (correct) context-exceeded reading. Rule order now puts
+        CONTEXT_EXCEEDED first."""
+        msg = (
+            "n_keep: 4103 >= n_ctx: 4096. Hint: The request payload was "
+            "rejected. This is usually a shape mismatch between our "
+            "backend and the LM Studio version in use. If you just "
+            "upgraded LM Studio, the native-endpoint schema may have "
+            "changed."
+        )
+        assert _classify_error(msg, None) is ErrorKind.CONTEXT_EXCEEDED
+
+    def test_schema_violation_requires_actual_violation_signal(self):
+        """The narrowed SCHEMA_VIOLATION rule needs both 'schema' AND a
+        violation/invalid/mismatch/unexpected word — not just 'schema'
+        alone (which was the old over-greedy bug)."""
+        # Real schema violation — should match.
+        assert _classify_error("Output schema violation: missing 'foo'", None) is ErrorKind.SCHEMA_VIOLATION
+        assert _classify_error("Schema mismatch on field 'bar'", None) is ErrorKind.SCHEMA_VIOLATION
+        assert _classify_error("Invalid JSON in response", None) is ErrorKind.SCHEMA_VIOLATION
+        # 'schema' alone in an unrelated hint must NOT match.
+        assert _classify_error("Hint: the schema may have been updated", None) is ErrorKind.UNKNOWN
+
+    def test_context_exceeded_alternate_phrasings(self):
+        """Cover the various LM Studio / OpenAI-compat phrasings."""
+        cases = [
+            "Prompt is too long for this context window",
+            "Input is too long for this model's context",
+            "context length is greater than max",
+            "load the model with a larger context length",
+            "Context size has been exceeded",
+        ]
+        for msg in cases:
+            assert _classify_error(msg, None) is ErrorKind.CONTEXT_EXCEEDED, msg
+
 
 # ---------------------------------------------------------------------------
 # Empty content detection

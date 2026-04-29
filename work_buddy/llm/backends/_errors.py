@@ -204,17 +204,31 @@ def _interpret_status_error(
         )
 
     # --- Context window exceeded -------------------------------------------
-    # LM Studio returns HTTP 500 with a body like:
+    # LM Studio returns HTTP 4xx/5xx with a body like one of:
     #   {"error": "Context size has been exceeded."}
-    # or variants ("Prompt exceeds context", "Context length exceeded",
-    # "Input is too long for this model's context"). This is distinct from
-    # the server error family below — it's actionable by the user (resize
-    # context, shorten prompt, narrow tool preset) rather than a server bug.
+    #   {"error": "Prompt exceeds context"}
+    #   {"error": "The number of tokens to keep from the initial prompt is
+    #             greater than the context length (n_keep: 4103 >= n_ctx: 4096).
+    #             Try to load the model with a larger context length..."}
+    # The third form (introduced in newer LM Studio builds) does NOT contain
+    # "exceed" or "too long" — the discriminator is "is greater than the
+    # context length", or even more reliably the structured n_keep / n_ctx
+    # tokens. Match those explicitly so we don't fall through to the
+    # generic-error path (which would lose the "context_exceeded" kind and
+    # break upstream tier-escalation in call_for_verdict).
+    #
+    # This is distinct from the server error family below — it's actionable
+    # by the user (resize context, shorten prompt, narrow tool preset)
+    # rather than a server bug.
     if status >= 400 and (
         "context size" in msg_lower
         or ("context" in msg_lower and ("exceed" in msg_lower or "too long" in msg_lower))
         or "prompt is too long" in msg_lower
         or "input is too long" in msg_lower
+        # Newer LM Studio phrasing — n_keep/n_ctx is dispositive.
+        or "n_keep" in msg_lower
+        or "n_ctx" in msg_lower
+        or ("context length" in msg_lower and ("greater than" in msg_lower or "larger context" in msg_lower))
     ):
         return LocalInferenceError(
             (

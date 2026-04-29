@@ -133,6 +133,72 @@ def test_non_json_body_still_produces_reasonable_error():
 
 
 # ---------------------------------------------------------------------------
+# Context-window overflow (multiple LM Studio phrasings)
+# ---------------------------------------------------------------------------
+
+def test_context_size_exceeded_classic_phrasing():
+    body = {"error": "Context size has been exceeded."}
+    exc = _status_error(500, body)
+    err = interpret_httpx_exception(exc, model="m", endpoint="/v1/chat/completions")
+    assert err.kind == "context_exceeded"
+
+
+def test_n_keep_n_ctx_phrasing_2026_lm_studio():
+    """LM Studio's newer phrasing — used to fall through to bad_request /
+    schema_violation downstream because no 'exceed' / 'too long' word
+    appears, even though the structured tokens are unambiguous."""
+    body = {
+        "error": (
+            "The number of tokens to keep from the initial prompt is "
+            "greater than the context length (n_keep: 4103 >= n_ctx: 4096). "
+            "Try to load the model with a larger context length, or "
+            "provide a shorter input."
+        ),
+    }
+    exc = _status_error(400, body)
+    err = interpret_httpx_exception(exc, model="m", endpoint="/v1/chat/completions")
+    assert err.kind == "context_exceeded"
+
+
+def test_context_exceeded_ignores_schema_hint_in_message():
+    """An LM Studio overflow error sometimes ships with a fallback hint
+    mentioning the API schema. The detector must not get distracted by
+    the word 'schema' and reclassify."""
+    body = {
+        "error": (
+            "n_keep: 4103 >= n_ctx: 4096. Hint: shape mismatch — the "
+            "native-endpoint schema may have changed."
+        ),
+    }
+    exc = _status_error(400, body)
+    err = interpret_httpx_exception(exc, model="m", endpoint="/v1/chat/completions")
+    assert err.kind == "context_exceeded"
+
+
+def test_prompt_too_long_phrasing():
+    body = {"error": "Prompt is too long for this model's context"}
+    exc = _status_error(500, body)
+    err = interpret_httpx_exception(exc, model="m", endpoint="/v1/chat/completions")
+    assert err.kind == "context_exceeded"
+
+
+def test_context_exceeded_carries_actionable_hint():
+    """The hint should mention the three-lever fix ladder."""
+    body = {"error": "Context size has been exceeded."}
+    exc = _status_error(500, body)
+    err = interpret_httpx_exception(exc, model="m", endpoint="/v1/chat/completions")
+    assert err.kind == "context_exceeded"
+    hint = err.hint.lower()
+    assert "context length" in hint or "context window" in hint
+    # At least one of the three levers should be mentioned.
+    assert (
+        "increase" in hint
+        or "narrow" in hint
+        or "shorten" in hint
+    )
+
+
+# ---------------------------------------------------------------------------
 # Unsupported model family
 # ---------------------------------------------------------------------------
 
