@@ -2113,6 +2113,34 @@ def _context_capabilities() -> list[Capability]:
             auto_retry=False,
         ),
         Capability(
+            name="triage_pool_quarantine_entry",
+            description=(
+                "Quarantine a single pool entry by (run_id, item_id). "
+                "Lighter-weight counterpart to triage_pool_sweep — used "
+                "when the caller already knows a specific entry is "
+                "stale (e.g. an 'open in app' action click returned "
+                "email_message_not_found). Idempotent."
+            ),
+            category="context",
+            search_aliases=[
+                "quarantine pool entry",
+                "drop one triage card",
+                "mark triage entry gone",
+                "remove pool entry source removed",
+            ],
+            parameters={
+                "run_id": {"type": "str", "description": "Pool run id (visible on the Review-card group as pool_run_id).", "required": True},
+                "item_id": {"type": "str", "description": "TriageItem id (visible on the Review-card item as id).", "required": True},
+                "reason": {"type": "str", "description": "Quarantine reason. Defaults to 'source_removed' to match the sweep's reason taxonomy.", "required": False},
+            },
+            callable=(lambda **kw: __import__(
+                "work_buddy.triage.capabilities.triage_pool_quarantine_entry",
+                fromlist=["triage_pool_quarantine_entry"],
+            ).triage_pool_quarantine_entry(**kw)),
+            mutates_state=True,
+            auto_retry=False,
+        ),
+        Capability(
             name="triage_pool_sweep",
             description=(
                 "Daily liveness pass over the triage pool (Slice 1). Walks every "

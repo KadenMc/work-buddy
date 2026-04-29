@@ -37,11 +37,18 @@ Action shape (what the frontend receives)
             "provider_message_id": "<RFC id>",
             "folder_path": "<bridge folder URI>",
         },
+        "quarantine_on_error_kinds": ["email_message_not_found"],
     }
 
 The ``command_id`` is the dashboard's existing palette-execute prefix
 (``work-buddy::<capability>``). No new HTTP endpoint; the click reuses
 ``POST /api/palette/execute``.
+
+``quarantine_on_error_kinds`` (optional, list of strings): if the
+action fails with one of these ``error_kind`` values, the frontend
+auto-triggers ``triage_pool_quarantine_entry`` to mark the entry stale.
+Self-healing UX for "user clicked, source is gone" — the click failure
+becomes the evidence for quarantine without waiting for the cron sweep.
 
 Descriptor shape (what authors write)
 -------------------------------------
@@ -155,11 +162,43 @@ def build_card_actions(
             return []
         params[kwarg] = value
 
-    return [{
+    action: dict[str, Any] = {
         "label": label,
         "command_id": f"work-buddy::{capability}",
         "params": params,
-    }]
+    }
+    qoek = spec.get("quarantine_on_error_kinds")
+    if isinstance(qoek, list) and qoek:
+        # Filter out non-string entries defensively; the frontend uses
+        # this list for direct equality checks against response.error_kind.
+        kinds = [k for k in qoek if isinstance(k, str) and k]
+        if kinds:
+            action["quarantine_on_error_kinds"] = kinds
+    return [action]
+
+
+def has_open_action(source: str, *, descriptor: Any | None = None) -> bool:
+    """True iff this source declares an ``open_action``.
+
+    Used by the presentation builder to suppress the legacy ``url``
+    field on items whose source has opted into the new actions seam —
+    the URL was almost always a synthetic marker (``thunderbird:msg/…``)
+    that didn't navigate anywhere useful, and the action button is the
+    real "open in app" affordance.
+    """
+    if not source:
+        return False
+    if descriptor is None:
+        try:
+            from work_buddy.triage.sources import get_descriptor
+            descriptor = get_descriptor(source)
+        except Exception:
+            return False
+    if descriptor is None:
+        return False
+    cfg = (getattr(descriptor, "config", None) or {})
+    spec = cfg.get("open_action")
+    return isinstance(spec, dict) and bool(spec.get("capability"))
 
 
 def _resolve_path(item: dict[str, Any], path: str) -> Any:

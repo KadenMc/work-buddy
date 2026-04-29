@@ -227,6 +227,76 @@ def test_email_entry_with_missing_metadata_omits_action() -> None:
     assert "actions" not in items[0] or items[0]["actions"] == []
 
 
+def test_email_entry_drops_legacy_synthetic_url() -> None:
+    """Pool entries written before the adapter cleanup commit still
+    carry the dead ``thunderbird:msg/<key>`` URL on disk. The
+    presentation builder must NOT emit it — sources with an
+    ``open_action`` declared have moved to the action-button seam."""
+    entry = _make_email_entry(
+        "email_legacy",
+        provider_message_id="abc@host",
+        folder_path="imap://acct1/INBOX",
+    )
+    # Simulate legacy on-disk shape: synthetic URL + good metadata.
+    entry.item["url"] = "thunderbird:msg/mid:abc@host"
+    pres = _build_presentation_from_pool([entry])
+    leave_groups = pres["groups_by_action"]["leave"]
+    items = leave_groups[0]["items"]
+    assert items
+    assert "url" not in items[0], (
+        "Legacy synthetic url should be dropped for sources with open_action"
+    )
+    # The replacement (the action) must still be there.
+    assert items[0]["actions"][0]["command_id"] == "work-buddy::email_display"
+
+
+def test_email_action_carries_quarantine_on_error_kinds() -> None:
+    """The descriptor declares ``quarantine_on_error_kinds`` so the
+    frontend knows to auto-quarantine the entry when the click fails
+    with an "email is gone" signal. This test pins that wire shape."""
+    entry = _make_email_entry(
+        "email_qoek",
+        provider_message_id="abc@host",
+        folder_path="imap://acct1/INBOX",
+    )
+    pres = _build_presentation_from_pool([entry])
+    items = pres["groups_by_action"]["leave"][0]["items"]
+    actions = items[0]["actions"]
+    assert "quarantine_on_error_kinds" in actions[0]
+    assert "email_message_not_found" in actions[0]["quarantine_on_error_kinds"]
+
+
+def test_chrome_source_keeps_url_through_builder() -> None:
+    """Sources WITHOUT an open_action (chrome_tab today) still emit
+    their url field — chrome's url is a real https:// URL the user
+    actually wants to click. Don't break that."""
+    entry = PoolEntry(
+        run_id="bgt_chrome",
+        adapter="chrome_triage",
+        source="chrome_tab",
+        item_id="chrome_xyz",
+        item={
+            "id": "chrome_xyz",
+            "text": "page text",
+            "label": "Page Title",
+            "source": "chrome_tab",
+            "url": "https://example.com/article",
+            "metadata": {},
+        },
+        verdict={
+            "recommended_action": "leave",
+            "rationale": "x",
+            "group_intent": "x",
+        },
+        created_at="2026-04-27T10:00:00+00:00",
+    )
+    pres = _build_presentation_from_pool([entry])
+    items = pres["groups_by_action"]["leave"][0]["items"]
+    assert items[0]["url"] == "https://example.com/article"
+    # Chrome doesn't currently have an open_action declaration.
+    assert "actions" not in items[0] or items[0]["actions"] == []
+
+
 def test_verdicted_entry_unchanged_by_raw_branch() -> None:
     """Verdicted entries must keep their existing presentation —
     rationale, group_intent, IR context all preserved."""

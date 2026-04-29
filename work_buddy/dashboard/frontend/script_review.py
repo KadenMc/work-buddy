@@ -165,19 +165,22 @@ function openReviewDrawer(item, group, presentation) {
                 e.stopPropagation();
                 btn.disabled = true;
                 try {
-                    const resp = await fetch('/api/palette/execute', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            command_id: act.command_id,
-                            params: act.params || {},
-                        }),
-                    });
-                    const data = await resp.json().catch(() => ({}));
-                    if (!resp.ok || data.success === false) {
-                        const msg = (data && data.error) ? data.error : 'Action failed';
-                        console.error('[review-drawer] action failed:', msg);
-                        btn.title = msg;
+                    const data = await window._wvExecuteAction(act);
+                    if (data && data.success === false) {
+                        const msg = data.error || 'Action failed';
+                        const errorKind = window._wvExtractErrorKind(data);
+                        const ek = (act.quarantine_on_error_kinds || []);
+                        if (errorKind && ek.indexOf(errorKind) >= 0) {
+                            // Self-heal: source is gone. Quarantine the
+                            // entry so the stale card vanishes from the
+                            // pool on next refresh. The drawer doesn't
+                            // have a row reference to fade out — feedback
+                            // is via button state + title only.
+                            await window._wvQuarantineEntry(group, item, errorKind, btn, null);
+                        } else {
+                            console.error('[review-drawer] action failed:', msg);
+                            btn.title = msg;
+                        }
                     }
                 } catch (err) {
                     console.error('[review-drawer] action threw:', err);

@@ -195,6 +195,12 @@ _DEFAULT_REGISTRY: dict[str, dict[str, Any]] = {
                     "provider_message_id": "metadata.provider_message_id",
                     "folder_path":         "metadata.folder_path",
                 },
+                # When the user clicks the action and the bridge says
+                # the message is no longer findable, the dashboard
+                # auto-fires triage_pool_quarantine_entry so the stale
+                # card vanishes instead of lingering until the next
+                # cron sweep. Self-healing UX.
+                "quarantine_on_error_kinds": ["email_message_not_found"],
             },
         },
     },

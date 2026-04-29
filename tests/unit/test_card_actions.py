@@ -217,3 +217,86 @@ def test_build_card_actions_param_map_silently_skips_non_string_keys():
     actions = build_card_actions("custom_source", item, descriptor=desc)
     assert len(actions) == 1
     assert actions[0]["params"] == {"good": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# quarantine_on_error_kinds — pass-through to the action dict
+# ---------------------------------------------------------------------------
+
+
+def test_build_card_actions_passes_through_quarantine_on_error_kinds():
+    desc = _desc_with({
+        "label": "Open",
+        "capability": "fake_cap",
+        "param_map": {},
+        "quarantine_on_error_kinds": ["thing_not_found", "another_kind"],
+    })
+    actions = build_card_actions("custom_source", {"id": "x"}, descriptor=desc)
+    assert len(actions) == 1
+    assert actions[0]["quarantine_on_error_kinds"] == ["thing_not_found", "another_kind"]
+
+
+def test_build_card_actions_omits_quarantine_kinds_when_absent():
+    """Default: no quarantine list emitted, frontend just shows the
+    error message verbatim."""
+    desc = _desc_with({
+        "label": "Open",
+        "capability": "fake_cap",
+        "param_map": {},
+    })
+    actions = build_card_actions("custom_source", {"id": "x"}, descriptor=desc)
+    assert "quarantine_on_error_kinds" not in actions[0]
+
+
+def test_build_card_actions_filters_non_string_quarantine_kinds():
+    """Defensive: malformed list entries (None, ints, dicts) get
+    silently filtered. Empty result reverts to "no field emitted"."""
+    desc = _desc_with({
+        "label": "Open",
+        "capability": "fake_cap",
+        "param_map": {},
+        "quarantine_on_error_kinds": [None, 42, {}, "valid_kind", "", "also_valid"],
+    })
+    actions = build_card_actions("custom_source", {"id": "x"}, descriptor=desc)
+    assert actions[0]["quarantine_on_error_kinds"] == ["valid_kind", "also_valid"]
+
+
+def test_build_card_actions_drops_field_when_quarantine_kinds_all_invalid():
+    desc = _desc_with({
+        "label": "Open",
+        "capability": "fake_cap",
+        "param_map": {},
+        "quarantine_on_error_kinds": [None, 42, {}],  # all junk
+    })
+    actions = build_card_actions("custom_source", {"id": "x"}, descriptor=desc)
+    assert "quarantine_on_error_kinds" not in actions[0]
+
+
+# ---------------------------------------------------------------------------
+# has_open_action — the legacy-url-drop helper
+# ---------------------------------------------------------------------------
+
+
+def test_has_open_action_email_message_true():
+    from work_buddy.triage.card_actions import has_open_action
+    assert has_open_action("email_message") is True
+
+
+def test_has_open_action_chrome_tab_false():
+    from work_buddy.triage.card_actions import has_open_action
+    assert has_open_action("chrome_tab") is False
+
+
+def test_has_open_action_unknown_source_false():
+    from work_buddy.triage.card_actions import has_open_action
+    assert has_open_action("totally_made_up") is False
+
+
+def test_has_open_action_explicit_descriptor():
+    """Caller can pass a descriptor directly (for test isolation
+    without hitting the registry cache)."""
+    from work_buddy.triage.card_actions import has_open_action
+    assert has_open_action("custom", descriptor=_desc_with({
+        "label": "Open", "capability": "x", "param_map": {},
+    })) is True
+    assert has_open_action("custom", descriptor=_desc_with(None)) is False

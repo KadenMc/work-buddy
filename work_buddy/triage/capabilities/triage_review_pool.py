@@ -184,18 +184,28 @@ def _build_presentation_from_pool(
             "label": label,
             "summary": summary,
         }
-        if url:
-            modal_item["url"] = url
 
         # Per-source "open in app" actions, declared in
         # SourceDescriptor.config.open_action and resolved against the
         # item's metadata. Frontend renders each entry as a button next
         # to the label and POSTs the click to /api/palette/execute. See
         # work_buddy/triage/card_actions.py for the contract.
-        from work_buddy.triage.card_actions import build_card_actions
+        from work_buddy.triage.card_actions import build_card_actions, has_open_action
         actions = build_card_actions(pe.source, item_obj)
         if actions:
             modal_item["actions"] = actions
+
+        # Drop legacy ``url`` field for sources that have opted into
+        # actions. Email's old ``thunderbird:msg/<key>`` synthetic URL
+        # was a dead link — the proper "open" affordance is now the
+        # action button. This also prunes the URL from pool entries
+        # written before the adapter cleanup committed, so users
+        # don't see vestigial dead links on stale cards.
+        # Sources without open_action (chrome_tab today) keep their
+        # url field — for chrome that's a real https:// URL the user
+        # genuinely wants to navigate to.
+        if url and not has_open_action(pe.source):
+            modal_item["url"] = url
 
         if is_raw:
             # Card title = first ~80 chars of the captured text, with

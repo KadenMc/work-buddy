@@ -2352,6 +2352,20 @@ body {
     border-color: var(--danger, #c44);
     color: var(--danger, #c44);
 }
+.wv-item-action-btn.wv-item-action-btn-quarantined {
+    border-color: var(--warning, #cc8);
+    color: var(--warning, #cc8);
+    background: transparent;
+}
+
+/* Visual cue when an action's failure response triggered an auto-
+ * quarantine on the row. The next pool poll will drop the card; this
+ * fade is the immediate feedback. */
+.wv-item.wv-item-quarantined {
+    opacity: 0.45;
+    text-decoration: line-through;
+    text-decoration-color: var(--warning, #cc8);
+}
 
 /* Same styling for the right-side drawer's actions section. */
 .review-drawer-action-btn {
