@@ -26,6 +26,7 @@ from urllib.request import Request, urlopen
 from work_buddy.email.errors import (
     EmailBridgeUnauthorized,
     EmailBridgeUnreachable,
+    EmailError,
     EmailMessageNotFound,
     EmailProviderError,
 )
@@ -292,6 +293,40 @@ class ThunderbirdEmailProvider:
                 raise EmailMessageNotFound(err)
             raise EmailProviderError(err)
         return result
+
+    def message_exists(self, handle: EmailMessageHandle) -> bool | None:
+        """Probe whether the message is still at its captured folder URI.
+
+        Bridge contract:
+          - 200 ``{exists: true, summary: ...}`` → True
+          - 200 ``{exists: false}`` → False
+          - any error path (HTTP 4xx/5xx, timeout, connection refused,
+            malformed JSON) → None (caller should treat as "still live")
+
+        We deliberately swallow errors here (not raise) because this is
+        called by the unattended triage-pool sweep — ambiguity must
+        never escalate into quarantining real entries. The trigger's
+        own logger surfaces degraded checks.
+        """
+        if not handle.provider_message_id or not handle.folder_path:
+            return None
+        try:
+            result = self._request(
+                "POST", "/messages/exists",
+                body={
+                    "provider_message_id": handle.provider_message_id,
+                    "folder_path": handle.folder_path,
+                },
+            )
+        except EmailError as exc:
+            log.debug(
+                "message_exists: bridge call failed for %s: %s",
+                handle.provider_message_id, exc,
+            )
+            return None
+        if not isinstance(result, dict) or "exists" not in result:
+            return None
+        return bool(result["exists"])
 
     # --- Mapping -----------------------------------------------------------
 

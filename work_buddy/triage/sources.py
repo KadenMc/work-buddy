@@ -167,12 +167,18 @@ _DEFAULT_REGISTRY: dict[str, dict[str, Any]] = {
     # Email messages — captured from the local mail bridge by
     # ``email_triage_run``. 7-day TTL: by then, an unread message that's
     # still pending review is either already handled out of band or the
-    # user has moved on. No quarantine triggers in v1 — we'd want
-    # "message moved out of inbox" as a future trigger, but that needs
-    # a follow-up bridge endpoint to verify the message's current folder.
+    # user has moved on.
+    #
+    # ``source_removed`` fires when the email is no longer at its
+    # captured (provider_message_id, folder_path) — i.e., the user
+    # moved it (to Trash, Archive, another folder) or deleted it. The
+    # trigger is implemented in
+    # :func:`work_buddy.triage.sources_triggers.trigger_source_removed`
+    # and uses the bridge's ``POST /messages/exists`` endpoint. Bridge
+    # unavailability returns None (don't quarantine on ambiguity).
     "email_message": {
         "ttl_days": 7,
-        "quarantine_triggers": [],
+        "quarantine_triggers": [TRIGGER_SOURCE_REMOVED],
         "config": {},
     },
 }

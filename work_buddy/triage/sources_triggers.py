@@ -171,6 +171,49 @@ def trigger_source_removed(
                 break
         return "source_removed" if all_gone else None
 
+    if source == "email_message":
+        # Ask the email bridge whether the message is still at its
+        # captured (provider_message_id, folder_path). If the user
+        # moved it to trash, archived it, or deleted it, the bridge's
+        # findMessage will fail and we get exists=False → fire.
+        #
+        # Defensive: the provider returns None when it can't decide
+        # (bridge unreachable, account access changed, malformed
+        # handle). Treat None as "still live" — never quarantine on
+        # ambiguity. The unattended sweep must not punish a brief
+        # bridge outage by burning real triage entries.
+        provider_msg_id = meta.get("provider_message_id") or ""
+        folder_path = meta.get("folder_path") or ""
+        if not provider_msg_id or not folder_path:
+            return None  # malformed metadata — leave alone
+        try:
+            from work_buddy.email.errors import EmailError
+            from work_buddy.email.models import EmailMessageHandle
+            from work_buddy.email.provider import get_email_provider
+        except ImportError as exc:
+            logger.debug("trigger: email module not importable: %s", exc)
+            return None
+        try:
+            provider = get_email_provider()
+        except EmailError as exc:
+            logger.debug("trigger: email provider unavailable: %s", exc)
+            return None
+        try:
+            exists = provider.message_exists(EmailMessageHandle(
+                provider_message_id=provider_msg_id,
+                folder_path=folder_path,
+            ))
+        except Exception as exc:  # noqa: BLE001 — defensive: never raise from a sweep trigger
+            logger.debug(
+                "trigger: message_exists raised for %s: %s",
+                provider_msg_id, exc,
+            )
+            return None
+        if exists is False:
+            return "source_removed"
+        # exists is True or None (couldn't decide) → leave alone
+        return None
+
     if source == "chrome_tab":
         from work_buddy.paths import data_dir
         ledger_path = data_dir("chrome") / "tab_ledger.json"

@@ -90,6 +90,22 @@ class EmailProvider(Protocol):
     ) -> dict:
         """Open a message in the user's mail UI (provider-specific)."""
 
+    def message_exists(self, handle: EmailMessageHandle) -> bool | None:
+        """Check whether the message is still at its captured folder URI.
+
+        Returns:
+            ``True`` — message is still present.
+            ``False`` — message is gone (moved or deleted).
+            ``None`` — could not determine (bridge unreachable, account
+                access changed, malformed handle). The caller should
+                treat ``None`` as "still live" — never quarantine on
+                ambiguity.
+
+        Used by :func:`work_buddy.triage.sources_triggers.trigger_source_removed`
+        to fire the ``source_removed`` quarantine reason when the user
+        moves an email out of its captured folder.
+        """
+
 
 # ---------------------------------------------------------------------------
 # Factory

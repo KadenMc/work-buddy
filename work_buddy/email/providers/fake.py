@@ -158,3 +158,22 @@ class FakeEmailProvider:
         raise EmailMessageNotFound(
             f"fake: no message with provider_message_id={handle.provider_message_id!r}"
         )
+
+    def message_exists(self, handle) -> bool | None:
+        """Existence check: must match provider_message_id AND folder_path."""
+        for summary in self._summaries.values():
+            if (summary.handle.provider_message_id == handle.provider_message_id
+                    and summary.handle.folder_path == handle.folder_path):
+                return True
+        return False
+
+    # Test helper — simulate a message moving / being deleted between
+    # capture and the next pool sweep.
+    def remove(self, *, provider_message_id: str, folder_path: str) -> bool:
+        for key, summary in list(self._summaries.items()):
+            if (summary.handle.provider_message_id == provider_message_id
+                    and summary.handle.folder_path == folder_path):
+                del self._summaries[key]
+                self._bodies.pop(key, None)
+                return True
+        return False
