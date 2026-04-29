@@ -187,6 +187,16 @@ def _build_presentation_from_pool(
         if url:
             modal_item["url"] = url
 
+        # Per-source "open in app" actions, declared in
+        # SourceDescriptor.config.open_action and resolved against the
+        # item's metadata. Frontend renders each entry as a button next
+        # to the label and POSTs the click to /api/palette/execute. See
+        # work_buddy/triage/card_actions.py for the contract.
+        from work_buddy.triage.card_actions import build_card_actions
+        actions = build_card_actions(pe.source, item_obj)
+        if actions:
+            modal_item["actions"] = actions
+
         if is_raw:
             # Card title = first ~80 chars of the captured text, with
             # any leading capture-marker prose stripped so the user's

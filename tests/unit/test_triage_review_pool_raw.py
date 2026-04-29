@@ -132,6 +132,101 @@ def test_raw_entry_rationale_explains_pending_state() -> None:
     assert "slice 3" in leave_group["rationale"].lower()
 
 
+# ---------------------------------------------------------------------------
+# _build_presentation_from_pool emits per-source `actions` arrays
+# ---------------------------------------------------------------------------
+
+
+def _make_email_entry(item_id: str, *, provider_message_id: str, folder_path: str) -> PoolEntry:
+    """Email pool entry with the metadata fields the open_action descriptor
+    references. Mirrors the shape produced by
+    :func:`work_buddy.email.triage_adapter._summary_to_item`."""
+    return PoolEntry(
+        run_id="bgt_test_email",
+        adapter="email_triage",
+        source="email_message",
+        item_id=item_id,
+        item={
+            "id": item_id,
+            "text": "Subject: Hello\nFrom: Alice",
+            "label": "Hello",
+            "source": "email_message",
+            "metadata": {
+                "stable_key": f"mid:{provider_message_id}",
+                "provider_message_id": provider_message_id,
+                "folder_path": folder_path,
+                "subject": "Hello",
+                "sender": "Alice",
+            },
+        },
+        verdict={
+            "recommended_action": "leave",
+            "rationale": "Test verdict.",
+            "group_intent": "Test intent",
+        },
+        created_at="2026-04-27T10:00:00+00:00",
+    )
+
+
+def test_email_entry_emits_open_in_thunderbird_action() -> None:
+    """The descriptor's open_action should surface as a single action
+    on the rendered card. This is the contract the dashboard depends on."""
+    entry = _make_email_entry(
+        "email_abc",
+        provider_message_id="abc@host",
+        folder_path="imap://acct1/INBOX",
+    )
+    pres = _build_presentation_from_pool([entry])
+    # The verdict action is "leave"; find the group there.
+    leave_groups = pres["groups_by_action"]["leave"]
+    assert len(leave_groups) == 1
+    items = leave_groups[0]["items"]
+    assert len(items) == 1
+    actions = items[0].get("actions", [])
+    assert len(actions) == 1
+    a = actions[0]
+    assert a["label"] == "Open in Thunderbird"
+    assert a["command_id"] == "work-buddy::email_display"
+    assert a["params"] == {
+        "provider_message_id": "abc@host",
+        "folder_path": "imap://acct1/INBOX",
+    }
+
+
+def test_journal_entry_does_not_get_actions() -> None:
+    """Sources without an open_action descriptor should NOT have an
+    `actions` key on their items — keeps the existing rendering path
+    (raw <a href> link) unchanged for chrome/journal/inline."""
+    entry = _make_raw_entry("j_001", "> #wb/capture\nplain thought")
+    pres = _build_presentation_from_pool([entry])
+    leave_groups = pres["groups_by_action"]["leave"]
+    assert leave_groups
+    items = leave_groups[0]["items"]
+    assert items
+    # Either no `actions` key at all (preferred) or empty list — both
+    # are valid; the frontend only renders buttons when len > 0.
+    assert "actions" not in items[0] or items[0]["actions"] == []
+
+
+def test_email_entry_with_missing_metadata_omits_action() -> None:
+    """If an email entry somehow loses its provider_message_id (legacy
+    pool data, schema drift), the action is silently dropped — better
+    no button than a broken click."""
+    entry = _make_email_entry(
+        "email_broken",
+        provider_message_id="ok@host",
+        folder_path="imap://acct1/INBOX",
+    )
+    # Strip the metadata field that the action requires
+    entry.item["metadata"]["provider_message_id"] = ""
+    pres = _build_presentation_from_pool([entry])
+    leave_groups = pres["groups_by_action"]["leave"]
+    assert leave_groups
+    items = leave_groups[0]["items"]
+    # No actions emitted because the param resolved to empty
+    assert "actions" not in items[0] or items[0]["actions"] == []
+
+
 def test_verdicted_entry_unchanged_by_raw_branch() -> None:
     """Verdicted entries must keep their existing presentation —
     rationale, group_intent, IR context all preserved."""

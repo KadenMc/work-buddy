@@ -555,6 +555,50 @@ function renderTriageReview(container, presentation, options) {
         else { labelEl.textContent = item.label; }
         row.appendChild(labelEl);
 
+        // Per-source "open in app" actions (declared in SourceDescriptor
+        // config; resolved by work_buddy.triage.card_actions). Buttons
+        // sit next to the label; click POSTs to /api/palette/execute
+        // (the same endpoint the command palette uses). When no actions
+        // are emitted (chrome / journal / inline today), this block is a
+        // no-op and the existing href-link behavior is preserved.
+        if (Array.isArray(item.actions) && item.actions.length > 0) {
+            for (const act of item.actions) {
+                const btn = document.createElement('button');
+                btn.className = 'wv-item-action-btn';
+                btn.type = 'button';
+                btn.textContent = act.label;
+                btn.title = act.label + ' (via ' + (act.command_id || '') + ')';
+                btn.addEventListener('click', async (e) => {
+                    e.stopPropagation();
+                    btn.disabled = true;
+                    try {
+                        const resp = await fetch('/api/palette/execute', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                command_id: act.command_id,
+                                params: act.params || {},
+                            }),
+                        });
+                        const data = await resp.json().catch(() => ({}));
+                        if (!resp.ok || data.success === false) {
+                            const msg = (data && data.error) ? data.error : 'Action failed';
+                            console.error('[triage] action failed:', msg);
+                            btn.title = msg;
+                            btn.classList.add('wv-item-action-btn-failed');
+                        }
+                    } catch (err) {
+                        console.error('[triage] action threw:', err);
+                        btn.title = String(err);
+                        btn.classList.add('wv-item-action-btn-failed');
+                    } finally {
+                        btn.disabled = false;
+                    }
+                });
+                row.appendChild(btn);
+            }
+        }
+
         // Item-detail eye icon. Only rendered when the caller
         // supplied an onItemClick handler (Review tab wires this to
         // the right-side drawer). Modal callers (workflow-view

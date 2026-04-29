@@ -60,10 +60,16 @@ def _summary_to_item(summary: EmailSummary, *, body_preview: str = "") -> Triage
         text=text,
         label=label,
         source=EMAIL_TRIAGE_SOURCE,
-        # `url` carries a synthetic deep-link the dashboard can render. Future
-        # work: a real `tbird:` URL handler. For now we use a non-clickable
-        # marker that's still useful in logs and grep.
-        url=f"thunderbird:msg/{summary.stable_key}",
+        # No ``url`` — the previous ``thunderbird:msg/<key>`` synthetic
+        # marker rendered as an ``<a href>`` in the dashboard but didn't
+        # do anything when clicked (browsers don't know that scheme).
+        # The proper "open in Thunderbird" affordance now flows through
+        # the per-source ``open_action`` declared on the email_message
+        # SourceDescriptor (see work_buddy/triage/sources.py); the
+        # Review UI renders that as a button next to the label, click
+        # POSTs to /api/palette/execute → email_display.
+        # The stable_key remains in metadata for log search.
+        url=None,
         metadata={
             "stable_key": summary.stable_key,
             "rfc_message_id": summary.rfc_message_id,

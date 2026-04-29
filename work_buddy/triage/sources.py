@@ -179,7 +179,24 @@ _DEFAULT_REGISTRY: dict[str, dict[str, Any]] = {
     "email_message": {
         "ttl_days": 7,
         "quarantine_triggers": [TRIGGER_SOURCE_REMOVED],
-        "config": {},
+        "config": {
+            # Per-source "open in app" action, surfaced as a button on
+            # each Review card. Resolved by
+            # :func:`work_buddy.triage.card_actions.build_card_actions`
+            # and dispatched through the existing
+            # ``POST /api/palette/execute`` endpoint
+            # (command_id="work-buddy::email_display"). No new HTTP
+            # endpoint, no new frontend dispatch table — the descriptor
+            # is the only declaration point.
+            "open_action": {
+                "label": "Open in Thunderbird",
+                "capability": "email_display",
+                "param_map": {
+                    "provider_message_id": "metadata.provider_message_id",
+                    "folder_path":         "metadata.folder_path",
+                },
+            },
+        },
     },
 }
 

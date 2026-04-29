@@ -148,6 +148,49 @@ function openReviewDrawer(item, group, presentation) {
         body.appendChild(sec);
     }
 
+    // --- Per-source "open in app" actions (e.g. email → Thunderbird) ---
+    // Same shape and POST target as the inline buttons in script_triage.py.
+    // Source-of-truth: work_buddy.triage.card_actions.
+    if (Array.isArray(item.actions) && item.actions.length > 0) {
+        const sec = document.createElement('div');
+        sec.className = 'review-drawer-section';
+        sec.innerHTML = '<span class="review-drawer-section-label">Actions</span>';
+        for (const act of item.actions) {
+            const btn = document.createElement('button');
+            btn.className = 'review-drawer-action-btn';
+            btn.type = 'button';
+            btn.textContent = act.label;
+            btn.title = act.label + ' (via ' + (act.command_id || '') + ')';
+            btn.addEventListener('click', async (e) => {
+                e.stopPropagation();
+                btn.disabled = true;
+                try {
+                    const resp = await fetch('/api/palette/execute', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            command_id: act.command_id,
+                            params: act.params || {},
+                        }),
+                    });
+                    const data = await resp.json().catch(() => ({}));
+                    if (!resp.ok || data.success === false) {
+                        const msg = (data && data.error) ? data.error : 'Action failed';
+                        console.error('[review-drawer] action failed:', msg);
+                        btn.title = msg;
+                    }
+                } catch (err) {
+                    console.error('[review-drawer] action threw:', err);
+                    btn.title = String(err);
+                } finally {
+                    btn.disabled = false;
+                }
+            });
+            sec.appendChild(btn);
+        }
+        body.appendChild(sec);
+    }
+
     // --- IR context hits (if the adapter attached any) ---
     const meta = item.metadata || {};
     const irHits = meta.ir_context || [];
