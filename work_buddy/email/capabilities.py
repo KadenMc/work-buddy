@@ -56,11 +56,18 @@ log = logging.getLogger(__name__)
 
 
 # Default body-char budget when the verdict pass is enabled. The LLM needs
-# enough body to discriminate "newsletter" from "action-required". 1500
-# chars covers the visible portion of most personal/work emails after
-# stripping signatures (which Slice 1's adapter doesn't do — sharp edge
-# noted in DECISIONS.md).
-_DEFAULT_VERDICT_BODY_CHARS = 1500
+# enough body to discriminate "would anything break if unread?" but the
+# system prompt + active-tasks context block already eats ~1.5k tokens of
+# Qwen's 4096-token window, so the body has to fit in what's left.
+#
+# Empirical sizing: at 800 chars (~200 tokens) we still classify
+# correctly on the test corpus AND reliably stay under context. Bumped
+# down from 1500 after a long-body email tripped LM Studio's
+# n_keep > n_ctx check post-prompt-sharpening.
+#
+# Users who run a model with a larger context window (or want richer
+# rationales) can override include_body_chars in the call.
+_DEFAULT_VERDICT_BODY_CHARS = 800
 
 
 def _provider_or_error() -> tuple[Any, dict | None]:
