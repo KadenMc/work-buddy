@@ -686,6 +686,7 @@ def _build_registry() -> dict[str, Capability | WorkflowDefinition]:
         ("ledger", _ledger_capabilities),
         ("knowledge", _knowledge_capabilities),
         ("artifacts", _artifact_capabilities),
+        ("email", _email_capabilities),
     ]:
         t = time.time()
         try:
@@ -6874,6 +6875,129 @@ def _artifact_capabilities() -> list[Capability]:
             search_aliases=[
                 "record commit", "commit metadata", "save commit info",
                 "log commit", "commit artifact",
+            ],
+        ),
+    ]
+
+
+def _email_capabilities() -> list[Capability]:
+    """Capabilities exposed by the email/Thunderbird integration.
+
+    All callables flow through ``work_buddy.email.provider.get_email_provider``,
+    which currently returns the Thunderbird HTTP client. The ``thunderbird``
+    tool probe gates these so they're filtered out of the registry when the
+    bridge isn't reachable.
+    """
+    from work_buddy.email.capabilities import (
+        email_accounts,
+        email_display,
+        email_get,
+        email_health,
+        email_triage_run,
+    )
+
+    return [
+        Capability(
+            name="email_health",
+            description=(
+                "Liveness probe for the email bridge. Returns the bridge's "
+                "/health payload (port, version, allowed-account count). Use "
+                "this when the user reports email features are missing — it "
+                "distinguishes 'bridge down' from 'no accounts allowed'."
+            ),
+            category="email",
+            parameters={},
+            callable=email_health,
+            requires=["thunderbird"],
+            search_aliases=[
+                "email health", "email bridge status",
+                "thunderbird bridge running", "is email working",
+                "email provider check",
+            ],
+        ),
+        Capability(
+            name="email_accounts",
+            description=(
+                "List the email accounts visible through the bridge — only "
+                "accounts the user has explicitly allowed in the extension's "
+                "options page are exposed (default-deny)."
+            ),
+            category="email",
+            parameters={},
+            callable=email_accounts,
+            requires=["thunderbird"],
+            search_aliases=[
+                "list email accounts", "show mail accounts",
+                "thunderbird accounts", "what email is connected",
+            ],
+        ),
+        Capability(
+            name="email_triage_run",
+            description=(
+                "Run one BackgroundTriageProducer pass over recent email and "
+                "drop new messages into the triage Review pool as raw entries. "
+                "Idempotent — re-running over an unchanged inbox is a no-op. "
+                "Slice 1: verdict pass disabled; Sonnet/Opus classification of "
+                "email is a follow-up."
+            ),
+            category="email",
+            parameters={
+                "days_back": {"type": "int", "description": "How far back to scan (default 2)", "required": False},
+                "max_messages": {"type": "int", "description": "Hard cap on candidates per run (default 50)", "required": False},
+                "unread_only": {"type": "bool", "description": "Only consider unread messages (default true)", "required": False},
+                "folder_path": {"type": "str", "description": "Limit to a specific folder URI (e.g. an inbox)", "required": False},
+                "account_id": {"type": "str", "description": "Limit to a specific account", "required": False},
+                "include_body_chars": {"type": "int", "description": "Fetch body up to N chars and include in TriageItem.text (default 0 = headers only)", "required": False},
+                "force": {"type": "bool", "description": "Bypass idempotence and per-item dedup", "required": False},
+                "dry_run": {"type": "bool", "description": "Collect candidates but don't write to the pool", "required": False},
+            },
+            callable=email_triage_run,
+            requires=["thunderbird"],
+            mutates_state=True,
+            retry_policy="manual",
+            search_aliases=[
+                "triage email", "scan inbox", "email triage scan",
+                "check unread mail", "process new email",
+                "feed email into triage", "email backlog",
+            ],
+        ),
+        Capability(
+            name="email_get",
+            description=(
+                "Fetch one email message by its operational handle "
+                "(provider_message_id + folder_path) — returns the body up to "
+                "max_body_chars chars plus all summary fields."
+            ),
+            category="email",
+            parameters={
+                "provider_message_id": {"type": "str", "description": "RFC Message-ID (or backend handle) from a triage card", "required": True},
+                "folder_path": {"type": "str", "description": "Backend folder URI (from the triage card)", "required": True},
+                "max_body_chars": {"type": "int", "description": "Body truncation cap (default 8000)", "required": False},
+            },
+            callable=email_get,
+            requires=["thunderbird"],
+            search_aliases=[
+                "read email", "open email", "get email body",
+                "show message content", "fetch mail",
+            ],
+        ),
+        Capability(
+            name="email_display",
+            description=(
+                "Open a message in Thunderbird's UI. Useful when the user wants "
+                "to read it themselves — does not modify anything."
+            ),
+            category="email",
+            parameters={
+                "provider_message_id": {"type": "str", "description": "RFC Message-ID from a triage card", "required": True},
+                "folder_path": {"type": "str", "description": "Backend folder URI", "required": True},
+                "mode": {"type": "str", "description": "'3pane' (default), 'tab', or 'window'", "required": False},
+            },
+            callable=email_display,
+            requires=["thunderbird"],
+            search_aliases=[
+                "open in thunderbird", "show email in thunderbird",
+                "display message", "open mail in client",
             ],
         ),
     ]

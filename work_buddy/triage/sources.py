@@ -163,6 +163,18 @@ _DEFAULT_REGISTRY: dict[str, dict[str, Any]] = {
             "capture_tag": "wb/captured",
         },
     },
+
+    # Email messages — captured from the local mail bridge by
+    # ``email_triage_run``. 7-day TTL: by then, an unread message that's
+    # still pending review is either already handled out of band or the
+    # user has moved on. No quarantine triggers in v1 — we'd want
+    # "message moved out of inbox" as a future trigger, but that needs
+    # a follow-up bridge endpoint to verify the message's current folder.
+    "email_message": {
+        "ttl_days": 7,
+        "quarantine_triggers": [],
+        "config": {},
+    },
 }
 
 

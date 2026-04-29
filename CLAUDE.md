@@ -111,6 +111,7 @@ Every scope below is browsable with `mcp__work-buddy__wb_run("agent_docs", {"sco
 | `journal/` | Daily note, sign-in, running notes, day planner |
 | `context/` | Collectors (git, chrome, calendar, obsidian, smart, datacore…), bundles, conversation search, session inspection, knowledge-store editing |
 | `obsidian/` | Bridge, vault writer, tasks plugin, datacore, smart ecosystem |
+| `email/` | Thunderbird bridge, provider abstraction, email triage adapter |
 | `browser/` | Chrome tab triage |
 | `threads/` | Multi-turn agent-user threads |
 | `notifications/` | Notify, request, consent, surfaces |
@@ -145,6 +146,7 @@ work_buddy/                            # Python package
   embedding/                           # Embedding service (localhost:5124)
   collectors/                          # Context collectors (git, obsidian, chrome, …)
   obsidian/                            # Bridge + plugin integrations
+  email/                               # Email provider abstraction + Thunderbird bridge client
   notifications/                       # Human-in-the-loop surfaces
   messaging/ memory/ telegram/         # Sidecar services
   dashboard/                           # Flask dashboard (localhost:5127)

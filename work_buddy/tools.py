@@ -735,6 +735,19 @@ def _probe_google_calendar() -> bool:
     return _bridge_plugin_available("google-calendar")
 
 
+def _probe_thunderbird() -> tuple[bool, str]:
+    """Check the thunderbird-work-buddy bridge is reachable.
+
+    Lazy-imports the email-providers module so this probe doesn't pay the
+    import cost on every gateway boot for users who don't run Thunderbird.
+    """
+    try:
+        from work_buddy.email.providers.thunderbird import probe_thunderbird_bridge
+    except ImportError as exc:
+        return False, f"email module import failed: {exc}"
+    return probe_thunderbird_bridge()
+
+
 # ---------------------------------------------------------------------------
 # Default probe registration
 # ---------------------------------------------------------------------------
@@ -834,6 +847,17 @@ def _register_default_probes() -> None:
             config_key="tools.google_calendar.enabled",
             depends_on=["obsidian"],
             reason_when_missing="Google Calendar plugin not available in Obsidian",
+        ),
+        ToolProbe(
+            id="thunderbird",
+            display_name="Thunderbird Bridge",
+            probe_fn=_probe_thunderbird,
+            config_key="tools.thunderbird.enabled",
+            reason_when_missing=(
+                "Thunderbird is not running, the thunderbird-work-buddy "
+                "extension is not installed/enabled, or no accounts have "
+                "been allowed in the extension's options."
+            ),
         ),
     ]
 
