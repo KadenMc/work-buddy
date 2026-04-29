@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from work_buddy.obsidian import bridge
+from work_buddy.consent import reduces_risk_for
 from work_buddy.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -44,6 +45,7 @@ def _run_js(
 # ── Readiness & Health ───────────────────────────────────────────
 
 
+@reduces_risk_for("obsidian.eval_js", "low")
 def check_ready() -> dict[str, Any]:
     """Check if SmartEnv is fully loaded and ready for use.
 
@@ -75,6 +77,7 @@ def check_ready() -> dict[str, Any]:
     return result
 
 
+@reduces_risk_for("obsidian.eval_js", "low")
 def wait_until_ready(timeout_seconds: int = 180, poll_interval: int = 5) -> dict[str, Any]:
     """Block until SmartEnv is fully loaded, or timeout.
 
@@ -121,6 +124,7 @@ def wait_until_ready(timeout_seconds: int = 180, poll_interval: int = 5) -> dict
 # ── Diagnostics & Console ────────────────────────────────────────
 
 
+@reduces_risk_for("obsidian.eval_js", "low")
 def install_console_capture() -> str:
     """Install a console interception buffer inside Obsidian.
 
@@ -133,6 +137,7 @@ def install_console_capture() -> str:
     return _run_js("install_console_capture.js")
 
 
+@reduces_risk_for("obsidian.eval_js", "low")
 def drain_console(
     since_ts: int = 0,
     level: str = "all",
@@ -157,6 +162,7 @@ def drain_console(
 # ── Tier 1: Core ─────────────────────────────────────────────────
 
 
+@reduces_risk_for("obsidian.eval_js", "low")
 def embed_text(text: str) -> list[float]:
     """Embed arbitrary text using Smart Connections' live Transformers.js model.
 
@@ -175,6 +181,7 @@ def embed_text(text: str) -> list[float]:
     return result["vec"]
 
 
+@reduces_risk_for("obsidian.eval_js", "low")
 def embed_batch(texts: list[str]) -> list[dict[str, Any]]:
     """Embed multiple texts in a single batch call.
 
@@ -191,6 +198,7 @@ def embed_batch(texts: list[str]) -> list[dict[str, Any]]:
     return result
 
 
+@reduces_risk_for("obsidian.eval_js", "low")
 def semantic_search(
     query: str,
     limit: int = 10,
@@ -218,6 +226,7 @@ def semantic_search(
     return result["results"]
 
 
+@reduces_risk_for("obsidian.eval_js", "low")
 def lookup_context(
     queries: list[str],
     limit: int = 10,
@@ -250,6 +259,7 @@ def lookup_context(
 # ── Tier 2: Context & Navigation ─────────────────────────────────
 
 
+@reduces_risk_for("obsidian.eval_js", "low")
 def create_context_pack(item_keys: list[str]) -> dict[str, Any]:
     """Create a SmartContext pack from a list of vault item keys.
 
@@ -265,6 +275,7 @@ def create_context_pack(item_keys: list[str]) -> dict[str, Any]:
     return _run_js("create_context_pack.js", {"__ITEM_KEYS_JSON__": keys_json})
 
 
+@reduces_risk_for("obsidian.eval_js", "low")
 def get_item_content(key: str) -> dict[str, Any]:
     """Read the content of a vault item by its SmartSource/SmartBlock key.
 
@@ -280,6 +291,7 @@ def get_item_content(key: str) -> dict[str, Any]:
     return _run_js("get_item_content.js", {"__KEY__": escaped}, timeout=30)
 
 
+@reduces_risk_for("obsidian.eval_js", "low")
 def get_workspace_context(semantic_limit: int = 5) -> dict[str, Any]:
     """Get the current workspace state plus semantic neighbors of the active file.
 
@@ -306,6 +318,7 @@ def get_workspace_context(semantic_limit: int = 5) -> dict[str, Any]:
 # ── Tier 3: Advanced ─────────────────────────────────────────────
 
 
+@reduces_risk_for("obsidian.eval_js", "low")
 def hybrid_search(query: str, limit: int = 10) -> list[dict[str, Any]]:
     """Combined semantic + lexical search with reciprocal rank fusion.
 
@@ -329,6 +342,7 @@ def hybrid_search(query: str, limit: int = 10) -> list[dict[str, Any]]:
     return result["results"]
 
 
+@reduces_risk_for("obsidian.eval_js", "low")
 def search_with_filter(
     query: str,
     limit: int = 10,
@@ -372,6 +386,7 @@ def search_with_filter(
     return result["results"]
 
 
+@reduces_risk_for("obsidian.eval_js", "low")
 def find_related(
     vault_path: str,
     limit: int = 10,
@@ -398,6 +413,7 @@ def find_related(
     return result["results"]
 
 
+@reduces_risk_for("obsidian.eval_js", "low")
 def monitor_model_config() -> dict[str, Any]:
     """Report the current embedding model configuration and index stats.
 

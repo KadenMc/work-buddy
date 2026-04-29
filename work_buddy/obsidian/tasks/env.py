@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from work_buddy.obsidian import bridge
+from work_buddy.consent import reduces_risk_for
 from work_buddy.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -52,6 +53,7 @@ def _run_js(
 # ── Readiness ───────────────────────────────────────────────────
 
 
+@reduces_risk_for("obsidian.eval_js", "low")
 def check_ready() -> dict[str, Any]:
     """Check if the Tasks plugin cache is warm and ready.
 
@@ -74,6 +76,7 @@ def check_ready() -> dict[str, Any]:
 # ── Queries ─────────────────────────────────────────────────────
 
 
+@reduces_risk_for("obsidian.eval_js", "low")
 def query_tasks(
     status: str | None = None,
     file_path: str | None = None,
@@ -110,6 +113,7 @@ def query_tasks(
     )
 
 
+@reduces_risk_for("obsidian.eval_js", "low")
 def get_task_counts() -> dict[str, Any]:
     """Get summary statistics for all tasks in the vault.
 
@@ -125,6 +129,7 @@ def get_task_counts() -> dict[str, Any]:
     return _run_js("task_counts.js")
 
 
+@reduces_risk_for("obsidian.eval_js", "low")
 def get_overdue_tasks() -> dict[str, Any]:
     """Find all incomplete tasks that are past their due date.
 
@@ -135,6 +140,7 @@ def get_overdue_tasks() -> dict[str, Any]:
     return _run_js("overdue_tasks.js")
 
 
+@reduces_risk_for("obsidian.eval_js", "low")
 def search_tasks(query: str) -> dict[str, Any]:
     """Search tasks by text content (case-insensitive).
 
@@ -152,6 +158,7 @@ def search_tasks(query: str) -> dict[str, Any]:
 # ── Convenience ─────────────────────────────────────────────────
 
 
+@reduces_risk_for("obsidian.eval_js", "low")
 def get_inbox_tasks() -> dict[str, Any]:
     """Get all incomplete tasks in inbox state.
 
@@ -163,6 +170,7 @@ def get_inbox_tasks() -> dict[str, Any]:
     return query_tasks(status="TODO", tag="#tasker/state/inbox")
 
 
+@reduces_risk_for("obsidian.eval_js", "low")
 def get_focused_tasks() -> dict[str, Any]:
     """Get all incomplete tasks in focused state.
 
@@ -174,6 +182,7 @@ def get_focused_tasks() -> dict[str, Any]:
     return query_tasks(status="TODO", tag="#tasker/state/focused")
 
 
+@reduces_risk_for("obsidian.eval_js", "low")
 def get_master_list_tasks(status: str | None = "TODO") -> dict[str, Any]:
     """Get tasks from the master task list file only.
 

@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from work_buddy.obsidian import bridge
+from work_buddy.consent import reduces_risk_for
 from work_buddy.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -65,6 +66,7 @@ def _default_exclude_folders() -> list[str]:
 # ── Bootstrap ───────────────────────────────────────────────────
 
 
+@reduces_risk_for("obsidian.eval_js", "low")
 def bootstrap(window_days: int | None = None) -> dict[str, Any]:
     """Register vault event listeners and initialize the ledger.
 
@@ -97,6 +99,7 @@ def bootstrap(window_days: int | None = None) -> dict[str, Any]:
 # ── Queries ─────────────────────────────────────────────────────
 
 
+@reduces_risk_for("obsidian.eval_js", "low")
 def get_hot_files(
     since_date: str,
     until_date: str | None = None,
@@ -137,6 +140,7 @@ def get_hot_files(
     }, timeout=15)
 
 
+@reduces_risk_for("obsidian.eval_js", "low")
 def get_recent_files(
     since_hours: float = 2,
     limit: int = 30,
@@ -171,6 +175,7 @@ def get_recent_files(
     })
 
 
+@reduces_risk_for("obsidian.eval_js", "low")
 def status() -> dict[str, Any]:
     """Get ledger status: active, file count, storage size, date range.
 

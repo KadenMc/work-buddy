@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from work_buddy.obsidian import bridge
+from work_buddy.consent import reduces_risk_for
 from work_buddy.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -64,6 +65,7 @@ def _run_js(
 # ── Readiness ───────────────────────────────────────────────────
 
 
+@reduces_risk_for("obsidian.eval_js", "low")
 def check_ready() -> dict[str, Any]:
     """Check if Datacore is installed, initialized, and queryable.
 
@@ -88,6 +90,7 @@ def check_ready() -> dict[str, Any]:
 # ── Query ───────────────────────────────────────────────────────
 
 
+@reduces_risk_for("obsidian.eval_js", "low")
 def validate_query(query: str) -> dict[str, Any]:
     """Validate a Datacore query string without executing it.
 
@@ -101,6 +104,7 @@ def validate_query(query: str) -> dict[str, Any]:
     )
 
 
+@reduces_risk_for("obsidian.eval_js", "low")
 def query(
     query_str: str,
     fields: list[str] | None = None,
@@ -127,6 +131,7 @@ def query(
     )
 
 
+@reduces_risk_for("obsidian.eval_js", "low")
 def fullquery(
     query_str: str,
     fields: list[str] | None = None,
@@ -153,6 +158,7 @@ def fullquery(
     )
 
 
+@reduces_risk_for("obsidian.eval_js", "low")
 def get_page(
     path: str,
     fields: list[str] | None = None,
@@ -176,6 +182,7 @@ def get_page(
     )
 
 
+@reduces_risk_for("obsidian.eval_js", "low")
 def evaluate(
     expression: str,
     source_path: str | None = None,
@@ -202,6 +209,7 @@ def evaluate(
 # ── Schema introspection ───────────────────────────────────────
 
 
+@reduces_risk_for("obsidian.eval_js", "low")
 def schema_summary(sample_limit: int = 200) -> dict[str, Any]:
     """Summarize the vault's Datacore schema.
 

@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from work_buddy.obsidian import bridge
-from work_buddy.consent import requires_consent
+from work_buddy.consent import requires_consent, reduces_risk_for
 from work_buddy.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -56,6 +56,7 @@ def _run_js(
 # ── Readiness ───────────────────────────────────────────────────
 
 
+@reduces_risk_for("obsidian.eval_js", "low")
 def check_ready() -> dict[str, Any]:
     """Check if the Google Calendar plugin is loaded and authenticated.
 
@@ -64,6 +65,10 @@ def check_ready() -> dict[str, Any]:
     - calendar_count: int — number of accessible calendars
     - version: str — plugin version
     - reason: str — explanation if not ready
+
+    Consent: read-only — executes a fixed snippet from _js/ with no
+    caller-supplied JS, so it auto-passes the obsidian.eval_js gate via
+    @reduces_risk_for("obsidian.eval_js", "low").
     """
     bridge.require_available()
     result = bridge.eval_js(_load_js("check_ready.js"), timeout=15)
@@ -78,16 +83,22 @@ def check_ready() -> dict[str, Any]:
 # ── Queries ─────────────────────────────────────────────────────
 
 
+@reduces_risk_for("obsidian.eval_js", "low")
 def get_calendars() -> list[dict[str, Any]]:
     """List all Google Calendar calendars the user has access to.
 
     Returns list of dicts with: id, summary, summaryOverride, primary,
     backgroundColor, accessRole, selected.
+
+    Consent: read-only — executes a fixed snippet from _js/ with no
+    caller-supplied JS, so it auto-passes the obsidian.eval_js gate via
+    @reduces_risk_for("obsidian.eval_js", "low").
     """
     result = _run_js("get_calendars.js")
     return result.get("calendars", [])
 
 
+@reduces_risk_for("obsidian.eval_js", "low")
 def get_events(start_date: str, end_date: str) -> dict[str, Any]:
     """Fetch events for a date range.
 
@@ -100,6 +111,11 @@ def get_events(start_date: str, end_date: str) -> dict[str, Any]:
         Each event has: id, summary, status, start, end, location,
         description, htmlLink, calendarId, calendarName, eventType,
         isAllDay, colorId, transparency.
+
+    Consent: read-only — executes a fixed snippet from _js/ with no
+    caller-supplied JS, so it auto-passes the obsidian.eval_js gate via
+    @reduces_risk_for("obsidian.eval_js", "low"). The date placeholders
+    are interpolated as ISO strings, not as JS code.
     """
     return _run_js(
         "get_events.js",
@@ -107,6 +123,7 @@ def get_events(start_date: str, end_date: str) -> dict[str, Any]:
     )
 
 
+@reduces_risk_for("obsidian.eval_js", "low")
 def get_today_schedule() -> dict[str, Any]:
     """Get today's events sorted by time, with schedule metadata.
 
@@ -114,6 +131,10 @@ def get_today_schedule() -> dict[str, Any]:
         Dict with: date, currentTime, count, allDayCount, timedCount,
         upcomingCount, currentCount, and events (list sorted by time,
         each with a timeStatus of 'all-day', 'past', 'current', or 'upcoming').
+
+    Consent: read-only — executes a fixed snippet from _js/ with no
+    caller-supplied JS, so it auto-passes the obsidian.eval_js gate via
+    @reduces_risk_for("obsidian.eval_js", "low").
     """
     return _run_js("get_today_schedule.js")
 

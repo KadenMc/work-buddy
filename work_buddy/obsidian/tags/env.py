@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from work_buddy.obsidian import bridge
-from work_buddy.consent import requires_consent
+from work_buddy.consent import reduces_risk_for, requires_consent
 from work_buddy.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -66,6 +66,7 @@ def _escape_js(text: str) -> str:
 # ── Readiness ───────────────────────────────────────────────────
 
 
+@reduces_risk_for("obsidian.eval_js", "low")
 def check_ready() -> dict[str, Any]:
     """Check if Tag Wrangler plugin is loaded and functional.
 
@@ -89,6 +90,7 @@ def check_ready() -> dict[str, Any]:
 # ── Read Operations (metadataCache — no Tag Wrangler dependency) ─
 
 
+@reduces_risk_for("obsidian.eval_js", "low")
 def get_all_tags(include_files: bool = False, file_limit: int = 10) -> list[dict]:
     """Get all vault tags with counts and hierarchy info.
 
@@ -109,6 +111,7 @@ def get_all_tags(include_files: bool = False, file_limit: int = 10) -> list[dict
     }, timeout=30)
 
 
+@reduces_risk_for("obsidian.eval_js", "low")
 def get_tag_hierarchy() -> list[dict]:
     """Build a hierarchical tree of all vault tags.
 
@@ -125,6 +128,7 @@ def get_tag_hierarchy() -> list[dict]:
     return _run_js("get_tag_hierarchy.js", timeout=20)
 
 
+@reduces_risk_for("obsidian.eval_js", "low")
 def get_file_tags(file_path: str) -> dict:
     """Get all tags for a specific file.
 
@@ -144,6 +148,7 @@ def get_file_tags(file_path: str) -> dict:
     })
 
 
+@reduces_risk_for("obsidian.eval_js", "low")
 def search_by_tag(
     tag: str,
     mode: str = "exact",
@@ -238,6 +243,7 @@ def merge_tags(source_tag: str, target_tag: str) -> dict:
     }, timeout=30)
 
 
+@reduces_risk_for("obsidian.eval_js", "low")
 def get_tag_page(tag: str) -> dict:
     """Get the tag page associated with a tag, if one exists.
 
