@@ -684,3 +684,32 @@ def check_telegram_bot_token() -> dict[str, Any]:
         except OSError:
             pass
     return {"ok": False, "detail": f"${token_env} not found in environment or .env file"}
+
+
+def check_thunderbird_bridge() -> dict[str, Any]:
+    """Check the thunderbird-work-buddy companion bridge is reachable.
+
+    Wraps :func:`work_buddy.email.providers.thunderbird.probe_thunderbird_bridge`
+    so the wizard surfaces actionable diagnostics: connection-file missing,
+    port closed, 403 (stale token), no allowed accounts. This requirement is
+    only meaningful when the user has opted into the bridge by setting
+    ``tools.thunderbird.enabled: true`` — when off, we report ``ok: True``
+    with an "(opted out)" detail so the wizard doesn't nag people who don't
+    use Thunderbird.
+    """
+    cfg = _cfg()
+    if not cfg.get("tools", {}).get("thunderbird", {}).get("enabled", False):
+        return {
+            "ok": True,
+            "detail": (
+                "Bridge probe skipped: tools.thunderbird.enabled is false "
+                "(opt in via config.local.yaml once thunderbird-work-buddy "
+                "is installed)."
+            ),
+        }
+    try:
+        from work_buddy.email.providers.thunderbird import probe_thunderbird_bridge
+    except ImportError as exc:
+        return {"ok": False, "detail": f"work_buddy.email module not importable: {exc}"}
+    available, reason = probe_thunderbird_bridge()
+    return {"ok": bool(available), "detail": reason or ("ok" if available else "not reachable")}
