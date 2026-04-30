@@ -387,11 +387,12 @@ function _resInstallKeyboardLayer(container) {
             }
         }
 
-        if (e.key === 'j') {
+        if (e.key === 'k') {
+            // Inverted from vim default — user preference.
             e.preventDefault();
             const next = cards[Math.min(cards.length - 1, idx + 1)] || cards[0];
             focusCard(next);
-        } else if (e.key === 'k') {
+        } else if (e.key === 'j') {
             e.preventDefault();
             const prev = cards[Math.max(0, idx - 1)] || cards[0];
             focusCard(prev);
@@ -443,7 +444,7 @@ function _resInstallHelpHint(container) {
     const hint = document.createElement('div');
     hint.className = 'wv-res-help-hint';
     hint.innerHTML =
-        '<kbd>j</kbd>/<kbd>k</kbd> nav '
+        '<kbd>k</kbd>/<kbd>j</kbd> nav '
         + '· <kbd>enter</kbd> submit '
         + '· <kbd>s</kbd> later '
         + '· <kbd>r</kbd> re-direct '
@@ -467,8 +468,8 @@ function _resToggleHelpOverlay(container) {
         '<div class="wv-res-help-panel">'
         + '<h3>Resolution Surface — keyboard shortcuts</h3>'
         + '<table class="wv-res-help-table">'
-        + '<tr><td><kbd>j</kbd></td><td>Next card</td></tr>'
-        + '<tr><td><kbd>k</kbd></td><td>Previous card</td></tr>'
+        + '<tr><td><kbd>k</kbd></td><td>Next card (down)</td></tr>'
+        + '<tr><td><kbd>j</kbd></td><td>Previous card (up)</td></tr>'
         + '<tr><td><kbd>enter</kbd></td><td>Submit focused card</td></tr>'
         + '<tr><td><kbd>s</kbd></td><td>Later (defer; bumps attraction count)</td></tr>'
         + '<tr><td><kbd>r</kbd></td><td>Re-direct (provide forced context; re-queues)</td></tr>'
