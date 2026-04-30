@@ -2067,13 +2067,18 @@ def _context_capabilities() -> list[Capability]:
             parameters={
                 "run_id": {"type": "str", "description": "The producer-assigned background-triage run id (from the agent's prompt).", "required": True},
                 "item_id": {"type": "str", "description": "The id of the item this verdict applies to.", "required": True},
-                "recommended_action": {"type": "str", "description": "One of: close, group, create_task, record_into_task, leave.", "required": True},
                 "rationale": {"type": "str", "description": "One-to-three-sentence justification.", "required": True},
-                "group_intent": {"type": "str", "description": "Short noun-phrase naming the underlying intent (≤8 words, distinct from the action name and the rationale). Used as the group title in the review UI.", "required": False},
+                "group_intent": {"type": "str", "description": "Short noun-phrase naming the underlying intent (≤8 words, distinct from the action name and the rationale). Used as the card title in the Resolution Surface.", "required": False},
                 "confidence": {"type": "float", "description": "Optional [0,1] confidence score.", "required": False},
-                "target_task_id": {"type": "str", "description": "For record_into_task: the existing task id.", "required": False},
-                "suggested_task_text": {"type": "str", "description": "For create_task: the proposed task body.", "required": False},
-                "related_item_ids": {"type": "list", "description": "Other item_ids from this run that belong to the same cluster.", "required": False},
+                # ---- Slice 3 multi-record fields (preferred for new captures) ----
+                "records": {"type": "list", "description": "Slice 3+: list of records produced from the captured item. Each is {destination: 'task'|'reference'|'calendar_only'|'delete', task_proposal/reference_proposal/calendar_proposal/delete_reason: ...}. Empty list = 'no record produced'. Mutually exclusive with refusal.", "required": False},
+                "refusal": {"type": "dict", "description": "Slice 3+: {question: '...', missing_context: [...]} when the agent doesn't have enough context to commit a verdict. Renders as a clarification card on the Resolution Surface. Mutually exclusive with records.", "required": False},
+                "pipeline_blocker": {"type": "dict", "description": "Slice 1.5: typed stop reason per ROADMAP §3.3. String (just kind) or dict with kind + optional detail. Surfaced as a typed badge on the Resolution Surface card.", "required": False},
+                # ---- Legacy single-action fields (Slice 1 compatibility) ----
+                "recommended_action": {"type": "str", "description": "Legacy: one of close, group, create_task, record_into_task, leave. Required ONLY when records/refusal are not provided.", "required": False},
+                "target_task_id": {"type": "str", "description": "Legacy: for record_into_task, the existing task id.", "required": False},
+                "suggested_task_text": {"type": "str", "description": "Legacy: for create_task, the proposed task body.", "required": False},
+                "related_item_ids": {"type": "list", "description": "Legacy: other item_ids from this run that belong to the same cluster.", "required": False},
             },
             callable=(lambda **kw: __import__(
                 "work_buddy.triage.capabilities.triage_submit",
