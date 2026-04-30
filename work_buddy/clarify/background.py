@@ -44,6 +44,21 @@ from work_buddy.clarify.items import (
 logger = get_logger(__name__)
 
 
+def _publish_pool_event(event_type: str, payload: dict[str, Any]) -> None:
+    """Best-effort publish to the dashboard event bus.
+
+    Routes through ``publish_auto``: in-process when called from the
+    dashboard's Flask process, cross-process via the messaging service
+    otherwise. Never raises — pool mutations must not fail because of
+    a missed event delivery.
+    """
+    try:
+        from work_buddy.dashboard.events import publish_auto
+        publish_auto(event_type, payload)
+    except Exception:
+        logger.exception("ClarifyPool: event publish for %r failed", event_type)
+
+
 # ---------------------------------------------------------------------------
 # Pool entry lifecycle states (Slice 1)
 # ---------------------------------------------------------------------------
@@ -362,6 +377,12 @@ class ClarifyPool:
             index.setdefault("entries", []).append(pe.to_dict())
             self._save_index(index)
 
+        _publish_pool_event("pool.entry_added", {
+            "run_id": run_id,
+            "item_id": item_id,
+            "source": entry_source,
+            "adapter": run.get("adapter", ""),
+        })
         return {
             "status": "ok",
             "run_id": run_id,
@@ -442,6 +463,13 @@ class ClarifyPool:
             index.setdefault("entries", []).append(pe.to_dict())
             self._save_index(index)
 
+        _publish_pool_event("pool.entry_added", {
+            "run_id": run_id,
+            "item_id": item_id,
+            "source": entry_source,
+            "adapter": run.get("adapter", ""),
+            "raw": True,
+        })
         return {
             "status": "ok",
             "run_id": run_id,
@@ -586,6 +614,7 @@ class ClarifyPool:
         Returns the number of entries stamped.
         """
         stamped = 0
+        stamped_keys: list[tuple[str, str]] = []
         now = _now_iso()
         key_set = set(entry_keys)
         with _pool_lock:
@@ -598,8 +627,16 @@ class ClarifyPool:
                     raw["state"] = STATE_REVIEWED
                     raw["state_changed_at"] = now
                     stamped += 1
+                    stamped_keys.append(key)
             if stamped:
                 self._save_index(index)
+        for run_id, item_id in stamped_keys:
+            _publish_pool_event("pool.entry_state_changed", {
+                "run_id": run_id,
+                "item_id": item_id,
+                "state": STATE_REVIEWED,
+                "outcome": outcome,
+            })
         return stamped
 
     def mark_state(
@@ -628,6 +665,7 @@ class ClarifyPool:
                 "reviewed_at + review_outcome too."
             )
         stamped = 0
+        stamped_keys: list[tuple[str, str]] = []
         now = _now_iso()
         key_set = set(entry_keys)
         with _pool_lock:
@@ -643,8 +681,18 @@ class ClarifyPool:
                 if state == STATE_QUARANTINED and reason:
                     raw["quarantine_reason"] = reason
                 stamped += 1
+                stamped_keys.append(key)
             if stamped:
                 self._save_index(index)
+        for run_id, item_id in stamped_keys:
+            payload: dict[str, Any] = {
+                "run_id": run_id,
+                "item_id": item_id,
+                "state": state,
+            }
+            if state == STATE_QUARANTINED and reason:
+                payload["reason"] = reason
+            _publish_pool_event("pool.entry_state_changed", payload)
         return stamped
 
     def quarantine(
@@ -678,6 +726,7 @@ class ClarifyPool:
         if not entry_keys:
             return 0
         bumped = 0
+        bumped_payloads: list[dict[str, Any]] = []
         key_set = set(entry_keys)
         with _pool_lock:
             index = self._load_index()
@@ -687,8 +736,15 @@ class ClarifyPool:
                     continue
                 raw["attraction_passes"] = int(raw.get("attraction_passes", 0)) + 1
                 bumped += 1
+                bumped_payloads.append({
+                    "run_id": key[0],
+                    "item_id": key[1],
+                    "count": raw["attraction_passes"],
+                })
             if bumped:
                 self._save_index(index)
+        for payload in bumped_payloads:
+            _publish_pool_event("pool.attraction_passes_bumped", payload)
         return bumped
 
     def store_forced_context(
@@ -714,6 +770,10 @@ class ClarifyPool:
                 ):
                     raw["forced_context"] = dict(forced_context)
                     self._save_index(index)
+                    _publish_pool_event("pool.forced_context_stored", {
+                        "run_id": run_id,
+                        "item_id": item_id,
+                    })
                     return True
         return False
 

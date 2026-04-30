@@ -150,11 +150,28 @@ def apply_preference_updates(updates: dict[str, Any]) -> list[str]:
                 reason=data.get("reason"),
             )
             written.append(comp_id)
+            _publish_preference_event(comp_id, data.get("wanted"), data.get("reason"))
         elif isinstance(data, bool) or data is None:
             set_preference(comp_id, wanted=data)
             written.append(comp_id)
+            _publish_preference_event(comp_id, data, None)
     _invalidate_control_graph()
     return written
+
+
+def _publish_preference_event(comp_id: str, wanted: Any, reason: str | None) -> None:
+    """Best-effort publish to the dashboard event bus."""
+    try:
+        from work_buddy.dashboard.events import publish_auto
+        publish_auto("component.preference_changed", {
+            "component_id": comp_id,
+            "wanted": wanted,
+            "reason": reason,
+        })
+    except Exception:
+        # logger intentionally silent here — preferences module shouldn't
+        # depend on dashboard logging conventions, and this is best-effort.
+        pass
 
 
 def _invalidate_control_graph() -> None:
