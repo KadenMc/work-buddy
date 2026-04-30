@@ -138,6 +138,59 @@ def health():
 
 
 # ---------------------------------------------------------------------------
+# Server-Sent Events
+# ---------------------------------------------------------------------------
+
+def _format_sse_event(event: dict) -> bytes:
+    """Render an event-bus event as a single ``data:`` SSE frame."""
+    return f"data: {json.dumps(event)}\n\n".encode("utf-8")
+
+
+def _sse_stream(bus, idle_timeout: float = 15.0):
+    """Yield SSE-framed bytes from the event bus.
+
+    Idle ticks emit an SSE comment line (``: keepalive``) so that
+    intermediaries (Tailscale Serve, mobile networks, browsers' idle
+    detection) don't close the connection while the bus has nothing to
+    say. Real events are emitted as ``data: <json>\\n\\n`` frames.
+
+    Extracted from the route so it can be unit-tested without spinning up
+    Flask's threaded test server.
+    """
+    # First-flush comment: forces some proxies to release headers and
+    # confirms to the client (via EventSource readyState=OPEN) that the
+    # connection is alive before the first real event arrives.
+    yield b": connected\n\n"
+    for event in bus.subscribe(timeout=idle_timeout):
+        if event is None:
+            yield b": keepalive\n\n"
+            continue
+        yield _format_sse_event(event)
+
+
+@app.get("/api/events")
+def api_events():
+    """Server-Sent Events stream of dashboard events.
+
+    Single connection per browser tab. Subscribers receive every event
+    published to the in-process bus (and, via the messaging bridge,
+    every cross-process event). The browser's native ``EventSource``
+    reconnects automatically on disconnect; the bus does not replay
+    events from before the reconnect.
+
+    No read-only gate: this is a pure read endpoint.
+    """
+    from work_buddy.dashboard.events import get_bus
+
+    bus = get_bus()
+    resp = Response(_sse_stream(bus), mimetype="text/event-stream")
+    resp.headers["Cache-Control"] = "no-cache"
+    resp.headers["X-Accel-Buffering"] = "no"  # nginx-friendly; harmless on Tailscale
+    resp.headers["Connection"] = "keep-alive"
+    return resp
+
+
+# ---------------------------------------------------------------------------
 # Frontend
 # ---------------------------------------------------------------------------
 
@@ -2569,6 +2622,25 @@ def main():
     )
 
     _start_acknowledge_poller()
+
+    # Mark this process so that ``events.publish_auto`` (used by the
+    # cross-cutting mutators in clarify/, tasks/, health/, etc.) routes
+    # publishes to the in-process bus rather than the messaging service.
+    from work_buddy.dashboard.events import mark_dashboard_process, start_heartbeat
+    mark_dashboard_process()
+
+    # Start the event-bus heartbeat (publishes ``bus.heartbeat`` every
+    # 10s to keep SSE connections lively and give the browser a
+    # liveness signal). The SSE endpoint also emits its own keepalive
+    # comments; both are complementary.
+    start_heartbeat(interval=10.0)
+
+    # Start the cross-process bridge: pulls ``bus.event`` messages
+    # from the messaging service (port 5123) and republishes them on
+    # the in-process bus. Sidecar publishers (cron jobs, IR rebuilds,
+    # service-health monitor) reach the dashboard via this bridge.
+    from work_buddy.dashboard.messaging_bridge import start_messaging_bridge
+    start_messaging_bridge()
 
     logger.info("Dashboard starting on http://%s:%d%s", host, port, " (dev mode)" if dev else "")
     app.run(host=host, port=port, debug=dev)

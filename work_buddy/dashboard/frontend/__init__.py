@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from .html import _html
 from .script_costs import _costs_script
+from .script_event_bus import _event_bus_script
 from .script_main import _script
 from .script_notifications import _notification_script
 from .script_palette import _command_palette_script
@@ -57,6 +58,10 @@ def render_page() -> str:
     vault = _vault_name()
     all_scripts = "\n".join([
         f"const WB_VAULT_NAME = {vault!r};",
+        # Event bus client first: other modules' top-level code may
+        # call window.eventBus.on(...) at script-load time, so the bus
+        # API must already be defined when they execute.
+        _event_bus_script(),
         _script(),
         _workflow_views_script(),
         _notification_script(),

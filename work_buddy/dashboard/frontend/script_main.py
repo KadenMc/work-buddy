@@ -2588,48 +2588,42 @@ async function launchSetupAgent(componentId, mode, btn) {
 }
 
 
-// ---- Auto-refresh (Decision 1(b)) ----
+// ---- Refresh model ----
 //
-// Earlier this called switchTab(activeTab) every 30s, which re-runs the
-// full loader and rewrites panel.innerHTML. That destroyed any in-flight
-// state the user had built up (active filters, scroll position, model-chip
-// hover, drawer contents) and was the *source* of the chronic
-// "dashboard refresh bug" — it wasn't a real reload, just a destructive
-// re-render. The data refreshers below re-fetch and update only the data
-// regions of each panel, leaving toolbars, chips, scroll, and selection
-// alone. Workflow views (wv-*) skip the interval entirely.
+// The dashboard previously ran a 30s setInterval that called
+// switchTab(activeTab), which re-ran the full loader and rewrote
+// panel.innerHTML. That destroyed any in-flight UI state (filters,
+// scroll, model-chip hover, drawer contents, ESPECIALLY focused
+// textareas) and was the canonical "dashboard refresh bug." A second
+// attempt (cd73918) tried to make the timer "data-only" via a
+// dataRefreshers table that aliased back to load*() in most cases,
+// re-introducing the same destructive rewrite for those tabs.
 //
-// Adding a new tab? Either:
-//   - alias your loader here (safe when the loader only writes to data
-//     regions and doesn't rebuild any toolbar/chip/input the user might be
-//     interacting with), or
-//   - write a sibling refreshXData() that does the data-only subset.
-const dataRefreshers = {
-    overview: () => loadOverview(),
-    tasks: () => _refreshTaskView(),       // skips _renderTaskStateChips()
-    review: () => loadReview(),
-    status: () => loadStatus(),
-    chats: () => loadChats(),              // re-fetches list; viewer state survives (separate DOM)
-    contracts: () => loadContracts(),
-    projects: () => loadProjects(),        // left list only; right pane untouched
-    costs: () => refreshCostsData(),       // data-only: skips costsRenderModelsFilter
-    settings: () => loadSettings(),        // existing snapshot/restore handles open <details>
-};
+// Both are gone. The dashboard now updates from the server-pushed
+// event bus (see script_event_bus.py + work_buddy/dashboard/events.py
+// + the SSE endpoint /api/events). The smart-refresh policy in the
+// bus dispatcher refreshes the active tab when an event affects it,
+// AND defers when the user is typing in an input/textarea inside the
+// panel (drained on focusout). Tab switches still refresh on switch
+// (switchTab calls staticLoaders[tab]()), and the visibilitychange
+// listener below refreshes the active tab when the browser tab
+// returns to foreground after being hidden.
 
-let refreshInterval = null;
-
-function startAutoRefresh(seconds = 30) {
-    if (refreshInterval) clearInterval(refreshInterval);
-    refreshInterval = setInterval(() => {
-        const activeTab = document.querySelector('.tab-btn.active');
-        if (!activeTab) return;
-        const tab = activeTab.dataset.tab;
-        // Workflow views have live user state; skip them.
-        if (tab.startsWith('wv-')) return;
-        const refresher = dataRefreshers[tab];
-        if (refresher) refresher();
-    }, seconds * 1000);
-}
+// ---- visibilitychange refresh ----
+// When the browser tab becomes visible again after being backgrounded,
+// re-run the active panel's loader once. Without this the SSE-only
+// model would only update what changed *while the tab was watching*;
+// long backgrounded periods leave the page stale even though the
+// EventSource buffered events while hidden.
+document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return;
+    const activeTab = document.querySelector('.tab-btn.active');
+    if (!activeTab) return;
+    const tab = activeTab.dataset.tab;
+    if (tab.startsWith('wv-')) return;  // workflow-view tabs poll on their own
+    const loader = staticLoaders[tab];
+    if (loader) loader();
+});
 
 // ---- Init ----
 // Set dynamic Obsidian vault links
@@ -2637,7 +2631,6 @@ if (WB_VAULT_NAME) {
     const mtl = document.getElementById('master-task-link');
     if (mtl) mtl.href = `obsidian://open?vault=${encodeURIComponent(WB_VAULT_NAME)}&file=tasks%2Fmaster-task-list.md`;
 }
-startAutoRefresh(30);
 // _initFromHash decides which tab/state to load based on the URL hash;
 // falls back to overview when no hash is present.
 if (document.readyState === 'loading') {
