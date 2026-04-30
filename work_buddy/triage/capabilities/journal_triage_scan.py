@@ -4,19 +4,23 @@ Thin adapter around :class:`BackgroundTriageProducer`. Cadence is a
 sidecar-job concern (see ``sidecar_jobs/journal-triage-scan.md``),
 not a property of the capability itself.
 
-Flow:
+Slice 3 flow:
 - :func:`work_buddy.triage.adapters.journal.collect_same_day_candidates`
   segments today's Running Notes into thread candidates.
-- Each candidate is IR-enriched and sent to Sonnet via
-  :class:`LLMRunner` with a constrained ``output_schema``
-  (:data:`work_buddy.triage.verdict_schema.VERDICT_SCHEMA`). The parsed
-  verdict is written directly to the Review pool via
+- For each candidate, the cheap deadline-extraction Haiku pass
+  (:mod:`work_buddy.triage.deadline_extract`) detects deadline +
+  dependency mentions. Hints get merged into the resulting
+  records[].task_proposal so Slice 8's resurfacing has the data even
+  for sparse captures.
+- The main Clarify pass calls Sonnet via :class:`LLMRunner` with the
+  new multi-record schema (:data:`MULTI_RECORD_VERDICT_SCHEMA`).
+  The parsed verdict is written directly to the Review pool via
   :func:`triage_submit`.
 - Backend-error escalation: TIMEOUT / CONTEXT_EXCEEDED / EMPTY_CONTENT /
   RATE_LIMITED → FRONTIER_BEST (Opus).
-- Validation-failure escalation: verdict parsed but missing
-  ``recommended_action`` at a tier below FRONTIER_BEST → one retry at
-  FRONTIER_BEST before giving up with :data:`ErrorKind.VALIDATION_FAILED`.
+- Validation-failure escalation: verdict parsed but missing required
+  fields at a tier below FRONTIER_BEST → one retry at FRONTIER_BEST
+  before giving up with :data:`ErrorKind.VALIDATION_FAILED`.
   Handled by :func:`work_buddy.triage.verdict_call.call_for_verdict`.
 
 Registered as a capability-type sidecar cron job. Safe to call
@@ -25,59 +29,141 @@ manually via ``wb_run`` for smoke tests or ad-hoc runs.
 
 from __future__ import annotations
 
+from datetime import date as _date_cls
 from typing import Any
 
 from work_buddy.llm import ErrorKind, LLMRunner, ModelTier
 from work_buddy.logging_config import get_logger
 from work_buddy.triage.background import BackgroundTriageProducer
 from work_buddy.triage.items import TriageItem
-from work_buddy.triage.verdict_schema import VERDICT_SCHEMA, verdict_to_submit_kwargs
+from work_buddy.triage.verdict_schema import (
+    MULTI_RECORD_VERDICT_SCHEMA,
+    verdict_to_submit_kwargs,
+)
 
 logger = get_logger(__name__)
 
 
 _AGENT_SYSTEM_PROMPT = """\
-You are triaging one thread from a daily running-notes journal. Given
-the thread, the user's current-context block, and IR hits for related
-prior content, decide the single best next action and fill in the
-verdict schema.
+You are running the Clarify step on one thread from a daily running-notes
+journal. Given the thread, the user's current-context block, IR hits for
+related prior content, and pre-extracted deadline / dependency hints,
+produce a verdict in the multi-record schema.
 
-## Action selection
+A captured thread can produce ZERO OR MORE records. Each record has a
+``destination`` (one of: ``task``, ``reference``, ``calendar_only``,
+``delete``) and a destination-specific proposal.
 
-  - create_task       — new actionable work. Include ``suggested_task_text``.
-                        DEFAULT to this for any actionable thread unless
-                        one of the Active Tasks is UNAMBIGUOUSLY about
-                        the same work.
-  - record_into_task  — add detail to an existing task. Include
-                        ``target_task_id`` (from the Active Tasks list —
-                        never invent an ID; copy it verbatim). Use only
-                        when the thread is about the same system, same
-                        subject, same intent. Loose keyword overlap is
-                        NOT enough. Quote the matching task title phrase
-                        in the rationale.
-  - leave             — keep in the note as-is. Observations, questions,
-                        or thoughts that don't map to a clear action.
-  - close             — safe to drop / already handled.
-  - group             — belongs with sibling items already in the pool.
-                        Include ``related_item_ids``.
+## Destination guide
 
-If you are uncertain, pick ``leave``.
+  - ``task``           — actionable work the user needs to track.
+                         Populate ``task_proposal``: required
+                         ``suggested_task_text``; optional Slice 2
+                         metadata (``kind``, ``outcome_text``,
+                         ``next_action_text``, ``definition_of_done``,
+                         ``creation_effort``, ``user_involvement``);
+                         deadline / dependency hints (the user-message
+                         block carries pre-extracted hints — copy them
+                         into the proposal when the underlying text
+                         actually mentions them).
 
-## Context
+                         For tracking work that's an UPDATE to an
+                         existing task in Active Tasks, set
+                         ``task_proposal.target_task_id`` to that exact
+                         task_id (NEVER invent ids; copy verbatim).
+                         The system records the captured text into the
+                         existing task's note rather than creating a
+                         new one. Use only when the thread is about
+                         the same system, same subject, same intent
+                         — loose keyword overlap is NOT enough; quote
+                         the matching task title phrase in the
+                         rationale.
+
+  - ``reference``      — non-actionable knowledge to file (a paper to
+                         remember, a snippet, a quote). Populate
+                         ``reference_proposal.summary``. Slice 6 wires
+                         actual filing — for now we just persist the
+                         summary.
+
+  - ``calendar_only``  — pure temporal-marker events that don't deserve
+                         task-class infrastructure (a friend's
+                         birthday with no prep needed, a holiday, a
+                         meeting reminder where the agent can't
+                         actually take action). Populate
+                         ``calendar_proposal.title`` and
+                         ``calendar_proposal.datetime`` when known.
+
+  - ``delete``         — safe to drop. Populate ``delete_reason``
+                         briefly (one sentence). Use when the captured
+                         text is already-handled, redundant with an
+                         existing record, or genuinely throwaway.
+
+## Multi-record output
+
+A single thread can produce several records. Examples:
+
+- "Sarah's 30th birthday party on May 12 — need to buy gift" produces
+  TWO records: a ``calendar_only`` for the party AND a ``task`` for
+  the gift. The records share context but route independently.
+
+- "Random idea: should we tighten the threshold on Figure 3?
+  See the Smith 2024 paper for prior art" might produce TWO records:
+  a ``task`` to investigate the threshold AND a ``reference`` to
+  remember the paper.
+
+Most threads produce ONE record. Some produce ZERO (ambient observation
+with no actionable component) — return ``records: []`` for those. The
+system treats empty records the same as the old ``leave`` action.
+
+## Refusal (instead of records)
+
+When you don't have enough context to commit a verdict — most commonly
+when the project assignment is ambiguous or you can't tell whether
+something is actionable — set ``refusal`` instead of producing records:
+
+  refusal: {
+    "question": "Which project does this belong to: <best-guess A> or <B>?",
+    "missing_context": ["project"]
+  }
+
+The Resolution Surface renders this as a clarification card; the
+user's answer re-queues the Clarify pass with the answer as a forced
+context. ``refusal`` and ``records`` are mutually exclusive — use one
+or the other, never both.
+
+USE REFUSAL HONESTLY. The downstream resurfacing system relies on
+verdicts being trustworthy. A refusal is a small cost; a wrong verdict
+is a much bigger one (the user may not catch it in review).
+
+## Required fields
+
+  - ``rationale`` (required): one to three sentences explaining the
+                              verdict. Cite specific thread content
+                              so the reviewer can verify your
+                              reasoning.
+  - ``group_intent`` (required): short noun phrase (≤8 words) naming
+                                 the underlying intent (NOT the
+                                 destination, NOT the action). Used as
+                                 the card title in the Resolution
+                                 Surface.
+  - ``confidence`` (optional): 0.0–1.0 self-assessed.
+
+## Context block
 
 The user message includes a ``## User's Current Context`` block with
-active tasks, contracts, projects, and recent commits. READ IT BEFORE
-DECIDING. If the thread references an Active Contract or Project,
-say so in the rationale. IR hits below the thread are semantic
-neighbours — use them as supporting evidence.
+active tasks, contracts, projects. READ IT BEFORE DECIDING. If the
+thread references an Active Contract or Project, say so in the
+rationale. IR hits below the thread are semantic neighbours — use them
+as supporting evidence, particularly for ``record_into_task``
+matching.
 
 ## group_intent (required)
 
 A short noun-phrase (3–8 words) naming the UNDERLYING INTENT behind
-the thread — NOT the action name, NOT a restatement of the thread's
-opening line. Shown as the card title in the review UI, so it should
-help the user recognize which of their own thoughts this is about at
-a glance.
+the thread — NOT a destination name, NOT a restatement of the thread's
+opening line. Shown as the card title in the Resolution Surface, so
+it should help the user recognize which of their own thoughts this is
+about at a glance.
 
 Good:
   thread: "Background — weekly check of ETFs/stocks — prices and news?"
@@ -86,15 +172,10 @@ Good:
     → group_intent: "search-tool filter API design"
 
 Bad:
-  - "Create task"             (that's the action, not the intent)
+  - "Create task"             (that's a destination, not the intent)
   - "Thread asks about ETFs"  (that's the rationale)
   - the full first line of the thread verbatim
   - leaving the field empty
-
-## Rationale
-
-One to three sentences. Cite specific thread content so the reviewer
-can verify your reasoning.
 """
 
 
@@ -107,21 +188,21 @@ def journal_triage_scan(
     enrich: bool = True,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Run a single background-triage pass over the journal's same-day notes.
+    """Run a single Clarify pass over the journal's same-day notes.
 
     Args:
         journal_date: ``YYYY-MM-DD`` or ``None`` for today.
         force: Ignore the unchanged-content idempotence gate.
         profile: Override the configured ``triage.segment_profile``
             (the segmentation call — agent LLM is now tier-driven).
-        tier: Starting LLM tier for the agent. Defaults to
+        tier: Starting LLM tier for the Clarify pass. Defaults to
             FRONTIER_BALANCED (Sonnet); escalates to FRONTIER_BEST
             (Opus) on TIMEOUT / CONTEXT_EXCEEDED / EMPTY_CONTENT /
             RATE_LIMITED.
         enrich: Pre-fetch hybrid-IR context for each candidate.
             Default True.
-        dry_run: Collect candidates and enrich, but skip the agent
-            loop. Returns what would have been sent.
+        dry_run: Collect candidates and enrich, but skip the LLM
+            calls. Returns what would have been sent.
 
     Returns:
         Status dict (see :class:`ProducerResult.to_dict`).
@@ -140,27 +221,10 @@ def journal_triage_scan(
             ) from exc
 
     cfg = load_triage_config()
-    # Segmentation still runs on the local profile — it's a
-    # deterministic classification task the local model handles well.
     seg_profile = resolve_profile(cfg, "segment", override=profile)
     enrich_cfg = cfg.get("enrich", {}) or {}
 
-    # Build the "what the user is actively working on" registry once
-    # per run. Injected into each per-item agent prompt so the agent
-    # can pick a real existing task_id for ``record_into_task`` and
-    # reason about which contracts/projects a thread relates to —
-    # the same block Chrome triage's Sonnet cluster-level call sees.
-    #
-    # Scope is narrower than Chrome's call on purpose: per-item
-    # prompts go to a smaller local model (Qwen 14B) that
-    # degenerates on long contexts. We ship only MIT + focused
-    # tasks (active work the user is currently doing), cap at 12,
-    # and drop recent_commits entirely — commits are noise for
-    # journal thread matching. Inbox tasks are omitted because
-    # they're unprocessed backlog; the typical journal thread is
-    # about current-focus work or genuinely new material. Cap /
-    # state filters live in feature config so they can be tuned
-    # without code changes.
+    # Build the "what the user is actively working on" registry.
     ctx_cfg = cfg.get("triage_context", {}) or {}
     try:
         from work_buddy.triage.recommend import (
@@ -172,8 +236,6 @@ def journal_triage_scan(
             ),
             max_tasks=ctx_cfg.get("max_tasks", 12),
         )
-        # Drop recent_commits for the per-item prompt — they rarely
-        # help classify a journal thread and eat tokens.
         if not ctx_cfg.get("include_recent_commits", False):
             triage_context.pop("recent_commits", None)
         triage_context_block = render_triage_context_block(triage_context)
@@ -206,12 +268,6 @@ def journal_triage_scan(
             "items": [it.to_dict() for it in items],
         }
 
-    # Slice 1 verdict-pass gate. When disabled (the default until
-    # Slice 3 ships the new schema), skip the LLM agent entirely;
-    # the producer writes raw entries (``verdict={"raw": True}``).
-    # Capture is preserved; the verdict is not. Per-source override
-    # via ``triage.verdict_pass.sources.journal.enabled`` wins over the
-    # global default; see :func:`is_verdict_pass_enabled_for`.
     verdict_pass_enabled = is_verdict_pass_enabled_for(cfg, "journal")
 
     if verdict_pass_enabled:
@@ -224,12 +280,9 @@ def journal_triage_scan(
                 run_id=run_id,
                 tier=tier,
                 triage_context_block=triage_context_block,
+                journal_date=journal_date,
             )
     else:
-        # No-op agent — the producer never calls it when the gate is off,
-        # but BackgroundTriageProducer requires a callable so we provide
-        # a stub. If someone ever turns the gate on mid-run, the stub
-        # surfaces the misconfiguration instead of silently 500'ing.
         def _agent(item: TriageItem, run_id: str) -> dict[str, Any]:
             return {
                 "content": "",
@@ -263,44 +316,67 @@ def _invoke_agent(
     run_id: str,
     tier: ModelTier,
     triage_context_block: str = "",
+    journal_date: str | None = None,
 ) -> dict[str, Any]:
-    """Call the unified runner with a constrained verdict schema.
+    """Run the Slice 3 Clarify pipeline for one journal thread.
 
-    The verdict comes back as structured JSON (enforced on Anthropic's
-    side). We parse it, call :func:`triage_submit` directly to write
-    the pool entry, and return a result dict shaped the way
-    :class:`BackgroundTriageProducer` expects (``content`` / ``error``
-    / ``error_kind``) so its submission-check path works unchanged.
+    Two passes in sequence:
 
-    ``triage_context_block`` is the rendered "User's Current Context"
-    block (active tasks / contracts / projects) from
-    :func:`recommend.build_triage_context`. Prepended to the user
-    prompt so the agent can pick real existing task IDs for
-    ``record_into_task``.
+    1. **Deadline pre-pass** (Haiku, cheap). Extracts has_deadline /
+       deadline_date / has_dependency / dependency_hint from the
+       thread text. Failures degrade gracefully (return all-false
+       sentinel).
+    2. **Main Clarify pass** (Sonnet, escalates to Opus on backend or
+       validation failure). Produces the multi-record verdict. The
+       deadline hints are merged into resulting task_proposals
+       post-call so the Sonnet output never has to redo the
+       extraction work.
     """
     from work_buddy.triage.capabilities.triage_submit import triage_submit
+    from work_buddy.triage.deadline_extract import (
+        extract_deadline_hints,
+        merge_hints_into_records,
+    )
     from work_buddy.triage.verdict_call import call_for_verdict
 
-    user_prompt = _render_item_prompt(
-        item=item, run_id=run_id, triage_context_block=triage_context_block,
+    # Pass 1: deadline / dependency hints.
+    msg_date: _date_cls | str | None = journal_date
+    if not msg_date:
+        # Use thread's source_dates if the adapter populated them,
+        # else today.
+        meta = item.metadata or {}
+        dates = meta.get("source_dates") or []
+        msg_date = dates[0] if dates else _date_cls.today()
+    hints = extract_deadline_hints(
+        item.text or "",
+        message_date=msg_date,
+        item_id=item.id,
     )
 
-    # Backend-error escalation (TIMEOUT etc. → FRONTIER_BEST) plus
-    # one validation-failure escalation at FRONTIER_BEST when the
-    # verdict parses but is missing ``recommended_action``.
+    # Pass 2: main Clarify verdict.
+    user_prompt = _render_item_prompt(
+        item=item, run_id=run_id,
+        triage_context_block=triage_context_block,
+        deadline_hints=hints,
+    )
+
     resp = call_for_verdict(
         runner=runner,
         tier=tier,
         system=_AGENT_SYSTEM_PROMPT,
         user=user_prompt,
-        output_schema=VERDICT_SCHEMA,
-        caller="journal_triage",
+        output_schema=MULTI_RECORD_VERDICT_SCHEMA,
+        # Slice 3: the multi-record schema requires rationale +
+        # group_intent. records / refusal are checked at the submit
+        # layer (at least one must be set).
+        required_fields=("rationale", "group_intent"),
+        caller="journal_clarify",
         item_id=item.id,
     )
 
     if resp.is_error():
         logger.warning(
-            "journal_triage: LLM failed for item %s on tier %s (%s): %s",
+            "journal_clarify: LLM failed for item %s on tier %s (%s): %s",
             item.id, resp.tier_used, resp.error_kind, resp.error,
         )
         return {
@@ -310,7 +386,14 @@ def _invoke_agent(
         }
 
     verdict = resp.structured_output or {}
+    # Merge deadline hints into task records.
+    if "records" in verdict:
+        verdict["records"] = merge_hints_into_records(
+            verdict.get("records"), hints,
+        )
 
+    # Submit. triage_submit accepts both shapes; multi-record fields
+    # come through verdict_to_submit_kwargs.
     submit_kwargs = verdict_to_submit_kwargs(verdict)
     submit_result = triage_submit(
         run_id=run_id,
@@ -320,7 +403,7 @@ def _invoke_agent(
 
     if submit_result.get("status") != "ok":
         logger.warning(
-            "journal_triage: triage_submit rejected verdict for item %s: %s",
+            "journal_clarify: triage_submit rejected verdict for item %s: %s",
             item.id, submit_result,
         )
         return {
@@ -333,6 +416,7 @@ def _invoke_agent(
         "content": resp.content or "",
         "verdict": verdict,
         "tier_used": resp.tier_used,
+        "deadline_hints": hints,
     }
 
 
@@ -341,23 +425,19 @@ def _render_item_prompt(
     item: TriageItem,
     run_id: str,
     triage_context_block: str = "",
+    deadline_hints: dict[str, Any] | None = None,
 ) -> str:
-    """Compose the per-item user prompt with context + IR inlined.
+    """Compose the per-item user prompt with context + IR + hints inlined.
 
     Prompt layout (top-to-bottom):
       1. Triage run id + item id (for the agent to copy into submit)
       2. Thread source dates (if any)
       3. Global "User's Current Context" block (active tasks,
          contracts, projects, recent commits) — enables the agent
-         to pick a real ``target_task_id`` for ``record_into_task``.
-      4. Thread content itself
-      5. Per-item IR hits (semantic neighbours of this thread)
-      6. Closing instruction
-
-    Global context comes BEFORE the thread so the agent reads it
-    first and has the task registry in mind while interpreting the
-    thread. IR hits come AFTER the thread because they're the
-    neighbours OF the thread — order matches reading flow.
+         to pick a real ``target_task_id`` for record-into-task.
+      4. Deadline / dependency hints (Slice 3 pre-pass output)
+      5. Thread content itself
+      6. Per-item IR hits (semantic neighbours of this thread)
     """
     from work_buddy.triage.enrich import render_ir_context
 
@@ -370,10 +450,33 @@ def _render_item_prompt(
 
     ctx_block = f"\n{triage_context_block}\n" if triage_context_block else ""
 
+    hints_block = ""
+    if deadline_hints:
+        if deadline_hints.get("hint_extraction_failed"):
+            hints_block = (
+                "\nDeadline hints: extraction failed; rely on the thread "
+                "text itself.\n"
+            )
+        elif (
+            deadline_hints.get("has_deadline")
+            or deadline_hints.get("has_dependency")
+        ):
+            parts = []
+            if deadline_hints.get("has_deadline"):
+                d = deadline_hints.get("deadline_date") or "(date unspecified)"
+                parts.append(f"deadline: {d}")
+            if deadline_hints.get("has_dependency"):
+                hint = deadline_hints.get("dependency_hint") or "(dependency unspecified)"
+                parts.append(f"dependency: {hint}")
+            hints_block = f"\nDeadline hints (pre-extracted): {'; '.join(parts)}\n"
+        else:
+            hints_block = "\nDeadline hints: none detected.\n"
+
     return (
         f"Item id: {item.id}\n"
         f"{date_line}"
         f"{ctx_block}"
+        f"{hints_block}"
         f"\n--- Thread content ---\n"
         f"{item.text.strip()}\n"
         f"--- End thread ---"
