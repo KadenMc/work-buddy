@@ -133,6 +133,38 @@ TRIAGE_DEFAULTS: dict[str, Any] = {
             "max_threads": 16,
         },
     },
+
+    # Slice 3 presentation-layer knobs.
+    #
+    # Cluster-on-read groups pending pool entries into clusters via
+    # ``work_buddy.triage.cluster.cluster_items`` and (optionally)
+    # labels each cluster via the Sonnet-tier ``group_intents`` call
+    # in ``work_buddy.triage.recommend``. The result lands on the
+    # presentation as a ``clusters`` field; the existing
+    # ``groups_by_action`` shape is preserved for backwards compat.
+    #
+    # Disabled by default: enabling fires real LLM calls per
+    # presentation render. Flip on once the user has validated that
+    # the local-pool size + Sonnet spend are acceptable.
+    "presentation": {
+        "cluster": {
+            "enabled": False,
+            # Skip clustering for pool sizes below this threshold —
+            # 2 entries don't benefit from Louvain. The ``clusters``
+            # field will be omitted from the presentation.
+            "min_entries": 3,
+            # When True, skip the Sonnet-tier group_intents call and
+            # use the auto-label produced by cluster_items
+            # (cohesion-and-domain-based). Lets the user see clustering
+            # in action without paying for the LLM label.
+            "skip_label_llm": False,
+            # Override the data_type passed to group_intents. Default
+            # is inferred from the dominant source ('journal' /
+            # 'chrome' / 'conversation'); this lets the user pin it
+            # for testing.
+            "data_type": None,
+        },
+    },
 }
 
 

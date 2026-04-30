@@ -366,10 +366,10 @@ def _build_presentation_from_pool(
         groups_by_action[action].append(presentation_group)
         all_item_ids.append(pe.item_id)
 
-    return {
+    presentation: dict[str, Any] = {
         "source": source,
         "narrative": (
-            f"{len(entries)} pending triage proposals from "
+            f"{len(entries)} pending Clarify proposals from "
             f"{len(sources)} source(s)."
         ),
         "total_groups": len(entries),
@@ -381,6 +381,152 @@ def _build_presentation_from_pool(
         "has_clarifying_questions": False,
         "revisions": 0,
     }
+
+    # Slice 3: cluster-on-read at the presentation layer. Off by
+    # default; flip on via ``triage.presentation.cluster.enabled`` in
+    # config.local.yaml. The result is purely additive — the existing
+    # ``groups_by_action`` shape is unchanged so the frontend keeps
+    # working without changes.
+    clusters = _maybe_cluster_entries(entries, sources)
+    if clusters:
+        presentation["clusters"] = clusters
+    return presentation
+
+
+def _maybe_cluster_entries(
+    entries: list[PoolEntry],
+    sources: set[str],
+) -> list[dict[str, Any]] | None:
+    """Run cluster_items + group_intents over pending entries (Slice 3).
+
+    Returns a list of cluster dicts shaped::
+
+        {
+            "cluster_id": int,
+            "cohesion": float,
+            "label": str,            # auto-label or Sonnet-supplied
+            "intent_label": str,     # Sonnet-supplied (when LLM ran)
+            "intent_rationale": str, # Sonnet-supplied
+            "item_ids": [str, ...],
+            "size": int,
+        }
+
+    Returns ``None`` when clustering is disabled, fewer than
+    ``min_entries`` entries are pending, or any step fails. The caller
+    treats ``None`` as "no clusters field" — never an error.
+
+    All errors are caught and logged; clustering is a presentation
+    enhancement, not a correctness requirement.
+    """
+    try:
+        from work_buddy.triage.config import load_triage_config
+        cfg = load_triage_config()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("cluster: config load failed: %s", exc)
+        return None
+
+    pres_cfg = cfg.get("presentation", {}) or {}
+    cluster_cfg = pres_cfg.get("cluster", {}) or {}
+    if not cluster_cfg.get("enabled"):
+        return None
+    min_entries = int(cluster_cfg.get("min_entries") or 3)
+    if len(entries) < min_entries:
+        return None
+
+    # Build TriageItems from pool entries — cluster_items needs the
+    # item dataclass + embeddings.
+    from work_buddy.triage.items import TriageItem
+    items: list[TriageItem] = []
+    for pe in entries:
+        item_dict = pe.item or {}
+        items.append(TriageItem(
+            id=pe.item_id,
+            text=item_dict.get("text", "") or "",
+            label=item_dict.get("label", "") or pe.item_id,
+            source=pe.source,
+            url=item_dict.get("url"),
+            metadata=item_dict.get("metadata", {}) or {},
+        ))
+
+    # Run cluster_items. The function embeds + Louvains; failures
+    # (embedding service down, etc.) raise — catch and degrade.
+    try:
+        from work_buddy.triage.cluster import cluster_items as _cluster
+        triage_clusters = _cluster(items)
+    except Exception as exc:
+        logger.warning("cluster: cluster_items failed: %s", exc)
+        return None
+    if not triage_clusters:
+        return None
+
+    # Optional Sonnet-tier label per cluster.
+    skip_label = bool(cluster_cfg.get("skip_label_llm"))
+    intent_groups: list[dict[str, Any]] = []
+    if not skip_label:
+        try:
+            from work_buddy.triage.recommend import group_intents
+            data_type = cluster_cfg.get("data_type")
+            if not data_type:
+                # Infer from the dominant source. ``journal`` keeps
+                # the existing data_type behaviour; multi-source pools
+                # fall back to ``conversation`` (closest generic).
+                if sources == {"journal"} or sources == {"journal_thread"}:
+                    data_type = "journal"
+                elif sources == {"chrome"} or sources == {"chrome_tab"}:
+                    data_type = "chrome"
+                else:
+                    data_type = "conversation"
+            res = group_intents(
+                triage_clusters,
+                lens="intent",
+                data_type=data_type,
+            )
+            intent_groups = res.get("intent_groups", []) or []
+        except Exception as exc:
+            logger.warning("cluster: group_intents failed: %s", exc)
+            intent_groups = []
+
+    # Build a lookup from item_id → intent_group entry for label/
+    # rationale annotation.
+    label_by_cluster_id: dict[int, dict[str, Any]] = {}
+    if intent_groups:
+        # group_intents typically emits a list of {item_ids,
+        # group_label, rationale} entries; the field names vary
+        # slightly across data_types. Match by item_id intersection
+        # against each cluster.
+        cluster_member_lookup: dict[int, set[str]] = {
+            c.cluster_id: {it.id for it in c.items}
+            for c in triage_clusters
+        }
+        for ig in intent_groups:
+            ig_items = set(
+                ig.get("item_ids") or ig.get("tab_ids") or [],
+            )
+            if not ig_items:
+                continue
+            best_cluster_id = None
+            best_overlap = 0
+            for cid, members in cluster_member_lookup.items():
+                overlap = len(ig_items & members)
+                if overlap > best_overlap:
+                    best_cluster_id = cid
+                    best_overlap = overlap
+            if best_cluster_id is not None and best_cluster_id not in label_by_cluster_id:
+                label_by_cluster_id[best_cluster_id] = ig
+
+    cluster_dicts: list[dict[str, Any]] = []
+    for tc in triage_clusters:
+        ig = label_by_cluster_id.get(tc.cluster_id, {})
+        cluster_dicts.append({
+            "cluster_id": tc.cluster_id,
+            "cohesion": tc.cohesion,
+            "label": ig.get("group_label") or ig.get("description") or tc.label,
+            "intent_label": ig.get("group_label") or "",
+            "intent_rationale": ig.get("rationale") or "",
+            "item_ids": [it.id for it in tc.items],
+            "size": tc.size,
+        })
+    return cluster_dicts
 
 
 def _raw_intent_from_text(text: str, max_chars: int = 80) -> str:
