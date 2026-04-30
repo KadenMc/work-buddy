@@ -197,6 +197,21 @@ def check_obsidian_plugin_calendar() -> dict[str, Any]:
     return _check_obsidian_plugin("google-calendar")
 
 
+def check_thunderbird_bridge() -> dict[str, Any]:
+    """Runtime diagnostic for the thunderbird-work-buddy companion add-on.
+
+    Wraps :func:`work_buddy.email.providers.thunderbird.probe_thunderbird_bridge`.
+    Surfaces actionable detail strings: connection-file missing, port closed,
+    auth rejected, or "ok with N accessible accounts".
+    """
+    try:
+        from work_buddy.email.providers.thunderbird import probe_thunderbird_bridge
+    except ImportError as exc:
+        return {"ok": False, "detail": f"work_buddy.email module not importable: {exc}"}
+    available, reason = probe_thunderbird_bridge()
+    return {"ok": bool(available), "detail": reason or ("ok" if available else "not reachable")}
+
+
 # --- Sidecar service checks (combine process + HTTP health) ---
 
 def _check_sidecar_service(service_name: str, port: int) -> dict[str, Any]:

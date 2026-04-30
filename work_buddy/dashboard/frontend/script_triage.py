@@ -225,6 +225,117 @@ def _triage_review_script() -> str:
 //   onComplete(): optional; called after a successful submit. Modal
 //       path uses it to remove the workflow tab; Review tab uses it
 //       to refresh the pool.
+// Card-action helpers shared by the inline button (renderItem below)
+// and the Review-drawer (script_review.py). Module-scoped so they're
+// not redefined per render; defined as window properties so the drawer
+// can call them across script files.
+//
+// _wvExecuteAction(action) -> Promise<{success, error?, error_kind?, ...}>
+//   POSTs to /api/palette/execute and returns the parsed body, with a
+//   conservative default shape on network errors. Never raises.
+//
+// _wvExtractErrorKind(data) -> string | null
+//   Reads the response's nested capability-result error_kind. The
+//   /api/palette/execute envelope shape is:
+//      {success: true, result: <stringified-json>, provider: "work-buddy"}
+//   for short results, or a palette_result view for long ones. The
+//   underlying capability's error_kind lives inside the parsed result.
+//
+// _wvQuarantineEntry(group, item, errorKind, btn, row) -> Promise<void>
+//   Self-heal helper: when an action click learns the source is gone,
+//   POST a triage_pool_quarantine_entry call so the stale card vanishes.
+//   Visually fades out the row; the next pool fetch confirms removal.
+if (!window._wvExecuteAction) {
+    window._wvExecuteAction = async function(action) {
+        try {
+            const resp = await fetch('/api/palette/execute', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    command_id: action.command_id,
+                    params: action.params || {},
+                }),
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok && data.success !== false) {
+                return { success: false, error: 'HTTP ' + resp.status, http_status: resp.status };
+            }
+            return data || { success: false, error: 'Empty response' };
+        } catch (err) {
+            return { success: false, error: String(err) };
+        }
+    };
+}
+if (!window._wvExtractErrorKind) {
+    window._wvExtractErrorKind = function(envelope) {
+        // Envelope is the /api/palette/execute response. The wrapped
+        // capability's verdict lives in `result` as a JSON string when
+        // small, or as a payload.result for palette_result views.
+        if (!envelope) return null;
+        // Newer-style envelope already exposes error_kind directly.
+        if (typeof envelope.error_kind === 'string' && envelope.error_kind) return envelope.error_kind;
+        const r = envelope.result;
+        if (typeof r === 'string') {
+            try {
+                const parsed = JSON.parse(r);
+                if (parsed && typeof parsed.error_kind === 'string') return parsed.error_kind;
+            } catch (_) { /* not JSON — opaque string result */ }
+        } else if (r && typeof r === 'object' && typeof r.error_kind === 'string') {
+            return r.error_kind;
+        }
+        return null;
+    };
+}
+if (!window._wvQuarantineEntry) {
+    window._wvQuarantineEntry = async function(group, item, errorKind, btn, row) {
+        const runId = group && group.pool_run_id;
+        const itemId = item && item.id;
+        if (!runId || !itemId) {
+            // Can't self-heal without both ids. Surface the original
+            // error verbatim instead.
+            if (btn) {
+                btn.title = 'Source gone (' + errorKind + ') — could not auto-quarantine: missing run_id or item_id';
+                btn.classList.add('wv-item-action-btn-failed');
+            }
+            return;
+        }
+        try {
+            const resp = await fetch('/api/palette/execute', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    command_id: 'work-buddy::triage_pool_quarantine_entry',
+                    params: { run_id: runId, item_id: itemId, reason: 'source_removed' },
+                }),
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok || data.success === false) {
+                if (btn) {
+                    btn.title = 'Source gone — quarantine failed: ' + (data.error || 'unknown');
+                    btn.classList.add('wv-item-action-btn-failed');
+                }
+                return;
+            }
+            // Visually fade the row so the user sees the self-healing.
+            // The next /api/triage poll will drop it from the rendered
+            // list; this is just immediate feedback.
+            if (row) {
+                row.classList.add('wv-item-quarantined');
+                row.title = 'Source no longer found (' + errorKind + ') — quarantined';
+            }
+            if (btn) {
+                btn.textContent = 'Source gone — quarantined';
+                btn.classList.add('wv-item-action-btn-quarantined');
+            }
+        } catch (err) {
+            if (btn) {
+                btn.title = 'Source gone — quarantine threw: ' + String(err);
+                btn.classList.add('wv-item-action-btn-failed');
+            }
+        }
+    };
+}
+
 function renderTriageReview(container, presentation, options) {
     const pres = presentation || {};
     options = options || {};
@@ -554,6 +665,51 @@ function renderTriageReview(container, presentation, options) {
         if (item.url) { labelEl.innerHTML = '<a href="' + item.url + '" target="_blank" title="' + item.url + '">' + item.label + '</a>'; }
         else { labelEl.textContent = item.label; }
         row.appendChild(labelEl);
+
+        // Per-source "open in app" actions (declared in SourceDescriptor
+        // config; resolved by work_buddy.triage.card_actions). Buttons
+        // sit next to the label; click POSTs to /api/palette/execute
+        // (the same endpoint the command palette uses). When no actions
+        // are emitted (chrome / journal / inline today), this block is a
+        // no-op and the existing href-link behavior is preserved.
+        if (Array.isArray(item.actions) && item.actions.length > 0) {
+            for (const act of item.actions) {
+                const btn = document.createElement('button');
+                btn.className = 'wv-item-action-btn';
+                btn.type = 'button';
+                btn.textContent = act.label;
+                btn.title = act.label + ' (via ' + (act.command_id || '') + ')';
+                btn.addEventListener('click', async (e) => {
+                    e.stopPropagation();
+                    btn.disabled = true;
+                    try {
+                        const data = await window._wvExecuteAction(act);
+                        if (data && data.success === false) {
+                            const msg = data.error || 'Action failed';
+                            const errorKind = window._wvExtractErrorKind(data);
+                            const ek = (act.quarantine_on_error_kinds || []);
+                            if (errorKind && ek.indexOf(errorKind) >= 0) {
+                                // Self-heal: source is gone. Mark this entry
+                                // quarantined so the stale card vanishes on
+                                // next pool read.
+                                await window._wvQuarantineEntry(group, item, errorKind, btn, row);
+                            } else {
+                                console.error('[triage] action failed:', msg);
+                                btn.title = msg;
+                                btn.classList.add('wv-item-action-btn-failed');
+                            }
+                        }
+                    } catch (err) {
+                        console.error('[triage] action threw:', err);
+                        btn.title = String(err);
+                        btn.classList.add('wv-item-action-btn-failed');
+                    } finally {
+                        btn.disabled = false;
+                    }
+                });
+                row.appendChild(btn);
+            }
+        }
 
         // Item-detail eye icon. Only rendered when the caller
         // supplied an onItemClick handler (Review tab wires this to

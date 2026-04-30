@@ -2321,6 +2321,76 @@ body {
     border-color: var(--accent);
 }
 
+/* Per-source "open in app" buttons on Review cards. Declared by each
+ * source's SourceDescriptor.open_action and rendered next to the item
+ * label. Click POSTs to /api/palette/execute. Visually consistent with
+ * .wv-item-detail-btn but slightly more emphasis (filled background)
+ * since they trigger an out-of-band action vs. the eye button which
+ * just opens the right-side drawer. */
+.wv-item-action-btn {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-secondary);
+    padding: 2px 8px;
+    font-size: 12px;
+    cursor: pointer;
+    margin-left: 6px;
+    line-height: 1;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.wv-item-action-btn:hover {
+    background: var(--accent);
+    color: var(--bg-primary);
+    border-color: var(--accent);
+}
+.wv-item-action-btn:disabled {
+    opacity: 0.5;
+    cursor: progress;
+}
+.wv-item-action-btn.wv-item-action-btn-failed {
+    border-color: var(--danger, #c44);
+    color: var(--danger, #c44);
+}
+.wv-item-action-btn.wv-item-action-btn-quarantined {
+    border-color: var(--warning, #cc8);
+    color: var(--warning, #cc8);
+    background: transparent;
+}
+
+/* Visual cue when an action's failure response triggered an auto-
+ * quarantine on the row. The next pool poll will drop the card; this
+ * fade is the immediate feedback. */
+.wv-item.wv-item-quarantined {
+    opacity: 0.45;
+    text-decoration: line-through;
+    text-decoration-color: var(--warning, #cc8);
+}
+
+/* Same styling for the right-side drawer's actions section. */
+.review-drawer-action-btn {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-primary);
+    padding: 6px 12px;
+    font-size: 13px;
+    cursor: pointer;
+    margin-right: 6px;
+    margin-top: 4px;
+    line-height: 1.2;
+    transition: background 0.15s, border-color 0.15s;
+}
+.review-drawer-action-btn:hover {
+    background: var(--accent);
+    color: var(--bg-primary);
+    border-color: var(--accent);
+}
+.review-drawer-action-btn:disabled {
+    opacity: 0.5;
+    cursor: progress;
+}
+
 /* Right-side drawer. Persistent in the DOM; slides in/out via a
  * CSS translate. Takes ~420px on wide screens, full-width on
  * narrow. Overlays the page content rather than reflowing it — the

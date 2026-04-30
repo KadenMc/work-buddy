@@ -267,6 +267,41 @@ _register(ComponentDef(
 ))
 
 _register(ComponentDef(
+    id="thunderbird",
+    display_name="Thunderbird Email Bridge",
+    category="integration",
+    health_source="tool_probe",
+    requirements=["integrations/thunderbird/bridge"],
+    check_sequence=[
+        CheckStep(
+            description=(
+                "thunderbird-work-buddy companion add-on responding on the "
+                "discovered localhost port"
+            ),
+            check_fn="work_buddy.health.checks.check_thunderbird_bridge",
+            on_fail=(
+                "The thunderbird-work-buddy bridge is not reachable. "
+                "Common causes:\n"
+                "  1. Thunderbird is closed — open it and re-probe.\n"
+                "  2. The companion add-on isn't installed in the active "
+                "Thunderbird profile. Install via "
+                "'Add-ons and Themes → ⚙ → Install Add-on From File' with "
+                "the freshly built dist/thunderbird-work-buddy.xpi.\n"
+                "  3. The add-on is installed but no accounts are ticked "
+                "in its options page (default-deny). Open the options "
+                "and tick the account(s) you want exposed.\n"
+                "  4. Stale connection file from a prior Thunderbird "
+                "session. Restart Thunderbird to refresh the per-startup "
+                "auth token.\n"
+                "  5. The integration is opted out via "
+                "tools.thunderbird.enabled: false — flip to true in "
+                "config.local.yaml after installing the add-on."
+            ),
+        ),
+    ],
+))
+
+_register(ComponentDef(
     id="chrome_extension",
     display_name="Chrome Tab Extension",
     category="integration",

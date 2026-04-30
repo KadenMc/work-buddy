@@ -163,6 +163,47 @@ _DEFAULT_REGISTRY: dict[str, dict[str, Any]] = {
             "capture_tag": "wb/captured",
         },
     },
+
+    # Email messages — captured from the local mail bridge by
+    # ``email_triage_run``. 7-day TTL: by then, an unread message that's
+    # still pending review is either already handled out of band or the
+    # user has moved on.
+    #
+    # ``source_removed`` fires when the email is no longer at its
+    # captured (provider_message_id, folder_path) — i.e., the user
+    # moved it (to Trash, Archive, another folder) or deleted it. The
+    # trigger is implemented in
+    # :func:`work_buddy.triage.sources_triggers.trigger_source_removed`
+    # and uses the bridge's ``POST /messages/exists`` endpoint. Bridge
+    # unavailability returns None (don't quarantine on ambiguity).
+    "email_message": {
+        "ttl_days": 7,
+        "quarantine_triggers": [TRIGGER_SOURCE_REMOVED],
+        "config": {
+            # Per-source "open in app" action, surfaced as a button on
+            # each Review card. Resolved by
+            # :func:`work_buddy.triage.card_actions.build_card_actions`
+            # and dispatched through the existing
+            # ``POST /api/palette/execute`` endpoint
+            # (command_id="work-buddy::email_display"). No new HTTP
+            # endpoint, no new frontend dispatch table — the descriptor
+            # is the only declaration point.
+            "open_action": {
+                "label": "Open in Thunderbird",
+                "capability": "email_display",
+                "param_map": {
+                    "provider_message_id": "metadata.provider_message_id",
+                    "folder_path":         "metadata.folder_path",
+                },
+                # When the user clicks the action and the bridge says
+                # the message is no longer findable, the dashboard
+                # auto-fires triage_pool_quarantine_entry so the stale
+                # card vanishes instead of lingering until the next
+                # cron sweep. Self-healing UX.
+                "quarantine_on_error_kinds": ["email_message_not_found"],
+            },
+        },
+    },
 }
 
 

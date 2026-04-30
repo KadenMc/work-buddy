@@ -669,6 +669,81 @@ _register(RequirementDef(
     fix_preview="Writes TELEGRAM_BOT_TOKEN=<your-token> to the repo .env file.",
 ))
 
+_register(RequirementDef(
+    id="integrations/thunderbird/bridge",
+    component="thunderbird",
+    description=(
+        "thunderbird-work-buddy companion add-on is installed, running, and "
+        "exposing at least one allowed account"
+    ),
+    check_fn="work_buddy.health.requirement_checks.check_thunderbird_bridge",
+    # Recommended, not required: Thunderbird email triage is opt-in. The
+    # `tools.thunderbird.enabled: false` default skips the probe entirely
+    # so users who don't use Thunderbird never see this as a "fix me" item.
+    severity="recommended",
+    fix_hint=(
+        "1. Install the thunderbird-work-buddy companion add-on:\n"
+        "     git clone https://github.com/KadenMc/thunderbird-work-buddy\n"
+        "     cd thunderbird-work-buddy\n"
+        "     node scripts/build-xpi.cjs\n"
+        "   Then in Thunderbird: Add-ons and Themes → ⚙ → Install Add-on\n"
+        "   From File…, pick dist/thunderbird-work-buddy.xpi.\n"
+        "2. Open the add-on's options page and TICK at least one account.\n"
+        "   (Default-deny: zero ticked accounts means the bridge exposes\n"
+        "   nothing.)\n"
+        "3. In config.local.yaml, set tools.thunderbird.enabled: true.\n"
+        "4. Reload the work-buddy registry:\n"
+        "     wb_run('mcp_registry_reload')"
+    ),
+    setup_group="thunderbird",
+    fix_kind="agent_handoff",
+    fix_preview=(
+        "Spawns a Claude Code session that walks through installing the "
+        "thunderbird-work-buddy add-on, allowing accounts, and flipping "
+        "tools.thunderbird.enabled in config.local.yaml."
+    ),
+    fix_agent_brief=(
+        "You are helping the user finish setting up the thunderbird-work-buddy "
+        "companion add-on so work-buddy can read email for triage. The "
+        "integration ships read-only in v1 (no compose/move/delete) and is "
+        "gated default-off; this fix walks the user from 'add-on installed' to "
+        "'wb_run(email_health) returns ok: true'.\n\n"
+        "## Steps\n\n"
+        "1. Confirm the companion repo is cloned. If not, point the user at "
+        "https://github.com/KadenMc/thunderbird-work-buddy. The repo lives "
+        "alongside work-buddy under <vault>/repos/.\n"
+        "2. Build + install the XPI:\n"
+        "     cd <repos>/thunderbird-work-buddy\n"
+        "     node scripts/build-xpi.cjs\n"
+        "     node scripts/install.cjs\n"
+        "   install.cjs auto-detects the active Thunderbird profile via "
+        "profiles.ini (handles default / default-release / default-esr).\n"
+        "3. Tell the user to install the add-on through Thunderbird's "
+        "Add-ons and Themes → ⚙ → Install Add-on From File…, picking the "
+        "freshly-built dist/thunderbird-work-buddy.xpi. Thunderbird ESR "
+        "doesn't enforce signing for this path.\n"
+        "4. Tell the user to open the add-on's Options page and TICK at "
+        "least one account. The default-deny copy on that page makes the "
+        "consequence explicit. Confirm the Status panel reads 'Bridge "
+        "running.' with a port (typically 27127).\n"
+        "5. In work-buddy/config.local.yaml, ensure:\n"
+        "     tools:\n"
+        "       thunderbird:\n"
+        "         enabled: true\n"
+        "6. Reload the registry: wb_run('mcp_registry_reload'). Then "
+        "wb_run('email_health') — expect ok: true and a non-zero "
+        "accessible_accounts count.\n"
+        "7. If ok: false, the 'reason' field tells you which step missed:\n"
+        "     - 'connection file missing' → add-on isn't running; restart TB\n"
+        "     - 'port … not accepting connections' → TB closed or extension "
+        "       crashed; check Thunderbird Error Console\n"
+        "     - 'rejected auth token' → stale connection file; restart TB\n"
+        "     - probe ok but accessible_accounts == 0 → no accounts ticked\n"
+        "Stop once the health check returns ok: true. Don't run "
+        "email_triage_run yet — the user may want to dry_run first."
+    ),
+))
+
 
 # ---------------------------------------------------------------------------
 # RequirementChecker

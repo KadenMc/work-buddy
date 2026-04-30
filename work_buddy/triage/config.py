@@ -189,6 +189,67 @@ def adapter_config(cfg: dict[str, Any], adapter_name: str) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Verdict-pass gating (per-source override)
+# ---------------------------------------------------------------------------
+
+# Stable mapping from human-friendly config keys to triage capability
+# call sites. The capability passes its own short name to
+# :func:`is_verdict_pass_enabled_for`; the config key is the user-facing
+# dial. ``TriageItem.source`` values (``journal_thread`` etc.) live in a
+# separate namespace because they describe the *captured thing*, not the
+# *user's domain*.
+#
+# Adding a new triage-source capability:
+#   1. Pick a friendly key (e.g. ``"web_browser"`` for Chrome triage).
+#   2. Add it to this dict with a one-line gloss for documentation.
+#   3. Have the capability call
+#      ``is_verdict_pass_enabled_for(cfg, "<your_key>")``.
+#   4. Document the dial in ``config.example.yaml`` under
+#      ``triage.verdict_pass.sources.*``.
+KNOWN_VERDICT_PASS_SOURCES: dict[str, str] = {
+    "journal":      "journal_triage_scan over Obsidian Running Notes",
+    "inline":       "inline_triage_scan over send-to-agent captures",
+    "email":        "email_triage_run over Thunderbird-bridge mail",
+    # web_browser: chrome_triage_scan does not yet ship a verdict pass.
+    # The key is reserved here so users can pre-stage the dial; it has
+    # no effect until that capability lands.
+    "web_browser":  "chrome_triage_scan over Chrome tab snapshots (future)",
+}
+
+
+def is_verdict_pass_enabled_for(cfg: dict[str, Any], source: str) -> bool:
+    """Resolve the verdict-pass gate for one triage source.
+
+    Resolution order, lowest → highest:
+      1. ``False`` (default if nothing else is set).
+      2. ``triage.verdict_pass.enabled`` (global default for all sources).
+      3. ``triage.verdict_pass.sources.<source>.enabled`` (per-source
+         override; explicitly ``true`` or ``false`` wins over the
+         global default).
+
+    Backwards-compatible: callers who keep the old global-only schema
+    (``triage.verdict_pass.enabled: true``) get exactly the previous
+    behavior — every source receives the same value.
+
+    Args:
+        cfg: Loaded triage config (output of :func:`load_triage_config`).
+        source: One of :data:`KNOWN_VERDICT_PASS_SOURCES` keys, or any
+            string. Unknown keys fall through to the global default;
+            this is intentional so a typo in a per-source override
+            never silently disables a real capability.
+
+    Returns:
+        ``True`` iff the verdict pass should run for this source.
+    """
+    vp = cfg.get("verdict_pass") or {}
+    sources = vp.get("sources") or {}
+    per_source = sources.get(source) or {}
+    if isinstance(per_source, dict) and "enabled" in per_source:
+        return bool(per_source["enabled"])
+    return bool(vp.get("enabled", False))
+
+
+# ---------------------------------------------------------------------------
 # Internals
 # ---------------------------------------------------------------------------
 

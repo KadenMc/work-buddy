@@ -102,6 +102,18 @@ DOMAINS: list[_DomainDef] = [
         "children_components": ["google_calendar"],
     },
     {
+        "id": "domain:email",
+        "label": "Email",
+        "description": (
+            "Email triage via the thunderbird-work-buddy companion add-on. "
+            "Read-only in v1: collects recent unread messages, drops them "
+            "into the triage Review pool, and lets work-buddy display "
+            "individual messages in Thunderbird. No compose / move / delete."
+        ),
+        "grouping_parents": [],
+        "children_components": ["thunderbird"],
+    },
+    {
         "id": "domain:runtime",
         "label": "Runtime",
         "description": (

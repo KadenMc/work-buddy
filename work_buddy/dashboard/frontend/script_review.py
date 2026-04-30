@@ -148,6 +148,52 @@ function openReviewDrawer(item, group, presentation) {
         body.appendChild(sec);
     }
 
+    // --- Per-source "open in app" actions (e.g. email → Thunderbird) ---
+    // Same shape and POST target as the inline buttons in script_triage.py.
+    // Source-of-truth: work_buddy.triage.card_actions.
+    if (Array.isArray(item.actions) && item.actions.length > 0) {
+        const sec = document.createElement('div');
+        sec.className = 'review-drawer-section';
+        sec.innerHTML = '<span class="review-drawer-section-label">Actions</span>';
+        for (const act of item.actions) {
+            const btn = document.createElement('button');
+            btn.className = 'review-drawer-action-btn';
+            btn.type = 'button';
+            btn.textContent = act.label;
+            btn.title = act.label + ' (via ' + (act.command_id || '') + ')';
+            btn.addEventListener('click', async (e) => {
+                e.stopPropagation();
+                btn.disabled = true;
+                try {
+                    const data = await window._wvExecuteAction(act);
+                    if (data && data.success === false) {
+                        const msg = data.error || 'Action failed';
+                        const errorKind = window._wvExtractErrorKind(data);
+                        const ek = (act.quarantine_on_error_kinds || []);
+                        if (errorKind && ek.indexOf(errorKind) >= 0) {
+                            // Self-heal: source is gone. Quarantine the
+                            // entry so the stale card vanishes from the
+                            // pool on next refresh. The drawer doesn't
+                            // have a row reference to fade out — feedback
+                            // is via button state + title only.
+                            await window._wvQuarantineEntry(group, item, errorKind, btn, null);
+                        } else {
+                            console.error('[review-drawer] action failed:', msg);
+                            btn.title = msg;
+                        }
+                    }
+                } catch (err) {
+                    console.error('[review-drawer] action threw:', err);
+                    btn.title = String(err);
+                } finally {
+                    btn.disabled = false;
+                }
+            });
+            sec.appendChild(btn);
+        }
+        body.appendChild(sec);
+    }
+
     // --- IR context hits (if the adapter attached any) ---
     const meta = item.metadata || {};
     const irHits = meta.ir_context || [];

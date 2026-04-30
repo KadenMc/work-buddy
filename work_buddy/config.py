@@ -74,6 +74,23 @@ DEFAULTS = {
         "messaging": {"enabled": True},
         "datacore": {"enabled": True},
         "google_calendar": {"enabled": True},
+        # Disabled by default — opt-in via config.local.yaml. Most users won't
+        # have Thunderbird + the thunderbird-work-buddy extension installed.
+        "thunderbird": {"enabled": False},
+    },
+    # Email integration. The default provider is "thunderbird" (talks HTTP
+    # to the thunderbird-work-buddy companion extension). Set "fake" for
+    # tests that exercise the pipeline without any local mail client.
+    "email": {
+        "enabled": True,
+        "provider": "thunderbird",
+        "candidate_days_back": 2,
+        "max_messages": 50,
+        "unread_only": True,
+        "include_body_chars": 4000,
+    },
+    "thunderbird": {
+        "timeout_seconds": 10,
     },
     "morning": {
         "phases": {
