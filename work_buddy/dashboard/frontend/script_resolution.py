@@ -57,10 +57,9 @@ window.mountResolutionSurface = function(container, presentation, options) {
     // Per-resolution-type placeholder copy — used when a card declares
     // a type Slice 1.5 doesn't fully render yet. The taxonomy strings
     // come from work_buddy.clarify.resolution; keep aligned by editing
-    // both sides.
+    // both sides. ``clarification`` was a Slice 1.5 placeholder; Slice 3
+    // ships its real renderer in ``_renderClarificationCard`` below.
     const PLACEHOLDER_BY_TYPE = {
-        clarification: { slice: 'Slice 3',
-            note: 'Clarification cards generalize the chrome-triage clarify modal; that wiring lands with the new Clarify schema.' },
         placement:     { slice: 'Slice 6',
             note: 'Reference filing surfaces live in the Reference filing pipeline.' },
         decomposition: { slice: 'Slice 7',
@@ -69,6 +68,15 @@ window.mountResolutionSurface = function(container, presentation, options) {
             note: 'Plan approval cards land with the risk-model + automation tiers.' },
         output_review: { slice: 'Slice 4',
             note: 'Output review cards land with tier-3 automation.' },
+    };
+
+    // Slice 3: per-destination presentation hints for the records
+    // panel rendered on multi-record cards.
+    const DESTINATION_DISPLAY = {
+        task:           { icon: '✓',  label: 'Task',      tone: 'task' },
+        reference:      { icon: '📚', label: 'Reference', tone: 'reference' },
+        calendar_only:  { icon: '📅', label: 'Calendar',  tone: 'calendar' },
+        delete:         { icon: '🗑',  label: 'Delete',    tone: 'delete' },
     };
 
     // Decoration callback — run after each card lands in the DOM.
@@ -142,6 +150,53 @@ window.mountResolutionSurface = function(container, presentation, options) {
                             + _resEsc(ph.note);
                         main.insertBefore(note, main.firstChild);
                     }
+                }
+            }
+        }
+
+        // 3.5) Slice 3: multi-record records panel ------------------
+        // For cards whose backend verdict carries a non-empty
+        // records[], render a panel showing each record's destination
+        // + summary so the user can see what the agent proposed.
+        // Idempotent across re-renders.
+        const existingRecords = cardEl.querySelector('.wv-records-panel');
+        if (existingRecords) existingRecords.remove();
+        if (group.is_multi_record && Array.isArray(group.records) && group.records.length > 0) {
+            const body = cardEl.querySelector('.wv-card-body');
+            const main = body && body.querySelector('.wv-card-main');
+            if (main) {
+                const panel = _resBuildRecordsPanel(group.records);
+                // Insert after rationale, before pills.
+                const pills = main.querySelector('.wv-action-pills');
+                if (pills) main.insertBefore(panel, pills);
+                else main.appendChild(panel);
+            }
+        }
+
+        // 3.6) Slice 3: clarification (refusal) card --------------
+        // When the verdict declared a refusal, the agent stopped at a
+        // question. Render the question + an answer textarea + a Send
+        // button that POSTs to /api/triage/redirect with the user's
+        // answer as forced_context. Idempotent across re-renders.
+        const existingClarify = cardEl.querySelector('.wv-clarify-block');
+        if (existingClarify) existingClarify.remove();
+        if (
+            group.resolution_type === 'clarification'
+            && group.refusal && group.refusal.question
+        ) {
+            const item2 = (group.items && group.items[0]) || null;
+            if (item2 && item2.pool_run_id && item2.id) {
+                const body = cardEl.querySelector('.wv-card-body');
+                const main = body && body.querySelector('.wv-card-main');
+                if (main) {
+                    const block = _resBuildClarificationBlock(
+                        cardEl, group, item2,
+                    );
+                    // Insert after rationale, before pills (or at top
+                    // when no pills exist).
+                    const pills = main.querySelector('.wv-action-pills');
+                    if (pills) main.insertBefore(block, pills);
+                    else main.appendChild(block);
                 }
             }
         }
@@ -485,6 +540,176 @@ function _resToggleHelpOverlay(container) {
 }
 
 
+// ---- Slice 3 multi-record records panel -----------------------------------
+
+function _resBuildRecordsPanel(records) {
+    const panel = document.createElement('div');
+    panel.className = 'wv-records-panel';
+
+    const header = document.createElement('div');
+    header.className = 'wv-records-header';
+    header.innerHTML = '<strong>Agent’s proposed records</strong> '
+        + '<span class="wv-records-count">(' + records.length + ')</span>';
+    panel.appendChild(header);
+
+    const list = document.createElement('div');
+    list.className = 'wv-records-list';
+
+    const DESTINATION_DISPLAY = {
+        task:           { icon: '✓', label: 'Task',      tone: 'task' },
+        reference:      { icon: '\u{1F4DA}', label: 'Reference', tone: 'reference' },
+        calendar_only:  { icon: '\u{1F4C5}', label: 'Calendar',  tone: 'calendar' },
+        delete:         { icon: '\u{1F5D1}', label: 'Delete',    tone: 'delete' },
+    };
+
+    records.forEach((rec, idx) => {
+        if (!rec || typeof rec !== 'object') return;
+        const dest = rec.destination || 'unknown';
+        const display = DESTINATION_DISPLAY[dest] || { icon: '?', label: dest, tone: 'unknown' };
+
+        const row = document.createElement('div');
+        row.className = 'wv-record-row tone-' + display.tone;
+
+        const tag = document.createElement('span');
+        tag.className = 'wv-record-tag';
+        tag.textContent = display.icon + ' ' + display.label;
+        row.appendChild(tag);
+
+        const summary = document.createElement('span');
+        summary.className = 'wv-record-summary';
+        summary.textContent = _resRecordSummary(rec, dest);
+        row.appendChild(summary);
+
+        list.appendChild(row);
+    });
+
+    panel.appendChild(list);
+    return panel;
+}
+
+function _resRecordSummary(rec, dest) {
+    if (dest === 'task') {
+        const p = rec.task_proposal || {};
+        const text = p.suggested_task_text || '(unnamed task)';
+        const target = p.target_task_id ? ' → ' + p.target_task_id : '';
+        const dl = p.has_deadline ? ' ⏰ ' + (p.deadline_date || 'soon') : '';
+        return text + target + dl;
+    }
+    if (dest === 'reference') {
+        const p = rec.reference_proposal || {};
+        return p.summary || '(no summary)';
+    }
+    if (dest === 'calendar_only') {
+        const p = rec.calendar_proposal || {};
+        const dt = p.datetime ? ' (' + p.datetime + ')' : '';
+        return (p.title || '(untitled event)') + dt;
+    }
+    if (dest === 'delete') {
+        return rec.delete_reason || '(no reason given)';
+    }
+    return JSON.stringify(rec).slice(0, 80);
+}
+
+
+// ---- Slice 3 clarification card (refusal-bearing verdict) -----------------
+
+function _resBuildClarificationBlock(cardEl, group, item) {
+    const wrap = document.createElement('div');
+    wrap.className = 'wv-clarify-block';
+
+    const intro = document.createElement('div');
+    intro.className = 'wv-clarify-intro';
+    intro.innerHTML = '<span class="wv-clarify-icon">❔</span> '
+        + '<strong>The agent paused on a question:</strong>';
+    wrap.appendChild(intro);
+
+    const q = document.createElement('div');
+    q.className = 'wv-clarify-question';
+    q.textContent = group.refusal.question || '(no question text)';
+    wrap.appendChild(q);
+
+    // Optional missing_context list (Slice 3 schema field).
+    const missing = (group.refusal && group.refusal.missing_context) || [];
+    if (Array.isArray(missing) && missing.length > 0) {
+        const mc = document.createElement('div');
+        mc.className = 'wv-clarify-missing';
+        mc.innerHTML = '<span class="wv-clarify-missing-label">Missing context:</span> '
+            + missing.map(m => '<code>' + _resEsc(String(m)) + '</code>').join(', ');
+        wrap.appendChild(mc);
+    }
+
+    const ta = document.createElement('textarea');
+    ta.className = 'wv-clarify-input';
+    ta.rows = 2;
+    ta.placeholder = 'Type your answer…';
+    wrap.appendChild(ta);
+
+    const buttons = document.createElement('div');
+    buttons.className = 'wv-clarify-buttons';
+
+    const sendBtn = document.createElement('button');
+    sendBtn.type = 'button';
+    sendBtn.className = 'wv-res-btn wv-clarify-send';
+    sendBtn.textContent = 'Send answer';
+    sendBtn.title = 'Re-run the Clarify pass with this answer as forced context';
+    sendBtn.addEventListener('click', () =>
+        _resSendClarification(cardEl, group, item, ta, sendBtn),
+    );
+    buttons.appendChild(sendBtn);
+    wrap.appendChild(buttons);
+
+    return wrap;
+}
+
+async function _resSendClarification(cardEl, group, item, textareaEl, btnEl) {
+    const answer = (textareaEl.value || '').trim();
+    if (!answer) {
+        textareaEl.focus();
+        textareaEl.classList.add('wv-clarify-input-error');
+        setTimeout(() => textareaEl.classList.remove('wv-clarify-input-error'), 1200);
+        return;
+    }
+    btnEl.disabled = true;
+    const orig = btnEl.textContent;
+    btnEl.textContent = 'Sending…';
+    try {
+        const r = await fetch('/api/triage/redirect', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                pool_run_id: item.pool_run_id,
+                item_id: item.id,
+                forced_context: {
+                    answer: answer,
+                    question: (group.refusal && group.refusal.question) || '',
+                    missing_context: (group.refusal && group.refusal.missing_context) || [],
+                },
+                target_step: 'clarify',
+            }),
+        });
+        const data = await r.json();
+        if (!data || data.status !== 'ok') {
+            console.error('[clarify] redirect failed:', data);
+            btnEl.textContent = 'Failed';
+            setTimeout(() => { btnEl.disabled = false; btnEl.textContent = orig; }, 1800);
+            return;
+        }
+        cardEl.classList.add('wv-card-redirected');
+        cardEl.style.transition = 'opacity 0.25s';
+        cardEl.style.opacity = '0.45';
+        const ack = document.createElement('div');
+        ack.className = 'wv-res-redirect-ack';
+        ack.textContent = 'Answer sent. The Clarify pass will re-run with this context.';
+        const wrap = btnEl.closest('.wv-clarify-block');
+        if (wrap) wrap.replaceWith(ack);
+    } catch (e) {
+        console.error('[clarify] send threw:', e);
+        btnEl.textContent = 'Failed';
+        setTimeout(() => { btnEl.disabled = false; btnEl.textContent = orig; }, 1800);
+    }
+}
+
+
 // ---- Helpers --------------------------------------------------------------
 
 function _resEsc(s) {
@@ -654,5 +879,113 @@ def _resolution_surface_styles() -> str:
     border: 1px solid var(--border-muted, #ccc);
     background: var(--bg-secondary, #f5f5f5);
     cursor: pointer;
+}
+
+/* Slice 3 multi-record records panel */
+
+.wv-records-panel {
+    border: 1px solid var(--border-muted, #ddd);
+    border-left: 3px solid var(--accent, #4a6fa5);
+    background: var(--bg-secondary, #fafafa);
+    border-radius: 6px;
+    padding: 8px 10px;
+    margin: 8px 0 10px 0;
+    font-size: 12px;
+}
+.wv-records-header {
+    margin-bottom: 6px;
+    font-size: 12px;
+    color: var(--text-primary, #222);
+}
+.wv-records-count {
+    color: var(--text-muted, #888);
+    font-weight: normal;
+}
+.wv-records-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+.wv-record-row {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 4px 6px;
+    border-radius: 4px;
+    background: var(--bg-primary, #fff);
+}
+.wv-record-row.tone-task      { border-left: 2px solid #4a8a4a; }
+.wv-record-row.tone-reference { border-left: 2px solid #4a6fa5; }
+.wv-record-row.tone-calendar  { border-left: 2px solid #b58a00; }
+.wv-record-row.tone-delete    { border-left: 2px solid #aa4a4a; }
+.wv-record-row.tone-unknown   { border-left: 2px solid #888;    }
+.wv-record-tag {
+    flex: 0 0 auto;
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--text-muted, #555);
+}
+.wv-record-summary {
+    flex: 1 1 auto;
+    color: var(--text-primary, #222);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Slice 3 clarification (refusal) card */
+
+.wv-clarify-block {
+    border: 1px solid #f0d878;
+    background: #fff8e6;
+    border-radius: 6px;
+    padding: 10px 12px;
+    margin: 8px 0 10px 0;
+    color: #5a4500;
+}
+.wv-clarify-intro {
+    margin-bottom: 6px;
+    font-size: 12px;
+}
+.wv-clarify-icon {
+    font-size: 14px;
+    margin-right: 4px;
+}
+.wv-clarify-question {
+    font-size: 13px;
+    margin-bottom: 8px;
+    font-style: italic;
+}
+.wv-clarify-missing {
+    font-size: 11px;
+    color: #6a4b00;
+    margin-bottom: 8px;
+}
+.wv-clarify-missing code {
+    background: rgba(0,0,0,0.06);
+    padding: 1px 4px;
+    border-radius: 3px;
+    font-size: 10px;
+}
+.wv-clarify-input {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 6px 8px;
+    border: 1px solid #d8c060;
+    border-radius: 4px;
+    font-family: inherit;
+    font-size: 13px;
+    resize: vertical;
+}
+.wv-clarify-input-error { border-color: #c33; box-shadow: 0 0 0 2px rgba(204,51,51,0.15); }
+.wv-clarify-buttons {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 6px;
+}
+.wv-clarify-send {
+    background: #b58a00;
+    color: #fff;
+    border-color: transparent;
 }
 """
