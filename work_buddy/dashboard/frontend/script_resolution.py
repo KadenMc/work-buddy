@@ -548,7 +548,7 @@ function _resBuildRecordsPanel(records) {
 
     const header = document.createElement('div');
     header.className = 'wv-records-header';
-    header.innerHTML = '<strong>Agent’s proposed records</strong> '
+    header.innerHTML = '<strong>Agent’s proposed actions</strong> '
         + '<span class="wv-records-count">(' + records.length + ')</span>';
     panel.appendChild(header);
 
