@@ -341,6 +341,11 @@ function renderTriageReview(container, presentation, options) {
     options = options || {};
     const onSubmit = options.onSubmit || (async () => {});
     const onComplete = options.onComplete || (() => {});
+    // Slice 1.5 hook: callers (notably the Resolution Surface) supply
+    // a per-card decoration callback that runs after a card is rendered
+    // and after any targeted re-render. Default is a no-op so the
+    // Chrome triage modal and tests keep their existing behaviour.
+    const decorateCard = options.decorateCard || (() => {});
     const ACTIONS = ['close', 'create_task', 'record_into_task', 'group', 'leave'];
     const ACTION_LABELS = {
         close: 'Close', create_task: 'Create Task', record_into_task: 'Record Into Task',
@@ -593,6 +598,14 @@ function renderTriageReview(container, presentation, options) {
         }
 
         parent.appendChild(card);
+
+        // Slice 1.5 decoration hook — invoked after the card lands in
+        // its parent so callers can add per-card affordances (defer
+        // button, redirect button, blocker badge) without forking the
+        // renderer. Re-runs on every targeted re-render via rerenderCard.
+        try { decorateCard(card, group); } catch (e) {
+            console.error('[triage] decorateCard threw:', e);
+        }
     }
 
     // Collect the single-group decision payload + send it via the
@@ -667,7 +680,7 @@ function renderTriageReview(container, presentation, options) {
         row.appendChild(labelEl);
 
         // Per-source "open in app" actions (declared in SourceDescriptor
-        // config; resolved by work_buddy.triage.card_actions). Buttons
+        // config; resolved by work_buddy.clarify.card_actions). Buttons
         // sit next to the label; click POSTs to /api/palette/execute
         // (the same endpoint the command palette uses). When no actions
         // are emitted (chrome / journal / inline today), this block is a

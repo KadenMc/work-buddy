@@ -1097,7 +1097,7 @@ def static_vendor(filename: str):
 # composed presentation without opening the legacy modal, and posts
 # back approved decisions through the existing triage execute path.
 # Same action taxonomy as the Chrome triage modal; source-aware note
-# headers come for free via ``work_buddy.triage.execute``.
+# headers come for free via ``work_buddy.clarify.execute``.
 
 
 @app.get("/api/review")
@@ -1109,7 +1109,7 @@ def api_review_pool():
         adapter: optional adapter-name filter.
         max_items: cap on pending entries (default 100).
     """
-    from work_buddy.triage.capabilities.triage_review_pool import triage_review_pool
+    from work_buddy.clarify.capabilities.triage_review_pool import triage_review_pool
 
     source = request.args.get("source") or None
     adapter = request.args.get("adapter") or None
@@ -1153,8 +1153,8 @@ def api_review_execute():
             "error": "presentation.groups_by_action is required",
         }), 400
 
-    from work_buddy.triage.execute import execute_triage_decisions
-    from work_buddy.triage.background import get_pool
+    from work_buddy.clarify.execute import execute_triage_decisions
+    from work_buddy.clarify.background import get_pool
     from work_buddy.consent import user_initiated
 
     # The user clicked Submit on a Review-tab card. That click IS the
@@ -1203,8 +1203,17 @@ def api_review_execute():
     succeeded_item_ids: set[str] = set()
     details = (executed or {}).get("details", {}) or {}
     for bucket_name in (
+        # Legacy buckets (Slice 1 actions).
         "tasks_created", "tasks_recorded", "grouped",
         "closed", "left",
+        # Slice 3 buckets — multi-record execution feeds these for
+        # destinations that aren't yet wired (reference, calendar) and
+        # for the Slice 3-only ``delete`` destination. Each entry carries
+        # ``item_id`` scalar (per-record) so the singular branch below
+        # picks them up. ``records_executed`` carries ``item_ids`` list
+        # (per-group rollup, in addition to the per-record entries).
+        "deleted", "references_logged", "calendar_logged",
+        "records_executed",
     ):
         for entry in details.get(bucket_name, []) or []:
             # Plural form: item_ids list
@@ -1262,6 +1271,183 @@ def api_review_execute():
         "executed": executed,
         "pool_updates": stamped,
         "operation_errors": op_errors,  # explicit top-level surfacing
+    })
+
+
+# ---------------------------------------------------------------------------
+# Resolution Surface (Slice 1.5) — defer + redirect surfaces
+# ---------------------------------------------------------------------------
+#
+# The Resolution Surface complements ``/api/review/execute`` with two
+# user-initiated micro-actions that don't go through the triage executor:
+#
+#   POST /api/triage/defer    — "Later" path; bumps ``attraction_passes``
+#   POST /api/triage/redirect — Re-direct mode; persists ``forced_context``
+#                                + quarantines so the entry doesn't keep
+#                                rendering with stale agent reasoning
+#
+# Both wrap ``user_initiated`` so nested @requires_consent gates pass
+# through (see ``notifications/consent`` knowledge unit). Both narrow
+# entry targeting to ``(pool_run_id, item_id)`` — never bulk-touch the
+# whole presentation.
+
+@app.post("/api/triage/defer")
+def api_triage_defer():
+    """One-click "Later" defer for a pool entry (Slice 1.5).
+
+    Bumps ``attraction_passes`` on the entry. Does NOT mark the entry
+    reviewed — the user said "not now," not "I acted on it." Slice 8
+    will read ``attraction_passes`` for resurfacing priority.
+
+    Request body: ``{"pool_run_id": "...", "item_id": "..."}``.
+    Response: ``{"status": "ok", "bumped": 0|1, "attraction_passes": N}``.
+    """
+    rejected = _reject_read_only()
+    if rejected is not None:
+        return rejected
+
+    data = request.get_json(silent=True) or {}
+    run_id = (data.get("pool_run_id") or "").strip()
+    item_id = (data.get("item_id") or "").strip()
+    if not run_id or not item_id:
+        return jsonify({
+            "status": "error",
+            "error": "pool_run_id and item_id are required",
+        }), 400
+
+    from work_buddy.clarify.background import get_pool
+    from work_buddy.consent import user_initiated
+
+    try:
+        # The user clicked Later. That click IS the consent for the
+        # increment; consent-gated dependencies (e.g. future audit-log
+        # writes) pass through.
+        with user_initiated("dashboard.resolution_defer"):
+            bumped = get_pool().increment_attraction_pass([(run_id, item_id)])
+    except Exception as exc:
+        logger.exception("api_triage_defer: increment failed")
+        return jsonify({"status": "error", "error": str(exc)}), 500
+
+    # Re-read the entry so the client can render the updated count.
+    new_count: int | None = None
+    try:
+        for pe in get_pool().all_entries():
+            if pe.run_id == run_id and pe.item_id == item_id:
+                new_count = int(pe.attraction_passes or 0)
+                break
+    except Exception:
+        pass
+
+    return jsonify({
+        "status": "ok",
+        "bumped": bumped,
+        "attraction_passes": new_count,
+    })
+
+
+@app.post("/api/triage/redirect")
+def api_triage_redirect():
+    """Re-direct mode for a pool entry (Slice 1.5).
+
+    Persists user-supplied ``forced_context`` on the entry and
+    quarantines the current entry so the stale verdict drops out of
+    the active surface. The actual pipeline re-run with the forced
+    context is wired in by Slice 3 (Clarify rewrite); Slice 1.5 lays
+    the surface and the persistence so Slice 3 has the data when it
+    lands.
+
+    Request body::
+
+        {
+          "pool_run_id": "...",
+          "item_id": "...",
+          "forced_context": {
+              "freeform": "...",            # user's free-text reroute
+              "project": "personal/finance" # optional structured field
+              # ... extensible, opaque to Slice 1.5
+          },
+          "target_step": "clarify"          # default; reserved for Slice 3
+        }
+
+    Response::
+
+        {"status": "ok", "stored": true, "quarantined": 1,
+         "target_step": "clarify"}
+    """
+    rejected = _reject_read_only()
+    if rejected is not None:
+        return rejected
+
+    data = request.get_json(silent=True) or {}
+    run_id = (data.get("pool_run_id") or "").strip()
+    item_id = (data.get("item_id") or "").strip()
+    forced_context = data.get("forced_context") or {}
+    target_step = (data.get("target_step") or "clarify").strip()
+
+    if not run_id or not item_id:
+        return jsonify({
+            "status": "error",
+            "error": "pool_run_id and item_id are required",
+        }), 400
+    if not isinstance(forced_context, dict):
+        return jsonify({
+            "status": "error",
+            "error": "forced_context must be an object",
+        }), 400
+    # Reject empty redirects — they'd just be a fancy stale-mark with
+    # no signal for Slice 3 to act on. Free-text or any structured
+    # field qualifies.
+    has_signal = any(
+        bool(v) if not isinstance(v, str) else bool(v.strip())
+        for v in forced_context.values()
+    )
+    if not has_signal:
+        return jsonify({
+            "status": "error",
+            "error": "forced_context must include at least one non-empty value",
+        }), 400
+
+    # Stamp target_step inside the persisted payload so Slice 3 doesn't
+    # have to re-derive it. Default ``clarify`` matches the canonical
+    # re-queue path; explicit values from the frontend are preserved.
+    payload = dict(forced_context)
+    payload.setdefault("target_step", target_step)
+
+    from work_buddy.clarify.background import get_pool, STATE_QUARANTINED
+    from work_buddy.consent import user_initiated
+
+    pool = get_pool()
+    try:
+        with user_initiated("dashboard.resolution_redirect"):
+            stored = pool.store_forced_context(run_id, item_id, payload)
+            if not stored:
+                return jsonify({
+                    "status": "error",
+                    "error": (
+                        f"Pool entry not found "
+                        f"(run_id={run_id!r}, item_id={item_id!r})."
+                    ),
+                }), 404
+            # Quarantine the current entry — its agent-side verdict is
+            # premised on context the user just rejected. Fresh output
+            # will arrive when Slice 3's re-queue path runs. Reason
+            # ``user_redirected`` is a new value but ``mark_state``
+            # accepts arbitrary reason strings; quarantine_reason is
+            # free-form metadata.
+            quarantined = pool.mark_state(
+                [(run_id, item_id)],
+                state=STATE_QUARANTINED,
+                reason="user_redirected",
+            )
+    except Exception as exc:
+        logger.exception("api_triage_redirect: persist failed")
+        return jsonify({"status": "error", "error": str(exc)}), 500
+
+    return jsonify({
+        "status": "ok",
+        "stored": True,
+        "quarantined": quarantined,
+        "target_step": target_step,
     })
 
 

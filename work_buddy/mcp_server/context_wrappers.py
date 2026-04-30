@@ -643,7 +643,7 @@ def triage_item_detail_wrapper(
         include_raw: If True, also return raw page content.
         max_raw_chars: Max characters of raw content.
     """
-    from work_buddy.triage.detail import triage_item_detail_capability
+    from work_buddy.clarify.detail import triage_item_detail_capability
     return triage_item_detail_capability(
         item_id=item_id,
         include_raw=include_raw,
@@ -1629,7 +1629,7 @@ def triage_execute(
     presentation: dict,
 ) -> dict:
     """Execute triage decisions from the review view."""
-    from work_buddy.triage.execute import execute_triage_decisions
+    from work_buddy.clarify.execute import execute_triage_decisions
     return execute_triage_decisions(decisions, presentation)
 
 

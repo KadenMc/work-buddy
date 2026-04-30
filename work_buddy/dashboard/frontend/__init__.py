@@ -29,6 +29,10 @@ from .script_costs import _costs_script
 from .script_main import _script
 from .script_notifications import _notification_script
 from .script_palette import _command_palette_script
+from .script_resolution import (
+    _resolution_surface_script,
+    _resolution_surface_styles,
+)
 from .script_review import _review_script
 from .script_settings import _settings_script
 from .script_threads import _thread_chat_script
@@ -58,6 +62,11 @@ def render_page() -> str:
         _notification_script(),
         _triage_clarify_script(),
         _triage_review_script(),
+        # script_resolution must come AFTER script_triage so the
+        # decorator can call renderTriageReview (declared in
+        # _triage_review_script). The Resolution Surface mounts onto
+        # the existing renderer rather than replacing it.
+        _resolution_surface_script(),
         _review_script(),
         _settings_script(),
         _thread_chat_script(),
@@ -71,7 +80,8 @@ def render_page() -> str:
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>work-buddy dashboard</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-    <style>{_styles()}</style>
+    <style>{_styles()}
+{_resolution_surface_styles()}</style>
     <script src="/vendor/chart.umd.min.js"></script>
 </head>
 <body>

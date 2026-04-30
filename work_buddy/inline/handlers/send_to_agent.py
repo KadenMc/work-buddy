@@ -34,7 +34,7 @@ def _run_producer(
 ) -> None:
     """Thread target — invoke the triage-scan capability and log outcome."""
     try:
-        from work_buddy.triage.capabilities.inline_triage_scan import (
+        from work_buddy.clarify.capabilities.inline_triage_scan import (
             inline_triage_scan,
         )
 

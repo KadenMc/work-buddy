@@ -1,7 +1,7 @@
 """``projects`` context source — active projects + contracts.
 
 Consolidates the projects + contracts fetching that lived in
-:func:`work_buddy.triage.recommend.build_triage_context`. Emits two
+:func:`work_buddy.clarify.recommend.build_triage_context`. Emits two
 kinds of items — tagged by ``type`` so the renderer can split them
 into separate prompt sections.
 

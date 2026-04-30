@@ -1,12 +1,22 @@
 """Dashboard JS for the Review tab.
 
-Thin adapter: fetches the pending-review presentation and mounts it
-through the shared ``renderTriageReview`` renderer defined in
-``script_triage.py``. No custom card code — that renderer already
-handles action-column layout, override flow, drag-to-reassign, new
-groups, and submit. We just provide the ``onSubmit`` callback that
-posts decisions to ``/api/review/execute`` (which runs the triage
-executor AND marks pool entries reviewed).
+Thin adapter: fetches the pending-review presentation and mounts the
+Slice 1.5 Resolution Surface (``mountResolutionSurface`` defined in
+``script_resolution.py``), which decorates the shared
+``renderTriageReview`` renderer with type-aware affordances:
+
+- pipeline-blocker badges (typed reasons per ROADMAP §3.3)
+- attraction-passes count (Slice 8 will read this)
+- Defer button + ``s`` keybinding → POST /api/triage/defer
+- Re-direct button + ``r`` keybinding → POST /api/triage/redirect
+- keyboard navigation (j/k/enter/r/s/?)
+
+The underlying ``renderTriageReview`` still handles the per-card
+edit flow (action pills, drag-to-reassign, namespace tags, per-source
+open buttons). All Slice 1 patterns (user_initiated consent context,
+success-only mark_reviewed filter, operation_errors surfacing,
+raw-entry rendering, perGroupSubmit, bridge-timeout handling) are
+preserved by delegation through that renderer + ``/api/review/execute``.
 
 Originally (Phase 2 first pass) this file had its own simpler card
 renderer, but that duplicated the Chrome renderer's logic AND its
@@ -56,15 +66,17 @@ async function loadReview() {
     // its own header + stats + action-column grid.
     container.innerHTML = '';
 
-    if (typeof renderTriageReview !== 'function') {
-        container.innerHTML = '<div class="empty-state">renderTriageReview not loaded \u2014 ' +
-            'script_triage.py must be included in the page.</div>';
+    if (typeof window.mountResolutionSurface !== 'function') {
+        container.innerHTML = '<div class="empty-state">Resolution Surface not loaded \u2014 ' +
+            'script_resolution.py and script_triage.py must be included in the page.</div>';
         return;
     }
 
-    renderTriageReview(container, presentation, {
-        perGroupSubmit: true,
-        showNamespaceTags: true,
+    // Slice 1.5: mount the Resolution Surface (decorator over
+    // renderTriageReview). Adds typed pipeline-blocker badges,
+    // attraction_passes display, Defer + Re-direct affordances,
+    // and the j/k/enter/r/s/? keyboard layer.
+    window.mountResolutionSurface(container, presentation, {
         onSubmit: async (gd, reassignments) => {
             const resp = await fetchJSON('/api/review/execute', {
                 method: 'POST',
@@ -150,7 +162,7 @@ function openReviewDrawer(item, group, presentation) {
 
     // --- Per-source "open in app" actions (e.g. email → Thunderbird) ---
     // Same shape and POST target as the inline buttons in script_triage.py.
-    // Source-of-truth: work_buddy.triage.card_actions.
+    // Source-of-truth: work_buddy.clarify.card_actions.
     if (Array.isArray(item.actions) && item.actions.length > 0) {
         const sec = document.createElement('div');
         sec.className = 'review-drawer-section';

@@ -6,7 +6,7 @@ The backlog pipeline (``/wb-journal-backlog``) chains these in order:
    Running Notes section from a daily journal file.
 2. :func:`strip_banners` — remove carried-over banners.
 3. Line-range segmentation (in
-   :mod:`work_buddy.triage.adapters.journal._segment_with_escalation`)
+   :mod:`work_buddy.clarify.adapters.journal._segment_with_escalation`)
    — produce thread dicts via the LLM-partition + locally-assigned-id
    path.
 4. :func:`build_thread_manifest` — per-thread tag/summary generation
