@@ -33,6 +33,44 @@ def _event_bus_script() -> str:
 // must be idempotent and per-tab visibility refresh is handled by the
 // `visibilitychange` listener in script_main.py.
 (function() {
+    // Global morphdom-replace helper. Used by every panel renderer
+    // that needs to refresh content without destroying user state
+    // (focused inputs, scroll, drilled-in <details>). Same semantics
+    // as Phoenix LiveView / Hotwire: render fresh HTML, then diff
+    // against the live DOM in place.
+    //
+    // Usage: ``window._wbMorphReplace(el, htmlString)``. Behaves like
+    // ``el.innerHTML = htmlString`` when morphdom is unavailable.
+    //
+    // Used to obsolete each panel's wholesale ``container.innerHTML =``
+    // rewrite — the user's typing, scroll, and <details> open state
+    // survive automatically.
+    window._wbMorphReplace = function(el, html) {
+        if (!el) return;
+        if (typeof window.morphdom !== 'function') {
+            el.innerHTML = html;
+            return;
+        }
+        const stage = document.createElement(el.tagName);
+        stage.innerHTML = html;
+        try {
+            window.morphdom(el, stage, {
+                childrenOnly: true,
+                onBeforeElUpdated(fromEl, toEl) {
+                    if (fromEl.tagName === 'INPUT' || fromEl.tagName === 'TEXTAREA') {
+                        if (document.activeElement === fromEl) return false;
+                        const v = (fromEl.value || '').trim();
+                        if (v && (toEl.value || '').trim() === '') return false;
+                    }
+                    return !fromEl.isEqualNode(toEl);
+                },
+            });
+        } catch (e) {
+            console.error('[wbMorphReplace] threw, falling back to innerHTML:', e);
+            el.innerHTML = html;
+        }
+    };
+
     const handlers = new Map();   // event_type -> Set<handler>
     let es = null;
     let reconnectCount = 0;
@@ -208,11 +246,38 @@ def _event_bus_script() -> str:
         });
     });
 
-    // Tasks / Settings / Costs surfaces are wired in subsequent
-    // commits as their handles land. Until then, their events are
-    // intentionally NO-OPs at this dispatcher — the 30s timer is
-    // gone and switchTab refreshes on visit. No fallback to wholesale
-    // loaders is acceptable.
+    // Tasks / Settings / Costs surfaces use a morphdom-merge refresh
+    // pattern (Phoenix LiveView convention): the panel's own
+    // ``surface.refresh()`` re-fetches its API endpoint and merges
+    // fresh HTML into the live container via ``window._wbMorphReplace``.
+    // User state (focused inputs, scroll, drilled-in <details>) is
+    // preserved natively by morphdom — no panel-wide wipe ever occurs.
+    //
+    // Multiple events arriving in a burst are coalesced via a 250 ms
+    // debounce per surface so a probe_all triggering 8+
+    // ``component.health_changed`` events maps to ONE refresh.
+    const _refreshTimers = new Map();
+    function _refreshSoon(surfaceName) {
+        if (_refreshTimers.has(surfaceName)) {
+            clearTimeout(_refreshTimers.get(surfaceName));
+        }
+        const t = setTimeout(() => {
+            _refreshTimers.delete(surfaceName);
+            _withSurface(surfaceName, (s) => {
+                if (typeof s.refresh === 'function') s.refresh();
+            });
+        }, 250);
+        _refreshTimers.set(surfaceName, t);
+    }
+
+    window.eventBus.on('task.created',             () => _refreshSoon('tasksSurface'));
+    window.eventBus.on('task.state_changed',       () => _refreshSoon('tasksSurface'));
+    window.eventBus.on('task.description_changed', () => _refreshSoon('tasksSurface'));
+
+    window.eventBus.on('component.health_changed',     () => _refreshSoon('settingsSurface'));
+    window.eventBus.on('component.preference_changed', () => _refreshSoon('settingsSurface'));
+
+    window.eventBus.on('llm.call_logged', () => _refreshSoon('costsSurface'));
 
     // Diagnostics handles for tests.
     window.eventBus._panelHandlers = () => ({
@@ -220,6 +285,12 @@ def _event_bus_script() -> str:
         'pool.entry_state_changed':      'reviewSurface.removeCard|updateCard',
         'pool.attraction_passes_bumped': 'reviewSurface.bumpAttractionPasses',
         'pool.forced_context_stored':    'reviewSurface.setForcedContextStored',
+        'task.created':                  'tasksSurface.refresh (morphdom)',
+        'task.state_changed':            'tasksSurface.refresh (morphdom)',
+        'task.description_changed':      'tasksSurface.refresh (morphdom)',
+        'component.health_changed':      'settingsSurface.refresh (morphdom)',
+        'component.preference_changed':  'settingsSurface.refresh (morphdom)',
+        'llm.call_logged':               'costsSurface.refresh (morphdom)',
     });
 
     if (document.readyState === 'loading') {

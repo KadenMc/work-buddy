@@ -707,7 +707,11 @@ async function loadOverview() {
 function renderTaskTable(tasks) {
     const el = document.getElementById('task-list');
     if (tasks.length === 0) {
-        el.innerHTML = '<div class="empty-state">No matching tasks</div>';
+        if (typeof window._wbMorphReplace === 'function') {
+            window._wbMorphReplace(el, '<div class="empty-state">No matching tasks</div>');
+        } else {
+            el.innerHTML = '<div class="empty-state">No matching tasks</div>';
+        }
         return;
     }
     const rows = tasks.map(t => {
@@ -717,7 +721,10 @@ function renderTaskTable(tasks) {
         const markers = (t.markers || []).map(m =>
             `<span title="${m.label}${m.date ? ' ' + m.date : ''}" style="cursor:help">${m.emoji}</span>`
         ).join(' ') || '\u2014';
-        return `<tr>
+        // Per-row identity via data-task-id so morphdom can keep
+        // unchanged rows in place across refreshes (preserves any
+        // inline edit state, hover, scroll position).
+        return `<tr data-task-id="${t.id || ''}">
             <td>${statusBadge(t.state)}</td>
             <td>${t.text}</td>
             <td>${t.urgency !== 'none' ? statusBadge(t.urgency) : '\u2014'}</td>
@@ -726,7 +733,7 @@ function renderTaskTable(tasks) {
             <td><code>${t.id || '\u2014'}</code></td>
         </tr>`;
     }).join('');
-    el.innerHTML = `
+    const html = `
         <div class="task-list-scroll">
         <table class="data-table">
             <thead><tr><th>State</th><th>Task</th><th>Urgency</th><th>Markers</th><th>Note</th><th>ID</th></tr></thead>
@@ -734,6 +741,11 @@ function renderTaskTable(tasks) {
         </table>
         </div>
     `;
+    if (typeof window._wbMorphReplace === 'function') {
+        window._wbMorphReplace(el, html);
+    } else {
+        el.innerHTML = html;
+    }
 }
 
 // Namespace-tree state for the Tasks tab. null = "All tasks" lens.
@@ -796,6 +808,20 @@ async function loadTasks() {
         });
     }
 }
+
+// Surface handle for the Tasks tab. SSE handlers in script_event_bus.py
+// call refresh() on task.created / task.state_changed /
+// task.description_changed — re-runs _refreshTaskView which fetches
+// /api/tasks and morphdom-merges the table. The user's typing in
+// task-search and any other inputs survive natively.
+window.tasksSurface = {
+    refresh: function() {
+        if (typeof _refreshTaskView === 'function') return _refreshTaskView();
+    },
+    isMounted: function() {
+        return !!document.getElementById('task-list');
+    },
+};
 
 // Task filter composition:
 //
@@ -979,7 +1005,13 @@ async function _refreshTaskView() {
             <div class="card-value">${n}</div>
         </div>
     `).join('');
-    document.getElementById('task-counts').innerHTML = countCards || '<div class="empty-state">No tasks</div>';
+    const countsEl = document.getElementById('task-counts');
+    const countsHtml = countCards || '<div class="empty-state">No tasks</div>';
+    if (typeof window._wbMorphReplace === 'function') {
+        window._wbMorphReplace(countsEl, countsHtml);
+    } else {
+        countsEl.innerHTML = countsHtml;
+    }
 
     // Breadcrumb.
     const crumb = document.getElementById('task-namespace-breadcrumb');
