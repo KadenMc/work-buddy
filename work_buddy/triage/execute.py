@@ -59,10 +59,36 @@ def execute_triage_decisions(
         "left": [],
         "skipped_stale": [],
         "errors": [],
+        # Slice 3 buckets: separate from the legacy task buckets so
+        # callers can tell a multi-record execution apart from a
+        # legacy create_task. Slices 6/10 will wire executors for
+        # references_filed / calendar_added; today they're recorded
+        # as "logged only" so the user sees what would have happened.
+        "records_executed": [],
+        "references_logged": [],
+        "calendar_logged": [],
+        "deleted": [],
     }
 
+    # Slice 3 multi-record execution: any group whose presentation
+    # carries ``records: [...]`` runs through the per-record router
+    # below instead of the legacy action ops loop. The router still
+    # marks reviewed via the existing pool stamp path because it
+    # populates the same ``tasks_created`` / ``tasks_recorded`` /
+    # ``deleted`` buckets (with item_ids), and the dashboard's
+    # ``api_review_execute`` filter walks all buckets.
+    multi_record_decisions, legacy_decisions = _split_decisions_by_shape(
+        group_decisions, presentation,
+    )
+    if multi_record_decisions:
+        _execute_multi_record_decisions(
+            multi_record_decisions, item_lookup, presentation, results,
+            source=source,
+        )
+
     # Flatten: expand item overrides into per-item effective actions
-    ops = _plan_operations(group_decisions, item_lookup, presentation)
+    # (legacy path only — multi-record decisions handled above).
+    ops = _plan_operations(legacy_decisions, item_lookup, presentation)
 
     # Group operations by action for batch execution
     close_ops = [op for op in ops if op["action"] == "close"]
@@ -122,7 +148,7 @@ def execute_triage_decisions(
             results["left"].append({"item_id": item_id, "label": meta.get("label", item_id)})
 
     summary = {
-        "total_operations": len(ops),
+        "total_operations": len(ops) + len(multi_record_decisions),
         "closed": len(results["closed"]),
         "tasks_created": len(results["tasks_created"]),
         "tasks_recorded": len(results["tasks_recorded"]),
@@ -130,18 +156,373 @@ def execute_triage_decisions(
         "left": len(results["left"]),
         "skipped_stale": len(results["skipped_stale"]),
         "errors": len(results["errors"]),
+        # Slice 3 summary fields
+        "records_executed": len(results["records_executed"]),
+        "references_logged": len(results["references_logged"]),
+        "calendar_logged": len(results["calendar_logged"]),
+        "deleted": len(results["deleted"]),
         "details": results,
     }
 
     logger.info(
         "Triage executed: %d closed, %d tasks created, %d recorded, "
-        "%d grouped, %d left, %d stale, %d errors",
+        "%d grouped, %d left, %d stale, %d errors, "
+        "%d records executed, %d references logged, %d calendar logged, "
+        "%d deleted",
         summary["closed"], summary["tasks_created"],
         summary["tasks_recorded"], summary["grouped"],
         summary["left"], summary["skipped_stale"], summary["errors"],
+        summary["records_executed"], summary["references_logged"],
+        summary["calendar_logged"], summary["deleted"],
     )
 
     return summary
+
+
+# ── Slice 3: multi-record execution ────────────────────────────
+
+
+def _split_decisions_by_shape(
+    group_decisions: list[dict],
+    presentation: dict,
+) -> tuple[list[dict], list[dict]]:
+    """Partition decisions into multi-record vs legacy shape.
+
+    A decision targets a multi-record group when the corresponding
+    presentation_group carries a non-empty ``records: [...]`` field.
+    Empty records arrays go through the legacy path (treated as
+    ``leave`` — there's nothing to execute).
+    """
+    # Build group-by-index lookup once; presentation has groups_by_action
+    # keyed by legacy action strings, but groups themselves carry the
+    # records field on the same presentation_group dict.
+    groups_by_index: dict[int, dict] = {}
+    for action_groups in presentation.get("groups_by_action", {}).values():
+        for g in action_groups:
+            idx = g.get("index")
+            if isinstance(idx, int):
+                groups_by_index[idx] = g
+
+    multi: list[dict] = []
+    legacy: list[dict] = []
+    for gd in group_decisions:
+        idx = gd.get("group_index")
+        group = groups_by_index.get(idx) if isinstance(idx, int) else None
+        records = (group or {}).get("records") if isinstance(group, dict) else None
+        if isinstance(records, list) and records:
+            multi.append(gd)
+        else:
+            legacy.append(gd)
+    return multi, legacy
+
+
+def _execute_multi_record_decisions(
+    decisions: list[dict],
+    item_lookup: dict,
+    presentation: dict,
+    results: dict,
+    *,
+    source: str = "unknown",
+) -> None:
+    """Run Slice 3 records[] for each multi-record group decision.
+
+    Per-record routing:
+
+    - ``destination=task`` → create_task OR record_into_task depending
+      on whether the record's task_proposal carries ``target_task_id``.
+      Slice 2 metadata fields (kind, outcome_text, definition_of_done,
+      creation_effort, user_involvement, has_deadline / deadline_date /
+      has_dependency / dependency_hint) are forwarded to ``create_task``
+      via its kwargs when populated. Defaults preserve current behavior
+      when fields are absent.
+    - ``destination=delete`` → record the delete_reason in results
+      (no vault mutation; the pool entry is marked reviewed by the
+      existing executor success-filter path).
+    - ``destination=reference`` → log only. Slice 6 wires actual
+      reference filing.
+    - ``destination=calendar_only`` → log only. Slice 10 wires
+      calendar destinations.
+
+    User overrides apply at the GROUP level: if the user picked
+    ``action='leave'`` or ``action='close'`` on the whole group, the
+    records are skipped (no-op for leave; treated as a coarse delete
+    for close — record the override but don't run individual records).
+    """
+    groups_by_index: dict[int, dict] = {}
+    for action_groups in presentation.get("groups_by_action", {}).values():
+        for g in action_groups:
+            idx = g.get("index")
+            if isinstance(idx, int):
+                groups_by_index[idx] = g
+
+    for gd in decisions:
+        gidx = gd.get("group_index")
+        group = groups_by_index.get(gidx) if isinstance(gidx, int) else None
+        if not group:
+            continue
+        records = group.get("records") or []
+        item_ids = [it.get("id") for it in (group.get("items") or []) if it.get("id")]
+
+        # User-level override: leave skips everything; close treats
+        # the whole group as a coarse delete (records ignored, just
+        # logged so the user can see what was skipped).
+        user_action = gd.get("action", "")
+        if user_action == "leave":
+            for iid in item_ids:
+                meta = item_lookup.get(iid, {})
+                results["left"].append({"item_id": iid, "label": meta.get("label", iid)})
+            continue
+        if user_action == "close":
+            for iid in item_ids:
+                results["deleted"].append({
+                    "item_id": iid,
+                    "reason": "user_overrode_to_close",
+                    "records_skipped": len(records),
+                })
+            continue
+
+        # Default path: execute each record per its destination.
+        record_outcomes: list[dict[str, Any]] = []
+        for rec_idx, rec in enumerate(records):
+            dest = rec.get("destination")
+            try:
+                outcome = _execute_record(
+                    rec=rec, group=group, item_ids=item_ids,
+                    item_lookup=item_lookup, results=results,
+                    source=source,
+                    record_index=rec_idx,
+                )
+                record_outcomes.append(outcome)
+            except Exception as exc:
+                logger.error(
+                    "execute_record %s/%s failed: %s",
+                    gidx, rec_idx, exc,
+                )
+                results["errors"].append({
+                    "action": f"record:{dest}",
+                    "group_index": gidx,
+                    "record_index": rec_idx,
+                    "error": str(exc),
+                })
+
+        results["records_executed"].append({
+            "group_index": gidx,
+            "item_ids": item_ids,
+            "outcomes": record_outcomes,
+            "n_records": len(records),
+        })
+
+
+def _execute_record(
+    *,
+    rec: dict[str, Any],
+    group: dict[str, Any],
+    item_ids: list[str],
+    item_lookup: dict[str, Any],
+    results: dict[str, Any],
+    source: str,
+    record_index: int,
+) -> dict[str, Any]:
+    """Route one Slice 3 record to its destination handler.
+
+    Returns a per-record outcome dict so the caller can attach a
+    record-by-record audit trail to the group-level result.
+    """
+    dest = rec.get("destination")
+    if dest == "task":
+        return _execute_record_task(
+            rec, group, item_ids, item_lookup, results, source=source,
+        )
+    if dest == "delete":
+        reason = rec.get("delete_reason") or "agent_marked_delete"
+        for iid in item_ids:
+            results["deleted"].append({
+                "item_id": iid,
+                "reason": reason,
+                "record_index": record_index,
+            })
+        return {"destination": "delete", "reason": reason}
+    if dest == "reference":
+        # Slice 6 wires reference filing. Log here so the user can
+        # see what would have been filed.
+        proposal = rec.get("reference_proposal") or {}
+        for iid in item_ids:
+            results["references_logged"].append({
+                "item_id": iid,
+                "summary": proposal.get("summary", ""),
+                "suggested_path": proposal.get("suggested_path"),
+                "record_index": record_index,
+            })
+        return {
+            "destination": "reference",
+            "logged_only": True,
+            "summary": proposal.get("summary", ""),
+        }
+    if dest == "calendar_only":
+        proposal = rec.get("calendar_proposal") or {}
+        for iid in item_ids:
+            results["calendar_logged"].append({
+                "item_id": iid,
+                "title": proposal.get("title", ""),
+                "datetime": proposal.get("datetime"),
+                "record_index": record_index,
+            })
+        return {
+            "destination": "calendar_only",
+            "logged_only": True,
+            "title": proposal.get("title", ""),
+        }
+    # Unknown destination — should have been caught by the schema /
+    # pool validation, but be defensive.
+    return {"destination": dest, "skipped": True, "reason": "unknown_destination"}
+
+
+def _execute_record_task(
+    rec: dict[str, Any],
+    group: dict[str, Any],
+    item_ids: list[str],
+    item_lookup: dict[str, Any],
+    results: dict[str, Any],
+    *,
+    source: str,
+) -> dict[str, Any]:
+    """Run one ``destination=task`` record.
+
+    Forks on ``task_proposal.target_task_id``:
+    - present and non-empty → record_into_task path
+    - absent → create_task path with the Slice 2 metadata forwarded
+      to ``tasks_create`` as kwargs.
+    """
+    proposal = rec.get("task_proposal") or {}
+    target = proposal.get("target_task_id") or ""
+    suggested = proposal.get("suggested_task_text") or ""
+
+    # Build the Source Items section (same shape as the legacy path
+    # for visual consistency in the task note).
+    url_lines: list[str] = []
+    for iid in item_ids:
+        meta = item_lookup.get(iid, {})
+        url = meta.get("url", "")
+        label = meta.get("label", iid)
+        if url:
+            url_lines.append(f"- [{label}]({url})")
+        else:
+            url_lines.append(f"- {label}")
+
+    if target:
+        # record_into_task
+        header_by_source = {
+            "chrome": "\n## Related Tabs (from Clarify record)\n\n",
+            "journal": "\n## Related Notes (from Clarify record)\n\n",
+            "inline": "\n## Source Selection (from Clarify record)\n\n",
+        }
+        header = header_by_source.get(source, "\n## Related Items (from Clarify record)\n\n")
+        context = header + "\n".join(url_lines)
+        results["tasks_recorded"].append({
+            "target_task_id": target,
+            "context": context,
+            "item_ids": item_ids,
+            "source_record_destination": "task",
+        })
+        return {
+            "destination": "task",
+            "mode": "record_into_task",
+            "target_task_id": target,
+        }
+
+    # create_task
+    if not suggested:
+        # Fall back to group_intent → first-item-label, mirroring the
+        # legacy behavior.
+        suggested = group.get("intent") or "Triage: " + ", ".join(
+            item_lookup.get(iid, {}).get("label", iid) for iid in item_ids[:3]
+        )
+
+    header_by_source = {
+        "chrome": "## Source Tabs",
+        "journal": "## Source Notes",
+        "inline": "## Source Selection",
+    }
+    header = header_by_source.get(source, "## Source Items")
+    note_content = header + "\n\n" + "\n".join(url_lines) if url_lines else ""
+
+    # Forward Slice 2 metadata to tasks_create when populated.
+    create_kwargs: dict[str, Any] = {
+        "task_text": suggested,
+        "urgency": "medium",
+        "summary": note_content if note_content else None,
+    }
+    namespace_tags = group.get("suggested_namespace_tags") or []
+    if namespace_tags:
+        create_kwargs["tags"] = list(namespace_tags)
+
+    # Slice 2 fields — forwarded only when present so legacy callers
+    # of tasks_create don't see surprise None values. The schema
+    # field ``kind`` maps to tasks_create's ``task_kind`` kwarg
+    # (the rest of the names match identically).
+    proposal_to_kwarg = {
+        "kind": "task_kind",
+        "outcome_text": "outcome_text",
+        "next_action_text": "next_action_text",
+        "definition_of_done": "definition_of_done",
+        "creation_effort": "creation_effort",
+        "user_involvement": "user_involvement",
+        "creation_provenance": "creation_provenance",
+        "has_deadline": "has_deadline",
+        "deadline_date": "deadline_date",
+        "has_dependency": "has_dependency",
+        "dependency_hint": "dependency_hint",
+    }
+    for proposal_field, kwarg in proposal_to_kwarg.items():
+        if proposal_field in proposal and proposal[proposal_field] is not None:
+            create_kwargs[kwarg] = proposal[proposal_field]
+
+    try:
+        from work_buddy.obsidian.tasks.mutations import create_task
+        result = create_task(**create_kwargs)
+        results["tasks_created"].append({
+            "task_text": suggested,
+            "task_id": result.get("task_id", ""),
+            "item_ids": item_ids,
+            "namespace_tags": list(namespace_tags),
+            "source_record_destination": "task",
+            "task_proposal": proposal,
+        })
+        return {
+            "destination": "task",
+            "mode": "create_task",
+            "task_id": result.get("task_id", ""),
+            "task_text": suggested,
+        }
+    except TypeError:
+        # tasks_create may not yet accept the Slice 2 kwargs (e.g.,
+        # during a partial Slice 2 migration). Retry without them so
+        # the task still lands; record a non-fatal warning.
+        logger.warning(
+            "create_task rejected Slice 2 kwargs; retrying with legacy shape "
+            "(task_text=%r)", suggested[:60],
+        )
+        from work_buddy.obsidian.tasks.mutations import create_task
+        legacy_kwargs = {
+            k: v for k, v in create_kwargs.items()
+            if k in {"task_text", "urgency", "summary", "tags"}
+        }
+        result = create_task(**legacy_kwargs)
+        results["tasks_created"].append({
+            "task_text": suggested,
+            "task_id": result.get("task_id", ""),
+            "item_ids": item_ids,
+            "namespace_tags": list(namespace_tags),
+            "source_record_destination": "task",
+            "slice_2_kwargs_dropped": True,
+        })
+        return {
+            "destination": "task",
+            "mode": "create_task",
+            "task_id": result.get("task_id", ""),
+            "task_text": suggested,
+            "slice_2_kwargs_dropped": True,
+        }
 
 
 # ── Operation Planning ──────────────────────────────────────────

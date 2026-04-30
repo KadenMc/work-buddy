@@ -1203,8 +1203,17 @@ def api_review_execute():
     succeeded_item_ids: set[str] = set()
     details = (executed or {}).get("details", {}) or {}
     for bucket_name in (
+        # Legacy buckets (Slice 1 actions).
         "tasks_created", "tasks_recorded", "grouped",
         "closed", "left",
+        # Slice 3 buckets — multi-record execution feeds these for
+        # destinations that aren't yet wired (reference, calendar) and
+        # for the Slice 3-only ``delete`` destination. Each entry carries
+        # ``item_id`` scalar (per-record) so the singular branch below
+        # picks them up. ``records_executed`` carries ``item_ids`` list
+        # (per-group rollup, in addition to the per-record entries).
+        "deleted", "references_logged", "calendar_logged",
+        "records_executed",
     ):
         for entry in details.get(bucket_name, []) or []:
             # Plural form: item_ids list
