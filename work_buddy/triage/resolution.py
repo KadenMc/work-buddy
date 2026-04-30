@@ -51,20 +51,27 @@ RESOLUTION_TYPES = (
 def derive_resolution_type(verdict: dict[str, Any]) -> str:
     """Pick a resolution_type for a pool entry from its verdict shape.
 
-    Slice 1.5 only distinguishes the two types with real data:
-    - ``raw_capture`` when the entry has ``verdict.raw == True``
-      (verdict-pass-disabled output from Slice 1)
-    - ``verdict_review`` otherwise (the default "review the agent's
-      proposed action" card)
+    Discrimination order (most specific first):
 
-    Slice 3+ will extend this to pick ``clarification`` for verdicts
-    with a refusal field, and Slices 4/6/7 will introduce their own
-    types as their data lands. The function is intentionally minimal
-    — adding a discriminator here is cheap; reading verdict shapes
-    that don't exist yet is a design fork-trap.
+    - ``clarification`` — verdict has a non-empty ``refusal`` dict
+      (Slice 3). The agent declined to commit a verdict; the user
+      needs to answer a question to unblock.
+    - ``raw_capture`` — verdict has ``raw == True`` (Slice 1).
+      Verdict-pass was disabled; user picks an action manually.
+    - ``verdict_review`` — anything else, including Slice 3
+      multi-record verdicts. The Resolution Surface card renders
+      the records list (or the legacy single action) for review.
+
+    Slices 4/6/7 will introduce ``placement`` / ``decomposition`` /
+    ``plan_approval`` / ``output_review`` as their owning data lands.
+    The function is intentionally minimal — adding a discriminator
+    here is cheap; reading verdict shapes that don't exist yet is a
+    design fork-trap.
     """
     if not isinstance(verdict, dict):
         return RESOLUTION_TYPE_VERDICT_REVIEW
+    if isinstance(verdict.get("refusal"), dict) and verdict["refusal"].get("question"):
+        return RESOLUTION_TYPE_CLARIFICATION
     if verdict.get("raw") is True:
         return RESOLUTION_TYPE_RAW_CAPTURE
     return RESOLUTION_TYPE_VERDICT_REVIEW

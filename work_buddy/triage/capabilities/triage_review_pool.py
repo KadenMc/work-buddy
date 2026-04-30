@@ -174,13 +174,45 @@ def _build_presentation_from_pool(
         # default verdicted-card layout puts IR-context plumbing in the
         # spotlight and buries the user's captured text. Render them
         # differently: lead with the captured text, drop the IR
-        # context, mark them clearly as needing triage. Slice 3 brings
-        # GTD-shaped verdicts back; until then this is the right shape.
+        # context, mark them clearly as needing triage.
         is_raw = bool(pe.verdict.get("raw"))
 
-        action = pe.verdict.get("recommended_action", "leave")
-        if action not in groups_by_action:
-            action = "leave"
+        # Slice 3: detect the multi-record shape. When a verdict carries
+        # ``records: [...]`` (or ``refusal``), pick a UI-facing action
+        # for grouping purposes (the legacy ``groups_by_action`` keys
+        # still drive the frontend's existing per-action sections).
+        # Mapping to a representative legacy action:
+        #   - records includes destination=task → ``create_task``
+        #   - records all delete → ``close``
+        #   - empty records → ``leave``
+        #   - refusal → ``leave`` (the Resolution Surface clarification
+        #     card will dispatch off resolution_type=clarification, not
+        #     the action key)
+        records = pe.verdict.get("records")
+        refusal = pe.verdict.get("refusal")
+        is_multi_record = isinstance(records, list) or isinstance(refusal, dict)
+
+        if is_multi_record:
+            if refusal:
+                action = "leave"
+            elif not records:
+                action = "leave"
+            else:
+                destinations = {r.get("destination") for r in records if isinstance(r, dict)}
+                if "task" in destinations:
+                    # Surface the most actionable destination first.
+                    action = "create_task"
+                elif destinations == {"delete"}:
+                    action = "close"
+                else:
+                    # reference / calendar_only — file under leave for
+                    # now since the Resolution Surface places these in
+                    # the main column anyway.
+                    action = "leave"
+        else:
+            action = pe.verdict.get("recommended_action", "leave")
+            if action not in groups_by_action:
+                action = "leave"
 
         item_obj = pe.item or {}
         label = item_obj.get("label") or pe.item_id
@@ -225,14 +257,31 @@ def _build_presentation_from_pool(
             intent = _raw_intent_from_text(text)
             rationale = (
                 "Raw capture — verdict pending. "
-                "Slice 3 will revisit with the new GTD-shaped schema; "
-                "for now, pick an action manually."
+                "The new Clarify pipeline (Slice 3) revisits these on "
+                "the next pass; you can also pick an action manually."
             )
             # Drop IR-context display: it's pre-LLM enrichment, not
             # content. Showing it dominates the visual without value.
             context_block = ""
+        elif is_multi_record:
+            # Slice 3 verdict — prefer the agent-supplied group_intent.
+            # Suggest the first task record's text as a fallback so
+            # the card title is concrete.
+            first_task_proposal: dict[str, Any] = {}
+            if records:
+                for r in records:
+                    if isinstance(r, dict) and r.get("destination") == "task":
+                        first_task_proposal = r.get("task_proposal") or {}
+                        break
+            intent = (
+                pe.verdict.get("group_intent")
+                or first_task_proposal.get("suggested_task_text")
+                or _short(pe.verdict.get("rationale", ""), 120)
+            )
+            rationale = pe.verdict.get("rationale", "")
+            context_block = _render_context_block(ir_ctx)
         else:
-            # Verdicted entry — original presentation. Prefer the
+            # Legacy verdicted entry — original presentation. Prefer the
             # agent-supplied group_intent (short, noun-phrase naming
             # the *intent*). Fall back ladder:
             #   1. explicit group_intent field (best)
@@ -254,6 +303,19 @@ def _build_presentation_from_pool(
         # without having to rummage through ``items``.
         modal_item["pool_run_id"] = pe.run_id
 
+        # Likely-task hint for the record_into_task path. Multi-record
+        # entries surface the first task record's target_task_id; legacy
+        # entries surface the verdict's top-level target_task_id.
+        likely_task_id = pe.verdict.get("target_task_id", "") or ""
+        if is_multi_record and records and not likely_task_id:
+            for r in records:
+                if not isinstance(r, dict):
+                    continue
+                tp = r.get("task_proposal") or {}
+                if tp.get("target_task_id"):
+                    likely_task_id = tp["target_task_id"]
+                    break
+
         presentation_group: dict[str, Any] = {
             "index": i,
             "intent": intent,
@@ -262,7 +324,7 @@ def _build_presentation_from_pool(
             "rationale": rationale,
             "context": context_block,
             "ambiguities": [],
-            "likely_task_id": pe.verdict.get("target_task_id", "") or "",
+            "likely_task_id": likely_task_id,
             "suggested_action": action,
             "pool_run_id": pe.run_id,  # non-UI; used for mark_reviewed
             "is_raw": is_raw,          # non-UI; lets renderers tag the card
@@ -275,12 +337,31 @@ def _build_presentation_from_pool(
             # read this for resurfacing priority; surfaced now so the
             # frontend can show "deferred N times" on the card.
             "attraction_passes": int(getattr(pe, "attraction_passes", 0) or 0),
+            # Slice 3: pass through the multi-record fields so the
+            # frontend (and the executor's split_decisions_by_shape)
+            # can detect and route them. ``None`` when the verdict was
+            # legacy / raw.
+            "records": list(records) if isinstance(records, list) else None,
+            "refusal": dict(refusal) if isinstance(refusal, dict) else None,
+            "is_multi_record": is_multi_record,
         }
         if action == "create_task":
-            presentation_group["suggested_task_text"] = (
-                pe.verdict.get("suggested_task_text")
-                or pe.verdict.get("rationale", "")
-            )
+            # Pull suggested_task_text from the first task record for
+            # multi-record entries; fall back to the legacy field.
+            suggested = ""
+            if is_multi_record and records:
+                for r in records:
+                    if isinstance(r, dict) and r.get("destination") == "task":
+                        tp = r.get("task_proposal") or {}
+                        suggested = tp.get("suggested_task_text") or ""
+                        if suggested:
+                            break
+            if not suggested:
+                suggested = (
+                    pe.verdict.get("suggested_task_text")
+                    or pe.verdict.get("rationale", "")
+                )
+            presentation_group["suggested_task_text"] = suggested
 
         groups_by_action[action].append(presentation_group)
         all_item_ids.append(pe.item_id)
