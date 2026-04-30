@@ -82,8 +82,31 @@ class TaskMatch:
         )
 
 
-# Valid triage actions
+# Legacy 5-action verbset (Slice 1 and earlier). New verdicts produced
+# from Slice 3 onward use ``TRIAGE_DESTINATIONS`` instead, but the pool
+# still contains entries written under this vocabulary, so callers
+# (presentation builder, submit validation, migration script) have to
+# read both. New code SHOULD NOT consume this — it's the legacy edge.
 TRIAGE_ACTIONS = ("close", "group", "create_task", "record_into_task", "leave")
+
+# GTD-shaped destination set (Slice 3). A captured item produces zero or
+# more **records**, each typed by one of these destinations. An empty
+# ``records`` array means "no record produced" (the agent saw something
+# not worth filing — equivalent to the old ``leave``). The ``refusal``
+# field on the verdict is mutually exclusive with records.
+#
+# Mapping from old TRIAGE_ACTIONS:
+#   close            → record(destination=delete)
+#   group            → falls out (clustering is upstream now)
+#   create_task      → record(destination=task)
+#   record_into_task → record(destination=task, target_task_id=<existing>)
+#   leave            → empty records[]
+#
+# Reference and calendar_only are PARSED but NOT EXECUTED in Slice 3;
+# Slice 6 wires reference filing, Slice 10 wires calendar destinations.
+# The schema accepts them so the LLM can produce them now and the
+# resulting pool entries are forward-compat.
+TRIAGE_DESTINATIONS = ("task", "reference", "calendar_only", "delete")
 
 
 @dataclass

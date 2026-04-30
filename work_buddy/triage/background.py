@@ -35,7 +35,11 @@ from typing import Any, Callable
 
 from work_buddy.logging_config import get_logger
 from work_buddy.paths import data_dir
-from work_buddy.triage.items import TRIAGE_ACTIONS, TriageItem
+from work_buddy.triage.items import (
+    TRIAGE_ACTIONS,
+    TRIAGE_DESTINATIONS,
+    TriageItem,
+)
 
 logger = get_logger(__name__)
 
@@ -264,8 +268,34 @@ class TriagePool:
                 "valid_item_ids": run.get("item_ids", []),
             }
 
+        # Slice 3: accept either the legacy (recommended_action) or the
+        # multi-record (records / refusal) shape during the migration
+        # window. The presentation builder picks the right rendering
+        # branch off the same discriminator (records list OR refusal
+        # dict OR neither → look at recommended_action).
         action = verdict.get("recommended_action", "")
-        if action not in TRIAGE_ACTIONS:
+        records = verdict.get("records")
+        refusal = verdict.get("refusal")
+        is_legacy_shape = bool(action)
+        is_multi_record_shape = (
+            isinstance(records, list) or isinstance(refusal, dict)
+        )
+        if not is_legacy_shape and not is_multi_record_shape:
+            return {
+                "status": "error",
+                "error": (
+                    "verdict must include either 'recommended_action' "
+                    "(legacy shape) or 'records'/'refusal' (Slice 3 "
+                    "multi-record shape)."
+                ),
+                "hint": (
+                    "For new captures use the multi-record schema; "
+                    "verdict.records=[] is valid (means no records "
+                    "produced, equivalent to the legacy 'leave' "
+                    "action)."
+                ),
+            }
+        if is_legacy_shape and action not in TRIAGE_ACTIONS:
             return {
                 "status": "error",
                 "error": (
@@ -273,6 +303,29 @@ class TriagePool:
                     f"{list(TRIAGE_ACTIONS)}."
                 ),
             }
+        if is_multi_record_shape and isinstance(records, list):
+            # Validate each record's destination is in TRIAGE_DESTINATIONS.
+            # We don't validate the per-destination proposal shapes here;
+            # that's the LLM's job (enforced server-side via output_schema)
+            # and the executor's job (skip records it can't handle).
+            for i, rec in enumerate(records):
+                if not isinstance(rec, dict):
+                    return {
+                        "status": "error",
+                        "error": (
+                            f"records[{i}] must be an object; got "
+                            f"{type(rec).__name__}."
+                        ),
+                    }
+                dest = rec.get("destination")
+                if dest not in TRIAGE_DESTINATIONS:
+                    return {
+                        "status": "error",
+                        "error": (
+                            f"records[{i}].destination={dest!r} is "
+                            f"not one of {list(TRIAGE_DESTINATIONS)}."
+                        ),
+                    }
 
         with _pool_lock:
             index = self._load_index()
@@ -1115,18 +1168,29 @@ def _shape_verdict(verdict: dict[str, Any]) -> dict[str, Any]:
     migration filters on ``verdict.get("raw") is True``.
     """
     allowed = {
+        # ---- Legacy single-action fields (Slice 1) ----
         "recommended_action",
-        "rationale",
-        "group_intent",
-        "confidence",
         "target_task_id",
         "suggested_task_text",
         "related_item_ids",
+        # ---- Shared (both schemas) ----
+        "rationale",
+        "group_intent",
+        "confidence",
         "raw",
-        # Slice 1.5: typed pipeline blocker (ROADMAP §3.3). String or
+        # ---- Slice 1.5 ----
+        # Typed pipeline blocker (ROADMAP §3.3). String or
         # ``{"kind": ..., "detail": ...}``; downstream filtering happens
         # in :func:`work_buddy.triage.resolution.extract_pipeline_blocker`.
         "pipeline_blocker",
+        # ---- Slice 3 multi-record fields ----
+        # ``records`` carries the typed list of records (task /
+        # reference / calendar_only / delete). ``refusal`` is mutually
+        # exclusive — set when the agent refuses to commit a verdict
+        # and needs human routing. Both pass through unmodified to
+        # the pool so the read path can branch on shape.
+        "records",
+        "refusal",
     }
     return {k: v for k, v in verdict.items() if k in allowed}
 
