@@ -132,8 +132,19 @@ def _build_presentation_from_pool(
     by ``verdict.recommended_action``; items within a group are
     further sub-grouped by ``related_item_ids`` linkage when present
     (v1 keeps this simple — one entry per group).
+
+    Slice 1.5 stamps two new fields on each ``presentation_group``:
+    ``resolution_type`` (selects the per-card renderer in the new
+    Resolution Surface dispatcher) and ``pipeline_blocker`` (typed
+    badge per ROADMAP §3.3, when the verdict declares one). Both are
+    additive — the legacy ``renderTriageReview`` ignores them, and the
+    new dispatcher reads them. Source descriptors stay unchanged.
     """
     from work_buddy.triage.items import TRIAGE_ACTIONS
+    from work_buddy.triage.resolution import (
+        derive_resolution_type,
+        extract_pipeline_blocker,
+    )
 
     # Infer source for the modal. If mixed, report "unknown" so the
     # modal uses its generic icon/label.
@@ -238,6 +249,11 @@ def _build_presentation_from_pool(
             rationale = pe.verdict.get("rationale", "")
             context_block = _render_context_block(ir_ctx)
 
+        # Stamp item id alongside pool_run_id so the Resolution Surface
+        # frontend can target a specific entry for Later/Re-direct ops
+        # without having to rummage through ``items``.
+        modal_item["pool_run_id"] = pe.run_id
+
         presentation_group: dict[str, Any] = {
             "index": i,
             "intent": intent,
@@ -250,6 +266,15 @@ def _build_presentation_from_pool(
             "suggested_action": action,
             "pool_run_id": pe.run_id,  # non-UI; used for mark_reviewed
             "is_raw": is_raw,          # non-UI; lets renderers tag the card
+            # Slice 1.5: which Resolution Surface card to dispatch to.
+            "resolution_type": derive_resolution_type(pe.verdict),
+            # Slice 1.5: typed pipeline blocker per ROADMAP §3.3.
+            # ``None`` when the verdict didn't declare one.
+            "pipeline_blocker": extract_pipeline_blocker(pe.verdict),
+            # Slice 1.5: counter for the Later/defer path. Slice 8 will
+            # read this for resurfacing priority; surfaced now so the
+            # frontend can show "deferred N times" on the card.
+            "attraction_passes": int(getattr(pe, "attraction_passes", 0) or 0),
         }
         if action == "create_task":
             presentation_group["suggested_task_text"] = (

@@ -128,6 +128,19 @@ class PoolEntry:
     # ISO8601. Stamped whenever ``state`` changes. Useful for audit
     # and for the sweep's "skip if checked recently" optimization.
     state_changed_at: str | None = None
+    # Slice 1.5 additions --------------------------------------------
+    # How many times the user clicked "Later" on this entry without
+    # acting. Slice 8 reads this for attraction-signal scoring; Slice
+    # 1.5 just stamps it via :meth:`TriagePool.increment_attraction_pass`.
+    # Non-shaming counter — this is a signal for the resurfacer, not a
+    # judgement displayed back to the user.
+    attraction_passes: int = 0
+    # User-supplied forced context captured by the Resolution Surface
+    # Re-direct mode. Stored on the original entry; Slice 3's Clarify
+    # rewrite will read this when re-running the pipeline step. Until
+    # Slice 3, the Re-direct flow quarantines the entry and persists
+    # the context for the future re-run.
+    forced_context: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -596,6 +609,61 @@ class TriagePool:
         """Convenience wrapper around :meth:`mark_state` for TTL expiry."""
         return self.mark_state(entry_keys, state=STATE_STALE)
 
+    def increment_attraction_pass(
+        self,
+        entry_keys: list[tuple[str, str]],
+    ) -> int:
+        """Bump ``attraction_passes`` on each entry (Slice 1.5).
+
+        Stamps the user's "Later" click on the Resolution Surface — a
+        non-shaming defer signal Slice 8 will read for resurfacing
+        priority. Idempotent in the sense that re-running on the same
+        entries simply increments again (each call = one defer event).
+        Returns the number of entries actually mutated. Missing entries
+        are silently skipped.
+        """
+        if not entry_keys:
+            return 0
+        bumped = 0
+        key_set = set(entry_keys)
+        with _pool_lock:
+            index = self._load_index()
+            for raw in index.get("entries", []):
+                key = (raw.get("run_id"), raw.get("item_id"))
+                if key not in key_set:
+                    continue
+                raw["attraction_passes"] = int(raw.get("attraction_passes", 0)) + 1
+                bumped += 1
+            if bumped:
+                self._save_index(index)
+        return bumped
+
+    def store_forced_context(
+        self,
+        run_id: str,
+        item_id: str,
+        forced_context: dict[str, Any],
+    ) -> bool:
+        """Persist a Re-direct payload on a single entry (Slice 1.5).
+
+        The Resolution Surface's Re-direct mode posts ``forced_context``
+        for an entry the user is re-routing. Slice 1.5 just persists
+        it and lets the caller quarantine the entry; Slice 3's Clarify
+        rewrite reads ``forced_context`` and re-runs the relevant
+        pipeline step. Returns True if the entry was found and updated.
+        """
+        with _pool_lock:
+            index = self._load_index()
+            for raw in index.get("entries", []):
+                if (
+                    raw.get("run_id") == run_id
+                    and raw.get("item_id") == item_id
+                ):
+                    raw["forced_context"] = dict(forced_context)
+                    self._save_index(index)
+                    return True
+        return False
+
     def apply_reviewer(
         self,
         reviewer: Callable[[list[PoolEntry]], list[dict[str, Any]]],
@@ -1055,6 +1123,10 @@ def _shape_verdict(verdict: dict[str, Any]) -> dict[str, Any]:
         "suggested_task_text",
         "related_item_ids",
         "raw",
+        # Slice 1.5: typed pipeline blocker (ROADMAP §3.3). String or
+        # ``{"kind": ..., "detail": ...}``; downstream filtering happens
+        # in :func:`work_buddy.triage.resolution.extract_pipeline_blocker`.
+        "pipeline_blocker",
     }
     return {k: v for k, v in verdict.items() if k in allowed}
 
