@@ -50,7 +50,7 @@ from work_buddy.email.triage_adapter import (
     EMAIL_TRIAGE_SOURCE,
     collect_email_candidates,
 )
-from work_buddy.triage.items import TriageItem
+from work_buddy.clarify.items import TriageItem
 
 log = logging.getLogger(__name__)
 
@@ -159,8 +159,8 @@ def email_triage_run(
             ``"frontier_best"``). ``None`` defaults to FRONTIER_BALANCED,
             matching the journal capability.
     """
-    from work_buddy.triage.background import BackgroundTriageProducer
-    from work_buddy.triage.config import is_verdict_pass_enabled_for, load_triage_config
+    from work_buddy.clarify.background import BackgroundTriageProducer
+    from work_buddy.clarify.config import is_verdict_pass_enabled_for, load_triage_config
 
     provider, err = _provider_or_error()
     if err:
@@ -169,7 +169,7 @@ def email_triage_run(
     cfg = load_triage_config()
     # Per-source override via ``triage.verdict_pass.sources.email.enabled``
     # wins over the global default. See
-    # :func:`work_buddy.triage.config.is_verdict_pass_enabled_for`.
+    # :func:`work_buddy.clarify.config.is_verdict_pass_enabled_for`.
     verdict_pass_enabled = is_verdict_pass_enabled_for(cfg, "email")
 
     # Auto-pick body budget if caller didn't override:
@@ -383,7 +383,7 @@ def _build_verdict_agent(
     closure that the producer will invoke per :class:`TriageItem`.
 
     Mirrors the structure of
-    :func:`work_buddy.triage.capabilities.journal_triage_scan.journal_triage_scan`.
+    :func:`work_buddy.clarify.capabilities.journal_triage_scan.journal_triage_scan`.
     """
     from work_buddy.llm import LLMRunner, ModelTier
 
@@ -420,7 +420,7 @@ def _build_context_block(cfg: dict) -> str:
     per-item prompt. Best-effort: failures yield an empty string."""
     ctx_cfg = cfg.get("triage_context", {}) or {}
     try:
-        from work_buddy.triage.recommend import (
+        from work_buddy.clarify.recommend import (
             build_triage_context, render_triage_context_block,
         )
         triage_context = build_triage_context(
@@ -455,9 +455,9 @@ def _invoke_email_agent(
     ``error_kind``) so its submission-check path works unchanged.
     """
     from work_buddy.llm import ErrorKind
-    from work_buddy.triage.capabilities.triage_submit import triage_submit
-    from work_buddy.triage.verdict_call import call_for_verdict
-    from work_buddy.triage.verdict_schema import VERDICT_SCHEMA, verdict_to_submit_kwargs
+    from work_buddy.clarify.capabilities.triage_submit import triage_submit
+    from work_buddy.clarify.verdict_call import call_for_verdict
+    from work_buddy.clarify.verdict_schema import VERDICT_SCHEMA, verdict_to_submit_kwargs
 
     user_prompt = _render_email_prompt(
         item=item, run_id=run_id, triage_context_block=triage_context_block,

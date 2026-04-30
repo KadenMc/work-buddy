@@ -1,7 +1,7 @@
 """Email → TriageItem adapter.
 
 Drops email summaries into the existing source-agnostic triage substrate
-(``work_buddy.triage.background.BackgroundTriageProducer``). Slice 1 is
+(``work_buddy.clarify.background.BackgroundTriageProducer``). Slice 1 is
 intentionally simple — capture email candidates as raw entries
 (``verdict_pass_enabled=False``); the LLM-verdict pass over emails is a
 follow-up slice once the dashboard renders ``source="email_message"`` cards.
@@ -22,7 +22,7 @@ from typing import Iterable
 from work_buddy.email.errors import EmailBridgeUnreachable, EmailError
 from work_buddy.email.models import EmailSummary
 from work_buddy.email.provider import get_email_provider, EmailProvider
-from work_buddy.triage.items import TriageItem
+from work_buddy.clarify.items import TriageItem
 
 log = logging.getLogger(__name__)
 

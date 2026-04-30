@@ -1,7 +1,7 @@
 """Shared verdict-call helper with post-response validation escalation.
 
-Both :mod:`work_buddy.triage.capabilities.inline_triage_scan` and
-:mod:`work_buddy.triage.capabilities.journal_triage_scan` share an
+Both :mod:`work_buddy.clarify.capabilities.inline_triage_scan` and
+:mod:`work_buddy.clarify.capabilities.journal_triage_scan` share an
 identical call pattern against :class:`LLMRunner`:
 
   1. Ask for a constrained-JSON verdict, letting the runner's built-in

@@ -14,7 +14,7 @@ already produced the evidence (the bridge said the message is no
 longer findable).
 
 Idempotent: if the entry is already in another state (already
-quarantined, marked stale, reviewed), :meth:`TriagePool.mark_state`
+quarantined, marked stale, reviewed), :meth:`ClarifyPool.mark_state`
 no-ops. Returns the count of state changes (0 or 1).
 """
 
@@ -64,7 +64,7 @@ def triage_pool_quarantine_entry(
         }
 
     try:
-        from work_buddy.triage.background import get_pool
+        from work_buddy.clarify.background import get_pool
         pool = get_pool()
         stamped = pool.quarantine([(run_id, item_id)], reason=reason)
     except Exception as exc:  # noqa: BLE001 — surface any pool error to the caller

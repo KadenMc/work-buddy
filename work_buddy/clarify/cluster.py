@@ -18,7 +18,7 @@ from work_buddy.ml.clustering import (
     cosine_similarity,
     position_proximity,
 )
-from work_buddy.triage.items import TriageCluster, TriageItem
+from work_buddy.clarify.items import TriageCluster, TriageItem
 
 logger = get_logger(__name__)
 

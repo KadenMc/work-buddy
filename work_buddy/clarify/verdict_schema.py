@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from work_buddy.triage.items import TRIAGE_ACTIONS, TRIAGE_DESTINATIONS
+from work_buddy.clarify.items import TRIAGE_ACTIONS, TRIAGE_DESTINATIONS
 
 
 # ---------------------------------------------------------------------------
@@ -384,7 +384,7 @@ _PIPELINE_BLOCKER_SCHEMA: dict[str, Any] = {
             "type": "string",
             "description": (
                 "One of the typed blocker kinds (see "
-                "work_buddy.triage.resolution.PIPELINE_BLOCKERS)."
+                "work_buddy.clarify.resolution.PIPELINE_BLOCKERS)."
             ),
         },
         "detail": {

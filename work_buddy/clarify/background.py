@@ -5,14 +5,14 @@ triage pass:
 
   1. An **adapter** yields :class:`TriageItem` objects from some source
      (journal, Chrome snapshot, etc.).
-  2. :func:`work_buddy.triage.enrich.enrich_with_ir_context` attaches
+  2. :func:`work_buddy.clarify.enrich.enrich_with_ir_context` attaches
      hybrid-IR supporting context to each item.
   3. A local-LLM **agent loop** (``llm_with_tools``) reasons about each
      item with read-only tools + one designated submission capability
      (``triage_submit``). The agent's verdict is captured through that
      capability — if it never calls ``triage_submit``, the run is
      discarded as ``unsubmitted``.
-  4. Submitted verdicts accumulate in the :class:`TriagePool` — a
+  4. Submitted verdicts accumulate in the :class:`ClarifyPool` — a
      persistent, artifact-backed store that the on-demand review
      entrypoint reads later.
 
@@ -35,7 +35,7 @@ from typing import Any, Callable
 
 from work_buddy.logging_config import get_logger
 from work_buddy.paths import data_dir
-from work_buddy.triage.items import (
+from work_buddy.clarify.items import (
     TRIAGE_ACTIONS,
     TRIAGE_DESTINATIONS,
     TriageItem,
@@ -48,7 +48,7 @@ logger = get_logger(__name__)
 # Pool entry lifecycle states (Slice 1)
 # ---------------------------------------------------------------------------
 
-# Lifecycle states a :class:`PoolEntry` may be in.
+# Lifecycle states a :class:`ClarifyEntry` may be in.
 #
 # - ``pending``     — created by the producer, awaiting human review.
 # - ``stale``       — past its ``expires_at`` per the source descriptor's TTL.
@@ -88,7 +88,7 @@ _pool_lock = threading.Lock()
 
 
 @dataclass
-class PoolEntry:
+class ClarifyEntry:
     """A single pending-review verdict in the pool.
 
     ``state`` is the canonical lifecycle marker (Slice 1). For legacy
@@ -96,7 +96,7 @@ class PoolEntry:
     ``reviewed_at`` so they keep behaving the way callers expect.
 
     ``expires_at`` is set at create time from the source descriptor's
-    TTL (see :mod:`work_buddy.triage.sources`). ``None`` means no
+    TTL (see :mod:`work_buddy.clarify.sources`). ``None`` means no
     auto-expiry — the daily sweep skips TTL transitions for the entry.
 
     ``quarantine_reason`` records WHY a quarantine fired
@@ -135,7 +135,7 @@ class PoolEntry:
     # Slice 1.5 additions --------------------------------------------
     # How many times the user clicked "Later" on this entry without
     # acting. Slice 8 reads this for attraction-signal scoring; Slice
-    # 1.5 just stamps it via :meth:`TriagePool.increment_attraction_pass`.
+    # 1.5 just stamps it via :meth:`ClarifyPool.increment_attraction_pass`.
     # Non-shaming counter — this is a signal for the resurfacer, not a
     # judgement displayed back to the user.
     attraction_passes: int = 0
@@ -150,7 +150,7 @@ class PoolEntry:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> PoolEntry:
+    def from_dict(cls, d: dict[str, Any]) -> ClarifyEntry:
         # Drop unknown fields so older code reading newer pool files
         # doesn't crash. Forward compat: newer fields just get
         # ignored.
@@ -166,7 +166,7 @@ class PoolEntry:
         return cls(**kwargs)
 
 
-class TriagePool:
+class ClarifyPool:
     """Pending-review pool, persisted as a stable JSON index + artifact snapshots.
 
     The pool is a single source of truth for "verdicts that haven't
@@ -343,7 +343,7 @@ class TriagePool:
             item_dict = run["items"].get(item_id, {})
             now = _now_iso()
             entry_source = run.get("source", "")
-            pe = PoolEntry(
+            pe = ClarifyEntry(
                 run_id=run_id,
                 adapter=run.get("adapter", ""),
                 source=entry_source,
@@ -423,7 +423,7 @@ class TriagePool:
             item_dict = run["items"].get(item_id, {})
             now = _now_iso()
             entry_source = run.get("source", "")
-            pe = PoolEntry(
+            pe = ClarifyEntry(
                 run_id=run_id,
                 adapter=run.get("adapter", ""),
                 source=entry_source,
@@ -493,7 +493,7 @@ class TriagePool:
         adapter: str | None = None,
         since: str | None = None,
         max_items: int | None = None,
-    ) -> list[PoolEntry]:
+    ) -> list[ClarifyEntry]:
         """Return entries currently active for human review.
 
         After Slice 1 this means ``state == "pending"``. Legacy
@@ -502,7 +502,7 @@ class TriagePool:
         :func:`_is_active_pending`).
         """
         index = self._load_index()
-        out: list[PoolEntry] = []
+        out: list[ClarifyEntry] = []
         for raw in index.get("entries", []):
             if not _is_active_pending(raw):
                 continue
@@ -512,7 +512,7 @@ class TriagePool:
                 continue
             if since and raw.get("created_at", "") < since:
                 continue
-            out.append(PoolEntry.from_dict(raw))
+            out.append(ClarifyEntry.from_dict(raw))
             if max_items and len(out) >= max_items:
                 break
         return out
@@ -523,7 +523,7 @@ class TriagePool:
         source: str | None = None,
         adapter: str | None = None,
     ) -> int:
-        """Cheap count of currently-pending entries (no PoolEntry build).
+        """Cheap count of currently-pending entries (no ClarifyEntry build).
 
         Used by the daily sweep for stats and (in future) by anyone
         wanting to gate work on pool size without paying for the
@@ -547,7 +547,7 @@ class TriagePool:
         *,
         source: str | None = None,
         adapter: str | None = None,
-    ) -> list[PoolEntry]:
+    ) -> list[ClarifyEntry]:
         """Explicit-state filter (Slice 1).
 
         Distinct from :meth:`pending`, which collapses the legacy
@@ -559,7 +559,7 @@ class TriagePool:
                 f"Unknown state {state!r}; valid: {sorted(POOL_ENTRY_STATES)}"
             )
         index = self._load_index()
-        out: list[PoolEntry] = []
+        out: list[ClarifyEntry] = []
         for raw in index.get("entries", []):
             if raw.get("state") != state:
                 continue
@@ -567,13 +567,13 @@ class TriagePool:
                 continue
             if adapter and raw.get("adapter") != adapter:
                 continue
-            out.append(PoolEntry.from_dict(raw))
+            out.append(ClarifyEntry.from_dict(raw))
         return out
 
-    def all_entries(self) -> list[PoolEntry]:
+    def all_entries(self) -> list[ClarifyEntry]:
         """Every entry on disk, regardless of state. For audit/migration."""
         index = self._load_index()
-        return [PoolEntry.from_dict(raw) for raw in index.get("entries", [])]
+        return [ClarifyEntry.from_dict(raw) for raw in index.get("entries", [])]
 
     def mark_reviewed(
         self,
@@ -719,12 +719,12 @@ class TriagePool:
 
     def apply_reviewer(
         self,
-        reviewer: Callable[[list[PoolEntry]], list[dict[str, Any]]],
+        reviewer: Callable[[list[ClarifyEntry]], list[dict[str, Any]]],
     ) -> dict[str, Any]:
         """Pluggable seam for an optional pre-human review pass.
 
         The reviewer callable (e.g. a local-Claude sweep) receives
-        the list of pending :class:`PoolEntry` objects and returns
+        the list of pending :class:`ClarifyEntry` objects and returns
         a list of decision dicts of the form::
 
             {"run_id": str, "item_id": str,
@@ -810,17 +810,17 @@ class TriagePool:
 # Module-level singleton — resolves paths lazily so tests can override.
 # ---------------------------------------------------------------------------
 
-_default_pool: TriagePool | None = None
+_default_pool: ClarifyPool | None = None
 
 
-def get_pool() -> TriagePool:
+def get_pool() -> ClarifyPool:
     global _default_pool
     if _default_pool is None:
-        _default_pool = TriagePool()
+        _default_pool = ClarifyPool()
     return _default_pool
 
 
-def set_pool_for_tests(pool: TriagePool | None) -> None:
+def set_pool_for_tests(pool: ClarifyPool | None) -> None:
     """Test hook: override the module-level pool singleton."""
     global _default_pool
     _default_pool = pool
@@ -876,7 +876,7 @@ class BackgroundTriageProducer:
         source: str,
         collect: Callable[[], tuple[list[TriageItem], str | None]],
         agent: Callable[[TriageItem, str], dict[str, Any]],
-        pool: TriagePool | None = None,
+        pool: ClarifyPool | None = None,
         enrich: bool = True,
         ir_top_k: int = 5,
         verdict_pass_enabled: bool = True,
@@ -997,7 +997,7 @@ class BackgroundTriageProducer:
         # then blows up on enrichment.
         if self._enrich:
             try:
-                from work_buddy.triage.enrich import enrich_with_ir_context
+                from work_buddy.clarify.enrich import enrich_with_ir_context
                 enrich_with_ir_context(items, top_k=self._ir_top_k)
             except Exception as exc:
                 logger.warning(
@@ -1142,11 +1142,11 @@ def _compute_expires_at(source: str, created_at_iso: str) -> str | None:
         TTL unset rather than guess)
       - the descriptor's ``ttl_days`` is ``None`` (e.g. inline)
 
-    Soft-imports :mod:`work_buddy.triage.sources` to avoid an import
+    Soft-imports :mod:`work_buddy.clarify.sources` to avoid an import
     cycle (sources imports background for type hints).
     """
     try:
-        from work_buddy.triage.sources import get_descriptor
+        from work_buddy.clarify.sources import get_descriptor
     except Exception:
         return None
     descriptor = get_descriptor(source)
@@ -1163,7 +1163,7 @@ def _shape_verdict(verdict: dict[str, Any]) -> dict[str, Any]:
     """Keep only known verdict fields to avoid the agent smuggling
     arbitrary payloads into the pool.
 
-    ``raw`` is allowed (Slice 1) so :meth:`TriagePool.submit_raw` can
+    ``raw`` is allowed (Slice 1) so :meth:`ClarifyPool.submit_raw` can
     flag entries that landed without a verdict pass. Slice 3's
     migration filters on ``verdict.get("raw") is True``.
     """
@@ -1181,7 +1181,7 @@ def _shape_verdict(verdict: dict[str, Any]) -> dict[str, Any]:
         # ---- Slice 1.5 ----
         # Typed pipeline blocker (ROADMAP §3.3). String or
         # ``{"kind": ..., "detail": ...}``; downstream filtering happens
-        # in :func:`work_buddy.triage.resolution.extract_pipeline_blocker`.
+        # in :func:`work_buddy.clarify.resolution.extract_pipeline_blocker`.
         "pipeline_blocker",
         # ---- Slice 3 multi-record fields ----
         # ``records`` carries the typed list of records (task /
@@ -1195,7 +1195,7 @@ def _shape_verdict(verdict: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in verdict.items() if k in allowed}
 
 
-def _item_submitted(pool: TriagePool, run_id: str, item_id: str) -> bool:
+def _item_submitted(pool: ClarifyPool, run_id: str, item_id: str) -> bool:
     index = pool._load_index()
     for raw in index.get("entries", []):
         if raw.get("run_id") == run_id and raw.get("item_id") == item_id:
@@ -1250,3 +1250,14 @@ def item_content_hash(source: str, text: str) -> str:
     # multi-line / multi-space artifacts.
     normalized = " ".join(normalized.split()).strip()
     return content_hash([source or "", normalized])
+
+
+# ---------------------------------------------------------------------------
+# Slice 3 backwards-compat aliases.
+# ---------------------------------------------------------------------------
+# The Triage→Clarify rename (Slice 3) renamed the public types. Keep
+# the legacy names available as aliases so external callers, tests,
+# and the on-disk pool-snapshot artifacts that name them in dataclass
+# repr keep working without a hard cutover. Importable as either name.
+TriagePool = ClarifyPool
+PoolEntry = ClarifyEntry

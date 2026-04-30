@@ -1,6 +1,6 @@
 """``chrome`` context source — currently-open tabs from the ledger snapshot.
 
-Wraps :func:`work_buddy.triage.adapters.chrome.chrome_tabs_to_items` —
+Wraps :func:`work_buddy.clarify.adapters.chrome.chrome_tabs_to_items` —
 the same tab-extraction path the Chrome triage workflow uses. Items
 are compact tab records (domain, title, url, engagement score) rather
 than the full Chrome triage shape; less-capable LLMs see high-signal
@@ -48,7 +48,7 @@ class ChromeSource(BaseContextSource):
         include_summaries = bool(custom.get("include_summaries", True))
 
         try:
-            from work_buddy.triage.adapters.chrome import chrome_tabs_to_items
+            from work_buddy.clarify.adapters.chrome import chrome_tabs_to_items
             result = chrome_tabs_to_items(
                 engagement_window=engagement_window,
                 include_summaries=include_summaries,

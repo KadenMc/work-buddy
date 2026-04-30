@@ -99,7 +99,7 @@ def build_card_actions(
     Args:
         source: The pool entry's source string (matches
             ``TriageItem.source`` and the descriptor's name).
-        item: The item dict — typically ``PoolEntry.item`` (the
+        item: The item dict — typically ``ClarifyEntry.item`` (the
             :meth:`TriageItem.to_dict` output). Required keys depend
             on the descriptor's ``param_map``.
         descriptor: Optional pre-resolved :class:`SourceDescriptor`.
@@ -121,7 +121,7 @@ def build_card_actions(
 
     if descriptor is None:
         try:
-            from work_buddy.triage.sources import get_descriptor
+            from work_buddy.clarify.sources import get_descriptor
             descriptor = get_descriptor(source)
         except Exception as exc:  # noqa: BLE001 — never let descriptor lookup break the UI
             logger.debug("build_card_actions: descriptor lookup failed for %r: %s", source, exc)
@@ -190,7 +190,7 @@ def has_open_action(source: str, *, descriptor: Any | None = None) -> bool:
         return False
     if descriptor is None:
         try:
-            from work_buddy.triage.sources import get_descriptor
+            from work_buddy.clarify.sources import get_descriptor
             descriptor = get_descriptor(source)
         except Exception:
             return False

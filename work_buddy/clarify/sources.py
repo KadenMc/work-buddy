@@ -25,7 +25,7 @@ Code defaults live in :data:`_DEFAULT_REGISTRY`. The
 :func:`load_source_registry` loader merges per-source overrides from
 ``triage.pool.sources`` in ``config.yaml`` / ``config.local.yaml``
 on top of the defaults — same merge discipline as
-:mod:`work_buddy.triage.config`. Users tune one source by writing one
+:mod:`work_buddy.clarify.config`. Users tune one source by writing one
 nested block::
 
     # config.local.yaml
@@ -36,14 +36,14 @@ nested block::
             ttl_days: 7
 
 The trigger functions themselves live in
-:mod:`work_buddy.triage.sources_triggers` and are dispatched by name.
+:mod:`work_buddy.clarify.sources_triggers` and are dispatched by name.
 This keeps the registry data-only (importable from migration scripts
 without paying the cost of bridge / vault helpers).
 
 Why a separate file
 -------------------
 
-The :mod:`work_buddy.triage.config` file holds **stage-shape** config
+The :mod:`work_buddy.clarify.config` file holds **stage-shape** config
 (profile names, max_tokens, escalation chain) — knobs about HOW the
 LLM call runs. This file holds **lifecycle** config (TTLs, quarantine
 triggers) — knobs about how entries AGE in the pool. They overlap
@@ -63,7 +63,7 @@ from typing import Any
 # ---------------------------------------------------------------------------
 
 # Quarantine trigger names. Each maps to a function in
-# :mod:`work_buddy.triage.sources_triggers`. Keep this list small and
+# :mod:`work_buddy.clarify.sources_triggers`. Keep this list small and
 # orthogonal — adding a new trigger means adding a new dispatch arm
 # in the sweeper, so casual additions accumulate cost.
 TRIGGER_SOURCE_REMOVED = "source_removed"
@@ -87,7 +87,7 @@ class SourceDescriptor:
     """Lifecycle declaration for one capture source.
 
     Attributes:
-        name: Source identifier (matches ``PoolEntry.source`` —
+        name: Source identifier (matches ``ClarifyEntry.source`` —
             e.g. ``"journal_thread"``, ``"chrome_tab"``, ``"inline"``).
         ttl_days: Soft expiry. After this many days, the sweep
             transitions ``state`` from ``pending`` to ``stale``.
@@ -173,7 +173,7 @@ _DEFAULT_REGISTRY: dict[str, dict[str, Any]] = {
     # captured (provider_message_id, folder_path) — i.e., the user
     # moved it (to Trash, Archive, another folder) or deleted it. The
     # trigger is implemented in
-    # :func:`work_buddy.triage.sources_triggers.trigger_source_removed`
+    # :func:`work_buddy.clarify.sources_triggers.trigger_source_removed`
     # and uses the bridge's ``POST /messages/exists`` endpoint. Bridge
     # unavailability returns None (don't quarantine on ambiguity).
     "email_message": {
@@ -182,7 +182,7 @@ _DEFAULT_REGISTRY: dict[str, dict[str, Any]] = {
         "config": {
             # Per-source "open in app" action, surfaced as a button on
             # each Review card. Resolved by
-            # :func:`work_buddy.triage.card_actions.build_card_actions`
+            # :func:`work_buddy.clarify.card_actions.build_card_actions`
             # and dispatched through the existing
             # ``POST /api/palette/execute`` endpoint
             # (command_id="work-buddy::email_display"). No new HTTP

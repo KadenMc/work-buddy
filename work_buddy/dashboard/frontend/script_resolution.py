@@ -56,7 +56,7 @@ window.mountResolutionSurface = function(container, presentation, options) {
 
     // Per-resolution-type placeholder copy — used when a card declares
     // a type Slice 1.5 doesn't fully render yet. The taxonomy strings
-    // come from work_buddy.triage.resolution; keep aligned by editing
+    // come from work_buddy.clarify.resolution; keep aligned by editing
     // both sides.
     const PLACEHOLDER_BY_TYPE = {
         clarification: { slice: 'Slice 3',

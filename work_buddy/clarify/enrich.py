@@ -15,7 +15,7 @@ from __future__ import annotations
 from typing import Any, Iterable
 
 from work_buddy.logging_config import get_logger
-from work_buddy.triage.items import TriageItem
+from work_buddy.clarify.items import TriageItem
 
 logger = get_logger(__name__)
 

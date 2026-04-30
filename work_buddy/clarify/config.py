@@ -44,7 +44,7 @@ TRIAGE_DEFAULTS: dict[str, Any] = {
     # Slice 1 verdict-pass gate. When ``enabled=False`` (the default
     # post-Slice-1, pre-Slice-3), the producer skips the LLM agent
     # invocation entirely and writes ``verdict={"raw": True}``
-    # entries via :meth:`TriagePool.submit_raw`. Slice 3 brings
+    # entries via :meth:`ClarifyPool.submit_raw`. Slice 3 brings
     # GTD-shaped verdicts back; until then full silence beats noisy
     # stub verdicts.
     #
@@ -60,7 +60,7 @@ TRIAGE_DEFAULTS: dict[str, Any] = {
 
     # Pre-LLM segmentation stage (the step that tags the running
     # notes into threads). These settings apply to the llm_call
-    # used inside `work_buddy.triage.adapters.journal`.
+    # used inside `work_buddy.clarify.adapters.journal`.
     "segment": {
         # Falls through to ``agent_profile`` when unset — split
         # only if you want a longer-context / different model.
@@ -137,9 +137,9 @@ TRIAGE_DEFAULTS: dict[str, Any] = {
     # Slice 3 presentation-layer knobs.
     #
     # Cluster-on-read groups pending pool entries into clusters via
-    # ``work_buddy.triage.cluster.cluster_items`` and (optionally)
+    # ``work_buddy.clarify.cluster.cluster_items`` and (optionally)
     # labels each cluster via the Sonnet-tier ``group_intents`` call
-    # in ``work_buddy.triage.recommend``. The result lands on the
+    # in ``work_buddy.clarify.recommend``. The result lands on the
     # presentation as a ``clusters`` field; the existing
     # ``groups_by_action`` shape is preserved for backwards compat.
     #

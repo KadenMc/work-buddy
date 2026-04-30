@@ -101,7 +101,7 @@ class EmailProvider(Protocol):
                 treat ``None`` as "still live" — never quarantine on
                 ambiguity.
 
-        Used by :func:`work_buddy.triage.sources_triggers.trigger_source_removed`
+        Used by :func:`work_buddy.clarify.sources_triggers.trigger_source_removed`
         to fire the ``source_removed`` quarantine reason when the user
         moves an email out of its captured folder.
         """

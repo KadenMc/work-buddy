@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from work_buddy.logging_config import get_logger
-from work_buddy.triage.items import TRIAGE_ACTIONS
+from work_buddy.clarify.items import TRIAGE_ACTIONS
 
 logger = get_logger(__name__)
 

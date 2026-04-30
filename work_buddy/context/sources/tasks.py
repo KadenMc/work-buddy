@@ -1,7 +1,7 @@
 """``tasks`` context source — currently-active tasks from the vault task store.
 
 Consolidates the task-fetching logic that lived in
-:func:`work_buddy.triage.recommend.build_triage_context`. Items are the
+:func:`work_buddy.clarify.recommend.build_triage_context`. Items are the
 cleaned one-liner task descriptions (from the master task list), not
 the full task notes — a future drill-down call via
 :func:`work_buddy.context.sources.tasks.TasksSource.drill_down` returns
@@ -120,7 +120,7 @@ class TasksSource(BaseContextSource):
         caller sees a clear error.
         """
         if field == "line":
-            from work_buddy.triage.task_match import _read_task_texts
+            from work_buddy.clarify.task_match import _read_task_texts
             texts = _read_task_texts()
             if item_id not in texts:
                 raise KeyError(f"Unknown task_id: {item_id!r}")
@@ -157,7 +157,7 @@ def _collect_tasks(
     """
     try:
         from work_buddy.obsidian.tasks import store as task_store
-        from work_buddy.triage.task_match import _read_task_texts
+        from work_buddy.clarify.task_match import _read_task_texts
     except Exception as exc:
         logger.debug("tasks source: deps unavailable (%s)", exc)
         return []

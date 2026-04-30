@@ -13,7 +13,7 @@ from typing import Any
 
 from work_buddy.logging_config import get_logger
 from work_buddy.ml.clustering import cosine_similarity
-from work_buddy.triage.items import TaskMatch, TriageCluster, TriageItem
+from work_buddy.clarify.items import TaskMatch, TriageCluster, TriageItem
 
 logger = get_logger(__name__)
 

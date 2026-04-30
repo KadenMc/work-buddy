@@ -157,7 +157,7 @@ _READONLY_CONTEXT = _READONLY_SAFE | frozenset({
 # triage_agent — background-triage producer scope
 # ---------------------------------------------------------------------------
 # Narrow preset for the hourly background-triage agent loop
-# (``work_buddy.triage.capabilities.journal_triage_scan`` et al.). Includes
+# (``work_buddy.clarify.capabilities.journal_triage_scan`` et al.). Includes
 # read-only context tools so the agent can investigate before deciding,
 # plus exactly ONE submission capability (``triage_submit``) whose
 # purpose is to record the verdict into the pending-review pool.

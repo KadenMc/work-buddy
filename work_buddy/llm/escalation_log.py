@@ -19,8 +19,8 @@ There are two emitters today:
 * :class:`work_buddy.llm.runner_v2.LLMRunner` writes a record after every
   call resolves — covering backend-error escalation chains.
 * Adapter loops that escalate **across** :class:`LLMRunner` calls
-  (e.g. :func:`work_buddy.triage.adapters.journal._segment_with_escalation`
-  and :func:`work_buddy.triage.verdict_call.call_for_verdict`) write a
+  (e.g. :func:`work_buddy.clarify.adapters.journal._segment_with_escalation`
+  and :func:`work_buddy.clarify.verdict_call.call_for_verdict`) write a
   separate record covering their adapter-level chain. Their attempts
   include adapter-side outcomes such as ``"validation_failed"`` that
   ``LLMRunner`` cannot see on its own.

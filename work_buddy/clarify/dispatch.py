@@ -199,7 +199,7 @@ def dispatch_clarify(presentation: dict[str, Any]) -> dict[str, Any]:
 
     # Save presentation before dispatching (timeout recovery)
     try:
-        from work_buddy.triage.presentation import save_presentation
+        from work_buddy.clarify.presentation import save_presentation
         save_presentation(presentation)
         logger.info("dispatch_clarify: saved presentation to disk")
     except Exception as e:
@@ -253,7 +253,7 @@ def dispatch_review(presentation: dict[str, Any]) -> dict[str, Any]:
 
     # Save presentation to disk before dispatching
     try:
-        from work_buddy.triage.presentation import save_presentation
+        from work_buddy.clarify.presentation import save_presentation
         save_presentation(presentation)
         logger.info("dispatch_review: saved presentation to disk")
     except Exception as e:
@@ -273,7 +273,7 @@ def dispatch_review(presentation: dict[str, Any]) -> dict[str, Any]:
 
         # Save decisions to disk
         try:
-            from work_buddy.triage.presentation import save_decisions
+            from work_buddy.clarify.presentation import save_decisions
             save_decisions(result["decisions"])
             logger.info("dispatch_review: saved decisions to disk")
         except Exception as e:

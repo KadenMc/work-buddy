@@ -18,7 +18,7 @@ from typing import Any
 
 from work_buddy.logging_config import get_logger
 from work_buddy.prompts import get_prompt
-from work_buddy.triage.items import TRIAGE_ACTIONS, TriageCluster, TriageItem
+from work_buddy.clarify.items import TRIAGE_ACTIONS, TriageCluster, TriageItem
 
 logger = get_logger(__name__)
 
@@ -500,7 +500,7 @@ def _load_task_info() -> dict[str, dict[str, Any]]:
     """Load task metadata + state history for all active tasks."""
     try:
         from work_buddy.obsidian.tasks import store as task_store
-        from work_buddy.triage.task_match import _read_task_texts
+        from work_buddy.clarify.task_match import _read_task_texts
 
         task_texts = _read_task_texts()
         result: dict[str, dict[str, Any]] = {}

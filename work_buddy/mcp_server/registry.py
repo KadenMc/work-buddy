@@ -1457,7 +1457,7 @@ def _context_capabilities() -> list[Capability]:
         collect_result = _execute_auto_run(
             "chrome_cluster:collect",
             {
-                "callable": "work_buddy.triage.adapters.chrome.chrome_tabs_to_items",
+                "callable": "work_buddy.clarify.adapters.chrome.chrome_tabs_to_items",
                 "kwargs": {"engagement_window": "24h", "include_summaries": True},
                 "timeout": 30,
             },
@@ -1474,7 +1474,7 @@ def _context_capabilities() -> list[Capability]:
             cluster_result = _execute_auto_run(
                 "chrome_cluster:extract_and_cluster",
                 {
-                    "callable": "work_buddy.triage.adapters.chrome.extract_and_cluster_tabs",
+                    "callable": "work_buddy.clarify.adapters.chrome.extract_and_cluster_tabs",
                     "kwargs": {"items_data": items, "max_extract": max_extract, "max_chars": max_chars},
                     "timeout": 120,
                 },
@@ -1484,7 +1484,7 @@ def _context_capabilities() -> list[Capability]:
             cluster_result = _execute_auto_run(
                 "chrome_cluster:cluster",
                 {
-                    "callable": "work_buddy.triage.cluster.cluster_items_from_raw",
+                    "callable": "work_buddy.clarify.cluster.cluster_items_from_raw",
                     "kwargs": {"items_data": items},
                     "timeout": 90,
                 },
@@ -2081,23 +2081,32 @@ def _context_capabilities() -> list[Capability]:
                 "related_item_ids": {"type": "list", "description": "Legacy: other item_ids from this run that belong to the same cluster.", "required": False},
             },
             callable=(lambda **kw: __import__(
-                "work_buddy.triage.capabilities.triage_submit",
+                "work_buddy.clarify.capabilities.triage_submit",
                 fromlist=["triage_submit"],
             ).triage_submit(**kw)),
             mutates_state=True,
             auto_retry=False,
         ),
         Capability(
-            name="triage_review_pool",
+            name="resolution_surface_pool",
             description=(
-                "Open the dashboard review modal over pending background-triage "
-                "proposals. Aggregates unreviewed PoolEntries, composes a "
-                "presentation, dispatches the modal, and (on response) executes "
-                "the user's decisions via the existing triage executor. "
-                "On-demand — nothing fires automatically."
+                "Open the dashboard Resolution Surface over pending Clarify "
+                "proposals. Aggregates unreviewed ClarifyEntries, composes a "
+                "presentation (Slice 3 multi-record schema or legacy "
+                "single-action), dispatches the modal, and (on response) "
+                "executes the user's decisions via the Clarify executor. "
+                "On-demand — nothing fires automatically. "
+                "Slice 3 rename of triage_review_pool; the legacy name is "
+                "kept as a search alias so old callers still resolve."
             ),
             category="context",
             search_aliases=[
+                "review clarify proposals",
+                "open resolution surface",
+                "drain clarify pool",
+                "review pending clarify",
+                # Legacy aliases — Slice 1/1.5 callers used these names.
+                "triage_review_pool",
                 "review triage proposals",
                 "open triage modal",
                 "drain triage pool",
@@ -2111,7 +2120,37 @@ def _context_capabilities() -> list[Capability]:
                 "dispatch": {"type": "bool", "description": "False to compose the presentation without opening the modal.", "required": False},
             },
             callable=(lambda **kw: __import__(
-                "work_buddy.triage.capabilities.triage_review_pool",
+                "work_buddy.clarify.capabilities.triage_review_pool",
+                fromlist=["triage_review_pool"],
+            ).triage_review_pool(**kw)),
+            mutates_state=True,
+            auto_retry=False,
+        ),
+        # Legacy capability name alias for Slice 1/1.5 callers. Same
+        # callable, same parameters — just a different name in the
+        # registry so ``wb_run("triage_review_pool", ...)`` still
+        # resolves. Search hits surface ``resolution_surface_pool``
+        # first (it's the canonical name); this entry exists purely
+        # for back-compat through the Slice 1→3 cutover.
+        Capability(
+            name="triage_review_pool",
+            description=(
+                "Legacy alias for ``resolution_surface_pool`` (Slice 3 "
+                "rename). Identical behavior — opens the dashboard "
+                "Resolution Surface over pending Clarify proposals. "
+                "Prefer ``resolution_surface_pool`` for new callers."
+            ),
+            category="context",
+            search_aliases=["legacy", "deprecated"],
+            parameters={
+                "source": {"type": "str", "description": "Optional source filter (e.g. 'journal_thread', 'chrome_tab').", "required": False},
+                "adapter": {"type": "str", "description": "Optional adapter-name filter (e.g. 'journal_triage').", "required": False},
+                "since": {"type": "str", "description": "ISO timestamp; only entries created at-or-after are included.", "required": False},
+                "max_items": {"type": "int", "description": "Safety cap on pending entries loaded (default 100).", "required": False},
+                "dispatch": {"type": "bool", "description": "False to compose the presentation without opening the modal.", "required": False},
+            },
+            callable=(lambda **kw: __import__(
+                "work_buddy.clarify.capabilities.triage_review_pool",
                 fromlist=["triage_review_pool"],
             ).triage_review_pool(**kw)),
             mutates_state=True,
@@ -2139,7 +2178,7 @@ def _context_capabilities() -> list[Capability]:
                 "reason": {"type": "str", "description": "Quarantine reason. Defaults to 'source_removed' to match the sweep's reason taxonomy.", "required": False},
             },
             callable=(lambda **kw: __import__(
-                "work_buddy.triage.capabilities.triage_pool_quarantine_entry",
+                "work_buddy.clarify.capabilities.triage_pool_quarantine_entry",
                 fromlist=["triage_pool_quarantine_entry"],
             ).triage_pool_quarantine_entry(**kw)),
             mutates_state=True,
@@ -2170,7 +2209,7 @@ def _context_capabilities() -> list[Capability]:
                 "max_entries": {"type": "int", "description": "Safety cap on entries inspected per pass.", "required": False},
             },
             callable=(lambda **kw: __import__(
-                "work_buddy.triage.capabilities.triage_pool_sweep",
+                "work_buddy.clarify.capabilities.triage_pool_sweep",
                 fromlist=["triage_pool_sweep"],
             ).triage_pool_sweep(**kw)),
             mutates_state=True,
@@ -3133,7 +3172,7 @@ def _journal_capabilities() -> list[Capability]:
                 "dry_run": {"type": "bool", "description": "Collect + enrich candidates but skip the agent loop.", "required": False},
             },
             callable=(lambda **kw: __import__(
-                "work_buddy.triage.capabilities.journal_triage_scan",
+                "work_buddy.clarify.capabilities.journal_triage_scan",
                 fromlist=["journal_triage_scan"],
             ).journal_triage_scan(**kw)),
             requires=["obsidian"],
@@ -3178,7 +3217,7 @@ def _journal_capabilities() -> list[Capability]:
                 "dry_run": {"type": "bool", "description": "Collect the item, skip the LLM call.", "required": False},
             },
             callable=(lambda **kw: __import__(
-                "work_buddy.triage.capabilities.inline_triage_scan",
+                "work_buddy.clarify.capabilities.inline_triage_scan",
                 fromlist=["inline_triage_scan"],
             ).inline_triage_scan(**kw)),
             requires=["obsidian"],

@@ -680,7 +680,7 @@ function renderTriageReview(container, presentation, options) {
         row.appendChild(labelEl);
 
         // Per-source "open in app" actions (declared in SourceDescriptor
-        // config; resolved by work_buddy.triage.card_actions). Buttons
+        // config; resolved by work_buddy.clarify.card_actions). Buttons
         // sit next to the label; click POSTs to /api/palette/execute
         // (the same endpoint the command palette uses). When no actions
         // are emitted (chrome / journal / inline today), this block is a

@@ -1,6 +1,6 @@
 """Quarantine trigger functions for the triage pool sweep (Slice 1).
 
-Each function decides whether a single :class:`PoolEntry` should
+Each function decides whether a single :class:`ClarifyEntry` should
 transition to ``state=quarantined``. They are dispatched by name from
 the source descriptor's ``quarantine_triggers`` list.
 
@@ -10,7 +10,7 @@ Trigger contract
 Every trigger has the signature::
 
     def trigger_<name>(
-        entry: PoolEntry,
+        entry: ClarifyEntry,
         descriptor: SourceDescriptor,
     ) -> str | None
 
@@ -48,8 +48,8 @@ from typing import TYPE_CHECKING
 from work_buddy.logging_config import get_logger
 
 if TYPE_CHECKING:
-    from work_buddy.triage.background import PoolEntry
-    from work_buddy.triage.sources import SourceDescriptor
+    from work_buddy.clarify.background import ClarifyEntry
+    from work_buddy.clarify.sources import SourceDescriptor
 
 logger = get_logger(__name__)
 
@@ -119,7 +119,7 @@ def _read_text_safe(path: Path) -> str | None:
 
 
 def trigger_source_removed(
-    entry: "PoolEntry",
+    entry: "ClarifyEntry",
     descriptor: "SourceDescriptor",
 ) -> str | None:
     """Fire when the entry's source no longer resolves.
@@ -247,7 +247,7 @@ def trigger_source_removed(
 
 
 def trigger_source_edited_beyond_match(
-    entry: "PoolEntry",
+    entry: "ClarifyEntry",
     descriptor: "SourceDescriptor",
 ) -> str | None:
     """Fire when the captured text no longer appears in the source.
@@ -317,7 +317,7 @@ def trigger_source_edited_beyond_match(
 
 
 def trigger_tag_removed(
-    entry: "PoolEntry",
+    entry: "ClarifyEntry",
     descriptor: "SourceDescriptor",
 ) -> str | None:
     """Fire when the entry's capture tag is no longer on the source paragraph.
@@ -348,7 +348,7 @@ _TRIGGER_DISPATCH = {
 
 
 def evaluate_triggers(
-    entry: "PoolEntry",
+    entry: "ClarifyEntry",
     descriptor: "SourceDescriptor",
 ) -> str | None:
     """Run the descriptor's quarantine triggers; return first reason that fires.

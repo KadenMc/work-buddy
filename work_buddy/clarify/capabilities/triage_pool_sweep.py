@@ -1,13 +1,13 @@
 """``triage_pool_sweep`` capability — daily liveness pass over the pool (Slice 1).
 
-Walks every pending :class:`PoolEntry`, checks two things:
+Walks every pending :class:`ClarifyEntry`, checks two things:
 
 1. **TTL expiry.** If the entry is past its ``expires_at`` the state
    transitions ``pending → stale``. Soft signal — entries are still
    on disk; the Review tab just stops showing them.
 
 2. **Source-specific quarantine triggers.** Per the entry's source
-   descriptor (see :mod:`work_buddy.triage.sources`), the configured
+   descriptor (see :mod:`work_buddy.clarify.sources`), the configured
    quarantine triggers (``source_removed``,
    ``source_edited_beyond_match``, …) are evaluated. The first one
    that fires transitions ``pending → quarantined`` with a
@@ -41,18 +41,18 @@ from datetime import datetime, timezone
 from typing import Any
 
 from work_buddy.logging_config import get_logger
-from work_buddy.triage.background import (
-    PoolEntry,
+from work_buddy.clarify.background import (
+    ClarifyEntry,
     STATE_PENDING,
     STATE_QUARANTINED,
     STATE_STALE,
     get_pool,
 )
-from work_buddy.triage.sources import (
+from work_buddy.clarify.sources import (
     SourceDescriptor,
     get_descriptor,
 )
-from work_buddy.triage.sources_triggers import evaluate_triggers
+from work_buddy.clarify.sources_triggers import evaluate_triggers
 
 logger = get_logger(__name__)
 

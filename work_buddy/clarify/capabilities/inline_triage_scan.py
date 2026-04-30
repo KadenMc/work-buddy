@@ -32,9 +32,9 @@ from typing import Any
 
 from work_buddy.llm import ErrorKind, LLMRunner, ModelTier
 from work_buddy.logging_config import get_logger
-from work_buddy.triage.background import BackgroundTriageProducer
-from work_buddy.triage.items import TriageItem
-from work_buddy.triage.verdict_schema import (
+from work_buddy.clarify.background import BackgroundTriageProducer
+from work_buddy.clarify.items import TriageItem
+from work_buddy.clarify.verdict_schema import (
     MULTI_RECORD_VERDICT_SCHEMA,
     verdict_to_submit_kwargs,
 )
@@ -157,7 +157,7 @@ def inline_triage_scan(
             ) from exc
 
     def _collect() -> tuple[list[TriageItem], str | None]:
-        from work_buddy.triage.adapters.inline import collect_inline_selection
+        from work_buddy.clarify.adapters.inline import collect_inline_selection
         return collect_inline_selection(
             file_path=file_path,
             selection=selection,
@@ -175,12 +175,12 @@ def inline_triage_scan(
             "items": [it.to_dict() for it in items],
         }
 
-    from work_buddy.triage.config import is_verdict_pass_enabled_for, load_triage_config
+    from work_buddy.clarify.config import is_verdict_pass_enabled_for, load_triage_config
     cfg = load_triage_config()
     verdict_pass_enabled = is_verdict_pass_enabled_for(cfg, "inline")
 
     if verdict_pass_enabled:
-        from work_buddy.triage.recommend import build_triage_context
+        from work_buddy.clarify.recommend import build_triage_context
         triage_context = build_triage_context() if enrich else {}
 
         runner = LLMRunner()
@@ -228,12 +228,12 @@ def _invoke_agent(
     tier: ModelTier,
 ) -> dict[str, Any]:
     """Run the Slice 3 Clarify pipeline for one inline selection."""
-    from work_buddy.triage.capabilities.triage_submit import triage_submit
-    from work_buddy.triage.deadline_extract import (
+    from work_buddy.clarify.capabilities.triage_submit import triage_submit
+    from work_buddy.clarify.deadline_extract import (
         extract_deadline_hints,
         merge_hints_into_records,
     )
-    from work_buddy.triage.verdict_call import call_for_verdict
+    from work_buddy.clarify.verdict_call import call_for_verdict
 
     # Deadline pre-pass.
     hints = extract_deadline_hints(
@@ -308,7 +308,7 @@ def _render_item_prompt(
     deadline_hints: dict[str, Any] | None = None,
 ) -> str:
     """Compose the per-item user prompt with file + hint + user context + hints."""
-    from work_buddy.triage.recommend import render_triage_context_block
+    from work_buddy.clarify.recommend import render_triage_context_block
 
     meta = item.metadata or {}
     file_path = meta.get("file_path", "") or "(unknown)"

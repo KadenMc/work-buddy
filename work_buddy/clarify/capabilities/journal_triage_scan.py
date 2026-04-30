@@ -5,10 +5,10 @@ sidecar-job concern (see ``sidecar_jobs/journal-triage-scan.md``),
 not a property of the capability itself.
 
 Slice 3 flow:
-- :func:`work_buddy.triage.adapters.journal.collect_same_day_candidates`
+- :func:`work_buddy.clarify.adapters.journal.collect_same_day_candidates`
   segments today's Running Notes into thread candidates.
 - For each candidate, the cheap deadline-extraction Haiku pass
-  (:mod:`work_buddy.triage.deadline_extract`) detects deadline +
+  (:mod:`work_buddy.clarify.deadline_extract`) detects deadline +
   dependency mentions. Hints get merged into the resulting
   records[].task_proposal so Slice 8's resurfacing has the data even
   for sparse captures.
@@ -21,7 +21,7 @@ Slice 3 flow:
 - Validation-failure escalation: verdict parsed but missing required
   fields at a tier below FRONTIER_BEST → one retry at FRONTIER_BEST
   before giving up with :data:`ErrorKind.VALIDATION_FAILED`.
-  Handled by :func:`work_buddy.triage.verdict_call.call_for_verdict`.
+  Handled by :func:`work_buddy.clarify.verdict_call.call_for_verdict`.
 
 Registered as a capability-type sidecar cron job. Safe to call
 manually via ``wb_run`` for smoke tests or ad-hoc runs.
@@ -34,9 +34,9 @@ from typing import Any
 
 from work_buddy.llm import ErrorKind, LLMRunner, ModelTier
 from work_buddy.logging_config import get_logger
-from work_buddy.triage.background import BackgroundTriageProducer
-from work_buddy.triage.items import TriageItem
-from work_buddy.triage.verdict_schema import (
+from work_buddy.clarify.background import BackgroundTriageProducer
+from work_buddy.clarify.items import TriageItem
+from work_buddy.clarify.verdict_schema import (
     MULTI_RECORD_VERDICT_SCHEMA,
     verdict_to_submit_kwargs,
 )
@@ -207,7 +207,7 @@ def journal_triage_scan(
     Returns:
         Status dict (see :class:`ProducerResult.to_dict`).
     """
-    from work_buddy.triage.config import (
+    from work_buddy.clarify.config import (
         is_verdict_pass_enabled_for, load_triage_config, resolve_profile,
     )
 
@@ -227,7 +227,7 @@ def journal_triage_scan(
     # Build the "what the user is actively working on" registry.
     ctx_cfg = cfg.get("triage_context", {}) or {}
     try:
-        from work_buddy.triage.recommend import (
+        from work_buddy.clarify.recommend import (
             build_triage_context, render_triage_context_block,
         )
         triage_context = build_triage_context(
@@ -244,7 +244,7 @@ def journal_triage_scan(
         triage_context_block = ""
 
     def _collect() -> tuple[list[TriageItem], str | None]:
-        from work_buddy.triage.adapters.journal import (
+        from work_buddy.clarify.adapters.journal import (
             collect_same_day_candidates,
         )
         return collect_same_day_candidates(
@@ -254,7 +254,7 @@ def journal_triage_scan(
     if dry_run:
         items, ch = _collect()
         if enrich and items:
-            from work_buddy.triage.enrich import enrich_with_ir_context
+            from work_buddy.clarify.enrich import enrich_with_ir_context
             enrich_with_ir_context(
                 items,
                 top_k=enrich_cfg.get("top_k", 5),
@@ -332,12 +332,12 @@ def _invoke_agent(
        post-call so the Sonnet output never has to redo the
        extraction work.
     """
-    from work_buddy.triage.capabilities.triage_submit import triage_submit
-    from work_buddy.triage.deadline_extract import (
+    from work_buddy.clarify.capabilities.triage_submit import triage_submit
+    from work_buddy.clarify.deadline_extract import (
         extract_deadline_hints,
         merge_hints_into_records,
     )
-    from work_buddy.triage.verdict_call import call_for_verdict
+    from work_buddy.clarify.verdict_call import call_for_verdict
 
     # Pass 1: deadline / dependency hints.
     msg_date: _date_cls | str | None = journal_date
@@ -439,7 +439,7 @@ def _render_item_prompt(
       5. Thread content itself
       6. Per-item IR hits (semantic neighbours of this thread)
     """
-    from work_buddy.triage.enrich import render_ir_context
+    from work_buddy.clarify.enrich import render_ir_context
 
     meta = item.metadata or {}
     ir_block = render_ir_context(meta.get("ir_context", []) or [])

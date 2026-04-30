@@ -15,7 +15,7 @@ from __future__ import annotations
 from typing import Any
 
 from work_buddy.logging_config import get_logger
-from work_buddy.triage.background import PoolEntry, get_pool
+from work_buddy.clarify.background import ClarifyEntry, get_pool
 
 logger = get_logger(__name__)
 
@@ -72,7 +72,7 @@ def triage_review_pool(
             "pending": len(pending),
         }
 
-    from work_buddy.triage.dispatch import dispatch_review
+    from work_buddy.clarify.dispatch import dispatch_review
     result = dispatch_review(presentation)
 
     if result.get("timeout"):
@@ -102,7 +102,7 @@ def triage_review_pool(
     # group) only execute meaningfully for Chrome today.
     executed: dict[str, Any] = {"skipped": True}
     try:
-        from work_buddy.triage.execute import execute_triage_decisions
+        from work_buddy.clarify.execute import execute_triage_decisions
         executed = execute_triage_decisions(decisions, presentation)
     except Exception as exc:
         logger.warning("execute_triage_decisions failed: %s", exc)
@@ -123,7 +123,7 @@ def triage_review_pool(
 
 
 def _build_presentation_from_pool(
-    entries: list[PoolEntry],
+    entries: list[ClarifyEntry],
 ) -> dict[str, Any]:
     """Shape a list of pool entries into the modal's presentation dict.
 
@@ -140,8 +140,8 @@ def _build_presentation_from_pool(
     additive — the legacy ``renderTriageReview`` ignores them, and the
     new dispatcher reads them. Source descriptors stay unchanged.
     """
-    from work_buddy.triage.items import TRIAGE_ACTIONS
-    from work_buddy.triage.resolution import (
+    from work_buddy.clarify.items import TRIAGE_ACTIONS
+    from work_buddy.clarify.resolution import (
         derive_resolution_type,
         extract_pipeline_blocker,
     )
@@ -151,7 +151,7 @@ def _build_presentation_from_pool(
     # Normalize per-item source name (e.g. ``chrome_tab``, ``journal_thread``)
     # to the presentation-level short form the modal + executor expect
     # (``chrome``, ``journal``). This matches the convention set by
-    # ``work_buddy.triage.presentation._detect_source`` which derives from
+    # ``work_buddy.clarify.presentation._detect_source`` which derives from
     # item id prefixes; we keep it in sync here so both code paths feed
     # the same downstream key.
     _SOURCE_NORMALIZE = {
@@ -233,7 +233,7 @@ def _build_presentation_from_pool(
         # item's metadata. Frontend renders each entry as a button next
         # to the label and POSTs the click to /api/palette/execute. See
         # work_buddy/triage/card_actions.py for the contract.
-        from work_buddy.triage.card_actions import build_card_actions, has_open_action
+        from work_buddy.clarify.card_actions import build_card_actions, has_open_action
         actions = build_card_actions(pe.source, item_obj)
         if actions:
             modal_item["actions"] = actions
@@ -394,7 +394,7 @@ def _build_presentation_from_pool(
 
 
 def _maybe_cluster_entries(
-    entries: list[PoolEntry],
+    entries: list[ClarifyEntry],
     sources: set[str],
 ) -> list[dict[str, Any]] | None:
     """Run cluster_items + group_intents over pending entries (Slice 3).
@@ -419,7 +419,7 @@ def _maybe_cluster_entries(
     enhancement, not a correctness requirement.
     """
     try:
-        from work_buddy.triage.config import load_triage_config
+        from work_buddy.clarify.config import load_triage_config
         cfg = load_triage_config()
     except Exception as exc:  # noqa: BLE001
         logger.debug("cluster: config load failed: %s", exc)
@@ -435,7 +435,7 @@ def _maybe_cluster_entries(
 
     # Build TriageItems from pool entries — cluster_items needs the
     # item dataclass + embeddings.
-    from work_buddy.triage.items import TriageItem
+    from work_buddy.clarify.items import TriageItem
     items: list[TriageItem] = []
     for pe in entries:
         item_dict = pe.item or {}
@@ -451,7 +451,7 @@ def _maybe_cluster_entries(
     # Run cluster_items. The function embeds + Louvains; failures
     # (embedding service down, etc.) raise — catch and degrade.
     try:
-        from work_buddy.triage.cluster import cluster_items as _cluster
+        from work_buddy.clarify.cluster import cluster_items as _cluster
         triage_clusters = _cluster(items)
     except Exception as exc:
         logger.warning("cluster: cluster_items failed: %s", exc)
@@ -464,7 +464,7 @@ def _maybe_cluster_entries(
     intent_groups: list[dict[str, Any]] = []
     if not skip_label:
         try:
-            from work_buddy.triage.recommend import group_intents
+            from work_buddy.clarify.recommend import group_intents
             data_type = cluster_cfg.get("data_type")
             if not data_type:
                 # Infer from the dominant source. ``journal`` keeps
@@ -581,5 +581,5 @@ def _render_context_block(hits: list[dict[str, Any]]) -> str:
     """Render IR context as a compact block for the modal's context field."""
     if not hits:
         return ""
-    from work_buddy.triage.enrich import render_ir_context
+    from work_buddy.clarify.enrich import render_ir_context
     return render_ir_context(hits)

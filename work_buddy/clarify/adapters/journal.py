@@ -36,7 +36,7 @@ import json
 from typing import Any
 
 from work_buddy.logging_config import get_logger
-from work_buddy.triage.items import TriageItem
+from work_buddy.clarify.items import TriageItem
 
 logger = get_logger(__name__)
 
@@ -128,8 +128,8 @@ def collect_same_day_candidates(
     from work_buddy.journal_backlog import read_running_notes
     from work_buddy.journal_backlog.segment import strip_banners
     from work_buddy.llm import ModelTier
-    from work_buddy.triage.background import content_hash as _hash
-    from work_buddy.triage.config import (
+    from work_buddy.clarify.background import content_hash as _hash
+    from work_buddy.clarify.config import (
         adapter_config,
         load_triage_config,
     )

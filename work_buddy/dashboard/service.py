@@ -1097,7 +1097,7 @@ def static_vendor(filename: str):
 # composed presentation without opening the legacy modal, and posts
 # back approved decisions through the existing triage execute path.
 # Same action taxonomy as the Chrome triage modal; source-aware note
-# headers come for free via ``work_buddy.triage.execute``.
+# headers come for free via ``work_buddy.clarify.execute``.
 
 
 @app.get("/api/review")
@@ -1109,7 +1109,7 @@ def api_review_pool():
         adapter: optional adapter-name filter.
         max_items: cap on pending entries (default 100).
     """
-    from work_buddy.triage.capabilities.triage_review_pool import triage_review_pool
+    from work_buddy.clarify.capabilities.triage_review_pool import triage_review_pool
 
     source = request.args.get("source") or None
     adapter = request.args.get("adapter") or None
@@ -1153,8 +1153,8 @@ def api_review_execute():
             "error": "presentation.groups_by_action is required",
         }), 400
 
-    from work_buddy.triage.execute import execute_triage_decisions
-    from work_buddy.triage.background import get_pool
+    from work_buddy.clarify.execute import execute_triage_decisions
+    from work_buddy.clarify.background import get_pool
     from work_buddy.consent import user_initiated
 
     # The user clicked Submit on a Review-tab card. That click IS the
@@ -1315,7 +1315,7 @@ def api_triage_defer():
             "error": "pool_run_id and item_id are required",
         }), 400
 
-    from work_buddy.triage.background import get_pool
+    from work_buddy.clarify.background import get_pool
     from work_buddy.consent import user_initiated
 
     try:
@@ -1413,7 +1413,7 @@ def api_triage_redirect():
     payload = dict(forced_context)
     payload.setdefault("target_step", target_step)
 
-    from work_buddy.triage.background import get_pool, STATE_QUARANTINED
+    from work_buddy.clarify.background import get_pool, STATE_QUARANTINED
     from work_buddy.consent import user_initiated
 
     pool = get_pool()

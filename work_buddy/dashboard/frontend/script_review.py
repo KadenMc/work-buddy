@@ -162,7 +162,7 @@ function openReviewDrawer(item, group, presentation) {
 
     // --- Per-source "open in app" actions (e.g. email → Thunderbird) ---
     // Same shape and POST target as the inline buttons in script_triage.py.
-    // Source-of-truth: work_buddy.triage.card_actions.
+    // Source-of-truth: work_buddy.clarify.card_actions.
     if (Array.isArray(item.actions) && item.actions.length > 0) {
         const sec = document.createElement('div');
         sec.className = 'review-drawer-section';

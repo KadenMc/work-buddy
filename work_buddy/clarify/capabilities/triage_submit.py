@@ -7,7 +7,7 @@ a real, reusable work-buddy capability rather than a synthetic
 "emit_verdict" tool that only makes sense inside one loop.
 
 The capability is intentionally narrow: it validates the run,
-validates the payload shape, and writes one :class:`PoolEntry`.
+validates the payload shape, and writes one :class:`ClarifyEntry`.
 All reasoning about what to do with that verdict happens later,
 during the on-demand review.
 """
@@ -17,7 +17,7 @@ from __future__ import annotations
 from typing import Any
 
 from work_buddy.logging_config import get_logger
-from work_buddy.triage.background import get_pool
+from work_buddy.clarify.background import get_pool
 
 logger = get_logger(__name__)
 
@@ -160,7 +160,7 @@ def triage_submit(
     if pipeline_blocker is not None:
         # Accepts either a string kind or a {kind, detail} dict — the
         # pool stores it verbatim, the resolver in
-        # work_buddy.triage.resolution.extract_pipeline_blocker
+        # work_buddy.clarify.resolution.extract_pipeline_blocker
         # normalizes on read.
         verdict["pipeline_blocker"] = pipeline_blocker
 

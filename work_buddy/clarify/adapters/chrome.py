@@ -19,7 +19,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from work_buddy.logging_config import get_logger
-from work_buddy.triage.items import TriageItem
+from work_buddy.clarify.items import TriageItem
 
 logger = get_logger(__name__)
 
@@ -253,7 +253,7 @@ def extract_and_cluster_tabs(
     """
     from work_buddy.collectors.chrome_collector import request_content
     from work_buddy.collectors.chrome_infer import _resolve_tab_ids
-    from work_buddy.triage.cluster import cluster_items, embed_items
+    from work_buddy.clarify.cluster import cluster_items, embed_items
 
     # Accept either the full collect result or a direct items list
     if items_data is None:
@@ -350,7 +350,7 @@ def extract_and_cluster_tabs(
 
     # Write content index for triage_item_detail lookups
     if content_map:
-        from work_buddy.triage.detail import write_content_index
+        from work_buddy.clarify.detail import write_content_index
         url_to_id = {item.url: item.id for item in items if item.url}
         write_content_index(content_map, url_to_id)
 
@@ -509,7 +509,7 @@ def enrich_items_with_summaries(
     all_item_dicts = []
     for cd in all_cluster_dicts:
         all_item_dicts.extend(cd.get("items", []))
-    from work_buddy.triage.detail import write_summary_index
+    from work_buddy.clarify.detail import write_summary_index
     write_summary_index(all_item_dicts, summaries)
 
     return {
