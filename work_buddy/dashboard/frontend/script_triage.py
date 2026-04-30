@@ -1251,7 +1251,23 @@ function renderTriageReview(container, presentation, options) {
             if (Array.isArray(synth.suggested_namespace_tags)) {
                 state.namespaceTags[synth.index] = [...synth.suggested_namespace_tags];
             }
-            renderGroupCard(container, synth);
+            // Render off-DOM, then insert in the correct position:
+            // BEFORE the "Drop item here" zone and the "Submit All"
+            // controls so the new card appears at the bottom of the
+            // existing card list, not below the footer affordances.
+            // Falls back to appending if no anchor is present (e.g.
+            // a non-Review caller that doesn't render the drop zone).
+            const stage = document.createDocumentFragment();
+            renderGroupCard(stage, synth);
+            const newCard = stage.firstElementChild;
+            const dropZone = container.querySelector('.wv-new-group-zone');
+            const newGroupsSection = container.querySelector('.wv-section');
+            const anchor = newGroupsSection || dropZone;
+            if (newCard && anchor && anchor.parentElement === container) {
+                container.insertBefore(newCard, anchor);
+            } else if (newCard) {
+                container.appendChild(newCard);
+            }
             const card = _findCard(group.pool_run_id, firstItem.id);
             if (card) {
                 card.classList.add('wv-incoming');
