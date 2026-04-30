@@ -51,9 +51,14 @@ def _drain_once(bus: EventBus) -> int:
     )
 
     try:
+        # The messaging service creates new messages with status='pending'
+        # (see models.py schema: ``status TEXT NOT NULL DEFAULT 'pending'``).
+        # Terminal status is 'resolved', mirroring the existing acknowledge
+        # poller pattern. Do NOT use 'unread' here — that's a per-reader
+        # tracking concept, not the row's lifecycle status.
         msgs = query_messages(
             recipient=DASHBOARD_RECIPIENT,
-            status="unread",
+            status="pending",
             limit=DEFAULT_FETCH_LIMIT,
         )
     except Exception:

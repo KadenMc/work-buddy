@@ -32,7 +32,7 @@ class _FakeMessaging:
         self.queue.append({"id": msg_id, "type": msg_type})
         if body is not None:
             self.bodies[msg_id] = body
-        self.statuses[msg_id] = "unread"
+        self.statuses[msg_id] = "pending"
 
     def query_messages(self, *, recipient, status, limit):
         # Return only currently-unread, in fifo order.
@@ -122,7 +122,7 @@ def test_drain_ignores_non_bus_messages(fake_messaging):
     delivered = bridge._drain_once(bus)
     assert delivered == 1
     # Non-bus message untouched.
-    assert fake_messaging.statuses["m1"] == "unread"
+    assert fake_messaging.statuses["m1"] == "pending"
     assert fake_messaging.statuses["m2"] == "resolved"
 
 
@@ -162,7 +162,7 @@ def test_drain_does_not_mark_resolved_when_publish_raises(monkeypatch, fake_mess
     monkeypatch.setattr(bus, "publish", boom)
     delivered = bridge._drain_once(bus)
     assert delivered == 0
-    assert fake_messaging.statuses["m1"] == "unread"
+    assert fake_messaging.statuses["m1"] == "pending"
 
 
 def test_drain_handles_query_failure(monkeypatch):
