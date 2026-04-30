@@ -76,7 +76,13 @@ async function loadReview() {
     // renderTriageReview). Adds typed pipeline-blocker badges,
     // attraction_passes display, Defer + Re-direct affordances,
     // and the j/k/enter/r/s/? keyboard layer.
-    window.mountResolutionSurface(container, presentation, {
+    // mountResolutionSurface returns the per-card mutation handle from
+    // renderTriageReview (appendCard / removeCard / updateCard /
+    // bumpAttractionPasses / setForcedContextStored / isMounted). We
+    // stash it on window.reviewSurface so the SSE dispatcher can drive
+    // single-card updates without ever touching loadReview() again.
+    // See architecture/event-bus.
+    const surface = window.mountResolutionSurface(container, presentation, {
         onSubmit: async (gd, reassignments) => {
             const resp = await fetchJSON('/api/review/execute', {
                 method: 'POST',
@@ -91,13 +97,17 @@ async function loadReview() {
             }
         },
         onComplete: () => {
-            // Refresh the tab so newly-cleared pool entries drop out
-            // and any entries added by a recent cron cycle appear.
+            // Submit success: per-card success paths in the renderer
+            // and Resolution Surface decorator already retire affected
+            // cards; the SSE pool.entry_state_changed handler also
+            // calls removeCard for any reviewed entries. Do NOT call
+            // loadReview() here — that would wipe sibling drafts.
+            // Just close the drawer.
             closeReviewDrawer();
-            loadReview();
         },
         onItemClick: (item, group) => openReviewDrawer(item, group, presentation),
     });
+    window.reviewSurface = surface;
 }
 
 // ---- Right-side item-detail drawer ----

@@ -44,6 +44,22 @@ from work_buddy.clarify.items import (
 logger = get_logger(__name__)
 
 
+def _safe_compose_group(entry: "ClarifyEntry") -> dict[str, Any] | None:
+    """Best-effort composition of a single presentation_group.
+
+    Returns ``None`` (skinny add) if anything goes wrong — composing
+    the group MUST NOT block the pool write or the event publish.
+    """
+    try:
+        from work_buddy.clarify.capabilities.triage_review_pool import (
+            compose_entry_presentation_group,
+        )
+        return compose_entry_presentation_group(entry)
+    except Exception:
+        logger.exception("_safe_compose_group failed; falling back to skinny add")
+        return None
+
+
 def _publish_pool_event(event_type: str, payload: dict[str, Any]) -> None:
     """Best-effort publish to the dashboard event bus.
 
@@ -382,6 +398,12 @@ class ClarifyPool:
             "item_id": item_id,
             "source": entry_source,
             "adapter": run.get("adapter", ""),
+            # Fat-add: include the rendered presentation_group so the
+            # browser can mount the new card via window.reviewSurface
+            # .appendCard(group) without a fetch round-trip. See
+            # architecture/event-bus. Defensive: composer may return
+            # None on error; the frontend handler skips when missing.
+            "group": _safe_compose_group(pe),
         })
         return {
             "status": "ok",
@@ -469,6 +491,8 @@ class ClarifyPool:
             "source": entry_source,
             "adapter": run.get("adapter", ""),
             "raw": True,
+            # See submit() — fat add carrying rendered presentation_group.
+            "group": _safe_compose_group(pe),
         })
         return {
             "status": "ok",

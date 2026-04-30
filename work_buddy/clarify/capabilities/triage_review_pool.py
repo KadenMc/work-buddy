@@ -393,6 +393,36 @@ def _build_presentation_from_pool(
     return presentation
 
 
+def compose_entry_presentation_group(entry: ClarifyEntry) -> dict[str, Any] | None:
+    """Compose a single ``presentation_group`` from one ``ClarifyEntry``.
+
+    Used by the dashboard event-bus publisher (``ClarifyPool.submit`` /
+    ``submit_raw``) to ship fat ``pool.entry_added`` events: the browser
+    can mount the new card without a fetch round-trip. See
+    ``architecture/event-bus``.
+
+    Returns ``None`` on any error so the publisher can fall back to a
+    skinny event (``{run_id, item_id, source, adapter}``) — composing
+    the group must never block the pool write.
+
+    Single-entry input naturally skips ``_maybe_cluster_entries``
+    (``min_entries`` is 3+), so this is fast (~1-5 ms) regardless of
+    config.
+    """
+    try:
+        pres = _build_presentation_from_pool([entry])
+    except Exception:
+        logger.exception(
+            "compose_entry_presentation_group failed for %s/%s",
+            entry.run_id, entry.item_id,
+        )
+        return None
+    for action_groups in pres.get("groups_by_action", {}).values():
+        if action_groups:
+            return action_groups[0]
+    return None
+
+
 def _maybe_cluster_entries(
     entries: list[ClarifyEntry],
     sources: set[str],

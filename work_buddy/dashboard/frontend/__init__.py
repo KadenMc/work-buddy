@@ -88,6 +88,7 @@ def render_page() -> str:
     <style>{_styles()}
 {_resolution_surface_styles()}</style>
     <script src="/vendor/chart.umd.min.js"></script>
+    <script src="/vendor/morphdom-umd.min.js"></script>
 </head>
 <body>
     {_html()}

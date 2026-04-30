@@ -131,117 +131,96 @@ def _event_bus_script() -> str:
         lastHeartbeatTs = evt.ts;
     });
 
-    // -- Smart per-panel refresh --------------------------------------
+    // -- Per-card mutation contract ----------------------------------
     //
-    // The event bus's job, from the user's perspective, is to update
-    // panels in real time WITHOUT destroying in-progress UI state
-    // (textareas, scroll, drawers). The minimal policy that achieves
-    // both:
+    // SSE handlers MUST mutate single rows. Calling a panel-wide
+    // loader (loadReview, loadTasks, loadSettings, loadCosts) from
+    // any handler is a regression — see architecture/event-bus and
+    // the regression test ``test_no_wholesale_loader_calls_in_event_handlers``.
     //
-    //   1. Event arrives that affects panel X.
-    //   2. If X is the active tab AND no input/textarea inside X is
-    //      focused, run X's loader now.
-    //   3. If X is active but an input is focused, defer the refresh
-    //      until the user blurs it (focusout, debounced 200ms).
-    //   4. If X is not the active tab, do nothing — switchTab(X) will
-    //      run X's loader fresh on next visit.
+    // Each panel exposes a handle on ``window.<name>Surface`` with
+    // per-row mutators (appendCard / removeCard / updateCard etc.).
+    // morphdom is the surgical-update primitive; per-card animation
+    // cancellation, focus capture, drag-state nulling, and state-dict
+    // pruning are responsibilities of the handle, not the dispatcher.
     //
-    // This is conservative compared to true per-card incremental DOM
-    // mutations (which would require lifting renderGroupCard out of
-    // the renderTriageReview closure). But it removes the chronic
-    // refresh bug (no global panel rewrite while user types) and gives
-    // the dashboard real-time updates everywhere except inside an
-    // actively-edited form. Future work can swap loaders for per-card
-    // mutators.
-    const pendingPanels = new Set();
+    // Ordering protection: in-process events have ~0ms delivery
+    // latency; cross-process events flow through the messaging-bridge
+    // poll (~500ms). A pool.entry_state_changed for a just-submitted
+    // entry can therefore arrive before the corresponding
+    // pool.entry_added (state change in-process; add cross-process
+    // through the bridge). The handles' removeCard records unknown
+    // keys in their own ``_pendingRemovals`` Set; appendCard checks
+    // that set first and discards a late add for an already-resolved
+    // entry. The dispatcher just routes events; it does NOT keep its
+    // own pending state.
 
-    function _activeTabName() {
-        const t = document.querySelector('.tab-btn.active');
-        return t ? t.dataset.tab : null;
+    function _withSurface(name, fn) {
+        // Defensive helper: call fn(surface) only when the surface is
+        // mounted. Unmounted surfaces drop events; switchTab will
+        // rebuild fresh state on next visit.
+        const s = window[name];
+        if (!s || typeof s.isMounted !== 'function' || !s.isMounted()) return;
+        try { fn(s); }
+        catch (e) { console.error('[event-bus] surface', name, 'mutator threw:', e); }
     }
 
-    function _panelHasUserContent(panelName) {
-        // True if ANY input/textarea/contenteditable inside the panel
-        // has user-entered content (focused or not). Drafts in
-        // unfocused fields must survive too — clicking a button
-        // (Re-direct, Submit, etc.) shifts focus away from your
-        // half-typed Create-Task input on a sibling card; if we only
-        // checked the currently-focused element we'd silently wipe it
-        // when an SSE event arrives moments later.
-        const panel = document.getElementById('panel-' + panelName);
-        if (!panel) return false;
-        const inputs = panel.querySelectorAll('input, textarea, [contenteditable="true"]');
-        for (const el of inputs) {
-            // Skip non-text inputs (buttons, checkboxes, radios, etc.).
-            if (el.tagName === 'INPUT') {
-                const t = (el.type || 'text').toLowerCase();
-                const TEXT_TYPES = ['text', 'search', 'url', 'email', 'tel', 'number', 'password', ''];
-                if (!TEXT_TYPES.includes(t)) continue;
+    const TERMINAL_POOL_STATES = ['reviewed', 'quarantined', 'stale', 'dropped'];
+
+    window.eventBus.on('pool.entry_added', (p) => {
+        if (!p || !p.run_id || !p.item_id) return;
+        _withSurface('reviewSurface', (s) => {
+            if (p.group && typeof s.appendCard === 'function') {
+                s.appendCard(p.group);
+            } else if (typeof s.removeCard === 'function') {
+                // Skinny add (no group composed): record in
+                // _pendingRemovals via removeCard's key path so a
+                // subsequent state-change can no-op cleanly.
+                // Otherwise this is a silent drop — appropriate when
+                // the server couldn't compose the rendered group.
             }
-            const v = el.tagName === 'TEXTAREA' || el.tagName === 'INPUT'
-                ? (el.value || '')
-                : (el.textContent || '');
-            if (v.trim() !== '') return true;
-        }
-        return false;
-    }
-
-    function _smartRefresh(panelName) {
-        if (_activeTabName() !== panelName) return;  // inactive: switchTab refreshes
-        if (_panelHasUserContent(panelName)) {
-            // Defer until the panel has no in-flight drafts. Drained by
-            // the input-listener below.
-            pendingPanels.add(panelName);
-            return;
-        }
-        pendingPanels.delete(panelName);
-        const loaders = (typeof staticLoaders === 'object') ? staticLoaders : null;
-        const loader = loaders && loaders[panelName];
-        if (typeof loader === 'function') {
-            try { loader(); }
-            catch (e) { console.error('[event-bus] smart-refresh', panelName, 'threw:', e); }
-        }
-    }
-
-    // Drain pending refreshes when the panel's drafts go away (user
-    // submits / cancels / clears). 300ms debounce gives focus and
-    // value transitions time to settle.
-    let _drainTimer = null;
-    function _scheduleDrain() {
-        if (_drainTimer) clearTimeout(_drainTimer);
-        _drainTimer = setTimeout(() => {
-            for (const p of Array.from(pendingPanels)) {
-                if (_activeTabName() === p && !_panelHasUserContent(p)) {
-                    _smartRefresh(p);
-                }
+        });
+    });
+    window.eventBus.on('pool.entry_state_changed', (p) => {
+        if (!p || !p.run_id || !p.item_id) return;
+        _withSurface('reviewSurface', (s) => {
+            if (TERMINAL_POOL_STATES.includes(p.state)) {
+                if (typeof s.removeCard === 'function') s.removeCard(p.run_id, p.item_id);
+            } else if (typeof s.updateCard === 'function' && p.group) {
+                s.updateCard(p.run_id, p.item_id, p.group);
             }
-        }, 300);
-    }
-    document.addEventListener('focusout', _scheduleDrain);
-    // Also re-check on input value changes so a user clearing their
-    // draft (Backspace-empty, programmatic .value=''), even without
-    // changing focus, releases pending refreshes.
-    document.addEventListener('input', _scheduleDrain);
+        });
+    });
+    window.eventBus.on('pool.attraction_passes_bumped', (p) => {
+        if (!p || !p.run_id || !p.item_id) return;
+        _withSurface('reviewSurface', (s) => {
+            if (typeof s.bumpAttractionPasses === 'function') {
+                s.bumpAttractionPasses(p.run_id, p.item_id, p.count);
+            }
+        });
+    });
+    window.eventBus.on('pool.forced_context_stored', (p) => {
+        if (!p || !p.run_id || !p.item_id) return;
+        _withSurface('reviewSurface', (s) => {
+            if (typeof s.setForcedContextStored === 'function') {
+                s.setForcedContextStored(p.run_id, p.item_id);
+            }
+        });
+    });
 
-    const PANEL_FOR_EVENT = {
-        'pool.entry_added':              'review',
-        'pool.entry_state_changed':      'review',
-        'pool.attraction_passes_bumped': 'review',
-        'pool.forced_context_stored':    'review',
-        'task.created':                  'tasks',
-        'task.state_changed':            'tasks',
-        'task.description_changed':      'tasks',
-        'component.health_changed':      'settings',
-        'component.preference_changed':  'settings',
-        'llm.call_logged':               'costs',
-    };
-    for (const [eventType, panelName] of Object.entries(PANEL_FOR_EVENT)) {
-        window.eventBus.on(eventType, () => _smartRefresh(panelName));
-    }
+    // Tasks / Settings / Costs surfaces are wired in subsequent
+    // commits as their handles land. Until then, their events are
+    // intentionally NO-OPs at this dispatcher — the 30s timer is
+    // gone and switchTab refreshes on visit. No fallback to wholesale
+    // loaders is acceptable.
 
     // Diagnostics handles for tests.
-    window.eventBus._pendingPanels = () => new Set(pendingPanels);
-    window.eventBus._smartRefresh = _smartRefresh;
+    window.eventBus._panelHandlers = () => ({
+        'pool.entry_added':              'reviewSurface.appendCard',
+        'pool.entry_state_changed':      'reviewSurface.removeCard|updateCard',
+        'pool.attraction_passes_bumped': 'reviewSurface.bumpAttractionPasses',
+        'pool.forced_context_stored':    'reviewSurface.setForcedContextStored',
+    });
 
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', _connect);

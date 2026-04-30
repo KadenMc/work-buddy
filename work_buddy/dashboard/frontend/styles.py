@@ -3384,6 +3384,46 @@ body {
 .card-sub {
     font-size: 11px; color: var(--text-muted); margin-top: 4px;
 }
+
+/* -----------------------------------------------------------------------
+ * Per-card mutation animations + accessibility
+ *
+ * Used by every panel surface (Review, Tasks, Settings, Costs) for
+ * SSE-driven incremental updates. Subtle: 200-300ms transitions,
+ * intentionally below the threshold of feeling "busy."
+ *
+ * See architecture/event-bus.
+ * ----------------------------------------------------------------------- */
+
+@keyframes wb-row-fade-in {
+    from { opacity: 0; transform: translateY(-6px); }
+    to   { opacity: 1; transform: none; }
+}
+@keyframes wb-row-fade-out {
+    from { opacity: 1;
+           max-height: 600px;
+           margin-bottom: var(--gap, 12px); }
+    to   { opacity: 0;
+           max-height: 0;
+           margin-bottom: 0; padding-top: 0; padding-bottom: 0;
+           border-width: 0; }
+}
+@keyframes wb-pulse {
+    0%   { background-color: var(--accent-subtle); }
+    100% { background-color: transparent; }
+}
+
+.wv-incoming { animation: wb-row-fade-in 0.25s ease-out; }
+.wv-leaving  { animation: wb-row-fade-out 0.20s ease-in forwards;
+               overflow: hidden; }
+.wv-pulse    { animation: wb-pulse 0.30s ease-out; }
+
+/* Hidden visually but exposed to assistive tech (e.g. role=status). */
+.visually-hidden {
+    position: absolute; width: 1px; height: 1px;
+    padding: 0; margin: -1px; overflow: hidden;
+    clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
 """
 
 

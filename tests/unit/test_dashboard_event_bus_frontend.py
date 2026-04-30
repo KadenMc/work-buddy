@@ -54,39 +54,98 @@ def test_header_has_event_bus_status_indicator():
     assert 'id="event-bus-status"' in page
 
 
-def test_smart_refresh_event_panel_map_present():
-    """The dispatcher must wire every taxonomy event to a panel loader."""
+def test_dispatcher_routes_pool_events_to_review_surface_mutators():
+    """The dispatcher must call per-card mutators on window.reviewSurface,
+    not panel-wide loaders. See architecture/event-bus."""
     src = _event_bus_script()
-    expected_pairs = {
-        "'pool.entry_added'":              "'review'",
-        "'pool.entry_state_changed'":      "'review'",
-        "'pool.attraction_passes_bumped'": "'review'",
-        "'pool.forced_context_stored'":    "'review'",
-        "'task.created'":                  "'tasks'",
-        "'task.state_changed'":            "'tasks'",
-        "'task.description_changed'":      "'tasks'",
-        "'component.health_changed'":      "'settings'",
-        "'component.preference_changed'":  "'settings'",
-        "'llm.call_logged'":               "'costs'",
-    }
-    for event_key, panel_value in expected_pairs.items():
-        assert event_key in src, f"event {event_key} not mapped"
-        assert panel_value in src, f"panel {panel_value} not in map"
+    # All four pool events are handled.
+    assert "'pool.entry_added'" in src
+    assert "'pool.entry_state_changed'" in src
+    assert "'pool.attraction_passes_bumped'" in src
+    assert "'pool.forced_context_stored'" in src
+    # Each calls a per-card mutator on reviewSurface (via _withSurface).
+    assert "appendCard" in src
+    assert "removeCard" in src
+    assert "updateCard" in src
+    assert "bumpAttractionPasses" in src
+    assert "setForcedContextStored" in src
+    # Terminal-state list drives remove vs update branching.
+    assert "'reviewed'" in src and "'quarantined'" in src
 
 
-def test_smart_refresh_skips_when_panel_has_user_content():
-    """Smart-refresh defers when ANY input/textarea in the panel has
-    unsaved text — focused or not. Drafts in sibling cards must
-    survive a click that shifts focus to a button (Re-direct, Submit).
+def test_dispatcher_uses_isMounted_guard_for_all_surfaces():
+    """Each handler must skip when its surface isn't mounted.
+    switchTab refreshes the surface fresh on next visit — never
+    fall back to a wholesale loader."""
+    src = _event_bus_script()
+    assert "_withSurface" in src
+    assert "isMounted" in src
+
+
+def test_no_wholesale_loader_calls_in_event_handlers():
+    """Regression guardrail: SSE handler bodies MUST NOT call any
+    panel-wide loader. The smart-refresh approach (deleted) routed
+    events to staticLoaders[panel](), which wholesale-rewrote
+    container.innerHTML and wiped sibling drafts.
+
+    See architecture/event-bus dev_notes for the regression history.
     """
     src = _event_bus_script()
-    assert "_panelHasUserContent" in src
-    assert "pendingPanels.add" in src
-    assert "pendingPanels.delete" in src
-    # Drains both on focusout AND on input changes (so clearing a
-    # field without losing focus also releases the pending refresh).
-    assert "addEventListener('focusout'" in src
-    assert "addEventListener('input'" in src
+    forbidden = [
+        "loadReview(",
+        "loadTasks(",
+        "loadSettings(",
+        "loadCosts(",
+        "refreshCostsData(",
+        "staticLoaders[",
+        "_smartRefresh",
+        "_panelHasUserContent",
+        "pendingPanels",
+    ]
+    for pattern in forbidden:
+        assert pattern not in src, (
+            f"forbidden wholesale-refresh pattern present in dispatcher: "
+            f"{pattern!r}. SSE handlers must call per-card surface "
+            f"mutators (e.g. window.reviewSurface.appendCard) only."
+        )
+
+
+def test_review_surface_handle_uses_morphdom():
+    """The Review surface's updateCard must use morphdom for surgical
+    diffing — not container.innerHTML rewrites or hand-rolled
+    attribute mutators that miss edge cases. Phoenix LiveView /
+    Hotwire convention."""
+    from work_buddy.dashboard.frontend.script_triage import (
+        _triage_review_script,
+    )
+    src = _triage_review_script()
+    assert "window.morphdom" in src or "morphdom(" in src
+    # Sanity: the handle's mutators are present on the return value.
+    assert "appendCard" in src and "removeCard" in src and "updateCard" in src
+
+
+def test_review_surface_announces_via_aria_live():
+    """removeCard / appendCard must write to a polite aria-live region
+    so screen-reader users hear card transitions. WCAG 4.1.3 AA."""
+    from work_buddy.dashboard.frontend.script_triage import (
+        _triage_review_script,
+    )
+    src = _triage_review_script()
+    assert "role" in src and "'status'" in src
+    assert "aria-live" in src
+    assert "_announce(" in src
+
+
+def test_review_surface_has_pending_removals_set():
+    """Ordering protection: in-process state-change events can arrive
+    before cross-process add events for the same card. removeCard
+    must record the key in _pendingRemovals when no card is found,
+    and appendCard must consult that set before mounting."""
+    from work_buddy.dashboard.frontend.script_triage import (
+        _triage_review_script,
+    )
+    src = _triage_review_script()
+    assert "_pendingRemovals" in src
 
 
 def test_legacy_30s_timer_is_gone():
