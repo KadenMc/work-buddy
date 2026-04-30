@@ -74,15 +74,19 @@ def test_smart_refresh_event_panel_map_present():
         assert panel_value in src, f"panel {panel_value} not in map"
 
 
-def test_smart_refresh_skips_when_input_focused():
+def test_smart_refresh_skips_when_panel_has_user_content():
+    """Smart-refresh defers when ANY input/textarea in the panel has
+    unsaved text — focused or not. Drafts in sibling cards must
+    survive a click that shifts focus to a button (Re-direct, Submit).
+    """
     src = _event_bus_script()
-    # The defining check: a focused INPUT/TEXTAREA in the active panel
-    # adds the panel to pendingPanels rather than running the loader.
-    assert "_focusedInsidePanel" in src
+    assert "_panelHasUserContent" in src
     assert "pendingPanels.add" in src
     assert "pendingPanels.delete" in src
-    # Drain on focusout, debounced.
+    # Drains both on focusout AND on input changes (so clearing a
+    # field without losing focus also releases the pending refresh).
     assert "addEventListener('focusout'" in src
+    assert "addEventListener('input'" in src
 
 
 def test_legacy_30s_timer_is_gone():

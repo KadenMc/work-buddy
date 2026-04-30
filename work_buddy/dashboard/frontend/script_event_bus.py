@@ -160,18 +160,37 @@ def _event_bus_script() -> str:
         return t ? t.dataset.tab : null;
     }
 
-    function _focusedInsidePanel(panelName) {
+    function _panelHasUserContent(panelName) {
+        // True if ANY input/textarea/contenteditable inside the panel
+        // has user-entered content (focused or not). Drafts in
+        // unfocused fields must survive too — clicking a button
+        // (Re-direct, Submit, etc.) shifts focus away from your
+        // half-typed Create-Task input on a sibling card; if we only
+        // checked the currently-focused element we'd silently wipe it
+        // when an SSE event arrives moments later.
         const panel = document.getElementById('panel-' + panelName);
         if (!panel) return false;
-        const a = document.activeElement;
-        if (!a || !panel.contains(a)) return false;
-        const tag = a.tagName;
-        return tag === 'INPUT' || tag === 'TEXTAREA' || a.isContentEditable;
+        const inputs = panel.querySelectorAll('input, textarea, [contenteditable="true"]');
+        for (const el of inputs) {
+            // Skip non-text inputs (buttons, checkboxes, radios, etc.).
+            if (el.tagName === 'INPUT') {
+                const t = (el.type || 'text').toLowerCase();
+                const TEXT_TYPES = ['text', 'search', 'url', 'email', 'tel', 'number', 'password', ''];
+                if (!TEXT_TYPES.includes(t)) continue;
+            }
+            const v = el.tagName === 'TEXTAREA' || el.tagName === 'INPUT'
+                ? (el.value || '')
+                : (el.textContent || '');
+            if (v.trim() !== '') return true;
+        }
+        return false;
     }
 
     function _smartRefresh(panelName) {
         if (_activeTabName() !== panelName) return;  // inactive: switchTab refreshes
-        if (_focusedInsidePanel(panelName)) {
+        if (_panelHasUserContent(panelName)) {
+            // Defer until the panel has no in-flight drafts. Drained by
+            // the input-listener below.
             pendingPanels.add(panelName);
             return;
         }
@@ -184,20 +203,25 @@ def _event_bus_script() -> str:
         }
     }
 
-    // Drain pending refreshes shortly after focus moves out of an
-    // input. 200ms debounce gives focus shifts time to settle (e.g.
-    // user moving from one textarea to another).
-    let _focusoutTimer = null;
-    document.addEventListener('focusout', () => {
-        if (_focusoutTimer) clearTimeout(_focusoutTimer);
-        _focusoutTimer = setTimeout(() => {
+    // Drain pending refreshes when the panel's drafts go away (user
+    // submits / cancels / clears). 300ms debounce gives focus and
+    // value transitions time to settle.
+    let _drainTimer = null;
+    function _scheduleDrain() {
+        if (_drainTimer) clearTimeout(_drainTimer);
+        _drainTimer = setTimeout(() => {
             for (const p of Array.from(pendingPanels)) {
-                if (_activeTabName() === p && !_focusedInsidePanel(p)) {
+                if (_activeTabName() === p && !_panelHasUserContent(p)) {
                     _smartRefresh(p);
                 }
             }
-        }, 200);
-    });
+        }, 300);
+    }
+    document.addEventListener('focusout', _scheduleDrain);
+    // Also re-check on input value changes so a user clearing their
+    // draft (Backspace-empty, programmatic .value=''), even without
+    // changing focus, releases pending refreshes.
+    document.addEventListener('input', _scheduleDrain);
 
     const PANEL_FOR_EVENT = {
         'pool.entry_added':              'review',
