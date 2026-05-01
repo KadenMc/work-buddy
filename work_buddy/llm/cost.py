@@ -170,6 +170,23 @@ def log_call(
             f.write(json.dumps(entry) + "\n")
     except OSError as e:
         logger.warning("Failed to write LLM cost log: %s", e)
+        return  # don't publish if we couldn't persist
+
+    # Best-effort publish to the dashboard event bus. The Costs panel
+    # picks this up and refreshes (subject to the smart-refresh policy).
+    try:
+        from work_buddy.dashboard.events import publish_auto
+        publish_auto("llm.call_logged", {
+            "model": entry["model"],
+            "task_id": entry["task_id"],
+            "input_tokens": entry["input_tokens"],
+            "output_tokens": entry["output_tokens"],
+            "estimated_cost_usd": entry["estimated_cost_usd"],
+            "execution_mode": entry["execution_mode"],
+            "cached": entry["cached"],
+        })
+    except Exception:
+        pass  # never let event publish hurt the call-logging path
 
 
 def session_total() -> dict:

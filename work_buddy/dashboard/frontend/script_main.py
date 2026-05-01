@@ -707,7 +707,11 @@ async function loadOverview() {
 function renderTaskTable(tasks) {
     const el = document.getElementById('task-list');
     if (tasks.length === 0) {
-        el.innerHTML = '<div class="empty-state">No matching tasks</div>';
+        if (typeof window._wbMorphReplace === 'function') {
+            window._wbMorphReplace(el, '<div class="empty-state">No matching tasks</div>');
+        } else {
+            el.innerHTML = '<div class="empty-state">No matching tasks</div>';
+        }
         return;
     }
     const rows = tasks.map(t => {
@@ -717,7 +721,10 @@ function renderTaskTable(tasks) {
         const markers = (t.markers || []).map(m =>
             `<span title="${m.label}${m.date ? ' ' + m.date : ''}" style="cursor:help">${m.emoji}</span>`
         ).join(' ') || '\u2014';
-        return `<tr>
+        // Per-row identity via data-task-id so morphdom can keep
+        // unchanged rows in place across refreshes (preserves any
+        // inline edit state, hover, scroll position).
+        return `<tr data-task-id="${t.id || ''}">
             <td>${statusBadge(t.state)}</td>
             <td>${t.text}</td>
             <td>${t.urgency !== 'none' ? statusBadge(t.urgency) : '\u2014'}</td>
@@ -726,7 +733,7 @@ function renderTaskTable(tasks) {
             <td><code>${t.id || '\u2014'}</code></td>
         </tr>`;
     }).join('');
-    el.innerHTML = `
+    const html = `
         <div class="task-list-scroll">
         <table class="data-table">
             <thead><tr><th>State</th><th>Task</th><th>Urgency</th><th>Markers</th><th>Note</th><th>ID</th></tr></thead>
@@ -734,6 +741,11 @@ function renderTaskTable(tasks) {
         </table>
         </div>
     `;
+    if (typeof window._wbMorphReplace === 'function') {
+        window._wbMorphReplace(el, html);
+    } else {
+        el.innerHTML = html;
+    }
 }
 
 // Namespace-tree state for the Tasks tab. null = "All tasks" lens.
@@ -796,6 +808,20 @@ async function loadTasks() {
         });
     }
 }
+
+// Surface handle for the Tasks tab. SSE handlers in script_event_bus.py
+// call refresh() on task.created / task.state_changed /
+// task.description_changed — re-runs _refreshTaskView which fetches
+// /api/tasks and morphdom-merges the table. The user's typing in
+// task-search and any other inputs survive natively.
+window.tasksSurface = {
+    refresh: function() {
+        if (typeof _refreshTaskView === 'function') return _refreshTaskView();
+    },
+    isMounted: function() {
+        return !!document.getElementById('task-list');
+    },
+};
 
 // Task filter composition:
 //
@@ -979,7 +1005,13 @@ async function _refreshTaskView() {
             <div class="card-value">${n}</div>
         </div>
     `).join('');
-    document.getElementById('task-counts').innerHTML = countCards || '<div class="empty-state">No tasks</div>';
+    const countsEl = document.getElementById('task-counts');
+    const countsHtml = countCards || '<div class="empty-state">No tasks</div>';
+    if (typeof window._wbMorphReplace === 'function') {
+        window._wbMorphReplace(countsEl, countsHtml);
+    } else {
+        countsEl.innerHTML = countsHtml;
+    }
 
     // Breadcrumb.
     const crumb = document.getElementById('task-namespace-breadcrumb');
@@ -2588,48 +2620,42 @@ async function launchSetupAgent(componentId, mode, btn) {
 }
 
 
-// ---- Auto-refresh (Decision 1(b)) ----
+// ---- Refresh model ----
 //
-// Earlier this called switchTab(activeTab) every 30s, which re-runs the
-// full loader and rewrites panel.innerHTML. That destroyed any in-flight
-// state the user had built up (active filters, scroll position, model-chip
-// hover, drawer contents) and was the *source* of the chronic
-// "dashboard refresh bug" — it wasn't a real reload, just a destructive
-// re-render. The data refreshers below re-fetch and update only the data
-// regions of each panel, leaving toolbars, chips, scroll, and selection
-// alone. Workflow views (wv-*) skip the interval entirely.
+// The dashboard previously ran a 30s setInterval that called
+// switchTab(activeTab), which re-ran the full loader and rewrote
+// panel.innerHTML. That destroyed any in-flight UI state (filters,
+// scroll, model-chip hover, drawer contents, ESPECIALLY focused
+// textareas) and was the canonical "dashboard refresh bug." A second
+// attempt (cd73918) tried to make the timer "data-only" via a
+// dataRefreshers table that aliased back to load*() in most cases,
+// re-introducing the same destructive rewrite for those tabs.
 //
-// Adding a new tab? Either:
-//   - alias your loader here (safe when the loader only writes to data
-//     regions and doesn't rebuild any toolbar/chip/input the user might be
-//     interacting with), or
-//   - write a sibling refreshXData() that does the data-only subset.
-const dataRefreshers = {
-    overview: () => loadOverview(),
-    tasks: () => _refreshTaskView(),       // skips _renderTaskStateChips()
-    review: () => loadReview(),
-    status: () => loadStatus(),
-    chats: () => loadChats(),              // re-fetches list; viewer state survives (separate DOM)
-    contracts: () => loadContracts(),
-    projects: () => loadProjects(),        // left list only; right pane untouched
-    costs: () => refreshCostsData(),       // data-only: skips costsRenderModelsFilter
-    settings: () => loadSettings(),        // existing snapshot/restore handles open <details>
-};
+// Both are gone. The dashboard now updates from the server-pushed
+// event bus (see script_event_bus.py + work_buddy/dashboard/events.py
+// + the SSE endpoint /api/events). The smart-refresh policy in the
+// bus dispatcher refreshes the active tab when an event affects it,
+// AND defers when the user is typing in an input/textarea inside the
+// panel (drained on focusout). Tab switches still refresh on switch
+// (switchTab calls staticLoaders[tab]()), and the visibilitychange
+// listener below refreshes the active tab when the browser tab
+// returns to foreground after being hidden.
 
-let refreshInterval = null;
-
-function startAutoRefresh(seconds = 30) {
-    if (refreshInterval) clearInterval(refreshInterval);
-    refreshInterval = setInterval(() => {
-        const activeTab = document.querySelector('.tab-btn.active');
-        if (!activeTab) return;
-        const tab = activeTab.dataset.tab;
-        // Workflow views have live user state; skip them.
-        if (tab.startsWith('wv-')) return;
-        const refresher = dataRefreshers[tab];
-        if (refresher) refresher();
-    }, seconds * 1000);
-}
+// ---- visibilitychange refresh ----
+// When the browser tab becomes visible again after being backgrounded,
+// re-run the active panel's loader once. Without this the SSE-only
+// model would only update what changed *while the tab was watching*;
+// long backgrounded periods leave the page stale even though the
+// EventSource buffered events while hidden.
+document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return;
+    const activeTab = document.querySelector('.tab-btn.active');
+    if (!activeTab) return;
+    const tab = activeTab.dataset.tab;
+    if (tab.startsWith('wv-')) return;  // workflow-view tabs poll on their own
+    const loader = staticLoaders[tab];
+    if (loader) loader();
+});
 
 // ---- Init ----
 // Set dynamic Obsidian vault links
@@ -2637,7 +2663,6 @@ if (WB_VAULT_NAME) {
     const mtl = document.getElementById('master-task-link');
     if (mtl) mtl.href = `obsidian://open?vault=${encodeURIComponent(WB_VAULT_NAME)}&file=tasks%2Fmaster-task-list.md`;
 }
-startAutoRefresh(30);
 // _initFromHash decides which tab/state to load based on the URL hash;
 // falls back to overview when no hash is present.
 if (document.readyState === 'loading') {

@@ -1075,29 +1075,15 @@ function _renderDomainNode(nodes, domainId) {
     `;
 }
 
-// Snapshot the open-state of every <details> in the settings tree before
-// wholesale-replacing innerHTML, and restore after. This preserves the
-// user's drill-down context when anything triggers a re-render (preference
-// toggle, manual Rebuild). Uses data-wb-detail-key attributes rather than
-// DOM position so restoration is robust to node-order changes.
-function _snapshotDetailsState(container) {
-    const state = {};
-    container.querySelectorAll('details[data-wb-detail-key]').forEach(el => {
-        state[el.dataset.wbDetailKey] = el.open;
-    });
-    return state;
-}
-
-function _restoreDetailsState(container, state) {
-    if (!state) return;
-    container.querySelectorAll('details[data-wb-detail-key]').forEach(el => {
-        const key = el.dataset.wbDetailKey;
-        if (key in state) {
-            el.open = state[key];
-        }
-    });
-}
-
+// renderSettingsTree morphdom-merges fresh HTML into the live tree.
+// morphdom natively diffs the ``open`` attribute on <details>, so the
+// user's drill-down state survives preference toggles + reprobes
+// without manual snapshot/restore.
+//
+// When WB_CONTROL_FILTER is active the new render has already computed
+// which <details> should be open to surface filter matches; we
+// communicate intent via the ``open=""`` attribute on the rendered
+// HTML and morphdom respects it.
 function renderSettingsTree() {
     const container = document.getElementById('settings-tree');
     if (!container) return;
@@ -1105,16 +1091,6 @@ function renderSettingsTree() {
         container.innerHTML = '<div class="loading">Loading...</div>';
         return;
     }
-
-    // Snapshot BEFORE we rebuild — we restore after.
-    //
-    // Important exception: when a filter is active we deliberately
-    // SKIP restoration. The new render has already computed which
-    // <details> should be open to surface the matches; restoring a
-    // previously-closed-by-the-user state would defeat the filter and
-    // hide what they're searching for. (Without filter, restore so
-    // their drill-down context survives preference toggles, etc.)
-    const priorState = WB_CONTROL_FILTER ? null : _snapshotDetailsState(container);
 
     const nodes = WB_CONTROL_GRAPH.nodes;
 
@@ -1140,9 +1116,24 @@ function renderSettingsTree() {
         .map(d => _renderDomainNode(nodes, d.id))
         .join('');
 
-    container.innerHTML = domainHtml + extras;
-
-    // Restore — any <details> with a key that was open before stays open.
-    _restoreDetailsState(container, priorState);
+    if (typeof window._wbMorphReplace === 'function') {
+        window._wbMorphReplace(container, domainHtml + extras);
+    } else {
+        container.innerHTML = domainHtml + extras;
+    }
 }
+
+// Surface handle for the Settings tab. SSE handlers in
+// script_event_bus.py call refresh() on component.health_changed and
+// component.preference_changed — refetches /api/control/graph and
+// morphdom-merges into the tree. <details> open state is preserved
+// natively by morphdom; no panel-wide rewrite ever occurs.
+window.settingsSurface = {
+    refresh: function() {
+        if (typeof loadSettings === 'function') return loadSettings();
+    },
+    isMounted: function() {
+        return !!document.getElementById('settings-tree');
+    },
+};
 """

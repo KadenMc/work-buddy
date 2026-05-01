@@ -265,6 +265,12 @@ def probe_all(force: bool = False) -> dict[str, dict[str, Any]]:
         pid, entry = _run_probe(probe)
         results[pid] = entry
 
+    # Capture previous availability per-component to detect transitions.
+    prev_status: dict[str, Any] = {}
+    if _TOOL_STATUS is not None:
+        for k, v in _TOOL_STATUS.items():
+            prev_status[k] = v.get("available")
+
     _TOOL_STATUS = results
     log.info(
         "Tool probes complete: %d available, %d unavailable",
@@ -272,6 +278,20 @@ def probe_all(force: bool = False) -> dict[str, dict[str, Any]]:
         sum(1 for r in results.values() if not r["available"]),
     )
     _persist_tool_status(results)
+
+    # Publish per-component health-change events for transitions.
+    try:
+        from work_buddy.dashboard.events import publish_auto
+        for tool_id, entry in results.items():
+            if prev_status.get(tool_id) != entry.get("available"):
+                publish_auto("component.health_changed", {
+                    "component_id": tool_id,
+                    "available": entry.get("available"),
+                    "reason": entry.get("reason", ""),
+                })
+    except Exception:
+        pass  # best-effort
+
     return results
 
 
@@ -334,8 +354,22 @@ def reprobe_one(tool_id: str) -> dict[str, Any] | None:
                 _TOOL_STATUS = {}
         else:
             _TOOL_STATUS = {}
+    prev = _TOOL_STATUS.get(tool_id, {}).get("available")
     _TOOL_STATUS[tool_id] = entry
     _persist_tool_status(_TOOL_STATUS)
+
+    # Publish a component.health_changed only on actual transitions —
+    # avoids spamming the bus when a probe re-confirms a stable state.
+    if prev != entry.get("available"):
+        try:
+            from work_buddy.dashboard.events import publish_auto
+            publish_auto("component.health_changed", {
+                "component_id": tool_id,
+                "available": entry.get("available"),
+                "reason": entry.get("reason", ""),
+            })
+        except Exception:
+            pass  # best-effort
 
     return entry
 

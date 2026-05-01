@@ -467,6 +467,15 @@ function renderTriageReview(container, presentation, options) {
         const card = document.createElement('div');
         card.className = 'wv-group-card';
         card.dataset.groupIndex = String(group.index);
+        // Per-card SSE addressing. The card identifies its underlying
+        // pool entry via (pool_run_id, item_id-of-first-item). Multi-
+        // item clusters (Slice 3) still resolve to the cluster's
+        // primary item; SSE state-change events fire per entry, so
+        // the dominant single-item case maps cleanly. See
+        // architecture/event-bus.
+        if (group.pool_run_id) card.dataset.poolRunId = group.pool_run_id;
+        const _firstItem = (group._items || group.items || [])[0];
+        if (_firstItem && _firstItem.id) card.dataset.itemId = _firstItem.id;
         card.addEventListener('dragover', (e) => { e.preventDefault(); card.classList.add('drag-over'); });
         card.addEventListener('dragleave', () => card.classList.remove('drag-over'));
         card.addEventListener('drop', (e) => {
@@ -1166,6 +1175,230 @@ function renderTriageReview(container, presentation, options) {
     }
 
     render();
+
+    // ------------------------------------------------------------------
+    // Per-card mutation handle (SSE-driven incremental updates)
+    // ------------------------------------------------------------------
+    //
+    // The dispatcher in script_event_bus.py calls these mutators when a
+    // pool.* event arrives. The handle closes over the same `state`,
+    // `dragItem`/`dragSourceGroup`, and helpers as the rest of this
+    // function — no closure-lift required. SSE handlers MUST NOT call
+    // any panel-wide loader (e.g. loadReview()); the regression test
+    // ``test_no_wholesale_loader_calls_in_event_handlers`` enforces.
+    //
+    // See architecture/event-bus for the full per-card mutation
+    // contract: animation cancellation, focus capture/restore,
+    // aria-live announcements, drag-state nulling, state-dict pruning,
+    // ordering-inversion mitigation via _pendingRemovals.
+
+    const _pendingRemovals = new Set();  // keys: `${run_id}::${item_id}`
+    const _ariaLive = (function() {
+        let el = container.querySelector('[data-wb-live-region]');
+        if (el) return el;
+        el = document.createElement('div');
+        el.setAttribute('role', 'status');
+        el.setAttribute('aria-live', 'polite');
+        el.setAttribute('aria-atomic', 'true');
+        el.dataset.wbLiveRegion = '';
+        el.className = 'visually-hidden';
+        container.appendChild(el);
+        return el;
+    })();
+    function _announce(msg) { if (_ariaLive) _ariaLive.textContent = msg; }
+    function _findCard(run_id, item_id) {
+        return container.querySelector(
+            '[data-pool-run-id="' + run_id + '"][data-item-id="' + item_id + '"]'
+        );
+    }
+    function _decorate(card, group) {
+        // Resolution Surface decorator is idempotent (script_resolution.py:85).
+        const dec = (typeof options.decorateCard === 'function')
+            ? options.decorateCard
+            : (() => {});
+        try { dec(card, group); }
+        catch (e) { console.error('[surface] decorateCard threw:', e); }
+    }
+
+    return {
+        appendCard(group) {
+            if (!group || !group.pool_run_id) return;
+            const firstItem = (group.items || [])[0];
+            if (!firstItem || !firstItem.id) return;
+            const key = group.pool_run_id + '::' + firstItem.id;
+            // Ordering inversion: if a removal already arrived for
+            // this key (in-process state-change beat the cross-process
+            // add through the messaging bridge), the card is already
+            // resolved server-side — discard the late add.
+            if (_pendingRemovals.has(key)) {
+                _pendingRemovals.delete(key);
+                return;
+            }
+            // DOM-presence guard — never double-mount the same entry.
+            if (_findCard(group.pool_run_id, firstItem.id)) return;
+            // Splice into closure state so per-card handlers (pill
+            // clicks, drag) can find the group via state.groups.
+            const synth = {...group, _items: [...(group.items || [])]};
+            if (synth.index === undefined || synth.index === null) {
+                synth.index = state.groups.length + state.newGroups.length;
+            }
+            state.groups.push(synth);
+            if (synth.suggested_action) {
+                state.decisions[synth.index] = synth.suggested_action;
+            }
+            if (synth.likely_task_id) state.taskAssignments[synth.index] = synth.likely_task_id;
+            if (synth.suggested_task_text) state.newTaskTexts[synth.index] = synth.suggested_task_text;
+            if (Array.isArray(synth.suggested_namespace_tags)) {
+                state.namespaceTags[synth.index] = [...synth.suggested_namespace_tags];
+            }
+            // Render off-DOM, then insert in the correct position:
+            // BEFORE the "Drop item here" zone and the "Submit All"
+            // controls so the new card appears at the bottom of the
+            // existing card list, not below the footer affordances.
+            // Falls back to appending if no anchor is present (e.g.
+            // a non-Review caller that doesn't render the drop zone).
+            const stage = document.createDocumentFragment();
+            renderGroupCard(stage, synth);
+            const newCard = stage.firstElementChild;
+            const dropZone = container.querySelector('.wv-new-group-zone');
+            const newGroupsSection = container.querySelector('.wv-section');
+            const anchor = newGroupsSection || dropZone;
+            if (newCard && anchor && anchor.parentElement === container) {
+                container.insertBefore(newCard, anchor);
+            } else if (newCard) {
+                container.appendChild(newCard);
+            }
+            const card = _findCard(group.pool_run_id, firstItem.id);
+            if (card) {
+                card.classList.add('wv-incoming');
+                _decorate(card, synth);
+            }
+            _announce('1 new triage item');
+        },
+
+        removeCard(run_id, item_id) {
+            const card = _findCard(run_id, item_id);
+            if (!card) {
+                _pendingRemovals.add(run_id + '::' + item_id);
+                return;
+            }
+            // Capture focus so we can restore to a sibling after removal.
+            const focused = document.activeElement;
+            const focusInside = focused && card.contains(focused);
+            let focusTarget = null;
+            if (focusInside) {
+                focusTarget = card.nextElementSibling
+                    || card.previousElementSibling
+                    || container;
+            }
+            // Cancel in-flight animations (e.g. wv-incoming) so the
+            // wv-leaving animation gets a clean run.
+            try {
+                if (typeof card.getAnimations === 'function') {
+                    card.getAnimations({subtree: true}).forEach(a => {
+                        try { a.cancel(); } catch (_) {}
+                    });
+                }
+            } catch (_) {}
+            // Null any drag state pointing into this group so the
+            // drop handler doesn't dereference a removed reference.
+            const groupIndex = parseInt(card.dataset.groupIndex, 10);
+            const group = state.groups.find(g => g.index === groupIndex);
+            if (group && dragSourceGroup === group) {
+                dragItem = null;
+                dragSourceGroup = null;
+            }
+            card.classList.add('wv-leaving');
+            let done = false;
+            const cleanup = () => {
+                if (done) return;
+                done = true;
+                if (group) {
+                    state.groups = state.groups.filter(g => g.index !== groupIndex);
+                    delete state.decisions[groupIndex];
+                    delete state.taskAssignments[groupIndex];
+                    delete state.newTaskTexts[groupIndex];
+                    delete state.namespaceTags[groupIndex];
+                    delete state.overrideReasons[groupIndex];
+                    for (const it of (group._items || group.items || [])) {
+                        delete state.itemOverrides[it.id];
+                    }
+                }
+                card.remove();
+                if (focusTarget && typeof focusTarget.focus === 'function') {
+                    try { focusTarget.focus({preventScroll: true}); } catch (_) {}
+                }
+            };
+            card.addEventListener('animationend', cleanup, {once: true});
+            // Failsafe: if animationend never fires (browser quirk
+            // when element is detached, or display:none on parent).
+            setTimeout(cleanup, 350);
+            _announce('Item resolved');
+        },
+
+        updateCard(run_id, item_id, freshGroup) {
+            const card = _findCard(run_id, item_id);
+            if (!card || !freshGroup) return;
+            // Render the fresh card off-DOM so morphdom can diff it.
+            const stage = document.createElement('div');
+            const synth = {...freshGroup, _items: [...(freshGroup.items || [])]};
+            // Preserve the existing groupIndex so internal handlers
+            // continue to address the same state slot.
+            const groupIndex = parseInt(card.dataset.groupIndex, 10);
+            if (!Number.isNaN(groupIndex)) synth.index = groupIndex;
+            renderGroupCard(stage, synth);
+            const fresh = stage.firstElementChild;
+            if (!fresh) return;
+            if (typeof window.morphdom === 'function') {
+                window.morphdom(card, fresh, {
+                    onBeforeElUpdated(fromEl, toEl) {
+                        // Preserve user-entered text across diffs:
+                        // never clobber a focused input, and never
+                        // replace a non-empty value with an empty one.
+                        if (fromEl.tagName === 'INPUT' || fromEl.tagName === 'TEXTAREA') {
+                            if (document.activeElement === fromEl) return false;
+                            const v = (fromEl.value || '').trim();
+                            if (v && (toEl.value || '').trim() === '') return false;
+                        }
+                        return !fromEl.isEqualNode(toEl);
+                    },
+                });
+                _decorate(card, synth);
+            }
+        },
+
+        bumpAttractionPasses(run_id, item_id, count) {
+            const card = _findCard(run_id, item_id);
+            if (!card) return;
+            const groupIndex = parseInt(card.dataset.groupIndex, 10);
+            const group = state.groups.find(g => g.index === groupIndex);
+            if (group) group.attraction_passes = count;
+            let badge = card.querySelector('.wv-pass-count');
+            if (!badge && group) {
+                _decorate(card, group);  // Resolution Surface mounts the badge.
+                badge = card.querySelector('.wv-pass-count');
+            }
+            if (!badge) return;
+            badge.textContent = '⏳ ' + count;
+            // Reflow trick: removing+re-adding the same animation
+            // class requires a layout flush to restart the keyframes.
+            badge.classList.remove('wv-pulse');
+            void badge.offsetWidth;
+            badge.classList.add('wv-pulse');
+        },
+
+        setForcedContextStored(run_id, item_id) {
+            const card = _findCard(run_id, item_id);
+            if (!card) return;
+            // Same visual retire as the user-initiated Re-direct path
+            // in script_resolution.py:385-392 — keeps consistency.
+            card.classList.add('wv-card-redirected');
+        },
+
+        isMounted() {
+            return document.body.contains(container);
+        },
+    };
 }
 
 // Thin wrapper preserving the workflow-view modal's original

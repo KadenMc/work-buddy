@@ -1460,4 +1460,19 @@ function costsRenderSessionsTable(shape, data) {
     costsState.sessionPage = page;
 }
 
+// Surface handle for the Costs tab. SSE handlers in
+// script_event_bus.py call refresh() on llm.call_logged. Uses the
+// existing data-only ``refreshCostsData`` path which preserves chip
+// rail / model filter / project selection by design — internally now
+// morphdom-merges via window._wbMorphReplace where it touches user
+// state. See architecture/event-bus.
+window.costsSurface = {
+    refresh: function() {
+        if (typeof refreshCostsData === 'function') return refreshCostsData();
+    },
+    isMounted: function() {
+        return !!document.getElementById('costs-cards');
+    },
+};
+
 """

@@ -242,7 +242,23 @@ window.mountResolutionSurface = function(container, presentation, options) {
     }
 
     // -- Mount the underlying renderer ------------------------------------
-    renderTriageReview(container, presentation, {
+    //
+    // renderTriageReview returns a per-card mutation handle (appendCard /
+    // removeCard / updateCard / bumpAttractionPasses / setForcedContextStored
+    // / isMounted). We pass it through verbatim so the SSE dispatcher
+    // (script_event_bus.py) can call surface mutators against the live
+    // tab without touching the wholesale loader. See architecture/event-bus.
+    //
+    // ── LISTENER-SCOPE RULE ─────────────────────────────────────────────
+    // Card-scope code MUST NOT register listeners on elements outside
+    // the card subtree without registering them for teardown via an
+    // ``AbortController``. The keyboard layer's document-level keydown
+    // handler is the ONLY allowed exception and is torn down via
+    // ``_resTeardownKeyboardLayer``. Adding a new document-level or
+    // window-level listener inside any card-creation path will leak
+    // closures forever after the first SSE-driven removeCard.
+    // ────────────────────────────────────────────────────────────────────
+    const reviewSurface = renderTriageReview(container, presentation, {
         perGroupSubmit: true,
         showNamespaceTags: true,
         onSubmit: options.onSubmit || (async () => {}),
@@ -255,11 +271,11 @@ window.mountResolutionSurface = function(container, presentation, options) {
     _resInstallKeyboardLayer(container);
     _resInstallHelpHint(container);
 
-    // Caller can call this to detach the keyboard listener — rarely
-    // needed because the Review tab is persistent in the dashboard.
-    return {
+    // Combined handle: per-card mutators (from renderTriageReview) +
+    // the existing dispose() for the document-level keyboard listener.
+    return Object.assign({}, reviewSurface || {}, {
         dispose: () => _resTeardownKeyboardLayer(container),
-    };
+    });
 };
 
 

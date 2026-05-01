@@ -30,6 +30,22 @@ from work_buddy.obsidian.tasks import store
 
 logger = get_logger(__name__)
 
+
+def _publish_task_event(event_type: str, payload: dict[str, Any]) -> None:
+    """Best-effort publish to the dashboard event bus.
+
+    Routes through ``publish_auto`` so callers from the dashboard
+    process publish in-process and callers from any other process
+    route through the messaging-service bridge automatically. Never
+    raises — a missed event must not break a task mutation.
+    """
+    try:
+        from work_buddy.dashboard.events import publish_auto
+        publish_auto(event_type, payload)
+    except Exception:
+        logger.exception("tasks: event publish for %r failed", event_type)
+
+
 # ── Constants ───────────────────────────────────────────────────
 
 MASTER_TASK_FILE = "tasks/master-task-list.md"
@@ -1048,6 +1064,12 @@ def update_task(
             result["store_updated"] = False
 
     result["task_id"] = task_id
+    if state is not None and task_id:
+        _publish_task_event("task.state_changed", {
+            "task_id": task_id,
+            "state": state,
+            "reason": reason,
+        })
     return result
 
 
@@ -1435,6 +1457,12 @@ def create_task(
     if note_path:
         result["note_path"] = note_path
         result["note_uuid"] = note_uuid
+    _publish_task_event("task.created", {
+        "task_id": task_id,
+        "state": "inbox",
+        "urgency": urgency,
+        "contract": contract,
+    })
     return result
 
 
@@ -1546,6 +1574,11 @@ def toggle_task(
         store.update(task_id, state=new_state, reason="toggled")
 
     logger.info("Task toggled: %s → %s in %s:%d", task_id, new_state, fp, idx + 1)
+    _publish_task_event("task.state_changed", {
+        "task_id": task_id,
+        "state": new_state,
+        "reason": "toggled",
+    })
     return {
         "success": True,
         "task_id": task_id,
@@ -1848,6 +1881,11 @@ def update_task_description(
         captured_old.get("description", ""),
         cleaned,
     )
+
+    _publish_task_event("task.description_changed", {
+        "task_id": task_id,
+        "description": cleaned,
+    })
 
     response: dict[str, Any] = {
         "success": True,

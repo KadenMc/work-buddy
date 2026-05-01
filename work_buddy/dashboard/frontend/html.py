@@ -9,6 +9,10 @@ def _html() -> str:
     <h1><span>work-buddy</span> dashboard</h1>
     <div class="header-meta">
         <span id="sidecar-status"><span class="status-dot stopped"></span> loading...</span>
+        <span id="event-bus-status" title="Real-time event stream"
+              class="bus-status connecting">
+            <span class="status-dot stopped"></span> live
+        </span>
         <span id="clock"></span>
         <span class="cp-kbd-hint" onclick="cpOpen()" title="Command palette">Ctrl+K</span>
         <button class="header-settings-btn" onclick="switchTab('settings')"
