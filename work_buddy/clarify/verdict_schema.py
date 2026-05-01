@@ -311,8 +311,49 @@ _TASK_PROPOSAL_SCHEMA: dict[str, Any] = {
             "type": ["array", "null"],
             "items": {"type": "string"},
             "description": (
-                "Slice 5b forward-compat: action contexts the user "
-                "needs to be in to execute this. Optional."
+                "DEPRECATED — kept for Slice 1→4 backwards compat. "
+                "Slice 5a splits into agent_required_contexts + "
+                "user_required_contexts; Clarify should populate the "
+                "two new fields and leave this null."
+            ),
+        },
+        "agent_required_contexts": {
+            "type": ["array", "null"],
+            "items": {"type": "string"},
+            "description": (
+                "Slice 5a: tokens describing the environment the AGENT "
+                "needs to act on this task autonomously. Examples: "
+                "``@filesystem`` (read/write project files), "
+                "``@vault`` (Obsidian bridge), ``@email_send`` (send "
+                "email under the user's identity), ``@web_public`` "
+                "(WebFetch / WebSearch). Empty array = no agent-side "
+                "requirements (the user does this work). The resolver "
+                "treats unknown tokens as user-only (forward-compat)."
+            ),
+        },
+        "user_required_contexts": {
+            "type": ["array", "null"],
+            "items": {"type": "string"},
+            "description": (
+                "Slice 5a: tokens describing the environment the USER "
+                "needs to be in. Examples: ``@user_workstation`` (at "
+                "their dev machine), ``@phone_voice`` (making a call), "
+                "``@user_creds`` (signed into a portal), ``@in_person`` "
+                "(physically present somewhere). Empty array = no "
+                "user-side requirements (the agent does this work "
+                "autonomously). Two lists may overlap (e.g., "
+                "``@chrome_active`` requires both)."
+            ),
+        },
+        "required_contexts_source": {
+            "type": ["string", "null"],
+            "enum": ["agent_inferred", "user_authored", None],
+            "description": (
+                "Slice 5a provenance for the two context lists. "
+                "Clarify writes ``agent_inferred``; the dashboard "
+                "flips to ``user_authored`` once the user edits the "
+                "list so future Clarify re-runs don't clobber the "
+                "edit."
             ),
         },
     },

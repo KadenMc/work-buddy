@@ -218,6 +218,75 @@ If you can't classify confidently, leave ``risk_profile`` unset; the
 system falls back to a conservative safe-profile that caps autonomy
 at the lowest dimension level. NEVER fabricate a permissive profile
 to make the user's queue look smaller.
+
+## Action contexts (Slice 5a)
+
+For every ``task`` record, populate BOTH context lists. The resolver
+uses them to answer "who can act now?" against the live tool-status
+cache:
+
+  - ``task_proposal.agent_required_contexts``: tokens describing what
+    the AGENT needs to act on this autonomously. Examples:
+    ``@filesystem`` (read/write project files), ``@vault`` (Obsidian
+    bridge), ``@email_send`` (send under user's identity),
+    ``@web_public`` (WebFetch / WebSearch), ``@github`` (gh CLI / web).
+    Empty array = the user does this work; the agent contributes
+    nothing.
+
+  - ``task_proposal.user_required_contexts``: tokens describing the
+    environment the USER needs to be in. Examples:
+    ``@user_workstation`` (at their dev machine),
+    ``@phone_voice`` (making a call), ``@user_creds`` (signed into a
+    portal — banking, CRA, healthcare), ``@in_person`` (physically
+    present), ``@physical`` (anything bodily). Empty = the agent
+    handles this without the user.
+
+  - ``task_proposal.required_contexts_source``: set to
+    ``"agent_inferred"``. The dashboard flips this to
+    ``"user_authored"`` if the user edits the lists.
+
+Context registry (the resolver knows these tokens; you may invent
+new ones for forward-compat — they'll resolve to user-only until the
+registry catches up):
+
+  user-only       : @physical, @in_person, @phone_voice,
+                    @user_creds, @user_workstation, @cluster
+  universal       : @filesystem, @web_public, @llm, @github
+  probe-gated     : @vault → obsidian
+                    @email_send → thunderbird
+                    @email_read → thunderbird
+                    @chrome_active → chrome_extension
+
+Heuristics:
+
+  - Code / file edits        → agent: [@filesystem],
+                                user:  [@user_workstation]
+  - Send email under user    → agent: [@email_send],
+                                user:  [@email_send]
+  - Read user's email        → user:  [@email_read]  (agent reads via
+                                                       Thunderbird only
+                                                       once user is at
+                                                       desk)
+  - Phone call               → agent: [],
+                                user:  [@phone_voice]
+  - Banking / portal task    → agent: [],
+                                user:  [@user_creds, @user_workstation]
+  - Vault edit               → agent: [@vault, @filesystem],
+                                user:  []
+  - Browser-mediated triage  → agent: [@chrome_active],
+                                user:  [@user_workstation]
+  - Pure-physical errand     → agent: [],
+                                user:  [@physical]
+  - Information lookup       → agent: [@web_public],
+                                user:  []
+
+When in doubt, prefer FEWER contexts (avoid over-restricting). Both
+lists are joined by AND; either may be empty. The resolver caps
+achievable tier at 1 ("suggest only") whenever the agent can't
+satisfy its list — the surface then renders a handoff card if the
+user's side is satisfied (per ROADMAP §3.2 "agent is blocked, not
+user"). If you OMIT both lists, the resolver falls back to the
+Slice-4 risk-only behavior (no context-cap applied).
 """
 
 

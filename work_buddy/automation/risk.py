@@ -51,9 +51,11 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 from work_buddy.clarify.resolution import (
+    PIPELINE_BLOCKER_AGENT_CONTEXT_UNMET,
     PIPELINE_BLOCKER_CONSENT_REQUIRED,
     PIPELINE_BLOCKER_INFERENCE_UNCERTAIN,
     PIPELINE_BLOCKER_RISK_THRESHOLD_EXCEEDED,
+    PIPELINE_BLOCKER_USER_CONTEXT_UNMET,
 )
 
 
@@ -334,28 +336,29 @@ def resolve_achievable_tier(
     task: Mapping[str, Any] | None = None,
     *,
     contexts: Mapping[str, bool] | None = None,
+    tool_status: Mapping[str, Any] | None = None,
 ) -> int:
     """Best-guess capability ceiling for a task.
 
     The achievable tier is the highest tier the agent's *capability*
     can support — set by inspection of the task body and which tools
-    it would need.  Slice 4 ships a deliberately simple inference: it
-    reads the cached ``automation_tier_achievable`` if Clarify has
-    populated it, otherwise infers from the risk profile (heuristic:
-    irreversible / critical-accuracy work tops out at tier 2; everyone
-    else can reach tier 3 or 4 depending on regret).
+    it would need.  Reads the cached ``automation_tier_achievable``
+    if Clarify has populated it; otherwise infers from a combination
+    of (Slice 5a) action contexts and (Slice 4) the risk profile.
 
-    Slice 5a will plug in the real context-aware version
-    (``resolve_who_can_act`` + ``CONTEXT_REGISTRY``).  This Slice-4
-    function is forward-compat: when contexts arrive, it'll start
-    consulting them.  Today, ``contexts`` is unused (kept in the
-    signature so callers don't churn).
+    Slice 5a wiring (precedence, highest cap first):
 
-    Returns 0 only when the task is explicitly tagged as
-    physical-world (``required_contexts`` includes ``@physical`` or
-    ``@in_person``); the safe-profile fallback bottoms out at tier 1
-    rather than 0 because most digital tasks can at least be
-    suggested.
+    1. Cached value from Clarify.
+    2. Physical / in-person work → tier 0.
+    3. Agent can't satisfy its required contexts → tier 1
+       (the agent can suggest but can't autonomously execute; the
+       Resolution Surface should show a handoff card per ROADMAP §3.2
+       when the user *can* satisfy their side).
+    4. Risk-profile heuristic (Slice 4 v0).
+
+    ``contexts`` is the Slice-5a forward-compat hook (kept for callers
+    that already pass it through).  ``tool_status`` is for tests that
+    want to bypass the live ``_TOOL_STATUS`` cache.
     """
     if not isinstance(task, Mapping):
         task = {}
@@ -365,20 +368,47 @@ def resolve_achievable_tier(
     if isinstance(cached, int) and 0 <= cached <= 4:
         return cached
 
-    # 2. Physical-world / in-person work: tier 0.
-    required = task.get("agent_required_contexts") or task.get("required_contexts") or []
-    if isinstance(required, str):
-        # Stored as JSON sometimes; tolerate both shapes.
-        try:
-            required = json.loads(required)
-        except json.JSONDecodeError:
-            required = []
-    if isinstance(required, list):
-        physical_tokens = {"@physical", "@in_person", "@phone_voice"}
-        if any(token in physical_tokens for token in required):
+    # 2. Physical-world / in-person work: tier 0.  Read both fields —
+    #    Slice 4 stored under ``required_contexts`` (legacy/forward-compat
+    #    placeholder); Slice 5a writes ``agent_required_contexts``.
+    physical_tokens = {"@physical", "@in_person", "@phone_voice"}
+    for field_name in ("agent_required_contexts", "required_contexts"):
+        raw = task.get(field_name)
+        if raw is None:
+            continue
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+        if isinstance(raw, list) and any(t in physical_tokens for t in raw):
             return 0
 
-    # 3. Heuristic from the risk profile.  irreversible + high-regret
+    # 3. Slice 5a context-aware cap.  When the agent can't satisfy its
+    #    required contexts, the achievable ceiling is tier-1 (suggest-
+    #    only) regardless of how permissive the risk profile is.  This
+    #    is the live tool-state feedback — the user sets up email →
+    #    dependent tasks unblock automatically on next render.
+    agent_required = task.get("agent_required_contexts")
+    user_required = task.get("user_required_contexts")
+    if agent_required or user_required:
+        try:
+            from work_buddy.automation.contexts import resolve_who_can_act
+            who = resolve_who_can_act(
+                agent_required, user_required, tool_status=tool_status,
+            )
+            if not who.agent:
+                # Suggest-only.  Slice 1.5's Resolution Surface picks
+                # this up via the ``user_context_unmet`` /
+                # ``agent_context_unmet`` blockers (see
+                # resolve_operating_tier below).
+                return 1
+        except Exception:  # pragma: no cover — defensive
+            # If the contexts module breaks, fall through to the Slice-4
+            # heuristic rather than blocking task surfacing.
+            pass
+
+    # 4. Heuristic from the risk profile.  irreversible + high-regret
     #    work caps achievable at 2; critical-accuracy work caps at 3
     #    (output review is the right surface).  Everyone else can
     #    reach 3.  Tier 4 is opt-in via Clarify or by the user, never
@@ -405,16 +435,25 @@ def resolve_operating_tier(
     config: Mapping[str, Any] | None = None,
     tolerance: RiskTolerance | None = None,
     amplifier_policy: AmplifierPolicy | None = None,
+    tool_status: Mapping[str, Any] | None = None,
 ) -> OperatingTierDecision:
     """Compute the operating tier for a task.
 
-    Pure function — no I/O, no DB writes.  All inputs are explicit:
-    ``task`` is the Slice-2/4 row dict (carrying ``risk_profile_json``
-    and optionally ``automation_tier_achievable``); ``contexts`` is
-    forward-compat for Slice 5a (currently unused but kept in the
-    signature so callers don't churn); ``config`` is a loaded
-    ``config.local.yaml`` dict from which tolerance + amplifier policy
-    are read (callers can override either explicitly).
+    Pure function — no I/O beyond the in-memory tool-status cache
+    (``work_buddy.tools._TOOL_STATUS``, populated by ``probe_all``).
+    All inputs are explicit:
+
+    - ``task`` is the Slice-2/4/5a row dict (carries
+      ``risk_profile_json`` plus optionally
+      ``automation_tier_achievable`` and the two
+      ``*_required_contexts`` lists).
+    - ``contexts`` is the legacy Slice-4 forward-compat hook (unused
+      today; kept in the signature so callers don't churn).
+    - ``config`` is a loaded ``config.local.yaml`` dict from which
+      tolerance + amplifier policy are read (callers can override
+      either explicitly).
+    - ``tool_status`` is a test-injection seam for the contexts
+      resolver; production callers leave it None.
 
     Returns an ``OperatingTierDecision`` carrying the achievable
     ceiling, the per-risk ceiling, the operating tier, and a typed
@@ -424,6 +463,12 @@ def resolve_operating_tier(
     Composition rule (ROADMAP §3.4): an action with high amplifiers
     requires consent *even if* the dimension levels alone would
     permit autonomy.  Three amplifiers all firing high → tier 2 cap.
+
+    Slice 5a addition: if the task declares required contexts and the
+    agent (or user) can't satisfy them, the resolver caps at tier 1
+    and emits ``agent_context_unmet`` / ``user_context_unmet`` — the
+    Resolution Surface uses these to render typed blocker badges with
+    setup-wizard deep-links.
     """
     if not isinstance(task, Mapping):
         task = {}
@@ -433,7 +478,44 @@ def resolve_operating_tier(
         amplifier_policy = load_amplifier_policy(config)
 
     profile = parse_risk_profile(task.get("risk_profile_json"))
-    achievable = resolve_achievable_tier(task, contexts=contexts)
+    achievable = resolve_achievable_tier(
+        task, contexts=contexts, tool_status=tool_status,
+    )
+
+    # Slice 5a: resolve who-can-act and surface a typed blocker when
+    # contexts aren't met.  We do this BEFORE the dimension/amplifier
+    # walk because a context miss is a more concrete reason to stop —
+    # the user can't approve a plan for an action whose tools aren't
+    # set up yet.
+    context_blocker: str | None = None
+    context_capped_by: list[str] = []
+    context_reasons: list[str] = []
+    agent_required = task.get("agent_required_contexts")
+    user_required = task.get("user_required_contexts")
+    if agent_required or user_required:
+        try:
+            from work_buddy.automation.contexts import resolve_who_can_act
+            who = resolve_who_can_act(
+                agent_required, user_required, tool_status=tool_status,
+            )
+            if not who.agent and who.agent_unmet:
+                context_blocker = PIPELINE_BLOCKER_AGENT_CONTEXT_UNMET
+                context_capped_by.append("contexts:agent")
+                context_reasons.append(
+                    "agent missing context(s): " + ", ".join(who.agent_unmet)
+                )
+            if not who.user and who.user_unmet:
+                # Agent blocker takes priority — agent_context_unmet has
+                # an actionable deep-link (setup wizard), user_context_unmet
+                # only resurfaces.  Record both reasons either way.
+                if context_blocker is None:
+                    context_blocker = PIPELINE_BLOCKER_USER_CONTEXT_UNMET
+                context_capped_by.append("contexts:user")
+                context_reasons.append(
+                    "user missing context(s): " + ", ".join(who.user_unmet)
+                )
+        except Exception:  # pragma: no cover — defensive
+            pass
 
     capped_by: list[str] = []
     reasons: list[str] = []
@@ -528,13 +610,21 @@ def resolve_operating_tier(
     if pipeline_blocker is None and allowed < achievable:
         pipeline_blocker = PIPELINE_BLOCKER_RISK_THRESHOLD_EXCEEDED
 
+    # Slice 5a: context blocker takes precedence over risk blockers
+    # when the achievable tier was already pinned to 1 by the contexts
+    # resolver (the agent literally can't act, so risk is moot).
+    if context_blocker is not None and achievable <= 1:
+        pipeline_blocker = context_blocker
+        capped_by = list(capped_by) + context_capped_by
+        reasons = list(reasons) + context_reasons
+
     operating = min(achievable, allowed)
 
     return OperatingTierDecision(
         achievable=achievable,
         allowed_under_risk=allowed,
         operating=operating,
-        pipeline_blocker=pipeline_blocker if operating < achievable else None,
+        pipeline_blocker=pipeline_blocker if operating < achievable or context_blocker else None,
         capped_by=tuple(capped_by),
         reasons=tuple(reasons),
     )

@@ -73,7 +73,55 @@ CREATE TABLE IF NOT EXISTS task_metadata (
     -- mutation fires inside a ``user_initiated()`` block the actor
     -- is the user; otherwise an autonomous agent path. NULL for
     -- legacy tasks created before Slice 4.
-    last_actor      TEXT
+    last_actor      TEXT,
+    -- Slice 5a: action-context resolution layer -------------------
+    -- ``agent_required_contexts`` / ``user_required_contexts``: JSON
+    -- arrays of context tokens (e.g. ``@filesystem``, ``@email_send``)
+    -- the agent / user must each be in for this action to fire.  Read
+    -- by ``work_buddy.automation.contexts.resolve_who_can_act`` against
+    -- the live tool-status cache to decide who-can-act-now (lazy,
+    -- never stored).  NULL on legacy rows (treated as empty list = no
+    -- constraints).
+    agent_required_contexts TEXT,
+    user_required_contexts  TEXT,
+    -- ``required_contexts_source``: 'agent_inferred' | 'user_authored'
+    -- | NULL.  Provenance for the two lists above — flips to
+    -- ``user_authored`` the first time the user edits the inferred
+    -- set so future re-runs of Clarify don't clobber the user's
+    -- ownership.
+    required_contexts_source TEXT,
+    -- Slice 7: density + per-action-item ----------------------------
+    -- ``current_action_item_id``: foreign key to task_action_items.id
+    -- naming the step the user is currently focused on.  NULL for
+    -- tasks that haven't been developed (sparse tasks at capture time).
+    -- The master-list view renders this item's description as the
+    -- "current step" badge, and the engage view resolves tier +
+    -- contexts against this item's profile rather than the parent
+    -- task's.  Set/cleared by the develop-at-pickup flow + the
+    -- action_items CRUD.
+    current_action_item_id INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS task_action_items (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id         TEXT NOT NULL,
+    sequence        INTEGER NOT NULL,
+    description     TEXT NOT NULL,
+    state           TEXT NOT NULL DEFAULT 'pending',
+                    -- 'pending' | 'in_progress' | 'done' | 'skipped'
+    risk_profile_json TEXT,
+    agent_required_contexts TEXT,   -- JSON array, mirrors task_metadata
+    user_required_contexts TEXT,
+    definition_of_done TEXT,
+    user_authored   INTEGER NOT NULL DEFAULT 0,
+                    -- 0 = agent proposed, 1 = user wrote/edited
+    approved_at     TEXT,            -- when user-approved an agent-proposed item
+    completed_at    TEXT,
+    handoff_package_path TEXT,       -- vault path to the prep package
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL,
+    FOREIGN KEY (task_id) REFERENCES task_metadata(task_id) ON DELETE CASCADE,
+    UNIQUE(task_id, sequence)
 );
 
 CREATE TABLE IF NOT EXISTS task_state_history (
@@ -117,6 +165,10 @@ CREATE INDEX IF NOT EXISTS idx_task_tags_tag
     ON task_tags(tag);
 CREATE INDEX IF NOT EXISTS idx_task_tags_ns
     ON task_tags(is_namespace, tag);
+CREATE INDEX IF NOT EXISTS idx_action_items_task
+    ON task_action_items(task_id, sequence);
+CREATE INDEX IF NOT EXISTS idx_action_items_state
+    ON task_action_items(state);
 """
 
 VALID_STATES = {"inbox", "mit", "focused", "snoozed", "done"}
@@ -148,6 +200,13 @@ VALID_USER_INVOLVEMENTS = {"low", "medium", "high"}
 # actor recorded yet). The set is closed because the resolver branches
 # on it; if Slice 7+ wants per-action-item actors, add a separate column.
 VALID_LAST_ACTORS = {"agent", "user", None}
+
+# Slice 5a enums -------------------------------------------------------
+# required_contexts_source: provenance of the agent / user context lists.
+# NULL = legacy (no contexts classified yet). 'agent_inferred' = Clarify
+# populated; 'user_authored' = the user edited the inferred set (locks
+# future Clarify runs from clobbering it).
+VALID_CONTEXT_SOURCES = {"agent_inferred", "user_authored", None}
 
 # Slice 2 column descriptors used by the idempotent migration. Keep this
 # in sync with the Slice 2 columns in _SCHEMA above. Format:
@@ -191,12 +250,33 @@ _SLICE_4_COLUMNS: list[tuple[str, str, str | None, bool]] = [
     ("last_actor", "TEXT", None, False),
 ]
 
+# Slice 5a column descriptors: action-context resolution layer.
+# All nullable JSON / enum columns.  ``agent_required_contexts`` and
+# ``user_required_contexts`` are TEXT JSON arrays.  Empty / NULL means
+# "no required contexts" (legacy rows).  ``required_contexts_source``
+# carries provenance ('agent_inferred' | 'user_authored' | NULL); the
+# value flips to ``user_authored`` once a human edits the inferred set
+# so future Clarify re-runs don't clobber the edit.
+_SLICE_5A_COLUMNS: list[tuple[str, str, str | None, bool]] = [
+    ("agent_required_contexts", "TEXT", None, False),
+    ("user_required_contexts", "TEXT", None, False),
+    ("required_contexts_source", "TEXT", None, False),
+]
+
+# Slice 7 column descriptors: per-action-item pointer.  ``current_
+# action_item_id`` is a foreign key into ``task_action_items.id`` —
+# nullable because most legacy tasks don't have action items.
+_SLICE_7_COLUMNS: list[tuple[str, str, str | None, bool]] = [
+    ("current_action_item_id", "INTEGER", None, False),
+]
+
 # All slice-N column lists, in migration order. Append new lists here
 # rather than modifying historical ones — the comment headers above each
 # list are reading material for future-you ("when did this column
 # appear and why").
 _ALL_MIGRATED_COLUMNS: list[tuple[str, str, str | None, bool]] = (
     _SLICE_2_COLUMNS + _SLICE_3_COLUMNS + _SLICE_4_COLUMNS
+    + _SLICE_5A_COLUMNS + _SLICE_7_COLUMNS
 )
 
 
@@ -249,6 +329,9 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
 
     Slice 4 columns added: risk_profile_json,
     automation_tier_achievable, last_actor.
+
+    Slice 5a columns added: agent_required_contexts,
+    user_required_contexts, required_contexts_source.
 
     Adding more columns later: append a new ``_SLICE_N_COLUMNS`` list
     and extend ``_ALL_MIGRATED_COLUMNS``. They'll get migrated on the
@@ -315,6 +398,10 @@ def create(
     risk_profile_json: str | None = None,
     automation_tier_achievable: int | None = None,
     last_actor: str | None = None,
+    # Slice 5a additions ---------------------------------------------
+    agent_required_contexts: str | None = None,
+    user_required_contexts: str | None = None,
+    required_contexts_source: str | None = None,
 ) -> dict[str, Any]:
     """Create a metadata record for a new task.
 
@@ -343,6 +430,11 @@ def create(
         raise ValueError(
             f"Invalid last_actor {last_actor!r}: expected 'agent', 'user', or None"
         )
+    if required_contexts_source not in VALID_CONTEXT_SOURCES:
+        raise ValueError(
+            f"Invalid required_contexts_source {required_contexts_source!r}: "
+            f"expected 'agent_inferred', 'user_authored', or None"
+        )
 
     now = _now_iso()
     conn = get_connection()
@@ -356,10 +448,13 @@ def create(
                 creation_provenance, has_deadline, deadline_date,
                 has_dependency, dependency_hint,
                 description,
-                risk_profile_json, automation_tier_achievable, last_actor)
+                risk_profile_json, automation_tier_achievable, last_actor,
+                agent_required_contexts, user_required_contexts,
+                required_contexts_source)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?,
                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                        ?,
+                       ?, ?, ?,
                        ?, ?, ?)""",
             (
                 task_id, state, urgency, complexity, contract, note_uuid,
@@ -371,6 +466,8 @@ def create(
                 int(bool(has_dependency)), dependency_hint,
                 description,
                 risk_profile_json, automation_tier_achievable, last_actor,
+                agent_required_contexts, user_required_contexts,
+                required_contexts_source,
             ),
         )
         conn.execute(
@@ -428,6 +525,10 @@ def update(
     risk_profile_json: str | None = _SENTINEL,
     automation_tier_achievable: int | None = _SENTINEL,
     last_actor: str | None = _SENTINEL,
+    # Slice 5a additions ---------------------------------------------
+    agent_required_contexts: str | None = _SENTINEL,
+    user_required_contexts: str | None = _SENTINEL,
+    required_contexts_source: str | None = _SENTINEL,
 ) -> dict[str, Any]:
     """Update metadata fields for a task. Only provided fields change.
 
@@ -549,6 +650,24 @@ def update(
             )
         sets.append("last_actor = ?")
         params.append(last_actor)
+
+    # Slice 5a fields ------------------------------------------------
+    if agent_required_contexts is not _SENTINEL:
+        sets.append("agent_required_contexts = ?")
+        params.append(agent_required_contexts)
+
+    if user_required_contexts is not _SENTINEL:
+        sets.append("user_required_contexts = ?")
+        params.append(user_required_contexts)
+
+    if required_contexts_source is not _SENTINEL:
+        if required_contexts_source not in VALID_CONTEXT_SOURCES:
+            raise ValueError(
+                f"Invalid required_contexts_source {required_contexts_source!r}: "
+                f"expected 'agent_inferred', 'user_authored', or None"
+            )
+        sets.append("required_contexts_source = ?")
+        params.append(required_contexts_source)
 
     if not sets:
         return {"task_id": task_id, "changed": False}

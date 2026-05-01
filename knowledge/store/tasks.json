@@ -341,5 +341,73 @@
       "summary": "Use task_update_description, NOT filesystem-direct Edit. It routes through the atomic app.vault.process() write path, so concurrent user typing in Obsidian doesn't get clobbered.",
       "full": "## When to use\n\nWhenever a task's description text needs to change - typo fix, scope sharpening, mid-flight rephrase. Examples:\n  - User asks \"can you rename that task to X\"\n  - You're consolidating two scope-shifted tasks and the description needs to reflect the new scope\n  - You spot a typo and want to correct it without deleting + recreating the task (preserves task_id, history, sessions)\n\n## Call\n\n```\nmcp__work-buddy__wb_run(\"task_update_description\", {\n    \"task_id\": \"t-...\",\n    \"new_description\": \"Rewritten task text\"\n})\n```\n\nReturns:\n  - `success`, `task_id`, `old_description`, `new_description`\n  - `old_line` / `new_line` - the full markdown line\n  - `store_updated` - whether the SQLite description column was kept in sync\n  - `atomic` - True when the write went through the atomic `app.vault.process()` path; False / absent when the legacy fallback ran (bridge unreachable)\n  - `conflict_resolved` - True when a concurrent-edit conflict was detected and the retry succeeded\n\n## What it preserves\n\nCheckbox state, the `#todo` marker, all hashtags (`#projects/*`, namespace tags), wikilinks (including the task-note link `[[uuid|📓]]`), the 🆔 marker and ID, plugin emojis (📅 due date, ✅ done date, 🔼/⏫ urgency).\n\n## What it does NOT do\n\n- It will not change the task's state, urgency, due date, or completion. Use `task_change_state` / `task_toggle` for those.\n- It will not add or remove tags. Use `task_set_tags` for tag rewrites.\n- It rejects multi-line descriptions. Task lines are single-line by construction; put detail in the `[[uuid|📓]]`-linked note.\n\n## Why NOT to use filesystem-direct Edit\n\nThe master-task-list.md has a documented read-modify-write race. Pre-Slice-3 the only path for description rewrites was `Edit` on `master-task-list.md`, which can clobber concurrent user typing in Obsidian. The Slice-C atomic write path (`app.vault.process()`) closes that race - but only if you go through `task_update_description`. Filesystem-direct edits bypass it.\n\nIf `task_update_description` returns `success=False, conflict=True`, the user is actively editing the task line in Obsidian. Surface the conflict to the user; don't keep retrying."
     }
+  },
+  "tasks/task-me-directions": {
+    "kind": "directions",
+    "name": "Task Me Directions",
+    "description": "How to run /wb-task-me — the re-runnable engage flow that answers what should I do right now",
+    "aliases": [
+      "task me",
+      "engage",
+      "now plan",
+      "what should I do"
+    ],
+    "tags": [
+      "tasks",
+      "engage",
+      "today",
+      "slice-5b"
+    ],
+    "parents": [
+      "tasks"
+    ],
+    "trigger": "user runs /wb-task-me or asks what to work on right now",
+    "command": "wb-task-me",
+    "workflow": "task-me",
+    "capabilities": [
+      "task_me"
+    ],
+    "content": {
+      "summary": "Re-runnable. Loads context, builds a clamp-to-now plan, presents top 1-2 recommendations. Slice-5a context-aware: skips tasks the agent and user both can't satisfy now.",
+      "full": "Run mcp__work-buddy__wb_run(\"task-me\") and follow the conductor.\n\nThe workflow has 4 steps:\n\n1. **load-context** (auto_run) — composes:\n   - task_briefing (focused / mit / overdue / inbox / stale buckets)\n   - calendar (today's events; best-effort)\n   - contract_constraints (WIP limits + active contracts)\n   - the Slice-5a engage view (per-task tier x who_can_act x user_now)\n\n2. **build-now-plan** (auto_run) — generates a clamp-to-now timeline\n   from focused tasks + calendar. Uses the engage view's filtered\n   set so context-blocked tasks don't land in the plan.\n\n3. **engage** (you, reasoning) — present:\n   - Top contract-constraint banner (if any active contracts)\n   - ONE recommendation card with rationale traced to the active\n     contract OR explicitly labeled \"exploration\"\n   - ONE alternative if a sensible second exists\n   - The plan as a compact list (time block + task)\n\n   Keep this brief. V1a — attention scarcity. No more than 2 cards.\n   If everything is blocked on missing contexts, name the contexts\n   and link to /setup.\n\n4. **write-back** (you, reasoning, OPTIONAL) — only if the user\n   explicitly asks to write the plan into the journal Day Planner.\n   Calls day_planner_generate_and_write. Skip silently if not asked.\n\n## Args\n\nThe slash command may be passed an optional preset:\n-  — default; assumes filesystem + vault + web + workstation\n- \n- \n\nThese map to the user_current_contexts list. If unset, the workflow\nruns without filtering — every task surfaces with its blocker badge.\n\n## Re-runnable\n\nDesigned to be called multiple times per day. Each run is independent;\nno state is mutated unless the user opts into write-back.\n\n## Don'ts\n\n- Don't recommend more than 2 actions\n- Don't silently write to the journal\n- Don't treat exploration as paper progress (per CLAUDE.local.md)\n- Don't suggest experiments without an active contract\n"
+    }
+  },
+  "tasks/action-items": {
+    "kind": "module",
+    "name": "Task action items (Slice 7)",
+    "description": "Per-action-item rows attached to a parent task. Each item carries its own risk profile + required contexts + definition_of_done. Safety rule: items with user_authored=0 AND approved_at IS NULL cannot be executed by the agent -- is_executable enforces this.",
+    "content": {
+      "full": "# tasks/action-items (Slice 7)\n\nModule: work_buddy/obsidian/tasks/action_items.py.\nSchema: task_action_items table + task_metadata.current_action_item_id column.\n\n## Schema\n\nPer-item: id, task_id (FK), sequence (UNIQUE per task), description, state ('pending' | 'in_progress' | 'done' | 'skipped'), risk_profile_json, agent_required_contexts, user_required_contexts, definition_of_done, user_authored, approved_at, completed_at, handoff_package_path, created_at, updated_at.\n\n## CRUD entry points\n\n- create(task_id, *, description, sequence=None, ...) -- auto-assigns next sequence when None.\n- get(item_id), list_for_task(task_id, *, include_done=True), update(item_id, **fields) (sentinel discipline like store.update), delete(item_id).\n- approve(item_id) -- flips user_authored=1 + stamps approved_at (the canonical way for the user to admit an agent-proposed item to execution).\n- set_current(task_id, item_id) -- points task_metadata.current_action_item_id (None to clear).\n\n## Safety rule (ROADMAP section 7)\n\nis_executable(item) returns True iff:\n- user_authored == 1 (user wrote it; no approval needed), OR\n- user_authored == 0 AND approved_at IS NOT NULL (user explicitly approved an agent-proposed item).\n\nAND state is not in {done, skipped} (terminal exclusion).\n\nEvery executor / Resolution Surface accept-action button / develop-at-pickup write step MUST call is_executable before running an item. Helper-level enforcement so future call sites import the check rather than re-implementing.\n\n## position_in_task\n\nposition_in_task(item) -> (1-based-index, total) powers the future master-list \"step N of M\" badge.\n\n## Status\n\nSchema + CRUD ship in Slice 7. The develop-at-pickup LLM flow + the master-list \"step N of M\" frontend + manual /wb-task-develop slash command are deferred -- those depend on Resolution Surface integration."
+    },
+    "tags": [
+      "tasks",
+      "action-items",
+      "density",
+      "slice-7",
+      "develop-at-pickup",
+      "safety-rule"
+    ],
+    "aliases": [
+      "action items",
+      "task action items",
+      "task_action_items",
+      "is_executable",
+      "approve action item",
+      "current step",
+      "step N of M"
+    ],
+    "parents": [
+      "tasks"
+    ],
+    "entry_points": [
+      "work_buddy.obsidian.tasks.action_items.create",
+      "work_buddy.obsidian.tasks.action_items.list_for_task",
+      "work_buddy.obsidian.tasks.action_items.update",
+      "work_buddy.obsidian.tasks.action_items.approve",
+      "work_buddy.obsidian.tasks.action_items.set_current",
+      "work_buddy.obsidian.tasks.action_items.is_executable",
+      "work_buddy.obsidian.tasks.action_items.position_in_task"
+    ],
+    "dev_notes": "Markdown is the eventual canonical surface (ROADMAP section 8 footnote). Slice 7 ships the table; the markdown round-trip lands in a follow-up so the schema can stabilize against real usage first. set_current uses raw SQL because store.update does not yet take the Slice-7 column -- when other callers need to write current_action_item_id, add the kwarg to store.update like the Slice-5a fields."
   }
 }

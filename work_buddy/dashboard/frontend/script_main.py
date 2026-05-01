@@ -8,10 +8,12 @@ def _script() -> str:
 // ---- Tab switching ----
 const staticLoaders = {
     overview: () => loadOverview(),
+    today: () => loadToday(),
     tasks: () => loadTasks(),
     review: () => loadReview(),
     'review-queue': () => loadReviewQueue(),
-    'daily-log': () => loadDailyLog(),
+    'daily-log': () => { loadDailyLog(); loadBlockedByContext(); },
+    engage: () => loadEngage(),
     status: () => loadStatus(),
     chats: () => loadChats(),
     contracts: () => loadContracts(),

@@ -4,7 +4,7 @@
     "name": "Automation",
     "description": "Lazy-resolution layer that decides how far the agent may take a task (operating tier) and how loudly to resurface it. Pure-function resolvers over stored signals; no I/O, no DB writes — surfaces (dashboard, engage view, audit log) call them per-read.",
     "content": {
-      "full": "# Automation\n\nThe ``work_buddy/automation/`` package owns the **lazy-resolution gates** that decide how much of a task an agent may execute autonomously and how loudly the system should resurface it. Both decisions are computed from stored signals (risk profile, achievable capability, provenance, deadline awareness, attraction passes, …) — never stored as the authoritative answer, per the lazy-resolution principle (P7 in ROADMAP §2).\n\n## Children\n\n- ``automation/risk`` — Slice 4: operating-tier and dynamic resurfacing-level resolvers. Composition rule from ROADMAP §3.4; the typed pipeline-blocker enum from §3.3.\n\n## Future siblings\n\nSlice 5a will add ``automation/contexts`` for the ``resolve_who_can_act(agent_required, user_required)`` resolver. Slice 8 will plug attraction + relevance signals into ``compute_resurfacing_level``."
+      "full": "# Automation\n\nThe work_buddy/automation/ package owns the lazy-resolution gates that decide how much of a task an agent may execute autonomously, who can act on it now, how loudly to resurface it, and whether it is ready for execution at pickup time. All decisions are computed from stored signals (risk profile, achievable capability, action contexts, provenance, deadline awareness, attraction passes, ...) -- never stored as the authoritative answer, per the lazy-resolution principle (P7 in ROADMAP section 2).\n\n## Children\n\n- automation/risk -- Slice 4: operating-tier and dynamic resurfacing-level resolvers. Composition rule from ROADMAP section 3.4; the typed pipeline-blocker enum from section 3.3.\n- automation/contexts -- Slice 5a: resolve_who_can_act over a CONTEXT_REGISTRY of agent / user environment tokens. Pure-function answers \"who can act on this now?\" against the live tool-status cache. Caps achievable tier at 1 when the agent cannot satisfy.\n- automation/pickup -- Slice 7: compute_pickup_readiness 5-rule precedence ladder. Decides whether to execute as-is or develop-first when a task is picked up.\n\n## Future siblings\n\nSlice 8 will plug attraction + relevance signals into compute_resurfacing_level and compute_pickup_readiness."
     },
     "tags": [
       "automation",
@@ -20,7 +20,9 @@
       "resurfacing level"
     ],
     "children": [
-      "automation/risk"
+      "automation/risk",
+      "automation/contexts",
+      "automation/pickup"
     ]
   },
   "automation/risk": {
@@ -61,5 +63,70 @@
       "work_buddy.automation.risk",
       "work_buddy.automation.__init__"
     ]
+  },
+  "automation/contexts": {
+    "kind": "module",
+    "name": "Action contexts (Slice 5a)",
+    "description": "resolve_who_can_act answers \"who can act on this task now?\" by consulting the CONTEXT_REGISTRY against the live tool-status cache. Tasks declare agent_required_contexts + user_required_contexts; the resolver returns a WhoCanActDecision with per-side unmet tokens and a handoff-eligible flag.",
+    "content": {
+      "full": "# automation/contexts (Slice 5a)\n\nModule: work_buddy/automation/contexts.py.\n\n## What\n\nTwo concepts:\n\n1. CONTEXT_REGISTRY -- dict[str, list[str] | None] mapping context tokens (e.g. @filesystem, @email_send) to the tool IDs that satisfy them for the agent.\n2. resolve_who_can_act(agent_required, user_required, *, tool_status=None) -- pure function returning a frozen WhoCanActDecision.\n\n## Sentinel discipline (registry values)\n\n- None  -> user-only context (@physical, @user_creds, @cluster). Agent never satisfies regardless of tool state.\n- []    -> universally available (@filesystem, @web_public, @llm, @github). Both actors satisfy without a probe.\n- [...] -> probe-gated. Agent satisfies iff ALL listed tool IDs are available (cf. work_buddy.tools.is_tool_available).\n\n## Starter token set (14)\n\nUser-only: @physical, @in_person, @phone_voice, @user_creds, @user_workstation, @cluster.\nUniversal: @filesystem, @web_public, @llm, @github.\nProbe-gated: @vault -> obsidian, @email_send -> thunderbird, @email_read -> thunderbird, @chrome_active -> chrome_extension.\n\nUnknown tokens (Clarify may invent new ones for forward-compat) are treated as user-only AND reported in unknown_tokens so the dashboard can warn.\n\n## WhoCanActDecision\n\nFrozen dataclass: agent (bool), user (bool), blocked (bool), agent_unmet (tuple), user_unmet (tuple), agent_handoff_eligible (bool), unknown_tokens (tuple).\n\n## Handoff framing (ROADMAP section 3.2)\n\nWhen agent=False AND user=True -> agent_handoff_eligible=True. The right surface is a HANDOFF card (\"agent prepared what it can; you take from here\"), NOT a \"task waiting\" badge. The Engage tab + Today tab render this badge.\n\n## Risk integration\n\nautomation.risk.resolve_achievable_tier consults this module via the tool_status kwarg. When the agent cannot satisfy its required contexts, the achievable ceiling drops to 1 (suggest only). resolve_operating_tier then emits agent_context_unmet / user_context_unmet blockers per ROADMAP section 3.3.\n\n## Schema (task_metadata, Slice 5a)\n\nThree nullable columns:\n- agent_required_contexts (TEXT, JSON array)\n- user_required_contexts (TEXT, JSON array)\n- required_contexts_source ('agent_inferred' | 'user_authored' | NULL)\n\nClarify populates the lists at task creation; the dashboard flips required_contexts_source to 'user_authored' once the user edits the inferred set."
+    },
+    "tags": [
+      "automation",
+      "contexts",
+      "action-contexts",
+      "slice-5a",
+      "lazy-resolution"
+    ],
+    "aliases": [
+      "who can act",
+      "resolve_who_can_act",
+      "context registry",
+      "agent required contexts",
+      "user required contexts",
+      "handoff eligibility",
+      "action context resolver"
+    ],
+    "parents": [
+      "automation"
+    ],
+    "entry_points": [
+      "work_buddy.automation.contexts.resolve_who_can_act",
+      "work_buddy.automation.contexts.CONTEXT_REGISTRY",
+      "work_buddy.automation.contexts.WhoCanActDecision",
+      "work_buddy.automation.contexts.user_satisfies_against",
+      "work_buddy.automation.contexts.context_tokens_blocked_by_tool"
+    ],
+    "dev_notes": "Pure function -- only I/O is the in-memory _TOOL_STATUS lookup via is_tool_available. Tests inject tool_status= to bypass the global cache. Empty list ([]) vs None sentinel discipline is load-bearing -- get this wrong and all tasks become user-only OR all become universal. The user-side resolver trusts declared contexts (always satisfies for known + universal tokens); the engage-view filter user_satisfies_against answers the orthogonal \"is the user CURRENTLY in this context?\" question."
+  },
+  "automation/pickup": {
+    "kind": "module",
+    "name": "Pickup-time readiness (Slice 7)",
+    "description": "compute_pickup_readiness pure function -- 5-rule precedence ladder deciding whether a task is ready to execute as-is or should develop first when picked up. Reads creation_effort + user_involvement + provenance + staleness + deadline + has_action_items.",
+    "content": {
+      "full": "# automation/pickup (Slice 7)\n\nModule: work_buddy/automation/pickup.py.\n\n## Function\n\ncompute_pickup_readiness(task, world_state=None, *, now_iso=None) -> PickupReadiness(ready, reason, signals).\n\nPure function. Returns a frozen dataclass. The engage flow calls this when a task is picked up (focused or working_on_now); when ready=False, the develop-at-pickup flow runs first.\n\n## 5-rule precedence ladder (highest first)\n\n1. action items already exist (world_state.has_action_items) -> ready. Decomposition done; execute against current step.\n2. density='developed' or 'dense' -> ready. User pre-developed.\n3. sparse + manual + medium/high involvement + has_deadline -> ready. Sparse-but-intentional; trust the user's brevity.\n4. sparse + agent-inferred + low involvement + stale -> NOT ready. Old, weakly-attested capture; develop first.\n5. otherwise -> develop-first default per ROADMAP section 3.6 (develop-at-pickup default).\n\n## Tunables (module constants)\n\n- SPARSE_STALENESS_DAYS = 7\n- HIGH_INVOLVEMENT_PROVENANCES = {'manual'}\n\nGreppable + visible -- the threshold-tuning discussion is a one-file PR.\n\n## world_state forward-compat\n\nSlice 8 will add attraction_passes and relevance_status to the world_state mapping. Today only has_action_items is consumed."
+    },
+    "tags": [
+      "automation",
+      "pickup",
+      "develop-at-pickup",
+      "slice-7",
+      "readiness"
+    ],
+    "aliases": [
+      "pickup readiness",
+      "compute_pickup_readiness",
+      "develop at pickup",
+      "ready to execute",
+      "develop-first"
+    ],
+    "parents": [
+      "automation"
+    ],
+    "entry_points": [
+      "work_buddy.automation.pickup.compute_pickup_readiness",
+      "work_buddy.automation.pickup.PickupReadiness"
+    ],
+    "dev_notes": "I considered a weighted-score model and rejected -- the user reads the reason field to understand WHY the engage flow chose develop-first; \"score 0.42 < 0.5\" is opaque. The 5-rule ladder gives concrete reasons (\"agent-inferred sparse capture aged 12 days without user touch -- develop first\")."
   }
 }

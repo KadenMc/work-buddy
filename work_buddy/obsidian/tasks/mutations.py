@@ -1278,6 +1278,10 @@ def create_task(
     risk_profile_json: str | None = None,
     automation_tier_achievable: int | None = None,
     last_actor: str | None = None,
+    # Slice 5a action contexts -----------------------------------------
+    agent_required_contexts: str | None = None,
+    user_required_contexts: str | None = None,
+    required_contexts_source: str | None = None,
 ) -> dict[str, Any]:
     """Create a new task with an auto-generated ID, optionally with a linked note.
 
@@ -1326,13 +1330,17 @@ def create_task(
     # Slice 4: when no achievable tier is precomputed, derive it now
     # from the risk profile so the cached value matches what the
     # resolver would return on first read.  Free; pure function.
+    # Slice 5a: forward the action-context lists too so a task that
+    # needs an unset tool starts at tier 1 from the moment of capture
+    # (the dashboard's first paint matches the resolver's eventual
+    # answer, no flicker).
     if automation_tier_achievable is None:
         try:
             from work_buddy.automation.risk import resolve_achievable_tier
             automation_tier_achievable = resolve_achievable_tier({
                 "risk_profile_json": risk_profile_json,
-                # Forward-compat for Slice 5a context lookups.
-                "agent_required_contexts": [],
+                "agent_required_contexts": agent_required_contexts,
+                "user_required_contexts": user_required_contexts,
             })
         except Exception:  # pragma: no cover — defensive
             automation_tier_achievable = None
@@ -1483,6 +1491,9 @@ def create_task(
             risk_profile_json=risk_profile_json,
             automation_tier_achievable=automation_tier_achievable,
             last_actor=last_actor,
+            agent_required_contexts=agent_required_contexts,
+            user_required_contexts=user_required_contexts,
+            required_contexts_source=required_contexts_source,
         )
 
     # --- Seed tag cache ---

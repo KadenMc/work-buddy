@@ -50,12 +50,16 @@ def _html() -> str:
 <nav class="tab-bar">
     <div class="tab-bar-left">
         <button class="tab-btn active" data-tab="overview">Overview</button>
+        <button class="tab-btn" data-tab="today"
+                title="What should I do right now? Slice 5b /wb-task-me view.">Today</button>
         <button class="tab-btn" data-tab="tasks">Tasks</button>
         <button class="tab-btn" data-tab="review">Review</button>
         <button class="tab-btn" data-tab="review-queue"
                 title="Tier-3 outputs awaiting accept/revise/reject">Review Queue</button>
         <button class="tab-btn" data-tab="daily-log"
                 title="Tier-4 autonomous actions, collapsible by category">Daily Log</button>
+        <button class="tab-btn" data-tab="engage"
+                title="What can I act on right now? Slice 5a Engage view.">Engage</button>
         <button class="tab-btn" data-tab="status">Status</button>
         <button class="tab-btn" data-tab="chats">Chats</button>
         <button class="tab-btn" data-tab="contracts">Contracts</button>
@@ -82,6 +86,39 @@ def _html() -> str:
     <div class="section-title">Scheduled Jobs</div>
     <div id="overview-jobs"><div class="loading">Loading...</div></div>
 
+</div>
+
+<!-- TODAY (Slice 5b) — re-runnable "what should I do right now?" view.
+     Reads /api/automation/today.  Composes the Slice-5a engage view
+     with the clamp-to-now plan + a top-1-2 recommendation card.
+     Re-run by clicking refresh; persistent context preset shared
+     with the Engage tab via localStorage. -->
+<div class="tab-panel" id="panel-today">
+    <div class="review-toolbar">
+        <div class="section-title">Today
+            <span class="section-subtitle"
+                  title="Re-runnable engage. Slice 5b /wb-task-me view.">
+                engage · Slice 5b
+            </span>
+        </div>
+        <select id="today-context-preset" class="chats-select"
+                onchange="onTodayContextPresetChange()"
+                title="Your current context — feeds the recommender">
+            <option value="at_desk">At desk + online</option>
+            <option value="phone_only">Phone only</option>
+            <option value="untethered">Untethered</option>
+            <option value="custom">Custom…</option>
+        </select>
+        <button class="chats-accent-btn" onclick="loadToday()">Re-run</button>
+    </div>
+    <div id="today-now-banner" class="today-now-banner"></div>
+    <div id="today-contracts-banner" class="today-contracts-banner"></div>
+    <div id="today-recommendations"
+         class="today-recommendations"></div>
+    <div class="section-title" style="margin-top:14px">Time-blocked plan
+        <span class="section-subtitle">clamp-to-now · day_planner</span>
+    </div>
+    <div id="today-plan"><div class="loading">Loading plan...</div></div>
 </div>
 
 <!-- TASKS -->
@@ -163,7 +200,45 @@ def _html() -> str:
         <button class="chats-accent-btn" onclick="loadDailyLog()">Refresh</button>
     </div>
     <div id="daily-log-summary" class="review-narrative"></div>
+    <!-- Slice 5a: blocked-by-context nudge bar. Populated by
+         /api/automation/blocked-by-context.  Each entry renders a
+         line "N tasks blocked on @token — set up <tool>?" with a
+         deep-link to the setup wizard.  Hidden when no blockers. -->
+    <div id="daily-log-blocked-by-context" class="blocked-by-context"></div>
     <div id="daily-log-categories"><div class="loading">Loading daily log...</div></div>
+</div>
+
+<!-- ENGAGE (Slice 5a) — "what can I act on right now?" view.
+     Populated by /api/automation/engage.  The user picks a
+     current-context preset; the view filters tasks against the
+     who-can-act resolver and renders blocker badges with deep
+     links per ROADMAP §3.3. -->
+<div class="tab-panel" id="panel-engage">
+    <div class="review-toolbar">
+        <div class="section-title">Engage
+            <span class="section-subtitle"
+                  title="What can I act on right now? Slice 5a action contexts.">
+                action contexts · Slice 5a
+            </span>
+        </div>
+        <select id="engage-context-preset" class="chats-select"
+                onchange="onEngageContextPresetChange()"
+                title="Your current context — what can you actually do?">
+            <option value="at_desk">At desk + online</option>
+            <option value="phone_only">Phone only</option>
+            <option value="untethered">Untethered</option>
+            <option value="custom">Custom…</option>
+        </select>
+        <label class="engage-toggle"
+               title="Hide tasks the agent can't satisfy right now (default: show with blocker badge)">
+            <input type="checkbox" id="engage-hide-blocked"
+                   onchange="loadEngage()"> Hide blocked
+        </label>
+        <button class="chats-accent-btn" onclick="loadEngage()">Refresh</button>
+    </div>
+    <div id="engage-current-contexts" class="engage-current-contexts"></div>
+    <div id="engage-summary" class="review-narrative"></div>
+    <div id="engage-items"><div class="loading">Loading engage view...</div></div>
 </div>
 
 <!-- Item-detail drawer. Persistent in the DOM, slides in/out from
