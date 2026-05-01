@@ -56,6 +56,8 @@ def _html() -> str:
                 title="Tier-3 outputs awaiting accept/revise/reject">Review Queue</button>
         <button class="tab-btn" data-tab="daily-log"
                 title="Tier-4 autonomous actions, collapsible by category">Daily Log</button>
+        <button class="tab-btn" data-tab="engage"
+                title="What can I act on right now? Slice 5a Engage view.">Engage</button>
         <button class="tab-btn" data-tab="status">Status</button>
         <button class="tab-btn" data-tab="chats">Chats</button>
         <button class="tab-btn" data-tab="contracts">Contracts</button>
@@ -163,7 +165,45 @@ def _html() -> str:
         <button class="chats-accent-btn" onclick="loadDailyLog()">Refresh</button>
     </div>
     <div id="daily-log-summary" class="review-narrative"></div>
+    <!-- Slice 5a: blocked-by-context nudge bar. Populated by
+         /api/automation/blocked-by-context.  Each entry renders a
+         line "N tasks blocked on @token — set up <tool>?" with a
+         deep-link to the setup wizard.  Hidden when no blockers. -->
+    <div id="daily-log-blocked-by-context" class="blocked-by-context"></div>
     <div id="daily-log-categories"><div class="loading">Loading daily log...</div></div>
+</div>
+
+<!-- ENGAGE (Slice 5a) — "what can I act on right now?" view.
+     Populated by /api/automation/engage.  The user picks a
+     current-context preset; the view filters tasks against the
+     who-can-act resolver and renders blocker badges with deep
+     links per ROADMAP §3.3. -->
+<div class="tab-panel" id="panel-engage">
+    <div class="review-toolbar">
+        <div class="section-title">Engage
+            <span class="section-subtitle"
+                  title="What can I act on right now? Slice 5a action contexts.">
+                action contexts · Slice 5a
+            </span>
+        </div>
+        <select id="engage-context-preset" class="chats-select"
+                onchange="onEngageContextPresetChange()"
+                title="Your current context — what can you actually do?">
+            <option value="at_desk">At desk + online</option>
+            <option value="phone_only">Phone only</option>
+            <option value="untethered">Untethered</option>
+            <option value="custom">Custom…</option>
+        </select>
+        <label class="engage-toggle"
+               title="Hide tasks the agent can't satisfy right now (default: show with blocker badge)">
+            <input type="checkbox" id="engage-hide-blocked"
+                   onchange="loadEngage()"> Hide blocked
+        </label>
+        <button class="chats-accent-btn" onclick="loadEngage()">Refresh</button>
+    </div>
+    <div id="engage-current-contexts" class="engage-current-contexts"></div>
+    <div id="engage-summary" class="review-narrative"></div>
+    <div id="engage-items"><div class="loading">Loading engage view...</div></div>
 </div>
 
 <!-- Item-detail drawer. Persistent in the DOM, slides in/out from

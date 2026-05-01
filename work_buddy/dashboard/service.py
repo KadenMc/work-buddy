@@ -1540,10 +1540,19 @@ def _build_review_queue_payload() -> dict:
     fallback — out of the surface.  The Review Queue is for "the
     agent has a tier-3 output to review," not "every untouched task
     happens to default to tier 3."
+
+    Slice 5a: each entry carries a ``who_can_act`` block (booleans +
+    per-side unmet contexts + handoff eligibility) so the Resolution
+    Surface can render handoff cards and typed agent_context_unmet /
+    user_context_unmet badges.
     """
     from work_buddy.obsidian.tasks import store as tasks_store
     from work_buddy.automation.risk import (
         resolve_operating_tier,
+    )
+    from work_buddy.automation.contexts import (
+        parse_context_list,
+        resolve_who_can_act,
     )
     from work_buddy.clarify.resolution import (
         PIPELINE_BLOCKER_PRESENTATION,
@@ -1569,14 +1578,24 @@ def _build_review_queue_payload() -> dict:
         if (
             row.get("risk_profile_json") is None
             and row.get("automation_tier_achievable") is None
+            and row.get("agent_required_contexts") is None
+            and row.get("user_required_contexts") is None
         ):
             continue
 
         decision = resolve_operating_tier(row, config=cfg)
         # Tier-3 == "execute and review output" — exactly what the
-        # Review Queue surfaces.  Lower tiers either ship silently
-        # (4) or want the plan-approval / suggestion surfaces.
-        if decision.operating != 3:
+        # Review Queue surfaces.  Slice 5a adds tier-1 entries with a
+        # context-blocker (the agent has nothing to execute but the
+        # user might handoff into action).  Lower tiers without a
+        # blocker continue to ship silently.
+        if decision.operating == 3:
+            include = True
+        elif decision.operating <= 1 and decision.pipeline_blocker:
+            include = True
+        else:
+            include = False
+        if not include:
             continue
 
         blocker = decision.pipeline_blocker
@@ -1592,6 +1611,28 @@ def _build_review_queue_payload() -> dict:
                 "detail": "; ".join(decision.reasons) or None,
             }
 
+        # Slice 5a: who-can-act decision for the surface.
+        who = resolve_who_can_act(
+            row.get("agent_required_contexts"),
+            row.get("user_required_contexts"),
+        )
+        who_view = {
+            "agent": who.agent,
+            "user": who.user,
+            "blocked": who.blocked,
+            "agent_unmet": list(who.agent_unmet),
+            "user_unmet": list(who.user_unmet),
+            "agent_handoff_eligible": who.agent_handoff_eligible,
+            "unknown_tokens": list(who.unknown_tokens),
+            "agent_required_contexts": parse_context_list(
+                row.get("agent_required_contexts"),
+            ),
+            "user_required_contexts": parse_context_list(
+                row.get("user_required_contexts"),
+            ),
+            "source": row.get("required_contexts_source"),
+        }
+
         queue.append({
             "task_id": row.get("task_id"),
             "text": row.get("description") or row.get("task_id"),
@@ -1606,6 +1647,7 @@ def _build_review_queue_payload() -> dict:
             "pipeline_blocker": blocker_view,
             "last_actor": row.get("last_actor"),
             "updated_at": row.get("updated_at"),
+            "who_can_act": who_view,
         })
 
     # Most-urgent-first: tasks with a pipeline blocker bubble up; tie-
@@ -1818,6 +1860,218 @@ def api_automation_daily_log():
         return jsonify(_build_daily_log_payload(days=days))
     except Exception as exc:
         logger.exception("api_automation_daily_log: failed")
+        return jsonify({"status": "error", "error": str(exc)}), 500
+
+
+def _build_blocked_tasks_payload() -> dict:
+    """Slice 5a: aggregate open tasks by the contexts blocking them.
+
+    Powers the daily nudge "X tasks blocked on @email_send — set up
+    email integration?" with deep-links to the setup wizard for the
+    underlying tool ID.
+
+    Algorithm:
+    1. Walk all non-archived, non-done tasks.
+    2. For each, run :func:`resolve_who_can_act` against the live
+       tool-status cache.
+    3. If the agent has unmet contexts, attribute one count to each
+       missing token.
+    4. Group by token, return sorted by count desc, including the
+       deep-link target (the first tool ID in the registry mapping)
+       so the frontend can build a setup-wizard URL.
+
+    Read-only; no mutations.
+    """
+    from work_buddy.obsidian.tasks import store as tasks_store
+    from work_buddy.automation.contexts import (
+        CONTEXT_REGISTRY,
+        resolve_who_can_act,
+    )
+    from work_buddy.tools import get_tool_status
+
+    rows = tasks_store.query(include_archived=False)
+    by_token: dict[str, dict] = {}
+    examined = 0
+
+    for row in rows:
+        if row.get("state") in {"done", "archived"}:
+            continue
+        agent_req = row.get("agent_required_contexts")
+        user_req = row.get("user_required_contexts")
+        if not agent_req and not user_req:
+            continue
+        examined += 1
+
+        who = resolve_who_can_act(agent_req, user_req)
+        if who.agent:
+            continue  # agent satisfies — no blocker on this row
+
+        for token in who.agent_unmet:
+            entry = by_token.setdefault(
+                token,
+                {
+                    "context": token,
+                    "count": 0,
+                    "task_ids": [],
+                    "tool_ids": [],
+                    "setup_link": None,
+                },
+            )
+            entry["count"] += 1
+            tid = row.get("task_id")
+            if tid and len(entry["task_ids"]) < 10:
+                entry["task_ids"].append(tid)
+            mapped = CONTEXT_REGISTRY.get(token)
+            if mapped:
+                for t in mapped:
+                    if t not in entry["tool_ids"]:
+                        entry["tool_ids"].append(t)
+                if entry["setup_link"] is None:
+                    entry["setup_link"] = (
+                        f"/setup?requirement_id={mapped[0]}"
+                    )
+
+    items = sorted(
+        by_token.values(),
+        key=lambda e: (-e["count"], e["context"]),
+    )
+
+    return {
+        "status": "ok",
+        "examined_tasks": examined,
+        "blocked_count": sum(e["count"] for e in items),
+        "items": items,
+        "tool_status": get_tool_status().get("tools", {}),
+    }
+
+
+@app.get("/api/automation/blocked-by-context")
+def api_automation_blocked_by_context():
+    """Slice 5a: aggregate of context-blocked tasks for the daily nudge."""
+    try:
+        return jsonify(_build_blocked_tasks_payload())
+    except Exception as exc:
+        logger.exception("api_automation_blocked_by_context: failed")
+        return jsonify({"status": "error", "error": str(exc)}), 500
+
+
+def _build_engage_view_payload(*, current_contexts: list[str] | None = None) -> dict:
+    """Slice 5a: Engage tab payload.
+
+    Returns every open task with:
+    - The Slice-4 operating-tier decision (so the engage view can show
+      the Auto column).
+    - The Slice-5a who-can-act decision (so the engage view can filter
+      and render handoff badges).
+    - Whether the task is currently blocked given the user's declared
+      ``current_contexts`` (subset of declared user contexts that
+      matter for the user-side check).
+
+    No mutations; safe to call on every render.  ``current_contexts``
+    is forwarded to :func:`user_satisfies_against` per-task.
+    """
+    from work_buddy.obsidian.tasks import store as tasks_store
+    from work_buddy.automation.risk import resolve_operating_tier
+    from work_buddy.automation.contexts import (
+        parse_context_list,
+        resolve_who_can_act,
+        user_satisfies_against,
+        list_known_context_tokens,
+    )
+    from work_buddy.clarify.resolution import PIPELINE_BLOCKER_PRESENTATION
+
+    cfg = load_config()
+    rows = tasks_store.query(include_archived=False)
+    items: list[dict] = []
+
+    for row in rows:
+        if row.get("state") in {"done", "archived"}:
+            continue
+
+        decision = resolve_operating_tier(row, config=cfg)
+        who = resolve_who_can_act(
+            row.get("agent_required_contexts"),
+            row.get("user_required_contexts"),
+        )
+        user_now_satisfied, user_now_unmet = user_satisfies_against(
+            row.get("user_required_contexts"),
+            current_contexts,
+        )
+
+        blocker_view = None
+        if decision.pipeline_blocker is not None:
+            base = PIPELINE_BLOCKER_PRESENTATION.get(
+                decision.pipeline_blocker, {},
+            )
+            blocker_view = {
+                "kind": decision.pipeline_blocker,
+                "label": base.get("label", decision.pipeline_blocker),
+                "tone": base.get("tone", "info"),
+                "deep_link": base.get("deep_link"),
+                "deep_link_label": base.get("deep_link_label"),
+                "detail": "; ".join(decision.reasons) or None,
+            }
+
+        items.append({
+            "task_id": row.get("task_id"),
+            "text": row.get("description") or row.get("task_id"),
+            "state": row.get("state"),
+            "urgency": row.get("urgency"),
+            "contract": row.get("contract"),
+            "auto": {
+                "achievable": decision.achievable,
+                "operating": decision.operating,
+                "pipeline_blocker": blocker_view,
+                "last_actor": row.get("last_actor"),
+            },
+            "who_can_act": {
+                "agent": who.agent,
+                "user": who.user,
+                "blocked": who.blocked,
+                "agent_unmet": list(who.agent_unmet),
+                "user_unmet": list(who.user_unmet),
+                "agent_handoff_eligible": who.agent_handoff_eligible,
+                "agent_required_contexts": parse_context_list(
+                    row.get("agent_required_contexts"),
+                ),
+                "user_required_contexts": parse_context_list(
+                    row.get("user_required_contexts"),
+                ),
+                "source": row.get("required_contexts_source"),
+            },
+            "user_now": {
+                "satisfied": user_now_satisfied,
+                "unmet": list(user_now_unmet),
+            },
+        })
+
+    return {
+        "status": "ok",
+        "count": len(items),
+        "current_contexts": list(current_contexts or []),
+        "known_tokens": list_known_context_tokens(),
+        "items": items,
+    }
+
+
+@app.get("/api/automation/engage")
+def api_automation_engage():
+    """Slice 5a Engage tab: tasks + tier + who-can-act + user-current filter.
+
+    Query params:
+        contexts: comma-separated list of user-declared current
+            contexts (e.g., ``@filesystem,@vault,@user_workstation``).
+            Used per-row to set ``user_now.satisfied``.  Empty / absent
+            means "no user-current declared" — every row's
+            ``user_now.satisfied`` is True for empty user_required_contexts
+            and False otherwise.
+    """
+    raw = (request.args.get("contexts") or "").strip()
+    current = [t.strip() for t in raw.split(",") if t.strip()] if raw else []
+    try:
+        return jsonify(_build_engage_view_payload(current_contexts=current))
+    except Exception as exc:
+        logger.exception("api_automation_engage: failed")
         return jsonify({"status": "error", "error": str(exc)}), 500
 
 

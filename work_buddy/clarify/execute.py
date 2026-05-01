@@ -495,6 +495,34 @@ def _execute_record_task(
                 suggested[:60],
             )
 
+    # Slice 5a: serialize the verdict's two action-context lists.  The
+    # contexts module canonicalizes (deduplicates, drops non-strings)
+    # and JSON-encodes; storing None preserves NULL columns for legacy
+    # rows.  The source defaults to "agent_inferred" when either list
+    # is populated by the LLM.
+    agent_ctx = proposal.get("agent_required_contexts")
+    user_ctx = proposal.get("user_required_contexts")
+    if agent_ctx is not None or user_ctx is not None:
+        try:
+            from work_buddy.automation.contexts import serialize_context_list
+            if agent_ctx is not None:
+                create_kwargs["agent_required_contexts"] = (
+                    serialize_context_list(agent_ctx)
+                )
+            if user_ctx is not None:
+                create_kwargs["user_required_contexts"] = (
+                    serialize_context_list(user_ctx)
+                )
+            source = proposal.get("required_contexts_source")
+            if source is None:
+                source = "agent_inferred"
+            create_kwargs["required_contexts_source"] = source
+        except Exception:  # pragma: no cover — defensive
+            logger.warning(
+                "execute_clarify: failed to serialize required_contexts for task=%r",
+                suggested[:60],
+            )
+
     try:
         from work_buddy.obsidian.tasks.mutations import create_task
         result = create_task(**create_kwargs)

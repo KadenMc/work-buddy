@@ -143,6 +143,47 @@ gates at the regret amplifier — V2b (honest signaling) trumps the
 "the user clicked send so it's fine" instinct. If you can't classify
 confidently, leave ``risk_profile`` unset (safe-profile fallback);
 NEVER fabricate a permissive profile.
+
+## Action contexts (Slice 5a)
+
+For every ``task`` record, populate BOTH ``agent_required_contexts``
+and ``user_required_contexts`` (and ``required_contexts_source =
+"agent_inferred"``). The resolver answers "who can act now?" against
+the live tool-status cache; an unmet context caps the agent's
+achievable tier at 1 (suggest only) and surfaces a typed blocker.
+
+Token vocabulary (full registry — invent new tokens for forward-
+compat; they resolve to user-only until the registry catches up):
+
+  user-only     : @physical, @in_person, @phone_voice, @user_creds,
+                  @user_workstation, @cluster
+  universal     : @filesystem, @web_public, @llm, @github
+  probe-gated   : @vault → obsidian
+                  @email_send → thunderbird
+                  @email_read → thunderbird
+                  @chrome_active → chrome_extension
+
+Heuristics (inline send is usually @user_workstation on the user
+side because they're at their desk reading the vault):
+
+  - Code edit                → agent: [@filesystem],
+                                user: [@user_workstation]
+  - Vault edit               → agent: [@vault, @filesystem],
+                                user: [@user_workstation]
+  - Send email               → agent: [@email_send],
+                                user: [@email_send]
+  - Phone call               → agent: [],
+                                user: [@phone_voice]
+  - Banking / portal         → agent: [],
+                                user: [@user_creds, @user_workstation]
+  - Web lookup               → agent: [@web_public],
+                                user: []
+  - In-person errand         → agent: [],
+                                user: [@in_person]
+
+Prefer FEWER contexts when uncertain (avoid over-restricting). Lists
+are joined by AND. If both lists are absent the resolver falls back
+to Slice-4 risk-only behavior.
 """
 
 
