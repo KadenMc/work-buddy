@@ -383,6 +383,50 @@ def run_task(
         )
 
 
+def _backend_failure_to_result(
+    exc: BaseException,
+    *,
+    backend_id: str,
+    model: str,
+) -> TaskResult:
+    """Log a backend-call failure at appropriate severity and convert
+    to a ``TaskResult``.
+
+    Recoverable ``LocalInferenceError`` kinds (timeout, server_unreachable,
+    model_not_available, …) get a one-line WARNING — these are operational
+    conditions where the caller has a fallback path, and the kind/hint
+    already carry everything an operator needs. Anything else gets a full
+    ERROR with traceback because it suggests a bug or unmodeled failure.
+
+    Centralized here so the policy "which failures deserve a stack trace"
+    lives in one place; the ``except`` clause in ``_run_profile`` is just
+    a one-liner that delegates here.
+    """
+    from work_buddy.llm.backends._errors import LocalInferenceError
+
+    if isinstance(exc, LocalInferenceError):
+        if exc.is_recoverable:
+            logger.warning(
+                "Profile %s backend call failed: kind=%s msg=%s",
+                backend_id, exc.kind, exc,
+            )
+        else:
+            logger.exception(
+                "Profile %s backend call failed (kind=%s)",
+                backend_id, exc.kind,
+            )
+        return TaskResult(
+            content="", error=exc.format_caller_message(), model=model,
+        )
+
+    logger.exception("Profile %s backend call failed", backend_id)
+    return TaskResult(
+        content="",
+        error=f"{type(exc).__name__}: {exc}",
+        model=model,
+    )
+
+
 def _run_profile(
     *,
     profile_info: dict,
@@ -493,17 +537,8 @@ def _run_profile(
                 model=resolved_model,
             )
     except Exception as exc:
-        from work_buddy.llm.backends._errors import LocalInferenceError
-        logger.exception("Profile %s backend call failed", backend_id)
-        if isinstance(exc, LocalInferenceError):
-            # Embed the hint in the error string so callers who only
-            # check .error still see the remedy without schema changes.
-            msg = str(exc) + (f" Hint: {exc.hint}" if exc.hint else "")
-            return TaskResult(content="", error=msg, model=resolved_model)
-        return TaskResult(
-            content="",
-            error=f"{type(exc).__name__}: {exc}",
-            model=resolved_model,
+        return _backend_failure_to_result(
+            exc, backend_id=backend_id, model=resolved_model,
         )
 
     content = backend_result["content"]

@@ -209,6 +209,88 @@ def _get_conda_python() -> str:
     return sys.executable
 
 
+# ---------------------------------------------------------------------------
+# Startup banner
+# ---------------------------------------------------------------------------
+#
+# When a human starts the sidecar in a terminal, the most useful thing
+# we can hand them is the dashboard URL printed plainly on boot. Logger
+# output is too noisy and goes to a file in non-foreground runs; this
+# banner goes to stdout so it's visible regardless of log routing.
+
+def _supports_color(stream: Any) -> bool:
+    """Whether ANSI escape codes are likely to render on ``stream``.
+
+    Three-way decision:
+    - ``NO_COLOR`` env var set (any value) → no color (per no-color.org).
+    - Stream not a TTY (piped, redirected, captured) → no color.
+    - Otherwise → assume yes. Modern Windows Terminal / VS Code / WezTerm
+      all handle ANSI; cmd.exe on Win10+ does too once any process in
+      the session writes an escape sequence. Old cmd.exe will show
+      garbage, but anyone running a Python sidecar on Windows is
+      almost certainly on a modern terminal.
+    """
+    if os.environ.get("NO_COLOR"):
+        return False
+    isatty = getattr(stream, "isatty", None)
+    return bool(isatty and isatty())
+
+
+def _print_startup_banner(
+    children: list[ChildService], cfg: dict[str, Any],
+) -> None:
+    """Print a short banner with the dashboard URL(s).
+
+    Always shows the local URL (for the machine the sidecar is running
+    on). Additionally shows the remote URL when ``dashboard.external_url``
+    is configured — that's the project's canonical place for the
+    Tailscale-served HTTPS URL (e.g. ``https://<host>.<tailnet>.ts.net``),
+    populated by the user or the setup wizard. Reading it from config
+    rather than re-discovering it via ``tailscale serve status --json``
+    keeps the banner consistent with telegram links and notification
+    surfaces, which read the same field.
+
+    No-ops cleanly when there's no dashboard service configured (or
+    disabled) — printing a banner that points at nothing would be
+    worse than silence.
+    """
+    dashboard = next(
+        (c for c in children if c.name == "dashboard" and c.enabled),
+        None,
+    )
+    if dashboard is None:
+        return
+
+    local_url = f"http://localhost:{dashboard.port}"
+    remote_url = (cfg.get("dashboard", {}).get("external_url") or "").rstrip("/")
+    use_color = _supports_color(sys.stdout)
+
+    if use_color:
+        BOLD = "\x1b[1m"
+        DIM = "\x1b[2m"
+        CYAN = "\x1b[36m"
+        UNDERLINE = "\x1b[4m"
+        RESET = "\x1b[0m"
+    else:
+        BOLD = DIM = CYAN = UNDERLINE = RESET = ""
+
+    def fmt_link(url: str) -> str:
+        return f"{CYAN}{UNDERLINE}{url}{RESET}"
+
+    # Two-column-aligned, with ``Local``/``Remote`` labels when both are
+    # present — labels collapse to "Dashboard:" when only the local URL
+    # exists, since the distinction would be redundant.
+    print()
+    print(f"    {BOLD}Work Buddy sidecar is running{RESET}")
+    if remote_url:
+        print(f"    {DIM}Local: {RESET}  {fmt_link(local_url)}")
+        print(f"    {DIM}Remote:{RESET}  {fmt_link(remote_url)}")
+    else:
+        print(f"    {DIM}Dashboard:{RESET}  {fmt_link(local_url)}")
+    print()
+    sys.stdout.flush()
+
+
 def _start_child(svc: ChildService) -> None:
     """Start a child service as a direct subprocess.
 
@@ -592,6 +674,7 @@ def run(foreground: bool = True) -> None:
         "daemon_start", "daemon",
         f"Started (pid={os.getpid()}, {len(children)} services, {len(scheduler.jobs)} jobs)",
     )
+    _print_startup_banner(children, cfg)
 
     # --- Main loop ---
     try:
