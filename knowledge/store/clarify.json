@@ -110,7 +110,7 @@
     ]
   },
   "clarify/reference-filing": {
-    "kind": "module",
+    "kind": "system",
     "name": "Reference filing pipeline (Slice 6)",
     "description": "Composition pipeline for destination=reference captures. semantic_search -> SmartSource.drill_down(content) -> vault_schema -> Clarify-style LLM call -> FilingVerdict. Read-side ships in Slice 6; write step parks for follow-up.",
     "content": {
@@ -148,7 +148,7 @@
     "dev_notes": "Composition over new pipeline (ROADMAP section 6). SmartSource.drill_down raises NotImplementedError when the bridge is down; the proposal pipeline catches and degrades to \"no candidate content available\" -- the LLM can still produce a verdict from candidate file paths alone. The write step is intentionally NOT wired yet -- landing real files needs a few real verdicts validated end-to-end first."
   },
   "clarify/develop-at-pickup": {
-    "kind": "module",
+    "kind": "system",
     "name": "Develop-at-pickup decomposition (Slice 7 completion)",
     "description": "LLM-driven decomposition of one task into ordered action items. propose_decomposition produces; user reviews edit-each-item; apply_decomposition persists the accepted subset with approved_at set.  Hallucination gate (ROADMAP section 7) is enforced at apply time.",
     "content": {

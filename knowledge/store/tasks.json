@@ -373,7 +373,7 @@
     }
   },
   "tasks/action-items": {
-    "kind": "module",
+    "kind": "system",
     "name": "Task action items (Slice 7)",
     "description": "Per-action-item rows attached to a parent task. Each item carries its own risk profile + required contexts + definition_of_done. Safety rule: items with user_authored=0 AND approved_at IS NULL cannot be executed by the agent -- is_executable enforces this.",
     "content": {
@@ -414,7 +414,7 @@
     "dev_notes": "Markdown is the eventual canonical surface (ROADMAP section 8 footnote). Slice 7 ships the table; the markdown round-trip lands in a follow-up so the schema can stabilize against real usage first. set_current uses raw SQL because store.update does not yet take the Slice-7 column -- when other callers need to write current_action_item_id, add the kwarg to store.update like the Slice-5a fields."
   },
   "tasks/working-on-now": {
-    "kind": "module",
+    "kind": "system",
     "name": "Working-on-now (Slice 5b session focus)",
     "description": "Per-session 'what is THIS session actively working on' pointer. Allen-style one-current rule, scoped per agent session.  The Today tab honors this above pure heuristics when ranking recommendations: a stated focus bubbles to position 1.",
     "content": {
