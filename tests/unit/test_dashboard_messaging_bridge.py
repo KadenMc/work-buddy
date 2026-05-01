@@ -214,39 +214,63 @@ def test_start_messaging_bridge_runs_drain_repeatedly(fake_messaging):
 # ---------------------------------------------------------------------------
 
 
-def test_publish_cross_process_calls_send_message(monkeypatch):
+def test_publish_cross_process_posts_to_messaging_endpoint(monkeypatch):
+    """``publish_cross_process`` POSTs directly to localhost:5123/messages
+    via urllib (no auto-start, short timeout). Verifies request shape."""
+    from urllib.request import Request
+
     captured = {}
 
-    def fake_send(**kwargs):
-        captured.update(kwargs)
-        return {"id": "m1"}
+    class _FakeResp:
+        status = 201
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
 
-    monkeypatch.setattr("work_buddy.messaging.client.send_message", fake_send)
+    def fake_urlopen(req, timeout=None):
+        captured["url"] = req.full_url
+        captured["method"] = req.get_method()
+        captured["timeout"] = timeout
+        captured["body"] = json.loads(req.data.decode("utf-8"))
+        return _FakeResp()
+
+    monkeypatch.setattr(
+        "work_buddy.dashboard.events.urlopen", fake_urlopen, raising=False,
+    )
+    # The function imports urlopen locally; patch the urllib.request
+    # module's urlopen so the local import binds to the fake.
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
 
     ok = publish_cross_process("pool.entry_added", {"item_id": "abc"})
     assert ok is True
-    assert captured["recipient"] == "dashboard"
-    assert captured["type"] == "bus.event"
-    assert captured["subject"] == "pool.entry_added"
-    body = json.loads(captured["body"])
-    assert body["event_type"] == "pool.entry_added"
-    assert body["payload"] == {"item_id": "abc"}
+    assert "/messages" in captured["url"]
+    assert captured["method"] == "POST"
+    assert captured["timeout"] == 0.5  # _PUBLISH_HTTP_TIMEOUT
+    body = captured["body"]
+    assert body["recipient"] == "dashboard"
+    assert body["type"] == "bus.event"
+    assert body["subject"] == "pool.entry_added"
+    inner = json.loads(body["body"])
+    assert inner["event_type"] == "pool.entry_added"
+    assert inner["payload"] == {"item_id": "abc"}
 
 
-def test_publish_cross_process_returns_false_when_send_fails(monkeypatch):
-    monkeypatch.setattr(
-        "work_buddy.messaging.client.send_message",
-        lambda **kw: None,
-    )
+def test_publish_cross_process_returns_false_when_service_unreachable(monkeypatch):
+    """No auto-start, no retry — service down means False fast."""
+    from urllib.error import URLError
+
+    def fake_urlopen(req, timeout=None):
+        raise URLError("connection refused")
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
     ok = publish_cross_process("any.event", {})
     assert ok is False
 
 
 def test_publish_cross_process_swallows_exceptions(monkeypatch):
-    monkeypatch.setattr(
-        "work_buddy.messaging.client.send_message",
-        lambda **kw: (_ for _ in ()).throw(RuntimeError("network down")),
-    )
-    # Must not raise — primary work should not fail because of a
-    # missed cross-process event.
+    """Unexpected errors during publish must not propagate — primary
+    work cannot be blocked by a missed cross-process event."""
+    def boom(*a, **kw):
+        raise RuntimeError("network down in some other way")
+
+    monkeypatch.setattr("urllib.request.urlopen", boom)
     assert publish_cross_process("any.event", {}) is False

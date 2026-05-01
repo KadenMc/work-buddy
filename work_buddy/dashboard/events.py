@@ -226,6 +226,9 @@ def publish_auto(event_type: str, payload: Any = None) -> None:
     publish_cross_process(event_type, payload)
 
 
+_PUBLISH_HTTP_TIMEOUT = 0.5  # seconds — keep tiny; fail fast when service is down.
+
+
 def publish_cross_process(event_type: str, payload: Any = None) -> bool:
     """Publish from a process other than the dashboard's.
 
@@ -234,38 +237,57 @@ def publish_cross_process(event_type: str, payload: Any = None) -> bool:
     and re-publish on the in-process bus.
 
     Returns ``True`` on apparent delivery to the messaging service,
-    ``False`` if the messaging client couldn't reach the service.
-    Failures are logged but do not raise — publishers must not fail
-    their primary work because of a missed cross-process event.
+    ``False`` if the service can't be reached. Cross-process events
+    are best-effort by contract — primary work must NOT block on
+    delivery, and the publisher must NOT auto-spawn the messaging
+    service. We post directly via ``urllib`` with a short timeout so
+    publishers add at most a few hundred milliseconds in the worst
+    case (service down) and ~5 ms in the happy path.
 
     Use this from sidecar-process callers (cron jobs, IR rebuilds,
     email triage, service-health monitor). In-process callers should
     use ``publish`` instead — same event taxonomy, no IPC overhead.
     """
     import json as _json
+    from urllib.error import URLError
+    from urllib.request import Request, urlopen
+
+    body = _json.dumps({
+        "sender": "sidecar",
+        "recipient": "dashboard",
+        "type": "bus.event",
+        "subject": event_type,
+        "body": _json.dumps({"event_type": event_type, "payload": payload}),
+    }).encode("utf-8")
+
+    # Resolve port from config lazily; fall back to the documented
+    # default. Keep this best-effort so a missing config doesn't break
+    # primary work.
+    try:
+        from work_buddy.config import load_config
+        port = load_config().get("messaging", {}).get("service_port", 5123)
+    except Exception:
+        port = 5123
+
+    req = Request(
+        f"http://localhost:{port}/messages",
+        data=body,
+        method="POST",
+    )
+    req.add_header("Content-Type", "application/json")
 
     try:
-        from work_buddy.messaging.client import send_message
-    except Exception:
-        logger.exception("publish_cross_process: messaging client import failed")
+        with urlopen(req, timeout=_PUBLISH_HTTP_TIMEOUT) as resp:
+            return 200 <= resp.status < 300
+    except URLError:
+        # Service not reachable. Drop the event silently.
         return False
-
-    envelope = _json.dumps({"event_type": event_type, "payload": payload})
-    try:
-        result = send_message(
-            sender="sidecar",
-            recipient="dashboard",
-            type="bus.event",
-            subject=event_type,
-            body=envelope,
-        )
     except Exception:
-        logger.exception(
-            "publish_cross_process: send_message failed for %r", event_type
+        logger.debug(
+            "publish_cross_process: unexpected error publishing %r",
+            event_type, exc_info=True,
         )
         return False
-
-    return result is not None
 
 
 # ---------------------------------------------------------------------------
