@@ -114,10 +114,10 @@ def test_apply_persists_items_with_approval(fresh_db):
     assert res.items_created == 2
     items = action_items.list_for_task("t-a")
     assert [i["description"] for i in items] == ["edit code", "test code"]
-    # Per ROADMAP §7: agent-proposed items land with approved_at set.
+    # Per ROADMAP §7 (PR #70 fix #2): agent-proposed user-approved
+    # items land with authorship='agent_approved' (preserves origin).
     for i in items:
-        assert int(i["user_authored"]) == 0
-        assert i["approved_at"] is not None
+        assert i["authorship"] == "agent_approved"
     # is_executable admits these (approved).
     for i in items:
         assert action_items.is_executable(i) is True

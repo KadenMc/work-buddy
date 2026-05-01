@@ -125,27 +125,24 @@ CREATE TABLE IF NOT EXISTS task_action_items (
     agent_required_contexts TEXT,   -- JSON array, mirrors task_metadata
     user_required_contexts TEXT,
     definition_of_done TEXT,
-    -- ``user_authored`` + ``approved_at`` are RETAINED for back-compat
-    -- but ``authorship`` is now the canonical source of truth.  The
-    -- old fields are kept in sync by the CRUD layer so existing
-    -- callers keep working until they migrate.
-    user_authored   INTEGER NOT NULL DEFAULT 0,
-                    -- DEPRECATED: 0 = agent proposed, 1 = user wrote/edited
-    approved_at     TEXT,
-                    -- DEPRECATED: when user-approved an agent-proposed item
-    -- ``authorship`` (Slice 7 PR #70 fix #2): single enum collapsing
-    -- (user_authored, approved_at) into one source of truth.  Values:
+    -- ``authorship`` (Slice 7 PR #70 fix #2): single enum source of
+    -- truth for the ROADMAP §7 hallucination gate.  Values:
     --   'user'              -- user wrote it from scratch (markdown OR
-    --                          direct create with user_authored=True)
+    --                          direct create with authorship='user')
     --   'agent_approved'    -- agent proposed, user accepted via the
     --                          develop-at-pickup flow OR by adopting it
     --                          into the markdown
     --   'agent_unapproved'  -- agent proposed, no user approval yet
-    -- The hallucination gate (is_executable) now checks
-    --   authorship in {'user', 'agent_approved'}
-    -- which matches the old (user_authored=1 OR approved_at IS NOT NULL)
-    -- semantics exactly while preserving agent-origin provenance
-    -- (the old flip-to-user_authored-on-adoption lost that).
+    -- The hallucination gate (is_executable) checks
+    --   authorship in {'user', 'agent_approved'}.
+    -- Origin (user-vs-agent) is preserved across approval:
+    -- agent_approved items keep their agent provenance forever.
+    --
+    -- (Replaced the original user_authored INTEGER + approved_at TEXT
+    -- pair; those columns were dropped in PR #70's follow-up cleanup.
+    -- The ``approved_at`` semantics live in created_at/updated_at +
+    -- the authorship enum -- approval doesn't need its own timestamp
+    -- since it's a state transition recorded by the row update.)
     authorship      TEXT NOT NULL DEFAULT 'agent_unapproved',
     completed_at    TEXT,
     handoff_package_path TEXT,       -- vault path to the prep package
@@ -387,36 +384,63 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
         conn.execute(f"ALTER TABLE task_metadata ADD COLUMN {clause}")
         logger.info("task_metadata: added column %s", col_name)
 
-    # Slice 7 PR #70 fix #2: task_action_items.authorship column +
-    # one-shot backfill from (user_authored, approved_at).  The CREATE
-    # TABLE IF NOT EXISTS path covers fresh DBs; this branch handles
-    # existing DBs created before the enum column existed.
+    # Slice 7 PR #70 fix #2: task_action_items.authorship is now the
+    # canonical column.  Two-phase migration:
+    #
+    #   Phase A (PR #70 initial): ADD authorship + backfill from
+    #     (user_authored, approved_at) so existing rows survived.
+    #
+    #   Phase B (PR #70 follow-up, this commit): DROP user_authored
+    #     and approved_at columns.  SQLite 3.35+ supports
+    #     ALTER TABLE DROP COLUMN.  Phase A always runs first when
+    #     the column is missing, so any DB reaching Phase B has the
+    #     enum populated correctly.
+    #
+    # The two phases are sequenced in one migration pass so a fresh
+    # connection on a pre-PR-70 DB picks up both at once.
     ai_existing = {
         row["name"]
         for row in conn.execute("PRAGMA table_info(task_action_items)")
     }
     if ai_existing and "authorship" not in ai_existing:
-        # Add nullable first so existing rows tolerate the ALTER, then
-        # backfill, then SQLite handles NOT NULL via the table's own
-        # default for future inserts.
+        # Phase A: add + backfill.
         conn.execute(
             "ALTER TABLE task_action_items ADD COLUMN authorship TEXT "
             "NOT NULL DEFAULT 'agent_unapproved'"
         )
-        # Backfill: user_authored=1 -> 'user';
-        # user_authored=0 + approved_at IS NOT NULL -> 'agent_approved';
-        # else -> 'agent_unapproved' (the column default).
-        conn.execute(
-            "UPDATE task_action_items SET authorship = 'user' "
-            "WHERE user_authored = 1"
-        )
-        conn.execute(
-            "UPDATE task_action_items SET authorship = 'agent_approved' "
-            "WHERE user_authored = 0 AND approved_at IS NOT NULL"
-        )
+        # The ``user_authored`` and ``approved_at`` columns are still
+        # present at this point (the DB was authored before Phase B).
+        if "user_authored" in ai_existing:
+            conn.execute(
+                "UPDATE task_action_items SET authorship = 'user' "
+                "WHERE user_authored = 1"
+            )
+        if "approved_at" in ai_existing:
+            conn.execute(
+                "UPDATE task_action_items SET authorship = 'agent_approved' "
+                "WHERE authorship = 'agent_unapproved' "
+                "AND approved_at IS NOT NULL"
+            )
         logger.info(
             "task_action_items: added + backfilled authorship column"
         )
+        # Refresh the column set so Phase B sees the new state.
+        ai_existing = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(task_action_items)")
+        }
+
+    # Phase B: drop the legacy columns if they're still around.
+    if "user_authored" in ai_existing:
+        conn.execute(
+            "ALTER TABLE task_action_items DROP COLUMN user_authored"
+        )
+        logger.info("task_action_items: dropped legacy user_authored column")
+    if "approved_at" in ai_existing:
+        conn.execute(
+            "ALTER TABLE task_action_items DROP COLUMN approved_at"
+        )
+        logger.info("task_action_items: dropped legacy approved_at column")
 
     conn.commit()
 

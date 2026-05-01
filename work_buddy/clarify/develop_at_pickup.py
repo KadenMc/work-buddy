@@ -5,7 +5,7 @@ involvement OR density signals fire OR explicit ``/wb-task-develop``
 invocation), the engage flow proposes a decomposition into action
 items.  The user reviews edit-each-item and the approved subset is
 written to :mod:`work_buddy.obsidian.tasks.action_items` with
-``user_authored=0, approved_at=<now>`` per the safety rule
+``authorship='agent_approved'`` per the safety rule
 (ROADMAP §7).
 
 Two phases:
@@ -170,11 +170,11 @@ one outcome.  Plain prose; the markdown bullet stores it verbatim.
 
 The user reviews every item before any agent executes it.  Your job
 is PROPOSAL only.  The user clicks accept on each item; only accepted
-items get persisted with approved_at set.  Unaccepted items are
-discarded (NOT silently kept as "agent-proposed pending review").
-The downstream is_executable check refuses agent execution of items
-that lack approved_at, so you cannot accidentally cause an unsafe
-write by being too generous.
+items get persisted with authorship='agent_approved'.  Unaccepted
+items are discarded (NOT silently kept as "agent-proposed pending
+review").  The downstream is_executable check refuses agent
+execution of items whose authorship is 'agent_unapproved', so you
+cannot accidentally cause an unsafe write by being too generous.
 
 ## Refusal
 
@@ -367,9 +367,7 @@ def apply_decomposition(
     Per ROADMAP §7 safety rule, every persisted item lands with
     ``authorship='agent_approved'`` (PR #70 fix #2) -- the user
     reviewed and approved an agent-proposed item.  ``is_executable``
-    admits items with this authorship value.  The legacy
-    ``user_authored`` + ``approved_at`` columns are kept in sync by
-    the action_items.create layer.
+    admits items with this authorship value.
 
     Bumps ``density`` from 'sparse' to 'developed' on the parent task
     when the first action item lands (so future pickup-readiness

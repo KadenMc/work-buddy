@@ -2,10 +2,10 @@
 
 1. Migration creates the table on fresh AND existing DBs.
 2. Create / get / list / update / delete round-trip.
-3. ``approve`` flips user_authored=1 and sets approved_at.
+3. ``approve`` sets ``authorship='agent_approved'``.
 4. ``set_current`` updates ``task_metadata.current_action_item_id``.
-5. ``is_executable`` enforces the user_authored OR approved_at rule
-   AND the terminal-state exclusion.
+5. ``is_executable`` enforces the authorship enum check (in
+   ``{'user', 'agent_approved'}``) AND the terminal-state exclusion.
 6. ``position_in_task`` returns the 1-based step index.
 """
 
@@ -79,13 +79,13 @@ def test_get_returns_inserted_row(fresh_db):
         task_id="t-ai-3",
         description="edit code",
         agent_required_contexts='["@filesystem"]',
-        user_authored=True,
+        authorship="user",
     )
     row = action_items.get(created["id"])
     assert row is not None
     assert row["description"] == "edit code"
     assert row["agent_required_contexts"] == '["@filesystem"]'
-    assert row["user_authored"] == 1
+    assert row["authorship"] == "user"
 
 
 def test_list_for_task_orders_by_sequence(fresh_db):
@@ -140,11 +140,9 @@ def test_create_invalid_state_rejected(fresh_db):
 
 
 def test_approve_sets_authorship_to_agent_approved(fresh_db):
-    """PR #70 fix #2: approve() now sets authorship='agent_approved'
-    to preserve agent-origin provenance.  The legacy approved_at
-    field is still populated by the back-compat layer for callers
-    that read it; user_authored stays 0 because the user didn't
-    write it from scratch -- they accepted an agent proposal.
+    """PR #70 fix #2: approve() sets authorship='agent_approved'
+    to preserve agent-origin provenance (vs flipping to 'user' which
+    would lose origin).
     """
     store.create(task_id="t-ai-10")
     a = action_items.create(
@@ -154,9 +152,6 @@ def test_approve_sets_authorship_to_agent_approved(fresh_db):
     action_items.approve(a["id"])
     row = action_items.get(a["id"])
     assert row["authorship"] == "agent_approved"
-    assert row["approved_at"] is not None
-    # Provenance preserved: agent origin not erased on approval.
-    assert row["user_authored"] == 0
     # is_executable admits this row.
     assert action_items.is_executable(row) is True
 
@@ -174,41 +169,39 @@ def test_set_current_updates_task_metadata(fresh_db):
 
 
 # ---------------------------------------------------------------------------
-# is_executable safety rule
+# is_executable safety rule -- canonical authorship enum reading.
+# Comprehensive enum + legacy-fallback coverage lives in test_authorship_enum.py.
 # ---------------------------------------------------------------------------
 
 
-def test_user_authored_item_is_executable():
-    item = {"user_authored": 1, "approved_at": None, "state": "pending"}
+def test_user_item_is_executable():
+    item = {"authorship": "user", "state": "pending"}
     assert action_items.is_executable(item) is True
 
 
-def test_agent_proposed_unapproved_is_not_executable():
-    item = {"user_authored": 0, "approved_at": None, "state": "pending"}
+def test_agent_unapproved_is_not_executable():
+    item = {"authorship": "agent_unapproved", "state": "pending"}
     assert action_items.is_executable(item) is False
 
 
-def test_agent_proposed_approved_is_executable():
-    item = {
-        "user_authored": 0,
-        "approved_at": "2026-04-30T12:00:00+00:00",
-        "state": "in_progress",
-    }
+def test_agent_approved_is_executable():
+    item = {"authorship": "agent_approved", "state": "in_progress"}
     assert action_items.is_executable(item) is True
 
 
-def test_done_item_is_not_executable_even_if_approved():
-    item = {
-        "user_authored": 1,
-        "approved_at": "2026-04-30T12:00:00+00:00",
-        "state": "done",
-    }
+def test_done_item_is_not_executable_even_if_user_authored():
+    item = {"authorship": "user", "state": "done"}
     assert action_items.is_executable(item) is False
 
 
 def test_skipped_item_is_not_executable():
-    item = {"user_authored": 1, "state": "skipped"}
+    item = {"authorship": "user", "state": "skipped"}
     assert action_items.is_executable(item) is False
+
+
+def test_missing_authorship_treated_as_unapproved():
+    """Items without authorship default to gate-blocked (safe)."""
+    assert action_items.is_executable({"state": "pending"}) is False
 
 
 # ---------------------------------------------------------------------------

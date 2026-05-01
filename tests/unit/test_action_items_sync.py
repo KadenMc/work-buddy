@@ -97,13 +97,13 @@ def test_reconcile_creates_new_items(fresh_db):
     assert summary["deleted"] == 0
     items = action_items.list_for_task("t-r-1")
     assert [i["description"] for i in items] == ["one", "two"]
-    assert all(int(i["user_authored"]) == 1 for i in items)
+    assert all(i["authorship"] == "user" for i in items)
 
 
 def test_reconcile_updates_changed_descriptions(fresh_db):
     store.create(task_id="t-r-2", density="developed")
     a = action_items.create(
-        task_id="t-r-2", description="old text", user_authored=True,
+        task_id="t-r-2", description="old text", authorship="user",
     )
     body = "## Action items\n\n- new text\n"
     summary = action_items.reconcile_from_markdown("t-r-2", body)
@@ -114,7 +114,7 @@ def test_reconcile_updates_changed_descriptions(fresh_db):
 def test_reconcile_deletes_removed_bullets(fresh_db):
     store.create(task_id="t-r-3", density="developed")
     a = action_items.create(
-        task_id="t-r-3", description="will be removed", user_authored=True,
+        task_id="t-r-3", description="will be removed", authorship="user",
     )
     body = "## Action items\n"
     summary = action_items.reconcile_from_markdown("t-r-3", body)
@@ -139,12 +139,6 @@ def test_reconcile_promotes_unapproved_to_approved_on_user_adoption(fresh_db):
     assert summary["kept"] == 1
     row = action_items.get(a["id"])
     assert row["authorship"] == "agent_approved"
-    # Origin preserved -- user_authored stays 0 because the user
-    # didn't write it from scratch.
-    assert row["user_authored"] == 0
-    # Approval timestamp got stamped by the promotion.
-    assert row["approved_at"] is not None
-    # is_executable admits the now-approved row.
     assert action_items.is_executable(row) is True
 
 
@@ -157,12 +151,10 @@ def test_reconcile_keeps_agent_approved_unchanged(fresh_db):
         description="already approved",
         authorship="agent_approved",
     )
-    original_approved_at = action_items.get(a["id"])["approved_at"]
     body = "## Action items\n\n- already approved\n"
     action_items.reconcile_from_markdown("t-r-4b", body)
     row = action_items.get(a["id"])
     assert row["authorship"] == "agent_approved"
-    assert row["approved_at"] == original_approved_at  # not bumped
 
 
 def test_reconcile_user_edited_description_lifts_to_user(fresh_db):
@@ -179,14 +171,13 @@ def test_reconcile_user_edited_description_lifts_to_user(fresh_db):
     row = action_items.get(a["id"])
     assert row["description"] == "the user's rewrite"
     assert row["authorship"] == "user"
-    assert row["user_authored"] == 1
 
 
 def test_reconcile_handles_empty_section(fresh_db):
     """User explicitly cleared the section -> all rows go."""
     store.create(task_id="t-r-5", density="developed")
-    action_items.create(task_id="t-r-5", description="a", user_authored=True)
-    action_items.create(task_id="t-r-5", description="b", user_authored=True)
+    action_items.create(task_id="t-r-5", description="a", authorship="user")
+    action_items.create(task_id="t-r-5", description="b", authorship="user")
     summary = action_items.reconcile_from_markdown(
         "t-r-5", "## Action items\n\n## Other\n",
     )

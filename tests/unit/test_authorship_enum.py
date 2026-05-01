@@ -1,9 +1,13 @@
-"""Slice 7 PR #70 fix #2: ``authorship`` enum migration coverage.
+"""Slice 7 PR #70 fix #2: ``authorship`` enum coverage.
 
-Pins the new canonical column + the back-compat shim to the legacy
-``user_authored`` + ``approved_at`` fields.  The shim exists so
-existing callers (tests, dashboards, sidecar jobs) keep working
-until they migrate.
+The legacy ``user_authored`` + ``approved_at`` columns were removed
+in the follow-up cleanup; ``authorship`` is now the sole source of
+truth.  These tests pin:
+
+- The enum values, validation, and the safe default ('agent_unapproved').
+- Schema migration: pre-PR-70 DBs get the column added + backfilled
+  + the legacy columns dropped, all in one connection-open pass.
+- ``is_executable`` reads only the enum (no more legacy fallback).
 """
 
 from __future__ import annotations
@@ -25,7 +29,8 @@ def fresh_db(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_table_has_authorship_column(fresh_db):
+def test_table_has_authorship_only(fresh_db):
+    """Fresh DB has authorship; legacy columns are gone."""
     conn = store.get_connection()
     try:
         cols = {
@@ -35,13 +40,13 @@ def test_table_has_authorship_column(fresh_db):
     finally:
         conn.close()
     assert "authorship" in cols
-    # Legacy fields kept for back-compat.
-    assert "user_authored" in cols
-    assert "approved_at" in cols
+    assert "user_authored" not in cols
+    assert "approved_at" not in cols
 
 
-def test_existing_db_gets_backfilled(tmp_path, monkeypatch):
-    """Simulate a pre-PR-70 DB and verify the migration backfills authorship."""
+def test_existing_db_gets_backfilled_then_dropped(tmp_path, monkeypatch):
+    """Simulate a pre-PR-70 DB: migration adds authorship, backfills
+    from the legacy columns, then drops them in the same pass."""
     import sqlite3
     db = tmp_path / "tasks.sqlite3"
 
@@ -88,12 +93,22 @@ def test_existing_db_gets_backfilled(tmp_path, monkeypatch):
     monkeypatch.setattr(store, "_db_path", lambda: db)
     conn = store.get_connection()
     try:
+        cols = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(task_action_items)")
+        }
         rows = conn.execute(
             "SELECT description, authorship FROM task_action_items "
             "ORDER BY sequence"
         ).fetchall()
     finally:
         conn.close()
+
+    # Legacy columns gone post-migration.
+    assert "user_authored" not in cols
+    assert "approved_at" not in cols
+    assert "authorship" in cols
+
     by_desc = {r["description"]: r["authorship"] for r in rows}
     assert by_desc["user wrote this"] == "user"
     assert by_desc["agent approved"] == "agent_approved"
@@ -101,7 +116,7 @@ def test_existing_db_gets_backfilled(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# create() + back-compat shim
+# create()
 # ---------------------------------------------------------------------------
 
 
@@ -110,53 +125,22 @@ def test_create_with_authorship_user(fresh_db):
     a = action_items.create(
         task_id="t-au-1", description="x", authorship="user",
     )
-    row = action_items.get(a["id"])
-    assert row["authorship"] == "user"
-    assert row["user_authored"] == 1
+    assert action_items.get(a["id"])["authorship"] == "user"
 
 
-def test_create_with_authorship_agent_approved_stamps_approved_at(fresh_db):
+def test_create_with_authorship_agent_approved(fresh_db):
     store.create(task_id="t-au-2")
     a = action_items.create(
         task_id="t-au-2", description="x", authorship="agent_approved",
     )
-    row = action_items.get(a["id"])
-    assert row["authorship"] == "agent_approved"
-    assert row["user_authored"] == 0
-    assert row["approved_at"] is not None  # auto-stamped
+    assert action_items.get(a["id"])["authorship"] == "agent_approved"
 
 
-def test_create_with_authorship_agent_unapproved_default(fresh_db):
-    """No authorship + no legacy fields -> defaults to agent_unapproved
-    (the safe option that gates execution)."""
+def test_create_default_is_agent_unapproved(fresh_db):
+    """No authorship -> defaults to 'agent_unapproved' (gate-blocked)."""
     store.create(task_id="t-au-3")
     a = action_items.create(task_id="t-au-3", description="x")
-    row = action_items.get(a["id"])
-    assert row["authorship"] == "agent_unapproved"
-
-
-def test_create_with_legacy_user_authored_true(fresh_db):
-    """Legacy callers passing user_authored=True still get authorship='user'."""
-    store.create(task_id="t-au-4")
-    a = action_items.create(
-        task_id="t-au-4", description="x", user_authored=True,
-    )
-    row = action_items.get(a["id"])
-    assert row["authorship"] == "user"
-    assert row["user_authored"] == 1
-
-
-def test_create_with_legacy_approved_at_only(fresh_db):
-    """user_authored=False + approved_at set -> authorship='agent_approved'."""
-    store.create(task_id="t-au-5")
-    a = action_items.create(
-        task_id="t-au-5", description="x",
-        user_authored=False,
-        approved_at="2026-04-01T12:00:00+00:00",
-    )
-    row = action_items.get(a["id"])
-    assert row["authorship"] == "agent_approved"
-    assert row["approved_at"] == "2026-04-01T12:00:00+00:00"
+    assert action_items.get(a["id"])["authorship"] == "agent_unapproved"
 
 
 def test_create_rejects_invalid_authorship(fresh_db):
@@ -168,68 +152,70 @@ def test_create_rejects_invalid_authorship(fresh_db):
 
 
 # ---------------------------------------------------------------------------
-# update() — authorship + back-compat
+# update()
 # ---------------------------------------------------------------------------
 
 
-def test_update_authorship_keeps_legacy_fields_in_sync(fresh_db):
+def test_update_authorship_changes_value(fresh_db):
     store.create(task_id="t-au-7")
     a = action_items.create(
         task_id="t-au-7", description="x", authorship="agent_unapproved",
     )
     action_items.update(a["id"], authorship="agent_approved")
+    assert action_items.get(a["id"])["authorship"] == "agent_approved"
+
+
+def test_update_rejects_invalid_authorship(fresh_db):
+    store.create(task_id="t-au-7b")
+    a = action_items.create(
+        task_id="t-au-7b", description="x", authorship="agent_unapproved",
+    )
+    with pytest.raises(ValueError):
+        action_items.update(a["id"], authorship="garbage")
+
+
+def test_update_omitted_authorship_unchanged(fresh_db):
+    """authorship=None on update leaves the value alone."""
+    store.create(task_id="t-au-7c")
+    a = action_items.create(
+        task_id="t-au-7c", description="x", authorship="agent_approved",
+    )
+    action_items.update(a["id"], description="new desc")
     row = action_items.get(a["id"])
     assert row["authorship"] == "agent_approved"
-    assert row["approved_at"] is not None
-    assert row["user_authored"] == 0
-
-
-def test_update_legacy_user_authored_recomputes_authorship(fresh_db):
-    """Legacy caller setting user_authored=True bumps authorship='user'."""
-    store.create(task_id="t-au-8")
-    a = action_items.create(
-        task_id="t-au-8", description="x", authorship="agent_approved",
-    )
-    action_items.update(a["id"], user_authored=True)
-    row = action_items.get(a["id"])
-    assert row["authorship"] == "user"
-    assert row["user_authored"] == 1
+    assert row["description"] == "new desc"
 
 
 # ---------------------------------------------------------------------------
-# is_executable -- enum reading + legacy fallback
+# is_executable -- canonical authorship reading.
 # ---------------------------------------------------------------------------
 
 
-def test_is_executable_reads_authorship_enum():
+def test_is_executable_admits_user():
     assert action_items.is_executable({
         "state": "pending", "authorship": "user",
     }) is True
+
+
+def test_is_executable_admits_agent_approved():
     assert action_items.is_executable({
-        "state": "pending", "authorship": "agent_approved",
+        "state": "in_progress", "authorship": "agent_approved",
     }) is True
+
+
+def test_is_executable_blocks_agent_unapproved():
     assert action_items.is_executable({
         "state": "pending", "authorship": "agent_unapproved",
     }) is False
 
 
-def test_is_executable_terminal_states_blocked_regardless():
+def test_is_executable_blocks_terminal_state():
     for terminal in ("done", "skipped"):
         assert action_items.is_executable({
             "state": terminal, "authorship": "user",
         }) is False
 
 
-def test_is_executable_legacy_fallback_when_authorship_absent():
-    """Items constructed without the authorship key (older tests, raw
-    dicts) fall back to the (user_authored, approved_at) check."""
-    assert action_items.is_executable({
-        "state": "pending", "user_authored": 1,
-    }) is True
-    assert action_items.is_executable({
-        "state": "pending", "user_authored": 0,
-        "approved_at": "2026-04-01T00:00:00+00:00",
-    }) is True
-    assert action_items.is_executable({
-        "state": "pending", "user_authored": 0, "approved_at": None,
-    }) is False
+def test_is_executable_missing_authorship_blocks():
+    """Items without authorship default to gate-blocked (safe)."""
+    assert action_items.is_executable({"state": "pending"}) is False

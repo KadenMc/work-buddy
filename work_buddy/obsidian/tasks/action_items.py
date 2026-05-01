@@ -6,9 +6,9 @@ its own risk profile + required contexts so the resolver can answer
 task — the engage view + the Today tab consume this when the parent
 task has ``current_action_item_id`` set.
 
-Safety rule (per ROADMAP §7): items with ``user_authored = 0 AND
-approved_at IS NULL`` cannot be executed by the agent — they're
-proposals waiting on user approval.  The :func:`is_executable`
+Safety rule (per ROADMAP §7, refined in PR #70 fix #2): items with
+``authorship = 'agent_unapproved'`` cannot be executed by the agent —
+they're proposals waiting on user approval.  The :func:`is_executable`
 helper enforces this; callers in the executor + Resolution Surface
 respect the check.
 
@@ -40,48 +40,22 @@ VALID_STATES = {"pending", "in_progress", "done", "skipped"}
 VALID_AUTHORSHIP = frozenset({"user", "agent_approved", "agent_unapproved"})
 
 
-def _resolve_authorship(
-    *,
-    authorship: str | None,
-    user_authored: bool | None,
-    approved_at: str | None,
-) -> tuple[str, bool, str | None]:
-    """Resolve the canonical authorship + maintain back-compat fields.
+def _validate_authorship(authorship: str | None) -> str:
+    """Coerce to a valid authorship value or raise.
 
-    Callers can pass any of:
-    - ``authorship='user' | 'agent_approved' | 'agent_unapproved'``
-      (preferred — sets the enum directly).
-    - ``user_authored=True/False`` + optional ``approved_at`` (legacy
-      shape; translated to the equivalent enum value).
-    - Nothing (defaults to 'agent_unapproved' — agent proposed, no
-      approval, gate-blocked from execution).
-
-    Returns ``(authorship, user_authored_int, approved_at)`` so the
-    INSERT keeps all three columns in sync.  This means ``is_executable``
-    can be migrated to read ``authorship`` while old SQL queries
-    against ``user_authored`` keep working until callers retire them.
+    None defaults to ``'agent_unapproved'`` -- the safe option that
+    gates execution.  Any other value raises ValueError so typos
+    surface at the call site rather than silently producing
+    gate-bypassing rows.
     """
-    if authorship is not None:
-        if authorship not in VALID_AUTHORSHIP:
-            raise ValueError(
-                f"Invalid authorship {authorship!r}: expected one of "
-                f"{sorted(VALID_AUTHORSHIP)}"
-            )
-        # Derive the legacy fields from the enum so back-compat queries
-        # against user_authored / approved_at still get the right answer.
-        if authorship == "user":
-            return ("user", 1, approved_at)
-        if authorship == "agent_approved":
-            return ("agent_approved", 0, approved_at or _now_iso())
-        # agent_unapproved
-        return ("agent_unapproved", 0, None)
-
-    # Legacy shape: derive the enum from user_authored + approved_at.
-    if bool(user_authored):
-        return ("user", 1, approved_at)
-    if approved_at:
-        return ("agent_approved", 0, approved_at)
-    return ("agent_unapproved", 0, None)
+    if authorship is None:
+        return "agent_unapproved"
+    if authorship not in VALID_AUTHORSHIP:
+        raise ValueError(
+            f"Invalid authorship {authorship!r}: expected one of "
+            f"{sorted(VALID_AUTHORSHIP)}"
+        )
+    return authorship
 
 
 def _now_iso() -> str:
@@ -104,8 +78,6 @@ def create(
     user_required_contexts: str | None = None,
     definition_of_done: str | None = None,
     authorship: str | None = None,
-    user_authored: bool = False,
-    approved_at: str | None = None,
     handoff_package_path: str | None = None,
 ) -> dict[str, Any]:
     """Insert a new action item row.
@@ -115,27 +87,18 @@ def create(
     explicit value to insert at a specific position (e.g., re-shuffling
     via the develop-at-pickup edit-each-item flow).
 
-    **Authorship (Slice 7 PR #70 fix #2)** — pass either:
-    - ``authorship='user' | 'agent_approved' | 'agent_unapproved'``
-      (preferred), OR
-    - ``user_authored=True/False`` + optional ``approved_at`` (legacy
-      shape; translated to the enum).
-
+    ``authorship`` (per ROADMAP §7 + PR #70 fix #2): one of
+    ``'user'`` / ``'agent_approved'`` / ``'agent_unapproved'``.
     Defaults to ``'agent_unapproved'`` — agent-proposed items are
     gate-blocked from execution until the user explicitly accepts via
-    :func:`approve` or by adopting them into the markdown.  Per
-    ROADMAP §7.
+    :func:`approve` or by adopting them into the markdown.
     """
     if state not in VALID_STATES:
         raise ValueError(
             f"Invalid state {state!r}: expected one of {sorted(VALID_STATES)}"
         )
 
-    auth_value, ua_int, approved = _resolve_authorship(
-        authorship=authorship,
-        user_authored=user_authored,
-        approved_at=approved_at,
-    )
+    auth_value = _validate_authorship(authorship)
 
     now = _now_iso()
     conn = store.get_connection()
@@ -153,15 +116,15 @@ def create(
                (task_id, sequence, description, state,
                 risk_profile_json, agent_required_contexts,
                 user_required_contexts, definition_of_done,
-                user_authored, approved_at, authorship,
+                authorship,
                 handoff_package_path,
                 created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 task_id, sequence, description, state,
                 risk_profile_json, agent_required_contexts,
                 user_required_contexts, definition_of_done,
-                ua_int, approved, auth_value,
+                auth_value,
                 handoff_package_path,
                 now, now,
             ),
@@ -227,8 +190,6 @@ def update(
     user_required_contexts: str | None | object = _SENTINEL,
     definition_of_done: str | None | object = _SENTINEL,
     authorship: str | None = None,
-    user_authored: bool | None = None,
-    approved_at: str | None | object = _SENTINEL,
     completed_at: str | None | object = _SENTINEL,
     handoff_package_path: str | None | object = _SENTINEL,
 ) -> dict[str, Any]:
@@ -237,11 +198,9 @@ def update(
     ``state='done'`` auto-stamps ``completed_at`` if the caller didn't
     pass one — same convention as ``store.update``.
 
-    **Authorship** — pass ``authorship=`` directly (preferred) OR the
-    legacy ``user_authored=`` / ``approved_at=`` combination.  When
-    ``authorship`` is set, the legacy fields are kept in sync.  When
-    only the legacy fields are set, ``authorship`` is recomputed from
-    them so the canonical column stays consistent.
+    ``authorship`` (when set) goes through ``_validate_authorship``
+    which raises on typos.  Pass None or omit to leave the field
+    unchanged.
     """
     sets: list[str] = []
     params: list[Any] = []
@@ -279,45 +238,9 @@ def update(
         sets.append("definition_of_done = ?")
         params.append(definition_of_done)
 
-    # Slice 7 PR #70 fix #2: authorship enum is the canonical source.
-    # When the caller passes authorship explicitly, derive the legacy
-    # fields and write all three.  When only the legacy fields are
-    # set, recompute authorship to keep the canonical column in sync.
-    auth_dirty = (
-        authorship is not None
-        or user_authored is not None
-        or approved_at is not _SENTINEL
-    )
-    if auth_dirty:
-        # Materialize the current row's legacy values for any field
-        # the caller didn't override -- so the resolver sees the full
-        # picture rather than treating "not provided" as None.
-        if user_authored is None or approved_at is _SENTINEL:
-            cur = get(item_id) or {}
-            ua_in = (
-                bool(int(cur.get("user_authored") or 0))
-                if user_authored is None
-                else user_authored
-            )
-            approved_in = (
-                cur.get("approved_at")
-                if approved_at is _SENTINEL
-                else approved_at
-            )
-        else:
-            ua_in = user_authored
-            approved_in = approved_at
-        auth_value, ua_int, approved = _resolve_authorship(
-            authorship=authorship,
-            user_authored=ua_in,
-            approved_at=approved_in,
-        )
+    if authorship is not None:
         sets.append("authorship = ?")
-        params.append(auth_value)
-        sets.append("user_authored = ?")
-        params.append(ua_int)
-        sets.append("approved_at = ?")
-        params.append(approved)
+        params.append(_validate_authorship(authorship))
 
     if completed_at is not _SENTINEL:
         sets.append("completed_at = ?")
@@ -400,29 +323,15 @@ def set_current(task_id: str, item_id: int | None) -> None:
 def is_executable(item: dict[str, Any]) -> bool:
     """Per ROADMAP §7: agent may only execute approved items.
 
-    Slice 7 PR #70 fix #2: reads the ``authorship`` enum as the
-    canonical source.  Returns True iff the item's authorship is
-    one of {``'user'``, ``'agent_approved'``} AND its state is not
-    terminal (``'done'`` / ``'skipped'``).
-
-    Falls back to the legacy ``user_authored`` / ``approved_at``
-    pair when ``authorship`` is missing — covers in-memory dicts
-    constructed by tests or older call sites that haven't migrated.
+    Returns True iff the item's ``authorship`` is one of
+    {``'user'``, ``'agent_approved'``} AND its state is not terminal
+    (``'done'`` / ``'skipped'``).  Items without ``authorship`` set
+    are treated as ``'agent_unapproved'`` (the safe default) — gate-
+    blocked from agent execution.
     """
-    state = item.get("state")
-    if state in {"done", "skipped"}:
+    if item.get("state") in {"done", "skipped"}:
         return False
-    auth = item.get("authorship")
-    if auth in {"user", "agent_approved"}:
-        return True
-    if auth == "agent_unapproved":
-        return False
-    # Legacy fallback when authorship is absent (None / missing).
-    if int(item.get("user_authored", 0) or 0) == 1:
-        return True
-    if item.get("approved_at"):
-        return True
-    return False
+    return item.get("authorship") in {"user", "agent_approved"}
 
 
 # ---------------------------------------------------------------------------
@@ -531,14 +440,9 @@ def reconcile_from_markdown(
         else:
             # Description is unchanged.  If the row was 'agent_unapproved'
             # but now appears in markdown, the user adopted it -- promote
-            # to 'agent_approved' (preserves agent-origin provenance,
-            # PR #70 fix #2).  If it was already 'agent_approved' or
-            # 'user', leave it alone.
-            cur_auth = existing_row.get("authorship") or (
-                "user" if int(existing_row.get("user_authored") or 0) == 1
-                else ("agent_approved" if existing_row.get("approved_at") else "agent_unapproved")
-            )
-            if cur_auth == "agent_unapproved":
+            # to 'agent_approved' (preserves agent-origin provenance).
+            # If it was already 'agent_approved' or 'user', leave alone.
+            if existing_row.get("authorship") == "agent_unapproved":
                 update(int(existing_row["id"]), authorship="agent_approved")
             summary["kept"] += 1
 

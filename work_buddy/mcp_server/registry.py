@@ -2338,12 +2338,12 @@ def _context_capabilities() -> list[Capability]:
             name="develop_apply",
             description=(
                 "Slice 7: persist user-approved action items to "
-                "task_action_items.  Items land with user_authored=0 + "
-                "approved_at=<now> per the ROADMAP §7 safety rule -- "
-                "the is_executable check then admits them.  Auto-bumps "
-                "density 'sparse' -> 'developed' on first item.  "
-                "Optionally points current_action_item_id at the first "
-                "item so the master-list step badge lights up."
+                "task_action_items.  Items land with "
+                "authorship='agent_approved' per the ROADMAP §7 safety "
+                "rule -- the is_executable check then admits them.  "
+                "Auto-bumps density 'sparse' -> 'developed' on first "
+                "item.  Optionally points current_action_item_id at "
+                "the first item so the master-list step badge lights up."
             ),
             category="tasks",
             search_aliases=[
