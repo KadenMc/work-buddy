@@ -2054,6 +2054,79 @@ def _build_engage_view_payload(*, current_contexts: list[str] | None = None) -> 
     }
 
 
+def _build_today_payload(*, current_contexts: list[str] | None = None) -> dict:
+    """Slice 5b Today tab payload.
+
+    Composes:
+    - The Slice-5a engage view (filtered by ``current_contexts``).
+    - The clamp-to-now plan from ``work_buddy.task_me.build_now_plan``.
+    - The top 1-2 recommendations heuristic from ``task_me.top_recommendations``.
+    - A current-time indicator + work-hour bounds from config.
+
+    No mutations.  This is the read-only side of the Today surface;
+    write-back happens via the ``/wb-task-me`` slash command's optional
+    consent-gated reasoning step.
+    """
+    from work_buddy.task_me import (
+        build_now_plan,
+        load_context_for_task_me,
+        top_recommendations,
+    )
+    from datetime import datetime, timezone
+
+    context = load_context_for_task_me(user_current_contexts=current_contexts)
+    plan = build_now_plan(context=context)
+    engage = context.get("engage") or {}
+    recs = top_recommendations(engage, limit=2)
+
+    cfg = load_config() or {}
+    work_hours = (
+        cfg.get("morning", {}).get("day_planner", {}).get("work_hours", [9, 17])
+    )
+
+    now_local = datetime.now()
+    now_minutes = now_local.hour * 60 + now_local.minute
+
+    contracts = (context.get("contract_constraints") or {}).get("active") or []
+    constraints = (context.get("contract_constraints") or {}).get("constraints") or []
+
+    return {
+        "status": context.get("status", "ok"),
+        "now": {
+            "iso": now_local.astimezone(timezone.utc).isoformat(),
+            "local_hhmm": now_local.strftime("%H:%M"),
+            "minutes_into_day": now_minutes,
+        },
+        "work_hours": work_hours,
+        "current_contexts": list(current_contexts or []),
+        "recommendations": recs,
+        "plan": plan.get("plan") or [],
+        "plan_status": plan.get("status"),
+        "focused_count": plan.get("focused_count", 0),
+        "calendar_event_count": plan.get("calendar_event_count", 0),
+        "active_contracts": contracts,
+        "contract_constraints": constraints,
+        "engage_count": engage.get("count", 0),
+        "errors": context.get("errors") or [],
+    }
+
+
+@app.get("/api/automation/today")
+def api_automation_today():
+    """Slice 5b Today tab payload.
+
+    Query params:
+        contexts: comma-separated tokens (forwarded to engage filter).
+    """
+    raw = (request.args.get("contexts") or "").strip()
+    current = [t.strip() for t in raw.split(",") if t.strip()] if raw else []
+    try:
+        return jsonify(_build_today_payload(current_contexts=current))
+    except Exception as exc:
+        logger.exception("api_automation_today: failed")
+        return jsonify({"status": "error", "error": str(exc)}), 500
+
+
 @app.get("/api/automation/engage")
 def api_automation_engage():
     """Slice 5a Engage tab: tasks + tier + who-can-act + user-current filter.

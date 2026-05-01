@@ -50,6 +50,8 @@ def _html() -> str:
 <nav class="tab-bar">
     <div class="tab-bar-left">
         <button class="tab-btn active" data-tab="overview">Overview</button>
+        <button class="tab-btn" data-tab="today"
+                title="What should I do right now? Slice 5b /wb-task-me view.">Today</button>
         <button class="tab-btn" data-tab="tasks">Tasks</button>
         <button class="tab-btn" data-tab="review">Review</button>
         <button class="tab-btn" data-tab="review-queue"
@@ -84,6 +86,39 @@ def _html() -> str:
     <div class="section-title">Scheduled Jobs</div>
     <div id="overview-jobs"><div class="loading">Loading...</div></div>
 
+</div>
+
+<!-- TODAY (Slice 5b) — re-runnable "what should I do right now?" view.
+     Reads /api/automation/today.  Composes the Slice-5a engage view
+     with the clamp-to-now plan + a top-1-2 recommendation card.
+     Re-run by clicking refresh; persistent context preset shared
+     with the Engage tab via localStorage. -->
+<div class="tab-panel" id="panel-today">
+    <div class="review-toolbar">
+        <div class="section-title">Today
+            <span class="section-subtitle"
+                  title="Re-runnable engage. Slice 5b /wb-task-me view.">
+                engage · Slice 5b
+            </span>
+        </div>
+        <select id="today-context-preset" class="chats-select"
+                onchange="onTodayContextPresetChange()"
+                title="Your current context — feeds the recommender">
+            <option value="at_desk">At desk + online</option>
+            <option value="phone_only">Phone only</option>
+            <option value="untethered">Untethered</option>
+            <option value="custom">Custom…</option>
+        </select>
+        <button class="chats-accent-btn" onclick="loadToday()">Re-run</button>
+    </div>
+    <div id="today-now-banner" class="today-now-banner"></div>
+    <div id="today-contracts-banner" class="today-contracts-banner"></div>
+    <div id="today-recommendations"
+         class="today-recommendations"></div>
+    <div class="section-title" style="margin-top:14px">Time-blocked plan
+        <span class="section-subtitle">clamp-to-now · day_planner</span>
+    </div>
+    <div id="today-plan"><div class="loading">Loading plan...</div></div>
 </div>
 
 <!-- TASKS -->

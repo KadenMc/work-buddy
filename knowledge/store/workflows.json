@@ -1889,5 +1889,89 @@
       "push": "Reasoning step. Ask the user: **\"Want me to push and create a PR?\"**\n\nIf yes:\n\n```bash\ngit push -u origin <branch>\ngh pr create --title \"<concise title>\" --body \"$(cat <<'EOF'\n## Summary\n<1-3 bullets>\n\n## Test plan\n- [ ] <what to verify>\n\nTask: <task-id if any>\nEOF\n)\"\n```\n\nReport the PR URL back.\n\nIf the user declines, confirm the commit is on the local branch and remind them they can push later. Do NOT push without asking — this is a shared-state action that requires explicit consent."
     },
     "command": "wb-dev-commit"
+  },
+  "tasks/task-me": {
+    "kind": "workflow",
+    "name": "Task Me — what should I do right now?",
+    "description": "Slice 5b: re-runnable engage flow. Loads context (tasks + calendar + contracts + Slice-5a engage view), builds a clamp-to-now plan, presents top 1-2 recommendations, optionally writes back to the journal Day Planner.",
+    "workflow_name": "task-me",
+    "execution": "main",
+    "steps": [
+      {
+        "id": "load-context",
+        "name": "Load task / calendar / contract / engage context",
+        "step_type": "code",
+        "depends_on": [],
+        "invokes": [],
+        "auto_run": {
+          "callable": "work_buddy.task_me.load_context_for_task_me"
+        },
+        "visibility": {
+          "mode": "summary",
+          "include_keys": [
+            "status",
+            "task_briefing",
+            "engage",
+            "current_contexts"
+          ]
+        }
+      },
+      {
+        "id": "build-now-plan",
+        "name": "Build clamp-to-now plan from focused tasks + calendar",
+        "step_type": "code",
+        "depends_on": [
+          "load-context"
+        ],
+        "invokes": [],
+        "auto_run": {
+          "callable": "work_buddy.task_me.build_now_plan",
+          "input_map": {
+            "context": "load-context"
+          }
+        },
+        "visibility": {
+          "mode": "summary"
+        }
+      },
+      {
+        "id": "engage",
+        "name": "Recommend top 1-2 actions and surface the plan",
+        "step_type": "reasoning",
+        "depends_on": [
+          "build-now-plan"
+        ],
+        "invokes": []
+      },
+      {
+        "id": "write-back",
+        "name": "Optional: write the plan into journal Day Planner",
+        "step_type": "reasoning",
+        "depends_on": [
+          "engage"
+        ],
+        "optional": true,
+        "invokes": [
+          "day_planner_generate_and_write"
+        ]
+      }
+    ],
+    "tags": [
+      "tasks",
+      "engage",
+      "today",
+      "task-me",
+      "slice-5b"
+    ],
+    "parents": [
+      "tasks"
+    ],
+    "allow_override": false,
+    "step_instructions": {
+      "load-context": "Auto-run: composes task_briefing, calendar, contract_constraints, and the Slice-5a engage view. The engage view filters by user_current_contexts when provided. No mutations.",
+      "build-now-plan": "Auto-run: calls work_buddy.obsidian.day_planner.planner.generate_plan with clamp_to_now=True. Returns the proposed timeline; does NOT write back. Pull focused tasks from the engage view (so Slice-5a context filtering applies) — fall back to task_briefing.focused if engage is unavailable.",
+      "engage": "Agentic step. Read the engage view in load-context.engage and the proposed plan in build-now-plan.plan. Present:\n  1. Top contract-constraint banner (if any active contracts).\n  2. ONE recommendation card with rationale traced to the active contract OR labeled exploration.\n  3. ONE alternative if a sensible second exists.\n  4. The clamp-to-now plan as a compact list.\nKeep this brief — V1a (attention scarcity). No more than 2 cards. If everything is blocked on contexts, say so + name the missing contexts + link to /setup.",
+      "write-back": "Optional + consent-gated. Only run if the user explicitly asked to write the plan into the journal. Calls day_planner_generate_and_write. Do not run silently. Skip when not asked."
+    }
   }
 }

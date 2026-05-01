@@ -341,5 +341,35 @@
       "summary": "Use task_update_description, NOT filesystem-direct Edit. It routes through the atomic app.vault.process() write path, so concurrent user typing in Obsidian doesn't get clobbered.",
       "full": "## When to use\n\nWhenever a task's description text needs to change - typo fix, scope sharpening, mid-flight rephrase. Examples:\n  - User asks \"can you rename that task to X\"\n  - You're consolidating two scope-shifted tasks and the description needs to reflect the new scope\n  - You spot a typo and want to correct it without deleting + recreating the task (preserves task_id, history, sessions)\n\n## Call\n\n```\nmcp__work-buddy__wb_run(\"task_update_description\", {\n    \"task_id\": \"t-...\",\n    \"new_description\": \"Rewritten task text\"\n})\n```\n\nReturns:\n  - `success`, `task_id`, `old_description`, `new_description`\n  - `old_line` / `new_line` - the full markdown line\n  - `store_updated` - whether the SQLite description column was kept in sync\n  - `atomic` - True when the write went through the atomic `app.vault.process()` path; False / absent when the legacy fallback ran (bridge unreachable)\n  - `conflict_resolved` - True when a concurrent-edit conflict was detected and the retry succeeded\n\n## What it preserves\n\nCheckbox state, the `#todo` marker, all hashtags (`#projects/*`, namespace tags), wikilinks (including the task-note link `[[uuid|📓]]`), the 🆔 marker and ID, plugin emojis (📅 due date, ✅ done date, 🔼/⏫ urgency).\n\n## What it does NOT do\n\n- It will not change the task's state, urgency, due date, or completion. Use `task_change_state` / `task_toggle` for those.\n- It will not add or remove tags. Use `task_set_tags` for tag rewrites.\n- It rejects multi-line descriptions. Task lines are single-line by construction; put detail in the `[[uuid|📓]]`-linked note.\n\n## Why NOT to use filesystem-direct Edit\n\nThe master-task-list.md has a documented read-modify-write race. Pre-Slice-3 the only path for description rewrites was `Edit` on `master-task-list.md`, which can clobber concurrent user typing in Obsidian. The Slice-C atomic write path (`app.vault.process()`) closes that race - but only if you go through `task_update_description`. Filesystem-direct edits bypass it.\n\nIf `task_update_description` returns `success=False, conflict=True`, the user is actively editing the task line in Obsidian. Surface the conflict to the user; don't keep retrying."
     }
+  },
+  "tasks/task-me-directions": {
+    "kind": "directions",
+    "name": "Task Me Directions",
+    "description": "How to run /wb-task-me — the re-runnable engage flow that answers what should I do right now",
+    "aliases": [
+      "task me",
+      "engage",
+      "now plan",
+      "what should I do"
+    ],
+    "tags": [
+      "tasks",
+      "engage",
+      "today",
+      "slice-5b"
+    ],
+    "parents": [
+      "tasks"
+    ],
+    "trigger": "user runs /wb-task-me or asks what to work on right now",
+    "command": "wb-task-me",
+    "workflow": "task-me",
+    "capabilities": [
+      "task_me"
+    ],
+    "content": {
+      "summary": "Re-runnable. Loads context, builds a clamp-to-now plan, presents top 1-2 recommendations. Slice-5a context-aware: skips tasks the agent and user both can't satisfy now.",
+      "full": "Run mcp__work-buddy__wb_run(\"task-me\") and follow the conductor.\n\nThe workflow has 4 steps:\n\n1. **load-context** (auto_run) — composes:\n   - task_briefing (focused / mit / overdue / inbox / stale buckets)\n   - calendar (today's events; best-effort)\n   - contract_constraints (WIP limits + active contracts)\n   - the Slice-5a engage view (per-task tier x who_can_act x user_now)\n\n2. **build-now-plan** (auto_run) — generates a clamp-to-now timeline\n   from focused tasks + calendar. Uses the engage view's filtered\n   set so context-blocked tasks don't land in the plan.\n\n3. **engage** (you, reasoning) — present:\n   - Top contract-constraint banner (if any active contracts)\n   - ONE recommendation card with rationale traced to the active\n     contract OR explicitly labeled \"exploration\"\n   - ONE alternative if a sensible second exists\n   - The plan as a compact list (time block + task)\n\n   Keep this brief. V1a — attention scarcity. No more than 2 cards.\n   If everything is blocked on missing contexts, name the contexts\n   and link to /setup.\n\n4. **write-back** (you, reasoning, OPTIONAL) — only if the user\n   explicitly asks to write the plan into the journal Day Planner.\n   Calls day_planner_generate_and_write. Skip silently if not asked.\n\n## Args\n\nThe slash command may be passed an optional preset:\n-  — default; assumes filesystem + vault + web + workstation\n- \n- \n\nThese map to the user_current_contexts list. If unset, the workflow\nruns without filtering — every task surfaces with its blocker badge.\n\n## Re-runnable\n\nDesigned to be called multiple times per day. Each run is independent;\nno state is mutated unless the user opts into write-back.\n\n## Don'ts\n\n- Don't recommend more than 2 actions\n- Don't silently write to the journal\n- Don't treat exploration as paper progress (per CLAUDE.local.md)\n- Don't suggest experiments without an active contract\n"
+    }
   }
 }
