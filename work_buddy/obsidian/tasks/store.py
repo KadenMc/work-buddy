@@ -89,7 +89,39 @@ CREATE TABLE IF NOT EXISTS task_metadata (
     -- ``user_authored`` the first time the user edits the inferred
     -- set so future re-runs of Clarify don't clobber the user's
     -- ownership.
-    required_contexts_source TEXT
+    required_contexts_source TEXT,
+    -- Slice 7: density + per-action-item ----------------------------
+    -- ``current_action_item_id``: foreign key to task_action_items.id
+    -- naming the step the user is currently focused on.  NULL for
+    -- tasks that haven't been developed (sparse tasks at capture time).
+    -- The master-list view renders this item's description as the
+    -- "current step" badge, and the engage view resolves tier +
+    -- contexts against this item's profile rather than the parent
+    -- task's.  Set/cleared by the develop-at-pickup flow + the
+    -- action_items CRUD.
+    current_action_item_id INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS task_action_items (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id         TEXT NOT NULL,
+    sequence        INTEGER NOT NULL,
+    description     TEXT NOT NULL,
+    state           TEXT NOT NULL DEFAULT 'pending',
+                    -- 'pending' | 'in_progress' | 'done' | 'skipped'
+    risk_profile_json TEXT,
+    agent_required_contexts TEXT,   -- JSON array, mirrors task_metadata
+    user_required_contexts TEXT,
+    definition_of_done TEXT,
+    user_authored   INTEGER NOT NULL DEFAULT 0,
+                    -- 0 = agent proposed, 1 = user wrote/edited
+    approved_at     TEXT,            -- when user-approved an agent-proposed item
+    completed_at    TEXT,
+    handoff_package_path TEXT,       -- vault path to the prep package
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL,
+    FOREIGN KEY (task_id) REFERENCES task_metadata(task_id) ON DELETE CASCADE,
+    UNIQUE(task_id, sequence)
 );
 
 CREATE TABLE IF NOT EXISTS task_state_history (
@@ -133,6 +165,10 @@ CREATE INDEX IF NOT EXISTS idx_task_tags_tag
     ON task_tags(tag);
 CREATE INDEX IF NOT EXISTS idx_task_tags_ns
     ON task_tags(is_namespace, tag);
+CREATE INDEX IF NOT EXISTS idx_action_items_task
+    ON task_action_items(task_id, sequence);
+CREATE INDEX IF NOT EXISTS idx_action_items_state
+    ON task_action_items(state);
 """
 
 VALID_STATES = {"inbox", "mit", "focused", "snoozed", "done"}
@@ -227,12 +263,20 @@ _SLICE_5A_COLUMNS: list[tuple[str, str, str | None, bool]] = [
     ("required_contexts_source", "TEXT", None, False),
 ]
 
+# Slice 7 column descriptors: per-action-item pointer.  ``current_
+# action_item_id`` is a foreign key into ``task_action_items.id`` —
+# nullable because most legacy tasks don't have action items.
+_SLICE_7_COLUMNS: list[tuple[str, str, str | None, bool]] = [
+    ("current_action_item_id", "INTEGER", None, False),
+]
+
 # All slice-N column lists, in migration order. Append new lists here
 # rather than modifying historical ones — the comment headers above each
 # list are reading material for future-you ("when did this column
 # appear and why").
 _ALL_MIGRATED_COLUMNS: list[tuple[str, str, str | None, bool]] = (
-    _SLICE_2_COLUMNS + _SLICE_3_COLUMNS + _SLICE_4_COLUMNS + _SLICE_5A_COLUMNS
+    _SLICE_2_COLUMNS + _SLICE_3_COLUMNS + _SLICE_4_COLUMNS
+    + _SLICE_5A_COLUMNS + _SLICE_7_COLUMNS
 )
 
 
