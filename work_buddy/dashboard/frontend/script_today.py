@@ -218,7 +218,12 @@ async function todayWriteToJournal() {
 
 function _todayBuildRecCard(item, rank) {
     const w = item.who_can_act || {};
-    const handoff = w.agent_handoff_eligible
+    // Prefer the dynamic "right now" reading; fall back to the static
+    // reading on payloads that predate the field.  See PR #70 review #1.
+    const handoffNow = (typeof w.agent_handoff_eligible_now === 'boolean')
+        ? w.agent_handoff_eligible_now
+        : w.agent_handoff_eligible;
+    const handoff = handoffNow
         ? '<span class="engage-handoff-badge">↪ handoff</span>'
         : '';
     const tier = (item.auto && item.auto.operating != null) ? item.auto.operating : '?';

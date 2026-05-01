@@ -400,7 +400,14 @@ function _engageBuildCard(item) {
     meta.appendChild(tierBadge);
 
     const w = item.who_can_act || {};
-    if (w.agent_handoff_eligible) {
+    // Prefer the dynamic "right now" reading -- the server computes it
+    // from (not agent) AND user's CURRENT contexts include the task's
+    // user-required set.  Falls back to the static reading on payloads
+    // that predate the field (defensive).
+    const handoffNow = (typeof w.agent_handoff_eligible_now === 'boolean')
+        ? w.agent_handoff_eligible_now
+        : w.agent_handoff_eligible;
+    if (handoffNow) {
         const handoff = document.createElement('span');
         handoff.className = 'engage-handoff-badge';
         handoff.title = 'Agent prepared what it can; you take from here.';

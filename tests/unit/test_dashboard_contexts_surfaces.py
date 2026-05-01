@@ -125,6 +125,61 @@ def test_engage_user_now_filter(client, fake_tool_status):
     assert item["user_now"]["satisfied"] is True
 
 
+def test_engage_handoff_eligible_now_dynamic(client, fake_tool_status):
+    """Slice 5a/5b review point #1: handoff badge should fire only when
+    the user is CURRENTLY in the contexts they'd need, not just when
+    the task's user_required_contexts are declared satisfiable.
+
+    Setup: agent fails on @email_send (thunderbird down); user-side
+    requires @email_send too.  The static reading
+    (agent_handoff_eligible=True) says "user could in principle do
+    this."  The dynamic reading (agent_handoff_eligible_now) flips
+    based on whether the user's CURRENT contexts include @email_send.
+    """
+    fake_tool_status["thunderbird"] = False
+    _seed("t-eng-handoff",
+          description="Send the dean an email",
+          agent=["@email_send"],
+          user=["@email_send"])
+
+    # Phone-only preset -> user is NOT in @email_send -> dynamic=False
+    body = client.get(
+        "/api/automation/engage?contexts=@phone_voice",
+    ).get_json()
+    item = body["items"][0]
+    who = item["who_can_act"]
+    assert who["agent_handoff_eligible"] is True, "static (in-principle) stays true"
+    assert who["agent_handoff_eligible_now"] is False, (
+        "dynamic should be False when user isn't in @email_send right now"
+    )
+    assert item["user_now"]["satisfied"] is False
+
+    # At-desk preset including @email_send -> dynamic=True
+    body = client.get(
+        "/api/automation/engage?contexts=@email_send,@user_workstation",
+    ).get_json()
+    item = body["items"][0]
+    who = item["who_can_act"]
+    assert who["agent_handoff_eligible_now"] is True
+    assert item["user_now"]["satisfied"] is True
+
+
+def test_engage_handoff_now_false_when_agent_satisfies(client, fake_tool_status):
+    """Sanity: if the agent CAN act, dynamic handoff is False (the
+    badge is for "agent is blocked, you take over" — not "everything
+    is fine")."""
+    _seed("t-eng-noop",
+          description="Edit code",
+          agent=["@filesystem"],
+          user=["@user_workstation"])
+    body = client.get(
+        "/api/automation/engage?contexts=@user_workstation",
+    ).get_json()
+    who = body["items"][0]["who_can_act"]
+    assert who["agent"] is True
+    assert who["agent_handoff_eligible_now"] is False
+
+
 def test_engage_skips_done_and_archived(client, fake_tool_status):
     _seed("t-eng-done",
           description="done task",

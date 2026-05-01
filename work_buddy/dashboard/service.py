@@ -2047,7 +2047,18 @@ def _build_engage_view_payload(*, current_contexts: list[str] | None = None) -> 
                 "blocked": who.blocked,
                 "agent_unmet": list(who.agent_unmet),
                 "user_unmet": list(who.user_unmet),
+                # Static "in principle" reading from the resolver --
+                # the user's declared contexts are satisfiable.
                 "agent_handoff_eligible": who.agent_handoff_eligible,
+                # Dynamic "right now" reading -- agent can't act AND
+                # the user IS in the contexts they'd need.  This is
+                # what the engage / today badge should consume so a
+                # task whose user-side requires @email_send doesn't
+                # show "handoff" when the user picked the phone-only
+                # preset.  See PR #70 review point #1.
+                "agent_handoff_eligible_now": (
+                    (not who.agent) and user_now_satisfied
+                ),
                 "agent_required_contexts": parse_context_list(
                     row.get("agent_required_contexts"),
                 ),
