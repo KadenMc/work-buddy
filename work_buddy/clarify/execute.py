@@ -343,20 +343,90 @@ def _execute_record(
             })
         return {"destination": "delete", "reason": reason}
     if dest == "reference":
-        # Slice 6 wires reference filing. Log here so the user can
-        # see what would have been filed.
+        # Slice 6 fully wires reference filing.  Tier-aware:
+        #   tier 1 -> log-only suggestion (status='suggested')
+        #   tier 3 -> filed-and-bucketed under references_logged with
+        #             status='ok' so the Daily Log surface lists it
+        #   tier 4 -> same as tier 3 (silent ledger entry)
+        # When the verdict has no candidate_paths the function
+        # degrades to the legacy log-only behavior so Slice 3 captures
+        # without a Slice-6 placement still flow.
         proposal = rec.get("reference_proposal") or {}
+        summary_text = proposal.get("summary", "") or ""
+        candidate_paths = proposal.get("candidate_paths") or []
+        outcomes: list[dict[str, Any]] = []
+
+        if candidate_paths:
+            try:
+                from work_buddy.clarify.reference_filing import (
+                    apply_reference_proposal,
+                    parse_filing_verdict,
+                )
+                verdict = parse_filing_verdict({
+                    "topic_label": proposal.get("topic_label") or "Reference",
+                    "candidate_paths": candidate_paths,
+                    "confidence": proposal.get("confidence", 0.5),
+                    "namespace_tags": proposal.get("namespace_tags") or [],
+                })
+            except Exception as exc:  # pragma: no cover -- defensive
+                verdict = None
+                logger.warning(
+                    "execute_record reference: parse_filing_verdict failed: %s",
+                    exc,
+                )
+
+            if verdict is not None:
+                for iid in item_ids:
+                    try:
+                        applied = apply_reference_proposal(
+                            summary=summary_text,
+                            verdict=verdict,
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "apply_reference_proposal failed for %s: %s",
+                            iid, exc,
+                        )
+                        results["errors"].append({
+                            "action": "reference",
+                            "item_id": iid,
+                            "error": str(exc),
+                        })
+                        continue
+                    results["references_logged"].append({
+                        "item_id": iid,
+                        "summary": summary_text,
+                        "chosen_path": applied.chosen_path,
+                        "action": applied.action,
+                        "tier": applied.tier,
+                        "status": applied.status,
+                        "record_index": record_index,
+                        "blocker": applied.blocker,
+                    })
+                    outcomes.append({
+                        "status": applied.status,
+                        "chosen_path": applied.chosen_path,
+                        "tier": applied.tier,
+                    })
+                return {
+                    "destination": "reference",
+                    "tier_aware": True,
+                    "outcomes": outcomes,
+                }
+
+        # Fallback: pure log-only path (Slice 3 behavior).
         for iid in item_ids:
             results["references_logged"].append({
                 "item_id": iid,
-                "summary": proposal.get("summary", ""),
+                "summary": summary_text,
                 "suggested_path": proposal.get("suggested_path"),
                 "record_index": record_index,
+                "logged_only": True,
             })
         return {
             "destination": "reference",
             "logged_only": True,
-            "summary": proposal.get("summary", ""),
+            "summary": summary_text,
         }
     if dest == "calendar_only":
         proposal = rec.get("calendar_proposal") or {}

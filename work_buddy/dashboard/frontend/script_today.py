@@ -180,6 +180,42 @@ async function loadToday() {
     }
 }
 
+async function todayWriteToJournal() {
+    const status = document.getElementById('today-write-status');
+    if (!status) return;
+    status.textContent = 'Writing...';
+    status.className = 'today-write-status pending';
+    const current = _todayGetCurrentContexts();
+    let data;
+    try {
+        const resp = await fetch('/api/automation/today/write-to-journal', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({contexts: current, confirm: true}),
+        });
+        data = await resp.json();
+    } catch (e) {
+        status.textContent = 'Failed: ' + _autEsc(String(e));
+        status.className = 'today-write-status error';
+        return;
+    }
+    if (!data || data.status !== 'ok') {
+        status.textContent = 'Write failed' + (data && data.error
+            ? ': ' + _autEsc(data.error) : '');
+        status.className = 'today-write-status error';
+        return;
+    }
+    status.textContent = 'Wrote ' + (data.plan_entries || 0) + ' entries to today\'s journal.';
+    status.className = 'today-write-status success';
+    // Auto-clear the success banner after 6 seconds so the toolbar stays clean.
+    setTimeout(() => {
+        if (status.classList.contains('success')) {
+            status.textContent = '';
+            status.className = 'today-write-status';
+        }
+    }, 6000);
+}
+
 function _todayBuildRecCard(item, rank) {
     const w = item.who_can_act || {};
     const handoff = w.agent_handoff_eligible
@@ -229,6 +265,29 @@ def _today_styles() -> str:
 .today-now-bounds {
     color: var(--text-muted, #666);
     margin-left: 8px;
+}
+.today-write-status {
+    padding: 4px 10px;
+    margin-bottom: 6px;
+    font-size: 12px;
+    border-radius: 4px;
+    min-height: 0;
+    transition: background 0.2s;
+}
+.today-write-status.pending {
+    background: #f0f4f8;
+    color: #2a3a5a;
+    border: 1px solid #c0d0e0;
+}
+.today-write-status.success {
+    background: #e3f4d4;
+    color: #2d5a2d;
+    border: 1px solid #b9d8a3;
+}
+.today-write-status.error {
+    background: #fde2e2;
+    color: #8a1f1f;
+    border: 1px solid #e2a3a3;
 }
 .today-degraded {
     margin-left: 12px;

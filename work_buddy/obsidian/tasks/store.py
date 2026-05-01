@@ -102,6 +102,18 @@ CREATE TABLE IF NOT EXISTS task_metadata (
     current_action_item_id INTEGER
 );
 
+CREATE TABLE IF NOT EXISTS session_focus (
+    -- Slice 5b: per-session "working on now" pointer.  Allen-style
+    -- one-current rule, scoped per agent session so two parallel
+    -- sessions can each have their own focus without contention.
+    -- Cleared explicitly by clear_working_on_now (e.g. when the
+    -- session ends or the user moves on); no automatic cleanup yet.
+    session_id  TEXT PRIMARY KEY,
+    task_id     TEXT NOT NULL,
+    started_at  TEXT NOT NULL,
+    FOREIGN KEY (task_id) REFERENCES task_metadata(task_id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS task_action_items (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     task_id         TEXT NOT NULL,
@@ -169,6 +181,8 @@ CREATE INDEX IF NOT EXISTS idx_action_items_task
     ON task_action_items(task_id, sequence);
 CREATE INDEX IF NOT EXISTS idx_action_items_state
     ON task_action_items(state);
+CREATE INDEX IF NOT EXISTS idx_session_focus_task
+    ON session_focus(task_id);
 """
 
 VALID_STATES = {"inbox", "mit", "focused", "snoozed", "done"}

@@ -141,8 +141,45 @@
       "work_buddy.clarify.reference_filing.vault_schema",
       "work_buddy.clarify.reference_filing.FILING_VERDICT_SCHEMA",
       "work_buddy.clarify.reference_filing.parse_filing_verdict",
-      "work_buddy.context.sources.smart.SmartSource.drill_down"
+      "work_buddy.context.sources.smart.SmartSource.drill_down",
+      "work_buddy.clarify.reference_filing.apply_reference_proposal",
+      "work_buddy.clarify.reference_filing.FilingApplyResult"
     ],
     "dev_notes": "Composition over new pipeline (ROADMAP section 6). SmartSource.drill_down raises NotImplementedError when the bridge is down; the proposal pipeline catches and degrades to \"no candidate content available\" -- the LLM can still produce a verdict from candidate file paths alone. The write step is intentionally NOT wired yet -- landing real files needs a few real verdicts validated end-to-end first."
+  },
+  "clarify/develop-at-pickup": {
+    "kind": "module",
+    "name": "Develop-at-pickup decomposition (Slice 7 completion)",
+    "description": "LLM-driven decomposition of one task into ordered action items. propose_decomposition produces; user reviews edit-each-item; apply_decomposition persists the accepted subset with approved_at set.  Hallucination gate (ROADMAP section 7) is enforced at apply time.",
+    "content": {
+      "full": "# clarify/develop-at-pickup (Slice 7 completion)\n\nModule: work_buddy/clarify/develop_at_pickup.py.\n\n## Two phases\n\n1. propose_decomposition(task_id, *, runner, tier, note_body) -> DevelopProposal.  Loads the task + note, calls the LLM via call_for_verdict with DEVELOP_VERDICT_SCHEMA.  Returns proposed items + rationale + confidence + raw output.  No state mutation.\n\n2. apply_decomposition(task_id, *, approved_items, set_current_to_first=True) -> ApplyResult.  Persists the user-approved subset via action_items.create with user_authored=0 + approved_at=<now>.  Bumps density sparse -> developed.  Optionally points current_action_item_id at the first new item.\n\n## Hallucination gate (load-bearing)\n\nItems land with user_authored=0 because the agent proposed them; approved_at is set BECAUSE the user explicitly accepted each one in the review step.  The is_executable check then admits them.  REJECTED items are DISCARDED, not silently kept as 'pending review' (that would defeat the gate).  apply_decomposition refuses an empty approved_items list -- callers handle the LLM's items=[] verdict (= 'task is correctly atomic') by recording the decision elsewhere, not by calling apply with [].\n\n## Workflow\n\ntasks/task-develop is the orchestrator (3 steps: propose / review / apply).  /wb-task-develop is the slash launcher.  The engage flow auto-invokes when compute_pickup_readiness returns ready=False.\n\n## Per-item profile\n\nEach proposed item may carry per-item agent_required_contexts / user_required_contexts / risk_profile (Slice 5a + Slice 4 overrides).  apply step serializes via serialize_context_list / parse_risk_profile so the per-item engage-view resolution honors them."
+    },
+    "tags": [
+      "clarify",
+      "develop",
+      "decompose",
+      "slice-7",
+      "action-items",
+      "hallucination-gate"
+    ],
+    "aliases": [
+      "develop at pickup",
+      "decompose task",
+      "propose action items",
+      "task develop",
+      "develop_propose",
+      "develop_apply"
+    ],
+    "parents": [
+      "clarify"
+    ],
+    "entry_points": [
+      "work_buddy.clarify.develop_at_pickup.propose_decomposition",
+      "work_buddy.clarify.develop_at_pickup.apply_decomposition",
+      "work_buddy.clarify.develop_at_pickup.DEVELOP_VERDICT_SCHEMA",
+      "work_buddy.clarify.develop_at_pickup.DevelopProposal",
+      "work_buddy.clarify.develop_at_pickup.ApplyResult"
+    ],
+    "dev_notes": "The propose step uses call_for_verdict so retry / escalation behavior matches Slice 3's multi-record pass.  The apply step calls action_items.create with user_authored=False + approved_at set -- the apparent contradiction (the user approved BUT user_authored=0) preserves provenance: this item originated from agent decomposition, even though the user consented to it.  is_executable admits both agent-approved and user-authored items.  Future caller wanting 'user wrote this from scratch' should pass user_authored=True directly to action_items.create."
   }
 }

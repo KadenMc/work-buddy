@@ -132,6 +132,33 @@ def compute_pickup_readiness(
     has_deadline = bool(task.get("has_deadline"))
     days_old = _days_old(task.get("created_at"), now_iso=now_iso)
 
+    # 3a. Slice-7 Addendum 1: consult the density-promotion heuristic
+    # when the task is sparse.  If the heuristic finds parenthetical
+    # sublists or dense bullet sections in the note body, the agent
+    # has a structural prior that decomposition is worth proposing
+    # (NOT ready -- prefer develop-at-pickup).  If the heuristic
+    # finds nothing, the user's "sparse" intent is reinforced and we
+    # let the rest of the ladder decide.  The density signal is
+    # carried in world_state.density_flag (caller-loaded so this
+    # function stays pure).
+    density_flag = world_state.get("density_flag")
+    if (
+        density_flag
+        and creation_effort == "sparse"
+        and density != "developed"
+    ):
+        signals.append(
+            f"density signals fired: {','.join(density_flag.get('signals', []))}"
+        )
+        return PickupReadiness(
+            ready=False,
+            reason=(
+                "density-promotion heuristic detects structural sub-list "
+                "in this sparse task -- decompose first"
+            ),
+            signals=tuple(signals),
+        )
+
     if (
         creation_effort == "sparse"
         and creation_provenance in HIGH_INVOLVEMENT_PROVENANCES

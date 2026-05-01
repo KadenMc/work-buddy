@@ -439,6 +439,29 @@ def get_tasks_summary() -> dict[str, Any]:
                     t["achievable_tier"] = decision.achievable
                     if decision.pipeline_blocker:
                         t["pipeline_blocker"] = decision.pipeline_blocker
+
+                # Slice 7: surface current_action_item description +
+                # "step N of M" position so the frontend can render the
+                # current step inline with the task row.  Cheap: at most
+                # one indexed query per developed task.
+                cur_id = row.get("current_action_item_id")
+                if cur_id:
+                    try:
+                        from work_buddy.obsidian.tasks import (
+                            action_items as _ai,
+                        )
+                        cur_item = _ai.get(int(cur_id))
+                        if cur_item:
+                            pos, total = _ai.position_in_task(cur_item)
+                            t["current_action_item"] = {
+                                "id": cur_item["id"],
+                                "description": cur_item["description"],
+                                "state": cur_item["state"],
+                                "position": pos,
+                                "total": total,
+                            }
+                    except Exception:  # pragma: no cover -- defensive
+                        pass
             else:
                 t["is_recent"] = False
     except Exception as exc:

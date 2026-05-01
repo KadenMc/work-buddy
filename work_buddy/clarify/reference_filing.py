@@ -544,6 +544,269 @@ def propose_reference_filing(
     )
 
 
+# ---------------------------------------------------------------------------
+# Write step: apply_reference_proposal
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class FilingApplyResult:
+    """Outcome of :func:`apply_reference_proposal`.
+
+    ``status`` is one of ``ok | suggested | failed``.  ``suggested``
+    means the resolver chose tier 1 (suggest only) and no write
+    happened; the user sees the candidate paths and decides.
+    """
+
+    status: str
+    chosen_path: str | None = None
+    action: str | None = None
+    tier: int | None = None
+    write_result: bool | None = None
+    error: str | None = None
+    blocker: str | None = None
+
+
+def apply_reference_proposal(
+    *,
+    summary: str,
+    verdict: FilingVerdict | dict | None,
+    topic_text: str | None = None,
+    risk_profile_json: str | None = None,
+    config: dict[str, Any] | None = None,
+    runner=None,
+) -> FilingApplyResult:
+    """Land a reference proposal at a vault path with tier-aware execution.
+
+    Tier resolution (per ROADMAP §6 + Slice 4 risk model):
+
+    - **Tier 1** ("here's where I'd file it") → return
+      ``status='suggested'`` with the chosen candidate; no write.  The
+      Resolution Surface renders the suggestion for user approval.
+    - **Tier 3** ("I filed it; review the placement") → write the
+      file AND return ``status='ok'``.  The dashboard's Daily Log /
+      Review Queue surfaces the written placement for the user to
+      confirm post-hoc.
+    - **Tier 4** ("I filed it silently") → write the file AND return
+      ``status='ok'``.  Surfaced in Daily Log only as a low-friction
+      ledger entry.
+
+    Args:
+        summary: The text body to file (the captured reference content).
+        verdict: A :class:`FilingVerdict` or its dict form (from
+            :func:`parse_filing_verdict`).  When None, this function
+            calls :func:`propose_reference_filing` first to produce
+            one (using ``topic_text`` for the semantic search query).
+        topic_text: Required when ``verdict`` is None; the seed text
+            for the semantic-search candidate generation.
+        risk_profile_json: Optional risk profile from the parent
+            captured item.  When None, the safe-profile default applies
+            (Slice 4 SAFE_PROFILE → tier 3 by heuristic for most
+            filing actions).
+        config: Optional config dict (forwarded to risk + filing).
+        runner: Optional LLM runner for the proposal pass when
+            ``verdict`` is None.  Skipped otherwise.
+
+    Returns:
+        :class:`FilingApplyResult` with status + chosen path +
+        write outcome OR error.
+    """
+    # 1. Make sure we have a parsed verdict.
+    if verdict is None:
+        if not topic_text:
+            return FilingApplyResult(
+                status="failed",
+                error="apply_reference_proposal: verdict OR topic_text required",
+            )
+        proposal = propose_reference_filing(
+            topic_text=topic_text, runner=runner,
+        )
+        verdict = proposal.verdict
+        if verdict is None:
+            return FilingApplyResult(
+                status="failed",
+                error=proposal.error or "no parsed verdict",
+            )
+    elif isinstance(verdict, dict):
+        verdict = parse_filing_verdict(verdict)
+        if verdict is None:
+            return FilingApplyResult(
+                status="failed",
+                error="verdict dict failed schema validation",
+            )
+
+    if not verdict.candidates:
+        return FilingApplyResult(
+            status="failed",
+            error="verdict has no candidates",
+        )
+
+    # 2. Resolve tier against the risk profile.
+    try:
+        from work_buddy.automation.risk import resolve_operating_tier
+        # For filing, treat the action as low-risk by default; the
+        # confidence field acts as an additional cap below.
+        decision = resolve_operating_tier(
+            {"risk_profile_json": risk_profile_json},
+            config=config,
+        )
+        tier = decision.operating
+        blocker = decision.pipeline_blocker
+    except Exception as exc:  # pragma: no cover -- defensive
+        logger.warning("apply_reference_proposal: tier resolution failed: %s", exc)
+        tier = 3  # default to review-required
+        blocker = None
+
+    # Confidence-based cap: low-confidence filings are always tier-1
+    # regardless of risk tolerance (V2b honest signaling).
+    if verdict.confidence < 0.3:
+        tier = min(tier, 1)
+        blocker = blocker or "inference_uncertain"
+
+    pick = verdict.candidates[0]
+
+    # 3. Tier 1: don't write.
+    if tier <= 1:
+        return FilingApplyResult(
+            status="suggested",
+            chosen_path=pick.path,
+            action=pick.action,
+            tier=tier,
+            blocker=blocker,
+        )
+
+    # 4. Tier 3+: write.  Compose the body per action.
+    body = _compose_filing_body(verdict=verdict, summary=summary)
+    try:
+        from work_buddy.obsidian import bridge
+    except ImportError as exc:  # pragma: no cover
+        return FilingApplyResult(
+            status="failed", error=f"bridge import failed: {exc}",
+            tier=tier, action=pick.action, chosen_path=pick.path,
+        )
+
+    try:
+        if pick.action == "extend":
+            wrote = _extend_existing_file(
+                bridge=bridge, path=pick.path, addendum=body,
+                topic_label=verdict.topic_label,
+            )
+        elif pick.action == "sibling":
+            sibling_path = _sibling_path_from(pick.path, verdict.topic_label)
+            wrote = bridge.write_file(sibling_path, body)
+            pick = FilingCandidate(
+                path=sibling_path, action=pick.action,
+                rationale=pick.rationale,
+            )
+        elif pick.action == "new_file":
+            wrote = bridge.write_file(pick.path, body)
+        else:
+            return FilingApplyResult(
+                status="failed",
+                error=f"unknown action {pick.action!r}",
+                tier=tier, chosen_path=pick.path,
+            )
+    except Exception as exc:
+        logger.warning("apply_reference_proposal write failed: %s", exc)
+        return FilingApplyResult(
+            status="failed", error=str(exc),
+            tier=tier, action=pick.action, chosen_path=pick.path,
+        )
+
+    return FilingApplyResult(
+        status="ok" if wrote else "failed",
+        chosen_path=pick.path,
+        action=pick.action,
+        tier=tier,
+        write_result=wrote,
+        error=None if wrote else "bridge.write_file returned False",
+        blocker=blocker if not wrote else None,
+    )
+
+
+def _compose_filing_body(*, verdict: FilingVerdict, summary: str) -> str:
+    """Render the body that lands at the chosen path.
+
+    For ``new_file`` / ``sibling`` we include a YAML frontmatter
+    marker so the file is greppable as a filed reference + a topic
+    heading + the summary body.  For ``extend`` callers concatenate
+    via :func:`_extend_existing_file`; this function is also reused
+    there to compose the appended section.
+    """
+    topic = verdict.topic_label or "Reference"
+    parts: list[str] = []
+    parts.append("---")
+    parts.append("type: reference")
+    if verdict.namespace_tags:
+        parts.append("tags:")
+        for t in verdict.namespace_tags:
+            parts.append(f"  - {t}")
+    parts.append("---")
+    parts.append("")
+    parts.append(f"# {topic}")
+    parts.append("")
+    parts.append(summary.strip())
+    if verdict.candidates and verdict.candidates[0].rationale:
+        parts.append("")
+        parts.append("---")
+        parts.append(
+            f"*Filed by reference-filing pipeline.  Rationale: "
+            f"{verdict.candidates[0].rationale}*"
+        )
+    return "\n".join(parts) + "\n"
+
+
+def _extend_existing_file(
+    *,
+    bridge,
+    path: str,
+    addendum: str,
+    topic_label: str | None,
+) -> bool:
+    """Append a new section to an existing vault file (the ``extend`` action).
+
+    Reads the file, appends a `## <topic_label>` heading + the
+    addendum body, writes the result back.  Skips the YAML frontmatter
+    block from ``addendum`` (the existing file already has its own
+    frontmatter).
+    """
+    existing = bridge.read_file(path)
+    if existing is None:
+        # Fallback: file doesn't exist; degrade to new_file.
+        return bridge.write_file(path, addendum)
+
+    # Strip the addendum's frontmatter (between leading --- and second ---).
+    body_only = _strip_frontmatter(addendum)
+    section_heading = (
+        f"\n\n## {topic_label}\n\n" if topic_label else "\n\n## Reference\n\n"
+    )
+    new_content = existing.rstrip() + section_heading + body_only.lstrip()
+    return bridge.write_file(path, new_content)
+
+
+def _strip_frontmatter(text: str) -> str:
+    """Remove a leading YAML frontmatter block from ``text``."""
+    if not text.startswith("---"):
+        return text
+    parts = text.split("---", 2)
+    if len(parts) < 3:
+        return text
+    return parts[2].lstrip("\n")
+
+
+def _sibling_path_from(neighbour_path: str, topic_label: str | None) -> str:
+    """Derive a new file path next to ``neighbour_path``."""
+    from pathlib import PurePosixPath
+    p = PurePosixPath(neighbour_path)
+    parent = p.parent.as_posix() if str(p.parent) not in (".", "") else ""
+    slug_base = (topic_label or p.stem + "-related").lower()
+    slug = "".join(
+        c if (c.isalnum() or c in "-_") else "-" for c in slug_base
+    ).strip("-") or "reference"
+    candidate = f"{parent}/{slug}.md" if parent else f"{slug}.md"
+    return candidate
+
+
 def _gather_semantic_candidates(
     topic_text: str,
     *,

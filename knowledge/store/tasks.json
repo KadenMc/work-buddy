@@ -369,7 +369,7 @@
     ],
     "content": {
       "summary": "Re-runnable. Loads context, builds a clamp-to-now plan, presents top 1-2 recommendations. Slice-5a context-aware: skips tasks the agent and user both can't satisfy now.",
-      "full": "Run mcp__work-buddy__wb_run(\"task-me\") and follow the conductor.\n\nThe workflow has 4 steps:\n\n1. **load-context** (auto_run) — composes:\n   - task_briefing (focused / mit / overdue / inbox / stale buckets)\n   - calendar (today's events; best-effort)\n   - contract_constraints (WIP limits + active contracts)\n   - the Slice-5a engage view (per-task tier x who_can_act x user_now)\n\n2. **build-now-plan** (auto_run) — generates a clamp-to-now timeline\n   from focused tasks + calendar. Uses the engage view's filtered\n   set so context-blocked tasks don't land in the plan.\n\n3. **engage** (you, reasoning) — present:\n   - Top contract-constraint banner (if any active contracts)\n   - ONE recommendation card with rationale traced to the active\n     contract OR explicitly labeled \"exploration\"\n   - ONE alternative if a sensible second exists\n   - The plan as a compact list (time block + task)\n\n   Keep this brief. V1a — attention scarcity. No more than 2 cards.\n   If everything is blocked on missing contexts, name the contexts\n   and link to /setup.\n\n4. **write-back** (you, reasoning, OPTIONAL) — only if the user\n   explicitly asks to write the plan into the journal Day Planner.\n   Calls day_planner_generate_and_write. Skip silently if not asked.\n\n## Args\n\nThe slash command may be passed an optional preset:\n-  — default; assumes filesystem + vault + web + workstation\n- \n- \n\nThese map to the user_current_contexts list. If unset, the workflow\nruns without filtering — every task surfaces with its blocker badge.\n\n## Re-runnable\n\nDesigned to be called multiple times per day. Each run is independent;\nno state is mutated unless the user opts into write-back.\n\n## Don'ts\n\n- Don't recommend more than 2 actions\n- Don't silently write to the journal\n- Don't treat exploration as paper progress (per CLAUDE.local.md)\n- Don't suggest experiments without an active contract\n"
+      "full": "Run mcp__work-buddy__wb_run(\"task-me\") and follow the conductor.\n\nThe workflow has 4 steps:\n\n1. **load-context** (auto_run) — composes:\n   - task_briefing (focused / mit / overdue / inbox / stale buckets)\n   - calendar (today's events; best-effort)\n   - contract_constraints (WIP limits + active contracts)\n   - the Slice-5a engage view (per-task tier x who_can_act x user_now)\n\n2. **build-now-plan** (auto_run) — generates a clamp-to-now timeline\n   from focused tasks + calendar. Uses the engage view's filtered\n   set so context-blocked tasks don't land in the plan.\n\n3. **engage** (you, reasoning) — present:\n   - Top contract-constraint banner (if any active contracts)\n   - ONE recommendation card with rationale traced to the active\n     contract OR explicitly labeled \"exploration\"\n   - ONE alternative if a sensible second exists\n   - The plan as a compact list (time block + task)\n\n   Keep this brief. V1a — attention scarcity. No more than 2 cards.\n   If everything is blocked on missing contexts, name the contexts\n   and link to /setup.\n\n4. **write-back** (you, reasoning, OPTIONAL) — only if the user\n   explicitly asks to write the plan into the journal Day Planner.\n   Calls day_planner_generate_and_write. Skip silently if not asked.\n\n## Args\n\nThe slash command may be passed an optional preset:\n-  — default; assumes filesystem + vault + web + workstation\n- \n- \n\nThese map to the user_current_contexts list. If unset, the workflow\nruns without filtering — every task surfaces with its blocker badge.\n\n## Re-runnable\n\nDesigned to be called multiple times per day. Each run is independent;\nno state is mutated unless the user opts into write-back.\n\n## Don'ts\n\n- Don't recommend more than 2 actions\n- Don't silently write to the journal\n- Don't treat exploration as paper progress (per CLAUDE.local.md)\n- Don't suggest experiments without an active contract\n\n\n## Slice 5b completion: morning + Today integration\n\nThe morning workflow's `propose-mits` step now chains to task-me via `workflow_ref: task-me` (same pattern as dev-commit's document step -> dev-document).  Run task-me; walk through load-context + build-now-plan + engage; SKIP write-back (the morning's downstream day-planner step writes to the journal).  Advance the morning's propose-mits with `{mits_created: [<task_ids>]}`.\n\nThe Today dashboard tab calls /api/automation/today/write-to-journal (POST, confirm=true) for the consent-gated journal write -- this corresponds to task-me's write-back step when invoked from the dashboard.\n\nToday is now the default landing tab (Slice 5b ROADMAP section 4).  Overview remains accessible in the nav bar."
     }
   },
   "tasks/action-items": {
@@ -377,7 +377,7 @@
     "name": "Task action items (Slice 7)",
     "description": "Per-action-item rows attached to a parent task. Each item carries its own risk profile + required contexts + definition_of_done. Safety rule: items with user_authored=0 AND approved_at IS NULL cannot be executed by the agent -- is_executable enforces this.",
     "content": {
-      "full": "# tasks/action-items (Slice 7)\n\nModule: work_buddy/obsidian/tasks/action_items.py.\nSchema: task_action_items table + task_metadata.current_action_item_id column.\n\n## Schema\n\nPer-item: id, task_id (FK), sequence (UNIQUE per task), description, state ('pending' | 'in_progress' | 'done' | 'skipped'), risk_profile_json, agent_required_contexts, user_required_contexts, definition_of_done, user_authored, approved_at, completed_at, handoff_package_path, created_at, updated_at.\n\n## CRUD entry points\n\n- create(task_id, *, description, sequence=None, ...) -- auto-assigns next sequence when None.\n- get(item_id), list_for_task(task_id, *, include_done=True), update(item_id, **fields) (sentinel discipline like store.update), delete(item_id).\n- approve(item_id) -- flips user_authored=1 + stamps approved_at (the canonical way for the user to admit an agent-proposed item to execution).\n- set_current(task_id, item_id) -- points task_metadata.current_action_item_id (None to clear).\n\n## Safety rule (ROADMAP section 7)\n\nis_executable(item) returns True iff:\n- user_authored == 1 (user wrote it; no approval needed), OR\n- user_authored == 0 AND approved_at IS NOT NULL (user explicitly approved an agent-proposed item).\n\nAND state is not in {done, skipped} (terminal exclusion).\n\nEvery executor / Resolution Surface accept-action button / develop-at-pickup write step MUST call is_executable before running an item. Helper-level enforcement so future call sites import the check rather than re-implementing.\n\n## position_in_task\n\nposition_in_task(item) -> (1-based-index, total) powers the future master-list \"step N of M\" badge.\n\n## Status\n\nSchema + CRUD ship in Slice 7. The develop-at-pickup LLM flow + the master-list \"step N of M\" frontend + manual /wb-task-develop slash command are deferred -- those depend on Resolution Surface integration."
+      "full": "# tasks/action-items (Slice 7)\n\nModule: work_buddy/obsidian/tasks/action_items.py.\nSchema: task_action_items table + task_metadata.current_action_item_id column.\n\n## Schema\n\nPer-item: id, task_id (FK), sequence (UNIQUE per task), description, state ('pending' | 'in_progress' | 'done' | 'skipped'), risk_profile_json, agent_required_contexts, user_required_contexts, definition_of_done, user_authored, approved_at, completed_at, handoff_package_path, created_at, updated_at.\n\n## CRUD entry points\n\n- create(task_id, *, description, sequence=None, ...) -- auto-assigns next sequence when None.\n- get(item_id), list_for_task(task_id, *, include_done=True), update(item_id, **fields) (sentinel discipline like store.update), delete(item_id).\n- approve(item_id) -- flips user_authored=1 + stamps approved_at (the canonical way for the user to admit an agent-proposed item to execution).\n- set_current(task_id, item_id) -- points task_metadata.current_action_item_id (None to clear).\n\n## Safety rule (ROADMAP section 7)\n\nis_executable(item) returns True iff:\n- user_authored == 1 (user wrote it; no approval needed), OR\n- user_authored == 0 AND approved_at IS NOT NULL (user explicitly approved an agent-proposed item).\n\nAND state is not in {done, skipped} (terminal exclusion).\n\nEvery executor / Resolution Surface accept-action button / develop-at-pickup write step MUST call is_executable before running an item. Helper-level enforcement so future call sites import the check rather than re-implementing.\n\n## position_in_task\n\nposition_in_task(item) -> (1-based-index, total) powers the future master-list \"step N of M\" badge.\n\n## Status\n\nSchema + CRUD ship in Slice 7. The develop-at-pickup LLM flow + the master-list \"step N of M\" frontend + manual /wb-task-develop slash command are deferred -- those depend on Resolution Surface integration.\n\n## Slice 7 completion: markdown <-> table sync\n\n**parse_action_items_from_note(note_body)** parses the `## Action items` section's plain bullets (no checkboxes per Slice 7 doctrine).  Empty section is meaningful -- represents explicitly-sparse intent; the sync layer does not auto-fill.\n\n**reconcile_from_markdown(task_id, note_body)** is the per-task diff-and-apply.  Pairs markdown bullets to table rows by sequence index.  Adds new bullets, updates changed descriptions in place (preserving state + risk_profile + contexts + approval), deletes table rows that no longer have a corresponding bullet.  Idempotent on re-run.\n\nAdoption-flips-authorship: if an agent-proposed item appears in the markdown (the user kept it after develop-at-pickup), user_authored is flipped to 1 idempotently -- markdown edits ARE user authorship by definition.\n\n**migrate_existing_notes(read_note_body)** is the one-shot migration for legacy developed-task notes.  Walks every non-sparse task with a note_uuid; calls reconcile_from_markdown.  Idempotent.  Skips missing notes (transient bridge failure shouldn't clobber the table).\n\n## task_sync hook\n\nPer task_sync run: walks every surviving developed/dense task with a note_uuid and calls reconcile_from_markdown.  Sparse tasks are SKIPPED (the explicit-sparsity doctrine).  Bridge unavailability is non-fatal; the next sync pass catches up.  Summary lands on the task_sync result as `action_items: {tasks_examined, added, updated, deleted, kept}`."
     },
     "tags": [
       "tasks",
@@ -406,8 +406,74 @@
       "work_buddy.obsidian.tasks.action_items.approve",
       "work_buddy.obsidian.tasks.action_items.set_current",
       "work_buddy.obsidian.tasks.action_items.is_executable",
-      "work_buddy.obsidian.tasks.action_items.position_in_task"
+      "work_buddy.obsidian.tasks.action_items.position_in_task",
+      "work_buddy.obsidian.tasks.action_items.parse_action_items_from_note",
+      "work_buddy.obsidian.tasks.action_items.reconcile_from_markdown",
+      "work_buddy.obsidian.tasks.action_items.migrate_existing_notes"
     ],
     "dev_notes": "Markdown is the eventual canonical surface (ROADMAP section 8 footnote). Slice 7 ships the table; the markdown round-trip lands in a follow-up so the schema can stabilize against real usage first. set_current uses raw SQL because store.update does not yet take the Slice-7 column -- when other callers need to write current_action_item_id, add the kwarg to store.update like the Slice-5a fields."
+  },
+  "tasks/working-on-now": {
+    "kind": "module",
+    "name": "Working-on-now (Slice 5b session focus)",
+    "description": "Per-session 'what is THIS session actively working on' pointer. Allen-style one-current rule, scoped per agent session.  The Today tab honors this above pure heuristics when ranking recommendations: a stated focus bubbles to position 1.",
+    "content": {
+      "full": "# tasks/working-on-now (Slice 5b)\n\nModule: work_buddy/obsidian/tasks/session_focus.py.\nSchema: session_focus table (session_id PK, task_id FK, started_at).\n\n## Why per-session\n\nThe `focused` task state (Slice 2) is persistent and Allen-style sticky -- a task stays focused until the user explicitly moves it.  `working_on_now` is the orthogonal axis: 'I'm actively head-down on this RIGHT NOW.'  Two parallel agent sessions can each have their own working_on_now without contention, and clearing it is cheap.\n\n## API\n\n- set_working_on_now(session_id, task_id) -- idempotent, INSERT OR REPLACE so the per-session uniqueness invariant holds without a separate DELETE round-trip.\n- get_working_on_now(session_id) -> {task_id, started_at} | None.\n- clear_working_on_now(session_id) -> bool.\n- sessions_focused_on(task_id) -> list -- reverse lookup for the dashboard's 'X sessions actively working on this' pill.\n- all_active() -> list -- used by the Today recommender to promote stated focus.\n\n## HTTP\n\n- POST /api/tasks/<task_id>/working-on-now -- set the pointer.  body: {session_id} (or X-Work-Buddy-Session header).\n- DELETE /api/tasks/<task_id>/working-on-now -- defensive clear (only if existing pointer matches the given task_id).\n\n## Today-tab integration\n\nThe Today payload's `recommendations` list is computed by `_ranked_recommendations_with_session_focus` -- it pulls all active session_focus rows and bubbles their target tasks above the Slice-5b deterministic heuristic.  The full focus set is also surfaced as `session_focus` on the payload so the frontend can render 'you said you're working on X'.\n\n## Why a separate table, not a column on task_metadata\n\n(a) Multiple sessions can each have their own working_on_now; a single column on task_metadata would force one global answer.  (b) Clearing is cheap (DELETE one row) versus nullable-column update churn.  (c) The pattern matches task_sessions (the existing assignment-tracking table) -- another per-session relation, not a per-task scalar."
+    },
+    "tags": [
+      "tasks",
+      "session-focus",
+      "working-on-now",
+      "slice-5b"
+    ],
+    "aliases": [
+      "working on now",
+      "session focus",
+      "current focus",
+      "what am I working on"
+    ],
+    "parents": [
+      "tasks"
+    ],
+    "entry_points": [
+      "work_buddy.obsidian.tasks.session_focus.set_working_on_now",
+      "work_buddy.obsidian.tasks.session_focus.get_working_on_now",
+      "work_buddy.obsidian.tasks.session_focus.clear_working_on_now",
+      "work_buddy.obsidian.tasks.session_focus.sessions_focused_on",
+      "work_buddy.obsidian.tasks.session_focus.all_active"
+    ],
+    "dev_notes": "No automatic cleanup -- session_focus rows persist until explicitly cleared OR the parent task is deleted (CASCADE).  This is intentional: the cleanup discipline is the caller's (slash command on session end, or the user clicks 'stop working on this').  Adding TTL-based expiry would discard valid focus from long-running sessions; the cost of a stale row is minor (recommender just fails to find the task)."
+  },
+  "tasks/task-develop-directions": {
+    "kind": "directions",
+    "name": "Task Develop Directions",
+    "description": "How to run /wb-task-develop -- LLM-driven decomposition into ordered action items with per-item user review and the ROADMAP section 7 hallucination gate.",
+    "aliases": [
+      "develop task",
+      "decompose task",
+      "break task into action items",
+      "develop at pickup",
+      "task develop"
+    ],
+    "tags": [
+      "tasks",
+      "develop",
+      "decompose",
+      "slice-7"
+    ],
+    "parents": [
+      "tasks"
+    ],
+    "trigger": "user runs /wb-task-develop OR engage flow auto-invokes when compute_pickup_readiness returns ready=False",
+    "command": "wb-task-develop",
+    "workflow": "task-develop",
+    "capabilities": [
+      "develop_propose",
+      "develop_apply"
+    ],
+    "content": {
+      "summary": "Run the task-develop workflow via mcp__work-buddy__wb_run('task-develop', {'task_id': '<id>'}).  LLM proposes ordered action items; you review each one with the user; only accepted items get persisted with approved_at set.",
+      "full": "Run mcp__work-buddy__wb_run('task-develop', {'task_id': '<id>'}) and follow the conductor.\n\n## Three steps\n\n1. **propose** (auto_run via develop_propose) -- LLM decomposition.  Returns proposed items + rationale + confidence.  Empty items[] = LLM judged the task atomic.\n\n2. **review** (you, reasoning) -- present each item to the user.  Edit-each-item affordance: the user can accept, reject, or edit the description / definition_of_done / contexts before accepting.  REJECTED items are DISCARDED -- do not silently keep them as 'pending review' (that breaks the hallucination gate).\n\n3. **apply** (you, reasoning) -- call develop_apply with the accepted subset.  Items land with user_authored=0 + approved_at=<now>.  set_current_to_first=true points the master-list 'step N of M' badge at the first item.\n\n## Why per-item approval\n\nROADMAP section 7 hallucination gate: items with user_authored=0 AND approved_at=NULL CANNOT be executed by the agent under any tier -- not even tier 4.  This protects against agent-invented sub-actions silently running.  The approval flow (per-item, explicit) is what admits items to executability.  Skipping the user review step is NEVER acceptable -- if the user says 'just do it,' you advance the review step with all items accepted; do not bypass develop_apply altogether.\n\n## Quality bar\n\n- Each item is a single concrete physical step.\n- Order matters; sequence reflects execution order.\n- Empty list IS valid (the task is correctly atomic).\n\n## Don'ts\n\n- Don't loop back to propose during review -- one-shot with edit-each-item per Q-7.\n- Don't silently mark unapproved items as approved.\n- Don't run develop_apply with an empty approved_items list -- the function refuses for safety; if the LLM concluded items=[], advance the workflow with that decision but do not call apply."
+    }
   }
 }

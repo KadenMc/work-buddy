@@ -367,17 +367,94 @@ _REFERENCE_PROPOSAL_SCHEMA: dict[str, Any] = {
         "summary": {
             "type": "string",
             "description": (
-                "Short summary of the reference content. Slice 6 "
-                "wires up actual filing; Slice 3 just persists the "
-                "summary so the user can see what was inferred."
+                "Short summary of the reference content.  The filing "
+                "pipeline writes this as the body when ``new_file`` or "
+                "``sibling`` lands; ``extend`` appends it under a "
+                "section heading derived from ``topic_label``."
             ),
         },
+        # Slice 6 fields ------------------------------------------------
+        # The full filing-verdict shape from
+        # ``work_buddy.clarify.reference_filing.FILING_VERDICT_SCHEMA``,
+        # inlined here so Clarify can produce the placement decision
+        # in the same multi-record verdict that classified the capture
+        # as a reference.  When these fields are populated, Slice 6's
+        # apply_reference_proposal can land the file directly.  When
+        # absent, the executor still logs the reference (back-compat).
+        "topic_label": {
+            "type": ["string", "null"],
+            "description": (
+                "Short noun phrase (≤8 words) naming the underlying "
+                "topic.  Used as the section heading when ``extend`` or "
+                "``sibling`` actions create new content.  Optional -- "
+                "callers without a strong topic may omit and the "
+                "filing layer falls back to deriving from summary."
+            ),
+        },
+        "candidate_paths": {
+            "type": ["array", "null"],
+            "items": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": (
+                            "Vault-relative path.  Existing path for "
+                            "extend / sibling; chosen-but-not-yet-"
+                            "existing path for new_file."
+                        ),
+                    },
+                    "action": {
+                        "type": "string",
+                        "enum": ["extend", "sibling", "new_file"],
+                        "description": (
+                            "extend: append a section to <path>. "
+                            "sibling: create a new file next to <path>. "
+                            "new_file: create a wholly new file at "
+                            "<path>."
+                        ),
+                    },
+                    "rationale": {
+                        "type": "string",
+                        "description": (
+                            "One to two sentences.  Cite the existing "
+                            "file that motivated the action."
+                        ),
+                    },
+                },
+                "required": ["path", "action", "rationale"],
+                "additionalProperties": False,
+            },
+            "description": (
+                "Candidate placements ranked best-first.  Optional: "
+                "Clarify may emit just a summary and let the Slice 6 "
+                "filing pipeline propose paths via semantic_search at "
+                "execute time."
+            ),
+        },
+        "confidence": {
+            "type": ["number", "null"],
+            "description": (
+                "Self-assessed confidence in the chosen placement, "
+                "0.0-1.0.  Sub-0.3 routes to tier-1 (suggest only) "
+                "regardless of other tier signals."
+            ),
+        },
+        "namespace_tags": {
+            "type": ["array", "null"],
+            "items": {"type": "string"},
+            "description": (
+                "Suggested namespace tags for the filed item (without "
+                "leading '#').  Optional."
+            ),
+        },
+        # Forward-compat: Slice 3's old field stays read-able.
         "suggested_path": {
             "type": ["string", "null"],
             "description": (
-                "Slice 6 forward-compat: where in the vault the "
-                "reference should land. Optional — Slice 6 will "
-                "infer this when not pre-supplied."
+                "DEPRECATED -- Slice 3 placeholder.  Slice 6 prefers "
+                "``candidate_paths`` (richer shape with action + "
+                "rationale per candidate)."
             ),
         },
     },

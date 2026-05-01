@@ -73,7 +73,7 @@ function _persistHash() {
     if (window._wbHashInitInProgress) return;
     const params = new URLSearchParams();
     const active = document.querySelector('.tab-btn.active');
-    let tab = active ? active.dataset.tab : 'overview';
+    let tab = active ? active.dataset.tab : 'today';
     if (tab.startsWith('wv-')) {
         params.set('tab', 'ntf');
         params.set('ntf', tab.slice(3));
@@ -111,10 +111,11 @@ async function _initFromHash() {
 
     const params = new URLSearchParams(hash.slice(1));
     if (!params.has('tab')) {
-        // No hash (or unknown hash) → default to overview, then write the
+        // No hash (or unknown hash) → default to today, then write the
         // canonical hash back so subsequent reloads have something to honor
-        // (Decision Q3: write #tab=overview eagerly).
-        switchTab('overview');
+        // (Slice 5b ROADMAP §4: Today replaces Overview as default landing.
+        // Overview remains accessible via the nav bar.)
+        switchTab('today');
         return;
     }
 
@@ -762,11 +763,23 @@ function renderTaskTable(tasks) {
         }
         if (autBits.length) autoCell = autBits.join(' ');
         // Per-row identity via data-task-id so morphdom can keep
+        // Slice 7: developed-task "step N of M" badge -- inline with the
+        // task description so the user sees the active substep without
+        // opening the note. Shown only when current_action_item is set;
+        // sparse tasks render unchanged.
+        let stepBadge = '';
+        if (t.current_action_item) {
+            const ci = t.current_action_item;
+            const tip = (ci.description || '').replace(/"/g, '&quot;');
+            stepBadge = `<span class="step-badge" title="Current step: ${tip}">`
+                + `step ${ci.position}/${ci.total}: ${escapeHtml(ci.description || '')}`
+                + `</span>`;
+        }
         // unchanged rows in place across refreshes (preserves any
         // inline edit state, hover, scroll position).
         return `<tr data-task-id="${t.id || ''}">
             <td>${statusBadge(t.state)}</td>
-            <td>${t.text}</td>
+            <td>${t.text}${stepBadge}</td>
             <td>${t.urgency !== 'none' ? statusBadge(t.urgency) : '\u2014'}</td>
             <td style="white-space:nowrap">${markers}</td>
             <td style="white-space:nowrap">${autoCell}</td>

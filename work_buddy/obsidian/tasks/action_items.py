@@ -310,6 +310,164 @@ def is_executable(item: dict[str, Any]) -> bool:
     return False
 
 
+# ---------------------------------------------------------------------------
+# Markdown ↔ table sync (Slice 7 + ROADMAP §8 footnote)
+# ---------------------------------------------------------------------------
+
+
+def parse_action_items_from_note(note_body: str | None) -> list[str]:
+    """Extract plain bullets from the ``## Action items`` section.
+
+    Per Slice-7 doctrine: action items are PLAIN BULLETS (``- `` only,
+    no checkboxes), keyed off the ``## Action items`` heading.  Empty
+    section is allowed (returns ``[]``).  An empty list is meaningful
+    -- it represents an explicitly-sparse task and the sync layer
+    should not auto-populate.
+
+    Returns the description strings in markdown order.  State /
+    metadata don't live in the markdown (they're SQLite-side); the
+    description text is the only field the user edits in markdown.
+    """
+    if not note_body:
+        return []
+
+    lines = note_body.splitlines()
+    in_section = False
+    items: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("## "):
+            heading = stripped[3:].strip().lower()
+            in_section = (heading == "action items")
+            continue
+        if not in_section:
+            continue
+        if not stripped:
+            continue
+        # Stop at the next heading of any level.
+        if stripped.startswith("#"):
+            in_section = False
+            continue
+        # Plain bullet only -- per Slice 7, no checkboxes.
+        if stripped.startswith("- "):
+            text = stripped[2:].strip()
+            if text:
+                items.append(text)
+    return items
+
+
+def reconcile_from_markdown(
+    task_id: str,
+    note_body: str | None,
+) -> dict[str, Any]:
+    """Sync the ``task_action_items`` table with the note's markdown.
+
+    Obsidian markdown is canonical (per ROADMAP §8 footnote); SQLite
+    is a cache.  This function:
+
+    1. Parses ``## Action items`` plain bullets via
+       :func:`parse_action_items_from_note`.
+    2. Loads the existing table rows for this task (ordered by sequence).
+    3. Reconciles by sequence position -- if markdown[i] differs from
+       table[i].description, update the description in place
+       (preserving state / risk_profile / contexts / approval).
+    4. Inserts new bullets that don't have a corresponding row.
+    5. Deletes table rows that have no corresponding bullet
+       (catches user removals from markdown).
+
+    Returns a summary dict ``{added, updated, deleted, kept}`` for
+    audit logging.
+
+    Note: this re-establishes the user_authored=1 invariant on every
+    bullet that appears in the markdown -- markdown edits ARE user
+    authorship by definition.  Approved-then-removed agent items
+    are dropped (the user removed them).
+    """
+    from_md = parse_action_items_from_note(note_body)
+    existing = list_for_task(task_id, include_done=True)
+    summary = {"added": 0, "updated": 0, "deleted": 0, "kept": 0}
+
+    # Pair by sequence index (1-based markdown order).
+    md_indexed = list(enumerate(from_md, start=1))
+    existing_by_seq = {int(r["sequence"]): r for r in existing}
+
+    seen_seqs: set[int] = set()
+    for seq, desc in md_indexed:
+        seen_seqs.add(seq)
+        existing_row = existing_by_seq.get(seq)
+        if existing_row is None:
+            create(
+                task_id=task_id, sequence=seq, description=desc,
+                user_authored=True,
+            )
+            summary["added"] += 1
+        elif existing_row.get("description") != desc:
+            update(
+                int(existing_row["id"]),
+                description=desc,
+                user_authored=True,
+            )
+            summary["updated"] += 1
+        else:
+            # Already-correct row; if it was agent-proposed and
+            # appearing-in-markdown means user adopted it, flip the
+            # authorship flag idempotently.
+            if int(existing_row.get("user_authored") or 0) != 1:
+                update(int(existing_row["id"]), user_authored=True)
+            summary["kept"] += 1
+
+    for seq, row in existing_by_seq.items():
+        if seq in seen_seqs:
+            continue
+        # Markdown removed this bullet -> table row goes too.
+        delete(int(row["id"]))
+        summary["deleted"] += 1
+
+    return summary
+
+
+def migrate_existing_notes(read_note_body) -> dict[str, Any]:
+    """One-shot migration: parse every developed/dense task's note and
+    populate ``task_action_items`` from the existing markdown.
+
+    Args:
+        read_note_body: callable ``(note_uuid) -> str | None`` --
+            typically ``bridge.read_file(f"tasks/notes/{uuid}.md")`` or
+            equivalent fallback.  Caller provides this so the function
+            stays bridge-agnostic + testable.
+
+    Returns:
+        ``{tasks_examined, tasks_with_items, items_inserted}``.
+        Idempotent on re-run -- :func:`reconcile_from_markdown` does
+        the per-task diff so re-running doesn't duplicate.
+    """
+    tally = {"tasks_examined": 0, "tasks_with_items": 0, "items_inserted": 0}
+    rows = store.query(include_archived=False)
+    for row in rows:
+        if row.get("density") == "sparse":
+            continue  # respect the explicit-sparsity doctrine
+        note_uuid = row.get("note_uuid")
+        if not note_uuid:
+            continue
+        try:
+            body = read_note_body(note_uuid)
+        except Exception as exc:
+            logger.debug("migrate_existing_notes: read failed for %s: %s",
+                         note_uuid, exc)
+            continue
+        if body is None:
+            # Missing note file -- skip rather than delete existing rows.
+            # Defensive: a transient bridge failure shouldn't clobber
+            # the table.
+            continue
+        tally["tasks_examined"] += 1
+        summary = reconcile_from_markdown(row["task_id"], body)
+        if summary["added"] or summary["kept"]:
+            tally["tasks_with_items"] += 1
+        tally["items_inserted"] += summary["added"]
+    return tally
+
+
 def position_in_task(item: dict[str, Any]) -> tuple[int, int]:
     """Return (current_index, total) for the master-list "step N of M" badge.
 

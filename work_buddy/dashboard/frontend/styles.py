@@ -3424,6 +3424,23 @@ body {
     padding: 0; margin: -1px; overflow: hidden;
     clip: rect(0 0 0 0); white-space: nowrap; border: 0;
 }
+
+/* Slice 7: 'step N of M' badge inline with developed-task descriptions. */
+.step-badge {
+    display: inline-block;
+    margin-left: 8px;
+    padding: 1px 7px;
+    font-size: 11px;
+    background: #2a3a5a;
+    color: #cde0ff;
+    border-radius: 10px;
+    cursor: help;
+    max-width: 320px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    vertical-align: middle;
+}
 """
 
 

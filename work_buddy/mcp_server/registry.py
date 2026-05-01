@@ -2216,6 +2216,162 @@ def _context_capabilities() -> list[Capability]:
             auto_retry=False,
         ),
 
+        # ── Slice 6: reference filing ────────────────────────────
+        Capability(
+            name="vault_schema",
+            description=(
+                "Slice 6: introspect vault organizing principles -- folder map "
+                "(top-50 by md_count, depth 3) + tag taxonomy (top-80 from "
+                "bridge.get_tags) + active namespaces (last 14d task "
+                "activity) + active contracts.  Per-section graceful "
+                "degradation; sub-failures land in warnings[].  Read-only; "
+                "safe to call on every reference proposal."
+            ),
+            category="clarify",
+            search_aliases=[
+                "vault structure",
+                "folder map",
+                "tag taxonomy",
+                "where do I file",
+                "vault organizing principles",
+            ],
+            parameters={
+                "include_tags": {"type": "bool", "description": "Include tag taxonomy.  Default true.", "required": False},
+                "include_folders": {"type": "bool", "description": "Include folder map.  Default true.", "required": False},
+                "include_active": {"type": "bool", "description": "Include active contracts + namespaces.  Default true.", "required": False},
+                "folder_max_depth": {"type": "int", "description": "Folder walk depth.  Default 3.", "required": False},
+                "folder_top_n": {"type": "int", "description": "Top-N folders by md_count.  Default 50.", "required": False},
+                "tag_top_n": {"type": "int", "description": "Top-N tags by occurrence.  Default 80.", "required": False},
+            },
+            callable=(lambda **kw: __import__(
+                "work_buddy.clarify.reference_filing",
+                fromlist=["vault_schema"],
+            ).vault_schema(**kw)),
+            requires=["obsidian"],
+            mutates_state=False,
+        ),
+        Capability(
+            name="apply_reference_proposal",
+            description=(
+                "Slice 6: land a reference proposal at a vault path with "
+                "tier-aware execution per ROADMAP §6.  Tier 1 -> "
+                "status='suggested' (no write); tier 3+/4 -> bridge.write_file "
+                "for new_file/sibling OR read-extend-write for extend.  "
+                "Confidence < 0.3 caps at tier 1 (V2b honest signaling).  "
+                "Returns FilingApplyResult with status + chosen_path + tier "
+                "+ write_result + optional blocker."
+            ),
+            category="clarify",
+            search_aliases=[
+                "file reference",
+                "place reference at vault path",
+                "apply filing verdict",
+                "land reference",
+            ],
+            parameters={
+                "summary": {"type": "str", "description": "The text body to file (the captured reference content).", "required": True},
+                "verdict": {"type": "dict", "description": "FilingVerdict dict with topic_label + candidate_paths + confidence + namespace_tags.  When None, the function calls propose_reference_filing first using topic_text.", "required": False},
+                "topic_text": {"type": "str", "description": "Required when verdict is None.  Seeds the semantic-search candidate generation.", "required": False},
+                "risk_profile_json": {"type": "str", "description": "Optional Slice 4 risk profile from the parent capture.  Affects tier resolution.", "required": False},
+            },
+            callable=(lambda **kw: (lambda r: {
+                "status": r.status,
+                "chosen_path": r.chosen_path,
+                "action": r.action,
+                "tier": r.tier,
+                "write_result": r.write_result,
+                "blocker": r.blocker,
+                "error": r.error,
+            })(__import__(
+                "work_buddy.clarify.reference_filing",
+                fromlist=["apply_reference_proposal"],
+            ).apply_reference_proposal(**kw))),
+            requires=["obsidian"],
+            mutates_state=True,
+            auto_retry=False,
+        ),
+
+        # ── Slice 7: develop-at-pickup ───────────────────────────
+        Capability(
+            name="develop_propose",
+            description=(
+                "Slice 7: LLM-driven decomposition of one task into "
+                "ordered action items.  No state mutation -- returns a "
+                "DevelopProposal carrying the proposed items + rationale "
+                "+ confidence + raw LLM output.  The user reviews each "
+                "item; only accepted items get persisted via "
+                "develop_apply.  Per ROADMAP §7 hallucination gate."
+            ),
+            category="tasks",
+            search_aliases=[
+                "decompose task",
+                "propose action items",
+                "develop at pickup",
+                "break task into steps",
+            ],
+            parameters={
+                "task_id": {"type": "str", "description": "Parent task id (must exist).", "required": True},
+                "tier": {"type": "str", "description": "Optional model-tier override (default FRONTIER_BALANCED).", "required": False},
+                "note_body": {"type": "str", "description": "Optional pre-loaded note body.  When None, the function loads via bridge.", "required": False},
+            },
+            callable=(lambda **kw: (lambda p: {
+                "task_id": p.task_id,
+                "rationale": p.rationale,
+                "items": list(p.items),
+                "confidence": p.confidence,
+                "raw_llm_output": p.raw_llm_output,
+                "error": p.error,
+            })(__import__(
+                "work_buddy.clarify.develop_at_pickup",
+                fromlist=["propose_decomposition"],
+            ).propose_decomposition(
+                kw.pop("task_id"),
+                runner=__import__(
+                    "work_buddy.llm", fromlist=["LLMRunner"],
+                ).LLMRunner(),
+                **kw,
+            ))),
+            requires=["obsidian"],
+            mutates_state=False,
+        ),
+        Capability(
+            name="develop_apply",
+            description=(
+                "Slice 7: persist user-approved action items to "
+                "task_action_items.  Items land with user_authored=0 + "
+                "approved_at=<now> per the ROADMAP §7 safety rule -- "
+                "the is_executable check then admits them.  Auto-bumps "
+                "density 'sparse' -> 'developed' on first item.  "
+                "Optionally points current_action_item_id at the first "
+                "item so the master-list step badge lights up."
+            ),
+            category="tasks",
+            search_aliases=[
+                "approve decomposition",
+                "save action items",
+                "create action items from decomposition",
+                "persist developed items",
+            ],
+            parameters={
+                "task_id": {"type": "str", "description": "Parent task id.", "required": True},
+                "approved_items": {"type": "list", "description": "List of dicts the user accepted (description required; optional definition_of_done, agent_required_contexts, user_required_contexts, risk_profile).", "required": True},
+                "set_current_to_first": {"type": "bool", "description": "Whether to point current_action_item_id at the first item.  Default true.", "required": False},
+            },
+            callable=(lambda **kw: (lambda r: {
+                "task_id": r.task_id,
+                "items_created": r.items_created,
+                "item_ids": list(r.item_ids),
+                "set_current": r.set_current,
+                "error": r.error,
+            })(__import__(
+                "work_buddy.clarify.develop_at_pickup",
+                fromlist=["apply_decomposition"],
+            ).apply_decomposition(**kw))),
+            requires=["obsidian"],
+            mutates_state=True,
+            auto_retry=False,
+        ),
+
         # ── Chrome tab mutations ────────────────────────────────
         Capability(
             name="chrome_tab_close",

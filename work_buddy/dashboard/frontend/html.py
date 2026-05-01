@@ -49,8 +49,8 @@ def _html() -> str:
 
 <nav class="tab-bar">
     <div class="tab-bar-left">
-        <button class="tab-btn active" data-tab="overview">Overview</button>
-        <button class="tab-btn" data-tab="today"
+        <button class="tab-btn" data-tab="overview">Overview</button>
+        <button class="tab-btn active" data-tab="today"
                 title="What should I do right now? Slice 5b /wb-task-me view.">Today</button>
         <button class="tab-btn" data-tab="tasks">Tasks</button>
         <button class="tab-btn" data-tab="review">Review</button>
@@ -79,7 +79,7 @@ def _html() -> str:
 <!-- ============================================================ -->
 
 <!-- OVERVIEW -->
-<div class="tab-panel active" id="panel-overview">
+<div class="tab-panel" id="panel-overview">
     <div class="card-grid" id="overview-cards">
         <div class="loading">Loading system state...</div>
     </div>
@@ -93,7 +93,7 @@ def _html() -> str:
      with the clamp-to-now plan + a top-1-2 recommendation card.
      Re-run by clicking refresh; persistent context preset shared
      with the Engage tab via localStorage. -->
-<div class="tab-panel" id="panel-today">
+<div class="tab-panel active" id="panel-today">
     <div class="review-toolbar">
         <div class="section-title">Today
             <span class="section-subtitle"
@@ -110,7 +110,13 @@ def _html() -> str:
             <option value="custom">Custom…</option>
         </select>
         <button class="chats-accent-btn" onclick="loadToday()">Re-run</button>
+        <button class="chats-accent-btn" id="today-write-to-journal-btn"
+                onclick="todayWriteToJournal()"
+                title="Persist the current plan to today's journal Day Planner section (consent-gated)">
+            Write to journal
+        </button>
     </div>
+    <div id="today-write-status" class="today-write-status"></div>
     <div id="today-now-banner" class="today-now-banner"></div>
     <div id="today-contracts-banner" class="today-contracts-banner"></div>
     <div id="today-recommendations"

@@ -1971,6 +1971,7 @@ def _build_engage_view_payload(*, current_contexts: list[str] | None = None) -> 
     is forwarded to :func:`user_satisfies_against` per-task.
     """
     from work_buddy.obsidian.tasks import store as tasks_store
+    from work_buddy.obsidian.tasks import action_items as tasks_action_items
     from work_buddy.automation.risk import resolve_operating_tier
     from work_buddy.automation.contexts import (
         parse_context_list,
@@ -1978,6 +1979,7 @@ def _build_engage_view_payload(*, current_contexts: list[str] | None = None) -> 
         user_satisfies_against,
         list_known_context_tokens,
     )
+    from work_buddy.automation.pickup import compute_pickup_readiness
     from work_buddy.clarify.resolution import PIPELINE_BLOCKER_PRESENTATION
 
     cfg = load_config()
@@ -1996,6 +1998,21 @@ def _build_engage_view_payload(*, current_contexts: list[str] | None = None) -> 
         user_now_satisfied, user_now_unmet = user_satisfies_against(
             row.get("user_required_contexts"),
             current_contexts,
+        )
+
+        # Slice 7: per-item pickup readiness.  Cheap (pure function +
+        # one indexed query for has_action_items).  Density heuristic
+        # signal omitted at the engage-view layer to keep this O(1)
+        # per task; the develop-at-pickup flow loads it when needed.
+        try:
+            ai_count = len(tasks_action_items.list_for_task(
+                row["task_id"], include_done=False,
+            ))
+        except Exception:  # pragma: no cover -- defensive
+            ai_count = 0
+        pickup_decision = compute_pickup_readiness(
+            row,
+            world_state={"has_action_items": ai_count > 0},
         )
 
         blocker_view = None
@@ -2043,6 +2060,12 @@ def _build_engage_view_payload(*, current_contexts: list[str] | None = None) -> 
                 "satisfied": user_now_satisfied,
                 "unmet": list(user_now_unmet),
             },
+            "pickup": {
+                "ready": pickup_decision.ready,
+                "reason": pickup_decision.reason,
+                "signals": list(pickup_decision.signals),
+                "action_items_count": ai_count,
+            },
         })
 
     return {
@@ -2052,6 +2075,33 @@ def _build_engage_view_payload(*, current_contexts: list[str] | None = None) -> 
         "known_tokens": list_known_context_tokens(),
         "items": items,
     }
+
+
+def _ranked_recommendations_with_session_focus(engage: dict, *, limit: int = 2):
+    """Slice 5b: Today recommendations honor session-focus before heuristics.
+
+    If any active session_focus row points at a task in the engage view,
+    that task is bubbled to position 1.  The Slice-5b heuristic
+    (focused > mit > inbox; high > medium > low; contract first) then
+    fills the rest.
+
+    Read-only; safe to call on every Today refresh.
+    """
+    from work_buddy.task_me import top_recommendations
+    try:
+        from work_buddy.obsidian.tasks import session_focus
+        focus_task_ids = {row["task_id"] for row in session_focus.all_active()}
+    except Exception:  # pragma: no cover -- defensive
+        focus_task_ids = set()
+
+    base = top_recommendations(engage, limit=limit + len(focus_task_ids))
+    if not focus_task_ids:
+        return base[:limit]
+
+    # Promote any focus-targeted item; preserve relative order otherwise.
+    promoted = [it for it in base if it.get("task_id") in focus_task_ids]
+    rest = [it for it in base if it.get("task_id") not in focus_task_ids]
+    return (promoted + rest)[:limit]
 
 
 def _build_today_payload(*, current_contexts: list[str] | None = None) -> dict:
@@ -2070,14 +2120,21 @@ def _build_today_payload(*, current_contexts: list[str] | None = None) -> dict:
     from work_buddy.task_me import (
         build_now_plan,
         load_context_for_task_me,
-        top_recommendations,
     )
     from datetime import datetime, timezone
 
     context = load_context_for_task_me(user_current_contexts=current_contexts)
     plan = build_now_plan(context=context)
     engage = context.get("engage") or {}
-    recs = top_recommendations(engage, limit=2)
+    recs = _ranked_recommendations_with_session_focus(engage, limit=2)
+
+    # Surface session-focus separately so the frontend can render
+    # "you said you're working on X" when a focus exists.
+    try:
+        from work_buddy.obsidian.tasks import session_focus
+        active_focus = session_focus.all_active()
+    except Exception:  # pragma: no cover
+        active_focus = []
 
     cfg = load_config() or {}
     work_hours = (
@@ -2107,6 +2164,7 @@ def _build_today_payload(*, current_contexts: list[str] | None = None) -> dict:
         "active_contracts": contracts,
         "contract_constraints": constraints,
         "engage_count": engage.get("count", 0),
+        "session_focus": active_focus,
         "errors": context.get("errors") or [],
     }
 
@@ -2124,6 +2182,140 @@ def api_automation_today():
         return jsonify(_build_today_payload(current_contexts=current))
     except Exception as exc:
         logger.exception("api_automation_today: failed")
+        return jsonify({"status": "error", "error": str(exc)}), 500
+
+
+@app.post("/api/automation/today/write-to-journal")
+def api_automation_today_write_to_journal():
+    """Slice 5b: gate the Today plan into today's journal Day Planner.
+
+    POST body (JSON, all optional):
+        contexts: list of user-current contexts (drives the plan generation)
+        confirm:  must be true; the button on the Today tab passes this so
+                  accidental keypresses don't write the journal silently
+
+    Calls ``day_planner generate_and_write`` after re-running the planner
+    so the written plan matches what the user just saw.  Returns the
+    write result + the entries that landed.
+    """
+    body = request.get_json(silent=True) or {}
+    if not body.get("confirm"):
+        return jsonify({
+            "status": "error",
+            "error": (
+                "confirm=true required.  This endpoint writes to the "
+                "journal Day Planner section; the Today tab button passes "
+                "the confirmation explicitly."
+            ),
+        }), 400
+
+    raw_ctx = body.get("contexts") or []
+    if isinstance(raw_ctx, str):
+        raw_ctx = [t.strip() for t in raw_ctx.split(",") if t.strip()]
+    current = [t for t in raw_ctx if isinstance(t, str)]
+
+    try:
+        from work_buddy.task_me import load_context_for_task_me
+        from work_buddy.obsidian.day_planner import planner as dp
+        from work_buddy.obsidian.day_planner import env as dp_env
+        ctx = load_context_for_task_me(user_current_contexts=current)
+        engage = ctx.get("engage") or {}
+        focused_tasks: list[dict] = []
+        for it in engage.get("items") or []:
+            if it.get("state") != "focused":
+                continue
+            who = it.get("who_can_act") or {}
+            user_now = it.get("user_now") or {}
+            if (not who.get("agent")) and (not user_now.get("satisfied")):
+                continue  # skip blocked-blocked, mirroring build_now_plan
+            focused_tasks.append({
+                "description": it.get("text") or it.get("task_id"),
+                "task_id": it.get("task_id"),
+            })
+
+        cfg = (load_config() or {}).get("morning", {}).get("day_planner", {}) or {}
+        cfg = dict(cfg)
+        cfg.setdefault("clamp_to_now", True)
+
+        plan = dp.generate_plan(
+            calendar_events=ctx.get("calendar") or [],
+            focused_tasks=focused_tasks,
+            cfg=cfg,
+        )
+        # write_plan is consent-gated at the planner layer; explicit confirm above.
+        write_result = dp_env.write_plan(plan)
+
+        return jsonify({
+            "status": "ok",
+            "wrote": True,
+            "plan_entries": len(plan),
+            "write_result": write_result,
+        })
+    except Exception as exc:
+        logger.exception("api_automation_today_write_to_journal: failed")
+        return jsonify({"status": "error", "error": str(exc)}), 500
+
+
+@app.post("/api/tasks/<task_id>/working-on-now")
+def api_tasks_set_working_on_now(task_id: str):
+    """Slice 5b: set the per-session ``working_on_now`` pointer.
+
+    POST body (JSON):
+        session_id: required.  The agent or dashboard caller passes the
+                    work-buddy session id (from WORK_BUDDY_SESSION_ID
+                    or the X-Work-Buddy-Session header).
+
+    Idempotent.  Returns the new pointer.  No state change to
+    task_metadata; ``working_on_now`` is per-session, not persistent.
+    """
+    body = request.get_json(silent=True) or {}
+    session_id = (body.get("session_id") or
+                  request.headers.get("X-Work-Buddy-Session") or "")
+    if not session_id:
+        return jsonify({
+            "status": "error",
+            "error": "session_id required (POST body or X-Work-Buddy-Session header)",
+        }), 400
+    try:
+        from work_buddy.obsidian.tasks import session_focus
+        out = session_focus.set_working_on_now(session_id, task_id)
+        return jsonify({"status": "ok", **out})
+    except Exception as exc:
+        logger.exception("api_tasks_set_working_on_now: failed")
+        return jsonify({"status": "error", "error": str(exc)}), 500
+
+
+@app.delete("/api/tasks/<task_id>/working-on-now")
+def api_tasks_clear_working_on_now(task_id: str):
+    """Clear the session's working_on_now (matches set route).
+
+    The path includes task_id for symmetry with the POST + so the
+    dashboard's "stop working on this" button can target a specific
+    pointer.  We only delete when the existing pointer matches the
+    given task_id (defensive: avoids clobbering a different task's
+    focus on a stale UI click).
+    """
+    body = request.get_json(silent=True) or {}
+    session_id = (body.get("session_id") or
+                  request.headers.get("X-Work-Buddy-Session") or "")
+    if not session_id:
+        return jsonify({
+            "status": "error",
+            "error": "session_id required",
+        }), 400
+    try:
+        from work_buddy.obsidian.tasks import session_focus
+        cur = session_focus.get_working_on_now(session_id)
+        if cur and cur.get("task_id") == task_id:
+            cleared = session_focus.clear_working_on_now(session_id)
+            return jsonify({"status": "ok", "cleared": cleared})
+        return jsonify({
+            "status": "ok",
+            "cleared": False,
+            "reason": "session not focused on this task",
+        })
+    except Exception as exc:
+        logger.exception("api_tasks_clear_working_on_now: failed")
         return jsonify({"status": "error", "error": str(exc)}), 500
 
 

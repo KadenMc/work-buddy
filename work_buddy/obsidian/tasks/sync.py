@@ -467,6 +467,55 @@ def task_sync() -> dict[str, Any]:
         logger.warning("task_sync: tag cache rebuild failed: %s", exc)
         tag_rows_written = 0
 
+    # --- Slice 7: action-items markdown -> table reconciliation ---
+    # Walks every developed/dense task with a note_uuid and runs
+    # parse_action_items_from_note + reconcile_from_markdown.  Sparse
+    # tasks are skipped (the explicit-sparsity doctrine -- empty
+    # `## Action items` is meaningful, the agent shouldn't auto-fill).
+    # Bridge unavailability is non-fatal; the next sync pass catches up.
+    action_items_summary = {
+        "tasks_examined": 0, "added": 0, "updated": 0,
+        "deleted": 0, "kept": 0,
+    }
+    try:
+        from work_buddy.obsidian import bridge as _bridge
+        from work_buddy.obsidian.tasks import action_items as _ai
+
+        for task_id in surviving_ids:
+            store_row = store_by_id.get(task_id)
+            if store_row is None:
+                continue
+            density = store_row.get("density") or "sparse"
+            if density == "sparse":
+                continue
+            note_uuid = store_row.get("note_uuid")
+            if not note_uuid:
+                continue
+            note_path = f"tasks/notes/{note_uuid}.md"
+            try:
+                body = _bridge.read_file(note_path)
+            except Exception as exc:
+                logger.debug(
+                    "task_sync: action-items read failed for %s: %s",
+                    task_id, exc,
+                )
+                continue
+            if body is None:
+                continue
+            try:
+                summary = _ai.reconcile_from_markdown(task_id, body)
+            except Exception as exc:
+                logger.warning(
+                    "task_sync: action-items reconcile failed for %s: %s",
+                    task_id, exc,
+                )
+                continue
+            action_items_summary["tasks_examined"] += 1
+            for k in ("added", "updated", "deleted", "kept"):
+                action_items_summary[k] += summary.get(k, 0)
+    except Exception as exc:  # pragma: no cover -- defensive
+        logger.warning("task_sync: action-items pass skipped: %s", exc)
+
     # --- Summary ---
     total_actions = (
         len(created)
@@ -487,6 +536,7 @@ def task_sync() -> dict[str, Any]:
         "resolved_note_uuids": len(resolved_note_uuids),
         "resolved_descriptions": len(resolved_descriptions),
         "tag_rows_written": tag_rows_written,
+        "action_items": action_items_summary,
     }
 
     # Include details only if actions were taken (keeps log concise)
