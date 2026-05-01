@@ -10,6 +10,8 @@ const staticLoaders = {
     overview: () => loadOverview(),
     tasks: () => loadTasks(),
     review: () => loadReview(),
+    'review-queue': () => loadReviewQueue(),
+    'daily-log': () => loadDailyLog(),
     status: () => loadStatus(),
     chats: () => loadChats(),
     contracts: () => loadContracts(),
@@ -721,6 +723,42 @@ function renderTaskTable(tasks) {
         const markers = (t.markers || []).map(m =>
             `<span title="${m.label}${m.date ? ' ' + m.date : ''}" style="cursor:help">${m.emoji}</span>`
         ).join(' ') || '\u2014';
+        // Slice 4: tier + actor + pipeline-blocker badges, opt-in
+        // via the .has-* CSS classes (only render when the field is
+        // populated, so legacy rows look unchanged).
+        let autoCell = '\u2014';
+        const autBits = [];
+        if (typeof t.operating_tier === 'number') {
+            autBits.push(
+                '<span class="aut-tier-badge tier-' + t.operating_tier
+                + '" title="Operating tier (achievable=' + (t.achievable_tier ?? '?') + ')">'
+                + 'tier ' + t.operating_tier + '</span>'
+            );
+        }
+        if (t.pipeline_blocker) {
+            const blkLabels = {
+                'consent_required': 'consent',
+                'risk_threshold_exceeded': 'risk',
+                'inference_uncertain': 'unsure',
+                'agent_context_unmet': 'agent ctx',
+                'user_context_unmet': 'user ctx',
+                'clarification_required': 'clarify',
+            };
+            const blkLabel = blkLabels[t.pipeline_blocker] || t.pipeline_blocker;
+            autBits.push(
+                '<span class="wv-blocker-badge tone-blocked" title="' + escapeHtml(t.pipeline_blocker) + '">'
+                + '<span class="wv-blocker-icon">\u26d4</span>'
+                + '<span class="wv-blocker-label">' + escapeHtml(blkLabel) + '</span>'
+                + '</span>'
+            );
+        }
+        if (t.last_actor) {
+            autBits.push(
+                '<span class="aut-actor-badge actor-' + escapeHtml(t.last_actor) + '"'
+                + ' title="Last actor">' + escapeHtml(t.last_actor) + '</span>'
+            );
+        }
+        if (autBits.length) autoCell = autBits.join(' ');
         // Per-row identity via data-task-id so morphdom can keep
         // unchanged rows in place across refreshes (preserves any
         // inline edit state, hover, scroll position).
@@ -729,6 +767,7 @@ function renderTaskTable(tasks) {
             <td>${t.text}</td>
             <td>${t.urgency !== 'none' ? statusBadge(t.urgency) : '\u2014'}</td>
             <td style="white-space:nowrap">${markers}</td>
+            <td style="white-space:nowrap">${autoCell}</td>
             <td style="text-align:center">${noteCell}</td>
             <td><code>${t.id || '\u2014'}</code></td>
         </tr>`;
@@ -736,7 +775,7 @@ function renderTaskTable(tasks) {
     const html = `
         <div class="task-list-scroll">
         <table class="data-table">
-            <thead><tr><th>State</th><th>Task</th><th>Urgency</th><th>Markers</th><th>Note</th><th>ID</th></tr></thead>
+            <thead><tr><th>State</th><th>Task</th><th>Urgency</th><th>Markers</th><th title="Slice 4: tier \u00b7 blocker \u00b7 actor">Auto</th><th>Note</th><th>ID</th></tr></thead>
             <tbody>${rows}</tbody>
         </table>
         </div>

@@ -54,7 +54,26 @@ CREATE TABLE IF NOT EXISTS task_metadata (
     -- NULL on initial migration; backfilled by task_sync from the
     -- file. Source of truth: the markdown line. Store follows file
     -- (same precedent as the checkbox/note_uuid reconciliation paths).
-    description     TEXT
+    description     TEXT,
+    -- Slice 4: risk model + automation tiers + last-actor ---------
+    -- ``risk_profile_json``: JSON blob with the four dimensions
+    -- (financial, privacy, accuracy, compute) + three amplifiers
+    -- (reversibility, regret_potential, inference_uncertainty).
+    -- NULL = "not yet classified" — the resolver treats NULL as the
+    -- safe-profile fallback (low across the board, low amplifiers).
+    -- Populated by Slice 3's Clarify prompt at task-proposal time.
+    risk_profile_json TEXT,
+    -- ``automation_tier_achievable``: cached output of
+    -- ``resolve_achievable_tier(task)``. The OPERATING tier is NOT
+    -- stored — it's computed on read from achievable × allowed × risk.
+    -- See ``work_buddy.automation.risk``.
+    automation_tier_achievable INTEGER,
+    -- ``last_actor``: 'agent' | 'user' | NULL. Detected at mutation
+    -- time via ``consent.get_consent_context_info()`` — when the
+    -- mutation fires inside a ``user_initiated()`` block the actor
+    -- is the user; otherwise an autonomous agent path. NULL for
+    -- legacy tasks created before Slice 4.
+    last_actor      TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_state_history (
@@ -124,6 +143,12 @@ VALID_USER_INVOLVEMENTS = {"low", "medium", "high"}
 # provenance string without a code change. The starter set is documented
 # in Slice 2's task note. Convention: 'manual' or 'agent_inferred_from_*'.
 
+# Slice 4 enums --------------------------------------------------------
+# last_actor: who most recently acted on the task. NULL = legacy (no
+# actor recorded yet). The set is closed because the resolver branches
+# on it; if Slice 7+ wants per-action-item actors, add a separate column.
+VALID_LAST_ACTORS = {"agent", "user", None}
+
 # Slice 2 column descriptors used by the idempotent migration. Keep this
 # in sync with the Slice 2 columns in _SCHEMA above. Format:
 #   (column_name, sqlite_type, default_sql_literal_or_None, not_null_bool)
@@ -151,12 +176,27 @@ _SLICE_3_COLUMNS: list[tuple[str, str, str | None, bool]] = [
     ("description", "TEXT", None, False),
 ]
 
+# Slice 4 column descriptors: risk model + automation-tier cache +
+# last-actor.  All nullable.  ``risk_profile_json`` is a JSON blob of
+# the four dimensions + three amplifiers — see
+# ``work_buddy.automation.risk`` for the schema and resolver semantics.
+# ``automation_tier_achievable`` caches a pure function of the task; it
+# is rebuilt by Clarify on creation and may be left NULL until then
+# (resolver re-derives lazily).  ``last_actor`` is detected at mutation
+# time via ``consent.get_consent_context_info()`` — we DON'T migrate
+# legacy rows; NULL means "before Slice 4 wired this in".
+_SLICE_4_COLUMNS: list[tuple[str, str, str | None, bool]] = [
+    ("risk_profile_json", "TEXT", None, False),
+    ("automation_tier_achievable", "INTEGER", None, False),
+    ("last_actor", "TEXT", None, False),
+]
+
 # All slice-N column lists, in migration order. Append new lists here
 # rather than modifying historical ones — the comment headers above each
 # list are reading material for future-you ("when did this column
 # appear and why").
 _ALL_MIGRATED_COLUMNS: list[tuple[str, str, str | None, bool]] = (
-    _SLICE_2_COLUMNS + _SLICE_3_COLUMNS
+    _SLICE_2_COLUMNS + _SLICE_3_COLUMNS + _SLICE_4_COLUMNS
 )
 
 
@@ -206,6 +246,9 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     deadline_date, has_dependency, dependency_hint.
 
     Slice 3 columns added: description.
+
+    Slice 4 columns added: risk_profile_json,
+    automation_tier_achievable, last_actor.
 
     Adding more columns later: append a new ``_SLICE_N_COLUMNS`` list
     and extend ``_ALL_MIGRATED_COLUMNS``. They'll get migrated on the
@@ -268,6 +311,10 @@ def create(
     dependency_hint: str | None = None,
     # Slice 3 addition -----------------------------------------------
     description: str | None = None,
+    # Slice 4 additions ----------------------------------------------
+    risk_profile_json: str | None = None,
+    automation_tier_achievable: int | None = None,
+    last_actor: str | None = None,
 ) -> dict[str, Any]:
     """Create a metadata record for a new task.
 
@@ -292,6 +339,10 @@ def create(
         raise ValueError(f"Invalid creation_effort {creation_effort!r}")
     if user_involvement not in VALID_USER_INVOLVEMENTS:
         raise ValueError(f"Invalid user_involvement {user_involvement!r}")
+    if last_actor not in VALID_LAST_ACTORS:
+        raise ValueError(
+            f"Invalid last_actor {last_actor!r}: expected 'agent', 'user', or None"
+        )
 
     now = _now_iso()
     conn = get_connection()
@@ -304,10 +355,12 @@ def create(
                 definition_of_done, creation_effort, user_involvement,
                 creation_provenance, has_deadline, deadline_date,
                 has_dependency, dependency_hint,
-                description)
+                description,
+                risk_profile_json, automation_tier_achievable, last_actor)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?,
                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                       ?)""",
+                       ?,
+                       ?, ?, ?)""",
             (
                 task_id, state, urgency, complexity, contract, note_uuid,
                 now, now,
@@ -317,6 +370,7 @@ def create(
                 int(bool(has_deadline)), deadline_date,
                 int(bool(has_dependency)), dependency_hint,
                 description,
+                risk_profile_json, automation_tier_achievable, last_actor,
             ),
         )
         conn.execute(
@@ -370,6 +424,10 @@ def update(
     dependency_hint: str | None = _SENTINEL,
     # Slice 3 addition -----------------------------------------------
     description: str | None = _SENTINEL,
+    # Slice 4 additions ----------------------------------------------
+    risk_profile_json: str | None = _SENTINEL,
+    automation_tier_achievable: int | None = _SENTINEL,
+    last_actor: str | None = _SENTINEL,
 ) -> dict[str, Any]:
     """Update metadata fields for a task. Only provided fields change.
 
@@ -474,6 +532,23 @@ def update(
     if description is not _SENTINEL:
         sets.append("description = ?")
         params.append(description)
+
+    # Slice 4 fields -------------------------------------------------
+    if risk_profile_json is not _SENTINEL:
+        sets.append("risk_profile_json = ?")
+        params.append(risk_profile_json)
+
+    if automation_tier_achievable is not _SENTINEL:
+        sets.append("automation_tier_achievable = ?")
+        params.append(automation_tier_achievable)
+
+    if last_actor is not _SENTINEL:
+        if last_actor is not None and last_actor not in {"agent", "user"}:
+            raise ValueError(
+                f"Invalid last_actor {last_actor!r}: expected 'agent', 'user', or None"
+            )
+        sets.append("last_actor = ?")
+        params.append(last_actor)
 
     if not sets:
         return {"task_id": task_id, "changed": False}

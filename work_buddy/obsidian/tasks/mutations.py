@@ -31,6 +31,30 @@ from work_buddy.obsidian.tasks import store
 logger = get_logger(__name__)
 
 
+def _detect_last_actor() -> str:
+    """Return ``'user'`` or ``'agent'`` based on the consent context.
+
+    Slice 4: when a mutation fires inside a ``consent.user_initiated()``
+    block, the user just clicked something (dashboard, CLI slash
+    command, …) and we record ``last_actor='user'``.  Outside that
+    block — sidecar cron, autonomous workflow, scheduled job — we
+    record ``last_actor='agent'``.
+
+    Defensive: if the consent module fails to import for any reason
+    (which shouldn't happen in production but might in test isolation),
+    default to ``'agent'`` since the safe assumption when we don't know
+    is "the agent did this autonomously."
+    """
+    try:
+        from work_buddy.consent import get_consent_context_info
+        ctx = get_consent_context_info()
+    except Exception:  # pragma: no cover — defensive
+        return "agent"
+    if ctx is not None and ctx.get("outer_operation"):
+        return "user"
+    return "agent"
+
+
 def _publish_task_event(event_type: str, payload: dict[str, Any]) -> None:
     """Best-effort publish to the dashboard event bus.
 
@@ -1056,6 +1080,11 @@ def update_task(
             store_kwargs["snooze_until"] = snooze_until
         if reason:
             store_kwargs["reason"] = reason
+        # Slice 4: any state-changing path records the actor for the
+        # Daily Log surface to attribute correctly.  Detected via the
+        # consent context — see _detect_last_actor.
+        if state is not None:
+            store_kwargs["last_actor"] = _detect_last_actor()
 
         if store_kwargs:
             store_result = store.update(task_id, **store_kwargs)
@@ -1245,6 +1274,10 @@ def create_task(
     deadline_date: str | None = None,
     has_dependency: bool = False,
     dependency_hint: str | None = None,
+    # Slice 4 risk model + automation tier + last actor ----------------
+    risk_profile_json: str | None = None,
+    automation_tier_achievable: int | None = None,
+    last_actor: str | None = None,
 ) -> dict[str, Any]:
     """Create a new task with an auto-generated ID, optionally with a linked note.
 
@@ -1281,6 +1314,28 @@ def create_task(
     if user_involvement not in store.VALID_USER_INVOLVEMENTS:
         raise ValueError(f"Invalid user_involvement {user_involvement!r}")
     namespace_tags = _normalize_tags(tags)
+
+    # Slice 4: detect last_actor via the consent context — the
+    # ``consent.user_initiated()`` block is the canonical signal for
+    # "the user just clicked something."  Outside it, autonomous
+    # paths record as 'agent'.  Callers can pin explicitly, e.g.
+    # the migration script wants 'agent' regardless.
+    if last_actor is None:
+        last_actor = _detect_last_actor()
+
+    # Slice 4: when no achievable tier is precomputed, derive it now
+    # from the risk profile so the cached value matches what the
+    # resolver would return on first read.  Free; pure function.
+    if automation_tier_achievable is None:
+        try:
+            from work_buddy.automation.risk import resolve_achievable_tier
+            automation_tier_achievable = resolve_achievable_tier({
+                "risk_profile_json": risk_profile_json,
+                # Forward-compat for Slice 5a context lookups.
+                "agent_required_contexts": [],
+            })
+        except Exception:  # pragma: no cover — defensive
+            automation_tier_achievable = None
 
     # Slice C.2: idempotent ID resolution. On retry of a recent identical
     # call (within _IDEMPOTENCY_TTL_SEC), reuse the previously-generated
@@ -1425,6 +1480,9 @@ def create_task(
             has_dependency=has_dependency,
             dependency_hint=dependency_hint,
             description=derived_description,
+            risk_profile_json=risk_profile_json,
+            automation_tier_achievable=automation_tier_achievable,
+            last_actor=last_actor,
         )
 
     # --- Seed tag cache ---
@@ -1570,8 +1628,17 @@ def toggle_task(
     )
 
     new_state = "done" if not is_done else "inbox"
+    # Slice 4: detect last_actor via consent context.  Toggle is a
+    # frequent path the user hits from the dashboard's checkbox + the
+    # CLI; the consent context tells us whether we're inside a
+    # ``user_initiated()`` block (dashboard click) or running
+    # autonomously (sidecar reconciliation, scheduled cleanup).
+    actor = _detect_last_actor()
     if store.get(task_id):
-        store.update(task_id, state=new_state, reason="toggled")
+        store.update(
+            task_id, state=new_state, reason="toggled",
+            last_actor=actor,
+        )
 
     logger.info("Task toggled: %s → %s in %s:%d", task_id, new_state, fp, idx + 1)
     _publish_task_event("task.state_changed", {

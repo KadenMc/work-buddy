@@ -25,6 +25,7 @@ Adding a new tab:
 from __future__ import annotations
 
 from .html import _html
+from .script_automation import _automation_script, _automation_styles
 from .script_costs import _costs_script
 from .script_event_bus import _event_bus_script
 from .script_main import _script
@@ -73,6 +74,7 @@ def render_page() -> str:
         # the existing renderer rather than replacing it.
         _resolution_surface_script(),
         _review_script(),
+        _automation_script(),
         _settings_script(),
         _thread_chat_script(),
         _command_palette_script(),
@@ -86,7 +88,8 @@ def render_page() -> str:
     <title>work-buddy dashboard</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg">
     <style>{_styles()}
-{_resolution_surface_styles()}</style>
+{_resolution_surface_styles()}
+{_automation_styles()}</style>
     <script src="/vendor/chart.umd.min.js"></script>
     <script src="/vendor/morphdom-umd.min.js"></script>
 </head>

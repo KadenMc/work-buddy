@@ -1505,6 +1505,323 @@ def api_triage_redirect():
 
 
 # ---------------------------------------------------------------------------
+# Slice 4 — Review Queue (tier-3) + Daily Log (tier-4)
+# ---------------------------------------------------------------------------
+#
+# Two surfaces, two endpoints, both reading the new Slice-4 columns
+# (``risk_profile_json``, ``automation_tier_achievable``,
+# ``last_actor``) on ``task_metadata``.  The composition rule lives
+# entirely in ``work_buddy.automation.risk`` — these endpoints just
+# project the resolver's output into a frontend-friendly shape and
+# group by tier.
+#
+# Why two endpoints and not one filtered listing?  v4 §1 makes the
+# two tiers UX-distinct: tier-3 outputs are awaiting review (the user
+# decides accept / revise / reject); tier-4 actions are already done
+# and want a glanceable daily summary, not a per-card form.  Sharing
+# one endpoint would force the frontend to branch on tier inside the
+# loop, which couples the two surfaces' empty states / sort orders /
+# refresh policies.
+
+def _build_review_queue_payload() -> dict:
+    """Compute the Review Queue payload from task_metadata + risk resolver.
+
+    Returns the full payload (no pagination yet — we expect this list
+    to be small; if/when it grows past ~50, add cursor pagination).
+    Each entry carries enough context for the Slice 1.5 Resolution
+    Surface to render: id / text / tier / blocker / actor / contract /
+    intent.  No mutations happen here; the frontend's Resolution
+    Surface mounts the same Slice 1.5 primitives over the result.
+
+    Filter: tasks must have either ``risk_profile_json IS NOT NULL``
+    (Clarify classified the action) OR ``automation_tier_achievable
+    IS NOT NULL`` (a caller pinned a tier explicitly).  This keeps
+    legacy tasks — which all default to tier-3 via the safe-profile
+    fallback — out of the surface.  The Review Queue is for "the
+    agent has a tier-3 output to review," not "every untouched task
+    happens to default to tier 3."
+    """
+    from work_buddy.obsidian.tasks import store as tasks_store
+    from work_buddy.automation.risk import (
+        resolve_operating_tier,
+    )
+    from work_buddy.clarify.resolution import (
+        PIPELINE_BLOCKER_PRESENTATION,
+    )
+
+    # Read every non-archived task; the resolver does the gating.
+    rows = tasks_store.query(include_archived=False)
+
+    # Reuse the active config so we honour user overrides.  Done once
+    # per request; the resolver is pure so it doesn't matter that we
+    # don't memoize across requests.
+    cfg = load_config()
+
+    queue: list[dict] = []
+    for row in rows:
+        if row.get("state") in {"done", "archived"}:
+            continue
+
+        # Skip tasks the resolver hasn't been given an explicit
+        # signal about.  Without a populated risk profile or cached
+        # achievable, we'd surface every legacy task — that's not
+        # the Review Queue's job.
+        if (
+            row.get("risk_profile_json") is None
+            and row.get("automation_tier_achievable") is None
+        ):
+            continue
+
+        decision = resolve_operating_tier(row, config=cfg)
+        # Tier-3 == "execute and review output" — exactly what the
+        # Review Queue surfaces.  Lower tiers either ship silently
+        # (4) or want the plan-approval / suggestion surfaces.
+        if decision.operating != 3:
+            continue
+
+        blocker = decision.pipeline_blocker
+        blocker_view = None
+        if blocker is not None:
+            base = PIPELINE_BLOCKER_PRESENTATION.get(blocker, {})
+            blocker_view = {
+                "kind": blocker,
+                "label": base.get("label", blocker),
+                "tone": base.get("tone", "info"),
+                "deep_link": base.get("deep_link"),
+                "deep_link_label": base.get("deep_link_label"),
+                "detail": "; ".join(decision.reasons) or None,
+            }
+
+        queue.append({
+            "task_id": row.get("task_id"),
+            "text": row.get("description") or row.get("task_id"),
+            "state": row.get("state"),
+            "urgency": row.get("urgency"),
+            "contract": row.get("contract"),
+            "achievable": decision.achievable,
+            "allowed_under_risk": decision.allowed_under_risk,
+            "operating": decision.operating,
+            "capped_by": list(decision.capped_by),
+            "reasons": list(decision.reasons),
+            "pipeline_blocker": blocker_view,
+            "last_actor": row.get("last_actor"),
+            "updated_at": row.get("updated_at"),
+        })
+
+    # Most-urgent-first: tasks with a pipeline blocker bubble up; tie-
+    # broken by recency so the user sees fresh output before backlog.
+    queue.sort(
+        key=lambda e: (
+            0 if e.get("pipeline_blocker") else 1,
+            -(_iso_to_epoch(e.get("updated_at"))),
+        ),
+    )
+    return {"status": "ok", "count": len(queue), "items": queue}
+
+
+def _iso_to_epoch(iso: str | None) -> float:
+    """Return ``datetime.fromisoformat(iso).timestamp()`` or 0 on failure.
+
+    Used for sort keys; the negative form puts most-recent first.
+    """
+    if not iso:
+        return 0.0
+    from datetime import datetime
+    try:
+        return datetime.fromisoformat(iso).timestamp()
+    except (ValueError, TypeError):
+        return 0.0
+
+
+@app.get("/api/automation/review-queue")
+def api_automation_review_queue():
+    """Tier-3 outputs awaiting accept/revise/reject (Slice 4 §3.5).
+
+    Reads task_metadata, runs the operating-tier resolver against
+    each task's risk profile, and surfaces only those that resolve to
+    tier 3.  No mutations happen here; the frontend uses the Slice
+    1.5 Resolution Surface primitives to act.
+    """
+    try:
+        return jsonify(_build_review_queue_payload())
+    except Exception as exc:
+        logger.exception("api_automation_review_queue: failed")
+        return jsonify({"status": "error", "error": str(exc)}), 500
+
+
+def _build_daily_log_payload(*, days: int = 1) -> dict:
+    """Compute the Daily Log payload (tier-4 actions in window).
+
+    Tier-4 work is "fully delegated" — the user wants a glanceable
+    log, not a per-card prompt.  We surface tasks that resolved to
+    tier-4 AND had a state change in the last ``days`` days, grouping
+    by category prefix (the namespace tag) and the action that
+    occurred (created / completed / state-change).  Demote-category
+    is the only action; it lives behind ``/api/automation/daily-log/
+    demote-category`` (not yet — Slice 4 ships read-only first).
+    """
+    from datetime import datetime, timedelta, timezone
+    from work_buddy.obsidian.tasks import store as tasks_store
+    from work_buddy.automation.risk import resolve_operating_tier
+
+    cfg = load_config()
+    now_dt = datetime.now(timezone.utc)
+    since_dt = now_dt - timedelta(days=days)
+    since_iso = since_dt.isoformat()
+    until_iso = now_dt.isoformat()
+
+    # Pull every state change in the window.  Each event has the
+    # task_id; we resolve the tier per task once, in bulk.
+    events = tasks_store.get_events_in_range(since_iso, until_iso)
+
+    # Bulk-prefetch every task referenced by the window's events in
+    # ONE query — opening a sqlite connection per event would N+1
+    # this surface to ~20s on a 7-day window with ~300 events.  Same
+    # for the tags lookup.  All in-memory after this.
+    distinct_tids = {
+        ev["task_id"] for ev in events if ev.get("task_id")
+    }
+    if not distinct_tids:
+        return {
+            "status": "ok",
+            "window_days": days,
+            "since": since_iso,
+            "until": until_iso,
+            "total_events": 0,
+            "categories": [],
+        }
+
+    rows_by_tid: dict[str, dict] = {}
+    tags_by_tid: dict[str, list[dict]] = {}
+    placeholders = ",".join("?" * len(distinct_tids))
+    tids_list = list(distinct_tids)
+    conn = tasks_store.get_connection()
+    try:
+        for r in conn.execute(
+            f"SELECT * FROM task_metadata WHERE task_id IN ({placeholders})",
+            tids_list,
+        ).fetchall():
+            rows_by_tid[r["task_id"]] = dict(r)
+        for r in conn.execute(
+            f"""SELECT task_id, tag, is_namespace FROM task_tags
+                WHERE task_id IN ({placeholders})
+                ORDER BY is_namespace DESC, tag""",
+            tids_list,
+        ).fetchall():
+            tags_by_tid.setdefault(r["task_id"], []).append(dict(r))
+    finally:
+        conn.close()
+
+    # Resolve tiers in a single in-memory pass.
+    tier_by_tid: dict[str, int] = {}
+    for tid in distinct_tids:
+        row = rows_by_tid.get(tid)
+        if not row:
+            tier_by_tid[tid] = 0
+            continue
+        tier_by_tid[tid] = resolve_operating_tier(
+            row, config=cfg,
+        ).operating
+
+    def _category_for_tid(tid: str) -> str | None:
+        tags = tags_by_tid.get(tid) or []
+        if not tags:
+            return None
+        ns = [t for t in tags if t.get("is_namespace")]
+        pick = ns[0] if ns else tags[0]
+        raw = pick.get("tag", "")
+        return raw.split("/")[0] if raw else None
+
+    # Group by category (the first segment of the first namespace tag),
+    # then by event for collapsible rendering.
+    by_category: dict[str, list[dict]] = {}
+    for ev in events:
+        tid = ev.get("task_id")
+        if not tid:
+            continue
+        # The Daily Log is for *actions taken*, not for the
+        # creation-event row store.create() writes alongside every
+        # task.  Drop creation events; legitimate tier-4 work always
+        # carries a non-NULL old_state (state changed FROM something).
+        if ev.get("reason") == "created" or ev.get("old_state") is None:
+            continue
+        if tier_by_tid.get(tid) != 4:
+            continue
+        row = rows_by_tid.get(tid) or {}
+        category = _category_for_tid(tid) or "(uncategorized)"
+        entry = {
+            "task_id": tid,
+            "text": row.get("description") or tid,
+            "old_state": ev.get("old_state"),
+            "new_state": ev.get("new_state"),
+            "changed_at": ev.get("changed_at"),
+            "reason": ev.get("reason"),
+            "last_actor": row.get("last_actor"),
+        }
+        by_category.setdefault(category, []).append(entry)
+
+    categories = [
+        {
+            "category": cat,
+            "events": sorted(
+                evs, key=lambda e: e.get("changed_at") or "", reverse=True,
+            ),
+            "count": len(evs),
+        }
+        for cat, evs in sorted(by_category.items())
+    ]
+    total_events = sum(c["count"] for c in categories)
+    return {
+        "status": "ok",
+        "window_days": days,
+        "since": since_iso,
+        "until": until_iso,
+        "total_events": total_events,
+        "categories": categories,
+    }
+
+
+def _category_for_task(task_id: str) -> str | None:
+    """Best-effort category for a task — first namespace tag's prefix.
+
+    The Daily Log groups by category for the collapse-by-category UX.
+    The ``task_tags`` table holds normalized tags; we pick the first
+    namespace tag (or ``projects/<slug>`` fallback) and use its first
+    path segment as the bucket.
+    """
+    from work_buddy.obsidian.tasks import store as tasks_store
+    tags = tasks_store.get_task_tags(task_id)
+    if not tags:
+        return None
+    namespace_tags = [t for t in tags if t.get("is_namespace")]
+    pick = namespace_tags[0] if namespace_tags else tags[0]
+    raw = pick.get("tag", "")
+    return raw.split("/")[0] if raw else None
+
+
+@app.get("/api/automation/daily-log")
+def api_automation_daily_log():
+    """Tier-4 actions in the last day, grouped by category (Slice 4 §3.5).
+
+    Query params:
+        days: window size (default 1, max 7).  The dashboard surface
+            is the *daily* log, but a 7-day backstop helps users who
+            check less often.
+    """
+    try:
+        days_raw = request.args.get("days", "1")
+        days = max(1, min(7, int(days_raw)))
+    except (TypeError, ValueError):
+        days = 1
+
+    try:
+        return jsonify(_build_daily_log_payload(days=days))
+    except Exception as exc:
+        logger.exception("api_automation_daily_log: failed")
+        return jsonify({"status": "error", "error": str(exc)}), 500
+
+
+# ---------------------------------------------------------------------------
 # Projects
 # ---------------------------------------------------------------------------
 

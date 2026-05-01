@@ -221,9 +221,91 @@ _TASK_PROPOSAL_SCHEMA: dict[str, Any] = {
         "risk_profile": {
             "type": ["object", "null"],
             "description": (
-                "Slice 4 forward-compat: composite risk dimensions + "
-                "amplifiers. Optional; Slice 4 populates this."
+                "Slice 4: composite risk dimensions + amplifiers. "
+                "Four dimensions (financial_cents, privacy, accuracy, "
+                "compute) + three amplifiers (reversibility, "
+                "regret_potential, inference_uncertainty). The "
+                "automation/risk resolver reads this against the "
+                "user's tolerance to compute the operating tier."
             ),
+            "properties": {
+                "financial_cents": {
+                    "type": "integer",
+                    "description": (
+                        "Estimated max spend in cents if the agent acts "
+                        "autonomously. 0 for non-spending tasks."
+                    ),
+                },
+                "privacy": {
+                    "type": "string",
+                    "enum": ["none", "internal", "public"],
+                    "description": (
+                        "Action-exposure level. ``none``: never leaves "
+                        "the user's local data. ``internal``: shared with "
+                        "trusted external services (calendar, vault). "
+                        "``public``: visible to anyone (sent email, "
+                        "public commit, posted to web)."
+                    ),
+                },
+                "accuracy": {
+                    "type": "string",
+                    "enum": ["low_stakes", "consequential", "critical"],
+                    "description": (
+                        "Blast radius if the output is wrong. "
+                        "``low_stakes``: tab close, summary draft — "
+                        "trivial to reverse. ``consequential``: "
+                        "structural change, code refactor — costly to "
+                        "fix. ``critical``: medical, legal, financial "
+                        "decisions — must be right the first time."
+                    ),
+                },
+                "compute": {
+                    "type": "string",
+                    "enum": ["instant", "background", "expensive"],
+                    "description": (
+                        "Resource consumption. ``instant``: <5s. "
+                        "``background``: <5min cron-class. "
+                        "``expensive``: full ML training run, large "
+                        "Anthropic call sweep, ≥$1 cost."
+                    ),
+                },
+                "reversibility": {
+                    "type": "string",
+                    "enum": ["trivial", "moderate", "irreversible"],
+                    "description": (
+                        "How hard is it to undo this action? Sending an "
+                        "email is irreversible; closing a tab is "
+                        "trivial; editing a file is moderate (git "
+                        "revert is possible but disruptive)."
+                    ),
+                },
+                "regret_potential": {
+                    "type": "string",
+                    "enum": ["low", "medium", "high"],
+                    "description": (
+                        "How bad would the user feel if this action "
+                        "fired wrongly? Sending email under user's "
+                        "identity is high-regret regardless of "
+                        "accuracy. Closing tabs is low-regret. Setting "
+                        "a calendar appointment is medium."
+                    ),
+                },
+                "inference_uncertainty": {
+                    "type": "string",
+                    "enum": ["low", "medium", "high"],
+                    "description": (
+                        "Your calibration on whether you correctly "
+                        "understand the user's intent here. Default to "
+                        "``medium`` for any task you didn't explicitly "
+                        "see the user invoke. Set ``high`` when you're "
+                        "guessing about which project this belongs to, "
+                        "what tone is expected, or whether the user "
+                        "wants this done at all. Set ``low`` only when "
+                        "the user message itself unambiguously "
+                        "specifies the action and target."
+                    ),
+                },
+            },
         },
         "required_contexts": {
             "type": ["array", "null"],

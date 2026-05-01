@@ -411,6 +411,16 @@ def get_tasks_summary() -> dict[str, Any]:
         ).isoformat()
 
         store_rows = {r["task_id"]: r for r in tasks_store.query(include_archived=False)}
+
+        # Slice 4: lazy import + per-call resolver re-use.  Loading
+        # the resolver module is cheap; the resolver itself is pure,
+        # so we can call it directly per row without memoization.
+        try:
+            from work_buddy.automation.risk import resolve_operating_tier
+            _have_resolver = True
+        except Exception:  # pragma: no cover — defensive
+            _have_resolver = False
+
         for t in tasks:
             row = store_rows.get(t.get("id"))
             if row:
@@ -419,6 +429,16 @@ def get_tasks_summary() -> dict[str, Any]:
                 # hasn't caught up — the UI shouldn't show a stale state).
                 t["state"] = "done" if t.get("done") else row["state"]
                 t["is_recent"] = bool(row.get("created_at", "") >= cutoff_iso)
+                # Slice 4: surface the operating tier + last actor + the
+                # typed pipeline-blocker kind on the same task row so the
+                # Tasks tab can render badges without a separate request.
+                t["last_actor"] = row.get("last_actor")
+                if _have_resolver and t.get("state") not in {"done", "archived"}:
+                    decision = resolve_operating_tier(row, config=_cfg)
+                    t["operating_tier"] = decision.operating
+                    t["achievable_tier"] = decision.achievable
+                    if decision.pipeline_blocker:
+                        t["pipeline_blocker"] = decision.pipeline_blocker
             else:
                 t["is_recent"] = False
     except Exception as exc:

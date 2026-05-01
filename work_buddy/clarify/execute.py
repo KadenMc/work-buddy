@@ -477,6 +477,24 @@ def _execute_record_task(
         if proposal_field in proposal and proposal[proposal_field] is not None:
             create_kwargs[kwarg] = proposal[proposal_field]
 
+    # Slice 4: serialize the verdict's risk_profile dict into the
+    # JSON-blob column.  parse_risk_profile handles unknown ladder
+    # values + missing keys via clamp-to-safe; ``to_json`` produces a
+    # canonical sorted-key form so two equal profiles round-trip
+    # bytewise (helps test fixtures and audit comparisons).
+    rp_dict = proposal.get("risk_profile")
+    if isinstance(rp_dict, dict):
+        try:
+            from work_buddy.automation.risk import parse_risk_profile
+            create_kwargs["risk_profile_json"] = parse_risk_profile(
+                rp_dict,
+            ).to_json()
+        except Exception:  # pragma: no cover — defensive
+            logger.warning(
+                "execute_clarify: failed to serialize risk_profile for task=%r",
+                suggested[:60],
+            )
+
     try:
         from work_buddy.obsidian.tasks.mutations import create_task
         result = create_task(**create_kwargs)
