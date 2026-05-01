@@ -1532,6 +1532,14 @@ def _build_review_queue_payload() -> dict:
     Surface to render: id / text / tier / blocker / actor / contract /
     intent.  No mutations happen here; the frontend's Resolution
     Surface mounts the same Slice 1.5 primitives over the result.
+
+    Filter: tasks must have either ``risk_profile_json IS NOT NULL``
+    (Clarify classified the action) OR ``automation_tier_achievable
+    IS NOT NULL`` (a caller pinned a tier explicitly).  This keeps
+    legacy tasks — which all default to tier-3 via the safe-profile
+    fallback — out of the surface.  The Review Queue is for "the
+    agent has a tier-3 output to review," not "every untouched task
+    happens to default to tier 3."
     """
     from work_buddy.obsidian.tasks import store as tasks_store
     from work_buddy.automation.risk import (
@@ -1552,6 +1560,16 @@ def _build_review_queue_payload() -> dict:
     queue: list[dict] = []
     for row in rows:
         if row.get("state") in {"done", "archived"}:
+            continue
+
+        # Skip tasks the resolver hasn't been given an explicit
+        # signal about.  Without a populated risk profile or cached
+        # achievable, we'd surface every legacy task — that's not
+        # the Review Queue's job.
+        if (
+            row.get("risk_profile_json") is None
+            and row.get("automation_tier_achievable") is None
+        ):
             continue
 
         decision = resolve_operating_tier(row, config=cfg)
@@ -1653,26 +1671,66 @@ def _build_daily_log_payload(*, days: int = 1) -> dict:
     until_iso = now_dt.isoformat()
 
     # Pull every state change in the window.  Each event has the
-    # task_id; we resolve the tier per task once, lazily.
+    # task_id; we resolve the tier per task once, in bulk.
     events = tasks_store.get_events_in_range(since_iso, until_iso)
 
-    # Per-task cache so we don't re-derive the tier for repeated events.
-    tier_cache: dict[str, int] = {}
-    actor_cache: dict[str, str | None] = {}
-    text_cache: dict[str, str] = {}
+    # Bulk-prefetch every task referenced by the window's events in
+    # ONE query — opening a sqlite connection per event would N+1
+    # this surface to ~20s on a 7-day window with ~300 events.  Same
+    # for the tags lookup.  All in-memory after this.
+    distinct_tids = {
+        ev["task_id"] for ev in events if ev.get("task_id")
+    }
+    if not distinct_tids:
+        return {
+            "status": "ok",
+            "window_days": days,
+            "since": since_iso,
+            "until": until_iso,
+            "total_events": 0,
+            "categories": [],
+        }
 
-    def _tier_for(task_id: str) -> int:
-        if task_id in tier_cache:
-            return tier_cache[task_id]
-        row = tasks_store.get(task_id) or {}
-        tier_cache[task_id] = resolve_operating_tier(
+    rows_by_tid: dict[str, dict] = {}
+    tags_by_tid: dict[str, list[dict]] = {}
+    placeholders = ",".join("?" * len(distinct_tids))
+    tids_list = list(distinct_tids)
+    conn = tasks_store.get_connection()
+    try:
+        for r in conn.execute(
+            f"SELECT * FROM task_metadata WHERE task_id IN ({placeholders})",
+            tids_list,
+        ).fetchall():
+            rows_by_tid[r["task_id"]] = dict(r)
+        for r in conn.execute(
+            f"""SELECT task_id, tag, is_namespace FROM task_tags
+                WHERE task_id IN ({placeholders})
+                ORDER BY is_namespace DESC, tag""",
+            tids_list,
+        ).fetchall():
+            tags_by_tid.setdefault(r["task_id"], []).append(dict(r))
+    finally:
+        conn.close()
+
+    # Resolve tiers in a single in-memory pass.
+    tier_by_tid: dict[str, int] = {}
+    for tid in distinct_tids:
+        row = rows_by_tid.get(tid)
+        if not row:
+            tier_by_tid[tid] = 0
+            continue
+        tier_by_tid[tid] = resolve_operating_tier(
             row, config=cfg,
         ).operating
-        actor_cache[task_id] = row.get("last_actor")
-        text_cache[task_id] = (
-            row.get("description") or row.get("task_id") or ""
-        )
-        return tier_cache[task_id]
+
+    def _category_for_tid(tid: str) -> str | None:
+        tags = tags_by_tid.get(tid) or []
+        if not tags:
+            return None
+        ns = [t for t in tags if t.get("is_namespace")]
+        pick = ns[0] if ns else tags[0]
+        raw = pick.get("tag", "")
+        return raw.split("/")[0] if raw else None
 
     # Group by category (the first segment of the first namespace tag),
     # then by event for collapsible rendering.
@@ -1687,17 +1745,18 @@ def _build_daily_log_payload(*, days: int = 1) -> dict:
         # carries a non-NULL old_state (state changed FROM something).
         if ev.get("reason") == "created" or ev.get("old_state") is None:
             continue
-        if _tier_for(tid) != 4:
+        if tier_by_tid.get(tid) != 4:
             continue
-        category = _category_for_task(tid) or "(uncategorized)"
+        row = rows_by_tid.get(tid) or {}
+        category = _category_for_tid(tid) or "(uncategorized)"
         entry = {
             "task_id": tid,
-            "text": text_cache.get(tid, tid),
+            "text": row.get("description") or tid,
             "old_state": ev.get("old_state"),
             "new_state": ev.get("new_state"),
             "changed_at": ev.get("changed_at"),
             "reason": ev.get("reason"),
-            "last_actor": actor_cache.get(tid),
+            "last_actor": row.get("last_actor"),
         }
         by_category.setdefault(category, []).append(entry)
 

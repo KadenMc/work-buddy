@@ -124,6 +124,36 @@ def test_review_queue_surfaces_tier_three_tasks(client):
     assert "accuracy" in (item.get("capped_by") or [])
 
 
+def test_review_queue_excludes_legacy_null_profile_tasks(client):
+    """Tasks without ``risk_profile_json`` AND without ``automation_tier_
+    achievable`` are legacy fallbacks — they default to tier-3 via the
+    safe profile but the user never asked for them to be reviewed.
+    Filtering them out keeps the Review Queue meaningful (only items
+    Clarify intentionally classified appear)."""
+    # Legacy task — both columns NULL.
+    store.create(task_id="t-legacy", state="inbox", description="legacy task")
+    # Properly classified task with the same effective tier.
+    _seed_task(
+        "t-classified",
+        description="critical accuracy work",
+        profile=RiskProfile(accuracy="critical"),
+        achievable=4,
+    )
+    # Task with ONLY a cached achievable (no profile JSON) should also
+    # appear — that's an explicit pin from a caller.
+    store.create(
+        task_id="t-pinned",
+        state="inbox",
+        description="explicit tier 3 pin",
+        automation_tier_achievable=3,
+    )
+    resp = client.get("/api/automation/review-queue")
+    body = resp.get_json()
+    ids = {item["task_id"] for item in body["items"]}
+    assert ids == {"t-classified", "t-pinned"}
+    assert body["count"] == 2
+
+
 def test_review_queue_excludes_done_tasks(client):
     _seed_task(
         "t-done",
