@@ -108,5 +108,41 @@
     "entry_points": [
       "work_buddy.clarify.deadline_extract"
     ]
+  },
+  "clarify/reference-filing": {
+    "kind": "module",
+    "name": "Reference filing pipeline (Slice 6)",
+    "description": "Composition pipeline for destination=reference captures. semantic_search -> SmartSource.drill_down(content) -> vault_schema -> Clarify-style LLM call -> FilingVerdict. Read-side ships in Slice 6; write step parks for follow-up.",
+    "content": {
+      "full": "# clarify/reference-filing (Slice 6)\n\nModule: work_buddy/clarify/reference_filing.py.\n\n## Pipeline\n\npropose_reference_filing(topic_text, *, runner=None, ...) -> ReferenceProposal.\n\n1. semantic_search(topic_text, limit=top_k) for high-level associations from Smart Connections.\n2. SmartSource.drill_down(key, \"content\") per candidate to fetch the file content snippet -- uses the existing ContextSource.drill_down protocol on the vault's semantic index (ROADMAP section 6 high-level -> fine-grain bridge).\n3. vault_schema() for organizing principles (folder map + tag taxonomy + active-namespace + active-contracts).\n4. Optional LLM call (runner=None skips it; tests + diagnostics-only callers benefit from the data layer).\n5. parse_filing_verdict -> frozen FilingVerdict with candidates (FilingCandidate per placement) + confidence + namespace_tags.\n\n## Filing verdict actions\n\n- extend -- append a section to an existing file at <path>. PREFERRED when an existing file is a clear topical home (V1c carrying-cost discipline).\n- sibling -- create a new file alongside an existing one.\n- new_file -- create a wholly new file at <path>. Reserved for genuinely new topics.\n\n## vault_schema sub-sections\n\n- folders -- Path.iterdir walk to depth 3, top-50 by md_count.\n- tags -- bridge.get_tags top-80; falls back to task-tag cache when bridge unavailable.\n- active_namespaces -- distinct_namespace_tags(recent_days=14) top-10.\n- active_contracts -- contracts.active_contracts() coerced {slug, title, namespace}.\n\nPer-section graceful degradation; sub-failures land in warnings[].\n\n## Status: read-side only\n\nThe actual write step (bridge.write_file via apply_reference_proposal) is parked. Today the executor's destination=reference path still logs the reference; future wiring lands the file with risk-tier integration (tier 1 = suggest, tier 3 = file-and-review, tier 4 = silent file)."
+    },
+    "tags": [
+      "clarify",
+      "reference",
+      "filing",
+      "slice-6",
+      "vault-schema",
+      "smart-connections",
+      "composition"
+    ],
+    "aliases": [
+      "reference filing",
+      "vault_schema",
+      "propose_reference_filing",
+      "filing verdict",
+      "FilingVerdict",
+      "where do I file this"
+    ],
+    "parents": [
+      "clarify"
+    ],
+    "entry_points": [
+      "work_buddy.clarify.reference_filing.propose_reference_filing",
+      "work_buddy.clarify.reference_filing.vault_schema",
+      "work_buddy.clarify.reference_filing.FILING_VERDICT_SCHEMA",
+      "work_buddy.clarify.reference_filing.parse_filing_verdict",
+      "work_buddy.context.sources.smart.SmartSource.drill_down"
+    ],
+    "dev_notes": "Composition over new pipeline (ROADMAP section 6). SmartSource.drill_down raises NotImplementedError when the bridge is down; the proposal pipeline catches and degrades to \"no candidate content available\" -- the LLM can still produce a verdict from candidate file paths alone. The write step is intentionally NOT wired yet -- landing real files needs a few real verdicts validated end-to-end first."
   }
 }
