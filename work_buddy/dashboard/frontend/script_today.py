@@ -242,7 +242,14 @@ def _today_styles() -> str:
     border-radius: 6px;
     margin-bottom: 8px;
     font-size: 12px;
-    color: var(--text-primary, #222);
+    /* Hard-coded dark text since the banner background is fixed-light. */
+    color: #1f2a3f;
+}
+.today-contracts-banner strong {
+    color: #0d1a3a;
+}
+.today-contracts-banner em {
+    color: #4a5a7a;
 }
 .today-no-contract {
     color: var(--text-muted, #888);

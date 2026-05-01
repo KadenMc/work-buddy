@@ -729,9 +729,20 @@ details[open] > .aut-dl-summary::before { transform: rotate(90deg); }
     margin: 4px 0 0 16px;
     padding: 0;
     font-size: 12px;
-    color: var(--text-primary, #222);
+    /* Card background is hard-coded light yellow for the alert tone,
+       so use a fixed dark text color rather than the theme variable —
+       --text-primary flips to light in dark mode and becomes
+       unreadable on the yellow card. */
+    color: #3a2a00;
 }
 .blocked-by-context-list li {
     line-height: 1.6;
+}
+.blocked-by-context-list li strong {
+    color: #1a1100;
+}
+.blocked-by-context-list .wv-blocker-link {
+    color: #4a2e00;
+    text-decoration: underline;
 }
 """
