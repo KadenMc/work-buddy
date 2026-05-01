@@ -147,6 +147,17 @@ def execute_triage_decisions(
             meta = item_lookup.get(item_id, {})
             results["left"].append({"item_id": item_id, "label": meta.get("label", item_id)})
 
+    # Slice 6 fix #4: split the references_logged count by status so
+    # the agent / sidecar log shows suggested-only-vs-actually-filed
+    # rather than collapsing them into one number.  Three buckets:
+    #   - references_filed    -- status='ok' (write landed)
+    #   - references_suggested -- status='suggested' (tier-1, no write)
+    #   - references_loggedonly -- legacy log-only path (Slice 3 fallback)
+    refs = results.get("references_logged") or []
+    refs_filed = sum(1 for r in refs if r.get("status") == "ok")
+    refs_suggested = sum(1 for r in refs if r.get("status") == "suggested")
+    refs_logged_only = sum(1 for r in refs if r.get("logged_only"))
+
     summary = {
         "total_operations": len(ops) + len(multi_record_decisions),
         "closed": len(results["closed"]),
@@ -159,6 +170,10 @@ def execute_triage_decisions(
         # Slice 3 summary fields
         "records_executed": len(results["records_executed"]),
         "references_logged": len(results["references_logged"]),
+        # Slice 6 fix #4 sub-counts (sum to references_logged for back-compat).
+        "references_filed": refs_filed,
+        "references_suggested": refs_suggested,
+        "references_logged_only": refs_logged_only,
         "calendar_logged": len(results["calendar_logged"]),
         "deleted": len(results["deleted"]),
         "details": results,
@@ -167,12 +182,13 @@ def execute_triage_decisions(
     logger.info(
         "Triage executed: %d closed, %d tasks created, %d recorded, "
         "%d grouped, %d left, %d stale, %d errors, "
-        "%d records executed, %d references logged, %d calendar logged, "
-        "%d deleted",
+        "%d records executed, %d references (%d filed, %d suggested, "
+        "%d log-only), %d calendar logged, %d deleted",
         summary["closed"], summary["tasks_created"],
         summary["tasks_recorded"], summary["grouped"],
         summary["left"], summary["skipped_stale"], summary["errors"],
         summary["records_executed"], summary["references_logged"],
+        refs_filed, refs_suggested, refs_logged_only,
         summary["calendar_logged"], summary["deleted"],
     )
 

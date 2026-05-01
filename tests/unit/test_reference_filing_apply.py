@@ -100,15 +100,82 @@ def test_sibling_action_derives_path_from_neighbour(stub_bridge):
 
 
 def test_extend_falls_back_to_new_file_when_target_missing(stub_bridge):
-    """If the file we wanted to extend doesn't exist, degrade to write."""
+    """PR #70 fix #6: silent extend->new_file degradation now surfaces
+    via action='extended_as_new' in the result so the audit trail is
+    honest about what landed."""
     stub_bridge.read_file.return_value = None
     res = rf.apply_reference_proposal(
         summary="topic body.",
         verdict=_verdict("extend", confidence=0.9),
     )
     assert res.status == "ok"
+    # PR #70 fix #6: action surfaces the degradation.
+    assert res.action == "extended_as_new"
     # write_file called even though action was 'extend' (degraded path).
     stub_bridge.write_file.assert_called_once()
+
+
+def test_extend_keeps_action_as_extend_when_target_exists(stub_bridge):
+    """Sanity: when extend target IS present, action stays 'extend'
+    (the fix only changes the missing-target path)."""
+    # Default stub_bridge.read_file returns the existing-content string.
+    res = rf.apply_reference_proposal(
+        summary="addendum.",
+        verdict=_verdict("extend", confidence=0.9),
+    )
+    assert res.status == "ok"
+    assert res.action == "extend"
+
+
+# ---------------------------------------------------------------------------
+# PR #70 fix #5: sibling/new_file slug collision
+# ---------------------------------------------------------------------------
+
+
+def test_new_file_collision_appends_n(stub_bridge):
+    """When the chosen new_file path already exists, the resolver
+    derives <stem>-2.md (then -3, -4, ...) instead of overwriting."""
+    # First read (existence probe of the bare path) returns existing
+    # content -- collision.  Second read (the -2 candidate) returns
+    # None -- free.
+    stub_bridge.read_file.side_effect = ["existing", None]
+    res = rf.apply_reference_proposal(
+        summary="x",
+        verdict=_verdict("new_file", confidence=0.95),
+    )
+    args, _ = stub_bridge.write_file.call_args
+    assert res.status == "ok"
+    assert args[0].endswith("-2.md"), (
+        f"expected -2 suffix on collision, got {args[0]}"
+    )
+
+
+def test_sibling_collision_appends_n(stub_bridge):
+    """Same logic on the sibling path.  The slug derives from
+    topic_label, then collision-resolves."""
+    # The sibling path is derived from the neighbour ('Research/ECG/aug.md')
+    # + topic_label ('ECG augmentation') -- yields 'Research/ECG/ecg-augmentation.md'.
+    # First read = collision; second = free.
+    stub_bridge.read_file.side_effect = ["existing sibling", None]
+    res = rf.apply_reference_proposal(
+        summary="x",
+        verdict=_verdict("sibling", confidence=0.95),
+    )
+    args, _ = stub_bridge.write_file.call_args
+    assert res.status == "ok"
+    assert args[0].endswith("-2.md")
+
+
+def test_new_file_no_collision_writes_at_base_path(stub_bridge):
+    """When the path is free, no rename happens."""
+    stub_bridge.read_file.return_value = None  # path is free
+    res = rf.apply_reference_proposal(
+        summary="x",
+        verdict=_verdict("new_file", confidence=0.95),
+    )
+    args, _ = stub_bridge.write_file.call_args
+    assert args[0] == "Research/ECG/aug.md"
+    assert res.action == "new_file"
 
 
 def test_no_candidates_fails(stub_bridge):

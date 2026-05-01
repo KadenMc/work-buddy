@@ -190,6 +190,100 @@ def test_workflow_requires_matches_one_hop_union(registry):
 
 
 # ---------------------------------------------------------------------------
+# Invariant 4 — every workflow_ref points at an existing workflow
+# ---------------------------------------------------------------------------
+
+def test_workflow_ref_chains_resolve(registry):
+    """Every WorkflowStep.workflow_ref must name an existing workflow.
+
+    Slice 5b (PR #70) added the morning routine's `propose-mits` step
+    chaining to `task-me` via workflow_ref; dev-commit's `document`
+    step uses the same pattern to chain to `dev-document`.  The
+    conductor follows these refs at runtime — a typo here would hang
+    the parent workflow with a "subworkflow not found" error mid-DAG,
+    which is hard to diagnose because the failure surfaces at the
+    user-facing step rather than at registry-build time.
+
+    This invariant catches the typo at CI time.  Same allowlist
+    semantics as Invariant 1: workflow_refs are matched against
+    EITHER registered workflow names OR DISABLED_CAPABILITIES (a
+    workflow whose required tool was probe-failed).
+    """
+    from work_buddy.mcp_server.registry import WorkflowDefinition
+    from work_buddy.tools import DISABLED_CAPABILITIES
+
+    known = set(registry.keys()) | set(DISABLED_CAPABILITIES.keys())
+
+    errors: list[str] = []
+    for name, entry in registry.items():
+        if not isinstance(entry, WorkflowDefinition):
+            continue
+        for step in entry.steps:
+            ref = getattr(step, "workflow_file", None)
+            if not ref:
+                continue
+            # workflow_file is sometimes the raw ref name (slice-5b /
+            # slice-7 sub-workflow chains) and sometimes a provenance
+            # marker like 'store:tasks/task-me' (when populated by the
+            # workflow loader).  Strip any 'store:' prefix to get the
+            # logical name; then check both the bare ref and the
+            # last segment ('tasks/task-me' -> 'task-me').
+            logical = ref.split(":", 1)[-1]
+            short = logical.rsplit("/", 1)[-1]
+            if logical in known or short in known:
+                continue
+            errors.append(
+                f"Workflow '{name}' step '{step.id}' has workflow_ref "
+                f"'{ref}' which does not resolve to a registered workflow."
+            )
+    assert not errors, "Dangling workflow_ref chains:\n  " + "\n  ".join(errors)
+
+
+# ---------------------------------------------------------------------------
+# Invariant 5 — every knowledge unit deserializes
+# ---------------------------------------------------------------------------
+
+def test_knowledge_units_deserialize_without_warning():
+    """Every JSON file in knowledge/store/ must produce zero deserialize
+    warnings.
+
+    Process-gap fix: the kind='module' bug shipped in PR #69 because
+    no test asserted "load_store() produces zero warnings".  A unit
+    that fails deserialization gets silently dropped and disappears
+    from wb_search results — caught only by an agent trying to
+    agent_docs the missing path.  This invariant catches it at CI.
+    """
+    import logging
+
+    from work_buddy.knowledge.store import load_store
+
+    # Capture warnings at the store's logger.  load_store's failure
+    # path is logger.warning(); we collect those during the load.
+    warnings_caught: list[str] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record):
+            msg = record.getMessage()
+            if "Failed to deserialize" in msg:
+                warnings_caught.append(msg)
+
+    handler = _Capture(level=logging.WARNING)
+    store_logger = logging.getLogger("work_buddy.knowledge.store")
+    store_logger.addHandler(handler)
+    try:
+        load_store()
+    finally:
+        store_logger.removeHandler(handler)
+
+    assert not warnings_caught, (
+        "Knowledge units failed to deserialize (likely an unsupported "
+        "'kind' value or a schema mismatch -- see _KIND_MAP in "
+        "work_buddy/knowledge/model.py):\n  "
+        + "\n  ".join(warnings_caught)
+    )
+
+
+# ---------------------------------------------------------------------------
 # Invariant 4 — morning-routine's invokes entries cover obsidian + google_calendar
 # ---------------------------------------------------------------------------
 

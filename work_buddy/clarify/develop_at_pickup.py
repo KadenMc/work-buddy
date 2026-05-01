@@ -365,9 +365,11 @@ def apply_decomposition(
             immediately.
 
     Per ROADMAP §7 safety rule, every persisted item lands with
-    ``user_authored=0, approved_at=<now>`` -- the user reviewed and
-    approved an agent-proposed item.  ``is_executable`` admits items
-    in this state.
+    ``authorship='agent_approved'`` (PR #70 fix #2) -- the user
+    reviewed and approved an agent-proposed item.  ``is_executable``
+    admits items with this authorship value.  The legacy
+    ``user_authored`` + ``approved_at`` columns are kept in sync by
+    the action_items.create layer.
 
     Bumps ``density`` from 'sparse' to 'developed' on the parent task
     when the first action item lands (so future pickup-readiness
@@ -381,8 +383,6 @@ def apply_decomposition(
         )
 
     try:
-        from datetime import datetime, timezone
-        now_iso = datetime.now(timezone.utc).isoformat()
         from work_buddy.obsidian.tasks import action_items, store
         from work_buddy.automation.contexts import serialize_context_list
         from work_buddy.automation.risk import parse_risk_profile
@@ -413,8 +413,9 @@ def apply_decomposition(
             risk_profile_json=risk_json,
             agent_required_contexts=agent_ctx,
             user_required_contexts=user_ctx,
-            user_authored=False,           # agent-proposed origin
-            approved_at=now_iso,           # user's explicit approval
+            # PR #70 fix #2: agent-proposed + user-approved -> the
+            # canonical enum value preserves both signals.
+            authorship="agent_approved",
         )
         created_ids.append(int(result["id"]))
 

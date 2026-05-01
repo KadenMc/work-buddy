@@ -687,19 +687,35 @@ def apply_reference_proposal(
 
     try:
         if pick.action == "extend":
-            wrote = _extend_existing_file(
+            wrote, actual_action = _extend_existing_file(
                 bridge=bridge, path=pick.path, addendum=body,
                 topic_label=verdict.topic_label,
             )
+            # Slice 6 fix #6: when the extend target was missing the
+            # helper degrades to a fresh write and reports
+            # "extended_as_new"; surface that to the audit trail so
+            # the user can spot the silent action change.
+            if actual_action != pick.action:
+                pick = FilingCandidate(
+                    path=pick.path, action=actual_action,
+                    rationale=pick.rationale,
+                )
         elif pick.action == "sibling":
-            sibling_path = _sibling_path_from(pick.path, verdict.topic_label)
+            base_sibling = _sibling_path_from(pick.path, verdict.topic_label)
+            sibling_path = _resolve_unique_path(bridge, base_sibling)
             wrote = bridge.write_file(sibling_path, body)
             pick = FilingCandidate(
                 path=sibling_path, action=pick.action,
                 rationale=pick.rationale,
             )
         elif pick.action == "new_file":
-            wrote = bridge.write_file(pick.path, body)
+            unique_path = _resolve_unique_path(bridge, pick.path)
+            wrote = bridge.write_file(unique_path, body)
+            if unique_path != pick.path:
+                pick = FilingCandidate(
+                    path=unique_path, action=pick.action,
+                    rationale=pick.rationale,
+                )
         else:
             return FilingApplyResult(
                 status="failed",
@@ -762,18 +778,34 @@ def _extend_existing_file(
     path: str,
     addendum: str,
     topic_label: str | None,
-) -> bool:
+) -> tuple[bool, str]:
     """Append a new section to an existing vault file (the ``extend`` action).
 
     Reads the file, appends a `## <topic_label>` heading + the
     addendum body, writes the result back.  Skips the YAML frontmatter
     block from ``addendum`` (the existing file already has its own
     frontmatter).
+
+    Returns ``(wrote, action_taken)`` where ``action_taken`` is:
+    - ``"extend"``         — target existed and was appended to.
+    - ``"extended_as_new"``— target was missing; degraded to a fresh
+                             write.  The audit trail surfaces this so
+                             the user knows the LLM's "extend the
+                             topical home" intent didn't actually
+                             append (the file wasn't there to extend).
+
+    Slice 6 fix #6: previously this silently returned a bool and
+    callers recorded ``action='extend'`` regardless of whether the
+    target existed.  The new tuple lets ``apply_reference_proposal``
+    record the actual outcome.
     """
     existing = bridge.read_file(path)
     if existing is None:
-        # Fallback: file doesn't exist; degrade to new_file.
-        return bridge.write_file(path, addendum)
+        # Target missing — degrade to a new_file write but flag it so
+        # the caller can surface the change.  The user's "extend"
+        # intent presumed the target existed; if not, they should know.
+        wrote = bridge.write_file(path, addendum)
+        return wrote, "extended_as_new"
 
     # Strip the addendum's frontmatter (between leading --- and second ---).
     body_only = _strip_frontmatter(addendum)
@@ -781,7 +813,8 @@ def _extend_existing_file(
         f"\n\n## {topic_label}\n\n" if topic_label else "\n\n## Reference\n\n"
     )
     new_content = existing.rstrip() + section_heading + body_only.lstrip()
-    return bridge.write_file(path, new_content)
+    wrote = bridge.write_file(path, new_content)
+    return wrote, "extend"
 
 
 def _strip_frontmatter(text: str) -> str:
@@ -792,6 +825,49 @@ def _strip_frontmatter(text: str) -> str:
     if len(parts) < 3:
         return text
     return parts[2].lstrip("\n")
+
+
+def _resolve_unique_path(bridge, base_path: str, *, max_attempts: int = 50) -> str:
+    """Return ``base_path`` if free, else ``base-2.md``, ``base-3.md``, …
+
+    Slice 6 fix #5: ``sibling`` and ``new_file`` actions previously
+    overwrote any existing file at the chosen path (consent-gated by
+    bridge.write_file but still destructive on a slug collision).
+    This helper consults bridge.read_file to detect existence and
+    derives a numbered alternative on collision.
+
+    Falls back to a timestamp suffix after ``max_attempts`` to avoid
+    pathological loops.  Defaults to 50 because reference-filing
+    collisions are expected to be rare; if a user collides 50 times
+    on the same topic-label something else is wrong.
+    """
+    from pathlib import PurePosixPath
+    p = PurePosixPath(base_path)
+    suffix = p.suffix or ".md"
+    stem_path = p.with_suffix("").as_posix()  # 'a/b/c' from 'a/b/c.md'
+
+    try:
+        # First-attempt: the bare path.
+        existing = bridge.read_file(base_path)
+    except Exception:
+        # Bridge failure: assume free; the write_file call will surface
+        # a real error if needed.  Don't block filing on a probe glitch.
+        return base_path
+    if existing is None:
+        return base_path
+
+    for n in range(2, max_attempts + 1):
+        candidate = f"{stem_path}-{n}{suffix}"
+        try:
+            if bridge.read_file(candidate) is None:
+                return candidate
+        except Exception:
+            return candidate
+
+    # Pathological — fall back to timestamp.
+    from datetime import datetime, timezone
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+    return f"{stem_path}-{stamp}{suffix}"
 
 
 def _sibling_path_from(neighbour_path: str, topic_label: str | None) -> str:

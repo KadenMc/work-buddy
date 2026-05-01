@@ -33,6 +33,56 @@ logger = get_logger(__name__)
 
 VALID_STATES = {"pending", "in_progress", "done", "skipped"}
 
+# Slice 7 PR #70 fix #2: authorship enum.
+#   'user'              -- user wrote it from scratch
+#   'agent_approved'    -- agent proposed, user accepted
+#   'agent_unapproved'  -- agent proposed, no user approval (gate-blocked)
+VALID_AUTHORSHIP = frozenset({"user", "agent_approved", "agent_unapproved"})
+
+
+def _resolve_authorship(
+    *,
+    authorship: str | None,
+    user_authored: bool | None,
+    approved_at: str | None,
+) -> tuple[str, bool, str | None]:
+    """Resolve the canonical authorship + maintain back-compat fields.
+
+    Callers can pass any of:
+    - ``authorship='user' | 'agent_approved' | 'agent_unapproved'``
+      (preferred — sets the enum directly).
+    - ``user_authored=True/False`` + optional ``approved_at`` (legacy
+      shape; translated to the equivalent enum value).
+    - Nothing (defaults to 'agent_unapproved' — agent proposed, no
+      approval, gate-blocked from execution).
+
+    Returns ``(authorship, user_authored_int, approved_at)`` so the
+    INSERT keeps all three columns in sync.  This means ``is_executable``
+    can be migrated to read ``authorship`` while old SQL queries
+    against ``user_authored`` keep working until callers retire them.
+    """
+    if authorship is not None:
+        if authorship not in VALID_AUTHORSHIP:
+            raise ValueError(
+                f"Invalid authorship {authorship!r}: expected one of "
+                f"{sorted(VALID_AUTHORSHIP)}"
+            )
+        # Derive the legacy fields from the enum so back-compat queries
+        # against user_authored / approved_at still get the right answer.
+        if authorship == "user":
+            return ("user", 1, approved_at)
+        if authorship == "agent_approved":
+            return ("agent_approved", 0, approved_at or _now_iso())
+        # agent_unapproved
+        return ("agent_unapproved", 0, None)
+
+    # Legacy shape: derive the enum from user_authored + approved_at.
+    if bool(user_authored):
+        return ("user", 1, approved_at)
+    if approved_at:
+        return ("agent_approved", 0, approved_at)
+    return ("agent_unapproved", 0, None)
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -53,6 +103,7 @@ def create(
     agent_required_contexts: str | None = None,
     user_required_contexts: str | None = None,
     definition_of_done: str | None = None,
+    authorship: str | None = None,
     user_authored: bool = False,
     approved_at: str | None = None,
     handoff_package_path: str | None = None,
@@ -64,15 +115,27 @@ def create(
     explicit value to insert at a specific position (e.g., re-shuffling
     via the develop-at-pickup edit-each-item flow).
 
-    Per Slice 7 safety rule: agent-proposed items default to
-    ``user_authored=False, approved_at=None`` — they appear in the
-    Resolution Surface as "proposed (needs approval)" and cannot be
-    executed by the agent until the user approves.
+    **Authorship (Slice 7 PR #70 fix #2)** — pass either:
+    - ``authorship='user' | 'agent_approved' | 'agent_unapproved'``
+      (preferred), OR
+    - ``user_authored=True/False`` + optional ``approved_at`` (legacy
+      shape; translated to the enum).
+
+    Defaults to ``'agent_unapproved'`` — agent-proposed items are
+    gate-blocked from execution until the user explicitly accepts via
+    :func:`approve` or by adopting them into the markdown.  Per
+    ROADMAP §7.
     """
     if state not in VALID_STATES:
         raise ValueError(
             f"Invalid state {state!r}: expected one of {sorted(VALID_STATES)}"
         )
+
+    auth_value, ua_int, approved = _resolve_authorship(
+        authorship=authorship,
+        user_authored=user_authored,
+        approved_at=approved_at,
+    )
 
     now = _now_iso()
     conn = store.get_connection()
@@ -90,14 +153,15 @@ def create(
                (task_id, sequence, description, state,
                 risk_profile_json, agent_required_contexts,
                 user_required_contexts, definition_of_done,
-                user_authored, approved_at, handoff_package_path,
+                user_authored, approved_at, authorship,
+                handoff_package_path,
                 created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 task_id, sequence, description, state,
                 risk_profile_json, agent_required_contexts,
                 user_required_contexts, definition_of_done,
-                int(bool(user_authored)), approved_at,
+                ua_int, approved, auth_value,
                 handoff_package_path,
                 now, now,
             ),
@@ -162,6 +226,7 @@ def update(
     agent_required_contexts: str | None | object = _SENTINEL,
     user_required_contexts: str | None | object = _SENTINEL,
     definition_of_done: str | None | object = _SENTINEL,
+    authorship: str | None = None,
     user_authored: bool | None = None,
     approved_at: str | None | object = _SENTINEL,
     completed_at: str | None | object = _SENTINEL,
@@ -171,6 +236,12 @@ def update(
 
     ``state='done'`` auto-stamps ``completed_at`` if the caller didn't
     pass one — same convention as ``store.update``.
+
+    **Authorship** — pass ``authorship=`` directly (preferred) OR the
+    legacy ``user_authored=`` / ``approved_at=`` combination.  When
+    ``authorship`` is set, the legacy fields are kept in sync.  When
+    only the legacy fields are set, ``authorship`` is recomputed from
+    them so the canonical column stays consistent.
     """
     sets: list[str] = []
     params: list[Any] = []
@@ -208,13 +279,45 @@ def update(
         sets.append("definition_of_done = ?")
         params.append(definition_of_done)
 
-    if user_authored is not None:
+    # Slice 7 PR #70 fix #2: authorship enum is the canonical source.
+    # When the caller passes authorship explicitly, derive the legacy
+    # fields and write all three.  When only the legacy fields are
+    # set, recompute authorship to keep the canonical column in sync.
+    auth_dirty = (
+        authorship is not None
+        or user_authored is not None
+        or approved_at is not _SENTINEL
+    )
+    if auth_dirty:
+        # Materialize the current row's legacy values for any field
+        # the caller didn't override -- so the resolver sees the full
+        # picture rather than treating "not provided" as None.
+        if user_authored is None or approved_at is _SENTINEL:
+            cur = get(item_id) or {}
+            ua_in = (
+                bool(int(cur.get("user_authored") or 0))
+                if user_authored is None
+                else user_authored
+            )
+            approved_in = (
+                cur.get("approved_at")
+                if approved_at is _SENTINEL
+                else approved_at
+            )
+        else:
+            ua_in = user_authored
+            approved_in = approved_at
+        auth_value, ua_int, approved = _resolve_authorship(
+            authorship=authorship,
+            user_authored=ua_in,
+            approved_at=approved_in,
+        )
+        sets.append("authorship = ?")
+        params.append(auth_value)
         sets.append("user_authored = ?")
-        params.append(int(bool(user_authored)))
-
-    if approved_at is not _SENTINEL:
+        params.append(ua_int)
         sets.append("approved_at = ?")
-        params.append(approved_at)
+        params.append(approved)
 
     if completed_at is not _SENTINEL:
         sets.append("completed_at = ?")
@@ -259,11 +362,16 @@ def delete(item_id: int) -> bool:
 def approve(item_id: int) -> dict[str, Any]:
     """Mark an agent-proposed action item as user-approved.
 
-    Sets ``approved_at`` to now and flips ``user_authored=1`` so the
-    safety check (:func:`is_executable`) admits future executions.
+    Sets ``authorship='agent_approved'`` (PR #70 fix #2) — the user
+    explicitly accepted an agent-proposed item, so it admits future
+    agent execution via :func:`is_executable` while preserving the
+    agent-origin provenance in the canonical column.
+
+    The legacy fields (``user_authored``, ``approved_at``) are kept
+    in sync by the update layer so back-compat callers still see the
+    expected values.
     """
-    now = _now_iso()
-    return update(item_id, user_authored=True, approved_at=now)
+    return update(item_id, authorship="agent_approved")
 
 
 def set_current(task_id: str, item_id: int | None) -> None:
@@ -292,17 +400,24 @@ def set_current(task_id: str, item_id: int | None) -> None:
 def is_executable(item: dict[str, Any]) -> bool:
     """Per ROADMAP §7: agent may only execute approved items.
 
-    Returns True iff the item is one of:
-      - ``user_authored == 1`` (the user wrote it; no approval needed)
-      - ``user_authored == 0 AND approved_at IS NOT NULL`` (the user
-        explicitly approved an agent-proposed item)
+    Slice 7 PR #70 fix #2: reads the ``authorship`` enum as the
+    canonical source.  Returns True iff the item's authorship is
+    one of {``'user'``, ``'agent_approved'``} AND its state is not
+    terminal (``'done'`` / ``'skipped'``).
 
-    Items in state ``done`` or ``skipped`` are also non-executable
-    (they're terminal); ``in_progress`` and ``pending`` are eligible.
+    Falls back to the legacy ``user_authored`` / ``approved_at``
+    pair when ``authorship`` is missing — covers in-memory dicts
+    constructed by tests or older call sites that haven't migrated.
     """
     state = item.get("state")
     if state in {"done", "skipped"}:
         return False
+    auth = item.get("authorship")
+    if auth in {"user", "agent_approved"}:
+        return True
+    if auth == "agent_unapproved":
+        return False
+    # Legacy fallback when authorship is absent (None / missing).
     if int(item.get("user_authored", 0) or 0) == 1:
         return True
     if item.get("approved_at"):
@@ -396,24 +511,35 @@ def reconcile_from_markdown(
         seen_seqs.add(seq)
         existing_row = existing_by_seq.get(seq)
         if existing_row is None:
+            # New bullet -- the user typed it directly into markdown.
+            # Origin = 'user'.
             create(
                 task_id=task_id, sequence=seq, description=desc,
-                user_authored=True,
+                authorship="user",
             )
             summary["added"] += 1
         elif existing_row.get("description") != desc:
+            # User edited an existing item's description in markdown.
+            # Edits are user authorship by definition; lift to 'user'
+            # if it wasn't already (PR #70 fix #2: edit IS rewrite).
             update(
                 int(existing_row["id"]),
                 description=desc,
-                user_authored=True,
+                authorship="user",
             )
             summary["updated"] += 1
         else:
-            # Already-correct row; if it was agent-proposed and
-            # appearing-in-markdown means user adopted it, flip the
-            # authorship flag idempotently.
-            if int(existing_row.get("user_authored") or 0) != 1:
-                update(int(existing_row["id"]), user_authored=True)
+            # Description is unchanged.  If the row was 'agent_unapproved'
+            # but now appears in markdown, the user adopted it -- promote
+            # to 'agent_approved' (preserves agent-origin provenance,
+            # PR #70 fix #2).  If it was already 'agent_approved' or
+            # 'user', leave it alone.
+            cur_auth = existing_row.get("authorship") or (
+                "user" if int(existing_row.get("user_authored") or 0) == 1
+                else ("agent_approved" if existing_row.get("approved_at") else "agent_unapproved")
+            )
+            if cur_auth == "agent_unapproved":
+                update(int(existing_row["id"]), authorship="agent_approved")
             summary["kept"] += 1
 
     for seq, row in existing_by_seq.items():

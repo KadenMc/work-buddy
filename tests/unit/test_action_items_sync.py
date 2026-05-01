@@ -122,19 +122,64 @@ def test_reconcile_deletes_removed_bullets(fresh_db):
     assert action_items.get(a["id"]) is None
 
 
-def test_reconcile_flips_authorship_on_user_adoption(fresh_db):
-    """An agent-proposed item that appears in the markdown is now
-    user-authored by definition."""
+def test_reconcile_promotes_unapproved_to_approved_on_user_adoption(fresh_db):
+    """PR #70 fix #2: an agent-proposed-and-unapproved item that now
+    appears in the markdown means the user adopted it.  Promote
+    authorship 'agent_unapproved' -> 'agent_approved' rather than
+    flipping to 'user' (which would erase agent origin).
+    """
     store.create(task_id="t-r-4", density="developed")
     a = action_items.create(
         task_id="t-r-4",
         description="agent proposed",
-        user_authored=False,
+        authorship="agent_unapproved",
     )
     body = "## Action items\n\n- agent proposed\n"
     summary = action_items.reconcile_from_markdown("t-r-4", body)
     assert summary["kept"] == 1
-    assert int(action_items.get(a["id"])["user_authored"]) == 1
+    row = action_items.get(a["id"])
+    assert row["authorship"] == "agent_approved"
+    # Origin preserved -- user_authored stays 0 because the user
+    # didn't write it from scratch.
+    assert row["user_authored"] == 0
+    # Approval timestamp got stamped by the promotion.
+    assert row["approved_at"] is not None
+    # is_executable admits the now-approved row.
+    assert action_items.is_executable(row) is True
+
+
+def test_reconcile_keeps_agent_approved_unchanged(fresh_db):
+    """An item already at 'agent_approved' that re-appears in
+    markdown should NOT get demoted or churned."""
+    store.create(task_id="t-r-4b", density="developed")
+    a = action_items.create(
+        task_id="t-r-4b",
+        description="already approved",
+        authorship="agent_approved",
+    )
+    original_approved_at = action_items.get(a["id"])["approved_at"]
+    body = "## Action items\n\n- already approved\n"
+    action_items.reconcile_from_markdown("t-r-4b", body)
+    row = action_items.get(a["id"])
+    assert row["authorship"] == "agent_approved"
+    assert row["approved_at"] == original_approved_at  # not bumped
+
+
+def test_reconcile_user_edited_description_lifts_to_user(fresh_db):
+    """A description the user edited in markdown is user-authored
+    by definition (the user rewrote it)."""
+    store.create(task_id="t-r-4c", density="developed")
+    a = action_items.create(
+        task_id="t-r-4c",
+        description="agent's original phrasing",
+        authorship="agent_approved",
+    )
+    body = "## Action items\n\n- the user's rewrite\n"
+    action_items.reconcile_from_markdown("t-r-4c", body)
+    row = action_items.get(a["id"])
+    assert row["description"] == "the user's rewrite"
+    assert row["authorship"] == "user"
+    assert row["user_authored"] == 1
 
 
 def test_reconcile_handles_empty_section(fresh_db):

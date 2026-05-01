@@ -125,9 +125,28 @@ CREATE TABLE IF NOT EXISTS task_action_items (
     agent_required_contexts TEXT,   -- JSON array, mirrors task_metadata
     user_required_contexts TEXT,
     definition_of_done TEXT,
+    -- ``user_authored`` + ``approved_at`` are RETAINED for back-compat
+    -- but ``authorship`` is now the canonical source of truth.  The
+    -- old fields are kept in sync by the CRUD layer so existing
+    -- callers keep working until they migrate.
     user_authored   INTEGER NOT NULL DEFAULT 0,
-                    -- 0 = agent proposed, 1 = user wrote/edited
-    approved_at     TEXT,            -- when user-approved an agent-proposed item
+                    -- DEPRECATED: 0 = agent proposed, 1 = user wrote/edited
+    approved_at     TEXT,
+                    -- DEPRECATED: when user-approved an agent-proposed item
+    -- ``authorship`` (Slice 7 PR #70 fix #2): single enum collapsing
+    -- (user_authored, approved_at) into one source of truth.  Values:
+    --   'user'              -- user wrote it from scratch (markdown OR
+    --                          direct create with user_authored=True)
+    --   'agent_approved'    -- agent proposed, user accepted via the
+    --                          develop-at-pickup flow OR by adopting it
+    --                          into the markdown
+    --   'agent_unapproved'  -- agent proposed, no user approval yet
+    -- The hallucination gate (is_executable) now checks
+    --   authorship in {'user', 'agent_approved'}
+    -- which matches the old (user_authored=1 OR approved_at IS NOT NULL)
+    -- semantics exactly while preserving agent-origin provenance
+    -- (the old flip-to-user_authored-on-adoption lost that).
+    authorship      TEXT NOT NULL DEFAULT 'agent_unapproved',
     completed_at    TEXT,
     handoff_package_path TEXT,       -- vault path to the prep package
     created_at      TEXT NOT NULL,
@@ -367,6 +386,38 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
         # nullable additions, which is what the descriptor signals.
         conn.execute(f"ALTER TABLE task_metadata ADD COLUMN {clause}")
         logger.info("task_metadata: added column %s", col_name)
+
+    # Slice 7 PR #70 fix #2: task_action_items.authorship column +
+    # one-shot backfill from (user_authored, approved_at).  The CREATE
+    # TABLE IF NOT EXISTS path covers fresh DBs; this branch handles
+    # existing DBs created before the enum column existed.
+    ai_existing = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(task_action_items)")
+    }
+    if ai_existing and "authorship" not in ai_existing:
+        # Add nullable first so existing rows tolerate the ALTER, then
+        # backfill, then SQLite handles NOT NULL via the table's own
+        # default for future inserts.
+        conn.execute(
+            "ALTER TABLE task_action_items ADD COLUMN authorship TEXT "
+            "NOT NULL DEFAULT 'agent_unapproved'"
+        )
+        # Backfill: user_authored=1 -> 'user';
+        # user_authored=0 + approved_at IS NOT NULL -> 'agent_approved';
+        # else -> 'agent_unapproved' (the column default).
+        conn.execute(
+            "UPDATE task_action_items SET authorship = 'user' "
+            "WHERE user_authored = 1"
+        )
+        conn.execute(
+            "UPDATE task_action_items SET authorship = 'agent_approved' "
+            "WHERE user_authored = 0 AND approved_at IS NOT NULL"
+        )
+        logger.info(
+            "task_action_items: added + backfilled authorship column"
+        )
+
     conn.commit()
 
 

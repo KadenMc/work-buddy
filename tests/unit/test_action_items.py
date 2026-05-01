@@ -139,15 +139,26 @@ def test_create_invalid_state_rejected(fresh_db):
 # ---------------------------------------------------------------------------
 
 
-def test_approve_flips_user_authored_and_stamps_approved_at(fresh_db):
+def test_approve_sets_authorship_to_agent_approved(fresh_db):
+    """PR #70 fix #2: approve() now sets authorship='agent_approved'
+    to preserve agent-origin provenance.  The legacy approved_at
+    field is still populated by the back-compat layer for callers
+    that read it; user_authored stays 0 because the user didn't
+    write it from scratch -- they accepted an agent proposal.
+    """
     store.create(task_id="t-ai-10")
     a = action_items.create(
-        task_id="t-ai-10", description="agent proposed", user_authored=False,
+        task_id="t-ai-10", description="agent proposed",
+        authorship="agent_unapproved",
     )
     action_items.approve(a["id"])
     row = action_items.get(a["id"])
-    assert row["user_authored"] == 1
+    assert row["authorship"] == "agent_approved"
     assert row["approved_at"] is not None
+    # Provenance preserved: agent origin not erased on approval.
+    assert row["user_authored"] == 0
+    # is_executable admits this row.
+    assert action_items.is_executable(row) is True
 
 
 def test_set_current_updates_task_metadata(fresh_db):
