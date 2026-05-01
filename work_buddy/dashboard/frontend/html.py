@@ -52,6 +52,10 @@ def _html() -> str:
         <button class="tab-btn active" data-tab="overview">Overview</button>
         <button class="tab-btn" data-tab="tasks">Tasks</button>
         <button class="tab-btn" data-tab="review">Review</button>
+        <button class="tab-btn" data-tab="review-queue"
+                title="Tier-3 outputs awaiting accept/revise/reject">Review Queue</button>
+        <button class="tab-btn" data-tab="daily-log"
+                title="Tier-4 autonomous actions, collapsible by category">Daily Log</button>
         <button class="tab-btn" data-tab="status">Status</button>
         <button class="tab-btn" data-tab="chats">Chats</button>
         <button class="tab-btn" data-tab="contracts">Contracts</button>
@@ -116,6 +120,50 @@ def _html() -> str:
     </div>
     <div id="review-narrative" class="review-narrative"></div>
     <div id="review-groups"><div class="loading">Loading review items...</div></div>
+</div>
+
+<!-- REVIEW QUEUE (Slice 4) — tier-3 outputs awaiting review.
+     Populated by /api/automation/review-queue. Each card is rendered
+     via the Slice 1.5 Resolution Surface primitives so the keyboard
+     layer (j/k/enter/r/s/?) and Defer / Re-direct affordances stay
+     consistent with the main Review tab. The two surfaces serve
+     different content shapes (pool entries vs task_metadata rows)
+     but share the UX language. -->
+<div class="tab-panel" id="panel-review-queue">
+    <div class="review-toolbar">
+        <div class="section-title">Review Queue
+            <span class="section-subtitle"
+                  title="Tier-3 outputs awaiting accept / revise / reject">
+                tier-3 surface · Slice 4
+            </span>
+        </div>
+        <button class="chats-accent-btn" onclick="loadReviewQueue()">Refresh</button>
+    </div>
+    <div id="review-queue-summary" class="review-narrative"></div>
+    <div id="review-queue-items"><div class="loading">Loading review queue...</div></div>
+</div>
+
+<!-- DAILY LOG (Slice 4) — tier-4 autonomous actions, collapsible by
+     category. Read-only in Slice 4; demote-category lands in a
+     follow-up. Reads /api/automation/daily-log. -->
+<div class="tab-panel" id="panel-daily-log">
+    <div class="review-toolbar">
+        <div class="section-title">Daily Log
+            <span class="section-subtitle"
+                  title="Tier-4 actions taken autonomously, grouped by category">
+                tier-4 surface · Slice 4
+            </span>
+        </div>
+        <select id="daily-log-window" class="chats-select"
+                onchange="loadDailyLog()" title="Look-back window">
+            <option value="1" selected>1 day</option>
+            <option value="3">3 days</option>
+            <option value="7">7 days</option>
+        </select>
+        <button class="chats-accent-btn" onclick="loadDailyLog()">Refresh</button>
+    </div>
+    <div id="daily-log-summary" class="review-narrative"></div>
+    <div id="daily-log-categories"><div class="loading">Loading daily log...</div></div>
 </div>
 
 <!-- Item-detail drawer. Persistent in the DOM, slides in/out from
