@@ -324,3 +324,26 @@ tools:
   # and ticked at least one account in its options page.
   thunderbird:
     enabled: false
+
+# Slice 4 — risk tolerance + amplifier policy.  Per-dimension ceilings
+# for autonomous action; anything above forces consent (caps the
+# operating tier at 2 = plan-and-execute).  Defaults are conservative;
+# bump up over time as trust builds.  See data/designs/gtd/ROADMAP.md
+# §3.4 + work_buddy/automation/risk.py for the full schema.
+risk_tolerance:
+  financial:
+    autonomous_max_cents: 50      # spend up to 50¢ without asking
+  privacy:
+    autonomous: none              # 'none' | 'internal' | 'public'
+  accuracy:
+    autonomous: low_stakes        # 'low_stakes' | 'consequential' | 'critical'
+  compute:
+    autonomous: background        # 'instant' | 'background' | 'expensive'
+
+# Risk-amplifier gates.  Each ON setting forces consent when the
+# named amplifier fires, regardless of how permissive the dimension
+# levels are.  Conservative defaults (all ON); set false to opt out.
+amplifier_policy:
+  irreversible_requires_consent: true
+  high_regret_requires_consent: true
+  high_inference_uncertainty_requires_consent: true
