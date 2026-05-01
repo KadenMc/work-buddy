@@ -116,6 +116,33 @@ looks like an actionable thought.
 If genuinely uncertain after weighting the hint, prefer ``refusal``
 over a low-confidence verdict. The downstream resurfacing system
 relies on verdicts being trustworthy.
+
+## Risk profile (Slice 4)
+
+For every ``task`` record, populate ``task_proposal.risk_profile``
+with the four-dimension + three-amplifier assessment. The downstream
+resolver uses this against the user's tolerance to decide how far the
+agent may take this autonomously. Inline-sent items are USER-INITIATED
+— the user just clicked send-to-agent — which is a strong signal that
+``inference_uncertainty`` is at most ``medium`` (the user picked this
+text on purpose). But errors are still possible (wrong project guess,
+ambiguous intent), so set ``high`` when applicable.
+
+  - ``financial_cents``: 0 unless the task involves spending.
+  - ``privacy``: ``none`` (local) | ``internal`` | ``public``.
+  - ``accuracy``: ``low_stakes`` | ``consequential`` | ``critical``.
+  - ``compute``: ``instant`` | ``background`` | ``expensive``.
+  - ``reversibility``: ``trivial`` | ``moderate`` | ``irreversible``.
+  - ``regret_potential``: ``low`` | ``medium`` | ``high``.
+  - ``inference_uncertainty``: default ``medium`` for inline sends;
+    ``low`` only when the hint or selection unambiguously names the
+    action; ``high`` when project/tone/intent are guessed.
+
+Be honest. A user-initiated capture with high regret potential still
+gates at the regret amplifier — V2b (honest signaling) trumps the
+"the user clicked send so it's fine" instinct. If you can't classify
+confidently, leave ``risk_profile`` unset (safe-profile fallback);
+NEVER fabricate a permissive profile.
 """
 
 

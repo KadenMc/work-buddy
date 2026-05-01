@@ -176,6 +176,48 @@ Bad:
   - "Thread asks about ETFs"  (that's the rationale)
   - the full first line of the thread verbatim
   - leaving the field empty
+
+## Risk profile (Slice 4)
+
+For every ``task`` record, populate ``task_proposal.risk_profile`` with
+a four-dimension + three-amplifier assessment of what would happen if
+the agent took this task end-to-end. The downstream resolver
+(``work_buddy.automation.risk``) reads this against the user's
+configured tolerance to decide how far the agent may go autonomously.
+
+  - ``financial_cents``: estimated max spend in cents. 0 for purely
+    informational or in-vault work. Use cents (50 ≠ $50).
+  - ``privacy``: ``none`` (local-only) | ``internal`` (trusted
+    services like calendar, vault) | ``public`` (sent email, public
+    commit). Most tasks are ``none`` or ``internal``.
+  - ``accuracy``: ``low_stakes`` (tab close, draft) | ``consequential``
+    (refactor, structural change) | ``critical`` (medical, legal,
+    publication-bound claim).
+  - ``compute``: ``instant`` | ``background`` (cron-class, <5min) |
+    ``expensive`` (ML training, ≥$1 cost). Default ``background``
+    when uncertain — most agent tasks fit there.
+  - ``reversibility``: ``trivial`` | ``moderate`` (git-revert
+    possible) | ``irreversible`` (sent email, deleted thing,
+    committed transaction).
+  - ``regret_potential``: ``low`` | ``medium`` | ``high``. High when
+    the action would be embarrassing or relationship-damaging if
+    wrong (email under user's name, public-facing post,
+    decision-on-user's-behalf).
+  - ``inference_uncertainty``: ``low`` | ``medium`` | ``high``.
+    DEFAULT ``medium`` for any task you didn't see the user invoke
+    in the same thread. Set ``high`` when you're guessing about
+    project assignment, tone, or whether the user wants this done.
+    Set ``low`` only when the user explicitly says "do X to Y."
+
+Be honest. The user reads this to calibrate trust. Underestimating
+high-regret or high-uncertainty work is a worse failure than being
+slightly conservative — V2b (honest signaling) is the load-bearing
+value here.
+
+If you can't classify confidently, leave ``risk_profile`` unset; the
+system falls back to a conservative safe-profile that caps autonomy
+at the lowest dimension level. NEVER fabricate a permissive profile
+to make the user's queue look smaller.
 """
 
 
