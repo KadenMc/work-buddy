@@ -19,6 +19,35 @@ from typing import Any
 import httpx
 
 
+# Operational/recoverable kinds — these represent conditions where the
+# caller has a fallback path (different tier, retry later) and the
+# ``hint`` is user-actionable. The runner logs these as one-line
+# WARNINGs without a traceback because the wall-of-text from
+# ``logger.exception`` is noise: nothing was unexpected, and the
+# adapter that called us is going to log a more contextual WARNING of
+# its own.
+#
+# Anything NOT in this set ("malformed_response", "unknown") suggests
+# either a bug in our integration or an unmodeled failure mode — those
+# get a full ERROR + traceback because we want to find them.
+#
+# When you add a new ``kind`` to ``LocalInferenceError``'s docstring,
+# decide its severity here in the same edit. Membership is consulted
+# by ``LocalInferenceError.is_recoverable``; nothing else reads it.
+_RECOVERABLE_KINDS: frozenset[str] = frozenset({
+    "timeout",
+    "server_unreachable",
+    "model_not_available",
+    "model_unsupported",
+    "context_exceeded",
+    "lm_link_dropped",
+    "mcp_gateway_timeout",
+    "mcp_fetch_failed",
+    "bad_request",
+    "server_error",
+})
+
+
 class LocalInferenceError(Exception):
     """Structured error for local inference failures.
 
@@ -64,6 +93,27 @@ class LocalInferenceError(Exception):
         self.kind = kind
         self.hint = hint
         self.raw = raw
+
+    @property
+    def is_recoverable(self) -> bool:
+        """Whether this represents an operational, caller-handled condition.
+
+        ``True`` for kinds where the caller is expected to fall back to
+        another tier or surface the hint to the user — these should be
+        logged at WARNING without a traceback. ``False`` for kinds that
+        suggest a bug (``unknown``, ``malformed_response``) — those want
+        a full stack trace.
+        """
+        return self.kind in _RECOVERABLE_KINDS
+
+    def format_caller_message(self) -> str:
+        """Combine the message and hint into one string for embedding
+        in a caller-facing error field (e.g. ``TaskResult.error``).
+
+        Centralized so the "append hint if present" idiom doesn't get
+        duplicated at every catch site.
+        """
+        return str(self) + (f" Hint: {self.hint}" if self.hint else "")
 
     def to_dict(self, *, model: str = "") -> dict[str, Any]:
         """Serialize for inclusion in an agent-facing response payload."""
