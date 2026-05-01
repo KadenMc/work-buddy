@@ -1952,7 +1952,7 @@
         ],
         "optional": true,
         "invokes": [
-          "day_planner_generate_and_write"
+          "day_planner"
         ]
       }
     ],
