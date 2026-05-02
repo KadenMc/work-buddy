@@ -366,13 +366,13 @@ class TestThreadEvent:
             "parent_event_id": 41,
             "timestamp": "2026-05-02T00:00:00+00:00",
             "migration_id": None,
-            "inference_tier": "FRONTIER_FAST",
+            "inference_tier": "frontier_fast",
         }
         e = ThreadEvent.from_row(row)
         assert e.id == 42
         assert e.data == {"foo": "bar"}
         assert e.parent_event_id == 41
-        assert e.inference_tier == "FRONTIER_FAST"
+        assert e.inference_tier == "frontier_fast"
 
 
 # ---------------------------------------------------------------------------
@@ -524,4 +524,4 @@ class TestProposal:
         d = p.to_dict()
         assert d["target"] == "intent"
         assert d["confidence"] == 0.82
-        assert d["tier_used"] == "FRONTIER_BALANCED"
+        assert d["tier_used"] == "frontier_balanced"

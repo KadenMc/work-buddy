@@ -114,21 +114,26 @@ class InferenceTarget(str, Enum):
 
 
 class ReasoningTier(str, Enum):
-    """The 8-tier reasoning ladder.
+    """The reasoning-tier ladder.
 
     The first 5 are existing tiers from work_buddy/llm/tiers.py and are
     reused. The last 2 (AGENT_HEADLESS, USER) are new in v5.
 
+    Values are lowercase to match the strings used by
+    ``work_buddy.llm.tiers.ModelTier`` (so cost-log entries, queue
+    rows, and event ``inference_tier`` annotations interop without
+    case-conversion).
+
     See DESIGN.md §9.2.
     """
 
-    LOCAL_TOOL_CALLING = "LOCAL_TOOL_CALLING"
-    LOCAL_FAST = "LOCAL_FAST"
-    FRONTIER_FAST = "FRONTIER_FAST"
-    FRONTIER_BALANCED = "FRONTIER_BALANCED"
-    FRONTIER_BEST = "FRONTIER_BEST"
-    AGENT_HEADLESS = "AGENT_HEADLESS"  # multi-turn agent w/ tools (v5)
-    USER = "USER"                       # human-in-the-loop (v5)
+    LOCAL_TOOL_CALLING = "local_tool_calling"
+    LOCAL_FAST = "local_fast"
+    FRONTIER_FAST = "frontier_fast"
+    FRONTIER_BALANCED = "frontier_balanced"
+    FRONTIER_BEST = "frontier_best"
+    AGENT_HEADLESS = "agent_headless"  # multi-turn agent w/ tools (v5)
+    USER = "user"                       # human-in-the-loop (v5)
 
 
 class InvocationContext(str, Enum):

@@ -335,12 +335,12 @@ class TestEventLog:
         ))
         e2 = store.append_event(ThreadEvent(
             thread_id=t.thread_id, kind=KIND_INTENT_INFERRED,
-            actor=ACTOR_AGENT, inference_tier="FRONTIER_FAST",
+            actor=ACTOR_AGENT, inference_tier="frontier_fast",
         ))
         events = store.list_events(t.thread_id, kinds=[KIND_INTENT_INFERRED])
         assert len(events) == 1
         assert events[0].id == e2.id
-        assert events[0].inference_tier == "FRONTIER_FAST"
+        assert events[0].inference_tier == "frontier_fast"
 
     def test_cross_thread_linked_events_via_migration_id(self, fresh_db):
         a = Thread()
@@ -374,7 +374,7 @@ class TestEventLog:
         payload = {"intent": "schedule", "supporting_refs": ["ref-1", "ref-2"]}
         e = store.append_event(ThreadEvent(
             thread_id=t.thread_id, kind=KIND_INTENT_INFERRED,
-            actor=ACTOR_AGENT, data=payload, inference_tier="FRONTIER_FAST",
+            actor=ACTOR_AGENT, data=payload, inference_tier="frontier_fast",
         ))
         events = store.list_events(t.thread_id)
         assert events[0].data == payload

@@ -178,10 +178,10 @@ class AutonomyPolicy:
                 InvocationContext(c) for c in d.get("allowed_invocation_contexts", [])
             ) or frozenset(InvocationContext),
             inference_floor_tier=ReasoningTier(
-                d.get("inference_floor_tier", "FRONTIER_FAST")
+                d.get("inference_floor_tier", "frontier_fast")
             ),
             inference_ceiling_tier=ReasoningTier(
-                d.get("inference_ceiling_tier", "AGENT_HEADLESS")
+                d.get("inference_ceiling_tier", "agent_headless")
             ),
             budget_usd=float(d.get("budget_usd", 0.50)),
         )
