@@ -1,0 +1,489 @@
+"""SQLite-backed store for v5 Threads and their event log.
+
+Stage 1.3 deliverable: schema, idempotent migration, and *minimum*
+CRUD scaffolding for ``threads`` and ``thread_events`` tables. The
+behaviour built on top (FSM engine, inference workers, Resolution
+Surface publication) lands in Stage 2.
+
+Two-table schema:
+
+- ``threads``        — current-state cache (Thread fields + JSON-blob
+                        columns for autonomy_policy, context_items,
+                        risk_profile, inciting_event_summary).
+- ``thread_events``  — append-only event log; each row is a
+                        ``ThreadEvent`` (DESIGN.md §13). Optimistic
+                        locking: ``parent_event_id`` on submit must
+                        match the latest event for that thread.
+
+Helpers:
+- ``get_connection()`` — opens the DB, ensures schema.
+- ``insert_thread()`` — INSERT a fresh Thread row.
+- ``get_thread()`` — SELECT one Thread by ID.
+- ``list_threads()`` — paginated list with optional state filter.
+- ``update_thread_state()`` — write the current-state cache.
+- ``append_event()`` — insert one event with optimistic-lock check.
+- ``list_events()`` — replay a Thread's event log in order.
+- ``latest_event_id()`` — fast lookup of the most recent event id.
+- ``rebuild_state_from_events()`` — derive current state from log
+  (rarely used; the cache is normally authoritative for queries).
+
+See DESIGN.md §13 for the canonical event-log model.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import sqlite3
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Iterable, Optional
+
+from work_buddy.threads.events import (
+    ALL_KINDS,
+    OptimisticLockConflict,
+    ThreadEvent,
+    validate_kind,
+)
+from work_buddy.threads.models import Thread
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Path resolution
+# ---------------------------------------------------------------------------
+
+
+def _db_path() -> Path:
+    """Resolve the threads DB path. Tests monkeypatch this to redirect."""
+    from work_buddy.paths import resolve
+    return resolve("db/threads")
+
+
+# ---------------------------------------------------------------------------
+# Schema
+# ---------------------------------------------------------------------------
+
+
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS threads (
+    -- Core identity & hierarchy
+    thread_id                  TEXT PRIMARY KEY,
+    parent_id                  TEXT,
+    subtype                    TEXT,           -- 'task' | NULL
+
+    -- Current-state cache (DESIGN.md says events are canonical;
+    -- this column exists for query convenience)
+    fsm_state                  TEXT NOT NULL DEFAULT 'proposed',
+
+    -- Optimistic-lock target on the next state transition.
+    -- NULL for never-transitioned threads.
+    parent_event_id            INTEGER,
+
+    -- JSON blobs (composed/serialised dataclass shapes)
+    autonomy_policy_json       TEXT NOT NULL DEFAULT '{}',
+    context_items_json         TEXT NOT NULL DEFAULT '[]',
+    risk_profile_json          TEXT NOT NULL DEFAULT '{}',
+    inciting_event_summary_json TEXT NOT NULL DEFAULT '{}',
+
+    -- Sub-Thread focus pointer (formerly current_action_item_id on
+    -- task_metadata; lives on Thread now since action items are
+    -- sub-threads). Points at a child Thread.
+    current_focus_thread_id    TEXT,
+
+    -- Lifecycle timestamps
+    created_at                 TEXT NOT NULL,
+    updated_at                 TEXT NOT NULL,
+    archived_at                TEXT,
+
+    FOREIGN KEY (parent_id) REFERENCES threads(thread_id) ON DELETE CASCADE,
+    FOREIGN KEY (current_focus_thread_id) REFERENCES threads(thread_id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_threads_parent
+    ON threads(parent_id);
+CREATE INDEX IF NOT EXISTS idx_threads_state
+    ON threads(fsm_state);
+CREATE INDEX IF NOT EXISTS idx_threads_subtype
+    ON threads(subtype);
+
+
+CREATE TABLE IF NOT EXISTS thread_events (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    thread_id       TEXT NOT NULL,
+
+    -- Event kind (one of work_buddy.threads.events.ALL_KINDS)
+    kind            TEXT NOT NULL,
+
+    -- Who triggered this event (work_buddy.threads.events.ACTOR_*)
+    actor           TEXT NOT NULL,
+
+    -- Reasoning tier for inference events (NULL otherwise)
+    inference_tier  TEXT,
+
+    -- Wall-clock timestamp (ISO 8601)
+    timestamp       TEXT NOT NULL,
+
+    -- Event-specific payload
+    data_json       TEXT NOT NULL DEFAULT '{}',
+
+    -- Optimistic-lock target: the latest event ID the actor saw
+    -- before deciding. Insert fails (raises OptimisticLockConflict)
+    -- if a newer event landed for this thread first.
+    parent_event_id INTEGER,
+
+    -- Cross-Thread linked-event marker (e.g. context migration).
+    -- Two events from different threads sharing a migration_id
+    -- form one logical operation.
+    migration_id    TEXT,
+
+    FOREIGN KEY (thread_id) REFERENCES threads(thread_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_thread_events_thread_kind
+    ON thread_events(thread_id, kind);
+CREATE INDEX IF NOT EXISTS idx_thread_events_thread_id_pk
+    ON thread_events(thread_id, id);
+CREATE INDEX IF NOT EXISTS idx_thread_events_migration
+    ON thread_events(migration_id) WHERE migration_id IS NOT NULL;
+"""
+
+
+def get_connection() -> sqlite3.Connection:
+    """Open the threads DB with WAL + FK enforcement; ensure schema."""
+    path = _db_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(path), timeout=10)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.executescript(_SCHEMA)
+    conn.commit()
+    return conn
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _dump_json(value: Any) -> str:
+    if value is None:
+        return "{}"
+    return json.dumps(value, default=str)
+
+
+# ---------------------------------------------------------------------------
+# Thread CRUD
+# ---------------------------------------------------------------------------
+
+
+def insert_thread(
+    thread: Thread, *, conn: Optional[sqlite3.Connection] = None,
+) -> Thread:
+    """Insert a fresh Thread row.
+
+    Returns the same Thread (no surprises). The caller is responsible
+    for also calling :func:`append_event` with a ``thread_created``
+    event to start the event log; this helper does NOT auto-write
+    that event because the parent_event_id semantics depend on
+    whether an inciting_event was already recorded.
+    """
+    own_conn = conn is None
+    if own_conn:
+        conn = get_connection()
+    try:
+        conn.execute(
+            """INSERT INTO threads
+               (thread_id, parent_id, subtype, fsm_state, parent_event_id,
+                autonomy_policy_json, context_items_json,
+                risk_profile_json, inciting_event_summary_json,
+                current_focus_thread_id,
+                created_at, updated_at, archived_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                thread.thread_id,
+                thread.parent_id,
+                thread.subtype,
+                thread.fsm_state.value,
+                thread.parent_event_id,
+                _dump_json(thread.autonomy_policy.to_dict()),
+                _dump_json([c.to_dict() for c in thread.context_items]),
+                _dump_json(thread.risk_profile),
+                _dump_json(thread.inciting_event_summary),
+                thread.current_focus_thread_id,
+                thread.created_at,
+                thread.updated_at,
+                thread.archived_at,
+            ),
+        )
+        conn.commit()
+        return thread
+    finally:
+        if own_conn:
+            conn.close()
+
+
+def get_thread(
+    thread_id: str, *, conn: Optional[sqlite3.Connection] = None,
+) -> Optional[Thread]:
+    own_conn = conn is None
+    if own_conn:
+        conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT * FROM threads WHERE thread_id = ?", (thread_id,)
+        ).fetchone()
+        return Thread.from_row(dict(row)) if row else None
+    finally:
+        if own_conn:
+            conn.close()
+
+
+def list_threads(
+    *,
+    state: Optional[str] = None,
+    subtype: Optional[str] = None,
+    parent_id: Optional[str] = None,
+    limit: int = 100,
+    conn: Optional[sqlite3.Connection] = None,
+) -> list[Thread]:
+    own_conn = conn is None
+    if own_conn:
+        conn = get_connection()
+    try:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if state is not None:
+            clauses.append("fsm_state = ?")
+            params.append(state)
+        if subtype is not None:
+            clauses.append("subtype IS ?")
+            params.append(subtype)
+        if parent_id is not None:
+            clauses.append("parent_id IS ?")
+            params.append(parent_id)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        params.append(limit)
+        rows = conn.execute(
+            f"SELECT * FROM threads{where} "
+            f"ORDER BY updated_at DESC LIMIT ?",
+            params,
+        ).fetchall()
+        return [Thread.from_row(dict(r)) for r in rows]
+    finally:
+        if own_conn:
+            conn.close()
+
+
+def update_thread_state(
+    thread_id: str,
+    *,
+    fsm_state: Optional[str] = None,
+    parent_event_id: Optional[int] = None,
+    current_focus_thread_id: Optional[str] = None,
+    archived_at: Optional[str] = None,
+    conn: Optional[sqlite3.Connection] = None,
+) -> bool:
+    """Update mutable fields of the current-state cache.
+
+    Returns True if a row was updated.
+
+    NOTE: this is a *cache* update. The canonical state lives in the
+    event log; the cache exists for query convenience. The Stage 2
+    FSM engine will update the cache as part of writing each
+    transition event; ad-hoc callers should generally not use this
+    directly.
+    """
+    own_conn = conn is None
+    if own_conn:
+        conn = get_connection()
+    try:
+        sets: list[str] = ["updated_at = ?"]
+        params: list[Any] = [_now_iso()]
+        if fsm_state is not None:
+            sets.append("fsm_state = ?")
+            params.append(fsm_state)
+        if parent_event_id is not None:
+            sets.append("parent_event_id = ?")
+            params.append(parent_event_id)
+        if current_focus_thread_id is not None:
+            sets.append("current_focus_thread_id = ?")
+            params.append(current_focus_thread_id)
+        if archived_at is not None:
+            sets.append("archived_at = ?")
+            params.append(archived_at)
+        params.append(thread_id)
+        cur = conn.execute(
+            f"UPDATE threads SET {', '.join(sets)} WHERE thread_id = ?",
+            params,
+        )
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        if own_conn:
+            conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Event log
+# ---------------------------------------------------------------------------
+
+
+def append_event(
+    event: ThreadEvent,
+    *,
+    expect_parent_event_id: Any = "USE_EVENT_FIELD",
+    conn: Optional[sqlite3.Connection] = None,
+) -> ThreadEvent:
+    """Append an event to a Thread's log with optimistic-lock check.
+
+    The lock target is taken from ``event.parent_event_id`` unless the
+    caller passes an explicit ``expect_parent_event_id`` (use the
+    sentinel value to opt out of the check entirely).
+
+    Raises:
+        :class:`work_buddy.threads.events.OptimisticLockConflict` if
+        a newer event has landed for this thread.
+        ``ValueError`` if ``event.kind`` is not in the canonical
+        catalog.
+
+    Returns the same event with ``event.id`` populated.
+    """
+    validate_kind(event.kind)
+
+    own_conn = conn is None
+    if own_conn:
+        conn = get_connection()
+    try:
+        # Optimistic-lock check
+        if expect_parent_event_id == "USE_EVENT_FIELD":
+            expect_parent_event_id = event.parent_event_id
+        if expect_parent_event_id is not None:
+            latest = latest_event_id(event.thread_id, conn=conn)
+            if latest != expect_parent_event_id:
+                raise OptimisticLockConflict(
+                    f"Thread {event.thread_id} latest event "
+                    f"is {latest!r}, expected "
+                    f"{expect_parent_event_id!r}; re-read and retry.",
+                )
+
+        cur = conn.execute(
+            """INSERT INTO thread_events
+               (thread_id, kind, actor, inference_tier, timestamp,
+                data_json, parent_event_id, migration_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                event.thread_id,
+                event.kind,
+                event.actor,
+                event.inference_tier,
+                event.timestamp,
+                _dump_json(event.data),
+                event.parent_event_id,
+                event.migration_id,
+            ),
+        )
+        event.id = cur.lastrowid
+        conn.commit()
+        return event
+    finally:
+        if own_conn:
+            conn.close()
+
+
+def list_events(
+    thread_id: str,
+    *,
+    kinds: Optional[Iterable[str]] = None,
+    limit: Optional[int] = None,
+    conn: Optional[sqlite3.Connection] = None,
+) -> list[ThreadEvent]:
+    own_conn = conn is None
+    if own_conn:
+        conn = get_connection()
+    try:
+        clauses = ["thread_id = ?"]
+        params: list[Any] = [thread_id]
+        if kinds:
+            placeholders = ", ".join("?" * len(list(kinds)))
+            clauses.append(f"kind IN ({placeholders})")
+            params.extend(kinds)
+        sql = (
+            f"SELECT * FROM thread_events WHERE {' AND '.join(clauses)} "
+            f"ORDER BY id ASC"
+        )
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(limit)
+        rows = conn.execute(sql, params).fetchall()
+        return [ThreadEvent.from_row(dict(r)) for r in rows]
+    finally:
+        if own_conn:
+            conn.close()
+
+
+def latest_event_id(
+    thread_id: str, *, conn: Optional[sqlite3.Connection] = None,
+) -> Optional[int]:
+    own_conn = conn is None
+    if own_conn:
+        conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT id FROM thread_events WHERE thread_id = ? "
+            "ORDER BY id DESC LIMIT 1",
+            (thread_id,),
+        ).fetchone()
+        return row["id"] if row else None
+    finally:
+        if own_conn:
+            conn.close()
+
+
+def get_linked_events(
+    migration_id: str, *, conn: Optional[sqlite3.Connection] = None,
+) -> list[ThreadEvent]:
+    """Return the linked events sharing a ``migration_id``.
+
+    Used for cross-Thread audit (e.g. a context-migration produces
+    one ``context_removed`` on the source Thread + one
+    ``context_added`` on the destination, both sharing a single
+    migration_id).
+    """
+    own_conn = conn is None
+    if own_conn:
+        conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM thread_events WHERE migration_id = ? "
+            "ORDER BY id ASC",
+            (migration_id,),
+        ).fetchall()
+        return [ThreadEvent.from_row(dict(r)) for r in rows]
+    finally:
+        if own_conn:
+            conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Auto-init on first import (best-effort; failures are non-fatal so
+# this module can be imported in environments without a writable
+# data dir, e.g. doc generation).
+# ---------------------------------------------------------------------------
+
+
+def _init_schema_safe() -> None:
+    try:
+        conn = get_connection()
+        conn.close()
+    except Exception as e:
+        logger.warning("Threads store schema init skipped: %s", e)
+
+
+_init_schema_safe()
