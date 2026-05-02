@@ -19,6 +19,14 @@ from typing import Any, Callable
 
 from work_buddy.frontmatter import parse_frontmatter
 
+# v5 Stage 1.5: capability/workflow definitions get four new fields
+# (is_action, available_in, intrinsic_amplifiers,
+# parameter_schema_for_action, requires_post_review). The
+# InvocationContext enum lives in work_buddy.threads.enums (a
+# pure-data module with no other work_buddy deps, so this import is
+# cycle-safe).
+from work_buddy.threads.enums import InvocationContext
+
 logger = logging.getLogger(__name__)
 
 _REPO_ROOT = Path(__file__).parent.parent.parent
@@ -68,6 +76,51 @@ class Capability:
     # rule. Capabilities with a manifest MUST be idempotent on retry —
     # the partial-state recovery path retries the full capability.
     effects: list[Any] = field(default_factory=list)  # list[EffectSpec]
+
+    # ---------------- v5 Stage 1.5 fields (defaults preserve v4) ----
+    # See data/designs/gtd/reimagined/DESIGN.md §10.
+
+    # Whether this capability appears in the v5 Action Catalog (i.e.
+    # whether action inference may propose it as the action to take
+    # for a Thread). False by default; capabilities the FSM should
+    # be able to dispatch as Standard Actions opt in by setting True.
+    is_action: bool = False
+
+    # Per DESIGN.md §10.3 — set of contexts where this capability is
+    # discoverable / callable. The default mirrors what existing v4
+    # capabilities expect: every context EXCEPT FSM_INTERNAL (which
+    # is reserved for FSM-engine-only operations the agent should
+    # never see directly). Sensitive capabilities and FSM internals
+    # override this set.
+    available_in: set[InvocationContext] = field(
+        default_factory=lambda: {
+            InvocationContext.AGENT_CONVERSATION,
+            InvocationContext.AGENT_AUTONOMOUS,
+            InvocationContext.ACTION_PROPOSAL,
+            InvocationContext.USER_INVOCATION,
+        }
+    )
+
+    # Per DESIGN.md §10.4 — risk amplifiers intrinsic to the action
+    # (regardless of caller / thread). Composed with Thread.risk_profile
+    # at execution time. e.g. ``send_email`` → {"reversibility":
+    # "irreversible", "regret_potential": "high"}.
+    intrinsic_amplifiers: dict[str, str] = field(default_factory=dict)
+
+    # If is_action=True: the JSONSchema (or simplified parameter
+    # spec) the inference module proposes parameters against. Falls
+    # back to the existing ``parameters`` field if not set, but
+    # action templates with non-trivial parameter shapes should
+    # provide an explicit schema.
+    parameter_schema_for_action: dict[str, Any] = field(default_factory=dict)
+
+    # Per DESIGN.md §7.2 / §7.7 (R7.6) — when the FSM dispatches this
+    # action, should the resulting Thread enter `awaiting_review`
+    # after `executing` succeeds? Most actions do NOT (False, default
+    # — the Thread goes straight to `done`). Action templates that
+    # produce output the user must validate (drafts, summaries,
+    # decompositions) opt in by setting True.
+    requires_post_review: bool = False
 
 
 @dataclass
@@ -151,6 +204,28 @@ class WorkflowDefinition:
     # the `requires` of capabilities named in `step.invokes`. Do not
     # hand-author; see `_compute_workflow_requires()`.
     requires: list[str] = field(default_factory=list)
+
+    # ---------------- v5 Stage 1.5 fields (defaults preserve v4) ----
+    # See DESIGN.md §10. Workflows can also be Action Catalog
+    # entries (i.e. a Standard Action whose execution dispatches
+    # into the workflow conductor). The fields mirror Capability's.
+
+    is_action: bool = False
+    available_in: set[InvocationContext] = field(
+        default_factory=lambda: {
+            InvocationContext.AGENT_CONVERSATION,
+            InvocationContext.AGENT_AUTONOMOUS,
+            InvocationContext.ACTION_PROPOSAL,
+            InvocationContext.USER_INVOCATION,
+        }
+    )
+    intrinsic_amplifiers: dict[str, str] = field(default_factory=dict)
+    parameter_schema_for_action: dict[str, Any] = field(default_factory=dict)
+    requires_post_review: bool = False
+
+    # Forward-looking: if a graduated improvised action got promoted
+    # into the catalog, record the originating Thread for provenance.
+    improvised_origin_thread_id: str | None = None
 
 
 # ---------------------------------------------------------------------------

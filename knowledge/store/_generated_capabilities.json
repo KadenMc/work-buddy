@@ -3810,6 +3810,7 @@
       "contract_health",
       "contract_wip_check",
       "contracts_summary",
+      "conversation_list",
       "datacore_compile_plan",
       "datacore_evaluate",
       "datacore_fullquery",
@@ -3851,7 +3852,6 @@
       "task_review_inbox",
       "task_scattered",
       "task_stale_check",
-      "thread_list",
       "triage_item_detail",
       "weekly_review_data"
     ],
