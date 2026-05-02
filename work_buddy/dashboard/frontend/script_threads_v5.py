@@ -295,9 +295,12 @@ def _threads_v5_script() -> str:
             + '</div>'
             + '<div class="threads-v5-toplist-row-actions" '
             +   'onclick="event.stopPropagation()">'
-            +   '<button class="threads-v5-btn-icon" title="Later (6h)" '
+            +   '<button class="threads-v5-btn-icon" '
+            +     'title="Later — left-click defers 6h; right-click for options" '
             +     'onclick="threadCommitAction(\'' + _esc(t.thread_id)
-            +     '\', \'later\', {hours: 6})">'
+            +     '\', \'later\', {hours: 6})" '
+            +     'oncontextmenu="event.preventDefault();'
+            +     'threadsShowLaterPopup(this, \'' + _esc(t.thread_id) + '\')">'
             +     '<svg width="14" height="14" viewBox="0 0 24 24" '
             +       'fill="none" stroke="currentColor" stroke-width="2" '
             +       'stroke-linecap="round" stroke-linejoin="round">'
@@ -357,6 +360,57 @@ def _threads_v5_script() -> str:
     window.invalidateThreadCache = function (threadId) {
         if (threadId) delete window._threadDetailCache[threadId];
         else window._threadDetailCache = {};
+    };
+
+    // ----- Later hover popup ------------------------------------------
+    //
+    // UX.md §13.3 — quick-pick durations. The Later button on
+    // every card has a hover-popup with: +1h / +3h / +6h / +12h /
+    // +24h / next week. Default click (if popup not engaged) =
+    // 6h (matches the backend default).
+
+    const _laterDurations = [
+        { hours: 1, label: '+1h' },
+        { hours: 3, label: '+3h' },
+        { hours: 6, label: '+6h (default)' },
+        { hours: 12, label: '+12h' },
+        { hours: 24, label: '+24h' },
+        { hours: 24 * 7, label: 'next week' },
+    ];
+
+    window.threadsShowLaterPopup = function (anchorEl, threadId) {
+        // Remove any existing popup
+        document.querySelectorAll('.threads-v5-later-popup').forEach(p => p.remove());
+        const popup = document.createElement('div');
+        popup.className = 'threads-v5-later-popup';
+        for (const d of _laterDurations) {
+            const btn = document.createElement('button');
+            btn.className = 'threads-v5-later-option';
+            btn.textContent = d.label;
+            btn.onclick = (e) => {
+                e.stopPropagation();
+                popup.remove();
+                threadCommitAction(threadId, 'later', { hours: d.hours });
+            };
+            popup.appendChild(btn);
+        }
+        // Position near the anchor
+        const rect = anchorEl.getBoundingClientRect();
+        popup.style.position = 'fixed';
+        popup.style.top = (rect.bottom + 4) + 'px';
+        popup.style.left = rect.left + 'px';
+        document.body.appendChild(popup);
+
+        // Click-outside-to-close
+        const close = (ev) => {
+            if (!popup.contains(ev.target) && ev.target !== anchorEl) {
+                popup.remove();
+                document.removeEventListener('mousedown', close);
+            }
+        };
+        // Defer attach so the click that opened the popup doesn't
+        // immediately close it
+        setTimeout(() => document.addEventListener('mousedown', close), 50);
     };
 
     // Wire footer button clicks into the backend.
@@ -673,6 +727,34 @@ def _threads_v5_styles() -> str:
     display: flex;
     align-items: center;
     gap: 4px;
+}
+
+/* Stage 4.10 — Later hover popup */
+.threads-v5-later-popup {
+    background: var(--bg, #0a0a0a);
+    border: 1px solid var(--border, #333);
+    border-radius: 6px;
+    padding: 4px;
+    box-shadow: 0 4px 18px rgba(0, 0, 0, 0.6);
+    z-index: 2000;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 140px;
+}
+
+.threads-v5-later-option {
+    background: transparent;
+    color: var(--text, #ddd);
+    border: none;
+    border-radius: 4px;
+    padding: 6px 14px;
+    text-align: left;
+    font-size: 13px;
+    cursor: pointer;
+}
+.threads-v5-later-option:hover {
+    background: var(--bg-tertiary, #1a1a1a);
 }
 
 .threads-v5-demo-row {
