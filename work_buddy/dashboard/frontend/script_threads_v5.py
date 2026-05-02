@@ -729,6 +729,36 @@ def _threads_v5_styles() -> str:
     gap: 4px;
 }
 
+/* Stage 4.15 — Legacy-tabs toggle */
+.tab-btn-toggle {
+    background: transparent;
+    color: var(--text-muted, #888);
+    border: 1px solid var(--border, #333);
+    border-radius: 4px;
+    padding: 4px 9px;
+    font-size: 11px;
+    cursor: pointer;
+    margin-left: 6px;
+}
+.tab-btn-toggle:hover {
+    color: var(--text, #ddd);
+    border-color: var(--accent, #4a7fc1);
+}
+.tab-btn-toggle.active {
+    background: var(--accent, #4a7fc1);
+    color: white;
+    border-color: var(--accent, #4a7fc1);
+}
+
+/* Hide v4 legacy tabs when the toggle is OFF. */
+body.hide-legacy-tabs .tab-btn[data-tab="today"],
+body.hide-legacy-tabs .tab-btn[data-tab="review"],
+body.hide-legacy-tabs .tab-btn[data-tab="review-queue"],
+body.hide-legacy-tabs .tab-btn[data-tab="daily-log"],
+body.hide-legacy-tabs .tab-btn[data-tab="engage"] {
+    display: none !important;
+}
+
 /* Stage 4.10 — Later hover popup */
 .threads-v5-later-popup {
     background: var(--bg, #0a0a0a);

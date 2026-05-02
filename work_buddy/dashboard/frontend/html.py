@@ -72,6 +72,12 @@ def _html() -> str:
              is still registered in staticLoaders, but it's not part of
              the primary navigation rhythm. -->
         <button class="tab-btn" data-tab="settings" style="display:none" aria-hidden="true"></button>
+        <!-- Stage 4.15: legacy-tabs toggle. Default-OFF hides v4 tabs
+             (Today / Review / Review Queue / Daily Log / Engage)
+             since v5 Threads is the canonical surface. -->
+        <button class="tab-btn-toggle" id="legacy-tabs-toggle"
+                title="Show v4 legacy tabs (Today / Review / Review Queue / Daily Log / Engage)"
+                onclick="toggleLegacyTabs()">v4</button>
     </div>
     <div class="tab-bar-right" id="workflow-tabs"></div>
 </nav>
