@@ -35,6 +35,10 @@ from .script_resolution import (
     _resolution_surface_script,
     _resolution_surface_styles,
 )
+from .script_resolution_surface_v5 import (
+    _resolution_surface_v5_script,
+    _resolution_surface_v5_styles,
+)
 from .script_review import _review_script
 from .script_settings import _settings_script
 from .script_conversations import _conversation_chat_script
@@ -74,6 +78,7 @@ def render_page() -> str:
         # _triage_review_script). The Resolution Surface mounts onto
         # the existing renderer rather than replacing it.
         _resolution_surface_script(),
+        _resolution_surface_v5_script(),
         _review_script(),
         _automation_script(),
         _today_script(),
@@ -91,6 +96,7 @@ def render_page() -> str:
     <link rel="icon" type="image/svg+xml" href="/favicon.svg">
     <style>{_styles()}
 {_resolution_surface_styles()}
+{_resolution_surface_v5_styles()}
 {_automation_styles()}
 {_today_styles()}</style>
     <script src="/vendor/chart.umd.min.js"></script>
