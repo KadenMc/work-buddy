@@ -152,26 +152,51 @@ def _threads_v5_script() -> str:
     }
 
     function renderThreadDetail(threadId) {
-        // Stage 4.1: show breadcrumb + thread ID + a placeholder for the
-        // card. Stage 4.2 implements the real card layout.
-        return (
-            '<div class="threads-v5-detail">'
-            + '<h2>' + _esc(threadId) + '</h2>'
-            + '<p class="threads-v5-stage-note">'
-            + 'Stage 4.1 — recursive nav scaffold. Click "Open sub-thread" '
-            + 'to test path nesting; click an inspector to test modal '
-            + 'state encoding.'
-            + '</p>'
-            + '<div class="threads-v5-demo-row">'
-            +   '<button class="threads-v5-demo-btn" '
-            +     'onclick="threadsPushPath(\'th-sub' + Date.now() + '\')">Open sub-thread</button>'
-            +   '<button class="threads-v5-demo-btn" '
-            +     'onclick="threadsOpenInspector(\'ci-1\')">Inspect ci-1</button>'
-            +   '<button class="threads-v5-demo-btn" '
-            +     'onclick="threadsOpenInspector(\'ev-42\')">Inspect ev-42</button>'
-            + '</div>'
-            + '</div>'
-        );
+        // Stage 4.2: real card layout. Backend wiring (4.3) replaces
+        // the mock thread data with /api/threads/<id> response.
+        if (typeof window.renderConfirmationCard !== "function") {
+            return '<div class="threads-v5-detail">'
+                 + '<p>Card module not loaded.</p></div>';
+        }
+        const thread = _mockThread(threadId);
+        return window.renderConfirmationCard(thread);
+    }
+
+    // Stage 4.2: stub thread data so the card renders end-to-end
+    // before backend wiring (4.3). Replaced by an /api/threads
+    // fetch in 4.3.
+    function _mockThread(threadId) {
+        return {
+            thread_id: threadId,
+            title: "Sarah's birthday + gift",
+            urgency: "defer",
+            fsm_state: "awaiting_confirmation",
+            intent: { text: "Schedule Sarah's 30th birthday + buy a gift.", editable: true },
+            context_items: [
+                { id: "ci-1", label: "Sarah's note (running journal)",
+                  source: "journal_note", type: "todo_line",
+                  payload: { line: "Sarah's birthday May 12" } },
+                { id: "ci-2", label: "Calendar destination: Personal",
+                  source: "calendar", type: "calendar",
+                  payload: { calendar_id: "personal" } },
+            ],
+            actions: [
+                { id: "act-1", name: "create_calendar_event", kind: "standard",
+                  parameters: { title: "Sarah's 30th birthday",
+                               datetime: "2026-05-12T18:00:00",
+                               duration_minutes: 60 },
+                  plan_summary: "Sarah's 30th birthday • 2026-05-12 18:00",
+                  required_contexts: ["@calendar"] },
+                { id: "act-2", name: "create_task", kind: "standard",
+                  parameters: { description: "Buy gift for Sarah",
+                               due_date: "2026-05-12" },
+                  plan_summary: "Buy gift for Sarah • due 2026-05-12",
+                  required_contexts: [] },
+            ],
+            namespace_tags: [],
+            can_clean_up: false,
+            sub_thread_count: 0,
+        };
     }
 
     function renderInspector(itemId) {
@@ -199,6 +224,11 @@ def _threads_v5_script() -> str:
         // Apply any state seeded by _initFromHash (script_main.py)
         renderThreads();
     };
+
+    // Exposed so card-state mutators (in script_threads_v5_card.py)
+    // can trigger a re-render after toggling X-flags or changing
+    // focus, without re-implementing renderThreads here.
+    window._renderActiveThread = renderThreads;
 
     // Register with staticLoaders if available
     try {
