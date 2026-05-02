@@ -38,7 +38,7 @@ class TestSpawnFromJournal:
         thread = store.get_thread(tid)
         assert thread is not None
         assert thread.inciting_event_summary["source"] == "journal_note"
-        assert thread.inciting_event_summary["note_path"] == "Daily/2026-05-12.md"
+        assert thread.inciting_event_summary["note_path"] == "journal/2026-05-12.md"
         # First non-empty line as line_text
         assert "Buy gift for Sarah" in thread.inciting_event_summary["line_text"]
 
@@ -94,7 +94,7 @@ class TestSpawnFromJournal:
         assert len(ids) == 3
         for tid in ids:
             t = store.get_thread(tid)
-            assert t.inciting_event_summary["note_path"] == "Daily/2026-05-12.md"
+            assert t.inciting_event_summary["note_path"] == "journal/2026-05-12.md"
 
 
 # ---------------------------------------------------------------------------

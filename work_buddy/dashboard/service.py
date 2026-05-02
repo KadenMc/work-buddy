@@ -3563,6 +3563,22 @@ def main():
 
     _start_acknowledge_poller()
 
+    # v5 Stage 4: bootstrap the v5 Thread system in the dashboard's
+    # process. Each subprocess (sidecar daemon, dashboard, conductor)
+    # has its own module-level state, so each needs to call
+    # bootstrap_v5() to get the FSM handlers + cleanup adapters
+    # registered. The daemon does this in its run(); the dashboard
+    # needs the same here so /api/threads endpoints have access to
+    # cleanup adapters and other bootstrap-registered handlers.
+    try:
+        from work_buddy.threads.bootstrap import bootstrap_v5
+        bootstrap_v5()
+    except Exception as e:
+        logger.warning(
+            "v5 Thread bootstrap failed in dashboard process; "
+            "/api/threads endpoints may have reduced functionality: %s", e,
+        )
+
     # Mark this process so that ``events.publish_auto`` (used by the
     # cross-cutting mutators in clarify/, tasks/, health/, etc.) routes
     # publishes to the in-process bus rather than the messaging service.

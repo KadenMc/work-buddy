@@ -46,8 +46,9 @@ def spawn_thread_from_journal_item(
         triage_item: dict shape — id, text, label, source='journal_thread',
             metadata{thread_id, line_count, journal_date, ...}
         note_path: vault-relative path to the inciting note. If None,
-            derive from metadata.journal_date as 'Daily/<date>.md'.
-            (Tunable via config in a future stage.)
+            derive from metadata.journal_date as 'journal/<date>.md'.
+            (Matches work_buddy/journal.py's vault-rel path
+            convention.)
 
     Returns:
         New v5 thread_id on success; None on failure (logged).
@@ -63,7 +64,7 @@ def spawn_thread_from_journal_item(
                 "and no note_path passed; can't determine source",
             )
             return None
-        note_path = f"Daily/{journal_date}.md"
+        note_path = f"journal/{journal_date}.md"
 
     raw_text = triage_item.get("text") or ""
     label = triage_item.get("label") or triage_item.get("id") or "(journal item)"
@@ -141,7 +142,7 @@ def spawn_threads_from_journal_scan(
     Returns the list of new thread_ids in the same order as input.
     Items that fail to spawn are skipped (logged).
     """
-    note_path = f"Daily/{journal_date}.md" if journal_date else None
+    note_path = f"journal/{journal_date}.md" if journal_date else None
     out: list[str] = []
     for item in items:
         tid = spawn_thread_from_journal_item(item, note_path=note_path)

@@ -3257,6 +3257,66 @@ def _journal_capabilities() -> list[Capability]:
             # retry-on-timeout needed (would just stack queued passes).
             auto_retry=False,
         ),
+        # ── v5 testing helper: seed sample threads ─────────────
+        Capability(
+            name="threads_v5_seed_test_data",
+            description=(
+                "Seed ~10 sample v5 Threads covering every card kind "
+                "(confirmation / consent / clarification / review / "
+                "redirect / cleanup-failure) + a parent with 4 sub-"
+                "threads + a Later'd thread. Used to exercise the "
+                "Threads tab UI without needing real LLM calls. Safe "
+                "to run repeatedly (creates new fresh ids each time)."
+            ),
+            category="threads",
+            search_aliases=[
+                "seed test threads",
+                "v5 sample data",
+                "fabricate test threads",
+                "populate threads dashboard",
+            ],
+            parameters={},
+            callable=(lambda **kw: __import__(
+                "work_buddy.threads.seed_test_data",
+                fromlist=["seed_all"],
+            ).seed_all(**kw)),
+            mutates_state=True,
+            auto_retry=False,
+        ),
+        # ── v5 journal scan (Stage 4 testing helper) ─────────────
+        Capability(
+            name="journal_v5_scan",
+            description=(
+                "Segment a daily journal and produce v5 Threads (one per "
+                "candidate). Distinct from journal_triage_scan: this skips "
+                "the v4 verdict pass + ClarifyPool layer and writes "
+                "straight to v5 Threads (work_buddy.threads). Each spawned "
+                "Thread carries inciting source='journal_note' so the "
+                "journal-note cleanup adapter applies — clicking 'Clean Up' "
+                "in the v5 Threads tab will delete the inciting line. "
+                "Useful for Stage 4 dashboard testing; safe to run "
+                "repeatedly."
+            ),
+            category="journal",
+            search_aliases=[
+                "v5 journal scan",
+                "journal v5",
+                "spawn v5 threads from journal",
+                "daily journal threads",
+            ],
+            parameters={
+                "journal_date": {"type": "str", "description": "YYYY-MM-DD. Default: today.", "required": False},
+                "profile": {"type": "str", "description": "Override the configured triage.segment_profile.", "required": False},
+                "dry_run": {"type": "bool", "description": "Segment + return items without spawning Threads.", "required": False},
+            },
+            callable=(lambda **kw: __import__(
+                "work_buddy.threads.journal_v5_scan",
+                fromlist=["journal_v5_scan"],
+            ).journal_v5_scan(**kw)),
+            requires=["obsidian"],
+            mutates_state=True,
+            auto_retry=False,
+        ),
         # ── Inline-selection triage producer ────────────────────
         Capability(
             name="inline_triage_scan",
