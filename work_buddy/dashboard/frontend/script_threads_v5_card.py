@@ -107,16 +107,30 @@ def _threads_v5_card_script() -> str:
         if (!thread) {
             return '<div class="threads-v5-card-empty">No thread loaded.</div>';
         }
+        // Dispatch by card_kind (Stage 4.5 — UX.md §4.2).
+        // Defaults to 'confirmation' for backward compatibility.
+        const kind = thread.card_kind || "confirmation";
+        if (kind === "clarification") return _renderClarification(thread);
+        if (kind === "review") return _renderReview(thread);
+        if (kind === "redirect") return _renderRedirect(thread);
+        if (kind === "cleanup_failure") return _renderCleanupFailure(thread);
+        // confirmation / consent — same shape; consent emphasizes risk
+        return _renderConfirmationOrConsent(thread, kind);
+    };
+
+    function _renderConfirmationOrConsent(thread, kind) {
         const s = _state(thread.thread_id);
         const hasFlags = _hasFlags(thread.thread_id);
 
-        let html = '<div class="threads-v5-card" data-thread-id="'
-                 + _esc(thread.thread_id) + '">';
+        let html = '<div class="threads-v5-card threads-v5-kind-' + kind + '" '
+                 + 'data-thread-id="' + _esc(thread.thread_id) + '">';
 
-        // Two-pane layout
+        // Risk-amplifier emphasis for consent cards
+        if (kind === "consent") {
+            html += _renderRiskBanner(thread);
+        }
+
         html += '<div class="threads-v5-card-body">';
-
-        // Left pane (always visible)
         html += '<div class="threads-v5-card-left">';
         html += _renderHeader(thread);
         html += _renderIntentSection(thread, s);
@@ -125,20 +139,38 @@ def _threads_v5_card_script() -> str:
         html += _renderNamespaceTagsSection(thread, s);
         html += _renderSubThreadsLink(thread);
         html += '</div>';
-
-        // Right pane (focused-element editor)
         html += '<div class="threads-v5-card-right">';
         html += _renderRightPane(thread, s);
         html += '</div>';
+        html += '</div>';
 
-        html += '</div>';  // body
-
-        // Footer
         html += _renderFooter(thread, hasFlags);
-        html += '</div>';  // card
-
+        html += '</div>';
         return html;
-    };
+    }
+
+    function _renderRiskBanner(thread) {
+        // Aggregate intrinsic_amplifiers across actions
+        let riskBits = [];
+        for (const a of (thread.actions || [])) {
+            const amp = a.intrinsic_amplifiers || {};
+            for (const dim of Object.keys(amp)) {
+                const val = amp[dim];
+                if (val === "high" || val === "irreversible") {
+                    riskBits.push(dim + "=" + val);
+                }
+            }
+        }
+        if (riskBits.length === 0) return '';
+        return (
+            '<div class="threads-v5-risk-banner">'
+            + _icon("alert-triangle")
+            + ' <strong>Consent gate:</strong> '
+            + 'high-impact action — ' + _esc(riskBits.join(', '))
+            + '</div>'
+        );
+    }
+
 
     // ----- Section renderers -------------------------------------------
 
@@ -378,6 +410,243 @@ def _threads_v5_card_script() -> str:
         );
     }
 
+    // ----- Clarification card (UX.md §4.4.2) ---------------------------
+
+    // Per-thread clarification input state
+    if (!window._clarifyInput) window._clarifyInput = {};
+
+    window.threadClarifyInput = function (threadId, value) {
+        window._clarifyInput[threadId] = value;
+    };
+
+    function _renderClarification(thread) {
+        const tid = _esc(thread.thread_id);
+        const promptText = _clarificationPromptFor(thread.fsm_state);
+        const stored = window._clarifyInput[thread.thread_id] || "";
+        let html = '<div class="threads-v5-card threads-v5-kind-clarification" '
+                 + 'data-thread-id="' + tid + '">';
+        html += _renderHeader(thread);
+        html += '<div class="threads-v5-card-body threads-v5-clarify-body">';
+        html += '<p class="threads-v5-clarify-prompt">' + _esc(promptText)
+              + '</p>';
+        html += '<textarea class="threads-v5-clarify-textarea" rows="6" '
+              + 'placeholder="Tell the agent what you mean..." '
+              + 'oninput="threadClarifyInput(\'' + tid + '\', this.value)">'
+              + _esc(stored) + '</textarea>';
+        if (thread.context_items && thread.context_items.length > 0) {
+            html += '<div class="threads-v5-clarify-context">';
+            html += '<div class="threads-v5-section-label">Context the agent has so far</div>';
+            html += '<ul class="threads-v5-list">';
+            for (const ci of thread.context_items) {
+                html += '<li class="threads-v5-item">';
+                html += '<div class="threads-v5-item-label">'
+                      + _esc(ci.label || ci.id) + '</div>';
+                html += '<div class="threads-v5-item-source">'
+                      + _esc(ci.source || "") + '</div>';
+                html += '</li>';
+            }
+            html += '</ul></div>';
+        }
+        html += '</div>';
+        // Footer: Trash / Broom / Later / (Re-direct skipped — clarif IS the redirect target) / Accept
+        html += _renderClarificationFooter(thread);
+        html += '</div>';
+        return html;
+    }
+
+    function _clarificationPromptFor(state) {
+        if (state === "awaiting_intent_clarification")
+            return "The agent couldn't infer your intent. What are you trying to accomplish?";
+        if (state === "awaiting_context_clarification")
+            return "The agent couldn't infer the relevant context. What should it look at?";
+        if (state === "awaiting_action_clarification")
+            return "The agent has no action candidate. What should it do (or pick from the catalog)?";
+        return "Please clarify.";
+    }
+
+    function _renderClarificationFooter(thread) {
+        const tid = _esc(thread.thread_id);
+        const cleanupShown = !!thread.can_clean_up;
+        return (
+            '<div class="threads-v5-card-footer">'
+            + '<div class="threads-v5-footer-secondary">'
+            +   '<button class="threads-v5-btn-icon" title="Dismiss" '
+            +     'onclick="threadCommitAction(\'' + tid + '\', \'dismiss\')">'
+            +     _icon("trash") + '</button>'
+            +   (cleanupShown
+                    ? '<button class="threads-v5-btn-icon" title="Clean up source" '
+                    +   'onclick="threadCommitAction(\'' + tid + '\', \'cleanup\')">'
+                    +   _icon("eraser") + '</button>'
+                    : '')
+            +   '<button class="threads-v5-btn-icon" title="Later (6h)" '
+            +     'onclick="threadCommitAction(\'' + tid + '\', \'later\', {hours: 6})">'
+            +     _icon("clock") + '</button>'
+            + '</div>'
+            + '<div class="threads-v5-footer-primary">'
+            +   '<button class="threads-v5-btn threads-v5-btn-primary" '
+            +     'onclick="threadCommitAction(\'' + tid + '\', \'accept\', {input: window._clarifyInput[\'' + tid + '\'] || \'\'})">'
+            +     _icon("check") + ' Accept'
+            +   '</button>'
+            + '</div>'
+            + '</div>'
+        );
+    }
+
+    // ----- Review card (UX.md §4.4.3) ----------------------------------
+
+    function _renderReview(thread) {
+        const tid = _esc(thread.thread_id);
+        const ctx = thread.review_context || {};
+        let html = '<div class="threads-v5-card threads-v5-kind-review" '
+                 + 'data-thread-id="' + tid + '">';
+        html += _renderHeader(thread);
+        html += '<div class="threads-v5-card-body threads-v5-review-body">';
+        html += '<div class="threads-v5-review-status">'
+              + 'Result: ' + _esc(ctx.status || 'completed')
+              + '</div>';
+        if (ctx.summary) {
+            html += '<div class="threads-v5-review-summary">'
+                  + _esc(ctx.summary) + '</div>';
+        }
+        if (ctx.output) {
+            html += '<pre class="threads-v5-review-output">'
+                  + _esc(typeof ctx.output === "string"
+                        ? ctx.output
+                        : JSON.stringify(ctx.output, null, 2))
+                  + '</pre>';
+        }
+        if (ctx.run_id) {
+            html += '<p class="threads-v5-review-run">Run ID: <code>'
+                  + _esc(ctx.run_id) + '</code></p>';
+        }
+        html += '</div>';
+        // UX.md §4.4.3: Review cards have NO Dismiss (action's done).
+        // Footer: Later / Re-direct / Mark done
+        html += '<div class="threads-v5-card-footer">'
+              + '<div class="threads-v5-footer-secondary">'
+              +   '<button class="threads-v5-btn-icon" title="Later (6h)" '
+              +     'onclick="threadCommitAction(\'' + tid + '\', \'later\', {hours: 6})">'
+              +     _icon("clock") + '</button>'
+              + '</div>'
+              + '<div class="threads-v5-footer-primary">'
+              +   '<button class="threads-v5-btn threads-v5-btn-secondary" '
+              +     'onclick="threadCommitAction(\'' + tid + '\', \'redirect\')">'
+              +     _icon("corner-up-left") + ' Re-direct'
+              +   '</button>'
+              +   '<button class="threads-v5-btn threads-v5-btn-primary" '
+              +     'onclick="threadCommitAction(\'' + tid + '\', \'accept\')">'
+              +     _icon("check") + ' Mark done'
+              +   '</button>'
+              + '</div>'
+              + '</div>';
+        html += '</div>';
+        return html;
+    }
+
+    // ----- Redirect card (UX.md §4.4.4) --------------------------------
+
+    if (!window._redirectInput) window._redirectInput = {};
+
+    window.threadRedirectInput = function (threadId, value) {
+        window._redirectInput[threadId] = value;
+    };
+
+    function _renderRedirect(thread) {
+        const tid = _esc(thread.thread_id);
+        const fc = thread.failure_context || {};
+        const stored = window._redirectInput[thread.thread_id] || "";
+        let html = '<div class="threads-v5-card threads-v5-kind-redirect" '
+                 + 'data-thread-id="' + tid + '">';
+        html += _renderHeader(thread);
+        html += '<div class="threads-v5-card-body threads-v5-redirect-body">';
+        html += '<div class="threads-v5-redirect-failure">'
+              + '<strong>Execution failed.</strong>';
+        if (fc.error) {
+            html += ' Error: <code>' + _esc(fc.error) + '</code>';
+        }
+        if (fc.step) {
+            html += ' Step: <code>' + _esc(fc.step) + '</code>';
+        }
+        html += '</div>';
+        html += '<p class="threads-v5-redirect-prompt">'
+              + 'Tell the agent what to do now.</p>';
+        html += '<textarea class="threads-v5-redirect-textarea" rows="5" '
+              + 'placeholder="Describe what went wrong / what to try..." '
+              + 'oninput="threadRedirectInput(\'' + tid + '\', this.value)">'
+              + _esc(stored) + '</textarea>';
+        html += '</div>';
+        // Footer: Trash / Broom / Later / Re-direct (= submit feedback) / Skip (= accept)
+        const cleanupShown = !!thread.can_clean_up;
+        html += '<div class="threads-v5-card-footer">'
+              + '<div class="threads-v5-footer-secondary">'
+              +   '<button class="threads-v5-btn-icon" title="Dismiss" '
+              +     'onclick="threadCommitAction(\'' + tid + '\', \'dismiss\')">'
+              +     _icon("trash") + '</button>'
+              +   (cleanupShown
+                    ? '<button class="threads-v5-btn-icon" title="Clean up source" '
+                    +   'onclick="threadCommitAction(\'' + tid + '\', \'cleanup\')">'
+                    +   _icon("eraser") + '</button>'
+                    : '')
+              +   '<button class="threads-v5-btn-icon" title="Later (6h)" '
+              +     'onclick="threadCommitAction(\'' + tid + '\', \'later\', {hours: 6})">'
+              +     _icon("clock") + '</button>'
+              + '</div>'
+              + '<div class="threads-v5-footer-primary">'
+              +   '<button class="threads-v5-btn threads-v5-btn-primary" '
+              +     'onclick="threadCommitAction(\'' + tid + '\', \'redirect\', {feedback: window._redirectInput[\'' + tid + '\'] || \'\'})">'
+              +     _icon("corner-up-left") + ' Submit redirect'
+              +   '</button>'
+              + '</div>'
+              + '</div>';
+        html += '</div>';
+        return html;
+    }
+
+    // ----- Cleanup-failure card (UX.md §6.5) ---------------------------
+
+    function _renderCleanupFailure(thread) {
+        const tid = _esc(thread.thread_id);
+        const cf = thread.cleanup_failure || {};
+        let html = '<div class="threads-v5-card threads-v5-kind-cleanup-failure" '
+                 + 'data-thread-id="' + tid + '">';
+        html += _renderHeader(thread);
+        html += '<div class="threads-v5-card-body threads-v5-cleanup-fail-body">';
+        html += '<div class="threads-v5-cleanup-fail-banner">'
+              + _icon("alert-triangle")
+              + ' <strong>Cleanup failed.</strong></div>';
+        if (cf.detail) {
+            html += '<p class="threads-v5-cleanup-fail-detail">'
+                  + _esc(cf.detail) + '</p>';
+        }
+        html += '<p class="threads-v5-stage-note">'
+              + 'You can retry the cleanup or accept the failure '
+              + '(closes this Thread without further action).</p>';
+        html += '</div>';
+        // Footer: Trash / Later / Accept failure / Retry
+        html += '<div class="threads-v5-card-footer">'
+              + '<div class="threads-v5-footer-secondary">'
+              +   '<button class="threads-v5-btn-icon" title="Dismiss" '
+              +     'onclick="threadCommitAction(\'' + tid + '\', \'dismiss\')">'
+              +     _icon("trash") + '</button>'
+              +   '<button class="threads-v5-btn-icon" title="Later (6h)" '
+              +     'onclick="threadCommitAction(\'' + tid + '\', \'later\', {hours: 6})">'
+              +     _icon("clock") + '</button>'
+              + '</div>'
+              + '<div class="threads-v5-footer-primary">'
+              +   '<button class="threads-v5-btn threads-v5-btn-secondary" '
+              +     'onclick="threadCommitAction(\'' + tid + '\', \'accept-cleanup-failure\')">'
+              +     _icon("check") + ' Accept failure'
+              +   '</button>'
+              +   '<button class="threads-v5-btn threads-v5-btn-primary" '
+              +     'onclick="threadCommitAction(\'' + tid + '\', \'retry-cleanup\')">'
+              +     _icon("refresh-cw") + ' Retry'
+              +   '</button>'
+              + '</div>'
+              + '</div>';
+        html += '</div>';
+        return html;
+    }
+
     // ----- Helpers ------------------------------------------------------
 
     function _kindIcon(kind) {
@@ -443,6 +712,13 @@ def _threads_v5_card_script() -> str:
             "zap": '<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>',
             "lightbulb": '<path d="M9 18h6M10 21h4M12 2a6 6 0 0 0-3.2 11.1c.6.4 1 .8 1.2 1.4V18h4v-3.5c.2-.6.6-1 1.2-1.4A6 6 0 0 0 12 2z"></path>',
             "box": '<path d="M21 16V8a2 2 0 0 0-1-1.7l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.7l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>',
+            "alert-triangle": '<path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>'
+                + '<line x1="12" y1="9" x2="12" y2="13"></line>'
+                + '<line x1="12" y1="17" x2="12.01" y2="17"></line>',
+            "refresh-cw": '<polyline points="23 4 23 10 17 10"></polyline>'
+                + '<polyline points="1 20 1 14 7 14"></polyline>'
+                + '<path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10"></path>'
+                + '<path d="M20.49 15a9 9 0 0 1-14.85 3.36L1 14"></path>',
         };
         const p = paths[name] || '';
         return '<svg class="threads-v5-icon" width="16" height="16" '
@@ -766,5 +1042,128 @@ def _threads_v5_card_styles() -> str:
 .threads-v5-icon {
     display: inline-block;
     vertical-align: middle;
+}
+
+/* Stage 4.5 — Consent risk banner */
+.threads-v5-risk-banner {
+    background: #4a2424;
+    color: #fbcaca;
+    padding: 10px 18px;
+    border-bottom: 1px solid var(--border, #333);
+    font-size: 13px;
+}
+
+/* Clarification card */
+.threads-v5-clarify-body {
+    padding: 20px;
+    display: block;
+}
+.threads-v5-clarify-prompt {
+    color: var(--text, #ddd);
+    font-size: 14px;
+    margin: 0 0 12px 0;
+}
+.threads-v5-clarify-textarea {
+    width: 100%;
+    padding: 10px 12px;
+    background: var(--bg, #0a0a0a);
+    color: var(--text, #ddd);
+    border: 1px solid var(--border, #333);
+    border-radius: 6px;
+    font: inherit;
+    font-size: 14px;
+    resize: vertical;
+    margin-bottom: 14px;
+}
+.threads-v5-clarify-context { margin-top: 12px; }
+
+/* Review card */
+.threads-v5-review-body {
+    padding: 20px;
+    display: block;
+}
+.threads-v5-review-status {
+    font-size: 14px;
+    color: var(--text, #ddd);
+    margin-bottom: 8px;
+    font-weight: 600;
+}
+.threads-v5-review-summary {
+    color: var(--text-muted, #aaa);
+    margin-bottom: 8px;
+    font-size: 13px;
+}
+.threads-v5-review-output {
+    background: var(--bg, #0a0a0a);
+    border: 1px solid var(--border, #333);
+    border-radius: 6px;
+    padding: 10px 12px;
+    font-size: 12px;
+    overflow: auto;
+    max-height: 280px;
+    color: var(--text-muted, #aaa);
+}
+.threads-v5-review-run {
+    font-size: 12px;
+    color: var(--text-muted, #888);
+}
+.threads-v5-review-run code {
+    background: var(--bg, #0a0a0a);
+    padding: 1px 6px;
+    border-radius: 3px;
+}
+
+/* Redirect card */
+.threads-v5-redirect-body {
+    padding: 20px;
+    display: block;
+}
+.threads-v5-redirect-failure {
+    background: #2c1c1c;
+    color: #f3a3a3;
+    padding: 10px 14px;
+    border-radius: 6px;
+    margin-bottom: 14px;
+    font-size: 13px;
+}
+.threads-v5-redirect-failure code {
+    background: rgba(0,0,0,0.4);
+    padding: 1px 6px;
+    border-radius: 3px;
+}
+.threads-v5-redirect-prompt {
+    color: var(--text, #ddd);
+    margin: 0 0 8px 0;
+    font-size: 14px;
+}
+.threads-v5-redirect-textarea {
+    width: 100%;
+    padding: 10px 12px;
+    background: var(--bg, #0a0a0a);
+    color: var(--text, #ddd);
+    border: 1px solid var(--border, #333);
+    border-radius: 6px;
+    font: inherit;
+    font-size: 14px;
+    resize: vertical;
+}
+
+/* Cleanup-failure card */
+.threads-v5-cleanup-fail-body {
+    padding: 20px;
+    display: block;
+}
+.threads-v5-cleanup-fail-banner {
+    background: #4a2424;
+    color: #fbcaca;
+    padding: 10px 14px;
+    border-radius: 6px;
+    margin-bottom: 14px;
+    font-size: 13px;
+}
+.threads-v5-cleanup-fail-detail {
+    color: var(--text-muted, #aaa);
+    font-size: 13px;
+    margin-bottom: 12px;
 }
 """

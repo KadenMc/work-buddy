@@ -2561,10 +2561,60 @@ def _v5_post_action(
         return jsonify({"error": str(exc)}), 500
 
 
+_ACCEPT_TRIGGER_BY_STATE = {
+    # Confirmation states → confirmed
+    "awaiting_intent_confirmation": "confirmed",
+    "awaiting_context_confirmation": "confirmed",
+    # Consent state → execute (action gate approval)
+    "awaiting_confirmation": "execute",
+    # Clarification states → provided
+    "awaiting_intent_clarification": "provided",
+    "awaiting_context_clarification": "provided",
+    "awaiting_action_clarification": "provided",
+    # Review state → review_accepted
+    "awaiting_review": "review_accepted",
+    # Redirect states → redirected (when user submits feedback)
+    "awaiting_redirect": "redirected",
+}
+
+
 @app.post("/api/threads/<thread_id>/accept")
 def api_v5_thread_accept(thread_id: str):
-    """Confirm/accept the proposed state. UX.md §5."""
-    return _v5_post_action(thread_id, trigger="confirmed")
+    """Smart accept: dispatches the right trigger based on FSM state.
+
+    Confirmation → confirmed. Consent → execute. Clarification →
+    provided. Review → review_accepted. Redirect → redirected.
+    UX.md §4.2 + §5.
+    """
+    blocked = _reject_read_only()
+    if blocked:
+        return blocked
+    try:
+        from work_buddy.threads import store
+        thread = store.get_thread(thread_id)
+        if thread is None:
+            return jsonify({"error": "Thread not found"}), 404
+        trigger = _ACCEPT_TRIGGER_BY_STATE.get(thread.fsm_state.value)
+        if trigger is None:
+            return jsonify({
+                "error": f"Accept not valid in state {thread.fsm_state.value!r}",
+            }), 400
+        return _v5_post_action(thread_id, trigger=trigger)
+    except Exception as exc:
+        logger.exception("v5 accept failed for %s: %s", thread_id, exc)
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.post("/api/threads/<thread_id>/retry-cleanup")
+def api_v5_thread_retry_cleanup(thread_id: str):
+    """Retry a failed cleanup. UX.md §6.5."""
+    return _v5_post_action(thread_id, trigger="retry_cleanup")
+
+
+@app.post("/api/threads/<thread_id>/accept-cleanup-failure")
+def api_v5_thread_accept_cleanup_failure(thread_id: str):
+    """Accept a failed cleanup; thread → done. UX.md §6.5."""
+    return _v5_post_action(thread_id, trigger="accept_cleanup_failure")
 
 
 @app.post("/api/threads/<thread_id>/dismiss")

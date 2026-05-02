@@ -116,6 +116,24 @@ def build_render_data(thread_id: str) -> Optional[dict[str, Any]]:
     # Sub-thread count
     sub_count = len(store.list_threads(parent_id=thread_id))
 
+    # Derive card kind from FSM state. UX.md §4.2.
+    card_kind = _card_kind_for(thread.fsm_state.value)
+
+    # For redirect cards, surface the failure context.
+    failure_context: Optional[dict[str, Any]] = None
+    if thread.fsm_state.value == "awaiting_redirect":
+        failure_context = _latest_failure_context(events)
+
+    # For review cards, surface the execution result.
+    review_context: Optional[dict[str, Any]] = None
+    if thread.fsm_state.value == "awaiting_review":
+        review_context = _latest_review_context(events)
+
+    # For cleanup-failed cards, surface the failure detail.
+    cleanup_failure: Optional[dict[str, Any]] = None
+    if thread.fsm_state.value == "done_cleanup_unsuccessful":
+        cleanup_failure = _latest_cleanup_failure(events)
+
     return {
         "thread_id": thread.thread_id,
         "parent_id": thread.parent_id,
@@ -123,6 +141,7 @@ def build_render_data(thread_id: str) -> Optional[dict[str, Any]]:
         "title": title,
         "urgency": urgency,
         "fsm_state": thread.fsm_state.value,
+        "card_kind": card_kind,
         "intent": {"text": intent_text, "editable": True},
         "context_items": context_items,
         "actions": actions,
@@ -132,6 +151,9 @@ def build_render_data(thread_id: str) -> Optional[dict[str, Any]]:
         "has_been_later": _has_been_later(events),
         "resurface_at": getattr(thread, "resurface_at", None),
         "parent_event_id": thread.parent_event_id,
+        "failure_context": failure_context,
+        "review_context": review_context,
+        "cleanup_failure": cleanup_failure,
     }
 
 
@@ -187,6 +209,69 @@ def _has_been_later(events) -> bool:
         if e.kind == KIND_LATER:
             return True
     return False
+
+
+_CARD_KIND_BY_STATE: dict[str, str] = {
+    # Confirmation
+    "awaiting_intent_confirmation": "confirmation",
+    "awaiting_context_confirmation": "confirmation",
+    # Consent (action gate — same shape, different emphasis)
+    "awaiting_confirmation": "consent",
+    # Clarification
+    "awaiting_intent_clarification": "clarification",
+    "awaiting_context_clarification": "clarification",
+    "awaiting_action_clarification": "clarification",
+    # Post-execution
+    "awaiting_review": "review",
+    # Failure / redirect
+    "awaiting_redirect": "redirect",
+    # Cleanup failure (UX.md §6.5 — retry/accept-failure UI)
+    "done_cleanup_unsuccessful": "cleanup_failure",
+}
+
+
+def _card_kind_for(fsm_state: str) -> str:
+    return _CARD_KIND_BY_STATE.get(fsm_state, "confirmation")
+
+
+def _latest_failure_context(events) -> Optional[dict[str, Any]]:
+    """Pull the latest execution_failed-style data for redirect cards."""
+    for e in reversed(events):
+        if e.kind in ("execution_finished", "step_failed"):
+            data = e.data or {}
+            if data.get("success") is False or data.get("status") == "failed":
+                return {
+                    "error": data.get("error") or data.get("detail"),
+                    "step": data.get("step"),
+                    "summary": data.get("summary"),
+                }
+    return None
+
+
+def _latest_review_context(events) -> Optional[dict[str, Any]]:
+    """Pull the latest execution_finished payload for review cards."""
+    for e in reversed(events):
+        if e.kind == "execution_finished":
+            data = e.data or {}
+            return {
+                "status": data.get("status") or "completed",
+                "output": data.get("output"),
+                "summary": data.get("summary") or data.get("detail"),
+                "run_id": data.get("run_id"),
+            }
+    return None
+
+
+def _latest_cleanup_failure(events) -> Optional[dict[str, Any]]:
+    """Pull the latest cleanup_failed for the retry/accept card."""
+    for e in reversed(events):
+        if e.kind == "cleanup_failed":
+            data = e.data or {}
+            return {
+                "detail": data.get("detail"),
+                "source_already_gone": data.get("source_already_gone", False),
+            }
+    return None
 
 
 def _summarise_action(payload: dict[str, Any]) -> str:
