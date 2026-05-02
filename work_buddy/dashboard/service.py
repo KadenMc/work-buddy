@@ -2632,6 +2632,46 @@ def api_v5_thread_retry_cleanup(thread_id: str):
     return _v5_post_action(thread_id, trigger="retry_cleanup")
 
 
+@app.post("/api/threads/<thread_id>/context/<item_id>/migrate")
+def api_v5_context_migrate(thread_id: str, item_id: str):
+    """Move a context item from one Thread to another. UX.md §9.
+
+    Body: {"to_thread_id": "th-abc"}.
+    """
+    blocked = _reject_read_only()
+    if blocked:
+        return blocked
+    body = request.get_json(silent=True) or {}
+    to_thread_id = body.get("to_thread_id")
+    if not to_thread_id:
+        return jsonify({"error": "missing to_thread_id"}), 400
+    try:
+        from work_buddy.threads.migration_context import (
+            ContextMigrationError,
+            migrate_context,
+        )
+        mig_id = migrate_context(
+            item_id=item_id,
+            from_thread_id=thread_id,
+            to_thread_id=to_thread_id,
+        )
+        return jsonify({
+            "ok": True,
+            "migration_id": mig_id,
+            "from_thread_id": thread_id,
+            "to_thread_id": to_thread_id,
+            "item_id": item_id,
+        })
+    except ContextMigrationError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as exc:
+        logger.exception(
+            "v5 context migrate failed for %s → %s: %s",
+            thread_id, to_thread_id, exc,
+        )
+        return jsonify({"error": str(exc)}), 500
+
+
 @app.post("/api/threads/<thread_id>/accept-cleanup-failure")
 def api_v5_thread_accept_cleanup_failure(thread_id: str):
     """Accept a failed cleanup; thread → done. UX.md §6.5."""
