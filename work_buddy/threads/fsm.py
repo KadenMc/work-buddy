@@ -132,6 +132,12 @@ TRANSITION_TABLE: dict[tuple[FSMState, str], TransitionOutcome] = {
     # --- proposed ------------------------------------------------------
     (FSMState.PROPOSED, TRIG_DISMISSED_BY_USER): _t(FSMState.DISMISSED),
     (FSMState.PROPOSED, TRIG_TIMEOUT): _t(FSMState.DISMISSED),
+    # PROPOSED accepts parent_force_close so sub-threads spawned
+    # via decompose() (start state PROPOSED) cascade-close cleanly.
+    # DESIGN.md §7.6's table is silent on this cell; we treat the
+    # absence as an oversight in the spec rather than an
+    # intentional rejection.
+    (FSMState.PROPOSED, TRIG_PARENT_FORCE_CLOSE): _t(FSMState.DISMISSED),
 
     # --- awaiting_inference -------------------------------------------
     (FSMState.AWAITING_INFERENCE, TRIG_DISMISSED_BY_USER): _t(FSMState.DISMISSED),
@@ -213,6 +219,10 @@ TRANSITION_TABLE: dict[tuple[FSMState, str], TransitionOutcome] = {
     # --- monitoring (parent-of-decomposed) ----------------------------
     (FSMState.MONITORING, TRIG_EXECUTION_DONE): _branch("done_when_all_subthreads_terminal"),
     (FSMState.MONITORING, TRIG_DISMISSED_BY_USER): _t(FSMState.DISMISSED),  # cascades to children
+    # MONITORING also accepts parent_force_close — a sub-thread
+    # may itself decompose and become a parent; force-closing its
+    # own parent must cascade through.
+    (FSMState.MONITORING, TRIG_PARENT_FORCE_CLOSE): _t(FSMState.DISMISSED),
 
     # Terminals have no outgoing transitions (no entries).
 }
