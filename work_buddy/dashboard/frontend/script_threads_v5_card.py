@@ -342,10 +342,8 @@ def _threads_v5_card_script() -> str:
                 + '</div>'
             );
         }
-        // Context-item or action editor — Stage 4.6 implements
-        // per-action specialized renderers + the per-context-item
-        // detail. For 4.2 we paint a generic JSON view with a
-        // disabled save button.
+        // Context-item or action editor (Stage 4.6 — per-action
+        // specialized renderers via window._actionRenderers).
         const target = _findById(thread, focused);
         if (!target) {
             return (
@@ -354,17 +352,24 @@ def _threads_v5_card_script() -> str:
                 + '</div>'
             );
         }
+        // Actions go through the action-renderer registry.
+        if (target.kind === "action"
+            && typeof window.renderActionInRightPane === "function") {
+            return (
+                '<div class="threads-v5-right-editor">'
+                + window.renderActionInRightPane(thread, target)
+                + '</div>'
+            );
+        }
+        // Context items: simple inspector for now (modal richness
+        // can land in a follow-up).
         return (
             '<div class="threads-v5-right-editor">'
-            + '<h4>' + _esc(target.kind || target.type || "Element")
+            + '<h4>' + _esc((target.kind || "element").replace(/_/g, " "))
             +   ' &middot; <code>' + _esc(focused) + '</code></h4>'
             + '<pre class="threads-v5-json-view">'
             +   _esc(JSON.stringify(target, null, 2))
             + '</pre>'
-            + '<p class="threads-v5-stage-note">'
-            +   'Stage 4.6 will replace this with a per-action / '
-            +   'per-context-item editor.'
-            + '</p>'
             + '</div>'
         );
     }
