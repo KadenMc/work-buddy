@@ -296,11 +296,15 @@ def process_one_pending(worker_id: str) -> Optional[dict[str, Any]]:
             thread_id, target.value, e,
         )
         queue.fail(entry.id, f"{type(e).__name__}: {e}")
-        # Move FSM forward via failure trigger
+        # The failed inference path may or may not have written
+        # an event — read fresh latest_event_id either way for
+        # the optimistic-lock target.
+        fresh_parent = store.latest_event_id(thread_id)
         try:
             result = engine.transition(
                 thread_id, TRIG_INFERENCE_FAILED,
                 data={"error": str(e), "queue_entry_id": entry.id},
+                parent_event_id=fresh_parent,
                 fire_side_effects=True,
             )
             summary["next_state"] = result.next_state.value
@@ -312,8 +316,14 @@ def process_one_pending(worker_id: str) -> Optional[dict[str, Any]]:
         summary["outcome"] = "failed"
         return summary
 
-    # Success: queue done + FSM forward via TRIG_INFERENCE_DONE
+    # Success: queue done + FSM forward via TRIG_INFERENCE_DONE.
+    # NOTE: inference.run() just inserted a *_inferred event, so
+    # the Thread's parent_event_id cache is stale. Pass an
+    # explicit parent_event_id read from the events table so
+    # the optimistic-lock target reflects what we actually saw,
+    # not the cache.
     queue.complete(entry.id, {"proposal": proposal.to_dict()})
+    fresh_parent = store.latest_event_id(thread_id)
     try:
         result = engine.transition(
             thread_id, TRIG_INFERENCE_DONE,
@@ -328,6 +338,7 @@ def process_one_pending(worker_id: str) -> Optional[dict[str, Any]]:
                 # AWAITING_*_CONFIRMATION card)
                 **proposal.payload,
             },
+            parent_event_id=fresh_parent,
             fire_side_effects=True,
         )
         summary["next_state"] = result.next_state.value

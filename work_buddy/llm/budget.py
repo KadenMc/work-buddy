@@ -52,7 +52,30 @@ def set_caller_budget(caller_id: str, budget_usd: float) -> None:
 
 
 def get_caller_budget(caller_id: str) -> Optional[float]:
-    return _BUDGETS_USD.get(caller_id)
+    """Resolve the budget cap for a caller.
+
+    For Thread callers (``caller_id`` starts with ``thread:``),
+    falls back to reading ``autonomy_policy.budget_usd`` from the
+    Thread itself if no explicit budget has been set. This makes
+    per-Thread budgets zero-config — every Thread automatically
+    respects its policy.
+
+    Explicit ``set_caller_budget`` calls take precedence (for
+    tests + manual overrides).
+    """
+    explicit = _BUDGETS_USD.get(caller_id)
+    if explicit is not None:
+        return explicit
+    if caller_id.startswith("thread:"):
+        thread_id = caller_id[len("thread:"):]
+        try:
+            from work_buddy.threads.store import get_thread
+            thread = get_thread(thread_id)
+            if thread is not None:
+                return thread.autonomy_policy.budget_usd
+        except Exception:
+            return None
+    return None
 
 
 def clear_caller_budgets() -> None:
