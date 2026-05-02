@@ -234,6 +234,11 @@ class Thread:
     # the bridge). Stored as a Thread ID pointing at a sub-Thread.
     current_focus_thread_id: Optional[str] = None
 
+    # Stage 4 fields (UX.md §8.2 + §10.2 + §13).
+    resurface_at: Optional[str] = None        # Later mechanic
+    order_index: int = 0                       # write-time linearization
+    search_blob: str = ""                      # denormalized search
+
     # ------------------------------------------------------------------
     # Convenience predicates
     # ------------------------------------------------------------------
@@ -261,6 +266,9 @@ class Thread:
             "updated_at": self.updated_at,
             "archived_at": self.archived_at,
             "current_focus_thread_id": self.current_focus_thread_id,
+            "resurface_at": self.resurface_at,
+            "order_index": self.order_index,
+            "search_blob": self.search_blob,
         }
 
     @classmethod
@@ -303,6 +311,9 @@ class Thread:
             updated_at=row.get("updated_at") or _now_iso(),
             archived_at=row.get("archived_at"),
             current_focus_thread_id=row.get("current_focus_thread_id"),
+            resurface_at=row.get("resurface_at"),
+            order_index=row.get("order_index") or 0,
+            search_blob=row.get("search_blob") or "",
         )
 
 

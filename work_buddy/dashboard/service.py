@@ -2478,6 +2478,184 @@ def api_notification_acknowledge(notification_id: str):
 
 
 # ---------------------------------------------------------------------------
+# v5 Threads API (Stage 4.3)
+#
+# Read endpoints + commit endpoints for the unified Threads tab. All
+# routed under /api/threads/. UX.md §15 Stage 4.3 spec.
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/threads")
+def api_v5_threads_list():
+    """List top-level v5 Threads (those with no parent_id)."""
+    try:
+        from work_buddy.threads.render import list_render_data
+        include_future = request.args.get("show_later") == "1"
+        threads = list_render_data(
+            parent_id=None,
+            include_resurface_future=include_future,
+            limit=int(request.args.get("limit", 100)),
+        )
+        return jsonify({"threads": threads})
+    except Exception as exc:
+        logger.exception("v5 threads list failed: %s", exc)
+        return jsonify({"threads": [], "error": str(exc)}), 500
+
+
+@app.get("/api/threads/<thread_id>")
+def api_v5_thread_get(thread_id: str):
+    """Fetch one v5 Thread + its render data."""
+    try:
+        from work_buddy.threads.render import build_render_data
+        data = build_render_data(thread_id)
+        if data is None:
+            return jsonify({"error": "Thread not found"}), 404
+        return jsonify(data)
+    except Exception as exc:
+        logger.exception("v5 thread get failed for %s: %s", thread_id, exc)
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.get("/api/threads/<thread_id>/sub")
+def api_v5_thread_sub_list(thread_id: str):
+    """List sub-threads under a parent."""
+    try:
+        from work_buddy.threads.render import list_render_data
+        threads = list_render_data(parent_id=thread_id, limit=200)
+        return jsonify({"threads": threads, "parent_id": thread_id})
+    except Exception as exc:
+        logger.exception(
+            "v5 sub-thread list failed for %s: %s", thread_id, exc,
+        )
+        return jsonify({"threads": [], "error": str(exc)}), 500
+
+
+def _v5_post_action(
+    thread_id: str, *, trigger: str, data_extras=None,
+):
+    """Common POST handler — fires an FSM transition through engine."""
+    blocked = _reject_read_only()
+    if blocked:
+        return blocked
+    payload = request.get_json(silent=True) or {}
+    try:
+        from work_buddy.threads import engine
+        merged = dict(payload)
+        if data_extras:
+            merged.update(data_extras)
+        result = engine.transition(
+            thread_id, trigger, data=merged, fire_side_effects=True,
+        )
+        return jsonify({
+            "ok": True,
+            "thread_id": thread_id,
+            "prev_state": result.prev_state.value,
+            "next_state": result.next_state.value,
+        })
+    except engine.ThreadNotFound:
+        return jsonify({"error": "Thread not found"}), 404
+    except engine.InvalidTransition as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as exc:
+        logger.exception("v5 thread action failed for %s: %s", thread_id, exc)
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.post("/api/threads/<thread_id>/accept")
+def api_v5_thread_accept(thread_id: str):
+    """Confirm/accept the proposed state. UX.md §5."""
+    return _v5_post_action(thread_id, trigger="confirmed")
+
+
+@app.post("/api/threads/<thread_id>/dismiss")
+def api_v5_thread_dismiss(thread_id: str):
+    """Trash the Thread. Transition to DISMISSED."""
+    return _v5_post_action(thread_id, trigger="dismissed_by_user")
+
+
+@app.post("/api/threads/<thread_id>/redirect")
+def api_v5_thread_redirect(thread_id: str):
+    """Re-direct: push back to inference with feedback. UX.md §5.3."""
+    return _v5_post_action(thread_id, trigger="redirected")
+
+
+@app.post("/api/threads/<thread_id>/cleanup")
+def api_v5_thread_cleanup(thread_id: str):
+    """Clean Up: invoke registered cleanup adapter, mutate the source.
+
+    Stage 4.3: transitions FSM to CLEANING_UP. Stage 4.4 wires the
+    adapter call + fires cleanup_succeeded / cleanup_failed.
+    """
+    blocked = _reject_read_only()
+    if blocked:
+        return blocked
+    try:
+        from work_buddy.threads import cleanup as _cleanup_mod
+        from work_buddy.threads import engine, store
+        thread = store.get_thread(thread_id)
+        if thread is None:
+            return jsonify({"error": "Thread not found"}), 404
+        if not _cleanup_mod.can_clean_up(thread):
+            return jsonify({
+                "error": "no cleanup adapter registered for this Thread's source",
+            }), 400
+        # Transition to CLEANING_UP — Stage 4.4 will register a state-
+        # entry handler that runs the adapter and fires the result trigger.
+        engine.transition(
+            thread_id, "cleanup_requested", fire_side_effects=True,
+        )
+        return jsonify({"ok": True, "thread_id": thread_id, "state": "cleaning_up"})
+    except Exception as exc:
+        logger.exception("v5 cleanup failed for %s: %s", thread_id, exc)
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.post("/api/threads/<thread_id>/later")
+def api_v5_thread_later(thread_id: str):
+    """Defer: set resurface_at to now + duration. UX.md §13.
+
+    Body (optional): {"hours": 6}  default 6h.
+    Stage 4.10 polishes with the hover popup; this endpoint ships
+    in 4.3 because the button is on every card.
+    """
+    blocked = _reject_read_only()
+    if blocked:
+        return blocked
+    try:
+        import json
+        from datetime import datetime, timedelta, timezone
+        from work_buddy.threads import store
+        from work_buddy.threads.events import KIND_LATER, ThreadEvent
+        body = request.get_json(silent=True) or {}
+        hours = float(body.get("hours") or 6.0)
+        thread = store.get_thread(thread_id)
+        if thread is None:
+            return jsonify({"error": "Thread not found"}), 404
+        when = datetime.now(timezone.utc) + timedelta(hours=hours)
+        resurface_iso = when.isoformat()
+        store.update_thread_state(
+            thread_id,
+            resurface_at=resurface_iso,
+        )
+        store.append_event(ThreadEvent(
+            thread_id=thread_id,
+            kind=KIND_LATER,
+            actor="user",
+            data={"hours": hours, "resurface_at": resurface_iso},
+            parent_event_id=store.latest_event_id(thread_id),
+        ))
+        return jsonify({
+            "ok": True,
+            "thread_id": thread_id,
+            "resurface_at": resurface_iso,
+            "hours": hours,
+        })
+    except Exception as exc:
+        logger.exception("v5 later failed for %s: %s", thread_id, exc)
+        return jsonify({"error": str(exc)}), 500
+
+
+# ---------------------------------------------------------------------------
 # Conversation API (renamed from Thread chat in v5 Stage 1)
 # ---------------------------------------------------------------------------
 

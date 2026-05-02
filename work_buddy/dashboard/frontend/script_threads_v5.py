@@ -128,76 +128,192 @@ def _threads_v5_script() -> str:
         return html;
     }
 
+    if (!window._topLevelCache) window._topLevelCache = null;
+
     function renderTopLevel() {
-        // Stage 4.1: scaffold the top-level list view. Stage 4.2+ adds
-        // real card layouts. For now: a placeholder "no Threads yet"
-        // message + a stub list of any threads we can find via the
-        // upcoming /api/threads endpoint (Stage 4.3 wires that).
+        // Stage 4.3: real /api/threads fetch. Cached until commit.
+        if (window._topLevelCache !== null) {
+            return _renderTopLevelHtml(window._topLevelCache);
+        }
+        // Trigger fetch and re-render.
+        fetch('/api/threads')
+            .then(r => r.ok ? r.json() : Promise.reject(r.statusText))
+            .then(data => {
+                window._topLevelCache = data.threads || [];
+                if (typeof window._renderActiveThread === 'function') {
+                    window._renderActiveThread();
+                }
+            })
+            .catch(err => {
+                window._topLevelCache = [];
+                console.warn('Top-level threads fetch failed:', err);
+                if (typeof window._renderActiveThread === 'function') {
+                    window._renderActiveThread();
+                }
+            });
+        return '<div class="threads-v5-loading">Loading Threads...</div>';
+    }
+
+    window.invalidateTopLevelCache = function () {
+        window._topLevelCache = null;
+    };
+
+    function _renderTopLevelHtml(threads) {
+        if (!Array.isArray(threads) || threads.length === 0) {
+            return (
+                '<div class="threads-v5-top">'
+                + '<h2>Threads</h2>'
+                + '<p class="threads-v5-empty-state">'
+                + 'No active Threads. As source scanners (journal, '
+                + 'Chrome, email) run, they\'ll surface here.'
+                + '</p>'
+                + '</div>'
+            );
+        }
+        let html = '<div class="threads-v5-top">';
+        html += '<h2>Threads <span class="threads-v5-count">('
+              + threads.length + ')</span></h2>';
+        html += '<ul class="threads-v5-toplist">';
+        for (const t of threads) {
+            html += _renderTopLevelCard(t);
+        }
+        html += '</ul>';
+        html += '</div>';
+        return html;
+    }
+
+    function _renderTopLevelCard(t) {
+        const urgent = t.urgency === "surface_now";
+        const hasLater = !!t.has_been_later;
+        const stateLabel = (t.fsm_state || "").replace(/_/g, " ");
+        const intent = (t.intent && t.intent.text) || t.title || t.thread_id;
         return (
-            '<div class="threads-v5-top">'
-            + '<h2>Threads</h2>'
-            + '<p class="threads-v5-stage-note">'
-            + 'Stage 4.1 wired URL routing. Cards + real list rendering '
-            + 'land in Stage 4.2+. Click any "Open thread" demo button '
-            + 'below to test recursive navigation.'
-            + '</p>'
-            + '<div class="threads-v5-demo-row">'
-            +   '<button class="threads-v5-demo-btn" '
-            +     'onclick="threadsPushPath(\'th-demo123\')">Open demo Thread</button>'
-            +   '<button class="threads-v5-demo-btn" '
-            +     'onclick="threadsPushPath(\'th-demo456\')">Open another demo Thread</button>'
+            '<li class="threads-v5-toplist-card'
+            + (urgent ? ' threads-v5-urgent' : '') + '" '
+            +   'onclick="threadsPushPath(\'' + _esc(t.thread_id) + '\')">'
+            + '<div class="threads-v5-toplist-meta">'
+            +   (urgent
+                    ? '<span class="threads-v5-urgency-pill high">!</span>'
+                    : '')
+            +   (hasLater
+                    ? '<span class="threads-v5-later-icon" '
+                    +   'title="This thread has been deferred at least once">'
+                    +   '<svg width="12" height="12" viewBox="0 0 24 24" '
+                    +     'fill="none" stroke="currentColor" stroke-width="2" '
+                    +     'stroke-linecap="round" stroke-linejoin="round">'
+                    +     '<circle cx="12" cy="12" r="10"></circle>'
+                    +     '<polyline points="12 6 12 12 16 14"></polyline>'
+                    +   '</svg>'
+                    +   '</span>'
+                    : '')
+            +   '<span class="threads-v5-toplist-state">'
+            +     _esc(stateLabel) + '</span>'
             + '</div>'
+            + '<div class="threads-v5-toplist-title">'
+            +   _esc(t.title || t.thread_id) + '</div>'
+            + '<div class="threads-v5-toplist-intent">'
+            +   _esc(intent.length > 200
+                        ? intent.slice(0, 197) + '...' : intent)
             + '</div>'
+            + '<div class="threads-v5-toplist-row-actions" '
+            +   'onclick="event.stopPropagation()">'
+            +   '<button class="threads-v5-btn-icon" title="Later (6h)" '
+            +     'onclick="threadCommitAction(\'' + _esc(t.thread_id)
+            +     '\', \'later\', {hours: 6})">'
+            +     '<svg width="14" height="14" viewBox="0 0 24 24" '
+            +       'fill="none" stroke="currentColor" stroke-width="2" '
+            +       'stroke-linecap="round" stroke-linejoin="round">'
+            +       '<circle cx="12" cy="12" r="10"></circle>'
+            +       '<polyline points="12 6 12 12 16 14"></polyline>'
+            +     '</svg>'
+            +   '</button>'
+            + '</div>'
+            + '</li>'
         );
     }
 
+    // Per-thread fetch cache so re-renders don't re-fetch.
+    if (!window._threadDetailCache) window._threadDetailCache = {};
+
     function renderThreadDetail(threadId) {
-        // Stage 4.2: real card layout. Backend wiring (4.3) replaces
-        // the mock thread data with /api/threads/<id> response.
+        // Stage 4.3: real backend fetch. Cached after first fetch
+        // until the user commits something (Accept / Redirect /
+        // etc.) which calls invalidateThreadCache.
         if (typeof window.renderConfirmationCard !== "function") {
             return '<div class="threads-v5-detail">'
                  + '<p>Card module not loaded.</p></div>';
         }
-        const thread = _mockThread(threadId);
-        return window.renderConfirmationCard(thread);
+        const cached = window._threadDetailCache[threadId];
+        if (cached) {
+            return window.renderConfirmationCard(cached);
+        }
+        // Trigger async fetch and re-render
+        fetch('/api/threads/' + encodeURIComponent(threadId))
+            .then(r => r.ok ? r.json() : Promise.reject(r.statusText))
+            .then(data => {
+                window._threadDetailCache[threadId] = data;
+                if (typeof window._renderActiveThread === 'function') {
+                    window._renderActiveThread();
+                }
+            })
+            .catch(err => {
+                window._threadDetailCache[threadId] = {
+                    thread_id: threadId,
+                    title: "(fetch failed)",
+                    fsm_state: "(unknown)",
+                    intent: { text: 'Failed to load: ' + err, editable: false },
+                    context_items: [],
+                    actions: [],
+                    namespace_tags: [],
+                    can_clean_up: false,
+                    sub_thread_count: 0,
+                };
+                if (typeof window._renderActiveThread === 'function') {
+                    window._renderActiveThread();
+                }
+            });
+        return '<div class="threads-v5-loading">Loading thread '
+             + _esc(threadId) + '...</div>';
     }
 
-    // Stage 4.2: stub thread data so the card renders end-to-end
-    // before backend wiring (4.3). Replaced by an /api/threads
-    // fetch in 4.3.
-    function _mockThread(threadId) {
-        return {
-            thread_id: threadId,
-            title: "Sarah's birthday + gift",
-            urgency: "defer",
-            fsm_state: "awaiting_confirmation",
-            intent: { text: "Schedule Sarah's 30th birthday + buy a gift.", editable: true },
-            context_items: [
-                { id: "ci-1", label: "Sarah's note (running journal)",
-                  source: "journal_note", type: "todo_line",
-                  payload: { line: "Sarah's birthday May 12" } },
-                { id: "ci-2", label: "Calendar destination: Personal",
-                  source: "calendar", type: "calendar",
-                  payload: { calendar_id: "personal" } },
-            ],
-            actions: [
-                { id: "act-1", name: "create_calendar_event", kind: "standard",
-                  parameters: { title: "Sarah's 30th birthday",
-                               datetime: "2026-05-12T18:00:00",
-                               duration_minutes: 60 },
-                  plan_summary: "Sarah's 30th birthday • 2026-05-12 18:00",
-                  required_contexts: ["@calendar"] },
-                { id: "act-2", name: "create_task", kind: "standard",
-                  parameters: { description: "Buy gift for Sarah",
-                               due_date: "2026-05-12" },
-                  plan_summary: "Buy gift for Sarah • due 2026-05-12",
-                  required_contexts: [] },
-            ],
-            namespace_tags: [],
-            can_clean_up: false,
-            sub_thread_count: 0,
-        };
-    }
+    window.invalidateThreadCache = function (threadId) {
+        if (threadId) delete window._threadDetailCache[threadId];
+        else window._threadDetailCache = {};
+    };
+
+    // Wire footer button clicks into the backend.
+    window.threadCommitAction = async function (threadId, action, body) {
+        const url = '/api/threads/' + encodeURIComponent(threadId)
+                  + '/' + action;
+        try {
+            const resp = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body || {}),
+            });
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({}));
+                console.warn('Thread action failed:', err);
+                alert('Action failed: ' + (err.error || resp.statusText));
+                return false;
+            }
+            window.invalidateThreadCache(threadId);
+            window.invalidateTopLevelCache();
+            // After Accept/Dismiss/etc, navigate up if we were inside the
+            // Thread; otherwise just refresh the list.
+            const state = window._threadsState || { path: [] };
+            if (state.path.length > 0
+                && state.path[state.path.length - 1] === threadId) {
+                threadsBack();
+            } else {
+                renderThreads();
+            }
+            return true;
+        } catch (e) {
+            console.warn('Thread action exception:', e);
+            return false;
+        }
+    };
 
     function renderInspector(itemId) {
         // Stage 4.1: minimal modal scaffold. Stage 4.5 + 4.6 implement
@@ -339,7 +455,7 @@ def _threads_v5_styles() -> str:
 
 /* Top-level + detail panes */
 .threads-v5-top, .threads-v5-detail {
-    max-width: 900px;
+    max-width: 1100px;
     margin: 2em auto;
     padding: 1.5em 2em;
     background: var(--bg-secondary, #1a1a1a);
@@ -350,6 +466,99 @@ def _threads_v5_styles() -> str:
 
 .threads-v5-top h2, .threads-v5-detail h2 {
     margin-top: 0;
+}
+
+.threads-v5-count {
+    color: var(--text-muted, #888);
+    font-weight: 400;
+    font-size: 80%;
+}
+
+.threads-v5-empty-state {
+    color: var(--text-muted, #888);
+    font-style: italic;
+    margin-top: 1.5em;
+}
+
+.threads-v5-loading {
+    color: var(--text-muted, #888);
+    text-align: center;
+    padding: 2em;
+}
+
+/* Top-level Thread cards (list view) */
+.threads-v5-toplist {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+
+.threads-v5-toplist-card {
+    background: var(--bg-tertiary, #0f0f0f);
+    border: 1px solid var(--border, #333);
+    border-left: 3px solid transparent;
+    border-radius: 6px;
+    padding: 12px 16px;
+    margin-bottom: 8px;
+    cursor: pointer;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 8px;
+    align-items: center;
+}
+
+.threads-v5-toplist-card:hover {
+    border-color: var(--accent, #4a7fc1);
+    background: var(--bg-secondary, #1a1a1a);
+}
+
+.threads-v5-toplist-card.threads-v5-urgent {
+    border-left-color: #c0392b;
+}
+
+.threads-v5-toplist-meta {
+    grid-row: 1;
+    grid-column: 1;
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    margin-bottom: 4px;
+    font-size: 11px;
+    color: var(--text-muted, #888);
+    text-transform: capitalize;
+}
+
+.threads-v5-toplist-state {
+    text-transform: capitalize;
+}
+
+.threads-v5-later-icon {
+    color: var(--text-muted, #666);
+    line-height: 0;
+}
+
+.threads-v5-toplist-title {
+    grid-row: 2;
+    grid-column: 1;
+    font-weight: 600;
+    font-size: 14px;
+    color: var(--text, #ddd);
+}
+
+.threads-v5-toplist-intent {
+    grid-row: 3;
+    grid-column: 1;
+    font-size: 12px;
+    color: var(--text-muted, #888);
+    margin-top: 4px;
+}
+
+.threads-v5-toplist-row-actions {
+    grid-row: 1 / span 3;
+    grid-column: 2;
+    display: flex;
+    gap: 4px;
+    align-items: center;
 }
 
 .threads-v5-demo-row {

@@ -338,34 +338,40 @@ def _threads_v5_card_script() -> str:
     }
 
     function _renderFooter(thread, hasFlags) {
-        // Footer button set per UX.md §4.1 + §5.4
+        // Footer button set per UX.md §4.1 + §5.4. Backend wired in 4.3.
         const cleanupShown = !!thread.can_clean_up;
         const acceptDisabled = hasFlags;
         const acceptTitle = hasFlags
             ? "Resolve any flagged elements before accepting"
             : "Commit the current state";
+        const tid = _esc(thread.thread_id);
         return (
             '<div class="threads-v5-card-footer">'
             + '<div class="threads-v5-footer-secondary">'
             +   '<button class="threads-v5-btn-icon" title="Dismiss" '
-            +     'data-action="dismiss">' + _icon("trash") + '</button>'
+            +     'onclick="threadCommitAction(\'' + tid + '\', \'dismiss\')">'
+            +     _icon("trash") + '</button>'
             +   (cleanupShown
                     ? '<button class="threads-v5-btn-icon" title="Clean up source" '
-                    +   'data-action="cleanup">' + _icon("eraser") + '</button>'
+                    +   'onclick="threadCommitAction(\'' + tid + '\', \'cleanup\')">'
+                    +   _icon("eraser") + '</button>'
                     : '')
             +   '<button class="threads-v5-btn-icon" title="Later (6h)" '
-            +     'data-action="later">' + _icon("clock") + '</button>'
+            +     'onclick="threadCommitAction(\'' + tid + '\', \'later\', {hours: 6})">'
+            +     _icon("clock") + '</button>'
             + '</div>'
             + '<div class="threads-v5-footer-primary">'
             +   '<button class="threads-v5-btn threads-v5-btn-secondary" '
-            +     'data-action="redirect">'
+            +     'onclick="threadCommitAction(\'' + tid + '\', \'redirect\')">'
             +     _icon("corner-up-left") + ' Re-direct'
             +   '</button>'
             +   '<button class="threads-v5-btn threads-v5-btn-primary" '
-            +     'data-action="accept" '
             +     (acceptDisabled ? 'disabled ' : '')
-            +     'title="' + _esc(acceptTitle) + '">'
-            +     _icon("check") + ' Accept'
+            +     'title="' + _esc(acceptTitle) + '" '
+            +     (acceptDisabled
+                    ? ''
+                    : 'onclick="threadCommitAction(\'' + tid + '\', \'accept\')"')
+            +     '>' + _icon("check") + ' Accept'
             +   '</button>'
             + '</div>'
             + '</div>'

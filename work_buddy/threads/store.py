@@ -272,8 +272,9 @@ def insert_thread(
                 autonomy_policy_json, context_items_json,
                 risk_profile_json, inciting_event_summary_json,
                 current_focus_thread_id,
-                created_at, updated_at, archived_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                created_at, updated_at, archived_at,
+                resurface_at, order_index, search_blob)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 thread.thread_id,
                 thread.parent_id,
@@ -288,6 +289,9 @@ def insert_thread(
                 thread.created_at,
                 thread.updated_at,
                 thread.archived_at,
+                getattr(thread, "resurface_at", None),
+                getattr(thread, "order_index", 0),
+                getattr(thread, "search_blob", ""),
             ),
         )
         conn.commit()
@@ -321,6 +325,13 @@ def list_threads(
     limit: int = 100,
     conn: Optional[sqlite3.Connection] = None,
 ) -> list[Thread]:
+    """List threads with sensible default ordering:
+
+    - Sub-threads (parent_id given) sort by ``order_index ASC``
+      (the linearization order from Stage 4.7).
+    - Top-level threads sort by ``resurface_at DESC NULLS LAST``
+      then ``updated_at DESC`` (the Later mechanic from §13).
+    """
     own_conn = conn is None
     if own_conn:
         conn = get_connection()
@@ -337,16 +348,27 @@ def list_threads(
             clauses.append("parent_id IS ?")
             params.append(parent_id)
         where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        if parent_id is not None:
+            order = "ORDER BY order_index ASC, updated_at DESC"
+        else:
+            # NULLS LAST trick: ORDER BY resurface_at IS NULL,
+            # resurface_at DESC, updated_at DESC
+            order = (
+                "ORDER BY (resurface_at IS NULL) ASC, "
+                "resurface_at DESC, updated_at DESC"
+            )
         params.append(limit)
         rows = conn.execute(
-            f"SELECT * FROM threads{where} "
-            f"ORDER BY updated_at DESC LIMIT ?",
+            f"SELECT * FROM threads{where} {order} LIMIT ?",
             params,
         ).fetchall()
         return [Thread.from_row(dict(r)) for r in rows]
     finally:
         if own_conn:
             conn.close()
+
+
+_UPDATE_SENTINEL = object()
 
 
 def update_thread_state(
@@ -356,6 +378,9 @@ def update_thread_state(
     parent_event_id: Optional[int] = None,
     current_focus_thread_id: Optional[str] = None,
     archived_at: Optional[str] = None,
+    resurface_at: Any = _UPDATE_SENTINEL,
+    order_index: Optional[int] = None,
+    search_blob: Optional[str] = None,
     conn: Optional[sqlite3.Connection] = None,
 ) -> bool:
     """Update mutable fields of the current-state cache.
@@ -367,6 +392,9 @@ def update_thread_state(
     FSM engine will update the cache as part of writing each
     transition event; ad-hoc callers should generally not use this
     directly.
+
+    ``resurface_at`` accepts ``None`` explicitly (clear the value) —
+    use the sentinel to distinguish "don't touch" from "set NULL".
     """
     own_conn = conn is None
     if own_conn:
@@ -386,6 +414,15 @@ def update_thread_state(
         if archived_at is not None:
             sets.append("archived_at = ?")
             params.append(archived_at)
+        if resurface_at is not _UPDATE_SENTINEL:
+            sets.append("resurface_at = ?")
+            params.append(resurface_at)
+        if order_index is not None:
+            sets.append("order_index = ?")
+            params.append(order_index)
+        if search_blob is not None:
+            sets.append("search_blob = ?")
+            params.append(search_blob)
         params.append(thread_id)
         cur = conn.execute(
             f"UPDATE threads SET {', '.join(sets)} WHERE thread_id = ?",

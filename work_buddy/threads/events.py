@@ -83,6 +83,11 @@ KIND_ESCALATED_TO_USER = "escalated_to_user"
 # e.g. queue dispatch -> inferring_*).
 KIND_STATE_TRANSITION = "state_transition"
 
+# Stage 4: Later mechanic + cleanup events.
+KIND_LATER = "later"
+KIND_SOURCE_CLEANED_UP = "source_cleaned_up"
+KIND_CLEANUP_FAILED = "cleanup_failed"
+
 
 ALL_KINDS: frozenset[str] = frozenset({
     KIND_INCITING_EVENT,
@@ -120,6 +125,9 @@ ALL_KINDS: frozenset[str] = frozenset({
     KIND_LOOP_DETECTED,
     KIND_ESCALATED_TO_USER,
     KIND_STATE_TRANSITION,
+    KIND_LATER,
+    KIND_SOURCE_CLEANED_UP,
+    KIND_CLEANUP_FAILED,
 })
 
 
