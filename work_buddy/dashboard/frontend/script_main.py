@@ -105,6 +105,17 @@ function _persistHash() {
             if (rs) params.set('rs', rs);
         } else if (tab === 'tasks' && window._selectedNamespace) {
             params.set('tn', window._selectedNamespace);
+        } else if (tab === 'threads' && typeof window._threadsState === 'object'
+                   && window._threadsState) {
+            // v5 Threads tab state encoding (UX.md §11.2):
+            //   tpath=th-abc/th-def  — slash-separated thread path
+            //   inspect=ci-7         — modal inspector (independent of tpath)
+            const tpath = window._threadsState.path;
+            if (Array.isArray(tpath) && tpath.length) {
+                params.set('tpath', tpath.join('/'));
+            }
+            const insp = window._threadsState.inspect;
+            if (insp) params.set('inspect', insp);
         }
     }
     history.replaceState(null, '', '#' + params.toString());
@@ -139,6 +150,16 @@ async function _initFromHash() {
         if (params.has('rs')) {
             const rsEl = document.getElementById('review-source-filter');
             if (rsEl) rsEl.value = params.get('rs');
+        }
+        // v5 Threads tab state (UX.md §11.2):
+        // Stash before switchTab fires loadThreads so the loader picks
+        // up the right path/inspect on first render.
+        if (params.has('tpath') || params.has('inspect') || params.get('tab') === 'threads') {
+            const tpath = params.get('tpath') || '';
+            window._threadsState = {
+                path: tpath ? tpath.split('/').filter(Boolean) : [],
+                inspect: params.get('inspect') || null,
+            };
         }
         // ci needs the chat list to exist before we can resolve short→full,
         // so loadChats() consumes it from window._urlState below.
