@@ -184,6 +184,20 @@ def decompose_thread(
             conn=conn,
         )
 
+        # Stage 4.7: write-time linearization. Compute the semantic
+        # order across the spawned children and persist
+        # ``order_index`` on each. Per UX.md §8.2, this is the only
+        # write-side trigger; render-time NEVER recomputes.
+        # Failure is non-fatal — fall back to creation-order.
+        try:
+            from work_buddy.threads.linearization import linearize_after_spawn
+            linearize_after_spawn(parent_id, conn=conn)
+        except Exception as e:
+            logger.warning(
+                "Linearization after decompose failed: %s; "
+                "siblings keep default order_index=0", e,
+            )
+
         return child_ids
     finally:
         if own_conn:
