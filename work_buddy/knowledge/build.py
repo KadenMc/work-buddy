@@ -48,7 +48,7 @@ def _get_unfiltered_registry() -> dict:
         _journal_capabilities, _memory_capabilities, _task_capabilities,
         _context_capabilities, _project_capabilities, _sidecar_capabilities,
         _llm_capabilities, _consent_capabilities, _notification_capabilities,
-        _thread_capabilities, _remote_session_capabilities, _ledger_capabilities,
+        _conversation_capabilities, _remote_session_capabilities, _ledger_capabilities,
         _artifact_capabilities, _knowledge_capabilities,
     )
 
@@ -67,7 +67,7 @@ def _get_unfiltered_registry() -> dict:
         ("llm", _llm_capabilities),
         ("consent", _consent_capabilities),
         ("notifications", _notification_capabilities),
-        ("threads", _thread_capabilities),
+        ("conversations", _conversation_capabilities),
         ("remote_session", _remote_session_capabilities),
         ("ledger", _ledger_capabilities),
         ("artifacts", _artifact_capabilities),
@@ -95,7 +95,7 @@ _CATEGORY_PATH_MAP = {
     "messaging": "messaging",
     "notifications": "notifications",
     "consent": "notifications/consent",
-    "threads": "threads",
+    "conversations": "conversations",
     "status": "status",
     "sidecar": "status",
     "llm": "status",

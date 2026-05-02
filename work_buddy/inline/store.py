@@ -1,6 +1,6 @@
 """SQLite-backed store for inline watchers and invocation history.
 
-Pattern-matches :mod:`work_buddy.threads.store`: WAL journal, auto-init
+Pattern-matches :mod:`work_buddy.conversations.store`: WAL journal, auto-init
 on import, row_factory dicts, and CRUD helpers that manage their own
 connections when one isn't passed in.
 """

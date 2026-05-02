@@ -680,7 +680,7 @@ def _build_registry() -> dict[str, Capability | WorkflowDefinition]:
         ("llm", _llm_capabilities),
         ("consent", _consent_capabilities),
         ("notifications", _notification_capabilities),
-        ("threads", _thread_capabilities),
+        ("conversations", _conversation_capabilities),
         ("inline", _inline_capabilities),
         ("remote_session", _remote_session_capabilities),
         ("ledger", _ledger_capabilities),
@@ -4863,28 +4863,35 @@ def _consent_capabilities() -> list[Capability]:
     ]
 
 
-def _thread_capabilities() -> list[Capability]:
-    """Thread chat capabilities — multi-turn agent-user conversations.
+def _conversation_capabilities() -> list[Capability]:
+    """Conversation capabilities — multi-turn agent-user dialogue.
 
-    Threads are a standalone subsystem backed by SQLite. The dashboard
-    renders them in a sidebar chat panel.
+    Conversations are a standalone subsystem backed by SQLite. The
+    dashboard renders them in a sidebar chat panel.
+
+    Renamed from ``_thread_capabilities`` in v5 Stage 1; the
+    ``thread`` namespace is reserved for the v5 universal-entity
+    primitive.
     """
     import os
     import time
     import urllib.request
-    from work_buddy.threads.store import (
-        create_thread as _create_thread,
-        get_thread as _get_thread,
-        get_thread_with_messages as _get_thread_msgs,
+    from work_buddy.conversations.store import (
+        create_conversation as _create_conversation,
+        get_conversation as _get_conversation,
+        get_conversation_with_messages as _get_conv_msgs,
         add_message as _add_msg,
         get_pending_question as _get_pending,
-        respond_to_thread as _respond_thread,
-        close_thread as _close_thread,
-        list_threads as _list_threads,
+        respond_to_conversation as _respond_conv,
+        close_conversation as _close_conversation,
+        list_conversations as _list_conversations,
     )
 
-    def _notify_thread_created(thread_id: str, title: str, body: str = "") -> None:
-        """Deliver a thread_chat notification through the proper notification system.
+    def _notify_conversation_created(
+        conversation_id: str, title: str, body: str = "",
+    ) -> None:
+        """Deliver a conversation_chat notification through the
+        notification system.
 
         Creates a Notification record and delivers via SurfaceDispatcher.
         DashboardSurface.deliver() creates the workflow view, and the
@@ -4899,11 +4906,14 @@ def _thread_capabilities() -> list[Capability]:
             from work_buddy.notifications.dispatcher import SurfaceDispatcher
 
             n = Notification(
-                notification_id=f"thread-{thread_id}",
+                notification_id=f"conversation-{conversation_id}",
                 title=title,
                 body=body[:100] if body else "New conversation",
                 response_type=ResponseType.NONE.value,
-                custom_template={"type": "thread_chat", "thread_id": thread_id},
+                custom_template={
+                    "type": "conversation_chat",
+                    "conversation_id": conversation_id,
+                },
                 expandable=True,
             )
             created = _create_notif(n)
@@ -4912,29 +4922,36 @@ def _thread_capabilities() -> list[Capability]:
         except Exception:
             pass  # Dashboard/notification system may not be running
 
-    def thread_create(title: str, message: str = "", source: str = "") -> dict:
+    def conversation_create(
+        title: str, message: str = "", source: str = "",
+    ) -> dict:
         if not source:
             source = f"agent:{os.environ.get('WORK_BUDDY_SESSION_ID', 'unknown')}"
-        thread = _create_thread(title=title, source=source)
-        result = {"thread_id": thread.thread_id, "status": "created"}
+        conv = _create_conversation(title=title, source=source)
+        result = {"conversation_id": conv.conversation_id, "status": "created"}
 
         if message:
-            msg = _add_msg(thread.thread_id, "agent", message)
+            msg = _add_msg(conv.conversation_id, "agent", message)
             if msg:
                 result["message_id"] = msg.message_id
 
-        _notify_thread_created(thread.thread_id, title, message)
+        _notify_conversation_created(conv.conversation_id, title, message)
         return result
 
-    def thread_send(thread_id: str, message: str) -> dict:
-        msg = _add_msg(thread_id, "agent", message)
+    def conversation_send(conversation_id: str, message: str) -> dict:
+        msg = _add_msg(conversation_id, "agent", message)
         if msg is None:
-            return {"error": f"Thread not found or closed: {thread_id}"}
-        # No notification needed — frontend polls /api/threads/<id> for new messages
-        return {"message_id": msg.message_id, "thread_id": thread_id}
+            return {
+                "error": f"Conversation not found or closed: {conversation_id}",
+            }
+        # Frontend polls /api/conversations/<id> for new messages
+        return {
+            "message_id": msg.message_id,
+            "conversation_id": conversation_id,
+        }
 
-    def thread_ask(
-        thread_id: str,
+    def conversation_ask(
+        conversation_id: str,
         question: str,
         response_type: str = "freeform",
         choices: list | None = None,
@@ -4950,16 +4967,18 @@ def _thread_capabilities() -> list[Capability]:
                     choice_dicts.append(c)
 
         msg = _add_msg(
-            thread_id, "agent", question,
+            conversation_id, "agent", question,
             message_type="question",
             response_type=response_type,
             choices=choice_dicts,
         )
         if msg is None:
-            return {"error": f"Thread not found or closed: {thread_id}"}
+            return {
+                "error": f"Conversation not found or closed: {conversation_id}",
+            }
         result = {
             "message_id": msg.message_id,
-            "thread_id": thread_id,
+            "conversation_id": conversation_id,
             "status": "pending",
         }
 
@@ -4968,10 +4987,9 @@ def _thread_capabilities() -> list[Capability]:
             timeout_seconds = min(timeout_seconds, 110)
             deadline = time.time() + timeout_seconds
             while time.time() < deadline:
-                pending = _get_pending(thread_id)
+                pending = _get_pending(conversation_id)
                 if pending is None or pending.status == "answered":
-                    # Question was answered
-                    data = _get_thread_msgs(thread_id)
+                    data = _get_conv_msgs(conversation_id)
                     if data:
                         for m in reversed(data["messages"]):
                             if m.get("message_id") == msg.message_id:
@@ -4985,16 +5003,15 @@ def _thread_capabilities() -> list[Capability]:
 
         return result
 
-    def thread_poll(
-        thread_id: str,
+    def conversation_poll(
+        conversation_id: str,
         timeout_seconds: int | None = None,
     ) -> dict:
-        pending = _get_pending(thread_id)
+        pending = _get_pending(conversation_id)
         if pending is None:
-            # No pending question — check if there was a recent answer
-            data = _get_thread_msgs(thread_id)
+            data = _get_conv_msgs(conversation_id)
             if not data:
-                return {"error": f"Thread not found: {thread_id}"}
+                return {"error": f"Conversation not found: {conversation_id}"}
             answered = [m for m in data["messages"]
                         if m.get("status") == "answered"]
             if answered:
@@ -5013,14 +5030,12 @@ def _thread_capabilities() -> list[Capability]:
                 "question": pending.content,
             }
 
-        # Blocking poll
         timeout_seconds = min(timeout_seconds, 110)
         deadline = time.time() + timeout_seconds
         while time.time() < deadline:
-            p = _get_pending(thread_id)
+            p = _get_pending(conversation_id)
             if p is None:
-                # Was answered
-                data = _get_thread_msgs(thread_id)
+                data = _get_conv_msgs(conversation_id)
                 if data:
                     answered = [m for m in data["messages"]
                                 if m.get("message_id") == pending.message_id]
@@ -5035,129 +5050,128 @@ def _thread_capabilities() -> list[Capability]:
 
         return {"status": "timeout", "waited_seconds": timeout_seconds}
 
-    def thread_close(thread_id: str) -> dict:
-        ok = _close_thread(thread_id)
+    def conversation_close(conversation_id: str) -> dict:
+        ok = _close_conversation(conversation_id)
         if not ok:
-            return {"error": f"Thread not found: {thread_id}"}
-        # Cancel the notification record
+            return {"error": f"Conversation not found: {conversation_id}"}
         try:
             from work_buddy.notifications.store import cancel_notification
-            cancel_notification(f"thread-{thread_id}")
+            cancel_notification(f"conversation-{conversation_id}")
         except Exception:
             pass
-        # Also dismiss the dashboard view directly as a fallback
         try:
             req = urllib.request.Request(
-                f"http://localhost:5127/api/workflow-views/thread-{thread_id}/dismiss",
+                f"http://localhost:5127/api/workflow-views/conversation-{conversation_id}/dismiss",
                 method="POST",
                 headers={"Content-Type": "application/json"},
             )
             urllib.request.urlopen(req, timeout=3)
         except Exception:
             pass
-        return {"closed": True, "thread_id": thread_id}
+        return {"closed": True, "conversation_id": conversation_id}
 
-    def thread_list(status: str = "open") -> dict:
-        threads = _list_threads(status=status if status != "all" else None)
-        return {"threads": threads, "count": len(threads)}
+    def conversation_list(status: str = "open") -> dict:
+        conversations = _list_conversations(
+            status=status if status != "all" else None,
+        )
+        return {
+            "conversations": conversations,
+            "count": len(conversations),
+        }
 
     return [
         Capability(
-            name="thread_create",
-            description="Create a new conversation thread with the user. Opens a chat sidebar on the dashboard.",
-            category="threads",
+            name="conversation_create",
+            description="Create a new conversation with the user. Opens a chat sidebar on the dashboard.",
+            category="conversations",
             parameters={
-                "title": {"type": "string", "description": "Thread title", "required": True},
+                "title": {"type": "string", "description": "Conversation title", "required": True},
                 "message": {"type": "string", "description": "Optional initial agent message"},
                 "source": {"type": "string", "description": "Source identifier (auto-detected if omitted)"},
             },
-            callable=thread_create,
+            callable=conversation_create,
             search_aliases=["chat", "conversation", "follow up", "multi-turn", "side chat"],
         ),
         Capability(
-            name="thread_send",
-            description="Send a message in an existing thread (fire-and-forget, no response expected).",
-            category="threads",
+            name="conversation_send",
+            description="Send a message in an existing conversation (fire-and-forget, no response expected).",
+            category="conversations",
             parameters={
-                "thread_id": {"type": "string", "description": "Thread ID", "required": True},
+                "conversation_id": {"type": "string", "description": "Conversation ID", "required": True},
                 "message": {"type": "string", "description": "Message content", "required": True},
             },
-            callable=thread_send,
+            callable=conversation_send,
             search_aliases=[
                 "chat message",
-                "thread message",
+                "conversation message",
                 "send chat message",
-                "post in thread",
+                "post in conversation",
                 "speak in conversation",
-                "fire thread message",
             ],
         ),
         Capability(
-            name="thread_ask",
-            description="Ask a question in a thread and optionally wait for the user's response.",
-            category="threads",
+            name="conversation_ask",
+            description="Ask a question in a conversation and optionally wait for the user's response.",
+            category="conversations",
             parameters={
-                "thread_id": {"type": "string", "description": "Thread ID", "required": True},
+                "conversation_id": {"type": "string", "description": "Conversation ID", "required": True},
                 "question": {"type": "string", "description": "Question text", "required": True},
                 "response_type": {"type": "string", "description": "freeform (default), boolean, or choice"},
                 "choices": {"type": "array", "description": "For choice type: [{key, label}] or [str]"},
                 "timeout_seconds": {"type": "integer", "description": "Block and wait for response (max 110s)"},
             },
-            callable=thread_ask,
-            search_aliases=["chat question", "ask user", "thread question", "follow up question"],
+            callable=conversation_ask,
+            search_aliases=["chat question", "ask user", "conversation question", "follow up question"],
         ),
         Capability(
-            name="thread_poll",
-            description="Check if the latest question in a thread has been answered.",
-            category="threads",
+            name="conversation_poll",
+            description="Check if the latest question in a conversation has been answered.",
+            category="conversations",
             parameters={
-                "thread_id": {"type": "string", "description": "Thread ID", "required": True},
+                "conversation_id": {"type": "string", "description": "Conversation ID", "required": True},
                 "timeout_seconds": {"type": "integer", "description": "Block and wait (max 110s)"},
             },
-            callable=thread_poll,
+            callable=conversation_poll,
             search_aliases=[
-                "check thread",
-                "thread response",
+                "check conversation",
+                "conversation response",
                 "poll chat",
                 "has user answered",
-                "thread answered",
+                "conversation answered",
                 "check for reply",
-                "thread question status",
             ],
         ),
         Capability(
-            name="thread_close",
-            description="Close a conversation thread.",
-            category="threads",
+            name="conversation_close",
+            description="Close a conversation.",
+            category="conversations",
             parameters={
-                "thread_id": {"type": "string", "description": "Thread ID", "required": True},
+                "conversation_id": {"type": "string", "description": "Conversation ID", "required": True},
             },
-            callable=thread_close,
+            callable=conversation_close,
             search_aliases=[
                 "end conversation",
                 "close chat",
-                "finish thread",
+                "finish conversation",
                 "wrap up conversation",
                 "close dashboard chat",
-                "end thread",
             ],
         ),
         Capability(
-            name="thread_list",
-            description="List conversation threads.",
-            category="threads",
+            name="conversation_list",
+            description="List conversations.",
+            category="conversations",
             parameters={
                 "status": {"type": "string", "description": "Filter: 'open' (default), 'closed', or 'all'"},
             },
-            callable=thread_list,
+            callable=conversation_list,
             search_aliases=[
                 "list chats",
-                "active threads",
-                "conversations",
-                "open threads",
-                "what threads are active",
+                "active conversations",
+                "open conversations",
+                "what conversations are active",
                 "recent conversations",
-                "thread directory",
+                "conversation directory",
             ],
         ),
     ]

@@ -96,6 +96,7 @@
       "context/knowledge_index_status",
       "context/knowledge_mint",
       "context/knowledge_personal",
+      "context/resolution_surface_pool",
       "context/session_commits",
       "context/session_expand",
       "context/session_get",
@@ -105,6 +106,7 @@
       "context/session_wb_activity",
       "context/triage_execute",
       "context/triage_item_detail",
+      "context/triage_pool_quarantine_entry",
       "context/triage_pool_sweep",
       "context/triage_review_pool",
       "context/triage_submit",
@@ -112,7 +114,7 @@
       "context/workflow_update"
     ],
     "content": {
-      "summary": "Container for 61 capabilities and workflows."
+      "summary": "Container for 63 capabilities and workflows."
     }
   },
   "artifacts": {
@@ -168,6 +170,25 @@
       "summary": "Container for 21 capabilities and workflows."
     }
   },
+  "conversations": {
+    "kind": "system",
+    "name": "Conversations",
+    "description": "Conversations capabilities and workflows",
+    "tags": [
+      "conversations"
+    ],
+    "children": [
+      "conversations/conversation_ask",
+      "conversations/conversation_close",
+      "conversations/conversation_create",
+      "conversations/conversation_list",
+      "conversations/conversation_poll",
+      "conversations/conversation_send"
+    ],
+    "content": {
+      "summary": "Container for 6 capabilities and workflows."
+    }
+  },
   "messaging": {
     "kind": "system",
     "name": "Messaging",
@@ -201,23 +222,6 @@
       "summary": "Container for 1 capabilities and workflows."
     }
   },
-  "memory": {
-    "kind": "system",
-    "name": "Memory",
-    "description": "Memory capabilities and workflows",
-    "tags": [
-      "memory"
-    ],
-    "children": [
-      "memory/memory_prune",
-      "memory/memory_read",
-      "memory/memory_reflect",
-      "memory/memory_write"
-    ],
-    "content": {
-      "summary": "Container for 4 capabilities and workflows."
-    }
-  },
   "tasks": {
     "kind": "system",
     "name": "Tasks",
@@ -237,33 +241,16 @@
       "tasks/task_read",
       "tasks/task_review_inbox",
       "tasks/task_scattered",
+      "tasks/task_search",
       "tasks/task_set_tags",
       "tasks/task_stale_check",
       "tasks/task_sync",
       "tasks/task_toggle",
+      "tasks/task_update_description",
       "tasks/weekly_review_data"
     ],
     "content": {
-      "summary": "Container for 16 capabilities and workflows."
-    }
-  },
-  "threads": {
-    "kind": "system",
-    "name": "Threads",
-    "description": "Threads capabilities and workflows",
-    "tags": [
-      "threads"
-    ],
-    "children": [
-      "threads/thread_ask",
-      "threads/thread_close",
-      "threads/thread_create",
-      "threads/thread_list",
-      "threads/thread_poll",
-      "threads/thread_send"
-    ],
-    "content": {
-      "summary": "Container for 6 capabilities and workflows."
+      "summary": "Container for 18 capabilities and workflows."
     }
   }
 }

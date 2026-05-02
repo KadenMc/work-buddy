@@ -11,7 +11,7 @@ own submodule:
         script_workflows.py     — workflow view polling + tab management
         script_notifications.py — toasts + browser notifications
         script_triage.py        — triage clarify + review renderers
-        script_threads.py       — thread chat component
+        script_conversations.py — conversation chat component
         script_palette.py       — command palette
 
 Adding a new tab:
@@ -37,7 +37,7 @@ from .script_resolution import (
 )
 from .script_review import _review_script
 from .script_settings import _settings_script
-from .script_threads import _thread_chat_script
+from .script_conversations import _conversation_chat_script
 from .script_today import _today_script, _today_styles
 from .script_triage import _triage_clarify_script, _triage_review_script
 from .script_workflows import _workflow_views_script
@@ -78,7 +78,7 @@ def render_page() -> str:
         _automation_script(),
         _today_script(),
         _settings_script(),
-        _thread_chat_script(),
+        _conversation_chat_script(),
         _command_palette_script(),
         _costs_script(),
     ])

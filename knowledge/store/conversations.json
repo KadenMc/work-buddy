@@ -1,0 +1,18 @@
+{
+  "conversations/conversation-directions": {
+    "kind": "directions",
+    "name": "Conversation Management Directions",
+    "description": "When and how to use agent-user conversations — decision guide, response types, behavioral notes. (Renamed from `threads/thread-directions` in v5 Stage 1; the `threads` namespace is reserved for the v5 universal-entity primitive.)",
+    "aliases": ["conversation usage", "manage conversations", "start conversation", "chat thread", "dashboard sidebar"],
+    "tags": ["conversations", "conversation", "dashboard", "chat", "directions"],
+    "parents": ["conversations"],
+    "trigger": "user wants to start a conversation, or agent needs to explain a plan, ask multi-step questions, or send progress updates",
+    "command": "wb-conversation",
+    "workflow": null,
+    "capabilities": ["conversations/conversation_create", "conversations/conversation_send", "conversations/conversation_ask", "conversations/conversation_poll", "conversations/conversation_close", "conversations/conversation_list"],
+    "content": {
+      "summary": "Use conversations for: explaining plans before executing, multi-step decisions, progress updates, follow-up dialogue. conversation_create opens the dashboard sidebar automatically. conversation_ask blocks up to 110s.",
+      "full": "Start or manage an agent-user conversation via the dashboard sidebar.\n\nArgument: $ARGUMENTS (optional -- conversation_id to resume, or blank to create new)\n\n## Conversation operations\n\nmcp__work-buddy__wb_run(\"conversation_create\", {\"title\": \"...\", \"message\": \"...\"})\nmcp__work-buddy__wb_run(\"conversation_send\", {\"conversation_id\": \"...\", \"message\": \"...\"})\nmcp__work-buddy__wb_run(\"conversation_ask\", {\"conversation_id\": \"...\", \"question\": \"...\", \"response_type\": \"boolean\"})\nmcp__work-buddy__wb_run(\"conversation_poll\", {\"conversation_id\": \"...\"})\nmcp__work-buddy__wb_run(\"conversation_close\", {\"conversation_id\": \"...\"})\nmcp__work-buddy__wb_run(\"conversation_list\")\n\n## When to use conversations\n\n- Explaining plans before executing: create a conversation, describe the plan, ask approval\n- Multi-step decisions: ask a sequence of questions in one back-and-forth\n- Progress updates: send status messages during long tasks\n- Follow-up dialogue: when a notification needs back-and-forth\n\n## Response types for conversation_ask\n\n| Type | User sees | Response value |\n|------|-----------|---------------|\n| freeform (default) | Text input | User's text |\n| boolean | Yes/No buttons | \"true\" or \"false\" |\n| choice | Labeled buttons | The choice key |\n\n## Behavior\n\n- conversation_create opens the chat sidebar on the dashboard automatically\n- conversation_ask with timeout_seconds blocks until response (max 110s)\n- conversation_poll checks the latest question without sending a new message\n- Sidebar auto-polls every 3s for new messages\n\n## Naming note\n\nIn v5 the term **Thread** is reserved for work-buddy's universal entity for 'context that may need an action' (see `data/designs/gtd/reimagined/DESIGN.md`). The agent-user dialogue subsystem you're using here is called a **Conversation** to free the name."
+    }
+  }
+}

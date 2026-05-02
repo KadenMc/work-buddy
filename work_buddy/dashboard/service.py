@@ -2478,45 +2478,45 @@ def api_notification_acknowledge(notification_id: str):
 
 
 # ---------------------------------------------------------------------------
-# Thread chat API
+# Conversation API (renamed from Thread chat in v5 Stage 1)
 # ---------------------------------------------------------------------------
 
 
-@app.get("/api/threads")
-def api_threads_list():
-    """List threads, optionally filtered by status."""
+@app.get("/api/conversations")
+def api_conversations_list():
+    """List conversations, optionally filtered by status."""
     status = request.args.get("status")
     try:
-        from work_buddy.threads.store import list_threads
-        threads = list_threads(status=status)
-        return jsonify({"threads": threads})
+        from work_buddy.conversations.store import list_conversations
+        conversations = list_conversations(status=status)
+        return jsonify({"conversations": conversations})
     except Exception as exc:
-        logger.error("Thread list failed: %s", exc)
-        return jsonify({"threads": [], "error": str(exc)})
+        logger.error("Conversation list failed: %s", exc)
+        return jsonify({"conversations": [], "error": str(exc)})
 
 
-@app.get("/api/threads/<thread_id>")
-def api_thread_get(thread_id: str):
-    """Get a thread with all messages in chronological order."""
+@app.get("/api/conversations/<conversation_id>")
+def api_conversation_get(conversation_id: str):
+    """Get a conversation with all messages in chronological order."""
     try:
-        from work_buddy.threads.store import get_thread_with_messages
-        result = get_thread_with_messages(thread_id)
+        from work_buddy.conversations.store import get_conversation_with_messages
+        result = get_conversation_with_messages(conversation_id)
         if result is None:
-            return jsonify({"error": "Thread not found"}), 404
+            return jsonify({"error": "Conversation not found"}), 404
         return jsonify(result)
     except Exception as exc:
-        logger.error("Thread get failed for %s: %s", thread_id, exc)
+        logger.error("Conversation get failed for %s: %s", conversation_id, exc)
         return jsonify({"error": str(exc)}), 500
 
 
-@app.post("/api/threads/<thread_id>/respond")
-def api_thread_respond(thread_id: str):
+@app.post("/api/conversations/<conversation_id>/respond")
+def api_conversation_respond(conversation_id: str):
     """User sends a message or responds to a pending question.
 
     Expects: {"value": "user's text"}
 
     If there's a pending question, answers it. Otherwise adds a general
-    user message to the thread.
+    user message to the conversation.
     """
     blocked = _reject_read_only()
     if blocked:
@@ -2527,35 +2527,42 @@ def api_thread_respond(thread_id: str):
         return jsonify({"error": "Missing 'value' in request body"}), 400
 
     try:
-        from work_buddy.threads.store import respond_to_thread, add_message
+        from work_buddy.conversations.store import (
+            respond_to_conversation,
+            add_message,
+        )
         # Try to answer a pending question first
-        msg = respond_to_thread(thread_id, str(value))
+        msg = respond_to_conversation(conversation_id, str(value))
         if msg is not None:
             return jsonify({"responded": True, "message_id": msg.message_id})
         # No pending question — add as a general user message
-        msg = add_message(thread_id, "user", str(value))
+        msg = add_message(conversation_id, "user", str(value))
         if msg is None:
-            return jsonify({"error": "Thread not found or closed"}), 404
+            return jsonify({"error": "Conversation not found or closed"}), 404
         return jsonify({"sent": True, "message_id": msg.message_id})
     except Exception as exc:
-        logger.error("Thread respond failed for %s: %s", thread_id, exc)
+        logger.error(
+            "Conversation respond failed for %s: %s", conversation_id, exc,
+        )
         return jsonify({"error": str(exc)}), 500
 
 
-@app.post("/api/threads/<thread_id>/close")
-def api_thread_close(thread_id: str):
-    """Close a thread."""
+@app.post("/api/conversations/<conversation_id>/close")
+def api_conversation_close(conversation_id: str):
+    """Close a conversation."""
     blocked = _reject_read_only()
     if blocked:
         return blocked
     try:
-        from work_buddy.threads.store import close_thread
-        ok = close_thread(thread_id)
+        from work_buddy.conversations.store import close_conversation
+        ok = close_conversation(conversation_id)
         if not ok:
-            return jsonify({"error": "Thread not found"}), 404
+            return jsonify({"error": "Conversation not found"}), 404
         return jsonify({"closed": True})
     except Exception as exc:
-        logger.error("Thread close failed for %s: %s", thread_id, exc)
+        logger.error(
+            "Conversation close failed for %s: %s", conversation_id, exc,
+        )
         return jsonify({"error": str(exc)}), 500
 
 
