@@ -43,6 +43,28 @@ class ModelTier(str, Enum):
     FRONTIER_BEST = "frontier_best"
     """Premium frontier model — Opus-class. Reserve for hardest escalations."""
 
+    # ---- v5 Stage 1.7 — new tiers introduced for the Thread system ----
+    # See data/designs/gtd/reimagined/DESIGN.md §9.2.
+
+    AGENT_HEADLESS = "agent_headless"
+    """Multi-turn agent (Claude Code subprocess) with tools.
+
+    Resumable via Thread state — a killed worker is not a problem
+    because the Thread's event log is the durable source of truth.
+    Stage 1 deliverable: tier registered with a stub binding so the
+    queue can route to it. The actual subprocess runner lands in
+    Stage 2 alongside the sidecar inference workers.
+    """
+
+    USER = "user"
+    """Human-in-the-loop. "Inference at this tier" means the FSM
+    transitions the Thread to a clarification state and asks the
+    user via the Resolution Surface. There is no model binding —
+    the runner short-circuits to a state-transition rather than
+    invoking an LLM. Stage 1: registered; Stage 2 wires the FSM
+    short-circuit.
+    """
+
 
 @dataclass(frozen=True)
 class TierBinding:
@@ -94,6 +116,23 @@ _DEFAULTS: dict[ModelTier, dict[str, Any]] = {
         "max_tokens": 1024,
         "temperature": 0.0,
         "tool_support": True,
+    },
+    # v5 Stage 1.7 — stub bindings. Routing wired in Stage 2.
+    ModelTier.AGENT_HEADLESS: {
+        "backend": "agent_subprocess",   # special pseudo-backend; runner_v2 dispatches to a subprocess spawner in Stage 2
+        "profile": None,
+        "model": None,                    # the subprocess picks its own model; tier binding only flags 'route to subprocess'
+        "max_tokens": 8192,
+        "temperature": 0.0,
+        "tool_support": True,
+    },
+    ModelTier.USER: {
+        "backend": "user_clarification",  # special pseudo-backend; FSM short-circuits to a clarification state
+        "profile": None,
+        "model": None,
+        "max_tokens": 0,
+        "temperature": 0.0,
+        "tool_support": False,
     },
     ModelTier.FRONTIER_BALANCED: {
         "backend": "anthropic",
