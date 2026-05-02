@@ -262,8 +262,10 @@ def _threads_v5_card_script() -> str:
         html += '<ul class="threads-v5-list">';
         for (const a of actions) {
             const flagged = s.flagged.has(a.id);
+            const blocked = !!a.context_blocked;
             html += '<li class="threads-v5-item'
-                  + (flagged ? ' threads-v5-flagged' : '') + '">';
+                  + (flagged ? ' threads-v5-flagged' : '')
+                  + (blocked ? ' threads-v5-ctx-blocked' : '') + '">';
             html += '<div class="threads-v5-item-label">'
                   + _kindIcon(a.kind) + ' ' + _esc(a.name || a.id) + '</div>';
             const summary = a.plan_summary || _summariseParams(a.parameters);
@@ -271,9 +273,29 @@ def _threads_v5_card_script() -> str:
                 html += '<div class="threads-v5-item-summary">'
                       + _esc(summary) + '</div>';
             }
-            // Action-context status indicator (Stage 4.11 fills this in
-            // for real; 4.2 just shows the placeholder hook).
-            if (Array.isArray(a.required_contexts) && a.required_contexts.length) {
+            // Action-context status indicator (Stage 4.11). Each
+            // required context shows availability inline with a
+            // ✓ / ⊘ glyph + reason on hover.
+            const statuses = a.context_statuses || [];
+            if (statuses.length > 0) {
+                html += '<div class="threads-v5-item-contexts">Requires: '
+                      + statuses.map(s => {
+                          const cls = s.available
+                              ? 'threads-v5-ctx-ok'
+                              : (s.kind === 'user_only'
+                                    ? 'threads-v5-ctx-user'
+                                    : 'threads-v5-ctx-down');
+                          const glyph = s.available ? '✓'
+                                       : (s.kind === 'user_only' ? '◐' : '⊘');
+                          const title = s.reason ? ' title="' + _esc(s.reason) + '"' : '';
+                          return '<span class="threads-v5-ctx ' + cls + '"'
+                                 + title + '>'
+                                 + glyph + ' ' + _esc(s.token)
+                                 + '</span>';
+                      }).join(' ')
+                      + '</div>';
+            } else if (Array.isArray(a.required_contexts) && a.required_contexts.length) {
+                // Fallback when status lookup wasn't run
                 html += '<div class="threads-v5-item-contexts">Requires: '
                       + a.required_contexts.map(_esc).join(', ')
                       + '</div>';
@@ -879,6 +901,34 @@ def _threads_v5_card_styles() -> str:
 .threads-v5-item.threads-v5-flagged {
     border-left-color: #c0392b;
     opacity: 0.55;
+}
+
+/* Context-blocked action: amber left-border + slightly faded */
+.threads-v5-item.threads-v5-ctx-blocked {
+    border-left-color: #b8860b;
+    opacity: 0.85;
+}
+
+/* Per-context status pill */
+.threads-v5-ctx {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 3px;
+    margin-right: 6px;
+    font-family: var(--font-mono, monospace);
+    font-size: 11px;
+}
+.threads-v5-ctx-ok {
+    background: rgba(50, 150, 80, 0.15);
+    color: #6dd99a;
+}
+.threads-v5-ctx-down {
+    background: rgba(180, 100, 30, 0.15);
+    color: #d8a06d;
+}
+.threads-v5-ctx-user {
+    background: rgba(100, 100, 180, 0.15);
+    color: #9da4d4;
 }
 
 .threads-v5-item-label {

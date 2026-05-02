@@ -80,32 +80,35 @@ def build_render_data(thread_id: str) -> Optional[dict[str, Any]]:
         # time; we render whatever's there.
         kind = payload.get("kind", "standard")
         if kind == "standard":
-            actions.append({
+            actions.append(_attach_context_status({
                 "id": f"act-{latest_action.id}",
                 "name": payload.get("name", "(unnamed)"),
                 "kind": "standard",
                 "parameters": payload.get("parameters") or {},
                 "plan_summary": _summarise_action(payload),
                 "required_contexts": payload.get("required_contexts") or [],
-            })
+                "intrinsic_amplifiers": payload.get("intrinsic_amplifiers") or {},
+            }))
         elif kind == "improvised":
-            actions.append({
+            actions.append(_attach_context_status({
                 "id": f"act-{latest_action.id}",
                 "name": "(improvised)",
                 "kind": "improvised",
                 "parameters": {},
                 "plan_summary": payload.get("plan_summary") or "",
                 "required_contexts": payload.get("required_contexts") or [],
-            })
+                "intrinsic_amplifiers": payload.get("intrinsic_amplifiers") or {},
+            }))
         elif kind == "suggestion":
-            actions.append({
+            actions.append(_attach_context_status({
                 "id": f"act-{latest_action.id}",
                 "name": "(suggestion)",
                 "kind": "suggestion",
                 "parameters": {},
                 "plan_summary": payload.get("text") or "",
                 "required_contexts": [],
-            })
+                "intrinsic_amplifiers": {},
+            }))
 
     # Urgency — derive from inciting summary or default to defer
     urgency = inciting.get("urgency", "defer")
@@ -272,6 +275,30 @@ def _latest_cleanup_failure(events) -> Optional[dict[str, Any]]:
                 "source_already_gone": data.get("source_already_gone", False),
             }
     return None
+
+
+def _attach_context_status(action: dict[str, Any]) -> dict[str, Any]:
+    """Add a `context_statuses` field to an action dict.
+
+    Stage 4.11: each required-context token gets an availability
+    status object so the UI can render the per-action indicator.
+    """
+    try:
+        from work_buddy.threads.context_status import context_statuses
+        action["context_statuses"] = context_statuses(
+            action.get("required_contexts") or [],
+        )
+    except Exception:
+        action["context_statuses"] = []
+    # Derived: any_unavailable = True if any required context's
+    # status is unavailable (excluding user_only — those route to
+    # the user not the agent).
+    any_blocking = any(
+        not s.get("available") and s.get("kind") != "user_only"
+        for s in action["context_statuses"]
+    )
+    action["context_blocked"] = any_blocking
+    return action
 
 
 def _summarise_action(payload: dict[str, Any]) -> str:
