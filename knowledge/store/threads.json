@@ -1,0 +1,105 @@
+{
+  "threads": {
+    "kind": "system",
+    "name": "Threads (v5 universal-entity primitive)",
+    "description": "The Thread is the universal entity for 'context that may need an action' in v5. Replaces v4's PoolEntry (folded into states) and ActionItem (folded into sub-Threads). Task survives as a subclass.",
+    "tags": ["threads", "v5", "fsm", "resolution", "core"],
+    "children": [
+      "threads/fsm",
+      "threads/resolution-phase",
+      "threads/event-log",
+      "threads/llm-call-queue",
+      "threads/action-catalog",
+      "threads/autonomy",
+      "threads/aggregator"
+    ],
+    "content": {
+      "summary": "v5 collapses v4's overlapping entities into one primitive: Thread. A Thread has FSM state, an event log, an autonomy policy, optional parent_id (for sub-threads), optional subtype ('task' for the master-list contract). Stage 1: types frozen, schemas migrated, scaffolding in place. Stage 2 wires the engine. Stage 3 migrates v4 data. Stage 4 redesigns surfaces.",
+      "full": "## Where this lives in the code\n\n- ``work_buddy/threads/enums.py`` — FSMState, InferenceTarget, ReasoningTier, InvocationContext, ActionKind, Authorship, SurfaceUrgency.\n- ``work_buddy/threads/models.py`` — Thread, Task(Thread), ContextItem, AutonomyPolicy, ResolutionRequest, Proposal.\n- ``work_buddy/threads/events.py`` — ThreadEvent, ALL_KINDS catalog, OptimisticLockConflict.\n- ``work_buddy/threads/fsm.py`` — TRANSITION_TABLE (DESIGN.md §7.6), lookup helpers, state-entry side-effect catalog.\n- ``work_buddy/threads/store.py`` — SQLite schema for ``threads`` + ``thread_events``; minimum CRUD; optimistic-lock event submission.\n- ``work_buddy/threads/aggregator.py`` — read-only Thread view over v4 task_metadata / task_action_items / ClarifyPool.\n- ``work_buddy/llm/queue.py`` — LLM-call priority queue (NOT in threads/ — it's general infra).\n- ``work_buddy/llm/budget.py`` — per-Thread budget admission hook.\n\n## Module-boundary rules (load-bearing)\n\n- The LLM-call **priority queue** lives in ``work_buddy/llm/`` and is OWNED by that subsystem, not by Threads. Threads enqueue into it; they do not own queue state. **Do NOT add a queue table or worker to the threads/ package.** See DESIGN.md §9.2.\n- The capability/workflow registry lives in ``work_buddy/mcp_server``. Threads dispatch into it via the Action Catalog (a typed lens, not a new registry).\n- The conductor lives in ``work_buddy/sidecar``. v5 dispatches workflow-backed actions into it; the conductor itself is unchanged by v5.\n\n## Stage status (v5 implementation)\n\n- **Stage 1 — Foundation**: in progress. Types frozen, schemas migrated, queue scaffolded, Resolution Surface card primitive registered, aggregator over v4 data working. NOTHING USER-VISIBLE YET. v4 surfaces continue to render exactly as before.\n- **Stage 2 — Engine**: not started. Will wire the FSM engine, the unified Inference class, sidecar inference workers, real Resolution Surface payloads.\n- **Stage 3 — Cutover**: not started. Will migrate v4 PoolEntry/Task/ActionItem rows to v5 Threads in a brief maintenance window.\n- **Stage 4 — Vertical slices + settle**: not started. Now feed, Tasks tab redesign, end-to-end use cases.\n\nFull design: ``data/designs/gtd/reimagined/DESIGN.md`` (gitignored, local artifact). Full plan: ``data/designs/gtd/reimagined/IMPLEMENTATION-PLAN.md``."
+    }
+  },
+
+  "threads/fsm": {
+    "kind": "system",
+    "name": "Thread FSM (resolution phase)",
+    "description": "14-state FSM that runs from inciting event to terminal. Transitions wired in Stage 2; data structures (state catalog, transition table) land in Stage 1.",
+    "tags": ["threads", "fsm", "resolution", "v5"],
+    "parents": ["threads"],
+    "content": {
+      "summary": "States: proposed, awaiting_inference, inferring_*, awaiting_*_confirmation, awaiting_*_clarification, awaiting_confirmation (action gate), awaiting_review (opt-in), awaiting_redirect, executing, monitoring, done, dismissed, handed_off. Cycles only via human-initiated redirect (any wait state → awaiting_inference). No automated retry loops.",
+      "full": "## State catalog\n\n5 categories:\n\n1. **Queued for inference** — `awaiting_inference`. Thread enqueues into the LLM-call priority queue (work_buddy/llm/queue.py); does NOT own the queue.\n2. **Inference running** — `inferring_intent` | `inferring_context` | `inferring_action`. Worker has dequeued; lifecycle managed by inference worker.\n3. **Resolution wait** — `awaiting_*_confirmation` (3 affordances), `awaiting_*_clarification` (2 affordances), `awaiting_confirmation` (consent gate, 3 affordances), `awaiting_review` (opt-in post-execution, 3 affordances), `awaiting_redirect` (after failure, 2 affordances).\n4. **Execution** — `executing`. Two events land in the Thread log: execution_started, execution_finished. Per-step detail lives on the run record (workflow run, capability call log, agent session).\n5. **Terminal** — `done` (succeeded), `dismissed` (user closed without acting / timeout), `handed_off` (work migrated to a human or external system; agent has no further role), `monitoring` (parent-of-decomposed; transitions to done when all children terminal).\n\n## Transition table\n\nSee ``work_buddy.threads.fsm.TRANSITION_TABLE`` for the canonical mapping. DESIGN.md §7.6 is the spec.\n\n## Cycles\n\nThe graph contains cycles ONLY via human-initiated redirect (any wait state → awaiting_inference). The forward inference path is acyclic. There is NO automated retry loop and NO cycle-prevention machinery (revisit caps, fingerprint detection). Per-Thread cost is bounded by the autonomy policy's budget axis, enforced at the LLM-call queue layer.\n\n## awaiting_review is opt-in\n\nMost actions go straight from executing → done. A Thread enters `awaiting_review` ONLY when the executed action's template declared `requires_post_review: true` OR the autonomy policy demands review (e.g., irreversibility above threshold). See R7.6 in DESIGN.md."
+    }
+  },
+
+  "threads/resolution-phase": {
+    "kind": "system",
+    "name": "Resolution phase (vs. execution)",
+    "description": "Resolution = the cyclic, human-in-loop FSM where the system decides what to do. Execution = whichever runtime owns the dispatched action; v5 introduces no execution engine.",
+    "tags": ["threads", "resolution", "execution", "v5"],
+    "parents": ["threads"],
+    "content": {
+      "summary": "Pre-dispatch: per-Thread FSM is cyclic; human-in-the-loop is a state. Inference + clarification + confirmation happen here. Post-dispatch: existing capability call infrastructure, workflow conductor, or agent loop — none introduced by v5. Two events (execution_started, execution_finished) mirror back; per-step detail lives on the run record.",
+      "full": "## Why a state machine for resolution\n\n- **Cycles**: user redirect requires backward transition.\n- **Human-in-the-loop is state, not interrupt**: the Thread sits until input arrives.\n- **Re-entry from execution**: failure re-enters the FSM at awaiting_redirect.\n\n## Resolution Request\n\nWhen a Thread enters any awaiting_* state, it produces a typed ``ResolutionRequest`` (see ``work_buddy.threads.models.ResolutionRequest``). This flows through the existing consent subsystem (``work_buddy/consent.py``), which becomes the FSM's I/O layer for human input. The Resolution Surface card primitive (``script_resolution_surface_v5.py``) renders these.\n\n## Card kinds (DESIGN.md §15.1)\n\n- ``confirmation`` — agent has guess; 3 affordances (Accept, Edit, Redirect).\n- ``clarification`` — agent has nothing; 2 affordances (Provide, Skip).\n- ``consent`` — action fully determined, gating execution; 3 affordances (Approve, Edit parameters, Reject).\n- ``review`` — post-execution review; 3 affordances (Mark done, Redirect, Drop).\n- ``redirect`` — post-failure; 2 affordances (Provide, Skip).\n\n## Edit vs Redirect\n\n- **Edit**: in-place modification; advances forward.\n- **Redirect**: changes the agent's premise; loops back to ``awaiting_inference`` with the redirect payload as forced input."
+    }
+  },
+
+  "threads/event-log": {
+    "kind": "system",
+    "name": "Thread event log (canonical state)",
+    "description": "Every state-affecting operation produces an event. The current-state cache exists for query convenience but events are authoritative.",
+    "tags": ["threads", "events", "audit", "v5"],
+    "parents": ["threads"],
+    "content": {
+      "summary": "Append-only thread_events table with optimistic locking via parent_event_id. Cross-Thread atomic operations share a migration_id. Workflow execution mirrors only execution_started / execution_finished into the Thread log; per-step detail lives on the run record. The Thread log is centrally about RESOLUTION; execution detail is sparingly mirrored.",
+      "full": "## Schema\n\n``thread_events`` table (see ``work_buddy.threads.store``):\n- ``id`` AUTOINCREMENT PK\n- ``thread_id`` FK → threads(thread_id) ON DELETE CASCADE\n- ``kind`` (one of ``ALL_KINDS`` from ``work_buddy.threads.events``)\n- ``actor`` (agent | user | sidecar | fsm_engine | conductor | inciting)\n- ``inference_tier`` (ReasoningTier value or NULL)\n- ``timestamp``\n- ``data_json``\n- ``parent_event_id`` (optimistic-lock target)\n- ``migration_id`` (cross-Thread linked events)\n\n## Event kinds (catalog)\n\nLifecycle, inference, confirmation, clarification, redirect, consent, execution, migration, decomposition, budget — see ``work_buddy.threads.events`` for the full list and constants. ``validate_kind()`` enforces at submit.\n\n## Optimistic locking\n\nEach event carries the latest ``parent_event_id`` the actor saw before deciding. The store rejects an insert whose ``parent_event_id`` doesn't match the most recent landed event for that thread (raises ``OptimisticLockConflict``). First-event submissions (``parent_event_id=None``) bypass the check. Two concurrent submissions race; one succeeds, one retries.\n\n## Cross-Thread migrations\n\nWhen a context item moves between Threads, both Threads emit events sharing a ``migration_id``: ``context_removed`` on the source, ``context_added`` on the destination. ``get_linked_events(migration_id)`` retrieves both."
+    }
+  },
+
+  "threads/llm-call-queue": {
+    "kind": "system",
+    "name": "LLM-call priority queue (lives in work_buddy/llm/, not threads/)",
+    "description": "General infrastructure for dispatching LLM work by priority. Threads enqueue; the queue dispatches. Reusable by any client (scheduled jobs, agents, batch ops). MUST NOT be reimplemented inside the Thread package.",
+    "tags": ["threads", "llm", "queue", "v5", "infrastructure"],
+    "parents": ["threads"],
+    "content": {
+      "summary": "When a Thread enters awaiting_inference, the FSM enqueues a request (caller_id, target, priority, payload, tier_hint) into the LLM-call queue and waits. The queue owns scheduling, concurrency limits, and dispatching to runtimes. Per-caller budgets enforced at enqueue via pluggable admission hooks. The Thread system is a publisher only.",
+      "full": "## Why the queue lives outside threads/\n\nFrom DESIGN.md §9.2: the queue is general infrastructure. Anything that wants to dispatch LLM work — other agents, scheduled jobs, batch operations, sidecar workers in unrelated subsystems — should go through it. Building it inside the Thread system would tie general infrastructure to one client and force every other client to either reinvent or reach across module boundaries.\n\n## Where it lives\n\n- ``work_buddy/llm/queue.py`` — schema (``llm_call_queue`` table), CRUD, status transitions, atomic dequeue, admission hooks.\n- ``work_buddy/llm/budget.py`` — per-caller budget store + cost source registry + admission hook.\n- ``work_buddy/llm/tiers.py`` — ``ModelTier`` (incl. v5 ``AGENT_HEADLESS`` and ``USER``).\n\n## Status transitions\n\npending → in_flight → done | failed | cancelled\npending → rejected (admission denied; audit row recorded)\n\n## Admission hooks\n\n``register_admission_hook(fn)`` — fn returns ``AdmissionDecision``; first ``admit=False`` rejects. The budget hook (``work_buddy.llm.budget.budget_admission_hook``) is the canonical example; Stage 2 registers it during sidecar bootstrap with per-Thread caps drawn from autonomy_policy.budget_usd.\n\n## Stage 1 status\n\nScaffolding only. Schema lives, CRUD works, hooks compose, but no dispatcher loop runs. Stage 2 wires the dispatcher (sidecar worker that pulls pending entries and routes to the appropriate runtime: structured LLM call, AGENT_HEADLESS subprocess, or USER-tier short-circuit to a clarification state)."
+    }
+  },
+
+  "threads/action-catalog": {
+    "kind": "system",
+    "name": "Action Catalog (typed lens over capability + workflow registries)",
+    "description": "Filtered view over the existing capability + workflow registries: entries where is_action=True. Three action kinds: Standard, Improvised, Suggestion.",
+    "tags": ["threads", "actions", "catalog", "v5"],
+    "parents": ["threads"],
+    "content": {
+      "summary": "Stage 1 deliverable: capability/workflow definitions gain four new fields (is_action, available_in, intrinsic_amplifiers, parameter_schema_for_action, requires_post_review). Defaults preserve v4 semantics. Stage 2 wires the action-inference filter through these fields.",
+      "full": "## Three action kinds\n\n- **Standard**: registered capability or workflow. The FSM dispatches into the existing capability call infrastructure or the workflow conductor.\n- **Improvised**: agent runs an action without a registered template — multi-turn agent loop with tools, deciding each step as it goes. NO workflow definition synthesised. Always requires user approval. Trace can be promoted to a Standard Action via explicit user gesture.\n- **Suggestion**: agent is blocked on user-held context (info, access, judgment) and surfaces a card asking the user to act manually. Agent has no execution role. NOT a low-confidence fallback.\n\n## Capability/Workflow extensions (Stage 1.5)\n\n- ``is_action: bool`` — opt-in for Action Catalog inclusion.\n- ``available_in: set[InvocationContext]`` — defaults to {AGENT_CONVERSATION, AGENT_AUTONOMOUS, ACTION_PROPOSAL, USER_INVOCATION} (every context EXCEPT FSM_INTERNAL). Sensitive ops + FSM internals override.\n- ``intrinsic_amplifiers: dict[str, str]`` — risk amplifiers intrinsic to the action (e.g. send_email → {reversibility: irreversible, regret_potential: high}).\n- ``parameter_schema_for_action: dict`` — JSONSchema the inference module proposes parameters against.\n- ``requires_post_review: bool`` — when False (default), the FSM dispatches → done after success. When True, lands in awaiting_review.\n\n## InvocationContext\n\n5 contexts: AGENT_CONVERSATION, AGENT_AUTONOMOUS, FSM_INTERNAL, ACTION_PROPOSAL, USER_INVOCATION. The gateway derives the caller's context server-side from session metadata; callers do NOT pass it (DESIGN.md §10.3 + correction #14). ``wb_search`` filters by available_in before returning candidates."
+    }
+  },
+
+  "threads/autonomy": {
+    "kind": "system",
+    "name": "Autonomy policy (composed, not enum)",
+    "description": "Per-Thread policy composed from orthogonal axes. Saved compositions are configuration, not types. Sub-threads override DOWN axis-by-axis only.",
+    "tags": ["threads", "autonomy", "v5"],
+    "parents": ["threads"],
+    "content": {
+      "summary": "Axes: auto_advance_states, consent_required_kinds, inference_confidence_floor, irreversibility_threshold, regret_potential_threshold, pause_on_risk_amplifier, allowed_action_kinds, allowed_invocation_contexts, inference_floor/ceiling_tier, budget_usd. Composition is Omegaconf-flavored: global defaults < parent overrides < Thread overrides.",
+      "full": "## Saved compositions (named bundles)\n\nCommon shapes get names. These are CONFIGURATION, not types — adding a new named composition is a YAML edit, not a code change. Threads can deviate from a saved composition without forking it.\n\n- ``end_to_end`` — auto-advance through inference + confirmation + executing; pause only on risk amplifier.\n- ``plan_then_review`` — auto-advance through inference; require user consent on action_approved.\n- ``hands_off`` — every event kind requires user input; no auto-advance.\n\n## Sub-thread inheritance\n\nChildren inherit axis-by-axis. Override DOWN (more conservative) is allowed; override UP is not. A parent at ``hands_off`` cannot have a child at ``end_to_end``. Enforced at sub-thread spawn time by the ``decompose`` Standard Action.\n\n## Risk-amplifier safety net\n\nWhen ``pause_on_risk_amplifier=True``, an action's intrinsic amplifiers OR the Thread's risk profile exceeding the policy's thresholds force ``awaiting_confirmation`` regardless of ``auto_advance_states``."
+    }
+  },
+
+  "threads/aggregator": {
+    "kind": "system",
+    "name": "Aggregator (read-only synthesis of v4 entities as v5 Threads)",
+    "description": "Lets v5 query paths see v4 task_metadata / task_action_items / ClarifyPool data without a migration. Stage 3 cutover replaces this with real migrated rows.",
+    "tags": ["threads", "aggregator", "v5", "migration"],
+    "parents": ["threads"],
+    "content": {
+      "summary": "Read-only. Maps v4 tasks → Task(Thread), action items → sub-Threads, ClarifyPool entries → Threads in awaiting_intent_confirmation. ID prefixes (agg-task-, agg-ai-, agg-pool-) make synthesised threads distinguishable from real v5 threads.",
+      "full": "Located at ``work_buddy/threads/aggregator.py``. Public API: ``list_threads_aggregated``, ``get_thread_aggregated``, ``aggregator_summary``. State mappings:\n\n- task ``inbox`` → PROPOSED; ``focused``/``mit`` → AWAITING_CONFIRMATION; ``done`` or archived → DONE; ``snoozed`` → AWAITING_REDIRECT.\n- action item ``pending`` → AWAITING_CONFIRMATION; ``in_progress`` → EXECUTING; ``done`` → DONE; ``skipped`` → DISMISSED.\n- pool entry ``pending`` → AWAITING_INTENT_CONFIRMATION; ``reviewed`` (approved) → DONE; everything else → DISMISSED.\n\nDual-schema authorship handling: prefers post-PR-70 ``authorship`` enum if present; falls back to deriving from ``user_authored`` + ``approved_at`` columns. The aggregator works against both shapes."
+    }
+  }
+}
