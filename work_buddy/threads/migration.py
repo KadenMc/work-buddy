@@ -386,6 +386,22 @@ def _migrate_action_item_row(
     return new_id
 
 
+# ---------------------------------------------------------------------------
+# ClarifyPool entries — INTENTIONALLY NOT MIGRATED (UX.md §14)
+#
+# Per the design conversation, PoolEntries are a v4 caching layer
+# between source scanners and the Triage Review surface. They are
+# NOT inciting events for v5 Threads — the inciting source is the
+# underlying journal/inline/chrome/email source. So pool entries
+# are dropped on cutover; the source scanners run post-cutover and
+# re-create as v5 Threads with proper inciting sources.
+#
+# The function below is preserved as a SHIM that records the
+# decision in the report rather than migrating. Stage 4.14
+# (UX.md §14) revises the migration runbook accordingly.
+# ---------------------------------------------------------------------------
+
+
 def _migrate_pool_entry(
     conn: sqlite3.Connection,
     entry: Any,
@@ -393,75 +409,29 @@ def _migrate_pool_entry(
     v4_to_v5: dict[str, str],
     report: MigrationReport,
 ) -> Optional[str]:
-    """Migrate one ClarifyPool entry to a Thread."""
-    v4_id = f"{entry.run_id}:{entry.item_id}"
-    map_key = f"pool_entry:{v4_id}"
-    if map_key in v4_to_v5:
-        return v4_to_v5[map_key]
+    """Stage 4.14: pool entries are NOT migrated.
 
-    synth = aggregator._pool_entry_to_thread(entry)
-    new_id = _new_thread_id()
+    Per the v5 architectural correction (UX.md §14), ClarifyPool
+    entries are a v4 caching layer; the inciting source for v5
+    is the underlying scanner output (journal note, chrome tab,
+    inline TODO). Post-cutover, source scanners run via the
+    spawn helpers in ``source_pipelines.py`` and create v5
+    Threads with correct inciting provenance.
 
-    new_thread = Thread(
-        thread_id=new_id,
-        parent_id=None,
-        subtype=None,
-        fsm_state=synth.fsm_state,
-        autonomy_policy=AutonomyPolicy(),
-        context_items=synth.context_items,
-        inciting_event_summary={
-            **dict(synth.inciting_event_summary),
-            "migrated_from_v4_at": _now_iso(),
-        },
-        created_at=synth.created_at,
-        updated_at=synth.updated_at,
-    )
-    store.insert_thread(new_thread, conn=conn)
-    inciting = store.append_event(
-        ThreadEvent(
-            thread_id=new_id,
-            kind=KIND_INCITING_EVENT,
-            actor=ACTOR_INCITING,
-            data={
-                "source": "v4_clarify_pool",
-                "v4_run_id": entry.run_id,
-                "v4_item_id": entry.item_id,
-                "adapter": getattr(entry, "adapter", None),
-            },
-            timestamp=synth.created_at,
+    This function returns None and records the skip in the
+    report's ``skipped`` list for audit.
+    """
+    v4_id = f"{getattr(entry, 'run_id', '?')}:{getattr(entry, 'item_id', '?')}"
+    report.skipped.append({
+        "kind": "pool_entry",
+        "v4_id": v4_id,
+        "reason": (
+            "pool entries are dropped per UX.md §14 — the source "
+            "scanners (journal, chrome, inline) re-create as v5 "
+            "Threads with proper inciting provenance"
         ),
-        conn=conn,
-    )
-    store.append_event(
-        ThreadEvent(
-            thread_id=new_id,
-            kind=KIND_THREAD_CREATED,
-            actor=ACTOR_INCITING,
-            data={
-                "migrated_from_v4": True,
-                "v4_kind": "pool_entry",
-                "v4_id": v4_id,
-            },
-            parent_event_id=inciting.id,
-        ),
-        conn=conn,
-    )
-    store.update_thread_state(
-        new_id,
-        parent_event_id=store.latest_event_id(new_id, conn=conn),
-        conn=conn,
-    )
-
-    _record_mapping(conn, "pool_entry", v4_id, new_id,
-                    notes=getattr(entry, "source", None))
-    v4_to_v5[map_key] = new_id
-
-    state_label = synth.fsm_state.value
-    report.pool_state_histogram[state_label] = (
-        report.pool_state_histogram.get(state_label, 0) + 1
-    )
-    report.pool_entries_migrated += 1
-    return new_id
+    })
+    return None
 
 
 # ---------------------------------------------------------------------------

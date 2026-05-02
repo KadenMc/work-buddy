@@ -267,6 +267,42 @@ class TestRunMigration:
             migration.run_migration(dry_run=True)
 
 
+class TestPoolEntriesDropped:
+    """Stage 4.14 (UX.md §14): pool entries are NOT migrated.
+
+    The inciting source of a v5 Thread is the underlying scanner
+    output (journal note, chrome tab, inline TODO), not the
+    intermediate ClarifyPool entry. Post-cutover, source scanners
+    run via source_pipelines spawn helpers.
+    """
+
+    def test_pool_migrate_function_is_no_op(self, fresh_v5_db):
+        # Build a fake pool entry
+        class FakeEntry:
+            run_id = "r1"
+            item_id = "i1"
+            source = "test"
+
+        report = migration.MigrationReport()
+        v4_to_v5 = {}
+        conn = store.get_connection()
+        try:
+            result = migration._migrate_pool_entry(
+                conn, FakeEntry(),
+                v4_to_v5=v4_to_v5, report=report,
+            )
+        finally:
+            conn.close()
+        assert result is None
+        # Mapping not recorded (pool not migrated)
+        assert "pool_entry:r1:i1" not in v4_to_v5
+        # Skip recorded for audit
+        assert any(
+            s.get("kind") == "pool_entry" and "r1:i1" in s.get("v4_id", "")
+            for s in report.skipped
+        )
+
+
 # ---------------------------------------------------------------------------
 # Dry-run isolation
 # ---------------------------------------------------------------------------
