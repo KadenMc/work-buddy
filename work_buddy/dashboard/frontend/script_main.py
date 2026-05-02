@@ -8,6 +8,7 @@ def _script() -> str:
 // ---- Tab switching ----
 const staticLoaders = {
     overview: () => loadOverview(),
+    threads: () => loadThreads(),
     today: () => loadToday(),
     tasks: () => loadTasks(),
     review: () => loadReview(),
@@ -21,6 +22,11 @@ const staticLoaders = {
     costs: () => loadCosts(),
     settings: () => loadSettings(),
 };
+// Expose globally so script_threads_v5.py can register its loader at
+// IIFE-execution time (loadThreads is defined later in the script
+// concatenation order; this lets the v5 module wire itself in
+// without depending on script_main.py's exact placement).
+window.staticLoaders = staticLoaders;
 
 function switchTab(tabName) {
     // Update all tab buttons (static + dynamic)

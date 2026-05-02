@@ -42,6 +42,7 @@ from .script_resolution_surface_v5 import (
 from .script_review import _review_script
 from .script_settings import _settings_script
 from .script_conversations import _conversation_chat_script
+from .script_threads_v5 import _threads_v5_script, _threads_v5_styles
 from .script_today import _today_script, _today_styles
 from .script_triage import _triage_clarify_script, _triage_review_script
 from .script_workflows import _workflow_views_script
@@ -84,6 +85,7 @@ def render_page() -> str:
         _today_script(),
         _settings_script(),
         _conversation_chat_script(),
+        _threads_v5_script(),
         _command_palette_script(),
         _costs_script(),
     ])
@@ -97,6 +99,7 @@ def render_page() -> str:
     <style>{_styles()}
 {_resolution_surface_styles()}
 {_resolution_surface_v5_styles()}
+{_threads_v5_styles()}
 {_automation_styles()}
 {_today_styles()}</style>
     <script src="/vendor/chart.umd.min.js"></script>

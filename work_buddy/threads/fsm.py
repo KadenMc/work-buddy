@@ -60,6 +60,13 @@ TRIG_TIMEOUT = "timeout"
 # Cascade from a parent's force-close
 TRIG_PARENT_FORCE_CLOSE = "parent_force_close"
 
+# Stage 4: cleanup triggers (UX.md §6.5)
+TRIG_CLEANUP_REQUESTED = "cleanup_requested"
+TRIG_CLEANUP_SUCCEEDED = "cleanup_succeeded"
+TRIG_CLEANUP_FAILED = "cleanup_failed"
+TRIG_RETRY_CLEANUP = "retry_cleanup"
+TRIG_ACCEPT_CLEANUP_FAILURE = "accept_cleanup_failure"
+
 
 ALL_TRIGGERS: frozenset[str] = frozenset({
     TRIG_INFERENCE_DONE,
@@ -224,6 +231,32 @@ TRANSITION_TABLE: dict[tuple[FSMState, str], TransitionOutcome] = {
     # own parent must cascade through.
     (FSMState.MONITORING, TRIG_PARENT_FORCE_CLOSE): _t(FSMState.DISMISSED),
 
+    # --- cleanup transitions (Stage 4 — UX.md §6.5) -------------------
+    # User clicked Clean Up while in any wait state. Adapter is
+    # invoked synchronously or queued. Thread enters CLEANING_UP.
+    (FSMState.AWAITING_INTENT_CONFIRMATION, TRIG_CLEANUP_REQUESTED): _t(FSMState.CLEANING_UP),
+    (FSMState.AWAITING_CONTEXT_CONFIRMATION, TRIG_CLEANUP_REQUESTED): _t(FSMState.CLEANING_UP),
+    (FSMState.AWAITING_INTENT_CLARIFICATION, TRIG_CLEANUP_REQUESTED): _t(FSMState.CLEANING_UP),
+    (FSMState.AWAITING_CONTEXT_CLARIFICATION, TRIG_CLEANUP_REQUESTED): _t(FSMState.CLEANING_UP),
+    (FSMState.AWAITING_ACTION_CLARIFICATION, TRIG_CLEANUP_REQUESTED): _t(FSMState.CLEANING_UP),
+    (FSMState.AWAITING_CONFIRMATION, TRIG_CLEANUP_REQUESTED): _t(FSMState.CLEANING_UP),
+    (FSMState.AWAITING_REVIEW, TRIG_CLEANUP_REQUESTED): _t(FSMState.CLEANING_UP),
+    (FSMState.AWAITING_REDIRECT, TRIG_CLEANUP_REQUESTED): _t(FSMState.CLEANING_UP),
+
+    # Adapter result
+    (FSMState.CLEANING_UP, TRIG_CLEANUP_SUCCEEDED): _t(FSMState.DONE_CLEANUP_SUCCESSFUL),
+    (FSMState.CLEANING_UP, TRIG_CLEANUP_FAILED): _t(FSMState.DONE_CLEANUP_UNSUCCESSFUL),
+    # User can dismiss mid-cleanup (e.g., the adapter's stuck waiting
+    # on a locked file). Cascade-close also works.
+    (FSMState.CLEANING_UP, TRIG_DISMISSED_BY_USER): _t(FSMState.DISMISSED),
+    (FSMState.CLEANING_UP, TRIG_PARENT_FORCE_CLOSE): _t(FSMState.DISMISSED),
+
+    # User responses to a failed cleanup
+    (FSMState.DONE_CLEANUP_UNSUCCESSFUL, TRIG_RETRY_CLEANUP): _t(FSMState.CLEANING_UP),
+    (FSMState.DONE_CLEANUP_UNSUCCESSFUL, TRIG_ACCEPT_CLEANUP_FAILURE): _t(FSMState.DONE),
+    (FSMState.DONE_CLEANUP_UNSUCCESSFUL, TRIG_DISMISSED_BY_USER): _t(FSMState.DISMISSED),
+    (FSMState.DONE_CLEANUP_UNSUCCESSFUL, TRIG_PARENT_FORCE_CLOSE): _t(FSMState.DISMISSED),
+
     # Terminals have no outgoing transitions (no entries).
 }
 
@@ -290,4 +323,13 @@ STATE_ENTRY_SIDE_EFFECTS: dict[FSMState, str] = {
         "record thread_dismissed event; cascade to live sub-threads if parent",
     FSMState.HANDED_OFF:
         "record thread_handed_off event",
+
+    # Stage 4: cleanup states (UX.md §6.4)
+    FSMState.CLEANING_UP:
+        "invoke registered cleanup adapter (work_buddy.threads.cleanup); "
+        "fires cleanup_succeeded or cleanup_failed trigger",
+    FSMState.DONE_CLEANUP_SUCCESSFUL:
+        "record source_cleaned_up terminal event",
+    FSMState.DONE_CLEANUP_UNSUCCESSFUL:
+        "publish ResolutionRequest (retry/accept-failure card) via consent system",
 }

@@ -97,6 +97,19 @@ CREATE TABLE IF NOT EXISTS threads (
     updated_at                 TEXT NOT NULL,
     archived_at                TEXT,
 
+    -- Stage 4: Later mechanic (UX.md §13).
+    -- NULL = always visible. ISO 8601 = hide until that time.
+    resurface_at               TEXT,
+
+    -- Stage 4: linearization order within siblings (UX.md §8.2).
+    -- Computed at WRITE time (decompose, sub-thread spawn). NEVER at
+    -- render time. Only meaningful when parent_id is non-NULL.
+    order_index                INTEGER NOT NULL DEFAULT 0,
+
+    -- Stage 4: search-blob cache (UX.md §10.2). Denormalised,
+    -- substring-searchable text rebuilt on Thread state change.
+    search_blob                TEXT NOT NULL DEFAULT '',
+
     FOREIGN KEY (parent_id) REFERENCES threads(thread_id) ON DELETE CASCADE,
     FOREIGN KEY (current_focus_thread_id) REFERENCES threads(thread_id) ON DELETE SET NULL
 );
@@ -107,6 +120,10 @@ CREATE INDEX IF NOT EXISTS idx_threads_state
     ON threads(fsm_state);
 CREATE INDEX IF NOT EXISTS idx_threads_subtype
     ON threads(subtype);
+CREATE INDEX IF NOT EXISTS idx_threads_parent_order
+    ON threads(parent_id, order_index);
+CREATE INDEX IF NOT EXISTS idx_threads_resurface
+    ON threads(resurface_at);
 
 
 CREATE TABLE IF NOT EXISTS thread_events (
@@ -150,14 +167,65 @@ CREATE INDEX IF NOT EXISTS idx_thread_events_migration
 """
 
 
+_STAGE_4_MIGRATIONS = """
+-- Stage 4 added three columns + two indexes. Use ALTER TABLE ADD COLUMN
+-- (idempotent only via the try/except below — SQLite has no IF NOT
+-- EXISTS for columns).
+"""
+
+
+def _add_column_if_missing(
+    conn: sqlite3.Connection,
+    table: str,
+    column: str,
+    decl: str,
+) -> None:
+    """Add a column if it's not already present. SQLite-friendly."""
+    cols = {
+        row["name"]
+        for row in conn.execute(f"PRAGMA table_info({table})")
+    }
+    if column not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+
+
+def _migrate_stage_4(conn: sqlite3.Connection) -> None:
+    """Add Stage 4 columns to an existing DB (idempotent).
+
+    Indexes referencing the new columns are created via the
+    ``_SCHEMA`` script after this runs — so we must add the columns
+    *before* ``executescript`` would try to index them.
+    """
+    # Only run if the threads table already exists (else executescript
+    # will create it with all current columns including these).
+    has_table = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='threads'"
+    ).fetchone() is not None
+    if not has_table:
+        return
+    _add_column_if_missing(conn, "threads", "resurface_at", "TEXT")
+    _add_column_if_missing(
+        conn, "threads", "order_index", "INTEGER NOT NULL DEFAULT 0",
+    )
+    _add_column_if_missing(
+        conn, "threads", "search_blob", "TEXT NOT NULL DEFAULT ''",
+    )
+
+
 def get_connection() -> sqlite3.Connection:
-    """Open the threads DB with WAL + FK enforcement; ensure schema."""
+    """Open the threads DB with WAL + FK enforcement; ensure schema.
+
+    Order matters: pre-existing tables get Stage-4 columns added
+    before the index-creation pass, so the index DDL doesn't fail
+    on missing columns.
+    """
     path = _db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path), timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
+    _migrate_stage_4(conn)
     conn.executescript(_SCHEMA)
     conn.commit()
     return conn

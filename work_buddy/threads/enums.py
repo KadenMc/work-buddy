@@ -51,12 +51,18 @@ class FSMState(str, Enum):
     HANDED_OFF = "handed_off"
     MONITORING = "monitoring"  # parent-of-decomposed
 
+    # Stage 4: cleanup states (UX.md §6.4)
+    CLEANING_UP = "cleaning_up"
+    DONE_CLEANUP_SUCCESSFUL = "done_cleanup_successful"
+    DONE_CLEANUP_UNSUCCESSFUL = "done_cleanup_unsuccessful"  # wait state
+
     @property
     def is_terminal(self) -> bool:
         return self in {
             FSMState.DONE,
             FSMState.DISMISSED,
             FSMState.HANDED_OFF,
+            FSMState.DONE_CLEANUP_SUCCESSFUL,
         }
 
     @property
@@ -71,6 +77,7 @@ class FSMState(str, Enum):
             FSMState.AWAITING_CONFIRMATION,
             FSMState.AWAITING_REVIEW,
             FSMState.AWAITING_REDIRECT,
+            FSMState.DONE_CLEANUP_UNSUCCESSFUL,  # waits for retry/accept
         }
 
     @property
