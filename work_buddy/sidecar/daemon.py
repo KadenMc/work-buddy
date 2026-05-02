@@ -545,6 +545,21 @@ def run(foreground: bool = True) -> None:
     cfg = load_config()
     sidecar_cfg = cfg.get("sidecar", {})
 
+    # --- v5 Stage 2.9 bootstrap ---
+    # Wires the FSM engine state-entry handlers + LLM-call queue
+    # admission hook. Idempotent and self-contained. Failure here
+    # is non-fatal — v5 simply won't process Threads but the rest
+    # of the sidecar (retry queue, scheduled jobs, conductor) is
+    # unaffected.
+    try:
+        from work_buddy.threads.bootstrap import bootstrap_v5
+        bootstrap_v5()
+    except Exception as e:
+        logger.warning(
+            "v5 Thread bootstrap failed; sidecar will continue "
+            "without v5 FSM wiring: %s", e,
+        )
+
     # --- Check for existing daemon — if one's alive, take it over ---
     # We enforce single-instance by replacement, not refusal: the user
     # may be intentionally restarting in a visible terminal to regain
