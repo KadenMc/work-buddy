@@ -295,6 +295,14 @@ def insert_thread(
             ),
         )
         conn.commit()
+        # Stage 4.8: best-effort initial search-blob population.
+        # Lazy-import to avoid cycles. Inciting summary alone is
+        # enough yield for the first index entry.
+        try:
+            from work_buddy.threads.search import update_search_blob
+            update_search_blob(thread.thread_id, conn=conn)
+        except Exception:
+            pass  # non-fatal
         return thread
     finally:
         if own_conn:

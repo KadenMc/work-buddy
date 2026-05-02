@@ -293,6 +293,18 @@ class Inference:
                 data=proposal.to_dict(),
             )
             store.append_event(event, expect_parent_event_id=None, conn=conn)
+            # Stage 4.8: refresh search-blob whenever a new
+            # *_inferred event lands. Best-effort — failure
+            # is non-fatal (a stale search blob is degraded UX,
+            # not a correctness issue).
+            try:
+                from work_buddy.threads.search import update_search_blob
+                update_search_blob(thread.thread_id, conn=conn)
+            except Exception as e:
+                logger.warning(
+                    "Search-blob refresh failed for %s: %s",
+                    thread.thread_id, e,
+                )
 
         return proposal
 

@@ -2487,15 +2487,36 @@ def api_notification_acknowledge(notification_id: str):
 
 @app.get("/api/threads")
 def api_v5_threads_list():
-    """List top-level v5 Threads (those with no parent_id)."""
+    """List top-level v5 Threads (those with no parent_id).
+
+    Query params:
+        ?show_later=1 — include Threads with future resurface_at.
+        ?q=...         — substring search over search_blob.
+        ?state=...     — filter by FSM state.
+        ?subtype=...   — 'task' for Tasks-only.
+        ?limit=N       — page size (default 100).
+    """
     try:
-        from work_buddy.threads.render import list_render_data
+        from work_buddy.threads.render import build_render_data
+        from work_buddy.threads.search import search_threads
+        q = request.args.get("q") or ""
+        state = request.args.get("state") or None
+        subtype = request.args.get("subtype") or None
         include_future = request.args.get("show_later") == "1"
-        threads = list_render_data(
+        limit = int(request.args.get("limit", 100))
+        threads_models = search_threads(
+            q,
             parent_id=None,
-            include_resurface_future=include_future,
-            limit=int(request.args.get("limit", 100)),
+            state=state,
+            subtype=subtype,
+            show_later=include_future,
+            limit=limit,
         )
+        threads = []
+        for t in threads_models:
+            data = build_render_data(t.thread_id)
+            if data is not None:
+                threads.append(data)
         return jsonify({"threads": threads})
     except Exception as exc:
         logger.exception("v5 threads list failed: %s", exc)

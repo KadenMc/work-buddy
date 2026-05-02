@@ -129,14 +129,39 @@ def _threads_v5_script() -> str:
     }
 
     if (!window._topLevelCache) window._topLevelCache = null;
+    if (!window._topLevelFilters) {
+        window._topLevelFilters = {
+            q: '',           // search query
+            state: '',        // FSM state filter
+            subtype: '',      // '' | 'task'
+            show_later: false,
+        };
+    }
+
+    function _filterParams() {
+        const f = window._topLevelFilters;
+        const params = new URLSearchParams();
+        if (f.q) params.set('q', f.q);
+        if (f.state) params.set('state', f.state);
+        if (f.subtype) params.set('subtype', f.subtype);
+        if (f.show_later) params.set('show_later', '1');
+        return params.toString();
+    }
+
+    window.threadsSetFilter = function (key, value) {
+        window._topLevelFilters[key] = value;
+        window._topLevelCache = null;  // invalidate; refetch
+        renderThreads();
+    };
 
     function renderTopLevel() {
-        // Stage 4.3: real /api/threads fetch. Cached until commit.
+        // Stage 4.8: pass filter chips + search query.
         if (window._topLevelCache !== null) {
             return _renderTopLevelHtml(window._topLevelCache);
         }
-        // Trigger fetch and re-render.
-        fetch('/api/threads')
+        const qs = _filterParams();
+        const url = '/api/threads' + (qs ? '?' + qs : '');
+        fetch(url)
             .then(r => r.ok ? r.json() : Promise.reject(r.statusText))
             .then(data => {
                 window._topLevelCache = data.threads || [];
@@ -154,25 +179,78 @@ def _threads_v5_script() -> str:
         return '<div class="threads-v5-loading">Loading Threads...</div>';
     }
 
+    function _renderFilterBar() {
+        const f = window._topLevelFilters;
+        const stateOpts = [
+            ['', 'All states'],
+            ['awaiting_intent_confirmation', 'Awaiting intent confirmation'],
+            ['awaiting_context_confirmation', 'Awaiting context confirmation'],
+            ['awaiting_intent_clarification', 'Awaiting intent clarification'],
+            ['awaiting_context_clarification', 'Awaiting context clarification'],
+            ['awaiting_action_clarification', 'Awaiting action clarification'],
+            ['awaiting_confirmation', 'Awaiting consent'],
+            ['awaiting_review', 'Awaiting review'],
+            ['awaiting_redirect', 'Awaiting redirect'],
+            ['executing', 'Executing'],
+            ['cleaning_up', 'Cleaning up'],
+            ['done', 'Done'],
+            ['dismissed', 'Dismissed'],
+        ];
+        const subtypeOpts = [
+            ['', 'All'],
+            ['task', 'Tasks only'],
+        ];
+        let html = '<div class="threads-v5-filter-bar">';
+        html += '<input type="text" class="threads-v5-search" '
+              + 'placeholder="Search threads..." '
+              + 'value="' + _esc(f.q) + '" '
+              + 'oninput="threadsSetFilter(\'q\', this.value)">';
+        html += '<select class="threads-v5-filter-select" '
+              + 'onchange="threadsSetFilter(\'state\', this.value)">';
+        for (const [v, label] of stateOpts) {
+            html += '<option value="' + _esc(v) + '"'
+                  + (f.state === v ? ' selected' : '') + '>'
+                  + _esc(label) + '</option>';
+        }
+        html += '</select>';
+        html += '<select class="threads-v5-filter-select" '
+              + 'onchange="threadsSetFilter(\'subtype\', this.value)">';
+        for (const [v, label] of subtypeOpts) {
+            html += '<option value="' + _esc(v) + '"'
+                  + (f.subtype === v ? ' selected' : '') + '>'
+                  + _esc(label) + '</option>';
+        }
+        html += '</select>';
+        html += '<label class="threads-v5-show-later">'
+              + '<input type="checkbox"'
+              + (f.show_later ? ' checked' : '')
+              + ' onchange="threadsSetFilter(\'show_later\', this.checked)">'
+              + ' Show deferred</label>';
+        html += '</div>';
+        return html;
+    }
+
     window.invalidateTopLevelCache = function () {
         window._topLevelCache = null;
     };
 
     function _renderTopLevelHtml(threads) {
-        if (!Array.isArray(threads) || threads.length === 0) {
-            return (
-                '<div class="threads-v5-top">'
-                + '<h2>Threads</h2>'
-                + '<p class="threads-v5-empty-state">'
-                + 'No active Threads. As source scanners (journal, '
-                + 'Chrome, email) run, they\'ll surface here.'
-                + '</p>'
-                + '</div>'
-            );
-        }
         let html = '<div class="threads-v5-top">';
         html += '<h2>Threads <span class="threads-v5-count">('
-              + threads.length + ')</span></h2>';
+              + (Array.isArray(threads) ? threads.length : 0) + ')</span></h2>';
+        html += _renderFilterBar();
+        if (!Array.isArray(threads) || threads.length === 0) {
+            const f = window._topLevelFilters || {};
+            const filtered = !!(f.q || f.state || f.subtype);
+            html += '<p class="threads-v5-empty-state">'
+                  + (filtered
+                        ? 'No Threads match the current filters.'
+                        : 'No active Threads. As source scanners (journal, '
+                          + 'Chrome, email) run, they\'ll surface here.')
+                  + '</p>';
+            html += '</div>';
+            return html;
+        }
         html += '<ul class="threads-v5-toplist">';
         for (const t of threads) {
             html += _renderTopLevelCard(t);
@@ -559,6 +637,42 @@ def _threads_v5_styles() -> str:
     display: flex;
     gap: 4px;
     align-items: center;
+}
+
+/* Stage 4.8 — search + filter bar */
+.threads-v5-filter-bar {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    margin: 10px 0 16px 0;
+    flex-wrap: wrap;
+}
+
+.threads-v5-search {
+    flex: 1 1 320px;
+    background: var(--bg-tertiary, #0f0f0f);
+    color: var(--text, #ddd);
+    border: 1px solid var(--border, #333);
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: 13px;
+}
+
+.threads-v5-filter-select {
+    background: var(--bg-tertiary, #0f0f0f);
+    color: var(--text, #ddd);
+    border: 1px solid var(--border, #333);
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: 13px;
+}
+
+.threads-v5-show-later {
+    color: var(--text-muted, #888);
+    font-size: 12px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
 }
 
 .threads-v5-demo-row {
