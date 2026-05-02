@@ -37,6 +37,8 @@ from typing import Optional
 
 from work_buddy.llm import budget, queue
 from work_buddy.threads import (
+    cleanup_adapters,
+    cleanup_runner,
     decompose,
     engine,
     inference_worker,
@@ -89,14 +91,23 @@ def bootstrap_v5(*, clear_first: bool = False) -> None:
     # 4. LLM-call queue admission hook
     queue.register_admission_hook(budget.budget_admission_hook)
 
+    # 5. CLEANING_UP state-entry handler (Stage 4.4)
+    cleanup_runner.register_cleanup_runner()
+
+    # 6. Default cleanup adapters (journal-note for Stage 4.4;
+    #    chrome adapter lands in 4.13 alongside the pipeline).
+    cleanup_adapters.register_default_adapters()
+
     _BOOTSTRAPPED = True
     logger.info("v5 bootstrap complete")
 
 
 def teardown_v5() -> None:
     """Test-only: clear all state-entry handlers + admission hooks
-    so the next test starts from a clean slate."""
+    + cleanup adapters so the next test starts from a clean slate."""
     global _BOOTSTRAPPED
     engine.clear_state_entry_handlers()
     queue.clear_admission_hooks()
+    from work_buddy.threads.cleanup import clear_cleanup_adapters
+    clear_cleanup_adapters()
     _BOOTSTRAPPED = False
