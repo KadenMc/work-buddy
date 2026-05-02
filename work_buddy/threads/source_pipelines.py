@@ -217,3 +217,102 @@ def chrome_tab_to_context_item(tab: dict[str, Any]) -> ContextItem:
             "tab_index": tab.get("tab_index"),
         },
     )
+
+
+def spawn_threads_from_chrome_scrape(
+    *,
+    tabs: list[dict[str, Any]],
+    scrape_id: Optional[str] = None,
+    summary: Optional[str] = None,
+) -> Optional[dict[str, Any]]:
+    """End-to-end Chrome scrape → v5 Thread tree.
+
+    Creates the parent Thread (chrome_scrape inciting source) AND
+    spawns sub-Threads via the decompose action (one per tab).
+    Stage 4.7's write-time linearization runs automatically inside
+    decompose so the resulting sub-thread order is semantic.
+
+    Returns:
+        {
+            'parent_id': str,
+            'sub_thread_ids': list[str],
+            'count': int,
+        }
+        or None on failure (logged).
+    """
+    if not tabs:
+        return None
+    parent_id = spawn_parent_thread_from_chrome_scrape(
+        scrape_id=scrape_id, summary=summary,
+    )
+    if parent_id is None:
+        return None
+    try:
+        from work_buddy.threads.decompose import decompose_thread
+        ctx_items = [chrome_tab_to_context_item(t) for t in tabs]
+        sub_ids = decompose_thread(
+            parent_id, ctx_items,
+            inciting_summary_extra={
+                "scrape_id": scrape_id,
+                "source_pipeline": "chrome_triage",
+            },
+        )
+        return {
+            "parent_id": parent_id,
+            "sub_thread_ids": sub_ids,
+            "count": len(sub_ids),
+        }
+    except Exception as e:
+        logger.warning(
+            "spawn_threads_from_chrome_scrape: decompose failed: %s", e,
+        )
+        return {
+            "parent_id": parent_id,
+            "sub_thread_ids": [],
+            "count": 0,
+            "error": str(e),
+        }
+
+
+# ---------------------------------------------------------------------------
+# Chrome-tab cleanup adapter (stub — closing tabs via the existing
+# Chrome native-messaging host is not currently supported; the host
+# only exports tab state. This adapter ships as a placeholder that
+# returns a clean "not yet implemented" failure so the UI's Clean
+# Up button on Chrome tabs surfaces honestly.)
+# ---------------------------------------------------------------------------
+
+
+def _chrome_tab_can_clean_up(thread) -> bool:  # type: ignore[no-untyped-def]
+    summary = getattr(thread, "inciting_event_summary", None) or {}
+    # We say "yes we can" so the UI shows the button; the cleanup
+    # call returns a friendly failure detail. This is intentionally
+    # discoverable: users learn the gap and can ask for it to be
+    # implemented.
+    return summary.get("source") == "chrome_tab"
+
+
+def _chrome_tab_cleanup(thread):  # type: ignore[no-untyped-def]
+    from work_buddy.threads.cleanup import CleanupResult
+    return CleanupResult(
+        success=False,
+        detail=(
+            "Chrome tab cleanup is not yet wired (the extension's "
+            "native-messaging host is export-only today). Tab will "
+            "remain open; please close it manually."
+        ),
+    )
+
+
+def register_chrome_tab_cleanup_adapter() -> None:
+    """Register the Chrome-tab cleanup adapter. Bootstrap calls this
+    alongside the journal adapter (Stage 4.4 + 4.13)."""
+    from work_buddy.threads.cleanup import (
+        CleanupAdapter, register_cleanup_adapter,
+    )
+    register_cleanup_adapter(CleanupAdapter(
+        source="chrome_tab",
+        can_clean_up=_chrome_tab_can_clean_up,
+        cleanup=_chrome_tab_cleanup,
+        description="(stub) close the Chrome tab — not yet wired.",
+    ))

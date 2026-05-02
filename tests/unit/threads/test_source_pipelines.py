@@ -133,3 +133,55 @@ class TestChromeSpawner:
         tab = {"id": "tab-2", "url": "https://x.com"}
         ci = source_pipelines.chrome_tab_to_context_item(tab)
         assert ci.label == "https://x.com"
+
+
+class TestChromeScrapeEndToEnd:
+    def test_creates_parent_and_sub_threads(self, fresh_db):
+        # Stub embedding so linearization is deterministic
+        from unittest.mock import patch
+        from work_buddy.threads import linearization
+        tabs = [
+            {"id": "t1", "title": "GitHub", "url": "https://github.com"},
+            {"id": "t2", "title": "Stack Overflow", "url": "https://stackoverflow.com"},
+            {"id": "t3", "title": "ECG paper", "url": "https://example.com/ecg"},
+        ]
+        with patch.object(linearization, "_embed_texts", return_value=None):
+            result = source_pipelines.spawn_threads_from_chrome_scrape(
+                tabs=tabs, scrape_id="scrape-1", summary="Research session",
+            )
+        assert result is not None
+        assert result["count"] == 3
+        assert result["parent_id"].startswith("th-")
+        # Parent has 3 children
+        children = store.list_threads(parent_id=result["parent_id"])
+        assert len(children) == 3
+        # Each child carries the chrome_tab inciting source
+        for c in children:
+            ci = c.context_items[0] if c.context_items else None
+            assert ci is not None
+            assert ci.source == "chrome_tab"
+
+    def test_empty_tabs_returns_none(self, fresh_db):
+        assert source_pipelines.spawn_threads_from_chrome_scrape(tabs=[]) is None
+
+
+class TestChromeTabCleanupAdapter:
+    def test_register_then_can_clean_up(self):
+        from work_buddy.threads import cleanup
+        cleanup.clear_cleanup_adapters()
+        source_pipelines.register_chrome_tab_cleanup_adapter()
+        adapter = cleanup.get_cleanup_adapter("chrome_tab")
+        assert adapter is not None
+
+    def test_cleanup_returns_failure_with_clear_message(self, fresh_db):
+        from work_buddy.threads import cleanup
+        from work_buddy.threads.models import Thread
+        cleanup.clear_cleanup_adapters()
+        source_pipelines.register_chrome_tab_cleanup_adapter()
+        t = Thread(inciting_event_summary={
+            "source": "chrome_tab",
+            "url": "https://x.com",
+        })
+        result = cleanup.perform_cleanup(t)
+        assert result.success is False
+        assert "not yet wired" in result.detail.lower()

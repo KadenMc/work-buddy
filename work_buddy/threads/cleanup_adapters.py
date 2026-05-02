@@ -149,4 +149,20 @@ def register_default_adapters() -> None:
     Idempotent: register_cleanup_adapter overwrites by source.
     """
     register_cleanup_adapter(JOURNAL_NOTE_ADAPTER)
-    logger.info("v5 cleanup: registered default adapters [journal_note]")
+    # Stage 4.13 — Chrome-tab adapter ships as a stub (closing tabs
+    # from Python isn't supported by the existing native-messaging
+    # host). The stub registers so the UI's Clean Up button shows on
+    # Chrome-tab Threads with an honest "not yet wired" message
+    # rather than disappearing.
+    try:
+        from work_buddy.threads.source_pipelines import (
+            register_chrome_tab_cleanup_adapter,
+        )
+        register_chrome_tab_cleanup_adapter()
+        logger.info(
+            "v5 cleanup: registered default adapters "
+            "[journal_note, chrome_tab(stub)]",
+        )
+    except Exception as e:
+        logger.warning("Chrome-tab adapter registration failed: %s", e)
+        logger.info("v5 cleanup: registered default adapters [journal_note]")
