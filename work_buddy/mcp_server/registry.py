@@ -3621,6 +3621,15 @@ def _task_capabilities() -> list[Capability]:
                 "user_involvement."
             ),
             category="tasks",
+            # v5: this is the canonical Standard Action for "create a
+            # new task". Without this flag the action-inference catalog
+            # is empty and the agent falls back to improvised/suggestion
+            # plans for what should be a one-call task creation.
+            is_action=True,
+            intrinsic_amplifiers={
+                "irreversibility": "low",
+                "regret_potential": "low",
+            },
             parameters={
                 "task_text": {"type": "str", "description": "Short single-line task description (NO newlines — will be rejected)", "required": True},
                 "urgency": {"type": "str", "description": "Urgency: low, medium (default), high", "required": False},

@@ -5,43 +5,6 @@ from __future__ import annotations
 
 def _script() -> str:
     return r"""
-// ---- Legacy-tabs toggle (Stage 4.15) ----
-//
-// v5 Threads is the canonical surface; v4 tabs (Today / Review /
-// Review Queue / Daily Log / Engage) are off by default but
-// available via the "v4" toggle in the tab bar. Persists via
-// localStorage so the choice survives reloads.
-
-const LEGACY_TABS = ['today', 'review', 'review-queue', 'daily-log', 'engage'];
-
-function _applyLegacyTabsVisibility() {
-    const show = localStorage.getItem('wb-show-legacy-tabs') === '1';
-    document.body.classList.toggle('hide-legacy-tabs', !show);
-    const toggle = document.getElementById('legacy-tabs-toggle');
-    if (toggle) {
-        toggle.classList.toggle('active', show);
-        toggle.setAttribute('aria-pressed', show ? 'true' : 'false');
-    }
-    // If the active tab is a legacy tab and we're hiding them,
-    // switch to overview instead.
-    if (!show) {
-        const active = document.querySelector('.tab-btn.active');
-        if (active && LEGACY_TABS.includes(active.dataset.tab)) {
-            switchTab('overview');
-        }
-    }
-}
-
-function toggleLegacyTabs() {
-    const cur = localStorage.getItem('wb-show-legacy-tabs') === '1';
-    localStorage.setItem('wb-show-legacy-tabs', cur ? '0' : '1');
-    _applyLegacyTabsVisibility();
-}
-
-// Apply on initial load
-window.addEventListener('DOMContentLoaded', _applyLegacyTabsVisibility);
-
-
 // ---- Tab switching ----
 const staticLoaders = {
     overview: () => loadOverview(),
@@ -49,9 +12,6 @@ const staticLoaders = {
     today: () => loadToday(),
     tasks: () => loadTasks(),
     review: () => loadReview(),
-    'review-queue': () => loadReviewQueue(),
-    'daily-log': () => { loadDailyLog(); loadBlockedByContext(); },
-    engage: () => loadEngage(),
     status: () => loadStatus(),
     chats: () => loadChats(),
     contracts: () => loadContracts(),

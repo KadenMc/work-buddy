@@ -166,14 +166,24 @@ class InvocationContext(str, Enum):
 
 
 class ActionKind(str, Enum):
-    """The three action kinds the FSM can dispatch.
+    """The action kinds the FSM can dispatch.
 
     See DESIGN.md §10.1 and §10.6/§10.7.
+
+    User-feedback (2026-05-03 afternoon): added CLARIFICATION as a
+    fourth kind so the agent has a first-class way to say "I don't
+    have enough information to propose any action" without falling
+    back to a misencoded SUGGESTION named "Clarify X". When kind is
+    CLARIFICATION, ``resolve_action_branch`` short-circuits to
+    AWAITING_ACTION_CLARIFICATION instead of AWAITING_CONFIRMATION
+    — the user is asked to provide info, not to accept/dismiss an
+    advisory action.
     """
 
-    STANDARD = "standard"      # registered capability or workflow
-    IMPROVISED = "improvised"  # agent runs wild; no template
-    SUGGESTION = "suggestion"  # agent blocked on user-held context
+    STANDARD = "standard"            # registered capability or workflow
+    IMPROVISED = "improvised"        # agent runs wild; no template
+    SUGGESTION = "suggestion"        # agent has an advisory recommendation
+    CLARIFICATION = "clarification"  # agent can't act; needs user info
 
 
 class Authorship(str, Enum):

@@ -182,7 +182,10 @@ def spawn_parent_thread_from_journal_scan(
     a parent "scan" thread, not a top-level thread.
 
     The parent has known intent + action (no LLM needed):
-    - Intent: "Process today's journal items" (confidence 1.0).
+    - Intent: "Process daily notes" (confidence 1.0). Generic
+      because the same parent shape is used regardless of which
+      day(s) the scan covered — distinguishing context lives in
+      `inciting.title` ("Journal scan: 2026-04-30").
     - Action: standard "decompose" (confidence 1.0).
 
     The parent sits in MONITORING from the start; it never goes
@@ -242,7 +245,7 @@ def spawn_parent_thread_from_journal_scan(
             data={
                 "target": "intent",
                 "payload": {
-                    "intent": "Process today's journal items",
+                    "intent": "Process daily notes",
                 },
                 "confidence": 1.0,
                 "tier_used": None,

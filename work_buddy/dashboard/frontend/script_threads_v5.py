@@ -571,28 +571,46 @@ def _threads_v5_script() -> str:
                 }
             })
             .catch(err => {
-                window._threadDetailCache[threadId] = {
-                    thread_id: threadId,
-                    title: "(fetch failed)",
-                    fsm_state: "(unknown)",
-                    intent: { text: 'Failed to load: ' + err, editable: false },
-                    context_items: [],
-                    actions: [],
-                    namespace_tags: [],
-                    can_clean_up: false,
-                    sub_thread_count: 0,
-                };
+                // 2026-05-03 fix: don't poison the cache with a fake
+                // "(fetch failed)" thread. Park the error in a parallel
+                // map so the renderer can show a real retry card while
+                // a future click re-fetches cleanly.
+                window._threadDetailErrors = window._threadDetailErrors || {};
+                window._threadDetailErrors[threadId] = String(err);
                 if (typeof window._renderActiveThread === 'function') {
                     window._renderActiveThread();
                 }
             });
+        // Render a fetch-error card if we already failed once.
+        const failed = (window._threadDetailErrors || {})[threadId];
+        if (failed) {
+            return '<div class="threads-v5-detail threads-v5-fetch-error">'
+                 + '<h2>Couldn’t load this thread</h2>'
+                 + '<p class="threads-v5-error-msg">' + _esc(failed) + '</p>'
+                 + '<p class="threads-v5-error-hint">'
+                 +   'Usually a transient sidecar restart. Retry, or pick '
+                 +   'another thread from the list.'
+                 + '</p>'
+                 + '<button class="threads-v5-retry-btn" '
+                 +   'onclick="(function(){'
+                 +     'delete (window._threadDetailErrors||{})[\'' + _esc(threadId) + '\'];'
+                 +     'delete window._threadDetailCache[\'' + _esc(threadId) + '\'];'
+                 +     'window._renderActiveThread && window._renderActiveThread();'
+                 +   '})()">Retry</button>'
+                 + '</div>';
+        }
         return '<div class="threads-v5-loading">Loading thread '
              + _esc(threadId) + '...</div>';
     }
 
     window.invalidateThreadCache = function (threadId) {
-        if (threadId) delete window._threadDetailCache[threadId];
-        else window._threadDetailCache = {};
+        if (threadId) {
+            delete window._threadDetailCache[threadId];
+            if (window._threadDetailErrors) delete window._threadDetailErrors[threadId];
+        } else {
+            window._threadDetailCache = {};
+            window._threadDetailErrors = {};
+        }
     };
 
     // ----- Later hover popup ------------------------------------------
@@ -1399,36 +1417,6 @@ def _threads_v5_styles() -> str:
     display: flex;
     align-items: center;
     gap: 4px;
-}
-
-/* Stage 4.15 — Legacy-tabs toggle */
-.tab-btn-toggle {
-    background: transparent;
-    color: var(--text-muted, #888);
-    border: 1px solid var(--border, #333);
-    border-radius: 4px;
-    padding: 4px 9px;
-    font-size: 11px;
-    cursor: pointer;
-    margin-left: 6px;
-}
-.tab-btn-toggle:hover {
-    color: var(--text, #ddd);
-    border-color: var(--accent, #4a7fc1);
-}
-.tab-btn-toggle.active {
-    background: var(--accent, #4a7fc1);
-    color: white;
-    border-color: var(--accent, #4a7fc1);
-}
-
-/* Hide v4 legacy tabs when the toggle is OFF. */
-body.hide-legacy-tabs .tab-btn[data-tab="today"],
-body.hide-legacy-tabs .tab-btn[data-tab="review"],
-body.hide-legacy-tabs .tab-btn[data-tab="review-queue"],
-body.hide-legacy-tabs .tab-btn[data-tab="daily-log"],
-body.hide-legacy-tabs .tab-btn[data-tab="engage"] {
-    display: none !important;
 }
 
 /* Stage 4.10 — Later hover popup */

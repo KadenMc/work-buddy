@@ -150,9 +150,24 @@ TARGETS: dict[InferenceTarget, TargetSpec] = {
         default_tier=ReasoningTier.FRONTIER_BALANCED,
         prompt_template=(
             "Given the Thread's intent and context, propose the next "
-            "action. Pick a Standard Action from the Action Catalog "
-            "if one fits; otherwise produce an Improvised plan or a "
-            "Suggestion if the agent is blocked on user-held context."
+            "action. Pick exactly one kind:\n"
+            "- 'standard': a registered Action Catalog entry. STRONGLY "
+            "PREFER this when an entry fits — e.g. a journal line "
+            "marked 'wb/TODO X' is a literal request to create task "
+            "X via the 'task_create' standard action, NOT a "
+            "clarification.\n"
+            "- 'improvised': you have a concrete plan that isn't a "
+            "registered action. Provide a plan_summary describing "
+            "what you'll do.\n"
+            "- 'suggestion': you have a concrete advisory recommendation "
+            "for the user (e.g. 'consider archiving this'). NOT for "
+            "asking the user questions.\n"
+            "- 'clarification': you genuinely cannot propose any "
+            "action without more user input. Use the blocked_on field "
+            "to state exactly what you need. Reserve this for cases "
+            "where the inciting context is too sparse to map to any "
+            "standard action — and remember 'wb/TODO X' alone IS "
+            "enough to call task_create with task_text='X'."
         ),
         output_schema={
             "type": "object",
@@ -161,7 +176,10 @@ TARGETS: dict[InferenceTarget, TargetSpec] = {
             "properties": {
                 "kind": {
                     "type": "string",
-                    "enum": ["standard", "improvised", "suggestion"],
+                    "enum": [
+                        "standard", "improvised",
+                        "suggestion", "clarification",
+                    ],
                 },
                 "name": {"type": "string"},
                 # parameters is action-specific — each Standard
@@ -276,7 +294,10 @@ TARGETS: dict[InferenceTarget, TargetSpec] = {
                     "properties": {
                         "kind": {
                             "type": "string",
-                            "enum": ["standard", "improvised", "suggestion"],
+                            "enum": [
+                                "standard", "improvised",
+                                "suggestion", "clarification",
+                            ],
                         },
                         "name": {"type": "string"},
                         # See staged ACTION target's comment for why

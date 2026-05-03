@@ -452,13 +452,46 @@ def resolve_context_branch(
 def resolve_action_branch(
     thread_id: str, data: dict[str, Any], *, conn=None,
 ) -> FSMState:
-    """Pick EXECUTING (auto-execute) vs AWAITING_CONFIRMATION
-    (user reviews before execution)."""
+    """Pick the post-action-inference target state.
+
+    Three outcomes:
+    - ``EXECUTING`` — auto-execute (policy permits, kind allowed)
+    - ``AWAITING_CONFIRMATION`` — user reviews before execution
+    - ``AWAITING_ACTION_CLARIFICATION`` — agent declared
+      ``kind='clarification'`` (it can't propose any concrete action
+      and is asking the user for the missing info). Short-circuits
+      the policy check entirely: clarification is by definition not
+      executable, so confidence/risk thresholds don't apply.
+    """
     from work_buddy.threads.events import KIND_ACTION_INFERRED
     thread = store.get_thread(thread_id, conn=conn)
     if thread is None:
         return FSMState.AWAITING_CONFIRMATION
     policy = _policy_for(thread, conn=conn)
+    meta = _action_metadata(data)
+
+    # Clarification short-circuit. The agent gave up trying to
+    # propose a concrete action; AWAITING_ACTION_CLARIFICATION is
+    # the FSM state designed for "agent has nothing to propose,
+    # user provides info, we re-infer".
+    if meta["kind"] == ActionKind.CLARIFICATION:
+        chosen = FSMState.AWAITING_ACTION_CLARIFICATION
+        _stash_audit(
+            data,
+            label="action_review_or_execute",
+            advance=False,
+            chosen_state=chosen,
+            axes=["clarification_short_circuit"],
+            target="action",
+            confidence=data.get("confidence"),
+            extra={
+                "action_kind": ActionKind.CLARIFICATION.value,
+                "action_name": meta["name"],
+                "blocked_on": data.get("blocked_on"),
+            },
+        )
+        return chosen
+
     advance, axes, meta = _evaluate_action_advance(
         policy, data, KIND_ACTION_INFERRED,
     )

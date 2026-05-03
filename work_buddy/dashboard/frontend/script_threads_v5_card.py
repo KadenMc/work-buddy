@@ -448,6 +448,18 @@ def _threads_v5_card_script() -> str:
                 + '</div>'
             );
         }
+        // User-feedback (2026-05-03 afternoon): once the action has
+        // been performed (FSM past the awaiting_confirmation gate),
+        // edit/flag affordances are misleading — the action already
+        // ran. Suppress the per-action action-row in post-execution
+        // states. The action label, plan, risk metadata, and rationale
+        // still render as a historical record.
+        const POST_ACTION_STATES = new Set([
+            'executing', 'monitoring', 'cleaning_up',
+            'done', 'dismissed', 'handed_off',
+            'done_cleanup_successful', 'done_cleanup_unsuccessful',
+        ]);
+        const actionPerformed = POST_ACTION_STATES.has(thread.fsm_state);
         let html = '<div class="threads-v5-section">';
         html += '<div class="threads-v5-section-label">Actions ('
               + actions.length + ')</div>';
@@ -536,14 +548,16 @@ def _threads_v5_card_script() -> str:
                       + a.required_contexts.map(_esc).join(', ')
                       + '</div>';
             }
-            html += '<div class="threads-v5-item-actions">';
-            html += _flagBtn(thread.thread_id, a.id, flagged);
-            html += '<button class="threads-v5-edit-btn" '
-                  + 'title="Edit action" '
-                  + 'onclick="threadCardFocus(\'' + _esc(thread.thread_id) + '\', \''
-                  + _esc(a.id) + '\')">'
-                  + _icon("edit") + '</button>';
-            html += '</div>';
+            if (!actionPerformed) {
+                html += '<div class="threads-v5-item-actions">';
+                html += _flagBtn(thread.thread_id, a.id, flagged);
+                html += '<button class="threads-v5-edit-btn" '
+                      + 'title="Edit action" '
+                      + 'onclick="threadCardFocus(\'' + _esc(thread.thread_id) + '\', \''
+                      + _esc(a.id) + '\')">'
+                      + _icon("edit") + '</button>';
+                html += '</div>';
+            }
             html += '</li>';
         }
         html += '</ul>';

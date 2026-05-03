@@ -167,6 +167,94 @@ class TestNormalizeParametersJson:
         assert payload["parameters"] == {}
 
 
+class TestActionCatalogInjection:
+    """The runner adapter detects action-shaped schemas and injects
+    a Standard Action catalog block into the user message. Without
+    this, the agent never sees what 'standard' kinds are available
+    and falls back to improvised/suggestion plans for actions that
+    have a registered template (e.g. 'task_create' for wb/TODO lines).
+    """
+
+    def test_action_schema_detected(self):
+        from work_buddy.threads.enums import InferenceTarget
+        from work_buddy.threads.inference import TARGETS
+        spec = TARGETS[InferenceTarget.ACTION]
+        assert bootstrap._is_action_schema(spec.output_schema) is True
+
+    def test_combined_schema_detected(self):
+        from work_buddy.threads.enums import InferenceTarget
+        from work_buddy.threads.inference import TARGETS
+        spec = TARGETS[InferenceTarget.COMBINED]
+        assert bootstrap._is_action_schema(spec.output_schema) is True
+
+    def test_intent_schema_not_detected(self):
+        from work_buddy.threads.enums import InferenceTarget
+        from work_buddy.threads.inference import TARGETS
+        spec = TARGETS[InferenceTarget.INTENT]
+        assert bootstrap._is_action_schema(spec.output_schema) is False
+
+    def test_catalog_block_lists_task_create(self, monkeypatch):
+        # task_create is registered with is_action=True and must
+        # appear in the catalog block so the agent can pick it.
+        # Inject a synthetic registry so the test isn't sensitive to
+        # whether the obsidian tool probe happens to succeed in the
+        # test environment (it filters task_create on requires=['obsidian']).
+        from work_buddy.threads.enums import InferenceTarget
+        from work_buddy.threads.inference import TARGETS
+        from work_buddy.threads import actions as _actions
+        from work_buddy.mcp_server.registry import Capability
+        from work_buddy.threads.enums import InvocationContext
+
+        fake = {
+            "task_create": Capability(
+                name="task_create",
+                description="Create a new task in the master task list.",
+                category="tasks",
+                parameters={
+                    "task_text": {"type": "str", "required": True},
+                    "urgency": {"type": "str", "required": False},
+                },
+                callable=lambda **_: None,
+                is_action=True,
+                available_in={InvocationContext.ACTION_PROPOSAL},
+            ),
+        }
+        # Patch the actions module to read from our fake registry —
+        # the catalog formatter goes through actions.catalog_for which
+        # uses _registry_entries. Patching get_registry is the cleanest
+        # injection point.
+        from work_buddy.mcp_server import registry as _reg
+        monkeypatch.setattr(_reg, "get_registry", lambda: fake)
+
+        spec = TARGETS[InferenceTarget.ACTION]
+        block = bootstrap._maybe_format_action_catalog(spec.output_schema)
+        assert "task_create" in block
+        assert "task_text" in block  # one of its key params
+
+    def test_catalog_block_empty_for_non_action_schema(self):
+        from work_buddy.threads.enums import InferenceTarget
+        from work_buddy.threads.inference import TARGETS
+        spec = TARGETS[InferenceTarget.INTENT]
+        block = bootstrap._maybe_format_action_catalog(spec.output_schema)
+        assert block == ""
+
+    def test_clarification_kind_in_action_schema(self):
+        # Regression: the schema must allow 'clarification' as a kind
+        # so the agent can route stuck threads to
+        # AWAITING_ACTION_CLARIFICATION via the autonomy_branch
+        # short-circuit.
+        from work_buddy.threads.enums import InferenceTarget
+        from work_buddy.threads.inference import TARGETS
+        for target in (InferenceTarget.ACTION, InferenceTarget.COMBINED):
+            spec = TARGETS[target]
+            schema = spec.output_schema
+            if target == InferenceTarget.ACTION:
+                kinds = schema["properties"]["kind"]["enum"]
+            else:
+                kinds = schema["properties"]["action"]["properties"]["kind"]["enum"]
+            assert "clarification" in kinds, f"missing in {target}"
+
+
 # ---------------------------------------------------------------------------
 # Per-Thread budget read-through (from autonomy_policy)
 # ---------------------------------------------------------------------------

@@ -153,7 +153,7 @@ def build_render_data(thread_id: str) -> Optional[dict[str, Any]]:
     # User-feedback fix #4 (2026-05-03): intent should win for
     # individual threads. Followup: but when inciting.title is
     # explicitly set (parents only), it's MORE distinguishing than
-    # the often-generic intent ("Process today's journal items").
+    # the often-generic intent ("Process daily notes").
     # So: explicit title > intent > description > thread_id.
     title = (
         inciting.get("title")

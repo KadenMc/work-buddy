@@ -204,6 +204,73 @@ def _normalize_parameters_json(payload: dict) -> None:
         _parse(nested_action)
 
 
+def _is_action_schema(schema: dict) -> bool:
+    """True iff the schema's ``kind`` enum lists action kinds.
+
+    Both staged ACTION and COMBINED carry a 'kind' field whose enum
+    includes 'standard' (and the others). Detecting via the schema
+    avoids piping a target marker through the runner contract.
+    """
+    if not isinstance(schema, dict):
+        return False
+    props = schema.get("properties") or {}
+    # Staged ACTION: 'kind' is at the top level
+    kind_field = props.get("kind")
+    if isinstance(kind_field, dict) and "standard" in (kind_field.get("enum") or []):
+        return True
+    # COMBINED: 'kind' lives under properties.action.properties.kind
+    action = props.get("action")
+    if isinstance(action, dict):
+        action_props = action.get("properties") or {}
+        action_kind = action_props.get("kind")
+        if isinstance(action_kind, dict) and "standard" in (action_kind.get("enum") or []):
+            return True
+    return False
+
+
+def _maybe_format_action_catalog(schema: dict) -> str:
+    """Render the Standard Action catalog as a markdown block.
+
+    Only emits when the schema is action-shaped (see
+    ``_is_action_schema``); otherwise returns "" so the caller can
+    blindly concatenate it into the user prompt.
+
+    The block lists each action's name, one-line description, and
+    the names of its parameters so the agent can pick by name and
+    fill ``parameters_json`` correctly.
+    """
+    if not _is_action_schema(schema):
+        return ""
+    try:
+        from work_buddy.threads import actions as _actions
+        from work_buddy.threads.enums import InvocationContext
+        catalog = _actions.catalog_for(InvocationContext.ACTION_PROPOSAL)
+    except Exception as e:  # pragma: no cover — defensive
+        logger.debug("Action catalog format failed: %s", e)
+        return ""
+    if not catalog:
+        return (
+            "Available Standard Actions: (none registered — use "
+            "improvised, suggestion, or clarification)\n\n"
+        )
+    lines = ["Available Standard Actions (pick one of these by name "
+             "for kind='standard'; otherwise pick improvised, "
+             "suggestion, or clarification):"]
+    for tmpl in catalog:
+        # Compact one-line description (truncate aggressively — the
+        # full description is in the registry; the agent just needs
+        # enough to match intent).
+        desc = (tmpl.description or "").split(". ")[0][:160]
+        params = list(tmpl.parameters.keys())
+        param_list = ", ".join(params[:6]) if params else "(no params)"
+        if len(params) > 6:
+            param_list += ", ..."
+        lines.append(f"- {tmpl.name}: {desc}")
+        lines.append(f"    params: {param_list}")
+    lines.append("")
+    return "\n".join(lines) + "\n"
+
+
 def _register_real_llm_runner() -> None:
     """Bind the v5 Inference layer to the existing LLMRunner.
 
@@ -238,12 +305,20 @@ def _register_real_llm_runner() -> None:
             # Build a minimal user prompt: prompt template + thread
             # context (inciting summary + intent if present).
             summary = thread.inciting_event_summary or {}
+            # 2026-05-03: when this is an action prompt (the schema's
+            # kind enum includes 'standard'), inject the Action Catalog
+            # so the agent can actually pick a Standard Action by name
+            # — previously the prompt said "pick from the Action
+            # Catalog" but never showed what was in it, so the agent
+            # consistently fell back to improvised/suggestion plans.
+            catalog_block = _maybe_format_action_catalog(schema)
             user_msg = (
                 "Thread inciting source:\n"
                 f"  source: {summary.get('source')}\n"
                 f"  description: {summary.get('description') or summary.get('label') or '(none)'}\n\n"
                 "Context items: "
                 f"{[ci.label for ci in thread.context_items]}\n\n"
+                f"{catalog_block}"
                 "Task:\n"
                 f"{prompt}\n\n"
                 "Reply with structured JSON matching the schema."

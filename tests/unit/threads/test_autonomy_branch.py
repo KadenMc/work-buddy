@@ -320,6 +320,31 @@ class TestResolveAction:
         result = autonomy_branch.resolve_action_branch(t.thread_id, data)
         assert result == FSMState.AWAITING_CONFIRMATION
 
+    def test_clarification_routes_to_action_clarification(self, fresh_db):
+        """ActionKind.CLARIFICATION short-circuits the policy gate and
+        routes to AWAITING_ACTION_CLARIFICATION regardless of confidence
+        or risk fields. The agent declared 'I can't propose anything;
+        the user needs to provide info' — there is nothing to execute
+        or confirm."""
+        # Even END_TO_END (most permissive) must NOT execute on
+        # clarification.
+        t = _thread_with_policy(
+            autonomy.END_TO_END, state=FSMState.INFERRING_ACTION,
+        )
+        data = {
+            "confidence": 0.99,  # high confidence in needing info
+            "kind": "clarification",
+            "name": "Need scope",
+            "blocked_on": "What platform should I integrate with?",
+        }
+        result = autonomy_branch.resolve_action_branch(t.thread_id, data)
+        assert result == FSMState.AWAITING_ACTION_CLARIFICATION
+        audit = data["_autonomy_audit"]
+        assert audit["chosen_state"] == "awaiting_action_clarification"
+        assert audit["axes"] == ["clarification_short_circuit"]
+        assert audit["action_kind"] == "clarification"
+        assert audit["blocked_on"] == "What platform should I integrate with?"
+
 
 # ---------------------------------------------------------------------------
 # Resolve-by-label dispatch
