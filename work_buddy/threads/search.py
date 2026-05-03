@@ -22,6 +22,15 @@ from work_buddy.threads.models import Thread
 
 _ACTIONABLE_STATE_VALUES: tuple[str, ...] = tuple(
     s.value for s in FSMState if s.is_wait_state
+) + (
+    # User-feedback (2026-05-03 morning): MONITORING parents aren't
+    # directly actionable themselves, but they're CONTAINERS for
+    # actionable children (journal-scan parent, chrome-scrape
+    # parent). Hiding them from the top-level list means the user
+    # can't see "I have 3 journal items to resolve" at a glance.
+    # Include MONITORING in the default actionable filter so
+    # parent threads with pending children stay visible.
+    FSMState.MONITORING.value,
 )
 
 # Mid-process states: the FSM is doing work but the user has nothing
