@@ -104,8 +104,62 @@ def bootstrap_v5(*, clear_first: bool = False) -> None:
     # thread looks "the agent had nothing."
     _register_real_llm_runner()
 
+    # 8. Wave D (2026-05-03): emit a thread.state_changed event
+    # to the dashboard event bus on every FSM transition. The
+    # dashboard frontend's threads-tab handler invalidates its
+    # cache and re-renders, so the user sees fresh state without
+    # manual refresh.
+    _register_dashboard_event_emitter()
+
     _BOOTSTRAPPED = True
     logger.info("v5 bootstrap complete")
+
+
+def _register_dashboard_event_emitter() -> None:
+    """Hook every FSM state-entry to publish a ``thread.state_changed``
+    event on the dashboard event bus.
+
+    Per process: the dashboard process publishes in-process (zero
+    IPC); the sidecar publishes via the messaging-service bridge.
+    Both go through ``publish_auto`` which picks the right channel.
+
+    Best-effort: failures are logged but never block the FSM
+    transition. The subscriber on the frontend invalidates its
+    cache and re-renders the threads list.
+    """
+    try:
+        from work_buddy.dashboard import events as bus
+        from work_buddy.threads.enums import FSMState
+    except Exception as e:
+        logger.warning(
+            "dashboard event emitter not registered: %s "
+            "(threads will land but the dashboard won't auto-refresh)",
+            e,
+        )
+        return
+
+    def _emit(transition_result) -> None:
+        try:
+            bus.publish_auto(
+                "thread.state_changed",
+                {
+                    "thread_id": transition_result.thread_id,
+                    "prev_state": transition_result.prev_state.value,
+                    "next_state": transition_result.next_state.value,
+                    "trigger": transition_result.trigger,
+                },
+            )
+        except Exception as ex:
+            logger.debug(
+                "thread.state_changed emit failed for %s: %s",
+                transition_result.thread_id, ex,
+            )
+
+    # Register on every FSMState — we want both wait and active
+    # states to fire updates so the dashboard sees mid-process
+    # transitions when the toggle is on.
+    for state in FSMState:
+        engine.register_state_entry_handler(state, _emit)
 
 
 def _normalize_parameters_json(payload: dict) -> None:

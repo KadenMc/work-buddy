@@ -91,18 +91,23 @@ class TestBootstrap:
 
     def test_clear_first_resets_handlers(self, fresh_dbs):
         bootstrap.bootstrap_v5()
-        # Add an extra handler manually
-        engine.register_state_entry_handler(
-            FSMState.PROPOSED, lambda r: None,
-        )
+        # Add an extra handler manually so we can prove
+        # ``clear_first=True`` removes it.
+        manual = lambda r: None
+        engine.register_state_entry_handler(FSMState.PROPOSED, manual)
         bootstrap.bootstrap_v5(clear_first=True)
-        # Still one bootstrap-registered handler per state, but
-        # the manual handler is gone (PROPOSED isn't bootstrapped
-        # so it should now be empty).
+        # After clear_first + re-bootstrap: the manual handler is
+        # gone. Wave D (2026-05-03): bootstrap now also registers
+        # a dashboard event emitter on EVERY state — including
+        # PROPOSED — so we expect exactly one handler (the emitter)
+        # and assert ``manual`` is not in the list.
         proposed_handlers = engine._REGISTERED_SIDE_EFFECTS.get(
             FSMState.PROPOSED, []
         )
-        assert proposed_handlers == []
+        assert manual not in proposed_handlers
+        # The dashboard emitter is the only bootstrap-registered
+        # handler for PROPOSED.
+        assert len(proposed_handlers) == 1
 
     def test_teardown_clears_state(self, fresh_dbs):
         bootstrap.bootstrap_v5()

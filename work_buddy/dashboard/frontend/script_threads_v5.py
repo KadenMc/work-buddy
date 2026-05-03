@@ -123,12 +123,23 @@ def _threads_v5_script() -> str:
         if (state.inspect) {
             html += renderInspector(state.inspect);
         }
-        panel.innerHTML = html;
+        // Wave D — use morphdom when available so SSE-triggered
+        // re-renders preserve focus, scroll, and in-flight inputs
+        // (e.g. the user typing in the search box). Falls back to
+        // innerHTML when morphdom isn't loaded.
+        if (typeof window._wbMorphReplace === "function") {
+            window._wbMorphReplace(panel, html);
+        } else {
+            panel.innerHTML = html;
+        }
     }
 
     function renderBreadcrumbs(path) {
-        // Stage 4.1: minimal breadcrumb with back button. Polishing
-        // (visual styling, click-to-jump-to-depth) lands in 4.2+.
+        // Wave E: show thread titles in the breadcrumb instead of
+        // the raw th-IDs. Falls back to ID when the title isn't yet
+        // cached. The cache is populated by renderThreadDetail's
+        // fetch, so by the time the breadcrumb renders fully, the
+        // titles are usually available.
         let html = '<nav class="threads-v5-breadcrumbs">';
         html += '<button class="threads-v5-back" '
               + 'onclick="threadsBack()" '
@@ -139,16 +150,29 @@ def _threads_v5_script() -> str:
             html += '<span class="threads-v5-crumb-sep">/</span>';
             const isLast = (i === path.length - 1);
             const segment = path[i];
+            const cached = (window._threadDetailCache || {})[segment];
+            // Use the title if known; truncate so long titles don't
+            // wrap the breadcrumb. Hover shows the full title +
+            // the thread ID.
+            let label = segment;
+            let fullTitle = segment;
+            if (cached && cached.title) {
+                fullTitle = cached.title + ' · ' + segment;
+                label = cached.title.length > 50
+                    ? cached.title.slice(0, 47) + '…'
+                    : cached.title;
+            }
+            const titleAttr = ' title="' + _esc(fullTitle) + '"';
             if (isLast) {
-                html += '<span class="threads-v5-crumb threads-v5-crumb-current">'
-                      + _esc(segment) + '</span>';
+                html += '<span class="threads-v5-crumb threads-v5-crumb-current"'
+                      + titleAttr + '>'
+                      + _esc(label) + '</span>';
             } else {
-                // Click to jump to this depth
                 const subPath = path.slice(0, i + 1);
                 const json = JSON.stringify(subPath).replace(/"/g, "&quot;");
-                html += '<a href="#" class="threads-v5-crumb" '
+                html += '<a href="#" class="threads-v5-crumb"' + titleAttr + ' '
                       + 'onclick="event.preventDefault();threadsSetPath('
-                      + json + ')">' + _esc(segment) + '</a>';
+                      + json + ')">' + _esc(label) + '</a>';
             }
         }
         html += '</nav>';
@@ -447,6 +471,12 @@ def _threads_v5_script() -> str:
                     : '')
             +   '<span class="threads-v5-toplist-state">'
             +     _esc(stateLabel) + '</span>'
+            +   (t.risk_highlight
+                    ? '<span class="threads-v5-toplist-risk-dot '
+                    +   _esc(t.risk_highlight) + '" '
+                    +   'title="Risk level: ' + _esc(t.risk_highlight)
+                    +   '"></span>'
+                    : '')
             + '</div>'
             + '<div class="threads-v5-toplist-title">'
             +   _esc(t.title || t.thread_id) + '</div>'
@@ -578,6 +608,15 @@ def _threads_v5_script() -> str:
     window.threadCommitAction = async function (threadId, action, body) {
         const url = '/api/threads/' + encodeURIComponent(threadId)
                   + '/' + action;
+        // Wave E — visual loading state on the triggering button
+        // (and its siblings, since the user shouldn't double-click).
+        const card = document.querySelector(
+            '.threads-v5-card[data-thread-id="' + threadId + '"]'
+        );
+        const buttons = card
+            ? card.querySelectorAll('.threads-v5-card-footer button')
+            : [];
+        for (const b of buttons) { b.disabled = true; }
         try {
             const resp = await fetch(url, {
                 method: 'POST',
@@ -587,11 +626,24 @@ def _threads_v5_script() -> str:
             if (!resp.ok) {
                 const err = await resp.json().catch(() => ({}));
                 console.warn('Thread action failed:', err);
-                alert('Action failed: ' + (err.error || resp.statusText));
+                _toast('error', (err.error || resp.statusText)
+                       || 'Action failed');
                 return false;
             }
             window.invalidateThreadCache(threadId);
             window.invalidateTopLevelCache();
+            // Wave E — confirmation toast for the user. Distinct
+            // copy per action so the user sees what just landed.
+            const verb = {
+                accept: 'Accepted',
+                dismiss: 'Dismissed',
+                cleanup: 'Cleanup queued',
+                later: 'Deferred',
+                redirect: 'Redirected to inference',
+                'retry-cleanup': 'Cleanup retried',
+                'accept-cleanup-failure': 'Failure accepted',
+            }[action] || (action + ' completed');
+            _toast('ok', verb);
             // After Accept/Dismiss/etc, navigate up if we were inside the
             // Thread; otherwise just refresh the list.
             const state = window._threadsState || { path: [] };
@@ -604,9 +656,34 @@ def _threads_v5_script() -> str:
             return true;
         } catch (e) {
             console.warn('Thread action exception:', e);
+            _toast('error', 'Action failed: ' + (e.message || e));
             return false;
+        } finally {
+            for (const b of buttons) { b.disabled = false; }
         }
     };
+
+    // Wave E — lightweight self-dismissing toast for confirmation
+    // and error feedback on commit actions. Auto-dismisses after
+    // 3.5s; click to dismiss early. Stacks if multiple fire in
+    // quick succession.
+    function _toast(kind, message) {
+        let host = document.getElementById("threads-v5-toast-host");
+        if (!host) {
+            host = document.createElement("div");
+            host.id = "threads-v5-toast-host";
+            document.body.appendChild(host);
+        }
+        const t = document.createElement("div");
+        t.className = "threads-v5-toast threads-v5-toast-" + (kind || "ok");
+        t.textContent = String(message || "");
+        t.addEventListener("click", () => t.remove());
+        host.appendChild(t);
+        setTimeout(() => {
+            try { t.classList.add("threads-v5-toast-fading"); } catch(e) {}
+            setTimeout(() => { try { t.remove(); } catch(e) {} }, 400);
+        }, 3500);
+    }
 
     function renderInspector(itemId) {
         // Wave C (2026-05-03): event-log inspector. UX.md §11.1
@@ -905,6 +982,35 @@ def _threads_v5_script() -> str:
             + '</div></div>';
         document.body.appendChild(el);
     }
+
+    // Wave D — server-pushed updates.
+    //
+    // The bootstrap layer (work_buddy/threads/bootstrap.py) emits
+    // ``thread.state_changed`` on every FSM transition. We subscribe
+    // here, invalidate the top-level cache, and re-render so the
+    // dashboard reflects state changes without manual refresh.
+    //
+    // Best-effort: if the event bus isn't yet ready (race during
+    // page load), we wire on the next animation frame.
+    function _wireThreadStateBus() {
+        if (!window.eventBus || typeof window.eventBus.on !== "function") {
+            requestAnimationFrame(_wireThreadStateBus);
+            return;
+        }
+        window.eventBus.on("thread.state_changed", (payload) => {
+            try {
+                // Invalidate caches so the next render fetches fresh.
+                window._topLevelCache = null;
+                if (window._threadDetailCache && payload && payload.thread_id) {
+                    delete window._threadDetailCache[payload.thread_id];
+                }
+                renderThreads();
+            } catch (e) {
+                console.warn("[threads-v5] state_changed handler:", e);
+            }
+        });
+    }
+    _wireThreadStateBus();
 
     // Hashchange listener: when the user uses browser back/forward, the
     // hash changes; re-extract state and re-render iff currently on the
@@ -1390,4 +1496,56 @@ body.hide-legacy-tabs .tab-btn[data-tab="engage"] {
     font-size: 10px;
     color: var(--text, #ccc);
 }
+
+/* Wave E — toast confirmation feedback for commit actions */
+#threads-v5-toast-host {
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    z-index: 9999;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    pointer-events: none;
+}
+.threads-v5-toast {
+    pointer-events: auto;
+    background: var(--bg-secondary, #1a1a1a);
+    color: var(--text, #ddd);
+    border: 1px solid var(--border, #333);
+    border-radius: 8px;
+    padding: 10px 14px;
+    font-size: 13px;
+    min-width: 200px;
+    cursor: pointer;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+    opacity: 1;
+    transition: opacity 350ms ease;
+    border-left: 3px solid var(--accent, #4a7fc1);
+}
+.threads-v5-toast.threads-v5-toast-ok {
+    border-left-color: #66cc66;
+}
+.threads-v5-toast.threads-v5-toast-error {
+    border-left-color: #ff5555;
+    color: #ffaaaa;
+}
+.threads-v5-toast.threads-v5-toast-fading {
+    opacity: 0;
+}
+
+/* Wave E — risk indicator on top-level list cards.
+   Mirrors the detail-view risk pill so the user can scan the
+   list and see which threads have risky actions queued. */
+.threads-v5-toplist-risk-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    margin-left: 6px;
+    vertical-align: middle;
+}
+.threads-v5-toplist-risk-dot.high { background: #ff5555; }
+.threads-v5-toplist-risk-dot.medium { background: #ff9955; }
+.threads-v5-toplist-risk-dot.low { background: #66cc66; }
 """
