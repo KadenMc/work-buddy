@@ -176,6 +176,46 @@ class TestResolveIntent:
         )
         assert result == FSMState.AWAITING_INTENT_CONFIRMATION
 
+    def test_advance_clears_stale_target_to_avoid_inference_loop(
+        self, fresh_db,
+    ):
+        """REGRESSION: when the resolver auto-advances to
+        AWAITING_INFERENCE, it must remove the just-completed
+        target from the transition data. Otherwise the
+        AWAITING_INFERENCE state-entry handler reads ``target='intent'``
+        (the just-finished one), re-enqueues an intent inference,
+        and the worker spins in an infinite intent → intent → intent
+        loop instead of advancing to context.
+
+        Discovered live with th-867a739d on 2026-05-03 — the worker
+        produced 7+ duplicate intent_inferred events in 30 seconds
+        before being stopped. Fix: clear data['target'] on advance
+        so the handler falls back to next_inference_target(thread)
+        which walks the event log and picks the right next target.
+        """
+        t = _thread_with_policy(autonomy.PLAN_THEN_REVIEW)
+        data = {"confidence": 0.9, "target": "intent", "intent": "x"}
+        result = autonomy_branch.resolve_intent_branch(t.thread_id, data)
+        assert result == FSMState.AWAITING_INFERENCE
+        assert "target" not in data, (
+            "Resolver must clear the stale target on auto-advance"
+        )
+        # Confidence and other data should still be there
+        assert data["confidence"] == 0.9
+        assert data["intent"] == "x"
+
+    def test_no_advance_preserves_target(self, fresh_db):
+        """When the resolver does NOT advance (low confidence, etc.),
+        the AWAITING_*_CONFIRMATION state-entry handler is the
+        Resolution Surface publisher — it doesn't enqueue, so
+        leaving target in the data is harmless. We preserve it for
+        audit completeness."""
+        t = _thread_with_policy(autonomy.PLAN_THEN_REVIEW)
+        data = {"confidence": 0.2, "target": "intent"}  # below floor
+        result = autonomy_branch.resolve_intent_branch(t.thread_id, data)
+        assert result == FSMState.AWAITING_INTENT_CONFIRMATION
+        assert data.get("target") == "intent"
+
 
 # ---------------------------------------------------------------------------
 # Resolver: context (mostly mirrors intent)

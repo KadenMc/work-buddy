@@ -374,6 +374,24 @@ def _stash_audit(
 # ---------------------------------------------------------------------------
 
 
+def _clear_stale_target_on_advance(data: dict[str, Any]) -> None:
+    """When auto-advancing to AWAITING_INFERENCE, the transition data
+    still carries the just-inferred target (e.g. ``target='intent'``)
+    because it was passed in by the worker's TRIG_INFERENCE_DONE
+    call. The AWAITING_INFERENCE state-entry handler reads
+    ``data['target']`` to decide what to enqueue, so leaving the
+    stale value would re-enqueue the SAME target — an infinite
+    intent → intent → intent loop.
+
+    Removing the key forces the handler to fall back to
+    ``inference_worker.next_inference_target(thread)``, which walks
+    the event log and correctly picks the first target whose
+    ``*_inferred`` event hasn't yet fired (CONTEXT after intent,
+    ACTION after context).
+    """
+    data.pop("target", None)
+
+
 def resolve_intent_branch(
     thread_id: str, data: dict[str, Any], *, conn=None,
 ) -> FSMState:
@@ -398,6 +416,8 @@ def resolve_intent_branch(
         target="intent",
         confidence=data.get("confidence"),
     )
+    if advance:
+        _clear_stale_target_on_advance(data)
     return chosen
 
 
@@ -424,6 +444,8 @@ def resolve_context_branch(
         target="context",
         confidence=data.get("confidence"),
     )
+    if advance:
+        _clear_stale_target_on_advance(data)
     return chosen
 
 

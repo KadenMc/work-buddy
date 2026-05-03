@@ -291,6 +291,73 @@ class TestProcessOnePending:
         summary = worker.process_one_pending("w-1")
         assert summary["next_state"] == "awaiting_confirmation"
 
+    def test_staged_auto_advance_walks_intent_to_context_to_action(
+        self, fresh_dbs,
+    ):
+        """REGRESSION (2026-05-03): the original autonomy implementation
+        carried the just-inferred ``data['target']`` through the
+        TRIG_INFERENCE_DONE → AWAITING_INFERENCE auto-advance hop.
+        The state-entry handler then re-enqueued the SAME target
+        instead of falling back to next_inference_target(thread),
+        producing an infinite intent → intent → intent loop.
+
+        This test reproduces the path: under PLAN_THEN_REVIEW with
+        high confidence, the worker should advance from intent →
+        context → action without enqueuing intent twice.
+        """
+        from work_buddy.threads import autonomy
+        # Register the autonomy-aware AWAITING_INFERENCE handler so
+        # the auto-advance to AWAITING_INFERENCE actually re-enqueues.
+        worker.register_inference_dispatch_handler()
+        t = Thread(
+            autonomy_policy=autonomy.PLAN_THEN_REVIEW,
+            fsm_state=FSMState.AWAITING_INFERENCE,
+        )
+        store.insert_thread(t)
+        worker.enqueue_inference_for_thread(t, InferenceTarget.INTENT)
+
+        def runner(prompt, schema, tier, thread):
+            # Same shape regardless of target — just enough payload
+            # to populate the *_inferred event.
+            return {
+                "payload": {
+                    "intent": "do something",
+                    "associated_refs": [],
+                    "kind": "standard",
+                    "name": "noop",
+                },
+                "confidence": 0.9,
+                "model": "test",
+                "cost_usd": 0.0,
+                "trace_pointer": None,
+            }
+        inference.set_llm_runner(runner)
+
+        # Drain the queue. Each call: dequeue one entry, run
+        # inference, fire TRIG_INFERENCE_DONE, resolver auto-advances,
+        # AWAITING_INFERENCE handler enqueues the next target (NOT
+        # the same one — that's the bug).
+        for _ in range(5):
+            if worker.process_one_pending("w-1") is None:
+                break
+
+        thread = store.get_thread(t.thread_id)
+        # Should have landed at AWAITING_CONFIRMATION (action's
+        # auto-advance is gated by PLAN_THEN_REVIEW which doesn't
+        # include AWAITING_CONFIRMATION in auto_advance_states).
+        assert thread.fsm_state == FSMState.AWAITING_CONFIRMATION, (
+            f"Expected AWAITING_CONFIRMATION, got {thread.fsm_state.value}; "
+            "worker is probably looping on intent inference"
+        )
+
+        # Each *_inferred event should appear exactly once.
+        events = store.list_events(t.thread_id)
+        kinds = [e.kind for e in events]
+        from work_buddy.threads.events import KIND_ACTION_INFERRED
+        assert kinds.count(KIND_INTENT_INFERRED) == 1
+        assert kinds.count(KIND_CONTEXT_INFERRED) == 1
+        assert kinds.count(KIND_ACTION_INFERRED) == 1
+
 
 # ---------------------------------------------------------------------------
 # Poller
