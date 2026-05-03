@@ -71,12 +71,36 @@ def test_full_pipeline_walk(fresh):
        AWAITING_CONFIRMATION (consent card)
     5. user approves → EXECUTING → DONE
 
+    The walk asserts step-by-step user confirmation between each
+    inference target. Use a STRICT policy that does NOT auto-advance
+    past intent/context — the saved ``PLAN_THEN_REVIEW`` composition
+    permits both, which would collapse intent + context into a
+    single chained worker pass and fail the per-step assertions.
+    The strict policy below pins this test to the manual-confirm
+    flow it was written to exercise.
+
     Stub the LLM runner with deterministic proposals and the
     Resolution Surface publisher with a simple capture list.
     """
 
     # ---- Setup ----
     bootstrap.bootstrap_v5()
+
+    from dataclasses import replace
+    strict_policy = replace(
+        autonomy.PLAN_THEN_REVIEW,
+        auto_advance_states=frozenset({
+            FSMState.PROPOSED,
+            FSMState.AWAITING_INFERENCE,
+            FSMState.INFERRING_INTENT,
+            FSMState.INFERRING_CONTEXT,
+            FSMState.INFERRING_ACTION,
+            # Critically: NOT AWAITING_INTENT_CONFIRMATION /
+            # AWAITING_CONTEXT_CONFIRMATION. The post-inference
+            # branch resolver should land on the confirmation
+            # state and wait for the user, not skip ahead.
+        }),
+    )
 
     proposals_by_target = {
         "intent": {"intent": "schedule a meeting"},
@@ -120,7 +144,7 @@ def test_full_pipeline_walk(fresh):
         side_effect=lambda rr: published.append(rr) or None,
     ):
         # ---- 1. Inciting event ----
-        t = Thread(autonomy_policy=autonomy.PLAN_THEN_REVIEW)
+        t = Thread(autonomy_policy=strict_policy)
         store.insert_thread(t)
         store.append_event(ThreadEvent(
             thread_id=t.thread_id,
