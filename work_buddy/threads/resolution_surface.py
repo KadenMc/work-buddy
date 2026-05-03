@@ -96,40 +96,48 @@ def build_resolution_request(
 # ---------------------------------------------------------------------------
 
 
+_OFF_DASHBOARD_SURFACES: tuple[str, ...] = ("telegram", "obsidian")
+
+
 def _surfaces_for(rr: ResolutionRequest) -> Optional[list[str]]:
     """Decide which notification surfaces should fan out for this
     Resolution Request.
 
-    Phase 5a of the autonomy plan: not every wait state warrants a
-    multi-surface ping. The user should only be paged across
-    Telegram/Obsidian when the FSM hits a *legitimate* pause — an
-    action approval, or an error/clarification path the agent can't
-    self-resolve.
+    User-feedback (2026-05-03): the v5 Threads dashboard tab is the
+    canonical surface for thread state. Publishing a workflow-view
+    notification for every wait-state thread floods the top-bar with
+    one tab per thread, which is the very noise the Threads tab was
+    supposed to replace. So this function now NEVER targets the
+    ``dashboard`` surface — only Telegram / Obsidian for the few
+    states that actually warrant an off-dashboard ping.
 
     Returns:
-        A list of surface names to target (e.g. ``["dashboard"]``)
-        or None to deliver to ALL available surfaces (the previous
-        default behaviour).
+        A list of surface names to target, or None to skip publishing
+        entirely. (Returning an empty list is NOT useful — the
+        dispatcher treats empty as "all surfaces"; see
+        ``SurfaceDispatcher._select_surfaces``.)
 
     Rules:
-    - ``AWAITING_CONFIRMATION`` (action approval): all surfaces.
-      This is the legitimate "I'm about to mutate the world" pause.
+    - ``AWAITING_CONFIRMATION`` (action approval): Telegram + Obsidian.
+      This is the legitimate "I'm about to mutate the world" pause
+      worth paging the user on a phone.
     - Any clarification state (``AWAITING_*_CLARIFICATION``,
-      ``AWAITING_REDIRECT``): all surfaces. The agent is stuck and
-      genuinely needs the user's input.
+      ``AWAITING_REDIRECT``): Telegram + Obsidian. The agent is
+      stuck and genuinely needs user input.
     - ``AWAITING_REVIEW`` (post-execution review, opt-in by the
-      action template): all surfaces. The user opted in.
-    - ``DONE_CLEANUP_UNSUCCESSFUL``: all surfaces. Cleanup failed
-      and the user has to choose retry vs accept-failure.
-    - Any intent/context confirmation that DID still surface (i.e.
-      the autonomy resolver chose AWAITING_*_CONFIRMATION because
-      confidence was low or the policy is conservative): dashboard
-      only. This is "the agent isn't sure" — important to see, but
-      not worth a Telegram interruption.
+      action template): Telegram + Obsidian. The user opted in.
+    - ``DONE_CLEANUP_UNSUCCESSFUL``: Telegram + Obsidian. Cleanup
+      failed and the user has to choose retry vs accept-failure.
+    - Intent/context confirmation states: NO surfaces. The Threads
+      tab shows them; an extra Telegram ping is overkill.
+    - Anything else: NO surfaces (defensive default).
+
+    The caller (``publish``) should short-circuit when this returns
+    None — there's nothing to deliver.
     """
     state = rr.fsm_state
     if state == FSMState.AWAITING_CONFIRMATION:
-        return None  # all surfaces
+        return list(_OFF_DASHBOARD_SURFACES)
     if state in (
         FSMState.AWAITING_INTENT_CLARIFICATION,
         FSMState.AWAITING_CONTEXT_CLARIFICATION,
@@ -138,15 +146,10 @@ def _surfaces_for(rr: ResolutionRequest) -> Optional[list[str]]:
         FSMState.AWAITING_REVIEW,
         FSMState.DONE_CLEANUP_UNSUCCESSFUL,
     ):
-        return None
-    if state in (
-        FSMState.AWAITING_INTENT_CONFIRMATION,
-        FSMState.AWAITING_CONTEXT_CONFIRMATION,
-    ):
-        return ["dashboard"]
-    # Defensive default: any state we forgot to map → dashboard only.
-    # Better to under-page than to over-page.
-    return ["dashboard"]
+        return list(_OFF_DASHBOARD_SURFACES)
+    # Intent/context confirmation + any other state: don't publish.
+    # The Threads tab is the only surface they need.
+    return None
 
 
 def publish(rr: ResolutionRequest) -> Optional[str]:
@@ -164,6 +167,15 @@ def publish(rr: ResolutionRequest) -> Optional[str]:
     intent/context confirmation states only land in the dashboard.
     """
     view_id = f"{_PUBLISHED_VIEW_PREFIX}{rr.thread_id}"
+
+    surfaces = _surfaces_for(rr)
+    if surfaces is None:
+        # No off-dashboard surface wanted (intent/context confirmation
+        # and unmapped states fall here). The Threads tab is the only
+        # surface they need — return without creating a Notification
+        # row. Skipping creation also avoids littering the workflow-
+        # views API with rows nothing will consume.
+        return None
 
     try:
         from work_buddy.notifications.dispatcher import SurfaceDispatcher
@@ -183,7 +195,7 @@ def publish(rr: ResolutionRequest) -> Optional[str]:
             title=title,
             body=body,
             response_type=ResponseType.NONE.value,  # custom card has its own affordances
-            surfaces=_surfaces_for(rr),
+            surfaces=surfaces,
             custom_template={
                 "type": "resolution_request",
                 "thread_id": rr.thread_id,
