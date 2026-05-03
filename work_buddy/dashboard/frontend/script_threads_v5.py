@@ -189,6 +189,7 @@ def _threads_v5_script() -> str:
             show_later: false,
             include_mid_process: false, // Phase 4: show in-flight states
             has_cleanup: false,        // Wave C: cleanup-applicable only
+            show_all: false,           // Wave F: show non-actionable states (terminal, proposed, ...)
         };
     }
 
@@ -202,6 +203,7 @@ def _threads_v5_script() -> str:
         if (f.show_later) params.set('show_later', '1');
         if (f.include_mid_process) params.set('include_mid_process', '1');
         if (f.has_cleanup) params.set('has_cleanup', '1');
+        if (f.show_all) params.set('show_all', '1');
         return params.toString();
     }
 
@@ -363,6 +365,18 @@ def _threads_v5_script() -> str:
               + (f.has_cleanup ? ' checked' : '')
               + ' onchange="threadsSetFilter(\'has_cleanup\', this.checked)">'
               + ' Cleanup-applicable</label>';
+        // Wave F: master "show all" toggle. Disables the default
+        // actionable-only filter so terminal threads (done /
+        // dismissed / handed_off) also show up. Useful for audit
+        // and review.
+        html += '<label class="threads-v5-show-later" '
+              + 'title="Disable the default actionable-only filter — '
+              + 'show ALL threads including done, dismissed, and '
+              + 'pre-PROPOSED states.">'
+              + '<input type="checkbox"'
+              + (f.show_all ? ' checked' : '')
+              + ' onchange="threadsSetFilter(\'show_all\', this.checked)">'
+              + ' Show all states</label>';
         // Phase 4: surface in-flight states (AWAITING_INFERENCE,
         // INFERRING_*, EXECUTING, MONITORING, CLEANING_UP). Off by
         // default — these are agent-internal states the user can't
@@ -438,10 +452,38 @@ def _threads_v5_script() -> str:
         return html;
     }
 
+    // Wave F — same friendlier state copy as the detail view
+    // header. Mirrored here to avoid a cross-module import.
+    function _friendlyStateTop(state) {
+        return ({
+            "awaiting_intent_confirmation": "Confirm intent",
+            "awaiting_intent_clarification": "Clarify intent",
+            "awaiting_context_confirmation": "Confirm context",
+            "awaiting_context_clarification": "Clarify context",
+            "awaiting_action_clarification": "Clarify action",
+            "awaiting_confirmation": "Approve action",
+            "awaiting_review": "Review result",
+            "awaiting_redirect": "Redirect needed",
+            "awaiting_inference": "Queued",
+            "inferring_intent": "Inferring intent",
+            "inferring_context": "Inferring context",
+            "inferring_action": "Inferring action",
+            "executing": "Executing",
+            "monitoring": "Monitoring",
+            "cleaning_up": "Cleaning up",
+            "done_cleanup_unsuccessful": "Cleanup failed",
+            "done_cleanup_successful": "Done · cleaned",
+            "done": "Done",
+            "dismissed": "Dismissed",
+            "handed_off": "Handed off",
+            "proposed": "Proposed",
+        }[state]) || (state || "").replace(/_/g, " ");
+    }
+
     function _renderTopLevelCard(t) {
         const urgent = t.urgency === "surface_now";
         const hasLater = !!t.has_been_later;
-        const stateLabel = (t.fsm_state || "").replace(/_/g, " ");
+        const stateLabel = _friendlyStateTop(t.fsm_state);
         const intent = (t.intent && t.intent.text) || t.title || t.thread_id;
         // Phase 4: mid_process display_mode → muted styling, no
         // action affordances. The user can still click through to

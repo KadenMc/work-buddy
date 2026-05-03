@@ -191,9 +191,38 @@ def _threads_v5_card_script() -> str:
 
     // ----- Section renderers -------------------------------------------
 
+    // Wave F — friendlier state copy. The raw FSM state names are
+    // engineering-internal; the user shouldn't see "awaiting
+    // confirmation" but rather "Waiting on you to approve."
+    function _friendlyState(state) {
+        return ({
+            "awaiting_intent_confirmation": "Confirm intent",
+            "awaiting_intent_clarification": "Need clarification on intent",
+            "awaiting_context_confirmation": "Confirm context",
+            "awaiting_context_clarification": "Need clarification on context",
+            "awaiting_action_clarification": "Need clarification on action",
+            "awaiting_confirmation": "Approve action",
+            "awaiting_review": "Review result",
+            "awaiting_redirect": "Action failed — redirect needed",
+            "awaiting_inference": "Queueing inference",
+            "inferring_intent": "Inferring intent…",
+            "inferring_context": "Inferring context…",
+            "inferring_action": "Inferring action…",
+            "executing": "Executing",
+            "monitoring": "Monitoring sub-threads",
+            "cleaning_up": "Cleaning up source",
+            "done_cleanup_unsuccessful": "Cleanup failed",
+            "done_cleanup_successful": "Done · source cleaned",
+            "done": "Done",
+            "dismissed": "Dismissed",
+            "handed_off": "Handed off",
+            "proposed": "Proposed",
+        }[state]) || (state || "").replace(/_/g, " ");
+    }
+
     function _renderHeader(thread) {
         const urgent = thread.urgency === "surface_now";
-        const stateLabel = (thread.fsm_state || "").replace(/_/g, " ");
+        const stateLabel = _friendlyState(thread.fsm_state);
         // Risk highlight pill — derived from action risk metadata
         // (irreversibility / regret_potential / risk_amplifier).
         // The consent card uses this to draw attention before the
@@ -502,8 +531,19 @@ def _threads_v5_card_script() -> str:
     }
 
     function _renderSubThreadsLink(thread) {
+        // Wave F: show the sub-thread section even when count=0,
+        // so the user knows the section exists. The link is muted
+        // when empty (no children to drill into).
         const n = thread.sub_thread_count || 0;
-        if (n === 0) return '';
+        if (n === 0) {
+            return (
+                '<div class="threads-v5-section">'
+                + '<div class="threads-v5-section-label">'
+                +   'Sub-threads (none)'
+                + '</div>'
+                + '</div>'
+            );
+        }
         return (
             '<div class="threads-v5-section">'
             + '<a class="threads-v5-subthread-link" href="#" '
