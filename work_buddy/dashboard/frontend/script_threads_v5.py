@@ -954,10 +954,24 @@ def _threads_v5_script() -> str:
                 ev.preventDefault();
                 _kbdOpenFocused();
             } else if (k === "Escape") {
+                // Order: 1) close inspector, 2) clear right-pane
+                // focus (un-select the focused element so the right
+                // pane disappears), 3) navigate back.
                 if (window._threadsState
                     && window._threadsState.inspect) {
                     ev.preventDefault();
                     window.threadsCloseInspector();
+                } else if (window._threadsState
+                    && window._threadsState.path.length > 0
+                    && window.threadCardState
+                    && _activeThreadHasFocus()) {
+                    ev.preventDefault();
+                    const tid = window._threadsState.path[
+                        window._threadsState.path.length - 1
+                    ];
+                    if (typeof window.threadCardFocus === "function") {
+                        window.threadCardFocus(tid, null);
+                    }
                 } else if (window._threadsState
                     && window._threadsState.path.length > 0) {
                     ev.preventDefault();
@@ -987,6 +1001,16 @@ def _threads_v5_script() -> str:
     // Persists across renders so j/k stay in place.
     if (window._threadsKbdIndex === undefined) {
         window._threadsKbdIndex = -1;
+    }
+
+    function _activeThreadHasFocus() {
+        // True iff the current thread's card-state has a
+        // focused element in the right pane.
+        const path = (window._threadsState || {}).path || [];
+        if (path.length === 0) return false;
+        const tid = path[path.length - 1];
+        const s = (window.threadCardState || {})[tid];
+        return !!(s && s.focusedId);
     }
 
     function _kbdMove(delta) {

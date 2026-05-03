@@ -158,7 +158,14 @@ def _threads_v5_card_script() -> str:
         const s = _state(thread.thread_id);
         const hasFlags = _hasFlags(thread.thread_id);
 
-        let html = '<div class="threads-v5-card threads-v5-kind-' + kind + '" '
+        // User-feedback fix #1 (2026-05-03 morning): hide the
+        // right pane unless something is focused. When focused,
+        // show an X to clear focus and return to full-width body.
+        const focused = !!s.focusedId;
+
+        let html = '<div class="threads-v5-card threads-v5-kind-' + kind
+                 + (focused ? ' threads-v5-with-right-pane' : ' threads-v5-full-width')
+                 + '" '
                  + 'data-thread-id="' + _esc(thread.thread_id) + '">';
 
         // Risk-amplifier emphasis for consent cards
@@ -175,9 +182,15 @@ def _threads_v5_card_script() -> str:
         html += _renderNamespaceTagsSection(thread, s);
         html += _renderSubThreadsLink(thread);
         html += '</div>';
-        html += '<div class="threads-v5-card-right">';
-        html += _renderRightPane(thread, s);
-        html += '</div>';
+        if (focused) {
+            html += '<div class="threads-v5-card-right">';
+            html += '<button class="threads-v5-right-close" '
+                  +   'title="Close editor (Esc)" '
+                  +   'onclick="threadCardFocus(\'' + _esc(thread.thread_id) + '\', null)">'
+                  +   _icon("x") + '</button>';
+            html += _renderRightPane(thread, s);
+            html += '</div>';
+        }
         html += '</div>';
 
         html += _renderFooter(thread, hasFlags);
@@ -361,8 +374,9 @@ def _threads_v5_card_script() -> str:
             +   _esc(editedText)
             + '</div>'
             + '<button class="threads-v5-edit-btn" '
+            +   'title="Edit intent" '
             +   'onclick="threadCardFocus(\'' + _esc(thread.thread_id) + '\', \'intent\')">'
-            +   'Edit'
+            +   _icon("edit")
             + '</button>'
             + '</div>'
         );
@@ -413,8 +427,10 @@ def _threads_v5_card_script() -> str:
             html += '<div class="threads-v5-item-actions">';
             html += _flagBtn(thread.thread_id, ci.id, flagged);
             html += '<button class="threads-v5-edit-btn" '
+                  + 'title="Edit context item" '
                   + 'onclick="threadCardFocus(\'' + _esc(thread.thread_id) + '\', \''
-                  + _esc(ci.id) + '\')">Edit</button>';
+                  + _esc(ci.id) + '\')">'
+                  + _icon("edit") + '</button>';
             html += '</div>';
             html += '</li>';
         }
@@ -523,8 +539,10 @@ def _threads_v5_card_script() -> str:
             html += '<div class="threads-v5-item-actions">';
             html += _flagBtn(thread.thread_id, a.id, flagged);
             html += '<button class="threads-v5-edit-btn" '
+                  + 'title="Edit action" '
                   + 'onclick="threadCardFocus(\'' + _esc(thread.thread_id) + '\', \''
-                  + _esc(a.id) + '\')">Edit</button>';
+                  + _esc(a.id) + '\')">'
+                  + _icon("edit") + '</button>';
             html += '</div>';
             html += '</li>';
         }
@@ -567,19 +585,13 @@ def _threads_v5_card_script() -> str:
     }
 
     function _renderSubThreadsLink(thread) {
-        // Wave F: show the sub-thread section even when count=0.
+        // User-feedback fix #2 (2026-05-03 morning): hide the
+        // sub-thread section entirely when count=0. Wave F's
+        // "(none)" version was unnecessary visual noise.
         // Wave I: aggregated state badges per UX.md §8.1
-        // ("5 done • 4 awaiting consent • 2 awaiting clarification").
+        // ("5 done · 4 awaiting consent · 2 awaiting clarification").
         const n = thread.sub_thread_count || 0;
-        if (n === 0) {
-            return (
-                '<div class="threads-v5-section">'
-                + '<div class="threads-v5-section-label">'
-                +   'Sub-threads (none)'
-                + '</div>'
-                + '</div>'
-            );
-        }
+        if (n === 0) return '';
         const counts = thread.sub_thread_state_counts || {};
         const badges = _renderStateBadges(counts);
         return (
@@ -758,45 +770,47 @@ def _threads_v5_card_script() -> str:
     }
 
     function _renderFooter(thread, hasFlags) {
-        // Footer button set per UX.md §4.1 + §5.4. Backend wired in 4.3.
+        // User-feedback fix #6 (2026-05-03 morning): unified icon
+        // row instead of left/right cluster. All buttons are
+        // icon-only with tooltips on hover; color-coded for
+        // scannability (destructive red, neutral muted, primary
+        // green, redirect orange).
+        // Per UX.md §4.1 + §5.4 (footer affordances).
         const cleanupShown = !!thread.can_clean_up;
         const acceptDisabled = hasFlags;
         const acceptTitle = hasFlags
             ? "Resolve any flagged elements before accepting"
-            : "Commit the current state";
+            : "Approve and commit";
         const tid = _esc(thread.thread_id);
         return (
             '<div class="threads-v5-card-footer">'
-            + '<div class="threads-v5-footer-secondary">'
-            +   '<button class="threads-v5-btn-icon" title="Dismiss" '
+            +   '<button class="threads-v5-btn-icon threads-v5-btn-destructive" '
+            +     'title="Dismiss this thread" '
             +     'onclick="threadCommitAction(\'' + tid + '\', \'dismiss\')">'
             +     _icon("trash") + '</button>'
             +   (cleanupShown
-                    ? '<button class="threads-v5-btn-icon" title="Clean up source" '
+                    ? '<button class="threads-v5-btn-icon threads-v5-btn-neutral" '
+                    +   'title="Clean up inciting event source" '
                     +   'onclick="threadCommitAction(\'' + tid + '\', \'cleanup\')">'
-                    +   _icon("eraser") + '</button>'
+                    +   _icon("broom") + '</button>'
                     : '')
-            +   '<button class="threads-v5-btn-icon" '
-            +     'title="Later — left-click 6h; right-click for options" '
+            +   '<button class="threads-v5-btn-icon threads-v5-btn-neutral" '
+            +     'title="Later — left-click defers 6h; right-click for options" '
             +     'onclick="threadCommitAction(\'' + tid + '\', \'later\', {hours: 6})" '
             +     'oncontextmenu="event.preventDefault();'
             +     'threadsShowLaterPopup(this, \'' + tid + '\')">'
             +     _icon("clock") + '</button>'
-            + '</div>'
-            + '<div class="threads-v5-footer-primary">'
-            +   '<button class="threads-v5-btn threads-v5-btn-secondary" '
+            +   '<button class="threads-v5-btn-icon threads-v5-btn-redirect" '
+            +     'title="Redirect — give the agent feedback and re-infer" '
             +     'onclick="threadCommitAction(\'' + tid + '\', \'redirect\')">'
-            +     _icon("corner-up-left") + ' Redirect'
-            +   '</button>'
-            +   '<button class="threads-v5-btn threads-v5-btn-primary" '
+            +     _icon("corner-up-left") + '</button>'
+            +   '<button class="threads-v5-btn-icon threads-v5-btn-accept" '
             +     (acceptDisabled ? 'disabled ' : '')
             +     'title="' + _esc(acceptTitle) + '" '
             +     (acceptDisabled
                     ? ''
                     : 'onclick="threadCommitAction(\'' + tid + '\', \'accept\')"')
-            +     '>' + _icon("check") + ' Accept'
-            +   '</button>'
-            + '</div>'
+            +     '>' + _icon("check") + '</button>'
             + '</div>'
         );
     }
@@ -856,32 +870,31 @@ def _threads_v5_card_script() -> str:
     }
 
     function _renderClarificationFooter(thread) {
+        // User-feedback fix #6: unified icon-only footer.
         const tid = _esc(thread.thread_id);
         const cleanupShown = !!thread.can_clean_up;
         return (
             '<div class="threads-v5-card-footer">'
-            + '<div class="threads-v5-footer-secondary">'
-            +   '<button class="threads-v5-btn-icon" title="Dismiss" '
+            +   '<button class="threads-v5-btn-icon threads-v5-btn-destructive" '
+            +     'title="Dismiss this thread" '
             +     'onclick="threadCommitAction(\'' + tid + '\', \'dismiss\')">'
             +     _icon("trash") + '</button>'
             +   (cleanupShown
-                    ? '<button class="threads-v5-btn-icon" title="Clean up source" '
+                    ? '<button class="threads-v5-btn-icon threads-v5-btn-neutral" '
+                    +   'title="Clean up inciting event source" '
                     +   'onclick="threadCommitAction(\'' + tid + '\', \'cleanup\')">'
-                    +   _icon("eraser") + '</button>'
+                    +   _icon("broom") + '</button>'
                     : '')
-            +   '<button class="threads-v5-btn-icon" '
-            +     'title="Later — left-click 6h; right-click for options" '
+            +   '<button class="threads-v5-btn-icon threads-v5-btn-neutral" '
+            +     'title="Later — left-click defers 6h; right-click for options" '
             +     'onclick="threadCommitAction(\'' + tid + '\', \'later\', {hours: 6})" '
             +     'oncontextmenu="event.preventDefault();'
             +     'threadsShowLaterPopup(this, \'' + tid + '\')">'
             +     _icon("clock") + '</button>'
-            + '</div>'
-            + '<div class="threads-v5-footer-primary">'
-            +   '<button class="threads-v5-btn threads-v5-btn-primary" '
+            +   '<button class="threads-v5-btn-icon threads-v5-btn-accept" '
+            +     'title="Submit clarification" '
             +     'onclick="threadCommitAction(\'' + tid + '\', \'accept\', {input: window._clarifyInput[\'' + tid + '\'] || \'\'})">'
-            +     _icon("check") + ' Accept'
-            +   '</button>'
-            + '</div>'
+            +     _icon("check") + '</button>'
             + '</div>'
         );
     }
@@ -915,26 +928,23 @@ def _threads_v5_card_script() -> str:
         }
         html += '</div>';
         // UX.md §4.4.3: Review cards have NO Dismiss (action's done).
-        // Footer: Later / Redirect / Mark done
+        // Footer: Later / Redirect / Mark done — unified icon row
+        // (user-feedback fix #6).
         html += '<div class="threads-v5-card-footer">'
-              + '<div class="threads-v5-footer-secondary">'
-              +   '<button class="threads-v5-btn-icon" '
-            +     'title="Later — left-click 6h; right-click for options" '
+              +   '<button class="threads-v5-btn-icon threads-v5-btn-neutral" '
+              +     'title="Later — left-click defers 6h; right-click for options" '
               +     'onclick="threadCommitAction(\'' + tid + '\', \'later\', {hours: 6})" '
-            +     'oncontextmenu="event.preventDefault();'
-            +     'threadsShowLaterPopup(this, \'' + tid + '\')">'
+              +     'oncontextmenu="event.preventDefault();'
+              +     'threadsShowLaterPopup(this, \'' + tid + '\')">'
               +     _icon("clock") + '</button>'
-              + '</div>'
-              + '<div class="threads-v5-footer-primary">'
-              +   '<button class="threads-v5-btn threads-v5-btn-secondary" '
+              +   '<button class="threads-v5-btn-icon threads-v5-btn-redirect" '
+              +     'title="Redirect — give the agent feedback and re-infer" '
               +     'onclick="threadCommitAction(\'' + tid + '\', \'redirect\')">'
-              +     _icon("corner-up-left") + ' Redirect'
-              +   '</button>'
-              +   '<button class="threads-v5-btn threads-v5-btn-primary" '
+              +     _icon("corner-up-left") + '</button>'
+              +   '<button class="threads-v5-btn-icon threads-v5-btn-accept" '
+              +     'title="Mark done" '
               +     'onclick="threadCommitAction(\'' + tid + '\', \'accept\')">'
-              +     _icon("check") + ' Mark done'
-              +   '</button>'
-              + '</div>'
+              +     _icon("check") + '</button>'
               + '</div>';
         html += '</div>';
         return html;
@@ -972,31 +982,30 @@ def _threads_v5_card_script() -> str:
               + 'oninput="threadRedirectInput(\'' + tid + '\', this.value)">'
               + _esc(stored) + '</textarea>';
         html += '</div>';
-        // Footer: Trash / Broom / Later / Redirect (= submit feedback) / Skip (= accept)
+        // Footer: Trash / Broom / Later / Submit redirect — unified
+        // icon row (user-feedback fix #6).
         const cleanupShown = !!thread.can_clean_up;
         html += '<div class="threads-v5-card-footer">'
-              + '<div class="threads-v5-footer-secondary">'
-              +   '<button class="threads-v5-btn-icon" title="Dismiss" '
+              +   '<button class="threads-v5-btn-icon threads-v5-btn-destructive" '
+              +     'title="Dismiss this thread" '
               +     'onclick="threadCommitAction(\'' + tid + '\', \'dismiss\')">'
               +     _icon("trash") + '</button>'
               +   (cleanupShown
-                    ? '<button class="threads-v5-btn-icon" title="Clean up source" '
+                    ? '<button class="threads-v5-btn-icon threads-v5-btn-neutral" '
+                    +   'title="Clean up inciting event source" '
                     +   'onclick="threadCommitAction(\'' + tid + '\', \'cleanup\')">'
-                    +   _icon("eraser") + '</button>'
+                    +   _icon("broom") + '</button>'
                     : '')
-              +   '<button class="threads-v5-btn-icon" '
-            +     'title="Later — left-click 6h; right-click for options" '
+              +   '<button class="threads-v5-btn-icon threads-v5-btn-neutral" '
+              +     'title="Later — left-click defers 6h; right-click for options" '
               +     'onclick="threadCommitAction(\'' + tid + '\', \'later\', {hours: 6})" '
-            +     'oncontextmenu="event.preventDefault();'
-            +     'threadsShowLaterPopup(this, \'' + tid + '\')">'
+              +     'oncontextmenu="event.preventDefault();'
+              +     'threadsShowLaterPopup(this, \'' + tid + '\')">'
               +     _icon("clock") + '</button>'
-              + '</div>'
-              + '<div class="threads-v5-footer-primary">'
-              +   '<button class="threads-v5-btn threads-v5-btn-primary" '
+              +   '<button class="threads-v5-btn-icon threads-v5-btn-redirect" '
+              +     'title="Submit redirect feedback" '
               +     'onclick="threadCommitAction(\'' + tid + '\', \'redirect\', {feedback: window._redirectInput[\'' + tid + '\'] || \'\'})">'
-              +     _icon("corner-up-left") + ' Submit redirect'
-              +   '</button>'
-              + '</div>'
+              +     _icon("corner-up-left") + '</button>'
               + '</div>';
         html += '</div>';
         return html;
@@ -1022,29 +1031,27 @@ def _threads_v5_card_script() -> str:
               + 'You can retry the cleanup or accept the failure '
               + '(closes this Thread without further action).</p>';
         html += '</div>';
-        // Footer: Trash / Later / Accept failure / Retry
+        // Footer: Trash / Later / Accept failure / Retry — unified
+        // icon row (user-feedback fix #6).
         html += '<div class="threads-v5-card-footer">'
-              + '<div class="threads-v5-footer-secondary">'
-              +   '<button class="threads-v5-btn-icon" title="Dismiss" '
+              +   '<button class="threads-v5-btn-icon threads-v5-btn-destructive" '
+              +     'title="Dismiss this thread" '
               +     'onclick="threadCommitAction(\'' + tid + '\', \'dismiss\')">'
               +     _icon("trash") + '</button>'
-              +   '<button class="threads-v5-btn-icon" '
-            +     'title="Later — left-click 6h; right-click for options" '
+              +   '<button class="threads-v5-btn-icon threads-v5-btn-neutral" '
+              +     'title="Later — left-click defers 6h; right-click for options" '
               +     'onclick="threadCommitAction(\'' + tid + '\', \'later\', {hours: 6})" '
-            +     'oncontextmenu="event.preventDefault();'
-            +     'threadsShowLaterPopup(this, \'' + tid + '\')">'
+              +     'oncontextmenu="event.preventDefault();'
+              +     'threadsShowLaterPopup(this, \'' + tid + '\')">'
               +     _icon("clock") + '</button>'
-              + '</div>'
-              + '<div class="threads-v5-footer-primary">'
-              +   '<button class="threads-v5-btn threads-v5-btn-secondary" '
+              +   '<button class="threads-v5-btn-icon threads-v5-btn-neutral" '
+              +     'title="Accept the failure and close this thread" '
               +     'onclick="threadCommitAction(\'' + tid + '\', \'accept-cleanup-failure\')">'
-              +     _icon("check") + ' Accept failure'
-              +   '</button>'
-              +   '<button class="threads-v5-btn threads-v5-btn-primary" '
+              +     _icon("check") + '</button>'
+              +   '<button class="threads-v5-btn-icon threads-v5-btn-redirect" '
+              +     'title="Retry cleanup" '
               +     'onclick="threadCommitAction(\'' + tid + '\', \'retry-cleanup\')">'
-              +     _icon("refresh-cw") + ' Retry'
-              +   '</button>'
-              + '</div>'
+              +     _icon("refresh-cw") + '</button>'
               + '</div>';
         html += '</div>';
         return html;
@@ -1156,6 +1163,17 @@ def _threads_v5_card_script() -> str:
                 + '<circle cx="18" cy="6" r="3"></circle>'
                 + '<circle cx="6" cy="18" r="3"></circle>'
                 + '<path d="M18 9a9 9 0 0 1-9 9"></path>',
+            // Broom icon (user-feedback fix #5, 2026-05-03 morning).
+            // The earlier "eraser" path was a pencil shape; this is
+            // an actual broom: handle on top-right, bristles at
+            // bottom-left.
+            "broom": '<path d="M19.36 2.72l1.42 1.42-5.5 5.5-1.41-1.42z"></path>'
+                + '<path d="M14.65 7.43l-9.93 9.93a3 3 0 0 0-.7 3.05l.7 2.09 7.07-7.07"></path>'
+                + '<path d="M11.79 15.43l-2.83 2.83-3.54-3.54"></path>',
+            // Pencil-edit icon for inline edit affordances on
+            // intent / context items / actions (user-feedback fix #5).
+            "edit": '<path d="M12 20h9"></path>'
+                + '<path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path>',
         };
         const p = paths[name] || '';
         return '<svg class="threads-v5-icon" width="16" height="16" '
@@ -1219,21 +1237,48 @@ def _threads_v5_card_styles() -> str:
     font-weight: 700;
 }
 
-/* Two-pane body */
+/* Two-pane body — right pane only renders when something is
+   focused (user-feedback fix #1, 2026-05-03 morning). */
 .threads-v5-card-body {
     display: grid;
-    grid-template-columns: 1fr 360px;
+    grid-template-columns: 1fr;
     min-height: 280px;
+}
+
+.threads-v5-card.threads-v5-with-right-pane .threads-v5-card-body {
+    grid-template-columns: 1fr 360px;
 }
 
 .threads-v5-card-left {
     padding: 16px 20px;
+}
+
+.threads-v5-card.threads-v5-with-right-pane .threads-v5-card-left {
     border-right: 1px solid var(--border, #333);
 }
 
 .threads-v5-card-right {
     padding: 16px 20px;
     background: var(--bg-tertiary, #0f0f0f);
+    position: relative;
+}
+
+/* X button on the right pane — close + return to full width */
+.threads-v5-right-close {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    background: transparent;
+    color: var(--text-muted, #888);
+    border: none;
+    cursor: pointer;
+    padding: 4px;
+    border-radius: 4px;
+    line-height: 0;
+}
+.threads-v5-right-close:hover {
+    background: var(--bg-secondary, #1a1a1a);
+    color: var(--text, #ddd);
 }
 
 .threads-v5-section {
@@ -1259,14 +1304,21 @@ def _threads_v5_card_styles() -> str:
     margin-bottom: 6px;
 }
 
+/* User-feedback fix #5 (2026-05-03 morning): edit buttons
+   become icon-only (pencil) with tooltip on hover, matching the
+   footer's icon-only style. Square shape so they sit cleanly
+   alongside the X-flag button. */
 .threads-v5-edit-btn {
     background: transparent;
     color: var(--text-muted, #888);
     border: 1px solid var(--border, #333);
     border-radius: 4px;
-    padding: 3px 9px;
-    font-size: 11px;
+    padding: 4px;
     cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 0;
 }
 .threads-v5-edit-btn:hover {
     background: var(--bg-tertiary, #0f0f0f);
@@ -1445,7 +1497,10 @@ def _threads_v5_card_styles() -> str:
     border-top: 1px solid var(--border, #333);
     padding: 12px 20px;
     display: flex;
-    justify-content: space-between;
+    /* User-feedback fix #6: unified icon row, no left/right
+       cluster split. */
+    justify-content: flex-end;
+    gap: 8px;
     align-items: center;
     background: var(--bg, #0a0a0a);
 }
@@ -1465,10 +1520,50 @@ def _threads_v5_card_styles() -> str:
     padding: 6px 8px;
     cursor: pointer;
     line-height: 0;
+    transition: color 100ms, background 100ms, border-color 100ms;
 }
-.threads-v5-btn-icon:hover {
+.threads-v5-btn-icon:hover:not(:disabled) {
     color: var(--text, #ddd);
     background: var(--bg-tertiary, #1a1a1a);
+}
+.threads-v5-btn-icon:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+/* User-feedback fix #6: per-action color-coding for footer
+   icons. Themed via CSS variables to stay consistent with the
+   dashboard's existing color palette. Hover slightly intensifies
+   the color. */
+.threads-v5-btn-icon.threads-v5-btn-destructive {
+    color: #c66464;
+    border-color: rgba(198, 100, 100, 0.4);
+}
+.threads-v5-btn-icon.threads-v5-btn-destructive:hover:not(:disabled) {
+    color: #ff8888;
+    background: rgba(198, 100, 100, 0.08);
+    border-color: rgba(198, 100, 100, 0.6);
+}
+.threads-v5-btn-icon.threads-v5-btn-neutral {
+    color: var(--text-muted, #888);
+}
+.threads-v5-btn-icon.threads-v5-btn-redirect {
+    color: #d99868;
+    border-color: rgba(217, 152, 104, 0.4);
+}
+.threads-v5-btn-icon.threads-v5-btn-redirect:hover:not(:disabled) {
+    color: #ffb888;
+    background: rgba(217, 152, 104, 0.08);
+    border-color: rgba(217, 152, 104, 0.6);
+}
+.threads-v5-btn-icon.threads-v5-btn-accept {
+    color: #66cc66;
+    border-color: rgba(102, 204, 102, 0.4);
+}
+.threads-v5-btn-icon.threads-v5-btn-accept:hover:not(:disabled) {
+    color: #88dd88;
+    background: rgba(102, 204, 102, 0.1);
+    border-color: rgba(102, 204, 102, 0.6);
 }
 
 .threads-v5-btn {

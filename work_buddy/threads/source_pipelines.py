@@ -17,11 +17,16 @@ Stage 4.14 deletes the v4 paths.
 from __future__ import annotations
 
 import logging
+import uuid
 from typing import Any, Optional
 
 from work_buddy.threads import store
+from work_buddy.threads.enums import FSMState
 from work_buddy.threads.events import (
+    KIND_ACTION_INFERRED,
     KIND_INCITING_EVENT,
+    KIND_INTENT_INFERRED,
+    KIND_SUBTHREADS_SPAWNED,
     KIND_THREAD_CREATED,
     ThreadEvent,
 )
@@ -39,6 +44,7 @@ def spawn_thread_from_journal_item(
     triage_item: dict[str, Any],
     *,
     note_path: Optional[str] = None,
+    parent_id: Optional[str] = None,
 ) -> Optional[str]:
     """Create a v5 Thread from a journal-source TriageItem.
 
@@ -103,6 +109,7 @@ def spawn_thread_from_journal_item(
     # wait state and force the user to confirm every inference step.
     from work_buddy.threads.autonomy import default_spawn_policy
     thread = Thread(
+        parent_id=parent_id,
         context_items=(ctx_item,),
         inciting_event_summary=inciting,
         autonomy_policy=default_spawn_policy(),
@@ -161,23 +168,225 @@ def _kickoff_inference(thread_id: str) -> None:
         )
 
 
+def spawn_parent_thread_from_journal_scan(
+    *,
+    journal_date: str,
+    item_count: int,
+    scan_id: Optional[str] = None,
+) -> Optional[str]:
+    """Create the parent "scan" Thread for a journal scan.
+
+    User-feedback fix #3 (2026-05-03 morning): a journal scan is
+    a single conceptual unit that produces N TODO-line items. The
+    user observed that each TODO line should be a SUB-THREAD under
+    a parent "scan" thread, not a top-level thread.
+
+    The parent has known intent + action (no LLM needed):
+    - Intent: "Process today's journal items" (confidence 1.0).
+    - Action: standard "decompose" (confidence 1.0).
+
+    The parent sits in MONITORING from the start; it never goes
+    through inference. As children reach terminal states the
+    cascade-on-terminal handler (decompose.cascade_terminal_to_parent)
+    advances the parent to DONE when all are terminal. Standard
+    decompose pattern.
+
+    Returns the new parent thread_id, or None on failure.
+    """
+    if scan_id is None:
+        scan_id = uuid.uuid4().hex[:8]
+    title = f"Journal scan: {journal_date}"
+    description = f"{title} ({item_count} item{'s' if item_count != 1 else ''})"
+    inciting = {
+        "source": "journal_scan",
+        "title": title,
+        "description": description,
+        "journal_date": journal_date,
+        "scan_id": scan_id,
+        "item_count": item_count,
+    }
+    from work_buddy.threads.autonomy import default_spawn_policy
+    # Insert directly in MONITORING — the parent is a structural
+    # container, not a thing that goes through inference. This
+    # mirrors what decompose_thread does for parents that fan out
+    # via the decompose action.
+    parent = Thread(
+        fsm_state=FSMState.MONITORING,
+        inciting_event_summary=inciting,
+        autonomy_policy=default_spawn_policy(),
+    )
+    try:
+        store.insert_thread(parent)
+        # Inciting + thread_created
+        e1 = store.append_event(ThreadEvent(
+            thread_id=parent.thread_id,
+            kind=KIND_INCITING_EVENT,
+            actor="inciting",
+            data=inciting,
+        ))
+        store.append_event(ThreadEvent(
+            thread_id=parent.thread_id,
+            kind=KIND_THREAD_CREATED,
+            actor="inciting",
+            data={"source_pipeline": "journal_v5_scan"},
+            parent_event_id=e1.id,
+        ))
+        # Pre-record the known intent + action. We use confidence
+        # 1.0 because these aren't inferred — they're definitionally
+        # true for any journal scan. actor=inciting (not agent)
+        # since no LLM was consulted.
+        intent_event = store.append_event(ThreadEvent(
+            thread_id=parent.thread_id,
+            kind=KIND_INTENT_INFERRED,
+            actor="inciting",
+            data={
+                "target": "intent",
+                "payload": {
+                    "intent": "Process today's journal items",
+                },
+                "confidence": 1.0,
+                "tier_used": None,
+                "model_used": None,
+                "synthetic": True,
+            },
+        ))
+        store.append_event(ThreadEvent(
+            thread_id=parent.thread_id,
+            kind=KIND_ACTION_INFERRED,
+            actor="inciting",
+            data={
+                "target": "action",
+                "payload": {
+                    "kind": "standard",
+                    "name": "decompose",
+                    "plan_summary": (
+                        "Spawn one sub-thread per inciting line"
+                    ),
+                    "irreversibility": "low",
+                    "regret_potential": "low",
+                    "risk_amplifier": False,
+                },
+                "confidence": 1.0,
+                "tier_used": None,
+                "model_used": None,
+                "synthetic": True,
+            },
+            parent_event_id=intent_event.id,
+        ))
+        # Bump cache parent_event_id so any later writes have the
+        # right optimistic-lock target.
+        store.update_thread_state(
+            parent.thread_id,
+            parent_event_id=store.latest_event_id(parent.thread_id),
+        )
+        return parent.thread_id
+    except Exception as e:
+        logger.warning(
+            "spawn_parent_thread_from_journal_scan: failed: %s", e,
+        )
+        return None
+
+
 def spawn_threads_from_journal_scan(
     items: list[dict[str, Any]],
     *,
     journal_date: Optional[str] = None,
-) -> list[str]:
-    """Spawn v5 Threads from a list of journal TriageItems.
+) -> dict[str, Any]:
+    """Spawn the journal-scan thread tree: 1 parent + N sub-threads.
 
-    Returns the list of new thread_ids in the same order as input.
-    Items that fail to spawn are skipped (logged).
+    User-feedback fix #3 (2026-05-03 morning): each TODO line is
+    now a sub-thread under a per-scan parent, not a standalone
+    top-level thread.
+
+    Args:
+        items: list of TriageItem-shaped dicts from the journal
+            adapter.
+        journal_date: ``YYYY-MM-DD``; required for the parent's
+            inciting summary.
+
+    Returns:
+        ``{
+            "parent_id": str,
+            "sub_thread_ids": [str],
+            "count": int,
+        }``
+        Sub-threads that fail to spawn are skipped (logged); count
+        reflects successful spawns.
+
+    Returns a count-zero dict if the parent itself fails to spawn
+    (the per-line spawn calls were never made).
+
+    The empty-items case still produces a parent (count=0) — the
+    user can see "we ran the scan and there was nothing actionable
+    today" rather than an unrendered void.
     """
-    note_path = f"journal/{journal_date}.md" if journal_date else None
-    out: list[str] = []
+    if journal_date is None:
+        # Best-effort fallback: derive from the first item's metadata.
+        if items:
+            md = (items[0] or {}).get("metadata") or {}
+            journal_date = md.get("journal_date")
+    if journal_date is None:
+        # Fall back to "unknown" — the cleanup adapter still works
+        # because each child carries its own note_path.
+        journal_date = "unknown"
+    parent_id = spawn_parent_thread_from_journal_scan(
+        journal_date=journal_date,
+        item_count=len(items),
+    )
+    if parent_id is None:
+        return {"parent_id": None, "sub_thread_ids": [], "count": 0}
+    note_path = f"journal/{journal_date}.md"
+    sub_ids: list[str] = []
     for item in items:
-        tid = spawn_thread_from_journal_item(item, note_path=note_path)
+        tid = spawn_thread_from_journal_item(
+            item,
+            note_path=note_path,
+            parent_id=parent_id,
+        )
         if tid is not None:
-            out.append(tid)
-    return out
+            sub_ids.append(tid)
+    # Record subthreads_spawned on the parent so the audit trail
+    # is consistent with the canonical decompose pattern.
+    if sub_ids:
+        try:
+            from work_buddy.threads.linearization import (
+                linearize_after_spawn,
+            )
+            store.append_event(ThreadEvent(
+                thread_id=parent_id,
+                kind=KIND_SUBTHREADS_SPAWNED,
+                actor="inciting",
+                data={
+                    "child_thread_ids": sub_ids,
+                    "source_count": len(sub_ids),
+                    "source_pipeline": "journal_v5_scan",
+                },
+            ))
+            # Update parent_event_id and run linearization so the
+            # children get sensible order_index values.
+            store.update_thread_state(
+                parent_id,
+                parent_event_id=store.latest_event_id(parent_id),
+            )
+            try:
+                linearize_after_spawn(parent_id)
+            except Exception as e:
+                logger.warning(
+                    "linearize_after_spawn for journal parent %s "
+                    "failed: %s; siblings keep order_index=0",
+                    parent_id, e,
+                )
+        except Exception as e:
+            logger.warning(
+                "subthreads_spawned event for journal parent %s "
+                "failed: %s",
+                parent_id, e,
+            )
+    return {
+        "parent_id": parent_id,
+        "sub_thread_ids": sub_ids,
+        "count": len(sub_ids),
+    }
 
 
 # ---------------------------------------------------------------------------

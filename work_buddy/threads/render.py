@@ -143,8 +143,17 @@ def build_render_data(thread_id: str) -> Optional[dict[str, Any]]:
     # Urgency — derive from inciting summary or default to defer
     urgency = inciting.get("urgency", "defer")
 
-    # Title — derive from inciting + intent
-    title = inciting.get("title") or inciting.get("description") or intent_text or thread.thread_id
+    # Title — prefer the inferred intent over the raw inciting text.
+    # User-feedback fix #4 (2026-05-03 morning): once intent has
+    # been inferred, the agent's intent phrasing is cleaner and
+    # more meaningful than the original journal line / chrome tab
+    # title. Fall back to the inciting summary if no intent yet.
+    title = (
+        intent_text
+        or inciting.get("title")
+        or inciting.get("description")
+        or thread.thread_id
+    )
 
     # Sub-thread count + per-state aggregation. UX.md §8.1
     # specifies the parent's detail view should show

@@ -97,17 +97,24 @@ def journal_v5_scan(
         }
 
     item_dicts = [it.to_dict() for it in items]
-    thread_ids = spawn_threads_from_journal_scan(
+    spawn_result = spawn_threads_from_journal_scan(
         item_dicts, journal_date=effective_date,
     )
+    parent_id = spawn_result.get("parent_id")
+    sub_thread_ids = spawn_result.get("sub_thread_ids") or []
     logger.info(
-        "journal_v5_scan: spawned %d v5 Threads for %s",
-        len(thread_ids), effective_date,
+        "journal_v5_scan: spawned parent %s + %d sub-threads for %s",
+        parent_id, len(sub_thread_ids), effective_date,
     )
     return {
         "status": "ok",
         "journal_date": effective_date,
         "item_count": len(items),
-        "spawned_thread_ids": thread_ids,
+        "parent_thread_id": parent_id,
+        "sub_thread_ids": sub_thread_ids,
+        # Kept for backward compatibility with any existing callers
+        # that read ``spawned_thread_ids``. New consumers should use
+        # ``parent_thread_id`` + ``sub_thread_ids``.
+        "spawned_thread_ids": sub_thread_ids,
         "content_hash": content_hash,
     }
