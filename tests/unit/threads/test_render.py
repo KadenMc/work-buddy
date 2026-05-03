@@ -112,6 +112,43 @@ class TestBuildRenderData:
         assert data["actions"][0]["kind"] == "improvised"
         assert "Open the doc" in data["actions"][0]["plan_summary"]
 
+    def test_improvised_action_preserves_agent_supplied_name(self, fresh_db):
+        """REGRESSION (Wave A — 2026-05-03): improvised actions used
+        to lose their agent-supplied name (rendered as ``(improvised)``).
+        The agent carefully names actions; the render should preserve
+        that and let the frontend show the kind separately."""
+        t = Thread()
+        store.insert_thread(t)
+        store.append_event(ThreadEvent(
+            thread_id=t.thread_id,
+            kind=KIND_ACTION_INFERRED,
+            actor="agent",
+            data={"payload": {
+                "kind": "improvised",
+                "name": "Research Claude Code Parallel Local Development",
+                "plan_summary": "Investigate parallel dev workflows.",
+            }},
+        ))
+        data = render.build_render_data(t.thread_id)
+        assert data["actions"][0]["name"] == \
+            "Research Claude Code Parallel Local Development"
+        assert data["actions"][0]["kind"] == "improvised"
+
+    def test_improvised_action_falls_back_when_name_missing(self, fresh_db):
+        """When the agent omits ``name`` on an improvised action,
+        the render uses a kind-specific fallback so the card still
+        renders something readable."""
+        t = Thread()
+        store.insert_thread(t)
+        store.append_event(ThreadEvent(
+            thread_id=t.thread_id,
+            kind=KIND_ACTION_INFERRED,
+            actor="agent",
+            data={"payload": {"kind": "improvised", "plan_summary": "..."}},
+        ))
+        data = render.build_render_data(t.thread_id)
+        assert data["actions"][0]["name"] == "(improvised)"
+
     def test_action_inferred_renders_suggestion(self, fresh_db):
         t = Thread()
         store.insert_thread(t)
@@ -128,6 +165,131 @@ class TestBuildRenderData:
         data = render.build_render_data(t.thread_id)
         assert data["actions"][0]["kind"] == "suggestion"
         assert "mom" in data["actions"][0]["plan_summary"]
+        assert data["actions"][0]["blocked_on"] == "relationship judgment"
+
+    def test_render_passes_through_confidence(self, fresh_db):
+        """REGRESSION (Wave A): confidence on intent/context/action
+        events should flow through to render data so the card can
+        display "agent is 92% sure" badges. Previously dropped."""
+        t = Thread()
+        store.insert_thread(t)
+        store.append_event(ThreadEvent(
+            thread_id=t.thread_id,
+            kind=KIND_INTENT_INFERRED,
+            actor="agent",
+            data={
+                "payload": {"intent": "schedule a call"},
+                "confidence": 0.92,
+            },
+        ))
+        store.append_event(ThreadEvent(
+            thread_id=t.thread_id,
+            kind=KIND_ACTION_INFERRED,
+            actor="agent",
+            data={
+                "payload": {"kind": "improvised", "name": "do x"},
+                "confidence": 0.7,
+            },
+        ))
+        data = render.build_render_data(t.thread_id)
+        assert data["intent"]["confidence"] == 0.92
+        assert data["actions"][0]["confidence"] == 0.7
+
+    def test_render_passes_through_action_risk_metadata(self, fresh_db):
+        """REGRESSION (Wave A): risk metadata declared on the action
+        proposal (irreversibility / regret_potential / risk_amplifier)
+        was previously dropped. Without it, the consent card can't
+        render an urgency pill, and the user has no risk signal."""
+        t = Thread()
+        store.insert_thread(t)
+        store.append_event(ThreadEvent(
+            thread_id=t.thread_id,
+            kind=KIND_ACTION_INFERRED,
+            actor="agent",
+            data={"payload": {
+                "kind": "improvised",
+                "name": "delete all email drafts",
+                "irreversibility": "high",
+                "regret_potential": "high",
+                "risk_amplifier": True,
+            }},
+        ))
+        data = render.build_render_data(t.thread_id)
+        action = data["actions"][0]
+        assert action["irreversibility"] == "high"
+        assert action["regret_potential"] == "high"
+        assert action["risk_amplifier"] is True
+        # Top-level risk_highlight derived from all actions.
+        assert data["risk_highlight"] == "high"
+
+    def test_risk_highlight_low_for_safe_actions(self, fresh_db):
+        t = Thread()
+        store.insert_thread(t)
+        store.append_event(ThreadEvent(
+            thread_id=t.thread_id,
+            kind=KIND_ACTION_INFERRED,
+            actor="agent",
+            data={"payload": {
+                "kind": "improvised",
+                "name": "log a note",
+                "irreversibility": "low",
+                "regret_potential": "low",
+                "risk_amplifier": False,
+            }},
+        ))
+        data = render.build_render_data(t.thread_id)
+        assert data["risk_highlight"] == "low"
+
+    def test_risk_highlight_none_when_no_risk_metadata(self, fresh_db):
+        """Pure suggestion or older threads without risk metadata
+        get None — frontend just doesn't show the pill."""
+        t = Thread()
+        store.insert_thread(t)
+        store.append_event(ThreadEvent(
+            thread_id=t.thread_id,
+            kind=KIND_ACTION_INFERRED,
+            actor="agent",
+            data={"payload": {"kind": "suggestion", "text": "..."}},
+        ))
+        data = render.build_render_data(t.thread_id)
+        assert data["risk_highlight"] is None
+
+    def test_auto_advance_trail_present(self, fresh_db):
+        """The auto_advance_decision events are surfaced on render
+        data so the consent card can show 'agent auto-advanced
+        through intent + context'."""
+        from work_buddy.threads.events import KIND_AUTO_ADVANCE_DECISION
+        t = Thread()
+        store.insert_thread(t)
+        store.append_event(ThreadEvent(
+            thread_id=t.thread_id,
+            kind=KIND_AUTO_ADVANCE_DECISION,
+            actor="fsm_engine",
+            data={
+                "target": "intent",
+                "advance": True,
+                "confidence": 0.92,
+                "chosen_state": "awaiting_inference",
+            },
+        ))
+        store.append_event(ThreadEvent(
+            thread_id=t.thread_id,
+            kind=KIND_AUTO_ADVANCE_DECISION,
+            actor="fsm_engine",
+            data={
+                "target": "context",
+                "advance": True,
+                "confidence": 0.85,
+                "chosen_state": "awaiting_inference",
+            },
+        ))
+        data = render.build_render_data(t.thread_id)
+        trail = data["auto_advance_trail"]
+        assert len(trail) == 2
+        assert trail[0]["target"] == "intent"
+        assert trail[0]["advance"] is True
+        assert trail[0]["confidence"] == 0.92
+        assert trail[1]["target"] == "context"
 
     def test_display_mode_actionable_for_wait_state(self, fresh_db):
         """Phase 4: render data carries display_mode so the frontend

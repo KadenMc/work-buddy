@@ -46,9 +46,36 @@ def _threads_v5_script() -> str:
         if (!segment) return;
         window._threadsState.path.push(segment);
         window._threadsState.inspect = null;  // clear inspector on nav
+        // Wave B: auto-dismiss any pending Resolution Surface toast
+        // for this thread when the user opens it. The user is now
+        // looking at the thread directly; the multi-surface toast
+        // is redundant noise. (Telegram/Obsidian remain — those
+        // surfaces don't see the user's dashboard navigation.)
+        try { _autoDismissResolutionToasts(segment); } catch(e) {}
         if (typeof _persistHash === "function") _persistHash();
         renderThreads();
     };
+
+    // Auto-dismiss any toast or workflow-tab chip for this
+    // thread. Used when the user navigates into a thread — the
+    // toast becomes redundant once they're looking at the card
+    // directly. (Telegram/Obsidian remain — those surfaces don't
+    // see the user's dashboard navigation.)
+    function _autoDismissResolutionToasts(threadId) {
+        if (!threadId) return;
+        const wantedViewId = "resolution-" + threadId;
+        // Use the canonical dismissAndRemoveTab if it exists —
+        // it cleans up the tab, panel, and the in-memory view
+        // tracker. Falls back to direct DOM removal otherwise.
+        if (typeof window.dismissAndRemoveTab === "function") {
+            try { window.dismissAndRemoveTab(wantedViewId); } catch(e) {}
+        } else {
+            document.querySelectorAll('[data-view-id="' + wantedViewId + '"]')
+                .forEach(el => el.remove());
+            fetch('/api/workflow-views/' + wantedViewId + '/dismiss',
+                  { method: 'POST' }).catch(() => {});
+        }
+    }
 
     window.threadsSetPath = function (parts) {
         window._threadsState.path = (parts || []).slice();
@@ -156,6 +183,58 @@ def _threads_v5_script() -> str:
         renderThreads();
     };
 
+    // Empty-state quick actions. Helps the user get from "list is
+    // empty" to "list has things to act on" without leaving the
+    // dashboard.
+
+    window.threadsClearFilters = function () {
+        window._topLevelFilters = {
+            q: '',
+            state: '',
+            subtype: '',
+            show_later: false,
+            include_mid_process: false,
+        };
+        window._topLevelCache = null;
+        renderThreads();
+    };
+
+    window.threadsToggleMidProcess = function () {
+        const f = window._topLevelFilters || {};
+        f.include_mid_process = !f.include_mid_process;
+        window._topLevelCache = null;
+        renderThreads();
+    };
+
+    // Run journal_v5_scan via the dashboard's MCP-style endpoint.
+    // Falls back to a friendly message on error so the empty-state
+    // CTA never throws an unhandled rejection.
+    window.threadsRunJournalScan = function () {
+        const btns = document.querySelectorAll('.threads-v5-empty-cta');
+        for (const b of btns) { b.disabled = true; }
+        // The dashboard exposes `/api/run/<capability>` as a
+        // gateway shim so we can trigger capabilities from the UI.
+        // If that route doesn't exist (the capability has to come
+        // from the MCP gateway), we surface a helpful message.
+        fetch('/api/run/journal_v5_scan', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({}),
+        })
+            .then(r => r.ok ? r.json() : Promise.reject(r.status))
+            .then(data => {
+                window._topLevelCache = null;
+                renderThreads();
+            })
+            .catch(err => {
+                alert('Could not run scan: ' + err
+                      + '. Run "journal_v5_scan" via the MCP gateway '
+                      + '(e.g. wb_run from an agent), or open Obsidian '
+                      + 'and ensure the work-buddy plugin is enabled.');
+                for (const b of btns) { b.disabled = false; }
+            });
+    };
+
     function renderTopLevel() {
         // Stage 4.8: pass filter chips + search query.
         if (window._topLevelCache !== null) {
@@ -255,12 +334,36 @@ def _threads_v5_script() -> str:
         if (!Array.isArray(threads) || threads.length === 0) {
             const f = window._topLevelFilters || {};
             const filtered = !!(f.q || f.state || f.subtype);
-            html += '<p class="threads-v5-empty-state">'
-                  + (filtered
-                        ? 'No Threads match the current filters.'
-                        : 'No active Threads. As source scanners (journal, '
-                          + 'Chrome, email) run, they\'ll surface here.')
-                  + '</p>';
+            if (filtered) {
+                html += '<p class="threads-v5-empty-state">'
+                      + 'No Threads match the current filters. '
+                      + '<a href="#" onclick="threadsClearFilters();return false;">Clear filters</a>'
+                      + '</p>';
+            } else {
+                // Calls-to-action: bridge between "list is empty"
+                // and "what should I do." Surfaces the two real
+                // source pipelines so the user can produce some
+                // threads without leaving the dashboard.
+                html += '<div class="threads-v5-empty-state">';
+                html += '<p>No active Threads. As source scanners run, '
+                      + 'they\'ll surface here.</p>';
+                html += '<div class="threads-v5-empty-cta-row">';
+                html += '<button class="threads-v5-empty-cta" '
+                      + 'onclick="threadsRunJournalScan()" '
+                      + 'title="Segment today\'s journal Running Notes '
+                      + 'into v5 Threads via the journal_v5_scan capability">'
+                      + 'Scan today\'s journal'
+                      + '</button>';
+                html += '<button class="threads-v5-empty-cta" '
+                      + 'onclick="threadsToggleMidProcess()" '
+                      + 'title="Show in-flight states (inferring, executing, '
+                      + 'monitoring) — useful for auditing what the agent '
+                      + 'is doing right now">'
+                      + 'Show mid-process'
+                      + '</button>';
+                html += '</div>';
+                html += '</div>';
+            }
             html += '</div>';
             return html;
         }
@@ -630,6 +733,39 @@ def _threads_v5_styles() -> str:
     color: var(--text-muted, #888);
     font-style: italic;
     margin-top: 1.5em;
+}
+
+.threads-v5-empty-state a {
+    color: var(--accent, #4a7fc1);
+    text-decoration: none;
+}
+.threads-v5-empty-state a:hover { text-decoration: underline; }
+
+.threads-v5-empty-cta-row {
+    display: flex;
+    gap: 12px;
+    margin-top: 18px;
+    flex-wrap: wrap;
+}
+
+.threads-v5-empty-cta {
+    background: var(--bg-secondary, #1a1a1a);
+    color: var(--text, #ddd);
+    border: 1px solid var(--border, #333);
+    border-radius: 6px;
+    padding: 10px 16px;
+    font-size: 13px;
+    font-style: normal;
+    cursor: pointer;
+    transition: border-color 80ms, background 80ms;
+}
+.threads-v5-empty-cta:hover:not(:disabled) {
+    border-color: var(--accent, #4a7fc1);
+    background: var(--bg, #0f0f0f);
+}
+.threads-v5-empty-cta:disabled {
+    opacity: 0.6;
+    cursor: wait;
 }
 
 .threads-v5-loading {

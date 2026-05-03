@@ -46,9 +46,11 @@ def build_render_data(thread_id: str) -> Optional[dict[str, Any]]:
     latest_action = _latest(events, KIND_ACTION_INFERRED)
 
     intent_text = ""
+    intent_confidence: Optional[float] = None
     if latest_intent is not None:
         payload = latest_intent.data.get("payload") or {}
         intent_text = payload.get("intent") or ""
+        intent_confidence = latest_intent.data.get("confidence")
     if not intent_text:
         # Fallback to inciting summary
         intent_text = (
@@ -56,6 +58,15 @@ def build_render_data(thread_id: str) -> Optional[dict[str, Any]]:
             or inciting.get("summary")
             or ""
         )
+
+    # Context confidence — surfaced so the user can see how
+    # certain the agent was. (When confidence < the policy's
+    # floor, we wouldn't have auto-advanced past this state, so
+    # the value is informative for "why am I being asked to
+    # confirm this?")
+    context_confidence: Optional[float] = None
+    if latest_context is not None:
+        context_confidence = latest_context.data.get("confidence")
 
     # Context items: Thread.context_items first; then any
     # context_inferred events that added to the list. For 4.3 we
@@ -71,44 +82,63 @@ def build_render_data(thread_id: str) -> Optional[dict[str, Any]]:
             "payload": ci.payload,
         })
 
-    # Actions: from the latest action_inferred event's payload
+    # Actions: from the latest action_inferred event's payload.
+    # Confidence + risk metadata are read off the event so the
+    # consent card can render the right urgency pill + risk
+    # disclosure without re-querying the autonomy_branch resolver.
     actions = []
     if latest_action is not None:
         payload = latest_action.data.get("payload") or {}
+        action_confidence = latest_action.data.get("confidence")
+        # Risk metadata: the agent declares irreversibility /
+        # regret_potential / risk_amplifier on the proposal payload
+        # (improvised) OR they come from the Standard Action template's
+        # intrinsic_amplifiers (the template-level mapping). We
+        # surface BOTH on the render dict so the frontend can show
+        # whichever applies.
+        risk = {
+            "irreversibility": payload.get("irreversibility"),
+            "regret_potential": payload.get("regret_potential"),
+            "risk_amplifier": payload.get("risk_amplifier", False),
+        }
+        intrinsic = payload.get("intrinsic_amplifiers") or {}
+
         # Action proposals can carry one or many actions. The v5
         # convention from DESIGN.md §10 is one ActionProposal at a
         # time; we render whatever's there.
         kind = payload.get("kind", "standard")
-        if kind == "standard":
-            actions.append(_attach_context_status({
-                "id": f"act-{latest_action.id}",
-                "name": payload.get("name", "(unnamed)"),
-                "kind": "standard",
-                "parameters": payload.get("parameters") or {},
-                "plan_summary": _summarise_action(payload),
-                "required_contexts": payload.get("required_contexts") or [],
-                "intrinsic_amplifiers": payload.get("intrinsic_amplifiers") or {},
-            }))
+        # Action display name: agent-supplied name takes precedence
+        # for ALL kinds. Pre-Wave-A bug: improvised/suggestion paths
+        # hardcoded the kind label as the name, dropping the agent's
+        # carefully-chosen name. Now we use the name and let the
+        # frontend show the kind as a separate badge.
+        action_name = payload.get("name") or _kind_fallback_name(kind)
+        # plan_summary differs slightly per kind: standard uses the
+        # generic summariser (which prefers parameters.title etc.),
+        # suggestion lives in payload['text'], improvised has its
+        # own plan_summary.
+        if kind == "suggestion":
+            plan_summary = payload.get("text") or payload.get("plan_summary") or ""
         elif kind == "improvised":
-            actions.append(_attach_context_status({
-                "id": f"act-{latest_action.id}",
-                "name": "(improvised)",
-                "kind": "improvised",
-                "parameters": {},
-                "plan_summary": payload.get("plan_summary") or "",
-                "required_contexts": payload.get("required_contexts") or [],
-                "intrinsic_amplifiers": payload.get("intrinsic_amplifiers") or {},
-            }))
-        elif kind == "suggestion":
-            actions.append(_attach_context_status({
-                "id": f"act-{latest_action.id}",
-                "name": "(suggestion)",
-                "kind": "suggestion",
-                "parameters": {},
-                "plan_summary": payload.get("text") or "",
-                "required_contexts": [],
-                "intrinsic_amplifiers": {},
-            }))
+            plan_summary = payload.get("plan_summary") or ""
+        else:
+            plan_summary = _summarise_action(payload)
+        actions.append(_attach_context_status({
+            "id": f"act-{latest_action.id}",
+            "name": action_name,
+            "kind": kind,
+            "parameters": payload.get("parameters") or {},
+            "plan_summary": plan_summary,
+            "rationale": payload.get("rationale") or "",
+            "blocked_on": payload.get("blocked_on") or "",
+            "required_contexts": payload.get("required_contexts") or [],
+            "intrinsic_amplifiers": intrinsic,
+            "irreversibility": risk["irreversibility"],
+            "regret_potential": risk["regret_potential"],
+            "risk_amplifier": bool(risk["risk_amplifier"]),
+            "confidence": action_confidence,
+            "model_used": latest_action.data.get("model_used"),
+        }))
 
     # Urgency — derive from inciting summary or default to defer
     urgency = inciting.get("urgency", "defer")
@@ -151,6 +181,25 @@ def build_render_data(thread_id: str) -> Optional[dict[str, Any]]:
     else:
         display_mode = "mid_process"
 
+    # Auto-advance trail — the audit events that record the
+    # autonomy resolver's decisions. Surfaced as a small
+    # breadcrumb on the consent card so the user can see "the
+    # agent powered through these intent + context decisions on
+    # its own" at a glance.
+    auto_advance_trail = _auto_advance_trail(events)
+
+    # Latest activity timestamp — the timestamp of the most-recent
+    # event. Used by the frontend to render relative time
+    # ("just now", "5m ago"). Falls back to thread.updated_at.
+    latest_activity = events[-1].timestamp if events else None
+    if latest_activity is None:
+        latest_activity = getattr(thread, "updated_at", None)
+
+    # Risk highlight — true if the action's risk metadata exceeds
+    # a "review-worthy" bar. Used by the consent card to apply a
+    # color-coded urgency pill.
+    risk_highlight = _risk_highlight(actions)
+
     return {
         "thread_id": thread.thread_id,
         "parent_id": thread.parent_id,
@@ -160,9 +209,19 @@ def build_render_data(thread_id: str) -> Optional[dict[str, Any]]:
         "fsm_state": thread.fsm_state.value,
         "card_kind": card_kind,
         "display_mode": display_mode,
-        "intent": {"text": intent_text, "editable": True},
+        "intent": {
+            "text": intent_text,
+            "editable": True,
+            "confidence": intent_confidence,
+        },
+        "context": {
+            "confidence": context_confidence,
+        },
         "context_items": context_items,
         "actions": actions,
+        "risk_highlight": risk_highlight,
+        "auto_advance_trail": auto_advance_trail,
+        "latest_activity": latest_activity,
         "namespace_tags": list(inciting.get("namespace_tags") or []),
         "can_clean_up": cleanup.can_clean_up(thread),
         "sub_thread_count": sub_count,
@@ -173,6 +232,80 @@ def build_render_data(thread_id: str) -> Optional[dict[str, Any]]:
         "review_context": review_context,
         "cleanup_failure": cleanup_failure,
     }
+
+
+def _kind_fallback_name(kind: str) -> str:
+    """Used when the agent omitted ``name`` on an action proposal.
+
+    Pre-Wave-A behavior was to use this as the canonical name,
+    which clobbered agent-supplied names. Now it's a true fallback:
+    only used when ``payload.get('name')`` is missing or empty.
+    """
+    return {
+        "standard": "(unnamed standard action)",
+        "improvised": "(improvised)",
+        "suggestion": "(suggestion)",
+    }.get(kind, "(unknown)")
+
+
+def _auto_advance_trail(events) -> list[dict[str, Any]]:
+    """Pull the autonomy-resolver decisions in chronological order.
+
+    Returns a compact list shape:
+
+        [{"target": "intent", "advance": True, "confidence": 0.92},
+         {"target": "context", "advance": True, "confidence": 0.85}]
+
+    Empty when no auto_advance_decision events have landed (e.g.
+    pre-autonomy threads or threads under hands_off policy).
+    """
+    from work_buddy.threads.events import KIND_AUTO_ADVANCE_DECISION
+    trail = []
+    for e in events:
+        if e.kind != KIND_AUTO_ADVANCE_DECISION:
+            continue
+        d = e.data or {}
+        trail.append({
+            "target": d.get("target"),
+            "advance": bool(d.get("advance")),
+            "confidence": d.get("confidence"),
+            "chosen_state": d.get("chosen_state"),
+        })
+    return trail
+
+
+_RISK_RANK = {"low": 0, "medium": 1, "high": 2, None: -1}
+
+
+def _risk_highlight(actions: list[dict[str, Any]]) -> Optional[str]:
+    """Decide what risk pill to show on the consent card.
+
+    Returns one of ``None``, ``'low'``, ``'medium'``, ``'high'``.
+
+    The highlight is derived from the action's declared risk
+    metadata + the intrinsic amplifiers from the Standard Action
+    registry (when the action is standard). If any of
+    irreversibility / regret_potential is high → high. If either
+    is medium OR risk_amplifier is True → medium. If both low → low.
+    None when no risk metadata is available (e.g. pure suggestion).
+    """
+    if not actions:
+        return None
+    levels: list[int] = []
+    for a in actions:
+        irrev = (a.get("irreversibility") or
+                 (a.get("intrinsic_amplifiers") or {}).get("irreversibility"))
+        regret = (a.get("regret_potential") or
+                  (a.get("intrinsic_amplifiers") or {}).get("regret_potential"))
+        amp = bool(a.get("risk_amplifier"))
+        rank = max(_RISK_RANK.get(irrev, -1), _RISK_RANK.get(regret, -1))
+        if amp:
+            rank = max(rank, _RISK_RANK["medium"])
+        levels.append(rank)
+    top = max(levels) if levels else -1
+    if top < 0:
+        return None
+    return {0: "low", 1: "medium", 2: "high"}.get(top)
 
 
 def list_render_data(

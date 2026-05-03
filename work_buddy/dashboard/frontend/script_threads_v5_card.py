@@ -150,14 +150,31 @@ def _threads_v5_card_script() -> str:
     }
 
     function _renderRiskBanner(thread) {
-        // Aggregate intrinsic_amplifiers across actions
+        // Aggregate risk indicators across actions. Reads BOTH the
+        // top-level fields (irreversibility, regret_potential,
+        // risk_amplifier — set by improvised actions) AND the
+        // intrinsic_amplifiers map (Standard Action template-level).
+        // Either source qualifies as a "high impact" signal.
         let riskBits = [];
+        const seen = new Set();
         for (const a of (thread.actions || [])) {
+            const candidates = [];
+            if (a.irreversibility === "high")
+                candidates.push("irreversibility=high");
+            if (a.regret_potential === "high")
+                candidates.push("regret_potential=high");
+            if (a.risk_amplifier === true)
+                candidates.push("risk_amplifier");
             const amp = a.intrinsic_amplifiers || {};
             for (const dim of Object.keys(amp)) {
                 const val = amp[dim];
-                if (val === "high" || val === "irreversible") {
-                    riskBits.push(dim + "=" + val);
+                if (val === "high" || val === "irreversible")
+                    candidates.push(dim + "=" + val);
+            }
+            for (const c of candidates) {
+                if (!seen.has(c)) {
+                    seen.add(c);
+                    riskBits.push(c);
                 }
             }
         }
@@ -177,6 +194,26 @@ def _threads_v5_card_script() -> str:
     function _renderHeader(thread) {
         const urgent = thread.urgency === "surface_now";
         const stateLabel = (thread.fsm_state || "").replace(/_/g, " ");
+        // Risk highlight pill — derived from action risk metadata
+        // (irreversibility / regret_potential / risk_amplifier).
+        // The consent card uses this to draw attention before the
+        // user clicks Accept on something that mutates the world.
+        const risk = thread.risk_highlight;
+        let riskPill = '';
+        if (risk === "high") {
+            riskPill = '<span class="threads-v5-risk-pill high">HIGH RISK</span>';
+        } else if (risk === "medium") {
+            riskPill = '<span class="threads-v5-risk-pill medium">MEDIUM RISK</span>';
+        } else if (risk === "low") {
+            riskPill = '<span class="threads-v5-risk-pill low">LOW RISK</span>';
+        }
+        // Relative timestamp — "5m ago" / "just now" / "2h ago".
+        // Derived from latest_activity (most recent event ts).
+        const ts = thread.latest_activity
+            ? '<span class="threads-v5-timestamp" '
+              + 'title="' + _esc(thread.latest_activity) + '">'
+              + _relativeTime(thread.latest_activity) + '</span>'
+            : '';
         return (
             '<div class="threads-v5-card-header">'
             + '<div class="threads-v5-card-title">'
@@ -187,7 +224,58 @@ def _threads_v5_card_script() -> str:
             +   (urgent
                     ? '<span class="threads-v5-urgency-pill high">SURFACE NOW</span>'
                     : '')
+            +   riskPill
+            +   ts
             + '</div>'
+            + _renderAutoAdvanceBreadcrumb(thread)
+            + '</div>'
+        );
+    }
+
+    // Relative-time helper. ISO timestamp → "just now" / "5m ago" /
+    // "2h ago" / "3d ago". Intentionally simple — fine for the
+    // single-user, low-volume context.
+    function _relativeTime(iso) {
+        if (!iso) return '';
+        try {
+            const t = new Date(iso).getTime();
+            if (Number.isNaN(t)) return '';
+            const delta = Math.max(0, (Date.now() - t) / 1000);
+            if (delta < 30) return 'just now';
+            if (delta < 60) return Math.floor(delta) + 's ago';
+            if (delta < 3600) return Math.floor(delta / 60) + 'm ago';
+            if (delta < 86400) return Math.floor(delta / 3600) + 'h ago';
+            return Math.floor(delta / 86400) + 'd ago';
+        } catch (e) { return ''; }
+    }
+
+    // Auto-advance breadcrumb — surfaces the autonomy resolver's
+    // recent decisions so the user can see what the agent decided
+    // on its own. "Agent auto-advanced through Intent (92%) +
+    // Context (85%) → here." Helps build trust and lets the user
+    // verify the agent's reasoning at a glance.
+    function _renderAutoAdvanceBreadcrumb(thread) {
+        const trail = thread.auto_advance_trail || [];
+        // Only show advances (not the surfaced-not-advanced
+        // decisions), since the surfaced ones are why the user is
+        // looking at this card in the first place.
+        const advances = trail.filter(d => d.advance);
+        if (advances.length === 0) return '';
+        const parts = advances.map(d => {
+            const tgt = (d.target || '').charAt(0).toUpperCase()
+                       + (d.target || '').slice(1);
+            const conf = d.confidence != null
+                ? ' (' + Math.round(d.confidence * 100) + '%)'
+                : '';
+            return _esc(tgt + conf);
+        });
+        return (
+            '<div class="threads-v5-auto-advance" '
+            +   'title="The agent auto-advanced past these stages '
+            +     'because confidence was sufficient and the policy '
+            +     'allowed it.">'
+            + _icon("zap") + ' Agent auto-advanced: '
+            + parts.join(' &middot; ')
             + '</div>'
         );
     }
@@ -198,9 +286,12 @@ def _threads_v5_card_script() -> str:
         const editedText = s.edited.intent !== undefined
             ? s.edited.intent
             : text;
+        const conf = thread.intent && thread.intent.confidence;
         return (
             '<div class="threads-v5-section">'
-            + '<div class="threads-v5-section-label">Intent</div>'
+            + '<div class="threads-v5-section-label">Intent'
+            +   _confidenceBadge(conf)
+            + '</div>'
             + '<div class="threads-v5-intent">'
             +   _esc(editedText)
             + '</div>'
@@ -212,18 +303,38 @@ def _threads_v5_card_script() -> str:
         );
     }
 
+    // Confidence badge — small inline chip showing the agent's
+    // self-reported confidence. Color-coded: green ≥0.8, yellow
+    // 0.5-0.8, red <0.5. Helps the user calibrate "should I trust
+    // this guess?" at a glance.
+    function _confidenceBadge(conf) {
+        if (conf == null) return '';
+        const pct = Math.round(conf * 100);
+        let cls = "low";
+        if (conf >= 0.8) cls = "high";
+        else if (conf >= 0.5) cls = "medium";
+        return ' <span class="threads-v5-confidence ' + cls + '" '
+             + 'title="Agent self-reported confidence">'
+             + pct + '%</span>';
+    }
+
     function _renderContextSection(thread, s) {
         const items = thread.context_items || [];
+        const ctxConf = thread.context && thread.context.confidence;
         if (items.length === 0) {
             return (
                 '<div class="threads-v5-section">'
-                + '<div class="threads-v5-section-label">Context (none inferred)</div>'
+                + '<div class="threads-v5-section-label">Context (none inferred)'
+                +   _confidenceBadge(ctxConf)
+                + '</div>'
                 + '</div>'
             );
         }
         let html = '<div class="threads-v5-section">';
         html += '<div class="threads-v5-section-label">Context ('
-              + items.length + ')</div>';
+              + items.length + ')'
+              + _confidenceBadge(ctxConf)
+              + '</div>';
         html += '<ul class="threads-v5-list">';
         for (const ci of items) {
             const flagged = s.flagged.has(ci.id);
@@ -266,12 +377,56 @@ def _threads_v5_card_script() -> str:
             html += '<li class="threads-v5-item'
                   + (flagged ? ' threads-v5-flagged' : '')
                   + (blocked ? ' threads-v5-ctx-blocked' : '') + '">';
+            // Action label: kind icon + name + small kind chip
+            // (so the user sees both "Research..." and that it's
+            // an improvised plan, not a Standard Action).
+            const kindChip = a.kind
+                ? ' <span class="threads-v5-kind-chip ' + _esc(a.kind) + '">'
+                  + _esc(a.kind) + '</span>'
+                : '';
             html += '<div class="threads-v5-item-label">'
-                  + _kindIcon(a.kind) + ' ' + _esc(a.name || a.id) + '</div>';
+                  + _kindIcon(a.kind) + ' ' + _esc(a.name || a.id)
+                  + kindChip
+                  + _confidenceBadge(a.confidence)
+                  + '</div>';
             const summary = a.plan_summary || _summariseParams(a.parameters);
             if (summary) {
                 html += '<div class="threads-v5-item-summary">'
                       + _esc(summary) + '</div>';
+            }
+            // Risk metadata disclosure — declared by the agent for
+            // improvised actions (and inherited from the Standard
+            // Action template's intrinsic_amplifiers when standard).
+            // Render inline so the user has the full risk picture
+            // before clicking Accept.
+            const riskBits = [];
+            if (a.irreversibility) riskBits.push('irreversibility=' + a.irreversibility);
+            if (a.regret_potential) riskBits.push('regret=' + a.regret_potential);
+            if (a.risk_amplifier === true) riskBits.push('risk-amplifier');
+            if (riskBits.length > 0) {
+                const cls = (a.irreversibility === "high"
+                             || a.regret_potential === "high"
+                             || a.risk_amplifier === true)
+                    ? 'threads-v5-risk-row threads-v5-risk-high'
+                    : 'threads-v5-risk-row';
+                html += '<div class="' + cls + '" '
+                      + 'title="Risk metadata declared by the agent">'
+                      + _icon("alert-circle") + ' '
+                      + _esc(riskBits.join(' · '))
+                      + '</div>';
+            }
+            // Show the agent's rationale inline if present (helpful
+            // for improvised actions the user might want to redirect).
+            if (a.rationale) {
+                html += '<div class="threads-v5-item-rationale">'
+                      + '<em>Why:</em> ' + _esc(a.rationale)
+                      + '</div>';
+            }
+            // Suggestion-only: show what the agent is blocked on.
+            if (a.kind === "suggestion" && a.blocked_on) {
+                html += '<div class="threads-v5-item-blocked">'
+                      + '<em>Blocked on:</em> ' + _esc(a.blocked_on)
+                      + '</div>';
             }
             // Action-context status indicator (Stage 4.11). Each
             // required context shows availability inline with a
@@ -383,17 +538,48 @@ def _threads_v5_card_script() -> str:
                 + '</div>'
             );
         }
-        // Context items: simple inspector for now (modal richness
-        // can land in a follow-up).
+        // Context-item inspector — pretty-printed fields with
+        // human labels rather than raw JSON. The payload is shown
+        // as a key/value table; long values truncated with click-
+        // to-expand. Much friendlier than the prior JSON dump.
         return (
             '<div class="threads-v5-right-editor">'
-            + '<h4>' + _esc((target.kind || "element").replace(/_/g, " "))
-            +   ' &middot; <code>' + _esc(focused) + '</code></h4>'
-            + '<pre class="threads-v5-json-view">'
-            +   _esc(JSON.stringify(target, null, 2))
-            + '</pre>'
+            + '<h4>Context item &middot; <code>' + _esc(focused) + '</code></h4>'
+            + _renderContextItemInspector(target)
             + '</div>'
         );
+    }
+
+    function _renderContextItemInspector(item) {
+        let html = '<table class="threads-v5-ci-table">';
+        const rows = [
+            ["Label", item.label],
+            ["Source", item.source],
+            ["Type", item.type],
+        ];
+        for (const [k, v] of rows) {
+            if (v === undefined || v === null || v === "") continue;
+            html += '<tr><th>' + _esc(k) + '</th>'
+                  + '<td>' + _esc(v) + '</td></tr>';
+        }
+        const payload = item.payload || {};
+        const payloadKeys = Object.keys(payload);
+        if (payloadKeys.length > 0) {
+            html += '<tr><th colspan="2" class="threads-v5-ci-payload-header">'
+                  + 'Payload</th></tr>';
+            for (const k of payloadKeys) {
+                let v = payload[k];
+                if (typeof v === "object") {
+                    v = JSON.stringify(v);
+                }
+                let s = String(v);
+                if (s.length > 200) s = s.slice(0, 200) + "…";
+                html += '<tr><th>' + _esc(k) + '</th>'
+                      + '<td><code>' + _esc(s) + '</code></td></tr>';
+            }
+        }
+        html += '</table>';
+        return html;
     }
 
     function _renderFooter(thread, hasFlags) {
@@ -425,7 +611,7 @@ def _threads_v5_card_script() -> str:
             + '<div class="threads-v5-footer-primary">'
             +   '<button class="threads-v5-btn threads-v5-btn-secondary" '
             +     'onclick="threadCommitAction(\'' + tid + '\', \'redirect\')">'
-            +     _icon("corner-up-left") + ' Re-direct'
+            +     _icon("corner-up-left") + ' Redirect'
             +   '</button>'
             +   '<button class="threads-v5-btn threads-v5-btn-primary" '
             +     (acceptDisabled ? 'disabled ' : '')
@@ -478,7 +664,7 @@ def _threads_v5_card_script() -> str:
             html += '</ul></div>';
         }
         html += '</div>';
-        // Footer: Trash / Broom / Later / (Re-direct skipped — clarif IS the redirect target) / Accept
+        // Footer: Trash / Broom / Later / (Redirect skipped — clarif IS the redirect target) / Accept
         html += _renderClarificationFooter(thread);
         html += '</div>';
         return html;
@@ -554,7 +740,7 @@ def _threads_v5_card_script() -> str:
         }
         html += '</div>';
         // UX.md §4.4.3: Review cards have NO Dismiss (action's done).
-        // Footer: Later / Re-direct / Mark done
+        // Footer: Later / Redirect / Mark done
         html += '<div class="threads-v5-card-footer">'
               + '<div class="threads-v5-footer-secondary">'
               +   '<button class="threads-v5-btn-icon" '
@@ -567,7 +753,7 @@ def _threads_v5_card_script() -> str:
               + '<div class="threads-v5-footer-primary">'
               +   '<button class="threads-v5-btn threads-v5-btn-secondary" '
               +     'onclick="threadCommitAction(\'' + tid + '\', \'redirect\')">'
-              +     _icon("corner-up-left") + ' Re-direct'
+              +     _icon("corner-up-left") + ' Redirect'
               +   '</button>'
               +   '<button class="threads-v5-btn threads-v5-btn-primary" '
               +     'onclick="threadCommitAction(\'' + tid + '\', \'accept\')">'
@@ -611,7 +797,7 @@ def _threads_v5_card_script() -> str:
               + 'oninput="threadRedirectInput(\'' + tid + '\', this.value)">'
               + _esc(stored) + '</textarea>';
         html += '</div>';
-        // Footer: Trash / Broom / Later / Re-direct (= submit feedback) / Skip (= accept)
+        // Footer: Trash / Broom / Later / Redirect (= submit feedback) / Skip (= accept)
         const cleanupShown = !!thread.can_clean_up;
         html += '<div class="threads-v5-card-footer">'
               + '<div class="threads-v5-footer-secondary">'
@@ -1121,6 +1307,169 @@ def _threads_v5_card_styles() -> str:
     padding: 10px 18px;
     border-bottom: 1px solid var(--border, #333);
     font-size: 13px;
+}
+
+/* Wave A/B (2026-05-03) — Risk pill on the card header.
+   Color-codes the consent card so the user can see at a glance
+   whether they're about to approve something with real risk. */
+.threads-v5-risk-pill {
+    display: inline-block;
+    margin-left: 8px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+}
+.threads-v5-risk-pill.high {
+    background: #4a2424;
+    color: #ff8888;
+    border: 1px solid #ff5555;
+}
+.threads-v5-risk-pill.medium {
+    background: #4a3624;
+    color: #ffbb88;
+    border: 1px solid #ff9955;
+}
+.threads-v5-risk-pill.low {
+    background: #244a2c;
+    color: #88dd88;
+    border: 1px solid #66cc66;
+}
+
+/* Confidence badge — inline chip showing agent self-reported
+   confidence on intent / context / action sections. Helps the
+   user calibrate trust at a glance. */
+.threads-v5-confidence {
+    display: inline-block;
+    padding: 1px 6px;
+    margin-left: 6px;
+    border-radius: 8px;
+    font-size: 10px;
+    font-weight: 500;
+    vertical-align: 1px;
+}
+.threads-v5-confidence.high {
+    background: rgba(102, 204, 102, 0.15);
+    color: #88dd88;
+}
+.threads-v5-confidence.medium {
+    background: rgba(255, 153, 85, 0.15);
+    color: #ffbb88;
+}
+.threads-v5-confidence.low {
+    background: rgba(255, 85, 85, 0.15);
+    color: #ff8888;
+}
+
+/* Auto-advance breadcrumb — shows the agent's recent autonomy
+   decisions (intent + context auto-advanced under PLAN_THEN_REVIEW). */
+.threads-v5-auto-advance {
+    margin-top: 8px;
+    padding: 6px 12px;
+    background: rgba(74, 127, 193, 0.08);
+    border-left: 2px solid var(--accent, #4a7fc1);
+    color: var(--text-muted, #aaa);
+    font-size: 11px;
+    font-style: italic;
+    border-radius: 0 4px 4px 0;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+/* Relative timestamp in card header */
+.threads-v5-timestamp {
+    margin-left: auto;
+    font-size: 11px;
+    color: var(--text-muted, #888);
+    font-weight: normal;
+    cursor: help;
+}
+
+/* Action kind chip — small badge next to the action name showing
+   "standard" | "improvised" | "suggestion". */
+.threads-v5-kind-chip {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 1px 7px;
+    border-radius: 8px;
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 0.4px;
+    text-transform: uppercase;
+    vertical-align: 1px;
+    background: rgba(170, 170, 170, 0.12);
+    color: var(--text-muted, #aaa);
+}
+.threads-v5-kind-chip.standard {
+    background: rgba(74, 127, 193, 0.15);
+    color: #88bbee;
+}
+.threads-v5-kind-chip.improvised {
+    background: rgba(255, 153, 85, 0.15);
+    color: #ffaa66;
+}
+.threads-v5-kind-chip.suggestion {
+    background: rgba(170, 170, 170, 0.12);
+    color: var(--text-muted, #aaa);
+}
+
+/* Risk-disclosure row inside an action item.
+   Surfaces irreversibility / regret_potential / risk_amplifier. */
+.threads-v5-risk-row {
+    margin-top: 4px;
+    font-size: 11px;
+    color: var(--text-muted, #888);
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+.threads-v5-risk-row.threads-v5-risk-high {
+    color: #ff8888;
+}
+
+/* Rationale + blocked-on inline text */
+.threads-v5-item-rationale,
+.threads-v5-item-blocked {
+    margin-top: 4px;
+    font-size: 12px;
+    color: var(--text-muted, #aaa);
+    line-height: 1.4;
+}
+
+/* Context-item inspector table in the right pane. */
+.threads-v5-ci-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+.threads-v5-ci-table th {
+    text-align: left;
+    color: var(--text-muted, #888);
+    font-weight: 500;
+    padding: 4px 8px 4px 0;
+    width: 30%;
+    vertical-align: top;
+}
+.threads-v5-ci-table td {
+    padding: 4px 0;
+    vertical-align: top;
+    word-break: break-word;
+}
+.threads-v5-ci-payload-header {
+    padding-top: 12px !important;
+    color: var(--text, #ddd) !important;
+    font-weight: 600 !important;
+    border-top: 1px solid var(--border, #333);
+}
+.threads-v5-ci-table code {
+    font-family: ui-monospace, monospace;
+    font-size: 12px;
+    background: var(--bg, #1a1a1a);
+    padding: 1px 4px;
+    border-radius: 3px;
 }
 
 /* Clarification card */

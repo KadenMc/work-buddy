@@ -2537,6 +2537,68 @@ def api_v5_threads_list():
         return jsonify({"threads": [], "error": str(exc)}), 500
 
 
+# A small allowlist of v5 dashboard-triggerable capabilities. We
+# intentionally don't expose the full registry — the user's
+# workflow is "MCP from agent for power", "dashboard buttons for
+# common nudges." Adding a capability here is a deliberate UX
+# decision (each appears as a button somewhere in the v5 UI).
+_DASHBOARD_RUNNABLE_CAPABILITIES: dict[str, dict] = {
+    "journal_v5_scan": {
+        "description": (
+            "Segment today's journal Running Notes into v5 Threads. "
+            "Wired to the empty-state CTA on the Threads tab."
+        ),
+        "mutates_state": True,
+    },
+}
+
+
+@app.post("/api/run/<capability_name>")
+def api_v5_run_capability(capability_name: str):
+    """Bridge endpoint that lets the dashboard trigger a small
+    allowlist of v5 capabilities directly.
+
+    The MCP gateway is the canonical way to invoke capabilities
+    from agents; this endpoint lets the *user* trigger a known
+    set of "common nudge" capabilities from dashboard buttons
+    (e.g. the empty-state "Scan today's journal" CTA).
+
+    Why an allowlist: we don't want a generic "call any capability"
+    surface from the unauthenticated dashboard. Each entry is a
+    deliberate UX choice.
+    """
+    blocked = _reject_read_only()
+    if blocked:
+        return blocked
+    if capability_name not in _DASHBOARD_RUNNABLE_CAPABILITIES:
+        return jsonify({
+            "error": f"Capability {capability_name!r} is not exposed to the "
+                     "dashboard. Use the MCP gateway (wb_run) for full "
+                     "registry access, or add it to "
+                     "_DASHBOARD_RUNNABLE_CAPABILITIES if it should be a "
+                     "user-triggerable button.",
+        }), 403
+    body = request.get_json(silent=True) or {}
+    try:
+        from work_buddy.mcp_server.registry import get_registry
+        reg = get_registry()
+        cap = reg.get(capability_name)
+        if cap is None:
+            return jsonify({
+                "error": f"Capability {capability_name!r} not in registry "
+                         "(probably a dependency probe is failing). Try "
+                         "the MCP gateway for diagnostics.",
+            }), 503
+        # Capabilities are callables in the registry — invoke
+        # directly. The argument shape mirrors wb_run's params dict.
+        result = cap.callable(**body)
+        return jsonify({"ok": True, "result": result})
+    except Exception as exc:
+        logger.exception("dashboard /api/run/%s failed: %s",
+                         capability_name, exc)
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
 @app.get("/api/threads/<thread_id>")
 def api_v5_thread_get(thread_id: str):
     """Fetch one v5 Thread + its render data."""
