@@ -719,3 +719,113 @@ def test_build_threads_from_range_reconstructs_raw_text() -> None:
     assert threads[0]["raw_text"] == "- alpha\n- beta\n- gamma"
     assert threads[0]["line_count"] == 3
     assert threads[1]["raw_text"] == "- delta\n- epsilon"
+
+
+# ---------------------------------------------------------------------------
+# merge_orphaned_continuations — safety-net for indented-bullet runs that
+# the LLM occasionally splits from their parent topic line.
+# ---------------------------------------------------------------------------
+
+
+def test_merge_orphaned_continuations_pulls_indented_bullets_into_parent():
+    """User-feedback (2026-05-03): a `#wb/TODO` line followed by indented
+    bullet evidence was being split into separate threads. The post-process
+    pass now folds the bullets back into the TODO's group."""
+    from work_buddy.journal_backlog.segment import merge_orphaned_continuations
+
+    originals = [
+        "- #wb/TODO work-buddy Zotero plugin",         # line 1, indent 0
+        "  - [ChatGPT chat](url1)",                    # line 2, indent 2
+        "  - [zotero-mcp](url2)",                      # line 3, indent 2
+        "  - [zotero-mcp fork](url3)",                 # line 4, indent 2
+        "- #wb/TODO unrelated topic",                  # line 5, indent 0
+    ]
+    # Bug: LLM put the TODO in one group and the bullets in another.
+    bad = [[1], [2, 3, 4], [5]]
+    fixed = merge_orphaned_continuations(bad, originals)
+    # After: bullets land with their parent TODO; line 5 stays alone.
+    assert any(set(g) == {1, 2, 3, 4} for g in fixed), fixed
+    assert [5] in fixed
+
+
+def test_merge_orphaned_continuations_leaves_well_segmented_groups_alone():
+    """If the LLM already kept indented bullets with their parent, the
+    merge pass should be a no-op."""
+    from work_buddy.journal_backlog.segment import merge_orphaned_continuations
+
+    originals = [
+        "- #wb/TODO topic A",
+        "  - evidence A1",
+        "- #wb/TODO topic B",
+        "  - evidence B1",
+    ]
+    good = [[1, 2], [3, 4]]
+    assert merge_orphaned_continuations(good, originals) == [[1, 2], [3, 4]]
+
+
+def test_merge_orphaned_continuations_does_not_merge_sibling_bullets():
+    """Bullets at the SAME indent level can legitimately be different
+    threads. Only strictly-greater indent triggers merging."""
+    from work_buddy.journal_backlog.segment import merge_orphaned_continuations
+
+    originals = [
+        "- topic A bullet",
+        "- topic B bullet (sibling)",
+    ]
+    groups = [[1], [2]]
+    # No parent/child relationship → groups unchanged.
+    assert merge_orphaned_continuations(groups, originals) == [[1], [2]]
+
+
+def test_merge_orphaned_continuations_drops_emptied_groups():
+    """If every line in a group gets pulled into its parent's group,
+    the now-empty group should be dropped."""
+    from work_buddy.journal_backlog.segment import merge_orphaned_continuations
+
+    originals = [
+        "- header",
+        "  - sub-bullet a",
+        "  - sub-bullet b",
+    ]
+    # LLM put the header in one group and ALL sub-bullets in another.
+    groups = [[1], [2, 3]]
+    fixed = merge_orphaned_continuations(groups, originals)
+    assert fixed == [[1, 2, 3]]
+
+
+def test_merge_orphaned_continuations_treats_blank_lines_as_passthrough():
+    """A blank line does NOT break the parent/child link — Markdown
+    allows blank lines between a header and its body. This is the
+    user-friendly behavior for journal-style notes."""
+    from work_buddy.journal_backlog.segment import merge_orphaned_continuations
+
+    originals = [
+        "- topic A",
+        "",                  # blank line; does not break the link
+        "  - bullet under A", # indent 2; still belongs to topic A
+    ]
+    groups = [[1], [3]]
+    fixed = merge_orphaned_continuations(groups, originals)
+    assert fixed == [[1, 3]]
+
+
+def test_build_threads_runs_merge_pass_end_to_end():
+    """Regression: the build_threads helper should now merge orphaned
+    continuations before reconstructing thread text."""
+    from work_buddy.journal_backlog.segment import (
+        build_threads_from_line_ranges,
+    )
+
+    originals = [
+        "- #wb/TODO research zotero MCP",
+        "  - [ChatGPT chat](url1)",
+        "  - [zotero-mcp](url2)",
+    ]
+    # LLM regression: split the TODO from its bullets.
+    validated = {"groups": [[1], [2, 3]], "valid": True}
+    threads = build_threads_from_line_ranges(validated, originals)
+    # Post-merge there should be exactly one thread containing all 3 lines.
+    assert len(threads) == 1
+    assert threads[0]["line_count"] == 3
+    assert "ChatGPT chat" in threads[0]["raw_text"]
+    assert "zotero-mcp" in threads[0]["raw_text"]

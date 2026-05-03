@@ -354,6 +354,104 @@ def validate_line_range_segmentation(
     }
 
 
+def _line_indent(line: str) -> int:
+    """Number of leading whitespace characters in ``line``.
+
+    Tabs count as 4 spaces (matches Obsidian's default rendering).
+    Returns ``0`` for blank lines so the merge pass treats blank rows
+    as topic boundaries rather than as part of a deeper indent block.
+    """
+    if not line.strip():
+        return 0
+    out = 0
+    for ch in line:
+        if ch == " ":
+            out += 1
+        elif ch == "\t":
+            out += 4
+        else:
+            break
+    return out
+
+
+def merge_orphaned_continuations(
+    groups: list[list[int]],
+    original_lines: list[str],
+) -> list[list[int]]:
+    """Merge indented-continuation lines back into their parent's group.
+
+    The segmentation prompt asks the LLM to keep indented sub-items
+    with their parent topic line, but small models occasionally split
+    a `#wb/TODO X` line from the indented bullets immediately below
+    it. That's a UX-breaking miss: the bullets are evidence/links for
+    the TODO, not stand-alone threads.
+
+    This pass walks ``original_lines`` and for each line whose indent
+    is strictly greater than the previous non-blank line, treats it
+    as a continuation of that previous line. If the continuation lives
+    in a different group, the continuation is **moved** into the
+    parent's group (and removed from its current group). A group that
+    ends up empty is dropped.
+
+    Conservative: only the strictly-greater-indent rule fires. Sibling
+    bullets at the same indent are NOT touched — those can legitimately
+    represent separate items.
+
+    Returns the rewritten group list. Original ordering is preserved.
+    """
+    if not groups or not original_lines:
+        return [list(g) for g in groups]
+
+    # line_number -> set of group indices it currently belongs to
+    line_to_groups: dict[int, set[int]] = {}
+    for gi, g in enumerate(groups):
+        for ln in g:
+            line_to_groups.setdefault(ln, set()).add(gi)
+
+    # Build a parent map: for each non-blank line, the most recent
+    # non-blank line at strictly less indent (the "parent topic").
+    parent_of: dict[int, int] = {}
+    indent_stack: list[tuple[int, int]] = []  # (line_number, indent)
+    for idx, line in enumerate(original_lines):
+        ln = idx + 1
+        if not line.strip():
+            continue
+        ind = _line_indent(line)
+        # Pop any deeper-or-equal entries from the stack — the new
+        # line is at the same or shallower depth than them.
+        while indent_stack and indent_stack[-1][1] >= ind:
+            indent_stack.pop()
+        if indent_stack:
+            parent_of[ln] = indent_stack[-1][0]
+        indent_stack.append((ln, ind))
+
+    # Walk lines that have a parent; if the line's group set doesn't
+    # intersect with the parent's group set, move the line into the
+    # parent's first group.
+    new_groups: list[list[int]] = [list(g) for g in groups]
+    for child_ln, parent_ln in parent_of.items():
+        child_groups = line_to_groups.get(child_ln) or set()
+        parent_groups = line_to_groups.get(parent_ln) or set()
+        if not child_groups or not parent_groups:
+            continue
+        if child_groups & parent_groups:
+            # Already shares a group with parent — fine.
+            continue
+        target = min(parent_groups)
+        # Remove from every current group; insert into parent's group
+        # in sorted order.
+        for gi in list(child_groups):
+            if child_ln in new_groups[gi]:
+                new_groups[gi].remove(child_ln)
+            line_to_groups[child_ln].discard(gi)
+        new_groups[target].append(child_ln)
+        new_groups[target].sort()
+        line_to_groups[child_ln].add(target)
+
+    # Drop groups that ended up empty.
+    return [g for g in new_groups if g]
+
+
 def build_threads_from_line_ranges(
     validated: dict[str, Any],
     original_lines: list[str],
@@ -365,6 +463,13 @@ def build_threads_from_line_ranges(
     bookkeeping, never the model's job). Computes ``has_multi_flag``
     from line-number overlap: a group whose lines also appear in any
     other group is marked multi.
+
+    Before id assignment, runs :func:`merge_orphaned_continuations` so
+    indented sub-list lines that the LLM accidentally split from their
+    parent topic line get folded back in. The merge pass is a
+    safety-net against a recurring small-model failure mode where a
+    `#wb/TODO X` line and its indented bullet evidence end up in
+    separate groups.
 
     Args:
         validated: Output of :func:`validate_line_range_segmentation`
@@ -379,6 +484,7 @@ def build_threads_from_line_ranges(
         ``source_dates``, ``has_multi_flag``.
     """
     groups: list[list[int]] = validated.get("groups", []) or []
+    groups = merge_orphaned_continuations(groups, original_lines)
 
     # Multi detection: any line that appears in ≥2 groups marks all of
     # its containing groups as multi.
