@@ -1088,6 +1088,10 @@ def _threads_v5_script() -> str:
                 if (window._threadDetailCache && payload && payload.thread_id) {
                     delete window._threadDetailCache[payload.thread_id];
                 }
+                // Invalidate ALL sub-thread caches — without the
+                // changed thread's parent_id we can't be more
+                // surgical, and the cardinality is small.
+                window._subThreadCache = {};
                 renderThreads();
             } catch (e) {
                 console.warn("[threads-v5] state_changed handler:", e);

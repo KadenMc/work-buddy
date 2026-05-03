@@ -590,22 +590,100 @@ def _threads_v5_card_script() -> str:
         // "(none)" version was unnecessary visual noise.
         // Wave I: aggregated state badges per UX.md §8.1
         // ("5 done · 4 awaiting consent · 2 awaiting clarification").
+        // 2026-05-03 followup: prior version pushed the parent's
+        // own ID, creating a self-referencing breadcrumb. Replaced
+        // with inline sub-thread mini-cards (UX.md §3.2 + §8.4 —
+        // "sub-thread list shows children of that Thread").
         const n = thread.sub_thread_count || 0;
         if (n === 0) return '';
         const counts = thread.sub_thread_state_counts || {};
         const badges = _renderStateBadges(counts);
-        return (
-            '<div class="threads-v5-section">'
-            + '<a class="threads-v5-subthread-link" href="#" '
-            +   'onclick="event.preventDefault();threadsPushPath(\''
-            +   _esc(thread.thread_id) + '\')">'
-            +   '&equiv; Sub-threads (' + n + ') &rarr;'
-            + '</a>'
-            + (badges
-                ? '<div class="threads-v5-state-badges">' + badges + '</div>'
-                : '')
-            + '</div>'
-        );
+        let html = '<div class="threads-v5-section">'
+                 + '<div class="threads-v5-section-label">'
+                 +   'Sub-threads (' + n + ')'
+                 + '</div>';
+        if (badges) {
+            html += '<div class="threads-v5-state-badges">'
+                  + badges + '</div>';
+        }
+        // Lazy-load the sub-thread list. The first render shows a
+        // placeholder; we fetch /api/threads/<id>/sub asynchronously
+        // and inject the cards via DOM insertion. We cache results
+        // on window._subThreadCache keyed by parent thread_id so
+        // re-renders don't re-fetch.
+        const cached = (window._subThreadCache || {})[thread.thread_id];
+        if (cached) {
+            html += _renderSubThreadCards(cached);
+        } else {
+            html += '<div class="threads-v5-subthread-loading" '
+                  + 'data-parent-id="' + _esc(thread.thread_id) + '">'
+                  + 'Loading sub-threads...</div>';
+            // Trigger async fetch on next tick
+            const tid = thread.thread_id;
+            setTimeout(() => _loadSubThreads(tid), 0);
+        }
+        html += '</div>';
+        return html;
+    }
+
+    function _loadSubThreads(parentId) {
+        if (!window._subThreadCache) window._subThreadCache = {};
+        if (window._subThreadCache[parentId]) return;
+        fetch('/api/threads/' + encodeURIComponent(parentId) + '/sub')
+            .then(r => r.ok ? r.json() : Promise.reject(r.statusText))
+            .then(data => {
+                window._subThreadCache[parentId] = data.threads || [];
+                if (typeof window._renderActiveThread === 'function') {
+                    window._renderActiveThread();
+                }
+            })
+            .catch(err => {
+                console.warn('[threads-v5] sub-thread fetch failed:', err);
+                window._subThreadCache[parentId] = [];
+                if (typeof window._renderActiveThread === 'function') {
+                    window._renderActiveThread();
+                }
+            });
+    }
+
+    function _renderSubThreadCards(subThreads) {
+        if (!subThreads || subThreads.length === 0) {
+            return '<p class="threads-v5-empty">'
+                 + '<em>(no sub-threads loaded)</em></p>';
+        }
+        let html = '<ul class="threads-v5-subthread-list">';
+        for (const sub of subThreads) {
+            const stateLabel = _friendlyState(sub.fsm_state);
+            const intent = (sub.intent && sub.intent.text)
+                            || sub.title || sub.thread_id;
+            const cls = 'threads-v5-subthread-card '
+                + (sub.display_mode === 'mid_process'
+                    ? 'threads-v5-mid-process' : '')
+                + (sub.display_mode === 'terminal'
+                    ? 'threads-v5-terminal' : '');
+            html += '<li class="' + cls + '" '
+                  + 'onclick="threadsPushPath(\''
+                  +   _esc(sub.thread_id) + '\')">'
+                  + '<div class="threads-v5-subthread-meta">'
+                  +   '<span class="threads-v5-subthread-state">'
+                  +     _esc(stateLabel) + '</span>'
+                  +   (sub.risk_highlight
+                        ? '<span class="threads-v5-toplist-risk-dot '
+                            + _esc(sub.risk_highlight) + '"></span>'
+                        : '')
+                  + '</div>'
+                  + '<div class="threads-v5-subthread-title">'
+                  +   _esc(sub.title || sub.thread_id) + '</div>'
+                  + (intent && intent !== sub.title
+                        ? '<div class="threads-v5-subthread-intent">'
+                          + _esc(intent.length > 140
+                              ? intent.slice(0, 137) + '...' : intent)
+                          + '</div>'
+                        : '')
+                  + '</li>';
+        }
+        html += '</ul>';
+        return html;
     }
 
     // Wave I: tiny inline state-badge row showing how many
@@ -1741,6 +1819,64 @@ def _threads_v5_card_styles() -> str:
     font-size: 12px;
     color: var(--text-muted, #aaa);
     line-height: 1.4;
+}
+
+/* User-feedback followup (2026-05-03): inline sub-thread list
+   under the parent's detail view. Each is a small clickable
+   card that drills into the sub-thread when clicked. */
+.threads-v5-subthread-list {
+    list-style: none;
+    padding: 0;
+    margin: 8px 0 0 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.threads-v5-subthread-card {
+    background: var(--bg-tertiary, #0f0f0f);
+    border: 1px solid var(--border, #333);
+    border-radius: 6px;
+    padding: 10px 14px;
+    cursor: pointer;
+    transition: border-color 80ms, background 80ms;
+}
+.threads-v5-subthread-card:hover {
+    border-color: var(--accent, #4a7fc1);
+    background: var(--bg-secondary, #1a1a1a);
+}
+.threads-v5-subthread-card.threads-v5-mid-process {
+    opacity: 0.6;
+    border-style: dashed;
+}
+.threads-v5-subthread-card.threads-v5-terminal {
+    opacity: 0.55;
+}
+.threads-v5-subthread-meta {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    font-size: 11px;
+    color: var(--text-muted, #888);
+    margin-bottom: 4px;
+    text-transform: capitalize;
+}
+.threads-v5-subthread-title {
+    color: var(--text, #ddd);
+    font-weight: 500;
+    font-size: 13px;
+    line-height: 1.3;
+    margin-bottom: 2px;
+}
+.threads-v5-subthread-intent {
+    color: var(--text-muted, #aaa);
+    font-size: 12px;
+    line-height: 1.4;
+}
+.threads-v5-subthread-loading {
+    color: var(--text-muted, #888);
+    font-size: 12px;
+    font-style: italic;
+    padding: 8px 0;
 }
 
 /* Wave I — sub-thread aggregated state badges */
