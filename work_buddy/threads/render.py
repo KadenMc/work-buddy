@@ -146,8 +146,17 @@ def build_render_data(thread_id: str) -> Optional[dict[str, Any]]:
     # Title — derive from inciting + intent
     title = inciting.get("title") or inciting.get("description") or intent_text or thread.thread_id
 
-    # Sub-thread count
-    sub_count = len(store.list_threads(parent_id=thread_id))
+    # Sub-thread count + per-state aggregation. UX.md §8.1
+    # specifies the parent's detail view should show
+    # "5 done • 4 awaiting consent • 2 awaiting clarification"
+    # at the top of the sub-thread list. We aggregate here so the
+    # frontend can render the badges without an extra API call.
+    sub_threads = store.list_threads(parent_id=thread_id)
+    sub_count = len(sub_threads)
+    sub_thread_state_counts: dict[str, int] = {}
+    for st in sub_threads:
+        key = st.fsm_state.value
+        sub_thread_state_counts[key] = sub_thread_state_counts.get(key, 0) + 1
 
     # Derive card kind from FSM state. UX.md §4.2.
     card_kind = _card_kind_for(thread.fsm_state.value)
@@ -225,6 +234,7 @@ def build_render_data(thread_id: str) -> Optional[dict[str, Any]]:
         "namespace_tags": list(inciting.get("namespace_tags") or []),
         "can_clean_up": cleanup.can_clean_up(thread),
         "sub_thread_count": sub_count,
+        "sub_thread_state_counts": sub_thread_state_counts,
         "has_been_later": _has_been_later(events),
         "resurface_at": getattr(thread, "resurface_at", None),
         "parent_event_id": thread.parent_event_id,

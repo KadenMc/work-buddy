@@ -567,9 +567,9 @@ def _threads_v5_card_script() -> str:
     }
 
     function _renderSubThreadsLink(thread) {
-        // Wave F: show the sub-thread section even when count=0,
-        // so the user knows the section exists. The link is muted
-        // when empty (no children to drill into).
+        // Wave F: show the sub-thread section even when count=0.
+        // Wave I: aggregated state badges per UX.md §8.1
+        // ("5 done • 4 awaiting consent • 2 awaiting clarification").
         const n = thread.sub_thread_count || 0;
         if (n === 0) {
             return (
@@ -580,6 +580,8 @@ def _threads_v5_card_script() -> str:
                 + '</div>'
             );
         }
+        const counts = thread.sub_thread_state_counts || {};
+        const badges = _renderStateBadges(counts);
         return (
             '<div class="threads-v5-section">'
             + '<a class="threads-v5-subthread-link" href="#" '
@@ -587,8 +589,87 @@ def _threads_v5_card_script() -> str:
             +   _esc(thread.thread_id) + '\')">'
             +   '&equiv; Sub-threads (' + n + ') &rarr;'
             + '</a>'
+            + (badges
+                ? '<div class="threads-v5-state-badges">' + badges + '</div>'
+                : '')
             + '</div>'
         );
+    }
+
+    // Wave I: tiny inline state-badge row showing how many
+    // sub-threads are in each state. Sorted by category so the
+    // user-actionable counts come first ("5 awaiting consent")
+    // and the agent-internal/terminal counts come later
+    // ("3 done").
+    function _renderStateBadges(counts) {
+        if (!counts || Object.keys(counts).length === 0) return '';
+        // Pretty labels — keep them short for compact display.
+        const PRETTY = {
+            "awaiting_intent_confirmation": "intent",
+            "awaiting_intent_clarification": "intent clarif",
+            "awaiting_context_confirmation": "context",
+            "awaiting_context_clarification": "context clarif",
+            "awaiting_action_clarification": "action clarif",
+            "awaiting_confirmation": "consent",
+            "awaiting_review": "review",
+            "awaiting_redirect": "redirect",
+            "awaiting_inference": "queued",
+            "inferring_intent": "inferring",
+            "inferring_context": "inferring",
+            "inferring_action": "inferring",
+            "executing": "executing",
+            "monitoring": "monitoring",
+            "cleaning_up": "cleaning",
+            "done_cleanup_unsuccessful": "cleanup failed",
+            "done_cleanup_successful": "done",
+            "done": "done",
+            "dismissed": "dismissed",
+            "handed_off": "handed off",
+            "proposed": "proposed",
+        };
+        // Order categories: actionable first, then in-flight, then terminal
+        const ORDER = [
+            "awaiting_confirmation",
+            "awaiting_intent_confirmation",
+            "awaiting_context_confirmation",
+            "awaiting_intent_clarification",
+            "awaiting_context_clarification",
+            "awaiting_action_clarification",
+            "awaiting_review",
+            "awaiting_redirect",
+            "done_cleanup_unsuccessful",
+            "awaiting_inference",
+            "inferring_intent",
+            "inferring_context",
+            "inferring_action",
+            "executing",
+            "monitoring",
+            "cleaning_up",
+            "proposed",
+            "done",
+            "done_cleanup_successful",
+            "dismissed",
+            "handed_off",
+        ];
+        const seen = new Set();
+        const parts = [];
+        for (const k of ORDER) {
+            if (k in counts && counts[k] > 0) {
+                seen.add(k);
+                parts.push('<span class="threads-v5-state-badge" '
+                    + 'title="' + _esc(k) + '">'
+                    + counts[k] + ' ' + _esc(PRETTY[k] || k)
+                    + '</span>');
+            }
+        }
+        // Any unrecognized states still appear at the end.
+        for (const k of Object.keys(counts)) {
+            if (!seen.has(k) && counts[k] > 0) {
+                parts.push('<span class="threads-v5-state-badge">'
+                    + counts[k] + ' ' + _esc(k) + '</span>');
+            }
+        }
+        return parts.join(' &middot; ');
     }
 
     function _renderRightPane(thread, s) {
@@ -1565,6 +1646,23 @@ def _threads_v5_card_styles() -> str:
     font-size: 12px;
     color: var(--text-muted, #aaa);
     line-height: 1.4;
+}
+
+/* Wave I — sub-thread aggregated state badges */
+.threads-v5-state-badges {
+    margin-top: 6px;
+    font-size: 11px;
+    color: var(--text-muted, #888);
+}
+.threads-v5-state-badge {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 8px;
+    background: var(--bg, #0a0a0a);
+    color: var(--text-muted, #aaa);
+    border: 1px solid rgba(60,60,60,0.5);
+    font-size: 10px;
+    margin: 2px 4px 2px 0;
 }
 
 /* Wave C — timeline / event-log link */

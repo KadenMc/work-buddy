@@ -254,6 +254,33 @@ class TestBuildRenderData:
         data = render.build_render_data(t.thread_id)
         assert data["risk_highlight"] is None
 
+    def test_sub_thread_state_counts_aggregated(self, fresh_db):
+        """Wave I: parent's render data includes per-state counts
+        of sub-threads so the card can show "5 done · 4 awaiting
+        consent" badges per UX.md §8.1."""
+        from work_buddy.threads.enums import FSMState
+        parent = Thread(
+            inciting_event_summary={"description": "parent"},
+        )
+        store.insert_thread(parent)
+        # Three children in different states
+        for state in (
+            FSMState.AWAITING_CONFIRMATION,
+            FSMState.AWAITING_CONFIRMATION,
+            FSMState.DONE,
+        ):
+            c = Thread(
+                parent_id=parent.thread_id,
+                fsm_state=state,
+                inciting_event_summary={"description": "child"},
+            )
+            store.insert_thread(c)
+        data = render.build_render_data(parent.thread_id)
+        counts = data["sub_thread_state_counts"]
+        assert counts.get("awaiting_confirmation") == 2
+        assert counts.get("done") == 1
+        assert data["sub_thread_count"] == 3
+
     def test_auto_advance_trail_present(self, fresh_db):
         """The auto_advance_decision events are surfaced on render
         data so the consent card can show 'agent auto-advanced
