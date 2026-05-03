@@ -143,14 +143,21 @@ def build_render_data(thread_id: str) -> Optional[dict[str, Any]]:
     # Urgency — derive from inciting summary or default to defer
     urgency = inciting.get("urgency", "defer")
 
-    # Title — prefer the inferred intent over the raw inciting text.
-    # User-feedback fix #4 (2026-05-03 morning): once intent has
-    # been inferred, the agent's intent phrasing is cleaner and
-    # more meaningful than the original journal line / chrome tab
-    # title. Fall back to the inciting summary if no intent yet.
+    # Title — prefer an explicit inciting.title (set by parent
+    # spawners e.g. journal_scan, chrome_scrape) since that
+    # carries distinguishing context like the date. Sub-threads
+    # and journal-line threads don't set inciting.title — for
+    # those, the agent's inferred intent text is cleaner than the
+    # raw description.
+    #
+    # User-feedback fix #4 (2026-05-03): intent should win for
+    # individual threads. Followup: but when inciting.title is
+    # explicitly set (parents only), it's MORE distinguishing than
+    # the often-generic intent ("Process today's journal items").
+    # So: explicit title > intent > description > thread_id.
     title = (
-        intent_text
-        or inciting.get("title")
+        inciting.get("title")
+        or intent_text
         or inciting.get("description")
         or thread.thread_id
     )
