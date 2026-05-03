@@ -277,6 +277,17 @@ def invalidate_registry() -> None:
     Also purges ``work_buddy.*`` modules from ``sys.modules`` so deferred
     imports in capability builders re-read the current source code.
     Clears tool probe cache so tools are re-probed on rebuild.
+
+    **Re-bootstraps v5 Threads after the purge.** Purging
+    ``work_buddy.threads.engine`` from sys.modules nukes the
+    process-global ``_REGISTERED_SIDE_EFFECTS`` dict, which is where
+    the v5 FSM state-entry handlers (enqueue inference, publish
+    Resolution Surface card, etc.) live. Without re-bootstrap, the
+    next FSM transition after a registry reload would land in a
+    wait state with no handlers registered, so capabilities like
+    ``journal_v5_scan`` would silently dead-end at AWAITING_INFERENCE.
+    Discovered live 2026-05-03 when ``mcp_registry_reload`` followed
+    by ``journal_v5_scan`` produced a thread that never got enqueued.
     """
     import sys
     from work_buddy.tools import invalidate_tool_status
@@ -295,6 +306,22 @@ def invalidate_registry() -> None:
     ]
     for k in to_remove:
         del sys.modules[k]
+
+    # Re-bootstrap v5 Threads in this subprocess. Best-effort: if
+    # bootstrap fails (e.g. budget hook init issue), the registry is
+    # still valid — capabilities will work, but FSM transitions on
+    # Threads won't fire side effects. Fail loud so the user notices.
+    try:
+        from work_buddy.threads.bootstrap import bootstrap_for_subprocess
+        bootstrap_for_subprocess(subprocess_name="mcp-gateway-reload")
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning(
+            "v5 Threads re-bootstrap after registry reload failed: %s. "
+            "FSM state-entry handlers may be missing; spawn capabilities "
+            "could dead-end. Restart the gateway to recover.",
+            exc,
+        )
 
 
 def _disabled_reason(capability_name: str) -> str:

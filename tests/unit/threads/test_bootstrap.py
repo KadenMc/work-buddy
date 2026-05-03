@@ -112,6 +112,56 @@ class TestBootstrap:
         assert queue._ADMISSION_HOOKS == []
 
 
+class TestNormalizeParametersJson:
+    """Action proposals carry parameters as a JSON STRING in the
+    schema (parameters_json), because Anthropic's structured-output
+    validator rejects open-shape ``object`` types. The runner
+    adapter parses parameters_json back to a dict before returning,
+    so downstream consumers see the canonical ``parameters`` shape.
+    """
+
+    def test_parses_top_level_action(self):
+        payload = {
+            "kind": "improvised",
+            "name": "send_email",
+            "parameters_json": '{"to": "x@y", "subject": "hi"}',
+        }
+        bootstrap._normalize_parameters_json(payload)
+        assert "parameters_json" not in payload
+        assert payload["parameters"] == {"to": "x@y", "subject": "hi"}
+
+    def test_parses_nested_combined_action(self):
+        payload = {
+            "intent": {"intent": "do x"},
+            "context": {"associated_refs": []},
+            "action": {
+                "kind": "standard",
+                "name": "decompose",
+                "parameters_json": '{"items": ["a", "b"]}',
+            },
+        }
+        bootstrap._normalize_parameters_json(payload)
+        assert "parameters_json" not in payload["action"]
+        assert payload["action"]["parameters"] == {"items": ["a", "b"]}
+
+    def test_missing_parameters_json_is_noop(self):
+        payload = {"kind": "improvised", "name": "x"}
+        bootstrap._normalize_parameters_json(payload)
+        assert "parameters" not in payload  # field stays absent
+
+    def test_invalid_json_falls_back_to_empty_dict(self):
+        payload = {"kind": "improvised", "parameters_json": "not-json"}
+        bootstrap._normalize_parameters_json(payload)
+        assert payload["parameters"] == {}
+
+    def test_non_dict_parsed_value_falls_back(self):
+        # Agent returned an array instead of an object — our contract
+        # says parameters is a dict, so we coerce to empty.
+        payload = {"kind": "improvised", "parameters_json": "[1,2,3]"}
+        bootstrap._normalize_parameters_json(payload)
+        assert payload["parameters"] == {}
+
+
 # ---------------------------------------------------------------------------
 # Per-Thread budget read-through (from autonomy_policy)
 # ---------------------------------------------------------------------------

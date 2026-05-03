@@ -111,13 +111,28 @@ TARGETS: dict[InferenceTarget, TargetSpec] = {
             "properties": {
                 "associated_refs": {
                     "type": "array",
-                    # Items are open-shape ContextItem dicts; we keep
-                    # them as bare objects (no additionalProperties:
-                    # false) so the model can include source-specific
-                    # fields. If Anthropic's schema validator rejects
-                    # this nested untyped object too, we'll need to
-                    # enumerate the expected ContextItem keys here.
-                    "items": {"type": "object"},
+                    # Items are ContextItem-shaped dicts. Anthropic's
+                    # structured-output validator requires
+                    # additionalProperties: false on EVERY nested
+                    # object schema, recursively. We enumerate the
+                    # expected fields and intentionally OMIT the
+                    # source-specific ``payload`` (URL/line_text/etc.)
+                    # — that's enriched downstream from the actual
+                    # source registry by id+source. Anthropic
+                    # rejected an open ``payload: {"type": "object"}``
+                    # so we just don't ask the agent for it here.
+                    # Discovered live 2026-05-03.
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["id", "source", "type", "label"],
+                        "properties": {
+                            "id": {"type": "string"},
+                            "source": {"type": "string"},
+                            "type": {"type": "string"},
+                            "label": {"type": "string"},
+                        },
+                    },
                 },
                 "reasoning": {"type": "string"},
                 # Confidence is in [0, 1] by convention but we
@@ -149,10 +164,17 @@ TARGETS: dict[InferenceTarget, TargetSpec] = {
                     "enum": ["standard", "improvised", "suggestion"],
                 },
                 "name": {"type": "string"},
-                # parameters is intentionally an open dict — each
-                # Standard Action declares its own parameter shape;
-                # we don't validate them at the inference layer.
-                "parameters": {"type": "object"},
+                # parameters is action-specific — each Standard
+                # Action declares its own parameter shape and we
+                # don't validate them at the inference layer.
+                # Anthropic's structured-output validator rejects
+                # ``"type": "object"`` without ``additionalProperties:
+                # false`` even on nested fields. To preserve the
+                # open-shape semantics we encode parameters as a
+                # JSON STRING and parse downstream. The agent
+                # serializes its proposed parameters as JSON.
+                # Discovered live 2026-05-03.
+                "parameters_json": {"type": "string"},
                 "plan_summary": {"type": "string"},
                 "rationale": {"type": "string"},
                 # Confidence is in [0, 1] by convention but we
@@ -162,6 +184,19 @@ TARGETS: dict[InferenceTarget, TargetSpec] = {
                 # clamps the value at use time.
                 "confidence": {"type": "number"},
                 "blocked_on": {"type": "string"},
+                # Risk metadata — declared by the agent for
+                # improvised actions; standard actions override
+                # via the ActionTemplate.intrinsic_amplifiers
+                # registry. Read by autonomy_branch.resolve_action_branch.
+                "irreversibility": {
+                    "type": "string",
+                    "enum": ["low", "medium", "high"],
+                },
+                "regret_potential": {
+                    "type": "string",
+                    "enum": ["low", "medium", "high"],
+                },
+                "risk_amplifier": {"type": "boolean"},
             },
         },
     ),
@@ -217,7 +252,19 @@ TARGETS: dict[InferenceTarget, TargetSpec] = {
                     "properties": {
                         "associated_refs": {
                             "type": "array",
-                            "items": {"type": "object"},
+                            # Same shape as the staged CONTEXT
+                            # target — see comment there.
+                            "items": {
+                                "type": "object",
+                                "additionalProperties": False,
+                                "required": ["id", "source", "type", "label"],
+                                "properties": {
+                                    "id": {"type": "string"},
+                                    "source": {"type": "string"},
+                                    "type": {"type": "string"},
+                                    "label": {"type": "string"},
+                                },
+                            },
                         },
                         "reasoning": {"type": "string"},
                     },
@@ -232,7 +279,10 @@ TARGETS: dict[InferenceTarget, TargetSpec] = {
                             "enum": ["standard", "improvised", "suggestion"],
                         },
                         "name": {"type": "string"},
-                        "parameters": {"type": "object"},
+                        # See staged ACTION target's comment for why
+                        # parameters is a JSON STRING here, not an
+                        # open object schema.
+                        "parameters_json": {"type": "string"},
                         "plan_summary": {"type": "string"},
                         "rationale": {"type": "string"},
                         "blocked_on": {"type": "string"},

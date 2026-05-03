@@ -73,6 +73,36 @@ class TestTargetRegistry:
         finally:
             inference.register_target(original)
 
+    def test_all_object_schemas_have_additional_properties_false(self):
+        """REGRESSION (2026-05-03): Anthropic's structured-output
+        validator rejects every ``"type": "object"`` schema that
+        doesn't EXPLICITLY set ``"additionalProperties": false``.
+        It checks recursively, so nested object types in arrays
+        (e.g. ``items``) and properties also need it.
+
+        Without this, the LLM call returns HTTP 400 BadRequestError
+        and the inference adapter's exception handler silently
+        returns an empty payload — making it look like the agent
+        had nothing to say. Walks every TargetSpec's output_schema
+        and asserts every object schema is correctly tagged.
+        """
+        def walk(node, path):
+            if isinstance(node, dict):
+                if node.get("type") == "object":
+                    assert node.get("additionalProperties") is False, (
+                        f"Object schema at {path} missing "
+                        f"`additionalProperties: false` — "
+                        f"Anthropic will reject it. Schema: {node}"
+                    )
+                for k, v in node.items():
+                    walk(v, f"{path}.{k}")
+            elif isinstance(node, list):
+                for i, item in enumerate(node):
+                    walk(item, f"{path}[{i}]")
+
+        for target, spec in inference.TARGETS.items():
+            walk(spec.output_schema, target.value)
+
 
 # ---------------------------------------------------------------------------
 # Pluggable LLM runner

@@ -108,6 +108,48 @@ def bootstrap_v5(*, clear_first: bool = False) -> None:
     logger.info("v5 bootstrap complete")
 
 
+def _normalize_parameters_json(payload: dict) -> None:
+    """In-place convert ``parameters_json`` (string) to ``parameters``
+    (dict) on action proposals.
+
+    Anthropic's structured-output validator requires
+    ``additionalProperties: false`` on every nested object schema,
+    but action parameters are open-shape (each Standard Action
+    declares its own parameter schema, agent-improvised actions can
+    make up any keys). To preserve open-shape semantics we have the
+    schema declare ``parameters_json: string`` and the agent
+    serializes parameters as JSON. This helper parses the string
+    back to a dict so downstream consumers see ``parameters``
+    unchanged.
+
+    Handles two payload shapes:
+    - Staged ACTION inference: ``payload["parameters_json"]``.
+    - COMBINED inference: ``payload["action"]["parameters_json"]``.
+
+    Failures parse to an empty dict and are logged at debug level —
+    we never raise from a normalization step that's supposed to be
+    transparent.
+    """
+    import json as _json
+
+    def _parse(holder: dict) -> None:
+        raw = holder.pop("parameters_json", None)
+        if raw is None:
+            return
+        try:
+            parsed = _json.loads(raw) if raw else {}
+            if not isinstance(parsed, dict):
+                parsed = {}
+        except (TypeError, ValueError):
+            parsed = {}
+        holder["parameters"] = parsed
+
+    _parse(payload)
+    nested_action = payload.get("action")
+    if isinstance(nested_action, dict):
+        _parse(nested_action)
+
+
 def _register_real_llm_runner() -> None:
     """Bind the v5 Inference layer to the existing LLMRunner.
 
@@ -171,6 +213,13 @@ def _register_real_llm_runner() -> None:
                         "trace_pointer": None,
                     }
                 payload = resp.structured_output or {}
+                # Action proposals carry parameters as a JSON string
+                # (parameters_json) because Anthropic's structured-
+                # output validator rejects open-shape ``object``
+                # types. Parse it back to a dict so downstream
+                # consumers (render data, autonomy_branch, action
+                # dispatcher) see the canonical ``parameters`` shape.
+                _normalize_parameters_json(payload)
                 confidence = float(payload.get("confidence") or 0.0)
                 cost = getattr(resp, "cost_usd", 0.0) or 0.0
                 model = getattr(resp, "model_used", None)
