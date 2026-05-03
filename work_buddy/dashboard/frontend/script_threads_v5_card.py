@@ -101,6 +101,56 @@ def _threads_v5_card_script() -> str:
         // No re-render — the user is typing
     };
 
+    // 2026-05-03 — explicit confirm/discard for the intent editor.
+    // The right-pane editor used to have no submit button, just the
+    // implicit "edits flow into the next Accept click" path; users
+    // had no way to lock in or back out of an edit without touching
+    // the card. Now the editor has a ↩ confirm and × discard, plus
+    // Enter / Esc keyboard semantics (Shift+Enter still inserts a
+    // newline). Confirming locks the edit into ``s.edited.intent``
+    // and closes the right pane; discarding clears the edit and
+    // closes the right pane. The actual FSM commit still happens
+    // when the user clicks Accept on the main card — the right
+    // pane is for staging edits, not for executing them.
+    window.threadCardConfirmIntentEdit = function (threadId) {
+        const s = _state(threadId);
+        s.focusedId = null;
+        if (typeof window._renderActiveThread === "function") {
+            window._renderActiveThread();
+        }
+    };
+    window.threadCardDiscardIntentEdit = function (threadId) {
+        const s = _state(threadId);
+        delete s.edited.intent;
+        s.focusedId = null;
+        if (typeof window._renderActiveThread === "function") {
+            window._renderActiveThread();
+        }
+    };
+    // Keyboard handler shared by every Threads textarea. Attach via
+    // ``onkeydown="return threadCardEditorKeydown(event, '<tid>', 'intent')"``.
+    // Returns false to prevent the default newline insertion when we
+    // intercept Enter / Esc; passes through Shift+Enter as a newline.
+    window.threadCardEditorKeydown = function (event, threadId, target) {
+        if (event.key === "Enter" && !event.shiftKey
+            && !event.ctrlKey && !event.metaKey && !event.altKey) {
+            event.preventDefault();
+            if (target === "intent") {
+                window.threadCardConfirmIntentEdit(threadId);
+            }
+            return false;
+        }
+        if (event.key === "Escape") {
+            event.preventDefault();
+            if (target === "intent") {
+                window.threadCardDiscardIntentEdit(threadId);
+            }
+            return false;
+        }
+        // Shift+Enter / plain typing: pass through.
+        return true;
+    };
+
     // Wave G — capture edits to action parameters in the right-pane
     // form. Each input/textarea/select wires
     // ``oninput="threadCardEditActionParam(tid, actId, paramName, this.value)"``.
@@ -789,12 +839,35 @@ def _threads_v5_card_script() -> str:
             const edited = s.edited.intent !== undefined
                 ? s.edited.intent
                 : ((thread.intent && thread.intent.text) || "");
+            const tidJs = _esc(thread.thread_id);
             return (
                 '<div class="threads-v5-right-editor">'
                 + '<h4>Edit intent</h4>'
-                + '<textarea class="threads-v5-textarea" rows="6" '
-                +   'oninput="threadCardEditIntent(\'' + _esc(thread.thread_id)
-                +     '\', this.value)">' + _esc(edited) + '</textarea>'
+                + '<p class="threads-v5-editor-hint">'
+                +   '<kbd>Enter</kbd> to confirm &middot; '
+                +   '<kbd>Shift</kbd>+<kbd>Enter</kbd> for newline &middot; '
+                +   '<kbd>Esc</kbd> to discard'
+                + '</p>'
+                + '<textarea class="threads-v5-textarea" rows="6" autofocus '
+                +   'oninput="threadCardEditIntent(\'' + tidJs + '\', this.value)" '
+                +   'onkeydown="return threadCardEditorKeydown(event, \''
+                +     tidJs + '\', \'intent\')"'
+                + '>' + _esc(edited) + '</textarea>'
+                + '<div class="threads-v5-editor-actions">'
+                +   '<button class="threads-v5-editor-btn threads-v5-editor-btn-cancel" '
+                +     'title="Discard edit (Esc)" '
+                +     'onclick="threadCardDiscardIntentEdit(\'' + tidJs + '\')">'
+                +     '<span class="threads-v5-editor-icon">&times;</span>'
+                +     '<span class="threads-v5-editor-label">Discard</span>'
+                +   '</button>'
+                +   '<button class="threads-v5-editor-btn threads-v5-editor-btn-confirm" '
+                +     'title="Confirm edit (Enter). The edit is staged; click Accept on '
+                +       'the main card to commit it to the thread." '
+                +     'onclick="threadCardConfirmIntentEdit(\'' + tidJs + '\')">'
+                +     '<span class="threads-v5-editor-icon">&#x21A9;</span>'
+                +     '<span class="threads-v5-editor-label">Confirm</span>'
+                +   '</button>'
+                + '</div>'
                 + '</div>'
             );
         }
@@ -1571,6 +1644,65 @@ def _threads_v5_card_styles() -> str:
     font-family: inherit;
     font-size: 13px;
     resize: vertical;
+}
+
+/* Editor hint line — small grey caption above the textarea
+ * explaining Enter / Shift+Enter / Esc semantics. */
+.threads-v5-editor-hint {
+    color: var(--text-muted, #888);
+    font-size: 11px;
+    margin: 0 0 6px 0;
+}
+.threads-v5-editor-hint kbd {
+    background: var(--bg-tertiary, #1a1a1a);
+    border: 1px solid var(--border, #333);
+    border-radius: 3px;
+    padding: 1px 4px;
+    font-family: ui-monospace, SFMono-Regular, monospace;
+    font-size: 10px;
+}
+
+/* Editor action buttons (Discard / Confirm) — sit below the
+ * textarea, right-aligned. Mirror the dashboard's neutral / accent
+ * button colour pair so the pair reads as cancel/submit. */
+.threads-v5-editor-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 8px;
+}
+.threads-v5-editor-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: transparent;
+    color: var(--text, #ddd);
+    border: 1px solid var(--border, #333);
+    border-radius: 5px;
+    padding: 6px 12px;
+    font-size: 12px;
+    cursor: pointer;
+}
+.threads-v5-editor-btn:hover {
+    background: var(--bg-tertiary, #1a1a1a);
+}
+.threads-v5-editor-btn-confirm {
+    border-color: var(--accent, #4a7fc1);
+    color: var(--accent, #4a7fc1);
+}
+.threads-v5-editor-btn-confirm:hover {
+    background: var(--accent, #4a7fc1);
+    color: #fff;
+}
+.threads-v5-editor-btn-cancel {
+    color: var(--text-muted, #888);
+}
+.threads-v5-editor-icon {
+    font-size: 14px;
+    line-height: 1;
+}
+.threads-v5-editor-label {
+    font-size: 12px;
 }
 
 .threads-v5-json-view {
