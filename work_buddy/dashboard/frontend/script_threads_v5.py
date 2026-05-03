@@ -161,8 +161,10 @@ def _threads_v5_script() -> str:
             q: '',                    // search query
             state: '',                 // FSM state filter
             subtype: '',               // '' | 'task'
+            urgency: '',               // '' | 'surface_now' | 'defer'
             show_later: false,
             include_mid_process: false, // Phase 4: show in-flight states
+            has_cleanup: false,        // Wave C: cleanup-applicable only
         };
     }
 
@@ -172,8 +174,10 @@ def _threads_v5_script() -> str:
         if (f.q) params.set('q', f.q);
         if (f.state) params.set('state', f.state);
         if (f.subtype) params.set('subtype', f.subtype);
+        if (f.urgency) params.set('urgency', f.urgency);
         if (f.show_later) params.set('show_later', '1');
         if (f.include_mid_process) params.set('include_mid_process', '1');
+        if (f.has_cleanup) params.set('has_cleanup', '1');
         return params.toString();
     }
 
@@ -192,8 +196,10 @@ def _threads_v5_script() -> str:
             q: '',
             state: '',
             subtype: '',
+            urgency: '',
             show_later: false,
             include_mid_process: false,
+            has_cleanup: false,
         };
         window._topLevelCache = null;
         renderThreads();
@@ -302,11 +308,37 @@ def _threads_v5_script() -> str:
                   + _esc(label) + '</option>';
         }
         html += '</select>';
+        // Wave C: urgency filter chip per UX.md §10.3.
+        const urgencyOpts = [
+            ['', 'Any urgency'],
+            ['surface_now', 'Surface now'],
+            ['defer', 'Defer'],
+        ];
+        html += '<select class="threads-v5-filter-select" '
+              + 'title="Filter by urgency level — surface_now is the '
+              + 'subset of threads that have requested immediate '
+              + 'attention via the inciting context." '
+              + 'onchange="threadsSetFilter(\'urgency\', this.value)">';
+        for (const [v, label] of urgencyOpts) {
+            html += '<option value="' + _esc(v) + '"'
+                  + (f.urgency === v ? ' selected' : '') + '>'
+                  + _esc(label) + '</option>';
+        }
+        html += '</select>';
         html += '<label class="threads-v5-show-later">'
               + '<input type="checkbox"'
               + (f.show_later ? ' checked' : '')
               + ' onchange="threadsSetFilter(\'show_later\', this.checked)">'
               + ' Show deferred</label>';
+        // Wave C: has-cleanup filter chip per UX.md §10.3.
+        html += '<label class="threads-v5-show-later" '
+              + 'title="Show only threads whose inciting source has a '
+              + 'registered cleanup adapter (you can hit Clean Up to '
+              + 'mutate the source).">'
+              + '<input type="checkbox"'
+              + (f.has_cleanup ? ' checked' : '')
+              + ' onchange="threadsSetFilter(\'has_cleanup\', this.checked)">'
+              + ' Cleanup-applicable</label>';
         // Phase 4: surface in-flight states (AWAITING_INFERENCE,
         // INFERRING_*, EXECUTING, MONITORING, CLEANING_UP). Off by
         // default — these are agent-internal states the user can't
@@ -331,6 +363,12 @@ def _threads_v5_script() -> str:
         html += '<h2>Threads <span class="threads-v5-count">('
               + (Array.isArray(threads) ? threads.length : 0) + ')</span></h2>';
         html += _renderFilterBar();
+        html += '<p class="threads-v5-kbd-hint">'
+              + '<kbd>j</kbd>/<kbd>k</kbd> nav · '
+              + '<kbd>Enter</kbd> open · '
+              + '<kbd>/</kbd> search · '
+              + '<kbd>?</kbd> help'
+              + '</p>';
         if (!Array.isArray(threads) || threads.length === 0) {
             const f = window._topLevelFilters || {};
             const filtered = !!(f.q || f.state || f.subtype);
@@ -571,8 +609,22 @@ def _threads_v5_script() -> str:
     };
 
     function renderInspector(itemId) {
-        // Stage 4.1: minimal modal scaffold. Stage 4.5 + 4.6 implement
-        // the real per-item-type modals (context items, actions, events).
+        // Wave C (2026-05-03): event-log inspector. UX.md §11.1
+        // says the inspector ID convention is ``ev-N`` for events.
+        // For now we ship the event-log inspector (the most useful
+        // one); per-context-item inspector is on the right pane in
+        // the card view, not here. ``ci-N`` and ``act-N`` IDs
+        // round-trip through the URL but currently fall back to
+        // the generic inspector.
+        if (/^ev-/.test(itemId)) {
+            return _renderEventLogInspector();
+        }
+        if (/^evlog$/.test(itemId)) {
+            // Special: open the full event log for the active
+            // thread. Triggered from the card's "View timeline"
+            // affordance.
+            return _renderEventLogInspector();
+        }
         return (
             '<div class="threads-v5-modal-backdrop" '
             +   'onclick="threadsCloseInspector()">'
@@ -583,12 +635,129 @@ def _threads_v5_script() -> str:
             +       'class="threads-v5-modal-close">&times;</button>'
             +   '</div>'
             +   '<div class="threads-v5-modal-body">'
-            +     '<p>Stage 4.1 — inspector scaffold.</p>'
-            +     '<p>The real per-item-type modals land in 4.5/4.6.</p>'
+            +     '<p>Click an event in the thread\'s timeline to '
+            +     'inspect it (timeline button on the card body).</p>'
             +   '</div>'
             + '</div>'
             + '</div>'
         );
+    }
+
+    // Event-log inspector — surfaces the full event log for the
+    // active thread in a modal. Useful for debugging, audit, and
+    // for users who want to see the agent's full reasoning chain.
+    function _renderEventLogInspector() {
+        const state = window._threadsState || { path: [] };
+        const tid = state.path[state.path.length - 1] || '';
+        let html = '<div class="threads-v5-modal-backdrop" '
+                 + 'onclick="threadsCloseInspector()">'
+                 + '<div class="threads-v5-modal threads-v5-modal-wide" '
+                 +   'onclick="event.stopPropagation()">'
+                 + '<div class="threads-v5-modal-header">'
+                 +   '<span>Event log: <code>' + _esc(tid) + '</code></span>'
+                 +   '<button onclick="threadsCloseInspector()" '
+                 +     'class="threads-v5-modal-close">&times;</button>'
+                 + '</div>'
+                 + '<div class="threads-v5-modal-body">'
+                 +   '<div id="threads-v5-evlog-content">Loading...</div>'
+                 + '</div>'
+                 + '</div></div>';
+        // Lazy-fetch the events on first render. The inspector
+        // markup is a placeholder; the events go inside
+        // #threads-v5-evlog-content.
+        if (tid) {
+            setTimeout(() => _loadEventLog(tid), 0);
+        }
+        return html;
+    }
+
+    function _loadEventLog(threadId) {
+        fetch('/api/threads/' + encodeURIComponent(threadId) + '/events')
+            .then(r => r.ok ? r.json() : Promise.reject(r.statusText))
+            .then(data => {
+                const target = document.getElementById('threads-v5-evlog-content');
+                if (!target) return;
+                target.innerHTML = _renderEventLogList(data.events || []);
+            })
+            .catch(err => {
+                const target = document.getElementById('threads-v5-evlog-content');
+                if (target) {
+                    target.innerHTML = '<p class="threads-v5-empty-state">'
+                                     + 'Failed to load event log: '
+                                     + _esc(String(err)) + '</p>';
+                }
+            });
+    }
+
+    function _renderEventLogList(events) {
+        if (events.length === 0) {
+            return '<p class="threads-v5-empty-state">No events yet.</p>';
+        }
+        let html = '<table class="threads-v5-evlog-table">';
+        html += '<thead><tr>'
+              + '<th>#</th>'
+              + '<th>When</th>'
+              + '<th>Kind</th>'
+              + '<th>Actor</th>'
+              + '<th>Summary</th>'
+              + '</tr></thead><tbody>';
+        for (const e of events) {
+            const summary = _summariseEvent(e);
+            const ts = e.timestamp || '';
+            const rel = ts ? ('<span title="' + _esc(ts) + '">'
+                              + _summariseTime(ts) + '</span>') : '';
+            html += '<tr>'
+                  + '<td><code>' + _esc(String(e.id)) + '</code></td>'
+                  + '<td>' + rel + '</td>'
+                  + '<td><code>' + _esc(e.kind) + '</code></td>'
+                  + '<td>' + _esc(e.actor || '') + '</td>'
+                  + '<td>' + summary + '</td>'
+                  + '</tr>';
+        }
+        html += '</tbody></table>';
+        return html;
+    }
+
+    function _summariseEvent(e) {
+        const d = e.data || {};
+        if (e.kind === 'state_transition') {
+            return _esc((d.from || '?') + ' → ' + (d.to || '?')
+                        + ' via ' + (d.trigger || ''));
+        }
+        if (e.kind === 'auto_advance_decision') {
+            const adv = d.advance ? '✓ advance' : '⊘ surface';
+            const conf = d.confidence != null
+                ? ' (' + Math.round(d.confidence * 100) + '%)' : '';
+            return _esc(d.target + ': ' + adv + conf);
+        }
+        if (e.kind === 'intent_inferred') {
+            const intent = (d.payload && d.payload.intent) || '';
+            const conf = d.confidence != null
+                ? ' (' + Math.round(d.confidence * 100) + '%)' : '';
+            return _esc(intent + conf);
+        }
+        if (e.kind === 'context_inferred') {
+            const refs = ((d.payload && d.payload.associated_refs) || []).length;
+            return _esc(refs + ' refs');
+        }
+        if (e.kind === 'action_inferred') {
+            const p = d.payload || {};
+            return _esc((p.kind || '?') + ' / ' + (p.name || '(unnamed)'));
+        }
+        return _esc(JSON.stringify(d).slice(0, 80));
+    }
+
+    function _summariseTime(iso) {
+        if (!iso) return '';
+        try {
+            const t = new Date(iso).getTime();
+            const delta = Math.max(0, (Date.now() - t) / 1000);
+            if (delta < 30) return 'just now';
+            if (delta < 60) return Math.floor(delta) + 's ago';
+            if (delta < 3600) return Math.floor(delta / 60) + 'm ago';
+            if (delta < 86400) return Math.floor(delta / 3600) + 'h ago';
+            return Math.floor(delta / 86400) + 'd ago';
+        } catch(e) { return ''; }
     }
 
     window.loadThreads = function (_opts) {
@@ -607,6 +776,135 @@ def _threads_v5_script() -> str:
             window.staticLoaders.threads = window.loadThreads;
         }
     } catch (e) { /* deferred to script_main's pre-registration */ }
+
+    // Wave C — keyboard navigation. Per the user's MEMORY note,
+    // j is UP and k is DOWN (inverted vim convention). Other
+    // shortcuts:
+    //   Enter / o       — open the focused thread
+    //   Escape          — close inspector / go back
+    //   /               — focus the search box
+    //   t               — open timeline (event log) for current
+    //   ?               — show keyboard hint help
+    // We only intercept when the active element isn't an input/
+    // textarea (so users can type "j" in the search box without
+    // triggering navigation).
+    if (!window._threadsKbdInstalled) {
+        window._threadsKbdInstalled = true;
+        document.addEventListener("keydown", function (ev) {
+            // Only act when on the Threads tab
+            const activeTab = (window._threadsState
+                && window._threadsState.path !== undefined)
+                ? "threads" : null;
+            if (activeTab !== "threads") return;
+            const panel = document.getElementById("panel-threads");
+            if (!panel || !panel.classList.contains("active")) {
+                if (panel && panel.style.display === "none") return;
+            }
+            // Skip if user is typing into an input/textarea
+            const tag = (ev.target && ev.target.tagName) || "";
+            if (tag === "INPUT" || tag === "TEXTAREA"
+                || tag === "SELECT") return;
+            if (ev.metaKey || ev.ctrlKey || ev.altKey) return;
+
+            const k = ev.key;
+            if (k === "j") {
+                ev.preventDefault();
+                _kbdMove(-1);
+            } else if (k === "k") {
+                ev.preventDefault();
+                _kbdMove(1);
+            } else if (k === "Enter" || k === "o") {
+                ev.preventDefault();
+                _kbdOpenFocused();
+            } else if (k === "Escape") {
+                if (window._threadsState
+                    && window._threadsState.inspect) {
+                    ev.preventDefault();
+                    window.threadsCloseInspector();
+                } else if (window._threadsState
+                    && window._threadsState.path.length > 0) {
+                    ev.preventDefault();
+                    window.threadsBack();
+                }
+            } else if (k === "/") {
+                ev.preventDefault();
+                const search = document.querySelector(
+                    ".threads-v5-search"
+                );
+                if (search) search.focus();
+            } else if (k === "t") {
+                // Open timeline for the active thread (if any)
+                if (window._threadsState
+                    && window._threadsState.path.length > 0) {
+                    ev.preventDefault();
+                    window.threadsOpenInspector("evlog");
+                }
+            } else if (k === "?") {
+                ev.preventDefault();
+                _kbdToggleHelp();
+            }
+        });
+    }
+
+    // Keyboard-focus index into the top-level threads list.
+    // Persists across renders so j/k stay in place.
+    if (window._threadsKbdIndex === undefined) {
+        window._threadsKbdIndex = -1;
+    }
+
+    function _kbdMove(delta) {
+        const cards = document.querySelectorAll(
+            ".threads-v5-toplist-card"
+        );
+        if (cards.length === 0) return;
+        let idx = window._threadsKbdIndex;
+        idx = (idx < 0) ? 0 : (idx + delta);
+        if (idx < 0) idx = 0;
+        if (idx >= cards.length) idx = cards.length - 1;
+        window._threadsKbdIndex = idx;
+        // Apply visual focus
+        cards.forEach((c, i) => {
+            c.classList.toggle("threads-v5-kbd-focus", i === idx);
+        });
+        cards[idx].scrollIntoView({block: "nearest", behavior: "smooth"});
+    }
+
+    function _kbdOpenFocused() {
+        const idx = window._threadsKbdIndex;
+        const cards = document.querySelectorAll(
+            ".threads-v5-toplist-card"
+        );
+        if (idx >= 0 && cards[idx]) cards[idx].click();
+    }
+
+    function _kbdToggleHelp() {
+        let el = document.getElementById("threads-v5-kbd-help");
+        if (el) { el.remove(); return; }
+        el = document.createElement("div");
+        el.id = "threads-v5-kbd-help";
+        el.className = "threads-v5-modal-backdrop";
+        el.onclick = () => el.remove();
+        el.innerHTML = '<div class="threads-v5-modal" '
+            + 'onclick="event.stopPropagation()" '
+            + 'style="max-width:480px">'
+            + '<div class="threads-v5-modal-header">'
+            + '<span>Keyboard shortcuts</span>'
+            + '<button class="threads-v5-modal-close" '
+            + 'onclick="document.getElementById(\'threads-v5-kbd-help\').remove()">&times;</button>'
+            + '</div>'
+            + '<div class="threads-v5-modal-body">'
+            + '<table class="threads-v5-ci-table">'
+            + '<tr><th><kbd>j</kbd></th><td>Move focus up (inverted vim)</td></tr>'
+            + '<tr><th><kbd>k</kbd></th><td>Move focus down (inverted vim)</td></tr>'
+            + '<tr><th><kbd>Enter</kbd> or <kbd>o</kbd></th><td>Open focused thread</td></tr>'
+            + '<tr><th><kbd>Escape</kbd></th><td>Close inspector / go back</td></tr>'
+            + '<tr><th><kbd>/</kbd></th><td>Focus the search box</td></tr>'
+            + '<tr><th><kbd>t</kbd></th><td>View timeline (when in a thread)</td></tr>'
+            + '<tr><th><kbd>?</kbd></th><td>Toggle this help</td></tr>'
+            + '</table>'
+            + '</div></div>';
+        document.body.appendChild(el);
+    }
 
     // Hashchange listener: when the user uses browser back/forward, the
     // hash changes; re-extract state and re-render iff currently on the
@@ -1034,5 +1332,62 @@ body.hide-legacy-tabs .tab-btn[data-tab="engage"] {
     padding: 18px 20px;
     color: var(--text, #ddd);
     overflow-y: auto;
+}
+
+/* Wave C — wide modal for event-log inspector */
+.threads-v5-modal-wide {
+    max-width: 1100px;
+    width: 90%;
+}
+
+.threads-v5-evlog-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+.threads-v5-evlog-table th {
+    text-align: left;
+    padding: 8px 12px 8px 0;
+    color: var(--text-muted, #888);
+    font-weight: 500;
+    border-bottom: 1px solid var(--border, #333);
+}
+.threads-v5-evlog-table td {
+    padding: 6px 12px 6px 0;
+    border-bottom: 1px solid rgba(60,60,60,0.4);
+    color: var(--text, #ddd);
+    vertical-align: top;
+    word-break: break-word;
+}
+.threads-v5-evlog-table code {
+    font-family: ui-monospace, monospace;
+    font-size: 12px;
+    background: var(--bg-secondary, #1a1a1a);
+    padding: 1px 5px;
+    border-radius: 3px;
+    color: var(--text-muted, #aaa);
+}
+
+/* Wave C — keyboard navigation. The currently-focused row in the
+   threads list gets a subtle highlight so j/k feel responsive. */
+.threads-v5-toplist-card.threads-v5-kbd-focus {
+    outline: 2px solid var(--accent, #4a7fc1);
+    outline-offset: -1px;
+}
+
+.threads-v5-kbd-hint {
+    margin: 8px 0 0 0;
+    font-size: 11px;
+    color: var(--text-muted, #666);
+    text-align: right;
+}
+.threads-v5-kbd-hint kbd {
+    background: var(--bg-secondary, #1a1a1a);
+    border: 1px solid var(--border, #333);
+    border-radius: 3px;
+    padding: 1px 5px;
+    font-family: ui-monospace, monospace;
+    font-size: 10px;
+    color: var(--text, #ccc);
 }
 """

@@ -385,7 +385,7 @@ def _threads_v5_card_script() -> str:
                   + _esc(a.kind) + '</span>'
                 : '';
             html += '<div class="threads-v5-item-label">'
-                  + _kindIcon(a.kind) + ' ' + _esc(a.name || a.id)
+                  + _kindIcon(a.kind, a.name) + ' ' + _esc(a.name || a.id)
                   + kindChip
                   + _confidenceBadge(a.confidence)
                   + '</div>';
@@ -479,6 +479,24 @@ def _threads_v5_card_script() -> str:
                                   + _esc(t) + '</span>').join('')
                     : '<em class="threads-v5-empty">(none)</em>')
             + '</div>'
+            + _renderTimelineLink(thread)
+            + '</div>'
+        );
+    }
+
+    // Wave C: timeline / event-log link. Surfaces the full event
+    // history for the thread in a modal. UX.md §11 says inspect=
+    // event IDs are URL-routable; this is a quick "see everything"
+    // affordance that opens the inspector.
+    function _renderTimelineLink(thread) {
+        return (
+            '<div class="threads-v5-timeline-link-row">'
+            + '<a href="#" '
+            +   'class="threads-v5-timeline-link" '
+            +   'title="Open the full event log for this thread" '
+            +   'onclick="event.preventDefault();threadsOpenInspector(\'evlog\')">'
+            +   _icon("list") + ' View timeline'
+            + '</a>'
             + '</div>'
         );
     }
@@ -877,7 +895,18 @@ def _threads_v5_card_script() -> str:
 
     // ----- Helpers ------------------------------------------------------
 
-    function _kindIcon(kind) {
+    function _kindIcon(kind, name) {
+        // Wave C: prefer an action-name-derived icon when we can
+        // detect a known action shape (calendar event, email, task,
+        // file, decompose). Falls back to kind-level icons.
+        if (name) {
+            const n = String(name).toLowerCase();
+            if (/calendar|invite|schedule|meeting/.test(n)) return _icon("calendar");
+            if (/email|mail|send_msg|send_email/.test(n)) return _icon("mail");
+            if (/task|todo|create_task/.test(n)) return _icon("check-square");
+            if (/file|note|reference/.test(n)) return _icon("file");
+            if (/decompose|split|sub-thread/.test(n)) return _icon("git-branch");
+        }
         if (kind === "standard") return _icon("check-circle");
         if (kind === "improvised") return _icon("zap");
         if (kind === "suggestion") return _icon("lightbulb");
@@ -947,6 +976,29 @@ def _threads_v5_card_script() -> str:
                 + '<polyline points="1 20 1 14 7 14"></polyline>'
                 + '<path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10"></path>'
                 + '<path d="M20.49 15a9 9 0 0 1-14.85 3.36L1 14"></path>',
+            "alert-circle": '<circle cx="12" cy="12" r="10"></circle>'
+                + '<line x1="12" y1="8" x2="12" y2="12"></line>'
+                + '<line x1="12" y1="16" x2="12.01" y2="16"></line>',
+            "list": '<line x1="8" y1="6" x2="21" y2="6"></line>'
+                + '<line x1="8" y1="12" x2="21" y2="12"></line>'
+                + '<line x1="8" y1="18" x2="21" y2="18"></line>'
+                + '<line x1="3" y1="6" x2="3.01" y2="6"></line>'
+                + '<line x1="3" y1="12" x2="3.01" y2="12"></line>'
+                + '<line x1="3" y1="18" x2="3.01" y2="18"></line>',
+            "calendar": '<rect x="3" y="4" width="18" height="18" rx="2"></rect>'
+                + '<line x1="16" y1="2" x2="16" y2="6"></line>'
+                + '<line x1="8" y1="2" x2="8" y2="6"></line>'
+                + '<line x1="3" y1="10" x2="21" y2="10"></line>',
+            "mail": '<path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"></path>'
+                + '<polyline points="22,6 12,13 2,6"></polyline>',
+            "check-square": '<polyline points="9 11 12 14 22 4"></polyline>'
+                + '<path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path>',
+            "file": '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>'
+                + '<polyline points="14 2 14 8 20 8"></polyline>',
+            "git-branch": '<line x1="6" y1="3" x2="6" y2="15"></line>'
+                + '<circle cx="18" cy="6" r="3"></circle>'
+                + '<circle cx="6" cy="18" r="3"></circle>'
+                + '<path d="M18 9a9 9 0 0 1-9 9"></path>',
         };
         const p = paths[name] || '';
         return '<svg class="threads-v5-icon" width="16" height="16" '
@@ -1437,6 +1489,24 @@ def _threads_v5_card_styles() -> str:
     font-size: 12px;
     color: var(--text-muted, #aaa);
     line-height: 1.4;
+}
+
+/* Wave C — timeline / event-log link */
+.threads-v5-timeline-link-row {
+    margin-top: 10px;
+    text-align: right;
+}
+.threads-v5-timeline-link {
+    color: var(--text-muted, #888);
+    text-decoration: none;
+    font-size: 11px;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    cursor: pointer;
+}
+.threads-v5-timeline-link:hover {
+    color: var(--accent, #4a7fc1);
 }
 
 /* Context-item inspector table in the right pane. */

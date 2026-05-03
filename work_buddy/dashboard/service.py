@@ -2494,6 +2494,9 @@ def api_v5_threads_list():
         ?q=...                — substring search over search_blob.
         ?state=...            — filter by FSM state.
         ?subtype=...          — 'task' for Tasks-only.
+        ?urgency=...          — 'surface_now' | 'defer' (post-query).
+        ?has_cleanup=1        — only Threads where the cleanup
+                                adapter is applicable (post-query).
         ?limit=N              — page size (default 100).
         ?show_all=1           — include non-actionable states
                                 (PROPOSED, terminal, …). Default:
@@ -2512,6 +2515,8 @@ def api_v5_threads_list():
         q = request.args.get("q") or ""
         state = request.args.get("state") or None
         subtype = request.args.get("subtype") or None
+        urgency = request.args.get("urgency") or None
+        has_cleanup_only = request.args.get("has_cleanup") == "1"
         include_future = request.args.get("show_later") == "1"
         actionable_only = request.args.get("show_all") != "1"
         include_mid_process = request.args.get("include_mid_process") == "1"
@@ -2529,8 +2534,15 @@ def api_v5_threads_list():
         threads = []
         for t in threads_models:
             data = build_render_data(t.thread_id)
-            if data is not None:
-                threads.append(data)
+            if data is None:
+                continue
+            # Post-query filters — neither has a SQL index, but the
+            # cardinality at this point (post search) is small.
+            if urgency and data.get("urgency") != urgency:
+                continue
+            if has_cleanup_only and not data.get("can_clean_up"):
+                continue
+            threads.append(data)
         return jsonify({"threads": threads})
     except Exception as exc:
         logger.exception("v5 threads list failed: %s", exc)
@@ -2625,6 +2637,37 @@ def api_v5_thread_sub_list(thread_id: str):
             "v5 sub-thread list failed for %s: %s", thread_id, exc,
         )
         return jsonify({"threads": [], "error": str(exc)}), 500
+
+
+@app.get("/api/threads/<thread_id>/events")
+def api_v5_thread_events(thread_id: str):
+    """Return the full event log for a thread.
+
+    Wave C (2026-05-03): backs the dashboard's event-log inspector
+    modal. Lightweight serialization — only the fields the UI
+    needs. Full event data is available via the SQLite DB if
+    deeper inspection is required.
+    """
+    try:
+        from work_buddy.threads import store
+        events = store.list_events(thread_id)
+        out = []
+        for e in events:
+            out.append({
+                "id": e.id,
+                "kind": e.kind,
+                "actor": e.actor,
+                "timestamp": e.timestamp,
+                "data": e.data,
+                "parent_event_id": e.parent_event_id,
+                "inference_tier": e.inference_tier,
+            })
+        return jsonify({"thread_id": thread_id, "events": out})
+    except Exception as exc:
+        logger.exception(
+            "v5 thread events fetch failed for %s: %s", thread_id, exc,
+        )
+        return jsonify({"events": [], "error": str(exc)}), 500
 
 
 def _v5_post_action(
