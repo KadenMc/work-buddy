@@ -1,15 +1,20 @@
-"""Thread chat component JS."""
+"""Conversation chat component JS.
+
+Renamed from ``script_threads.py`` in v5 Stage 1 (the ``Thread`` name
+is reserved for the v5 universal-entity primitive). The chat UI here
+is for agent-user dialogue and is rendered as a Conversation.
+"""
 
 from __future__ import annotations
 
 
-def _thread_chat_script() -> str:
+def _conversation_chat_script() -> str:
     return """
-// ---- ThreadChat: reusable chat component ----
-// Mount into any container. Used by the thread_chat view renderer
-// (standalone tab) and available for any view via attachThreadChat().
+// ---- ConversationChat: reusable chat component ----
+// Mount into any container. Used by the conversation_chat view renderer
+// (standalone tab) and available for any view via attachConversationChat().
 (function() {
-    const _instances = {};  // threadId → { container, pollInterval, lastCount }
+    const _instances = {};  // conversationId → { container, pollInterval, lastCount }
 
     function _esc(s) {
         if (!s) return '';
@@ -22,9 +27,9 @@ def _thread_chat_script() -> str:
         catch(e) { return ''; }
     }
 
-    function _msgHtml(msg, tid) {
+    function _msgHtml(msg, cid) {
         const rawRole = msg.role || 'agent';
-        // Map thread roles to shared chat-msg classes: agent→assistant
+        // Map roles to shared chat-msg classes: agent→assistant
         const cssRole = rawRole === 'agent' ? 'assistant' : rawRole;
         const t = _time(msg.created_at);
 
@@ -34,12 +39,12 @@ def _thread_chat_script() -> str:
         if (msg.status === 'pending' && msg.message_type === 'question') {
             if (msg.response_type === 'boolean') {
                 bubble += '<div class="msg-choices">'
-                  + '<button onclick="threadRespond(&#39;' + tid + '&#39;,&#39;true&#39;)">Yes</button>'
-                  + '<button onclick="threadRespond(&#39;' + tid + '&#39;,&#39;false&#39;)">No</button></div>';
+                  + '<button onclick="conversationRespond(&#39;' + cid + '&#39;,&#39;true&#39;)">Yes</button>'
+                  + '<button onclick="conversationRespond(&#39;' + cid + '&#39;,&#39;false&#39;)">No</button></div>';
             } else if (msg.response_type === 'choice' && msg.choices) {
                 bubble += '<div class="msg-choices">';
                 for (const c of msg.choices) {
-                    bubble += '<button onclick="threadRespond(&#39;' + tid + '&#39;,&#39;' + _esc(c.key) + '&#39;)">'
+                    bubble += '<button onclick="conversationRespond(&#39;' + cid + '&#39;,&#39;' + _esc(c.key) + '&#39;)">'
                        + _esc(c.label) + '</button>';
                 }
                 bubble += '</div>';
@@ -53,50 +58,52 @@ def _thread_chat_script() -> str:
     }
 
     function _render(inst, data) {
-        const thread = data.thread;
+        const conv = data.conversation;
         const msgs = data.messages || [];
-        const tid = thread.thread_id;
+        const cid = conv.conversation_id;
 
         let html = '';
-        for (const m of msgs) html += _msgHtml(m, tid);
+        for (const m of msgs) html += _msgHtml(m, cid);
 
         const pending = msgs.filter(m => m.status === 'pending');
         const hasPending = pending.length > 0;
-        const isOpen = thread.status === 'open';
+        const isOpen = conv.status === 'open';
 
         let status = '';
-        if (thread.status === 'closed') status = 'Thread closed';
+        if (conv.status === 'closed') status = 'Conversation closed';
         else if (hasPending) status = 'Waiting for your response...';
 
-        // Use the appropriate wrapper class
+        // Use the appropriate wrapper class. Keep the same CSS class names
+        // (thread-chat-*) so existing styles continue to work without a
+        // CSS rewrite. Classes are CSS-only labels at this point.
         const wrapClass = inst.mode === 'pane' ? 'thread-chat-pane' : 'thread-chat-standalone';
         inst.container.innerHTML =
             '<div class="' + wrapClass + '">'
-            + '<div class="thread-chat-messages" id="tc-msgs-' + tid + '">' + html + '</div>'
+            + '<div class="thread-chat-messages" id="tc-msgs-' + cid + '">' + html + '</div>'
             + (isOpen
-                ? '<div class="thread-input" id="tc-input-' + tid + '">'
+                ? '<div class="thread-input" id="tc-input-' + cid + '">'
                   + '<input type="text" placeholder="Type a message..." '
-                  + 'onkeydown="if(event.key===&#39;Enter&#39;&&!event.shiftKey){event.preventDefault();threadSendInput(&#39;' + tid + '&#39;)}" />'
-                  + '<button onclick="threadSendInput(&#39;' + tid + '&#39;)">Send</button></div>'
+                  + 'onkeydown="if(event.key===&#39;Enter&#39;&&!event.shiftKey){event.preventDefault();conversationSendInput(&#39;' + cid + '&#39;)}" />'
+                  + '<button onclick="conversationSendInput(&#39;' + cid + '&#39;)">Send</button></div>'
                 : '')
             + (status ? '<div class="thread-status-bar">' + _esc(status) + '</div>' : '')
             + '</div>';
 
-        const el = document.getElementById('tc-msgs-' + tid);
+        const el = document.getElementById('tc-msgs-' + cid);
         if (el) el.scrollTop = el.scrollHeight;
         inst.lastCount = msgs.length;
     }
 
-    async function _fetch(tid) {
-        const r = await fetch('/api/threads/' + tid);
+    async function _fetch(cid) {
+        const r = await fetch('/api/conversations/' + cid);
         if (!r.ok) return null;
         return await r.json();
     }
 
-    async function _poll(tid) {
-        const inst = _instances[tid];
+    async function _poll(cid) {
+        const inst = _instances[cid];
         if (!inst) return;
-        const data = await _fetch(tid);
+        const data = await _fetch(cid);
         if (data && (data.messages || []).length !== (inst.lastCount || 0)) {
             _render(inst, data);
         }
@@ -105,12 +112,12 @@ def _thread_chat_script() -> str:
     // ---- Public API ----
 
     /**
-     * Mount a ThreadChat into a container element.
+     * Mount a ConversationChat into a container element.
      * @param {HTMLElement} container - DOM element to render into
-     * @param {string} threadId - thread to display
+     * @param {string} conversationId - conversation to display
      * @param {object} opts - { mode: 'standalone'|'pane' } (default: standalone)
      */
-    window.attachThreadChat = function(container, threadId, opts) {
+    window.attachConversationChat = function(container, conversationId, opts) {
         opts = opts || {};
         const inst = {
             container: container,
@@ -118,51 +125,51 @@ def _thread_chat_script() -> str:
             lastCount: 0,
             pollInterval: null,
         };
-        _instances[threadId] = inst;
+        _instances[conversationId] = inst;
 
-        _fetch(threadId).then(data => {
-            if (!data) { container.innerHTML = '<div class="empty-state">Thread not found</div>'; return; }
+        _fetch(conversationId).then(data => {
+            if (!data) { container.innerHTML = '<div class="empty-state">Conversation not found</div>'; return; }
             _render(inst, data);
-            inst.pollInterval = setInterval(() => _poll(threadId), 3000);
+            inst.pollInterval = setInterval(() => _poll(conversationId), 3000);
         }).catch(() => {
-            container.innerHTML = '<div class="empty-state">Failed to load thread</div>';
+            container.innerHTML = '<div class="empty-state">Failed to load conversation</div>';
         });
     };
 
-    /** Unmount and stop polling for a thread. */
-    window.detachThreadChat = function(threadId) {
-        const inst = _instances[threadId];
+    /** Unmount and stop polling for a conversation. */
+    window.detachConversationChat = function(conversationId) {
+        const inst = _instances[conversationId];
         if (!inst) return;
         if (inst.pollInterval) clearInterval(inst.pollInterval);
-        delete _instances[threadId];
+        delete _instances[conversationId];
     };
 
-    window.threadRespond = async function(tid, value) {
+    window.conversationRespond = async function(cid, value) {
         if (_readOnly) return;
         try {
-            const r = await fetch('/api/threads/' + tid + '/respond', {
+            const r = await fetch('/api/conversations/' + cid + '/respond', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({value: value}),
             });
-            if (r.ok) { const d = await _fetch(tid); if (d) _render(_instances[tid], d); }
-        } catch(e) { console.error('Thread respond failed:', e); }
+            if (r.ok) { const d = await _fetch(cid); if (d) _render(_instances[cid], d); }
+        } catch(e) { console.error('Conversation respond failed:', e); }
     };
 
-    window.threadSendInput = function(tid) {
-        const el = document.getElementById('tc-input-' + tid);
+    window.conversationSendInput = function(cid) {
+        const el = document.getElementById('tc-input-' + cid);
         if (!el) return;
         const input = el.querySelector('input');
         if (!input || !input.value.trim()) return;
-        threadRespond(tid, input.value.trim());
+        conversationRespond(cid, input.value.trim());
         input.value = '';
     };
 
     // ---- Workflow view renderer: split layout (context + chat) ----
     if (typeof registerViewRenderer === 'function') {
-        registerViewRenderer('thread_chat', function(container, viewId, payload) {
-            const tid = payload && payload.thread_id;
-            if (!tid) { container.innerHTML = '<div class="empty-state">Missing thread_id</div>'; return; }
+        registerViewRenderer('conversation_chat', function(container, viewId, payload) {
+            const cid = payload && payload.conversation_id;
+            if (!cid) { container.innerHTML = '<div class="empty-state">Missing conversation_id</div>'; return; }
 
             container.innerHTML = '';
             const layout = document.createElement('div');
@@ -172,7 +179,7 @@ def _thread_chat_script() -> str:
             contentPane.className = 'thread-split-content';
             contentPane.innerHTML = '<div style="color:var(--text-muted);font-size:13px">'
                 + '<p style="margin-bottom:8px;font-weight:600;color:var(--text)">'
-                + _esc(payload.title || 'Thread') + '</p>'
+                + _esc(payload.title || 'Conversation') + '</p>'
                 + '<p>This panel will show related context — task details, '
                 + 'notification content, or workflow state.</p></div>';
             layout.appendChild(contentPane);
@@ -181,7 +188,7 @@ def _thread_chat_script() -> str:
             layout.appendChild(chatPane);
 
             container.appendChild(layout);
-            attachThreadChat(chatPane, tid, { mode: 'pane' });
+            attachConversationChat(chatPane, cid, { mode: 'pane' });
         });
     }
 
@@ -189,8 +196,8 @@ def _thread_chat_script() -> str:
     const _origRemove = window.removeWorkflowTab;
     if (typeof _origRemove === 'function') {
         window.removeWorkflowTab = function(viewId) {
-            if (viewId && viewId.startsWith('thread-')) {
-                detachThreadChat(viewId.substring(7));
+            if (viewId && viewId.startsWith('conversation-')) {
+                detachConversationChat(viewId.substring('conversation-'.length));
             }
             return _origRemove(viewId);
         };

@@ -305,6 +305,12 @@ class PromptUnit(KnowledgeUnit):
     All system documentation units inherit from this. The class itself adds
     no fields — it serves as the type boundary between system and personal
     knowledge in isinstance checks and store scoping.
+
+    PromptUnit also doubles as a generic fallback container when
+    ``unit_from_dict`` encounters an on-disk ``kind`` that doesn't match
+    any typed subclass (see ``automation/contexts``, etc., which carry
+    ``"kind": "module"``). The deserializer is responsible for passing
+    ``kind`` through explicitly in that case.
     """
     pass
 
@@ -543,6 +549,12 @@ def unit_from_dict(path: str, data: dict[str, Any]) -> KnowledgeUnit:
         base_kwargs["last_observed"] = data.get("last_observed", "")
         base_kwargs["observation_count"] = data.get("observation_count", 0)
         base_kwargs["source_file"] = data.get("source_file", "")
+    elif cls is PromptUnit:
+        # Fallback path: the JSON's ``kind`` didn't match any of the
+        # typed subclasses (e.g. ad-hoc ``"module"`` units). Pass it
+        # through so the loaded unit reflects the actual JSON kind
+        # rather than PromptUnit's default ``"system"``.
+        base_kwargs["kind"] = kind
 
     return cls(**base_kwargs)
 

@@ -19,6 +19,14 @@ from typing import Any, Callable
 
 from work_buddy.frontmatter import parse_frontmatter
 
+# v5 Stage 1.5: capability/workflow definitions get four new fields
+# (is_action, available_in, intrinsic_amplifiers,
+# parameter_schema_for_action, requires_post_review). The
+# InvocationContext enum lives in work_buddy.threads.enums (a
+# pure-data module with no other work_buddy deps, so this import is
+# cycle-safe).
+from work_buddy.threads.enums import InvocationContext
+
 logger = logging.getLogger(__name__)
 
 _REPO_ROOT = Path(__file__).parent.parent.parent
@@ -68,6 +76,51 @@ class Capability:
     # rule. Capabilities with a manifest MUST be idempotent on retry —
     # the partial-state recovery path retries the full capability.
     effects: list[Any] = field(default_factory=list)  # list[EffectSpec]
+
+    # ---------------- v5 Stage 1.5 fields (defaults preserve v4) ----
+    # See data/designs/gtd/reimagined/DESIGN.md §10.
+
+    # Whether this capability appears in the v5 Action Catalog (i.e.
+    # whether action inference may propose it as the action to take
+    # for a Thread). False by default; capabilities the FSM should
+    # be able to dispatch as Standard Actions opt in by setting True.
+    is_action: bool = False
+
+    # Per DESIGN.md §10.3 — set of contexts where this capability is
+    # discoverable / callable. The default mirrors what existing v4
+    # capabilities expect: every context EXCEPT FSM_INTERNAL (which
+    # is reserved for FSM-engine-only operations the agent should
+    # never see directly). Sensitive capabilities and FSM internals
+    # override this set.
+    available_in: set[InvocationContext] = field(
+        default_factory=lambda: {
+            InvocationContext.AGENT_CONVERSATION,
+            InvocationContext.AGENT_AUTONOMOUS,
+            InvocationContext.ACTION_PROPOSAL,
+            InvocationContext.USER_INVOCATION,
+        }
+    )
+
+    # Per DESIGN.md §10.4 — risk amplifiers intrinsic to the action
+    # (regardless of caller / thread). Composed with Thread.risk_profile
+    # at execution time. e.g. ``send_email`` → {"reversibility":
+    # "irreversible", "regret_potential": "high"}.
+    intrinsic_amplifiers: dict[str, str] = field(default_factory=dict)
+
+    # If is_action=True: the JSONSchema (or simplified parameter
+    # spec) the inference module proposes parameters against. Falls
+    # back to the existing ``parameters`` field if not set, but
+    # action templates with non-trivial parameter shapes should
+    # provide an explicit schema.
+    parameter_schema_for_action: dict[str, Any] = field(default_factory=dict)
+
+    # Per DESIGN.md §7.2 / §7.7 (R7.6) — when the FSM dispatches this
+    # action, should the resulting Thread enter `awaiting_review`
+    # after `executing` succeeds? Most actions do NOT (False, default
+    # — the Thread goes straight to `done`). Action templates that
+    # produce output the user must validate (drafts, summaries,
+    # decompositions) opt in by setting True.
+    requires_post_review: bool = False
 
 
 @dataclass
@@ -152,6 +205,28 @@ class WorkflowDefinition:
     # hand-author; see `_compute_workflow_requires()`.
     requires: list[str] = field(default_factory=list)
 
+    # ---------------- v5 Stage 1.5 fields (defaults preserve v4) ----
+    # See DESIGN.md §10. Workflows can also be Action Catalog
+    # entries (i.e. a Standard Action whose execution dispatches
+    # into the workflow conductor). The fields mirror Capability's.
+
+    is_action: bool = False
+    available_in: set[InvocationContext] = field(
+        default_factory=lambda: {
+            InvocationContext.AGENT_CONVERSATION,
+            InvocationContext.AGENT_AUTONOMOUS,
+            InvocationContext.ACTION_PROPOSAL,
+            InvocationContext.USER_INVOCATION,
+        }
+    )
+    intrinsic_amplifiers: dict[str, str] = field(default_factory=dict)
+    parameter_schema_for_action: dict[str, Any] = field(default_factory=dict)
+    requires_post_review: bool = False
+
+    # Forward-looking: if a graduated improvised action got promoted
+    # into the catalog, record the originating Thread for provenance.
+    improvised_origin_thread_id: str | None = None
+
 
 # ---------------------------------------------------------------------------
 # Registry singleton
@@ -202,6 +277,17 @@ def invalidate_registry() -> None:
     Also purges ``work_buddy.*`` modules from ``sys.modules`` so deferred
     imports in capability builders re-read the current source code.
     Clears tool probe cache so tools are re-probed on rebuild.
+
+    **Re-bootstraps v5 Threads after the purge.** Purging
+    ``work_buddy.threads.engine`` from sys.modules nukes the
+    process-global ``_REGISTERED_SIDE_EFFECTS`` dict, which is where
+    the v5 FSM state-entry handlers (enqueue inference, publish
+    Resolution Surface card, etc.) live. Without re-bootstrap, the
+    next FSM transition after a registry reload would land in a
+    wait state with no handlers registered, so capabilities like
+    ``journal_v5_scan`` would silently dead-end at AWAITING_INFERENCE.
+    Discovered live 2026-05-03 when ``mcp_registry_reload`` followed
+    by ``journal_v5_scan`` produced a thread that never got enqueued.
     """
     import sys
     from work_buddy.tools import invalidate_tool_status
@@ -220,6 +306,22 @@ def invalidate_registry() -> None:
     ]
     for k in to_remove:
         del sys.modules[k]
+
+    # Re-bootstrap v5 Threads in this subprocess. Best-effort: if
+    # bootstrap fails (e.g. budget hook init issue), the registry is
+    # still valid — capabilities will work, but FSM transitions on
+    # Threads won't fire side effects. Fail loud so the user notices.
+    try:
+        from work_buddy.threads.bootstrap import bootstrap_for_subprocess
+        bootstrap_for_subprocess(subprocess_name="mcp-gateway-reload")
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning(
+            "v5 Threads re-bootstrap after registry reload failed: %s. "
+            "FSM state-entry handlers may be missing; spawn capabilities "
+            "could dead-end. Restart the gateway to recover.",
+            exc,
+        )
 
 
 def _disabled_reason(capability_name: str) -> str:
@@ -680,7 +782,7 @@ def _build_registry() -> dict[str, Capability | WorkflowDefinition]:
         ("llm", _llm_capabilities),
         ("consent", _consent_capabilities),
         ("notifications", _notification_capabilities),
-        ("threads", _thread_capabilities),
+        ("conversations", _conversation_capabilities),
         ("inline", _inline_capabilities),
         ("remote_session", _remote_session_capabilities),
         ("ledger", _ledger_capabilities),
@@ -3182,6 +3284,54 @@ def _journal_capabilities() -> list[Capability]:
             # retry-on-timeout needed (would just stack queued passes).
             auto_retry=False,
         ),
+        # NOTE: ``threads_v5_seed_test_data`` was a temporary
+        # scaffolding capability used during Stage 4 to populate the
+        # Threads tab with fake data. It was removed as part of the
+        # autonomy implementation cleanup — real journal/Chrome
+        # source pipelines now produce live threads. The
+        # ``seed_test_data`` Python module remains in
+        # work_buddy/threads/ for any future debugging needs but is
+        # no longer registered as a callable capability.
+
+        # ── v5 journal scan (canonical journal → Thread path) ────
+        # Distinct from the v4 ``journal_triage_scan``: this skips the
+        # v4 verdict-pass + ClarifyPool layer and writes straight to
+        # v5 Threads. Once Stage 4.14 retires the v4 pool, this
+        # becomes the only journal-to-thread path and the v4 capability
+        # is removed.
+        Capability(
+            name="journal_v5_scan",
+            description=(
+                "Segment today's journal Running Notes section into "
+                "individual v5 Threads (one per candidate). Each spawned "
+                "Thread carries inciting source='journal_note' so the "
+                "journal-note cleanup adapter applies — clicking 'Clean "
+                "Up' in the v5 Threads tab will delete the inciting "
+                "line. Threads default to the plan_then_review autonomy "
+                "policy: the agent auto-advances through intent + "
+                "context inference and pauses at action approval. "
+                "Idempotent on unchanged content; safe to run repeatedly."
+            ),
+            category="journal",
+            search_aliases=[
+                "v5 journal scan",
+                "journal v5",
+                "spawn v5 threads from journal",
+                "daily journal threads",
+            ],
+            parameters={
+                "journal_date": {"type": "str", "description": "YYYY-MM-DD. Default: today.", "required": False},
+                "profile": {"type": "str", "description": "Override the configured triage.segment_profile.", "required": False},
+                "dry_run": {"type": "bool", "description": "Segment + return items without spawning Threads.", "required": False},
+            },
+            callable=(lambda **kw: __import__(
+                "work_buddy.threads.journal_v5_scan",
+                fromlist=["journal_v5_scan"],
+            ).journal_v5_scan(**kw)),
+            requires=["obsidian"],
+            mutates_state=True,
+            auto_retry=False,
+        ),
         # ── Inline-selection triage producer ────────────────────
         Capability(
             name="inline_triage_scan",
@@ -3471,6 +3621,15 @@ def _task_capabilities() -> list[Capability]:
                 "user_involvement."
             ),
             category="tasks",
+            # v5: this is the canonical Standard Action for "create a
+            # new task". Without this flag the action-inference catalog
+            # is empty and the agent falls back to improvised/suggestion
+            # plans for what should be a one-call task creation.
+            is_action=True,
+            intrinsic_amplifiers={
+                "irreversibility": "low",
+                "regret_potential": "low",
+            },
             parameters={
                 "task_text": {"type": "str", "description": "Short single-line task description (NO newlines — will be rejected)", "required": True},
                 "urgency": {"type": "str", "description": "Urgency: low, medium (default), high", "required": False},
@@ -4863,28 +5022,35 @@ def _consent_capabilities() -> list[Capability]:
     ]
 
 
-def _thread_capabilities() -> list[Capability]:
-    """Thread chat capabilities — multi-turn agent-user conversations.
+def _conversation_capabilities() -> list[Capability]:
+    """Conversation capabilities — multi-turn agent-user dialogue.
 
-    Threads are a standalone subsystem backed by SQLite. The dashboard
-    renders them in a sidebar chat panel.
+    Conversations are a standalone subsystem backed by SQLite. The
+    dashboard renders them in a sidebar chat panel.
+
+    Renamed from ``_thread_capabilities`` in v5 Stage 1; the
+    ``thread`` namespace is reserved for the v5 universal-entity
+    primitive.
     """
     import os
     import time
     import urllib.request
-    from work_buddy.threads.store import (
-        create_thread as _create_thread,
-        get_thread as _get_thread,
-        get_thread_with_messages as _get_thread_msgs,
+    from work_buddy.conversations.store import (
+        create_conversation as _create_conversation,
+        get_conversation as _get_conversation,
+        get_conversation_with_messages as _get_conv_msgs,
         add_message as _add_msg,
         get_pending_question as _get_pending,
-        respond_to_thread as _respond_thread,
-        close_thread as _close_thread,
-        list_threads as _list_threads,
+        respond_to_conversation as _respond_conv,
+        close_conversation as _close_conversation,
+        list_conversations as _list_conversations,
     )
 
-    def _notify_thread_created(thread_id: str, title: str, body: str = "") -> None:
-        """Deliver a thread_chat notification through the proper notification system.
+    def _notify_conversation_created(
+        conversation_id: str, title: str, body: str = "",
+    ) -> None:
+        """Deliver a conversation_chat notification through the
+        notification system.
 
         Creates a Notification record and delivers via SurfaceDispatcher.
         DashboardSurface.deliver() creates the workflow view, and the
@@ -4899,11 +5065,14 @@ def _thread_capabilities() -> list[Capability]:
             from work_buddy.notifications.dispatcher import SurfaceDispatcher
 
             n = Notification(
-                notification_id=f"thread-{thread_id}",
+                notification_id=f"conversation-{conversation_id}",
                 title=title,
                 body=body[:100] if body else "New conversation",
                 response_type=ResponseType.NONE.value,
-                custom_template={"type": "thread_chat", "thread_id": thread_id},
+                custom_template={
+                    "type": "conversation_chat",
+                    "conversation_id": conversation_id,
+                },
                 expandable=True,
             )
             created = _create_notif(n)
@@ -4912,29 +5081,36 @@ def _thread_capabilities() -> list[Capability]:
         except Exception:
             pass  # Dashboard/notification system may not be running
 
-    def thread_create(title: str, message: str = "", source: str = "") -> dict:
+    def conversation_create(
+        title: str, message: str = "", source: str = "",
+    ) -> dict:
         if not source:
             source = f"agent:{os.environ.get('WORK_BUDDY_SESSION_ID', 'unknown')}"
-        thread = _create_thread(title=title, source=source)
-        result = {"thread_id": thread.thread_id, "status": "created"}
+        conv = _create_conversation(title=title, source=source)
+        result = {"conversation_id": conv.conversation_id, "status": "created"}
 
         if message:
-            msg = _add_msg(thread.thread_id, "agent", message)
+            msg = _add_msg(conv.conversation_id, "agent", message)
             if msg:
                 result["message_id"] = msg.message_id
 
-        _notify_thread_created(thread.thread_id, title, message)
+        _notify_conversation_created(conv.conversation_id, title, message)
         return result
 
-    def thread_send(thread_id: str, message: str) -> dict:
-        msg = _add_msg(thread_id, "agent", message)
+    def conversation_send(conversation_id: str, message: str) -> dict:
+        msg = _add_msg(conversation_id, "agent", message)
         if msg is None:
-            return {"error": f"Thread not found or closed: {thread_id}"}
-        # No notification needed — frontend polls /api/threads/<id> for new messages
-        return {"message_id": msg.message_id, "thread_id": thread_id}
+            return {
+                "error": f"Conversation not found or closed: {conversation_id}",
+            }
+        # Frontend polls /api/conversations/<id> for new messages
+        return {
+            "message_id": msg.message_id,
+            "conversation_id": conversation_id,
+        }
 
-    def thread_ask(
-        thread_id: str,
+    def conversation_ask(
+        conversation_id: str,
         question: str,
         response_type: str = "freeform",
         choices: list | None = None,
@@ -4950,16 +5126,18 @@ def _thread_capabilities() -> list[Capability]:
                     choice_dicts.append(c)
 
         msg = _add_msg(
-            thread_id, "agent", question,
+            conversation_id, "agent", question,
             message_type="question",
             response_type=response_type,
             choices=choice_dicts,
         )
         if msg is None:
-            return {"error": f"Thread not found or closed: {thread_id}"}
+            return {
+                "error": f"Conversation not found or closed: {conversation_id}",
+            }
         result = {
             "message_id": msg.message_id,
-            "thread_id": thread_id,
+            "conversation_id": conversation_id,
             "status": "pending",
         }
 
@@ -4968,10 +5146,9 @@ def _thread_capabilities() -> list[Capability]:
             timeout_seconds = min(timeout_seconds, 110)
             deadline = time.time() + timeout_seconds
             while time.time() < deadline:
-                pending = _get_pending(thread_id)
+                pending = _get_pending(conversation_id)
                 if pending is None or pending.status == "answered":
-                    # Question was answered
-                    data = _get_thread_msgs(thread_id)
+                    data = _get_conv_msgs(conversation_id)
                     if data:
                         for m in reversed(data["messages"]):
                             if m.get("message_id") == msg.message_id:
@@ -4985,16 +5162,15 @@ def _thread_capabilities() -> list[Capability]:
 
         return result
 
-    def thread_poll(
-        thread_id: str,
+    def conversation_poll(
+        conversation_id: str,
         timeout_seconds: int | None = None,
     ) -> dict:
-        pending = _get_pending(thread_id)
+        pending = _get_pending(conversation_id)
         if pending is None:
-            # No pending question — check if there was a recent answer
-            data = _get_thread_msgs(thread_id)
+            data = _get_conv_msgs(conversation_id)
             if not data:
-                return {"error": f"Thread not found: {thread_id}"}
+                return {"error": f"Conversation not found: {conversation_id}"}
             answered = [m for m in data["messages"]
                         if m.get("status") == "answered"]
             if answered:
@@ -5013,14 +5189,12 @@ def _thread_capabilities() -> list[Capability]:
                 "question": pending.content,
             }
 
-        # Blocking poll
         timeout_seconds = min(timeout_seconds, 110)
         deadline = time.time() + timeout_seconds
         while time.time() < deadline:
-            p = _get_pending(thread_id)
+            p = _get_pending(conversation_id)
             if p is None:
-                # Was answered
-                data = _get_thread_msgs(thread_id)
+                data = _get_conv_msgs(conversation_id)
                 if data:
                     answered = [m for m in data["messages"]
                                 if m.get("message_id") == pending.message_id]
@@ -5035,129 +5209,128 @@ def _thread_capabilities() -> list[Capability]:
 
         return {"status": "timeout", "waited_seconds": timeout_seconds}
 
-    def thread_close(thread_id: str) -> dict:
-        ok = _close_thread(thread_id)
+    def conversation_close(conversation_id: str) -> dict:
+        ok = _close_conversation(conversation_id)
         if not ok:
-            return {"error": f"Thread not found: {thread_id}"}
-        # Cancel the notification record
+            return {"error": f"Conversation not found: {conversation_id}"}
         try:
             from work_buddy.notifications.store import cancel_notification
-            cancel_notification(f"thread-{thread_id}")
+            cancel_notification(f"conversation-{conversation_id}")
         except Exception:
             pass
-        # Also dismiss the dashboard view directly as a fallback
         try:
             req = urllib.request.Request(
-                f"http://localhost:5127/api/workflow-views/thread-{thread_id}/dismiss",
+                f"http://localhost:5127/api/workflow-views/conversation-{conversation_id}/dismiss",
                 method="POST",
                 headers={"Content-Type": "application/json"},
             )
             urllib.request.urlopen(req, timeout=3)
         except Exception:
             pass
-        return {"closed": True, "thread_id": thread_id}
+        return {"closed": True, "conversation_id": conversation_id}
 
-    def thread_list(status: str = "open") -> dict:
-        threads = _list_threads(status=status if status != "all" else None)
-        return {"threads": threads, "count": len(threads)}
+    def conversation_list(status: str = "open") -> dict:
+        conversations = _list_conversations(
+            status=status if status != "all" else None,
+        )
+        return {
+            "conversations": conversations,
+            "count": len(conversations),
+        }
 
     return [
         Capability(
-            name="thread_create",
-            description="Create a new conversation thread with the user. Opens a chat sidebar on the dashboard.",
-            category="threads",
+            name="conversation_create",
+            description="Create a new conversation with the user. Opens a chat sidebar on the dashboard.",
+            category="conversations",
             parameters={
-                "title": {"type": "string", "description": "Thread title", "required": True},
+                "title": {"type": "string", "description": "Conversation title", "required": True},
                 "message": {"type": "string", "description": "Optional initial agent message"},
                 "source": {"type": "string", "description": "Source identifier (auto-detected if omitted)"},
             },
-            callable=thread_create,
+            callable=conversation_create,
             search_aliases=["chat", "conversation", "follow up", "multi-turn", "side chat"],
         ),
         Capability(
-            name="thread_send",
-            description="Send a message in an existing thread (fire-and-forget, no response expected).",
-            category="threads",
+            name="conversation_send",
+            description="Send a message in an existing conversation (fire-and-forget, no response expected).",
+            category="conversations",
             parameters={
-                "thread_id": {"type": "string", "description": "Thread ID", "required": True},
+                "conversation_id": {"type": "string", "description": "Conversation ID", "required": True},
                 "message": {"type": "string", "description": "Message content", "required": True},
             },
-            callable=thread_send,
+            callable=conversation_send,
             search_aliases=[
                 "chat message",
-                "thread message",
+                "conversation message",
                 "send chat message",
-                "post in thread",
+                "post in conversation",
                 "speak in conversation",
-                "fire thread message",
             ],
         ),
         Capability(
-            name="thread_ask",
-            description="Ask a question in a thread and optionally wait for the user's response.",
-            category="threads",
+            name="conversation_ask",
+            description="Ask a question in a conversation and optionally wait for the user's response.",
+            category="conversations",
             parameters={
-                "thread_id": {"type": "string", "description": "Thread ID", "required": True},
+                "conversation_id": {"type": "string", "description": "Conversation ID", "required": True},
                 "question": {"type": "string", "description": "Question text", "required": True},
                 "response_type": {"type": "string", "description": "freeform (default), boolean, or choice"},
                 "choices": {"type": "array", "description": "For choice type: [{key, label}] or [str]"},
                 "timeout_seconds": {"type": "integer", "description": "Block and wait for response (max 110s)"},
             },
-            callable=thread_ask,
-            search_aliases=["chat question", "ask user", "thread question", "follow up question"],
+            callable=conversation_ask,
+            search_aliases=["chat question", "ask user", "conversation question", "follow up question"],
         ),
         Capability(
-            name="thread_poll",
-            description="Check if the latest question in a thread has been answered.",
-            category="threads",
+            name="conversation_poll",
+            description="Check if the latest question in a conversation has been answered.",
+            category="conversations",
             parameters={
-                "thread_id": {"type": "string", "description": "Thread ID", "required": True},
+                "conversation_id": {"type": "string", "description": "Conversation ID", "required": True},
                 "timeout_seconds": {"type": "integer", "description": "Block and wait (max 110s)"},
             },
-            callable=thread_poll,
+            callable=conversation_poll,
             search_aliases=[
-                "check thread",
-                "thread response",
+                "check conversation",
+                "conversation response",
                 "poll chat",
                 "has user answered",
-                "thread answered",
+                "conversation answered",
                 "check for reply",
-                "thread question status",
             ],
         ),
         Capability(
-            name="thread_close",
-            description="Close a conversation thread.",
-            category="threads",
+            name="conversation_close",
+            description="Close a conversation.",
+            category="conversations",
             parameters={
-                "thread_id": {"type": "string", "description": "Thread ID", "required": True},
+                "conversation_id": {"type": "string", "description": "Conversation ID", "required": True},
             },
-            callable=thread_close,
+            callable=conversation_close,
             search_aliases=[
                 "end conversation",
                 "close chat",
-                "finish thread",
+                "finish conversation",
                 "wrap up conversation",
                 "close dashboard chat",
-                "end thread",
             ],
         ),
         Capability(
-            name="thread_list",
-            description="List conversation threads.",
-            category="threads",
+            name="conversation_list",
+            description="List conversations.",
+            category="conversations",
             parameters={
                 "status": {"type": "string", "description": "Filter: 'open' (default), 'closed', or 'all'"},
             },
-            callable=thread_list,
+            callable=conversation_list,
             search_aliases=[
                 "list chats",
-                "active threads",
-                "conversations",
-                "open threads",
-                "what threads are active",
+                "active conversations",
+                "open conversations",
+                "what conversations are active",
                 "recent conversations",
-                "thread directory",
+                "conversation directory",
             ],
         ),
     ]

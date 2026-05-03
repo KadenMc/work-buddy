@@ -545,6 +545,45 @@ def run(foreground: bool = True) -> None:
     cfg = load_config()
     sidecar_cfg = cfg.get("sidecar", {})
 
+    # --- v5 Stage 2.9 bootstrap ---
+    # Wires the FSM engine state-entry handlers + LLM-call queue
+    # admission hook. Idempotent and self-contained. Failure here
+    # is non-fatal — v5 simply won't process Threads but the rest
+    # of the sidecar (retry queue, scheduled jobs, conductor) is
+    # unaffected.
+    from work_buddy.threads.bootstrap import bootstrap_for_subprocess
+    bootstrap_for_subprocess(subprocess_name="sidecar")
+
+    # --- v5 inference-worker poller ---
+    # Without this, queue.enqueue() during AWAITING_INFERENCE entry
+    # would just pile up entries with nothing draining them. The
+    # poller pulls one entry per cycle and runs inference inline
+    # in this background thread.
+    try:
+        from work_buddy.threads import inference_worker
+
+        def _v5_inference_poller_loop():
+            try:
+                inference_worker.run_poller(
+                    worker_id=f"sidecar-{os.getpid()}",
+                    max_iterations=None,  # forever
+                    poll_interval_s=5.0,
+                )
+            except Exception as e:
+                logger.warning("v5 inference poller crashed: %s", e)
+
+        threading.Thread(
+            target=_v5_inference_poller_loop,
+            name="v5-inference-poller",
+            daemon=True,
+        ).start()
+        logger.info("v5 inference poller started (5s interval)")
+    except Exception as e:
+        logger.warning(
+            "v5 inference poller could not start; queued inference "
+            "requests will pile up untouched: %s", e,
+        )
+
     # --- Check for existing daemon — if one's alive, take it over ---
     # We enforce single-instance by replacement, not refusal: the user
     # may be intentionally restarting in a visible terminal to regain

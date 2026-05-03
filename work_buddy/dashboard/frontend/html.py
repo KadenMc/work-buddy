@@ -50,16 +50,12 @@ def _html() -> str:
 <nav class="tab-bar">
     <div class="tab-bar-left">
         <button class="tab-btn active" data-tab="overview">Overview</button>
+        <button class="tab-btn" data-tab="threads"
+                title="v5 Threads — unified resolution surface">Threads</button>
         <button class="tab-btn" data-tab="today"
                 title="What should I do right now? Slice 5b /wb-task-me view.">Today</button>
         <button class="tab-btn" data-tab="tasks">Tasks</button>
         <button class="tab-btn" data-tab="review">Review</button>
-        <button class="tab-btn" data-tab="review-queue"
-                title="Tier-3 outputs awaiting accept/revise/reject">Review Queue</button>
-        <button class="tab-btn" data-tab="daily-log"
-                title="Tier-4 autonomous actions, collapsible by category">Daily Log</button>
-        <button class="tab-btn" data-tab="engage"
-                title="What can I act on right now? Slice 5a Engage view.">Engage</button>
         <button class="tab-btn" data-tab="status">Status</button>
         <button class="tab-btn" data-tab="chats">Chats</button>
         <button class="tab-btn" data-tab="contracts">Contracts</button>
@@ -86,6 +82,13 @@ def _html() -> str:
     <div class="section-title">Scheduled Jobs</div>
     <div id="overview-jobs"><div class="loading">Loading...</div></div>
 
+</div>
+
+<!-- THREADS (v5) — Unified resolution surface for v5 Threads. Stage
+     4 ships this incrementally; the panel is rendered by
+     window.loadThreads in script_threads_v5.py. -->
+<div class="tab-panel" id="panel-threads">
+    <div class="loading">Loading Threads...</div>
 </div>
 
 <!-- TODAY (Slice 5b) — re-runnable "what should I do right now?" view.
@@ -157,88 +160,6 @@ def _html() -> str:
     </div>
     <div id="review-narrative" class="review-narrative"></div>
     <div id="review-groups"><div class="loading">Loading review items...</div></div>
-</div>
-
-<!-- REVIEW QUEUE (Slice 4) — tier-3 outputs awaiting review.
-     Populated by /api/automation/review-queue. Each card is rendered
-     via the Slice 1.5 Resolution Surface primitives so the keyboard
-     layer (j/k/enter/r/s/?) and Defer / Re-direct affordances stay
-     consistent with the main Review tab. The two surfaces serve
-     different content shapes (pool entries vs task_metadata rows)
-     but share the UX language. -->
-<div class="tab-panel" id="panel-review-queue">
-    <div class="review-toolbar">
-        <div class="section-title">Review Queue
-            <span class="section-subtitle"
-                  title="Tier-3 outputs awaiting accept / revise / reject">
-                tier-3 surface · Slice 4
-            </span>
-        </div>
-        <button class="chats-accent-btn" onclick="loadReviewQueue()">Refresh</button>
-    </div>
-    <div id="review-queue-summary" class="review-narrative"></div>
-    <div id="review-queue-items"><div class="loading">Loading review queue...</div></div>
-</div>
-
-<!-- DAILY LOG (Slice 4) — tier-4 autonomous actions, collapsible by
-     category. Read-only in Slice 4; demote-category lands in a
-     follow-up. Reads /api/automation/daily-log. -->
-<div class="tab-panel" id="panel-daily-log">
-    <div class="review-toolbar">
-        <div class="section-title">Daily Log
-            <span class="section-subtitle"
-                  title="Tier-4 actions taken autonomously, grouped by category">
-                tier-4 surface · Slice 4
-            </span>
-        </div>
-        <select id="daily-log-window" class="chats-select"
-                onchange="loadDailyLog()" title="Look-back window">
-            <option value="1" selected>1 day</option>
-            <option value="3">3 days</option>
-            <option value="7">7 days</option>
-        </select>
-        <button class="chats-accent-btn" onclick="loadDailyLog()">Refresh</button>
-    </div>
-    <div id="daily-log-summary" class="review-narrative"></div>
-    <!-- Slice 5a: blocked-by-context nudge bar. Populated by
-         /api/automation/blocked-by-context.  Each entry renders a
-         line "N tasks blocked on @token — set up <tool>?" with a
-         deep-link to the setup wizard.  Hidden when no blockers. -->
-    <div id="daily-log-blocked-by-context" class="blocked-by-context"></div>
-    <div id="daily-log-categories"><div class="loading">Loading daily log...</div></div>
-</div>
-
-<!-- ENGAGE (Slice 5a) — "what can I act on right now?" view.
-     Populated by /api/automation/engage.  The user picks a
-     current-context preset; the view filters tasks against the
-     who-can-act resolver and renders blocker badges with deep
-     links per ROADMAP §3.3. -->
-<div class="tab-panel" id="panel-engage">
-    <div class="review-toolbar">
-        <div class="section-title">Engage
-            <span class="section-subtitle"
-                  title="What can I act on right now? Slice 5a action contexts.">
-                action contexts · Slice 5a
-            </span>
-        </div>
-        <select id="engage-context-preset" class="chats-select"
-                onchange="onEngageContextPresetChange()"
-                title="Your current context — what can you actually do?">
-            <option value="at_desk">At desk + online</option>
-            <option value="phone_only">Phone only</option>
-            <option value="untethered">Untethered</option>
-            <option value="custom">Custom…</option>
-        </select>
-        <label class="engage-toggle"
-               title="Hide tasks the agent can't satisfy right now (default: show with blocker badge)">
-            <input type="checkbox" id="engage-hide-blocked"
-                   onchange="loadEngage()"> Hide blocked
-        </label>
-        <button class="chats-accent-btn" onclick="loadEngage()">Refresh</button>
-    </div>
-    <div id="engage-current-contexts" class="engage-current-contexts"></div>
-    <div id="engage-summary" class="review-narrative"></div>
-    <div id="engage-items"><div class="loading">Loading engage view...</div></div>
 </div>
 
 <!-- Item-detail drawer. Persistent in the DOM, slides in/out from

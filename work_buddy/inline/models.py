@@ -1,6 +1,6 @@
 """Dataclasses for the inline-command subsystem.
 
-Mirrors the conventions used in ``work_buddy.threads.models``:
+Mirrors the conventions used in ``work_buddy.conversations.models``:
 
 - ``@dataclass`` with defaults for every field
 - ``to_dict()`` for JSON-safe serialisation (handlers/callables are excluded)

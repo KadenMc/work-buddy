@@ -1505,458 +1505,18 @@ def api_triage_redirect():
 
 
 # ---------------------------------------------------------------------------
-# Slice 4 — Review Queue (tier-3) + Daily Log (tier-4)
+# Engage view payload
 # ---------------------------------------------------------------------------
 #
-# Two surfaces, two endpoints, both reading the new Slice-4 columns
-# (``risk_profile_json``, ``automation_tier_achievable``,
-# ``last_actor``) on ``task_metadata``.  The composition rule lives
-# entirely in ``work_buddy.automation.risk`` — these endpoints just
-# project the resolver's output into a frontend-friendly shape and
-# group by tier.
-#
-# Why two endpoints and not one filtered listing?  v4 §1 makes the
-# two tiers UX-distinct: tier-3 outputs are awaiting review (the user
-# decides accept / revise / reject); tier-4 actions are already done
-# and want a glanceable daily summary, not a per-card form.  Sharing
-# one endpoint would force the frontend to branch on tier inside the
-# loop, which couples the two surfaces' empty states / sort orders /
-# refresh policies.
-
-def _build_review_queue_payload() -> dict:
-    """Compute the Review Queue payload from task_metadata + risk resolver.
-
-    Returns the full payload (no pagination yet — we expect this list
-    to be small; if/when it grows past ~50, add cursor pagination).
-    Each entry carries enough context for the Slice 1.5 Resolution
-    Surface to render: id / text / tier / blocker / actor / contract /
-    intent.  No mutations happen here; the frontend's Resolution
-    Surface mounts the same Slice 1.5 primitives over the result.
-
-    Filter: tasks must have either ``risk_profile_json IS NOT NULL``
-    (Clarify classified the action) OR ``automation_tier_achievable
-    IS NOT NULL`` (a caller pinned a tier explicitly).  This keeps
-    legacy tasks — which all default to tier-3 via the safe-profile
-    fallback — out of the surface.  The Review Queue is for "the
-    agent has a tier-3 output to review," not "every untouched task
-    happens to default to tier 3."
-
-    Slice 5a: each entry carries a ``who_can_act`` block (booleans +
-    per-side unmet contexts + handoff eligibility) so the Resolution
-    Surface can render handoff cards and typed agent_context_unmet /
-    user_context_unmet badges.
-    """
-    from work_buddy.obsidian.tasks import store as tasks_store
-    from work_buddy.automation.risk import (
-        resolve_operating_tier,
-    )
-    from work_buddy.automation.contexts import (
-        parse_context_list,
-        resolve_who_can_act,
-    )
-    from work_buddy.clarify.resolution import (
-        PIPELINE_BLOCKER_PRESENTATION,
-    )
-
-    # Read every non-archived task; the resolver does the gating.
-    rows = tasks_store.query(include_archived=False)
-
-    # Reuse the active config so we honour user overrides.  Done once
-    # per request; the resolver is pure so it doesn't matter that we
-    # don't memoize across requests.
-    cfg = load_config()
-
-    queue: list[dict] = []
-    for row in rows:
-        if row.get("state") in {"done", "archived"}:
-            continue
-
-        # Skip tasks the resolver hasn't been given an explicit
-        # signal about.  Without a populated risk profile or cached
-        # achievable, we'd surface every legacy task — that's not
-        # the Review Queue's job.
-        if (
-            row.get("risk_profile_json") is None
-            and row.get("automation_tier_achievable") is None
-            and row.get("agent_required_contexts") is None
-            and row.get("user_required_contexts") is None
-        ):
-            continue
-
-        decision = resolve_operating_tier(row, config=cfg)
-        # Tier-3 == "execute and review output" — exactly what the
-        # Review Queue surfaces.  Slice 5a adds tier-1 entries with a
-        # context-blocker (the agent has nothing to execute but the
-        # user might handoff into action).  Lower tiers without a
-        # blocker continue to ship silently.
-        if decision.operating == 3:
-            include = True
-        elif decision.operating <= 1 and decision.pipeline_blocker:
-            include = True
-        else:
-            include = False
-        if not include:
-            continue
-
-        blocker = decision.pipeline_blocker
-        blocker_view = None
-        if blocker is not None:
-            base = PIPELINE_BLOCKER_PRESENTATION.get(blocker, {})
-            blocker_view = {
-                "kind": blocker,
-                "label": base.get("label", blocker),
-                "tone": base.get("tone", "info"),
-                "deep_link": base.get("deep_link"),
-                "deep_link_label": base.get("deep_link_label"),
-                "detail": "; ".join(decision.reasons) or None,
-            }
-
-        # Slice 5a: who-can-act decision for the surface.
-        who = resolve_who_can_act(
-            row.get("agent_required_contexts"),
-            row.get("user_required_contexts"),
-        )
-        who_view = {
-            "agent": who.agent,
-            "user": who.user,
-            "blocked": who.blocked,
-            "agent_unmet": list(who.agent_unmet),
-            "user_unmet": list(who.user_unmet),
-            "agent_handoff_eligible": who.agent_handoff_eligible,
-            "unknown_tokens": list(who.unknown_tokens),
-            "agent_required_contexts": parse_context_list(
-                row.get("agent_required_contexts"),
-            ),
-            "user_required_contexts": parse_context_list(
-                row.get("user_required_contexts"),
-            ),
-            "source": row.get("required_contexts_source"),
-        }
-
-        queue.append({
-            "task_id": row.get("task_id"),
-            "text": row.get("description") or row.get("task_id"),
-            "state": row.get("state"),
-            "urgency": row.get("urgency"),
-            "contract": row.get("contract"),
-            "achievable": decision.achievable,
-            "allowed_under_risk": decision.allowed_under_risk,
-            "operating": decision.operating,
-            "capped_by": list(decision.capped_by),
-            "reasons": list(decision.reasons),
-            "pipeline_blocker": blocker_view,
-            "last_actor": row.get("last_actor"),
-            "updated_at": row.get("updated_at"),
-            "who_can_act": who_view,
-        })
-
-    # Most-urgent-first: tasks with a pipeline blocker bubble up; tie-
-    # broken by recency so the user sees fresh output before backlog.
-    queue.sort(
-        key=lambda e: (
-            0 if e.get("pipeline_blocker") else 1,
-            -(_iso_to_epoch(e.get("updated_at"))),
-        ),
-    )
-    return {"status": "ok", "count": len(queue), "items": queue}
-
-
-def _iso_to_epoch(iso: str | None) -> float:
-    """Return ``datetime.fromisoformat(iso).timestamp()`` or 0 on failure.
-
-    Used for sort keys; the negative form puts most-recent first.
-    """
-    if not iso:
-        return 0.0
-    from datetime import datetime
-    try:
-        return datetime.fromisoformat(iso).timestamp()
-    except (ValueError, TypeError):
-        return 0.0
-
-
-@app.get("/api/automation/review-queue")
-def api_automation_review_queue():
-    """Tier-3 outputs awaiting accept/revise/reject (Slice 4 §3.5).
-
-    Reads task_metadata, runs the operating-tier resolver against
-    each task's risk profile, and surfaces only those that resolve to
-    tier 3.  No mutations happen here; the frontend uses the Slice
-    1.5 Resolution Surface primitives to act.
-    """
-    try:
-        return jsonify(_build_review_queue_payload())
-    except Exception as exc:
-        logger.exception("api_automation_review_queue: failed")
-        return jsonify({"status": "error", "error": str(exc)}), 500
-
-
-def _build_daily_log_payload(*, days: int = 1) -> dict:
-    """Compute the Daily Log payload (tier-4 actions in window).
-
-    Tier-4 work is "fully delegated" — the user wants a glanceable
-    log, not a per-card prompt.  We surface tasks that resolved to
-    tier-4 AND had a state change in the last ``days`` days, grouping
-    by category prefix (the namespace tag) and the action that
-    occurred (created / completed / state-change).  Demote-category
-    is the only action; it lives behind ``/api/automation/daily-log/
-    demote-category`` (not yet — Slice 4 ships read-only first).
-    """
-    from datetime import datetime, timedelta, timezone
-    from work_buddy.obsidian.tasks import store as tasks_store
-    from work_buddy.automation.risk import resolve_operating_tier
-
-    cfg = load_config()
-    now_dt = datetime.now(timezone.utc)
-    since_dt = now_dt - timedelta(days=days)
-    since_iso = since_dt.isoformat()
-    until_iso = now_dt.isoformat()
-
-    # Pull every state change in the window.  Each event has the
-    # task_id; we resolve the tier per task once, in bulk.
-    events = tasks_store.get_events_in_range(since_iso, until_iso)
-
-    # Bulk-prefetch every task referenced by the window's events in
-    # ONE query — opening a sqlite connection per event would N+1
-    # this surface to ~20s on a 7-day window with ~300 events.  Same
-    # for the tags lookup.  All in-memory after this.
-    distinct_tids = {
-        ev["task_id"] for ev in events if ev.get("task_id")
-    }
-    if not distinct_tids:
-        return {
-            "status": "ok",
-            "window_days": days,
-            "since": since_iso,
-            "until": until_iso,
-            "total_events": 0,
-            "categories": [],
-        }
-
-    rows_by_tid: dict[str, dict] = {}
-    tags_by_tid: dict[str, list[dict]] = {}
-    placeholders = ",".join("?" * len(distinct_tids))
-    tids_list = list(distinct_tids)
-    conn = tasks_store.get_connection()
-    try:
-        for r in conn.execute(
-            f"SELECT * FROM task_metadata WHERE task_id IN ({placeholders})",
-            tids_list,
-        ).fetchall():
-            rows_by_tid[r["task_id"]] = dict(r)
-        for r in conn.execute(
-            f"""SELECT task_id, tag, is_namespace FROM task_tags
-                WHERE task_id IN ({placeholders})
-                ORDER BY is_namespace DESC, tag""",
-            tids_list,
-        ).fetchall():
-            tags_by_tid.setdefault(r["task_id"], []).append(dict(r))
-    finally:
-        conn.close()
-
-    # Resolve tiers in a single in-memory pass.
-    tier_by_tid: dict[str, int] = {}
-    for tid in distinct_tids:
-        row = rows_by_tid.get(tid)
-        if not row:
-            tier_by_tid[tid] = 0
-            continue
-        tier_by_tid[tid] = resolve_operating_tier(
-            row, config=cfg,
-        ).operating
-
-    def _category_for_tid(tid: str) -> str | None:
-        tags = tags_by_tid.get(tid) or []
-        if not tags:
-            return None
-        ns = [t for t in tags if t.get("is_namespace")]
-        pick = ns[0] if ns else tags[0]
-        raw = pick.get("tag", "")
-        return raw.split("/")[0] if raw else None
-
-    # Group by category (the first segment of the first namespace tag),
-    # then by event for collapsible rendering.
-    by_category: dict[str, list[dict]] = {}
-    for ev in events:
-        tid = ev.get("task_id")
-        if not tid:
-            continue
-        # The Daily Log is for *actions taken*, not for the
-        # creation-event row store.create() writes alongside every
-        # task.  Drop creation events; legitimate tier-4 work always
-        # carries a non-NULL old_state (state changed FROM something).
-        if ev.get("reason") == "created" or ev.get("old_state") is None:
-            continue
-        if tier_by_tid.get(tid) != 4:
-            continue
-        row = rows_by_tid.get(tid) or {}
-        category = _category_for_tid(tid) or "(uncategorized)"
-        entry = {
-            "task_id": tid,
-            "text": row.get("description") or tid,
-            "old_state": ev.get("old_state"),
-            "new_state": ev.get("new_state"),
-            "changed_at": ev.get("changed_at"),
-            "reason": ev.get("reason"),
-            "last_actor": row.get("last_actor"),
-        }
-        by_category.setdefault(category, []).append(entry)
-
-    categories = [
-        {
-            "category": cat,
-            "events": sorted(
-                evs, key=lambda e: e.get("changed_at") or "", reverse=True,
-            ),
-            "count": len(evs),
-        }
-        for cat, evs in sorted(by_category.items())
-    ]
-    total_events = sum(c["count"] for c in categories)
-    return {
-        "status": "ok",
-        "window_days": days,
-        "since": since_iso,
-        "until": until_iso,
-        "total_events": total_events,
-        "categories": categories,
-    }
-
-
-def _category_for_task(task_id: str) -> str | None:
-    """Best-effort category for a task — first namespace tag's prefix.
-
-    The Daily Log groups by category for the collapse-by-category UX.
-    The ``task_tags`` table holds normalized tags; we pick the first
-    namespace tag (or ``projects/<slug>`` fallback) and use its first
-    path segment as the bucket.
-    """
-    from work_buddy.obsidian.tasks import store as tasks_store
-    tags = tasks_store.get_task_tags(task_id)
-    if not tags:
-        return None
-    namespace_tags = [t for t in tags if t.get("is_namespace")]
-    pick = namespace_tags[0] if namespace_tags else tags[0]
-    raw = pick.get("tag", "")
-    return raw.split("/")[0] if raw else None
-
-
-@app.get("/api/automation/daily-log")
-def api_automation_daily_log():
-    """Tier-4 actions in the last day, grouped by category (Slice 4 §3.5).
-
-    Query params:
-        days: window size (default 1, max 7).  The dashboard surface
-            is the *daily* log, but a 7-day backstop helps users who
-            check less often.
-    """
-    try:
-        days_raw = request.args.get("days", "1")
-        days = max(1, min(7, int(days_raw)))
-    except (TypeError, ValueError):
-        days = 1
-
-    try:
-        return jsonify(_build_daily_log_payload(days=days))
-    except Exception as exc:
-        logger.exception("api_automation_daily_log: failed")
-        return jsonify({"status": "error", "error": str(exc)}), 500
-
-
-def _build_blocked_tasks_payload() -> dict:
-    """Slice 5a: aggregate open tasks by the contexts blocking them.
-
-    Powers the daily nudge "X tasks blocked on @email_send — set up
-    email integration?" with deep-links to the setup wizard for the
-    underlying tool ID.
-
-    Algorithm:
-    1. Walk all non-archived, non-done tasks.
-    2. For each, run :func:`resolve_who_can_act` against the live
-       tool-status cache.
-    3. If the agent has unmet contexts, attribute one count to each
-       missing token.
-    4. Group by token, return sorted by count desc, including the
-       deep-link target (the first tool ID in the registry mapping)
-       so the frontend can build a setup-wizard URL.
-
-    Read-only; no mutations.
-    """
-    from work_buddy.obsidian.tasks import store as tasks_store
-    from work_buddy.automation.contexts import (
-        CONTEXT_REGISTRY,
-        resolve_who_can_act,
-    )
-    from work_buddy.tools import get_tool_status
-
-    rows = tasks_store.query(include_archived=False)
-    by_token: dict[str, dict] = {}
-    examined = 0
-
-    for row in rows:
-        if row.get("state") in {"done", "archived"}:
-            continue
-        agent_req = row.get("agent_required_contexts")
-        user_req = row.get("user_required_contexts")
-        if not agent_req and not user_req:
-            continue
-        examined += 1
-
-        who = resolve_who_can_act(agent_req, user_req)
-        if who.agent:
-            continue  # agent satisfies — no blocker on this row
-
-        for token in who.agent_unmet:
-            entry = by_token.setdefault(
-                token,
-                {
-                    "context": token,
-                    "count": 0,
-                    "task_ids": [],
-                    "tool_ids": [],
-                    "setup_link": None,
-                },
-            )
-            entry["count"] += 1
-            tid = row.get("task_id")
-            if tid and len(entry["task_ids"]) < 10:
-                entry["task_ids"].append(tid)
-            mapped = CONTEXT_REGISTRY.get(token)
-            if mapped:
-                for t in mapped:
-                    if t not in entry["tool_ids"]:
-                        entry["tool_ids"].append(t)
-                if entry["setup_link"] is None:
-                    entry["setup_link"] = (
-                        f"/setup?requirement_id={mapped[0]}"
-                    )
-
-    items = sorted(
-        by_token.values(),
-        key=lambda e: (-e["count"], e["context"]),
-    )
-
-    return {
-        "status": "ok",
-        "examined_tasks": examined,
-        "blocked_count": sum(e["count"] for e in items),
-        "items": items,
-        "tool_status": get_tool_status().get("tools", {}),
-    }
-
-
-@app.get("/api/automation/blocked-by-context")
-def api_automation_blocked_by_context():
-    """Slice 5a: aggregate of context-blocked tasks for the daily nudge."""
-    try:
-        return jsonify(_build_blocked_tasks_payload())
-    except Exception as exc:
-        logger.exception("api_automation_blocked_by_context: failed")
-        return jsonify({"status": "error", "error": str(exc)}), 500
-
+# Originally drove the v4 Engage tab; that surface was removed once
+# v5 Threads became the canonical "what should I act on" UI. The
+# helper survives because ``work_buddy.task_me.load_context_for_task_me``
+# still composes it into the Today tab's payload (focus list filtered
+# by who-can-act + user-current contexts). No HTTP route is mounted —
+# this is a private collaborator of the Today builder below.
 
 def _build_engage_view_payload(*, current_contexts: list[str] | None = None) -> dict:
-    """Slice 5a: Engage tab payload.
+    """Per-task tier × who_can_act × user-current snapshot.
 
     Returns every open task with:
     - The Slice-4 operating-tier decision (so the engage view can show
@@ -2124,27 +1684,6 @@ def api_automation_today():
         return jsonify(_build_today_payload(current_contexts=current))
     except Exception as exc:
         logger.exception("api_automation_today: failed")
-        return jsonify({"status": "error", "error": str(exc)}), 500
-
-
-@app.get("/api/automation/engage")
-def api_automation_engage():
-    """Slice 5a Engage tab: tasks + tier + who-can-act + user-current filter.
-
-    Query params:
-        contexts: comma-separated list of user-declared current
-            contexts (e.g., ``@filesystem,@vault,@user_workstation``).
-            Used per-row to set ``user_now.satisfied``.  Empty / absent
-            means "no user-current declared" — every row's
-            ``user_now.satisfied`` is True for empty user_required_contexts
-            and False otherwise.
-    """
-    raw = (request.args.get("contexts") or "").strip()
-    current = [t.strip() for t in raw.split(",") if t.strip()] if raw else []
-    try:
-        return jsonify(_build_engage_view_payload(current_contexts=current))
-    except Exception as exc:
-        logger.exception("api_automation_engage: failed")
         return jsonify({"status": "error", "error": str(exc)}), 500
 
 
@@ -2478,45 +2017,453 @@ def api_notification_acknowledge(notification_id: str):
 
 
 # ---------------------------------------------------------------------------
-# Thread chat API
+# v5 Threads API (Stage 4.3)
+#
+# Read endpoints + commit endpoints for the unified Threads tab. All
+# routed under /api/threads/. UX.md §15 Stage 4.3 spec.
 # ---------------------------------------------------------------------------
 
 
 @app.get("/api/threads")
-def api_threads_list():
-    """List threads, optionally filtered by status."""
-    status = request.args.get("status")
+def api_v5_threads_list():
+    """List top-level v5 Threads (those with no parent_id).
+
+    Query params:
+        ?show_later=1         — include Threads with future resurface_at.
+        ?q=...                — substring search over search_blob.
+        ?state=...            — filter by FSM state.
+        ?subtype=...          — 'task' for Tasks-only.
+        ?urgency=...          — 'surface_now' | 'defer' (post-query).
+        ?has_cleanup=1        — only Threads where the cleanup
+                                adapter is applicable (post-query).
+        ?limit=N              — page size (default 100).
+        ?show_all=1           — include non-actionable states
+                                (PROPOSED, terminal, …). Default:
+                                actionable wait states only.
+        ?include_mid_process=1 — also include the in-flight
+                                inferring/executing/monitoring
+                                states. Layered on top of the
+                                default "actionable only" filter so
+                                the user can see "what's the agent
+                                doing right now?" without dropping
+                                the actionable filter entirely.
+    """
     try:
-        from work_buddy.threads.store import list_threads
-        threads = list_threads(status=status)
+        from work_buddy.threads.render import build_render_data
+        from work_buddy.threads.search import search_threads
+        q = request.args.get("q") or ""
+        state = request.args.get("state") or None
+        subtype = request.args.get("subtype") or None
+        urgency = request.args.get("urgency") or None
+        has_cleanup_only = request.args.get("has_cleanup") == "1"
+        include_future = request.args.get("show_later") == "1"
+        actionable_only = request.args.get("show_all") != "1"
+        include_mid_process = request.args.get("include_mid_process") == "1"
+        limit = int(request.args.get("limit", 100))
+        threads_models = search_threads(
+            q,
+            parent_id=None,
+            state=state,
+            subtype=subtype,
+            show_later=include_future,
+            actionable_only=actionable_only,
+            include_mid_process=include_mid_process,
+            limit=limit,
+        )
+        threads = []
+        for t in threads_models:
+            data = build_render_data(t.thread_id)
+            if data is None:
+                continue
+            # Post-query filters — neither has a SQL index, but the
+            # cardinality at this point (post search) is small.
+            if urgency and data.get("urgency") != urgency:
+                continue
+            if has_cleanup_only and not data.get("can_clean_up"):
+                continue
+            threads.append(data)
         return jsonify({"threads": threads})
     except Exception as exc:
-        logger.error("Thread list failed: %s", exc)
-        return jsonify({"threads": [], "error": str(exc)})
+        logger.exception("v5 threads list failed: %s", exc)
+        return jsonify({"threads": [], "error": str(exc)}), 500
+
+
+# A small allowlist of v5 dashboard-triggerable capabilities. We
+# intentionally don't expose the full registry — the user's
+# workflow is "MCP from agent for power", "dashboard buttons for
+# common nudges." Adding a capability here is a deliberate UX
+# decision (each appears as a button somewhere in the v5 UI).
+_DASHBOARD_RUNNABLE_CAPABILITIES: dict[str, dict] = {
+    "journal_v5_scan": {
+        "description": (
+            "Segment today's journal Running Notes into v5 Threads. "
+            "Wired to the empty-state CTA on the Threads tab."
+        ),
+        "mutates_state": True,
+    },
+}
+
+
+@app.post("/api/run/<capability_name>")
+def api_v5_run_capability(capability_name: str):
+    """Bridge endpoint that lets the dashboard trigger a small
+    allowlist of v5 capabilities directly.
+
+    The MCP gateway is the canonical way to invoke capabilities
+    from agents; this endpoint lets the *user* trigger a known
+    set of "common nudge" capabilities from dashboard buttons
+    (e.g. the empty-state "Scan today's journal" CTA).
+
+    Why an allowlist: we don't want a generic "call any capability"
+    surface from the unauthenticated dashboard. Each entry is a
+    deliberate UX choice.
+    """
+    blocked = _reject_read_only()
+    if blocked:
+        return blocked
+    if capability_name not in _DASHBOARD_RUNNABLE_CAPABILITIES:
+        return jsonify({
+            "error": f"Capability {capability_name!r} is not exposed to the "
+                     "dashboard. Use the MCP gateway (wb_run) for full "
+                     "registry access, or add it to "
+                     "_DASHBOARD_RUNNABLE_CAPABILITIES if it should be a "
+                     "user-triggerable button.",
+        }), 403
+    body = request.get_json(silent=True) or {}
+    try:
+        from work_buddy.mcp_server.registry import get_registry
+        reg = get_registry()
+        cap = reg.get(capability_name)
+        if cap is None:
+            return jsonify({
+                "error": f"Capability {capability_name!r} not in registry "
+                         "(probably a dependency probe is failing). Try "
+                         "the MCP gateway for diagnostics.",
+            }), 503
+        # Capabilities are callables in the registry — invoke
+        # directly. The argument shape mirrors wb_run's params dict.
+        result = cap.callable(**body)
+        return jsonify({"ok": True, "result": result})
+    except Exception as exc:
+        logger.exception("dashboard /api/run/%s failed: %s",
+                         capability_name, exc)
+        return jsonify({"ok": False, "error": str(exc)}), 500
 
 
 @app.get("/api/threads/<thread_id>")
-def api_thread_get(thread_id: str):
-    """Get a thread with all messages in chronological order."""
+def api_v5_thread_get(thread_id: str):
+    """Fetch one v5 Thread + its render data."""
     try:
-        from work_buddy.threads.store import get_thread_with_messages
-        result = get_thread_with_messages(thread_id)
-        if result is None:
+        from work_buddy.threads.render import build_render_data
+        data = build_render_data(thread_id)
+        if data is None:
             return jsonify({"error": "Thread not found"}), 404
-        return jsonify(result)
+        return jsonify(data)
     except Exception as exc:
-        logger.error("Thread get failed for %s: %s", thread_id, exc)
+        logger.exception("v5 thread get failed for %s: %s", thread_id, exc)
         return jsonify({"error": str(exc)}), 500
 
 
-@app.post("/api/threads/<thread_id>/respond")
-def api_thread_respond(thread_id: str):
+@app.get("/api/threads/<thread_id>/sub")
+def api_v5_thread_sub_list(thread_id: str):
+    """List sub-threads under a parent."""
+    try:
+        from work_buddy.threads.render import list_render_data
+        threads = list_render_data(parent_id=thread_id, limit=200)
+        return jsonify({"threads": threads, "parent_id": thread_id})
+    except Exception as exc:
+        logger.exception(
+            "v5 sub-thread list failed for %s: %s", thread_id, exc,
+        )
+        return jsonify({"threads": [], "error": str(exc)}), 500
+
+
+@app.get("/api/threads/<thread_id>/events")
+def api_v5_thread_events(thread_id: str):
+    """Return the full event log for a thread.
+
+    Wave C (2026-05-03): backs the dashboard's event-log inspector
+    modal. Lightweight serialization — only the fields the UI
+    needs. Full event data is available via the SQLite DB if
+    deeper inspection is required.
+    """
+    try:
+        from work_buddy.threads import store
+        events = store.list_events(thread_id)
+        out = []
+        for e in events:
+            out.append({
+                "id": e.id,
+                "kind": e.kind,
+                "actor": e.actor,
+                "timestamp": e.timestamp,
+                "data": e.data,
+                "parent_event_id": e.parent_event_id,
+                "inference_tier": e.inference_tier,
+            })
+        return jsonify({"thread_id": thread_id, "events": out})
+    except Exception as exc:
+        logger.exception(
+            "v5 thread events fetch failed for %s: %s", thread_id, exc,
+        )
+        return jsonify({"events": [], "error": str(exc)}), 500
+
+
+def _v5_post_action(
+    thread_id: str, *, trigger: str, data_extras=None,
+):
+    """Common POST handler — fires an FSM transition through engine."""
+    blocked = _reject_read_only()
+    if blocked:
+        return blocked
+    payload = request.get_json(silent=True) or {}
+    try:
+        from work_buddy.threads import engine
+        merged = dict(payload)
+        if data_extras:
+            merged.update(data_extras)
+        result = engine.transition(
+            thread_id, trigger, data=merged, fire_side_effects=True,
+        )
+        return jsonify({
+            "ok": True,
+            "thread_id": thread_id,
+            "prev_state": result.prev_state.value,
+            "next_state": result.next_state.value,
+        })
+    except engine.ThreadNotFound:
+        return jsonify({"error": "Thread not found"}), 404
+    except engine.InvalidTransition as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as exc:
+        logger.exception("v5 thread action failed for %s: %s", thread_id, exc)
+        return jsonify({"error": str(exc)}), 500
+
+
+_ACCEPT_TRIGGER_BY_STATE = {
+    # Confirmation states → confirmed
+    "awaiting_intent_confirmation": "confirmed",
+    "awaiting_context_confirmation": "confirmed",
+    # Consent state → execute (action gate approval)
+    "awaiting_confirmation": "execute",
+    # Clarification states → provided
+    "awaiting_intent_clarification": "provided",
+    "awaiting_context_clarification": "provided",
+    "awaiting_action_clarification": "provided",
+    # Review state → review_accepted
+    "awaiting_review": "review_accepted",
+    # Redirect states → redirected (when user submits feedback)
+    "awaiting_redirect": "redirected",
+}
+
+
+@app.post("/api/threads/<thread_id>/accept")
+def api_v5_thread_accept(thread_id: str):
+    """Smart accept: dispatches the right trigger based on FSM state.
+
+    Confirmation → confirmed. Consent → execute. Clarification →
+    provided. Review → review_accepted. Redirect → redirected.
+    UX.md §4.2 + §5.
+    """
+    blocked = _reject_read_only()
+    if blocked:
+        return blocked
+    try:
+        from work_buddy.threads import store
+        thread = store.get_thread(thread_id)
+        if thread is None:
+            return jsonify({"error": "Thread not found"}), 404
+        trigger = _ACCEPT_TRIGGER_BY_STATE.get(thread.fsm_state.value)
+        if trigger is None:
+            return jsonify({
+                "error": f"Accept not valid in state {thread.fsm_state.value!r}",
+            }), 400
+        return _v5_post_action(thread_id, trigger=trigger)
+    except Exception as exc:
+        logger.exception("v5 accept failed for %s: %s", thread_id, exc)
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.post("/api/threads/<thread_id>/retry-cleanup")
+def api_v5_thread_retry_cleanup(thread_id: str):
+    """Retry a failed cleanup. UX.md §6.5."""
+    return _v5_post_action(thread_id, trigger="retry_cleanup")
+
+
+@app.post("/api/threads/<thread_id>/context/<item_id>/migrate")
+def api_v5_context_migrate(thread_id: str, item_id: str):
+    """Move a context item from one Thread to another. UX.md §9.
+
+    Body: {"to_thread_id": "th-abc"}.
+    """
+    blocked = _reject_read_only()
+    if blocked:
+        return blocked
+    body = request.get_json(silent=True) or {}
+    to_thread_id = body.get("to_thread_id")
+    if not to_thread_id:
+        return jsonify({"error": "missing to_thread_id"}), 400
+    try:
+        from work_buddy.threads.migration_context import (
+            ContextMigrationError,
+            migrate_context,
+        )
+        mig_id = migrate_context(
+            item_id=item_id,
+            from_thread_id=thread_id,
+            to_thread_id=to_thread_id,
+        )
+        return jsonify({
+            "ok": True,
+            "migration_id": mig_id,
+            "from_thread_id": thread_id,
+            "to_thread_id": to_thread_id,
+            "item_id": item_id,
+        })
+    except ContextMigrationError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as exc:
+        logger.exception(
+            "v5 context migrate failed for %s → %s: %s",
+            thread_id, to_thread_id, exc,
+        )
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.post("/api/threads/<thread_id>/accept-cleanup-failure")
+def api_v5_thread_accept_cleanup_failure(thread_id: str):
+    """Accept a failed cleanup; thread → done. UX.md §6.5."""
+    return _v5_post_action(thread_id, trigger="accept_cleanup_failure")
+
+
+@app.post("/api/threads/<thread_id>/dismiss")
+def api_v5_thread_dismiss(thread_id: str):
+    """Trash the Thread. Transition to DISMISSED."""
+    return _v5_post_action(thread_id, trigger="dismissed_by_user")
+
+
+@app.post("/api/threads/<thread_id>/redirect")
+def api_v5_thread_redirect(thread_id: str):
+    """Re-direct: push back to inference with feedback. UX.md §5.3."""
+    return _v5_post_action(thread_id, trigger="redirected")
+
+
+@app.post("/api/threads/<thread_id>/cleanup")
+def api_v5_thread_cleanup(thread_id: str):
+    """Clean Up: invoke registered cleanup adapter, mutate the source.
+
+    Stage 4.3: transitions FSM to CLEANING_UP. Stage 4.4 wires the
+    adapter call + fires cleanup_succeeded / cleanup_failed.
+    """
+    blocked = _reject_read_only()
+    if blocked:
+        return blocked
+    try:
+        from work_buddy.threads import cleanup as _cleanup_mod
+        from work_buddy.threads import engine, store
+        thread = store.get_thread(thread_id)
+        if thread is None:
+            return jsonify({"error": "Thread not found"}), 404
+        if not _cleanup_mod.can_clean_up(thread):
+            return jsonify({
+                "error": "no cleanup adapter registered for this Thread's source",
+            }), 400
+        # Transition to CLEANING_UP — Stage 4.4 will register a state-
+        # entry handler that runs the adapter and fires the result trigger.
+        engine.transition(
+            thread_id, "cleanup_requested", fire_side_effects=True,
+        )
+        return jsonify({"ok": True, "thread_id": thread_id, "state": "cleaning_up"})
+    except Exception as exc:
+        logger.exception("v5 cleanup failed for %s: %s", thread_id, exc)
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.post("/api/threads/<thread_id>/later")
+def api_v5_thread_later(thread_id: str):
+    """Defer: set resurface_at to now + duration. UX.md §13.
+
+    Body (optional): {"hours": 6}  default 6h.
+    Stage 4.10 polishes with the hover popup; this endpoint ships
+    in 4.3 because the button is on every card.
+    """
+    blocked = _reject_read_only()
+    if blocked:
+        return blocked
+    try:
+        import json
+        from datetime import datetime, timedelta, timezone
+        from work_buddy.threads import store
+        from work_buddy.threads.events import KIND_LATER, ThreadEvent
+        body = request.get_json(silent=True) or {}
+        hours = float(body.get("hours") or 6.0)
+        thread = store.get_thread(thread_id)
+        if thread is None:
+            return jsonify({"error": "Thread not found"}), 404
+        when = datetime.now(timezone.utc) + timedelta(hours=hours)
+        resurface_iso = when.isoformat()
+        store.update_thread_state(
+            thread_id,
+            resurface_at=resurface_iso,
+        )
+        store.append_event(ThreadEvent(
+            thread_id=thread_id,
+            kind=KIND_LATER,
+            actor="user",
+            data={"hours": hours, "resurface_at": resurface_iso},
+            parent_event_id=store.latest_event_id(thread_id),
+        ))
+        return jsonify({
+            "ok": True,
+            "thread_id": thread_id,
+            "resurface_at": resurface_iso,
+            "hours": hours,
+        })
+    except Exception as exc:
+        logger.exception("v5 later failed for %s: %s", thread_id, exc)
+        return jsonify({"error": str(exc)}), 500
+
+
+# ---------------------------------------------------------------------------
+# Conversation API (renamed from Thread chat in v5 Stage 1)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/conversations")
+def api_conversations_list():
+    """List conversations, optionally filtered by status."""
+    status = request.args.get("status")
+    try:
+        from work_buddy.conversations.store import list_conversations
+        conversations = list_conversations(status=status)
+        return jsonify({"conversations": conversations})
+    except Exception as exc:
+        logger.error("Conversation list failed: %s", exc)
+        return jsonify({"conversations": [], "error": str(exc)})
+
+
+@app.get("/api/conversations/<conversation_id>")
+def api_conversation_get(conversation_id: str):
+    """Get a conversation with all messages in chronological order."""
+    try:
+        from work_buddy.conversations.store import get_conversation_with_messages
+        result = get_conversation_with_messages(conversation_id)
+        if result is None:
+            return jsonify({"error": "Conversation not found"}), 404
+        return jsonify(result)
+    except Exception as exc:
+        logger.error("Conversation get failed for %s: %s", conversation_id, exc)
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.post("/api/conversations/<conversation_id>/respond")
+def api_conversation_respond(conversation_id: str):
     """User sends a message or responds to a pending question.
 
     Expects: {"value": "user's text"}
 
     If there's a pending question, answers it. Otherwise adds a general
-    user message to the thread.
+    user message to the conversation.
     """
     blocked = _reject_read_only()
     if blocked:
@@ -2527,35 +2474,42 @@ def api_thread_respond(thread_id: str):
         return jsonify({"error": "Missing 'value' in request body"}), 400
 
     try:
-        from work_buddy.threads.store import respond_to_thread, add_message
+        from work_buddy.conversations.store import (
+            respond_to_conversation,
+            add_message,
+        )
         # Try to answer a pending question first
-        msg = respond_to_thread(thread_id, str(value))
+        msg = respond_to_conversation(conversation_id, str(value))
         if msg is not None:
             return jsonify({"responded": True, "message_id": msg.message_id})
         # No pending question — add as a general user message
-        msg = add_message(thread_id, "user", str(value))
+        msg = add_message(conversation_id, "user", str(value))
         if msg is None:
-            return jsonify({"error": "Thread not found or closed"}), 404
+            return jsonify({"error": "Conversation not found or closed"}), 404
         return jsonify({"sent": True, "message_id": msg.message_id})
     except Exception as exc:
-        logger.error("Thread respond failed for %s: %s", thread_id, exc)
+        logger.error(
+            "Conversation respond failed for %s: %s", conversation_id, exc,
+        )
         return jsonify({"error": str(exc)}), 500
 
 
-@app.post("/api/threads/<thread_id>/close")
-def api_thread_close(thread_id: str):
-    """Close a thread."""
+@app.post("/api/conversations/<conversation_id>/close")
+def api_conversation_close(conversation_id: str):
+    """Close a conversation."""
     blocked = _reject_read_only()
     if blocked:
         return blocked
     try:
-        from work_buddy.threads.store import close_thread
-        ok = close_thread(thread_id)
+        from work_buddy.conversations.store import close_conversation
+        ok = close_conversation(conversation_id)
         if not ok:
-            return jsonify({"error": "Thread not found"}), 404
+            return jsonify({"error": "Conversation not found"}), 404
         return jsonify({"closed": True})
     except Exception as exc:
-        logger.error("Thread close failed for %s: %s", thread_id, exc)
+        logger.error(
+            "Conversation close failed for %s: %s", conversation_id, exc,
+        )
         return jsonify({"error": str(exc)}), 500
 
 
@@ -3266,6 +3220,14 @@ def main():
     )
 
     _start_acknowledge_poller()
+
+    # v5 Stage 4: bootstrap the v5 Thread system in the dashboard's
+    # process. Each subprocess has its own module-level state, so
+    # each needs its own bootstrap call to get the FSM handlers +
+    # cleanup adapters registered. The shared helper centralizes
+    # the try/except + logging so each call site is one line.
+    from work_buddy.threads.bootstrap import bootstrap_for_subprocess
+    bootstrap_for_subprocess(subprocess_name="dashboard")
 
     # Mark this process so that ``events.publish_auto`` (used by the
     # cross-cutting mutators in clarify/, tasks/, health/, etc.) routes

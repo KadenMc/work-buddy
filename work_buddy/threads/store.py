@@ -1,11 +1,33 @@
-"""SQLite-backed thread store.
+"""SQLite-backed store for v5 Threads and their event log.
 
-Storage for threads and messages. Lightweight, thread-safe via Python's
-sqlite3 module. Database lives at ``agents/threads.db``.
+Stage 1.3 deliverable: schema, idempotent migration, and *minimum*
+CRUD scaffolding for ``threads`` and ``thread_events`` tables. The
+behaviour built on top (FSM engine, inference workers, Resolution
+Surface publication) lands in Stage 2.
 
-All public functions accept an optional ``conn`` parameter for callers
-that want to manage their own connections (e.g., transactions). When
-omitted, a fresh connection is created and auto-closed.
+Two-table schema:
+
+- ``threads``        — current-state cache (Thread fields + JSON-blob
+                        columns for autonomy_policy, context_items,
+                        risk_profile, inciting_event_summary).
+- ``thread_events``  — append-only event log; each row is a
+                        ``ThreadEvent`` (DESIGN.md §13). Optimistic
+                        locking: ``parent_event_id`` on submit must
+                        match the latest event for that thread.
+
+Helpers:
+- ``get_connection()`` — opens the DB, ensures schema.
+- ``insert_thread()`` — INSERT a fresh Thread row.
+- ``get_thread()`` — SELECT one Thread by ID.
+- ``list_threads()`` — paginated list with optional state filter.
+- ``update_thread_state()`` — write the current-state cache.
+- ``append_event()`` — insert one event with optimistic-lock check.
+- ``list_events()`` — replay a Thread's event log in order.
+- ``latest_event_id()`` — fast lookup of the most recent event id.
+- ``rebuild_state_from_events()`` — derive current state from log
+  (rarely used; the cache is normally authoritative for queries).
+
+See DESIGN.md §13 for the canonical event-log model.
 """
 
 from __future__ import annotations
@@ -13,142 +35,283 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
-import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable, Optional
 
-from work_buddy.threads.models import Thread, ThreadMessage
+from work_buddy.threads.events import (
+    ALL_KINDS,
+    OptimisticLockConflict,
+    ThreadEvent,
+    validate_kind,
+)
+from work_buddy.threads.models import Thread
 
 logger = logging.getLogger(__name__)
 
-from work_buddy.paths import data_dir
 
-_DB_PATH = data_dir("agents") / "threads.db"
+# ---------------------------------------------------------------------------
+# Path resolution
+# ---------------------------------------------------------------------------
+
+
+def _db_path() -> Path:
+    """Resolve the threads DB path. Tests monkeypatch this to redirect."""
+    from work_buddy.paths import resolve
+    return resolve("db/threads")
 
 
 # ---------------------------------------------------------------------------
-# Connection / schema
+# Schema
 # ---------------------------------------------------------------------------
 
-def _get_db_path() -> Path:
-    _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    return _DB_PATH
+
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS threads (
+    -- Core identity & hierarchy
+    thread_id                  TEXT PRIMARY KEY,
+    parent_id                  TEXT,
+    subtype                    TEXT,           -- 'task' | NULL
+
+    -- Current-state cache (DESIGN.md says events are canonical;
+    -- this column exists for query convenience)
+    fsm_state                  TEXT NOT NULL DEFAULT 'proposed',
+
+    -- Optimistic-lock target on the next state transition.
+    -- NULL for never-transitioned threads.
+    parent_event_id            INTEGER,
+
+    -- JSON blobs (composed/serialised dataclass shapes)
+    autonomy_policy_json       TEXT NOT NULL DEFAULT '{}',
+    context_items_json         TEXT NOT NULL DEFAULT '[]',
+    risk_profile_json          TEXT NOT NULL DEFAULT '{}',
+    inciting_event_summary_json TEXT NOT NULL DEFAULT '{}',
+
+    -- Sub-Thread focus pointer (formerly current_action_item_id on
+    -- task_metadata; lives on Thread now since action items are
+    -- sub-threads). Points at a child Thread.
+    current_focus_thread_id    TEXT,
+
+    -- Lifecycle timestamps
+    created_at                 TEXT NOT NULL,
+    updated_at                 TEXT NOT NULL,
+    archived_at                TEXT,
+
+    -- Stage 4: Later mechanic (UX.md §13).
+    -- NULL = always visible. ISO 8601 = hide until that time.
+    resurface_at               TEXT,
+
+    -- Stage 4: linearization order within siblings (UX.md §8.2).
+    -- Computed at WRITE time (decompose, sub-thread spawn). NEVER at
+    -- render time. Only meaningful when parent_id is non-NULL.
+    order_index                INTEGER NOT NULL DEFAULT 0,
+
+    -- Stage 4: search-blob cache (UX.md §10.2). Denormalised,
+    -- substring-searchable text rebuilt on Thread state change.
+    search_blob                TEXT NOT NULL DEFAULT '',
+
+    FOREIGN KEY (parent_id) REFERENCES threads(thread_id) ON DELETE CASCADE,
+    FOREIGN KEY (current_focus_thread_id) REFERENCES threads(thread_id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_threads_parent
+    ON threads(parent_id);
+CREATE INDEX IF NOT EXISTS idx_threads_state
+    ON threads(fsm_state);
+CREATE INDEX IF NOT EXISTS idx_threads_subtype
+    ON threads(subtype);
+CREATE INDEX IF NOT EXISTS idx_threads_parent_order
+    ON threads(parent_id, order_index);
+CREATE INDEX IF NOT EXISTS idx_threads_resurface
+    ON threads(resurface_at);
+
+
+CREATE TABLE IF NOT EXISTS thread_events (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    thread_id       TEXT NOT NULL,
+
+    -- Event kind (one of work_buddy.threads.events.ALL_KINDS)
+    kind            TEXT NOT NULL,
+
+    -- Who triggered this event (work_buddy.threads.events.ACTOR_*)
+    actor           TEXT NOT NULL,
+
+    -- Reasoning tier for inference events (NULL otherwise)
+    inference_tier  TEXT,
+
+    -- Wall-clock timestamp (ISO 8601)
+    timestamp       TEXT NOT NULL,
+
+    -- Event-specific payload
+    data_json       TEXT NOT NULL DEFAULT '{}',
+
+    -- Optimistic-lock target: the latest event ID the actor saw
+    -- before deciding. Insert fails (raises OptimisticLockConflict)
+    -- if a newer event landed for this thread first.
+    parent_event_id INTEGER,
+
+    -- Cross-Thread linked-event marker (e.g. context migration).
+    -- Two events from different threads sharing a migration_id
+    -- form one logical operation.
+    migration_id    TEXT,
+
+    FOREIGN KEY (thread_id) REFERENCES threads(thread_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_thread_events_thread_kind
+    ON thread_events(thread_id, kind);
+CREATE INDEX IF NOT EXISTS idx_thread_events_thread_id_pk
+    ON thread_events(thread_id, id);
+CREATE INDEX IF NOT EXISTS idx_thread_events_migration
+    ON thread_events(migration_id) WHERE migration_id IS NOT NULL;
+"""
+
+
+_STAGE_4_MIGRATIONS = """
+-- Stage 4 added three columns + two indexes. Use ALTER TABLE ADD COLUMN
+-- (idempotent only via the try/except below — SQLite has no IF NOT
+-- EXISTS for columns).
+"""
+
+
+def _add_column_if_missing(
+    conn: sqlite3.Connection,
+    table: str,
+    column: str,
+    decl: str,
+) -> None:
+    """Add a column if it's not already present. SQLite-friendly."""
+    cols = {
+        row["name"]
+        for row in conn.execute(f"PRAGMA table_info({table})")
+    }
+    if column not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+
+
+def _migrate_stage_4(conn: sqlite3.Connection) -> None:
+    """Add Stage 4 columns to an existing DB (idempotent).
+
+    Indexes referencing the new columns are created via the
+    ``_SCHEMA`` script after this runs — so we must add the columns
+    *before* ``executescript`` would try to index them.
+    """
+    # Only run if the threads table already exists (else executescript
+    # will create it with all current columns including these).
+    has_table = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='threads'"
+    ).fetchone() is not None
+    if not has_table:
+        return
+    _add_column_if_missing(conn, "threads", "resurface_at", "TEXT")
+    _add_column_if_missing(
+        conn, "threads", "order_index", "INTEGER NOT NULL DEFAULT 0",
+    )
+    _add_column_if_missing(
+        conn, "threads", "search_blob", "TEXT NOT NULL DEFAULT ''",
+    )
 
 
 def get_connection() -> sqlite3.Connection:
-    """Open a connection with row_factory set."""
-    conn = sqlite3.connect(str(_get_db_path()), timeout=10)
+    """Open the threads DB with WAL + FK enforcement; ensure schema.
+
+    Order matters: pre-existing tables get Stage-4 columns added
+    before the index-creation pass, so the index DDL doesn't fail
+    on missing columns.
+    """
+    path = _db_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(path), timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
+    _migrate_stage_4(conn)
+    conn.executescript(_SCHEMA)
+    conn.commit()
     return conn
-
-
-def _ensure_schema(conn: sqlite3.Connection) -> None:
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS threads (
-            thread_id   TEXT PRIMARY KEY,
-            title       TEXT NOT NULL DEFAULT '',
-            status      TEXT NOT NULL DEFAULT 'open',
-            created_at  TEXT NOT NULL,
-            updated_at  TEXT NOT NULL,
-            source      TEXT NOT NULL DEFAULT '',
-            metadata    TEXT NOT NULL DEFAULT '{}'
-        );
-
-        CREATE TABLE IF NOT EXISTS messages (
-            message_id    TEXT PRIMARY KEY,
-            thread_id     TEXT NOT NULL,
-            role          TEXT NOT NULL DEFAULT 'agent',
-            content       TEXT NOT NULL DEFAULT '',
-            created_at    TEXT NOT NULL,
-            message_type  TEXT NOT NULL DEFAULT 'text',
-            response_type TEXT NOT NULL DEFAULT 'none',
-            choices       TEXT,
-            response      TEXT,
-            status        TEXT NOT NULL DEFAULT 'sent',
-            FOREIGN KEY (thread_id) REFERENCES threads(thread_id)
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_messages_thread
-            ON messages(thread_id, created_at);
-
-        CREATE INDEX IF NOT EXISTS idx_threads_status
-            ON threads(status);
-    """)
-
-
-# Auto-init on first import
-try:
-    _conn = get_connection()
-    _ensure_schema(_conn)
-    _conn.close()
-except Exception as e:
-    logger.warning("Thread store schema init failed: %s", e)
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _now() -> str:
+
+def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _new_id() -> str:
-    return uuid.uuid4().hex[:12]
+def _dump_json(value: Any) -> str:
+    if value is None:
+        return "{}"
+    return json.dumps(value, default=str)
 
 
 # ---------------------------------------------------------------------------
 # Thread CRUD
 # ---------------------------------------------------------------------------
 
-def create_thread(
-    title: str,
-    source: str = "",
-    metadata: dict | None = None,
-    conn: sqlite3.Connection | None = None,
+
+def insert_thread(
+    thread: Thread, *, conn: Optional[sqlite3.Connection] = None,
 ) -> Thread:
-    """Create a new thread. Returns the Thread object."""
+    """Insert a fresh Thread row.
+
+    Returns the same Thread (no surprises). The caller is responsible
+    for also calling :func:`append_event` with a ``thread_created``
+    event to start the event log; this helper does NOT auto-write
+    that event because the parent_event_id semantics depend on
+    whether an inciting_event was already recorded.
+    """
     own_conn = conn is None
     if own_conn:
         conn = get_connection()
     try:
-        now = _now()
-        thread = Thread(
-            thread_id=_new_id(),
-            title=title,
-            status="open",
-            created_at=now,
-            updated_at=now,
-            source=source,
-            metadata=metadata or {},
-        )
         conn.execute(
             """INSERT INTO threads
-               (thread_id, title, status, created_at, updated_at, source, metadata)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+               (thread_id, parent_id, subtype, fsm_state, parent_event_id,
+                autonomy_policy_json, context_items_json,
+                risk_profile_json, inciting_event_summary_json,
+                current_focus_thread_id,
+                created_at, updated_at, archived_at,
+                resurface_at, order_index, search_blob)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 thread.thread_id,
-                thread.title,
-                thread.status,
+                thread.parent_id,
+                thread.subtype,
+                thread.fsm_state.value,
+                thread.parent_event_id,
+                _dump_json(thread.autonomy_policy.to_dict()),
+                _dump_json([c.to_dict() for c in thread.context_items]),
+                _dump_json(thread.risk_profile),
+                _dump_json(thread.inciting_event_summary),
+                thread.current_focus_thread_id,
                 thread.created_at,
                 thread.updated_at,
-                thread.source,
-                json.dumps(thread.metadata),
+                thread.archived_at,
+                getattr(thread, "resurface_at", None),
+                getattr(thread, "order_index", 0),
+                getattr(thread, "search_blob", ""),
             ),
         )
         conn.commit()
-        logger.info("Created thread %s: %s", thread.thread_id, title)
+        # Stage 4.8: best-effort initial search-blob population.
+        # Lazy-import to avoid cycles. Inciting summary alone is
+        # enough yield for the first index entry.
+        try:
+            from work_buddy.threads.search import update_search_blob
+            update_search_blob(thread.thread_id, conn=conn)
+        except Exception:
+            pass  # non-fatal
         return thread
     finally:
         if own_conn:
             conn.close()
 
 
-def get_thread(thread_id: str, conn: sqlite3.Connection | None = None) -> Thread | None:
-    """Get a thread by ID (without messages)."""
+def get_thread(
+    thread_id: str, *, conn: Optional[sqlite3.Connection] = None,
+) -> Optional[Thread]:
     own_conn = conn is None
     if own_conn:
         conn = get_connection()
@@ -156,308 +319,284 @@ def get_thread(thread_id: str, conn: sqlite3.Connection | None = None) -> Thread
         row = conn.execute(
             "SELECT * FROM threads WHERE thread_id = ?", (thread_id,)
         ).fetchone()
-        if row is None:
-            return None
-        return Thread.from_row(dict(row))
-    finally:
-        if own_conn:
-            conn.close()
-
-
-def get_thread_with_messages(
-    thread_id: str, conn: sqlite3.Connection | None = None
-) -> dict[str, Any] | None:
-    """Get a thread with all messages in chronological order.
-
-    Returns ``{"thread": Thread.to_dict(), "messages": [msg.to_dict(), ...]}``
-    or None if thread not found.
-    """
-    own_conn = conn is None
-    if own_conn:
-        conn = get_connection()
-    try:
-        thread = get_thread(thread_id, conn=conn)
-        if thread is None:
-            return None
-        rows = conn.execute(
-            "SELECT * FROM messages WHERE thread_id = ? ORDER BY created_at ASC",
-            (thread_id,),
-        ).fetchall()
-        messages = [ThreadMessage.from_row(dict(r)) for r in rows]
-        return {
-            "thread": thread.to_dict(),
-            "messages": [m.to_dict() for m in messages],
-        }
+        return Thread.from_row(dict(row)) if row else None
     finally:
         if own_conn:
             conn.close()
 
 
 def list_threads(
-    status: str | None = None,
-    limit: int = 50,
-    conn: sqlite3.Connection | None = None,
-) -> list[dict[str, Any]]:
-    """List threads with last message preview.
+    *,
+    state: Optional[str] = None,
+    subtype: Optional[str] = None,
+    parent_id: Optional[str] = None,
+    limit: int = 100,
+    conn: Optional[sqlite3.Connection] = None,
+) -> list[Thread]:
+    """List threads with sensible default ordering:
 
-    Returns list of dicts with thread fields + ``message_count`` and
-    ``last_message_preview``.
+    - Sub-threads (parent_id given) sort by ``order_index ASC``
+      (the linearization order from Stage 4.7).
+    - Top-level threads sort by ``resurface_at DESC NULLS LAST``
+      then ``updated_at DESC`` (the Later mechanic from §13).
     """
     own_conn = conn is None
     if own_conn:
         conn = get_connection()
     try:
-        if status:
-            rows = conn.execute(
-                """SELECT t.*,
-                          (SELECT COUNT(*) FROM messages m WHERE m.thread_id = t.thread_id) AS message_count,
-                          (SELECT m.content FROM messages m WHERE m.thread_id = t.thread_id
-                           ORDER BY m.created_at DESC LIMIT 1) AS last_message_preview,
-                          (SELECT m.status FROM messages m WHERE m.thread_id = t.thread_id
-                           ORDER BY m.created_at DESC LIMIT 1) AS last_message_status
-                   FROM threads t
-                   WHERE t.status = ?
-                   ORDER BY t.updated_at DESC
-                   LIMIT ?""",
-                (status, limit),
-            ).fetchall()
+        clauses: list[str] = []
+        params: list[Any] = []
+        if state is not None:
+            clauses.append("fsm_state = ?")
+            params.append(state)
+        if subtype is not None:
+            clauses.append("subtype IS ?")
+            params.append(subtype)
+        if parent_id is not None:
+            clauses.append("parent_id IS ?")
+            params.append(parent_id)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        if parent_id is not None:
+            order = "ORDER BY order_index ASC, updated_at DESC"
         else:
-            rows = conn.execute(
-                """SELECT t.*,
-                          (SELECT COUNT(*) FROM messages m WHERE m.thread_id = t.thread_id) AS message_count,
-                          (SELECT m.content FROM messages m WHERE m.thread_id = t.thread_id
-                           ORDER BY m.created_at DESC LIMIT 1) AS last_message_preview,
-                          (SELECT m.status FROM messages m WHERE m.thread_id = t.thread_id
-                           ORDER BY m.created_at DESC LIMIT 1) AS last_message_status
-                   FROM threads t
-                   ORDER BY t.updated_at DESC
-                   LIMIT ?""",
-                (limit,),
-            ).fetchall()
-
-        results = []
-        for row in rows:
-            d = Thread.from_row(dict(row)).to_dict()
-            d["message_count"] = row["message_count"] or 0
-            preview = row["last_message_preview"] or ""
-            d["last_message_preview"] = preview[:120] + ("..." if len(preview) > 120 else "")
-            d["has_pending"] = row["last_message_status"] == "pending"
-            results.append(d)
-        return results
+            # NULLS LAST trick: ORDER BY resurface_at IS NULL,
+            # resurface_at DESC, updated_at DESC
+            order = (
+                "ORDER BY (resurface_at IS NULL) ASC, "
+                "resurface_at DESC, updated_at DESC"
+            )
+        params.append(limit)
+        rows = conn.execute(
+            f"SELECT * FROM threads{where} {order} LIMIT ?",
+            params,
+        ).fetchall()
+        return [Thread.from_row(dict(r)) for r in rows]
     finally:
         if own_conn:
             conn.close()
 
 
-def close_thread(thread_id: str, conn: sqlite3.Connection | None = None) -> bool:
-    """Close a thread. Marks all pending messages as 'sent' (no longer awaiting).
-    Returns False if thread not found."""
+_UPDATE_SENTINEL = object()
+
+
+def update_thread_state(
+    thread_id: str,
+    *,
+    fsm_state: Optional[str] = None,
+    parent_event_id: Optional[int] = None,
+    current_focus_thread_id: Optional[str] = None,
+    archived_at: Optional[str] = None,
+    resurface_at: Any = _UPDATE_SENTINEL,
+    order_index: Optional[int] = None,
+    search_blob: Optional[str] = None,
+    conn: Optional[sqlite3.Connection] = None,
+) -> bool:
+    """Update mutable fields of the current-state cache.
+
+    Returns True if a row was updated.
+
+    NOTE: this is a *cache* update. The canonical state lives in the
+    event log; the cache exists for query convenience. The Stage 2
+    FSM engine will update the cache as part of writing each
+    transition event; ad-hoc callers should generally not use this
+    directly.
+
+    ``resurface_at`` accepts ``None`` explicitly (clear the value) —
+    use the sentinel to distinguish "don't touch" from "set NULL".
+    """
     own_conn = conn is None
     if own_conn:
         conn = get_connection()
     try:
-        thread = get_thread(thread_id, conn=conn)
-        if thread is None:
-            return False
-        now = _now()
-        conn.execute(
-            "UPDATE threads SET status = 'closed', updated_at = ? WHERE thread_id = ?",
-            (now, thread_id),
-        )
-        conn.execute(
-            "UPDATE messages SET status = 'sent' WHERE thread_id = ? AND status = 'pending'",
-            (thread_id,),
+        sets: list[str] = ["updated_at = ?"]
+        params: list[Any] = [_now_iso()]
+        if fsm_state is not None:
+            sets.append("fsm_state = ?")
+            params.append(fsm_state)
+        if parent_event_id is not None:
+            sets.append("parent_event_id = ?")
+            params.append(parent_event_id)
+        if current_focus_thread_id is not None:
+            sets.append("current_focus_thread_id = ?")
+            params.append(current_focus_thread_id)
+        if archived_at is not None:
+            sets.append("archived_at = ?")
+            params.append(archived_at)
+        if resurface_at is not _UPDATE_SENTINEL:
+            sets.append("resurface_at = ?")
+            params.append(resurface_at)
+        if order_index is not None:
+            sets.append("order_index = ?")
+            params.append(order_index)
+        if search_blob is not None:
+            sets.append("search_blob = ?")
+            params.append(search_blob)
+        params.append(thread_id)
+        cur = conn.execute(
+            f"UPDATE threads SET {', '.join(sets)} WHERE thread_id = ?",
+            params,
         )
         conn.commit()
-        logger.info("Closed thread %s", thread_id)
-        return True
+        return cur.rowcount > 0
     finally:
         if own_conn:
             conn.close()
 
 
 # ---------------------------------------------------------------------------
-# Message CRUD
+# Event log
 # ---------------------------------------------------------------------------
 
-def add_message(
-    thread_id: str,
-    role: str,
-    content: str,
-    message_type: str = "text",
-    response_type: str = "none",
-    choices: list[dict] | None = None,
-    conn: sqlite3.Connection | None = None,
-) -> ThreadMessage | None:
-    """Add a message to a thread. Returns the message, or None if thread not found.
 
-    For questions (message_type="question"), set response_type and choices.
-    The message status is set to "pending" for questions, "sent" otherwise.
+def append_event(
+    event: ThreadEvent,
+    *,
+    expect_parent_event_id: Any = "USE_EVENT_FIELD",
+    conn: Optional[sqlite3.Connection] = None,
+) -> ThreadEvent:
+    """Append an event to a Thread's log with optimistic-lock check.
+
+    The lock target is taken from ``event.parent_event_id`` unless the
+    caller passes an explicit ``expect_parent_event_id`` (use the
+    sentinel value to opt out of the check entirely).
+
+    Raises:
+        :class:`work_buddy.threads.events.OptimisticLockConflict` if
+        a newer event has landed for this thread.
+        ``ValueError`` if ``event.kind`` is not in the canonical
+        catalog.
+
+    Returns the same event with ``event.id`` populated.
     """
+    validate_kind(event.kind)
+
     own_conn = conn is None
     if own_conn:
         conn = get_connection()
     try:
-        thread = get_thread(thread_id, conn=conn)
-        if thread is None:
-            return None
-        if thread.status == "closed":
-            logger.warning("Cannot add message to closed thread %s", thread_id)
-            return None
+        # Optimistic-lock check
+        if expect_parent_event_id == "USE_EVENT_FIELD":
+            expect_parent_event_id = event.parent_event_id
+        if expect_parent_event_id is not None:
+            latest = latest_event_id(event.thread_id, conn=conn)
+            if latest != expect_parent_event_id:
+                raise OptimisticLockConflict(
+                    f"Thread {event.thread_id} latest event "
+                    f"is {latest!r}, expected "
+                    f"{expect_parent_event_id!r}; re-read and retry.",
+                )
 
-        now = _now()
-        status = "pending" if message_type == "question" else "sent"
-        msg = ThreadMessage(
-            message_id=_new_id(),
-            thread_id=thread_id,
-            role=role,
-            content=content,
-            created_at=now,
-            message_type=message_type,
-            response_type=response_type,
-            choices=choices,
-            status=status,
-        )
-        conn.execute(
-            """INSERT INTO messages
-               (message_id, thread_id, role, content, created_at,
-                message_type, response_type, choices, response, status)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        cur = conn.execute(
+            """INSERT INTO thread_events
+               (thread_id, kind, actor, inference_tier, timestamp,
+                data_json, parent_event_id, migration_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             (
-                msg.message_id,
-                msg.thread_id,
-                msg.role,
-                msg.content,
-                msg.created_at,
-                msg.message_type,
-                msg.response_type,
-                json.dumps(choices) if choices else None,
-                None,
-                msg.status,
+                event.thread_id,
+                event.kind,
+                event.actor,
+                event.inference_tier,
+                event.timestamp,
+                _dump_json(event.data),
+                event.parent_event_id,
+                event.migration_id,
             ),
         )
-        # Touch thread updated_at
-        conn.execute(
-            "UPDATE threads SET updated_at = ? WHERE thread_id = ?",
-            (now, thread_id),
-        )
+        event.id = cur.lastrowid
         conn.commit()
-        return msg
+        return event
     finally:
         if own_conn:
             conn.close()
 
 
-def get_pending_question(
-    thread_id: str, conn: sqlite3.Connection | None = None
-) -> ThreadMessage | None:
-    """Get the latest unanswered question in a thread."""
+def list_events(
+    thread_id: str,
+    *,
+    kinds: Optional[Iterable[str]] = None,
+    limit: Optional[int] = None,
+    conn: Optional[sqlite3.Connection] = None,
+) -> list[ThreadEvent]:
+    own_conn = conn is None
+    if own_conn:
+        conn = get_connection()
+    try:
+        clauses = ["thread_id = ?"]
+        params: list[Any] = [thread_id]
+        if kinds:
+            placeholders = ", ".join("?" * len(list(kinds)))
+            clauses.append(f"kind IN ({placeholders})")
+            params.extend(kinds)
+        sql = (
+            f"SELECT * FROM thread_events WHERE {' AND '.join(clauses)} "
+            f"ORDER BY id ASC"
+        )
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(limit)
+        rows = conn.execute(sql, params).fetchall()
+        return [ThreadEvent.from_row(dict(r)) for r in rows]
+    finally:
+        if own_conn:
+            conn.close()
+
+
+def latest_event_id(
+    thread_id: str, *, conn: Optional[sqlite3.Connection] = None,
+) -> Optional[int]:
     own_conn = conn is None
     if own_conn:
         conn = get_connection()
     try:
         row = conn.execute(
-            """SELECT * FROM messages
-               WHERE thread_id = ? AND status = 'pending'
-               ORDER BY created_at DESC LIMIT 1""",
+            "SELECT id FROM thread_events WHERE thread_id = ? "
+            "ORDER BY id DESC LIMIT 1",
             (thread_id,),
         ).fetchone()
-        if row is None:
-            return None
-        return ThreadMessage.from_row(dict(row))
+        return row["id"] if row else None
     finally:
         if own_conn:
             conn.close()
 
 
-def respond_to_message(
-    message_id: str,
-    response: str,
-    conn: sqlite3.Connection | None = None,
-) -> ThreadMessage | None:
-    """Record a user response to a pending question.
+def get_linked_events(
+    migration_id: str, *, conn: Optional[sqlite3.Connection] = None,
+) -> list[ThreadEvent]:
+    """Return the linked events sharing a ``migration_id``.
 
-    Returns the updated message, or None if not found / not pending.
+    Used for cross-Thread audit (e.g. a context-migration produces
+    one ``context_removed`` on the source Thread + one
+    ``context_added`` on the destination, both sharing a single
+    migration_id).
     """
     own_conn = conn is None
     if own_conn:
         conn = get_connection()
     try:
-        row = conn.execute(
-            "SELECT * FROM messages WHERE message_id = ?", (message_id,)
-        ).fetchone()
-        if row is None:
-            return None
-        msg = ThreadMessage.from_row(dict(row))
-        if msg.status != "pending":
-            logger.warning("Message %s is not pending (status=%s)", message_id, msg.status)
-            return None
-
-        now = _now()
-        conn.execute(
-            "UPDATE messages SET response = ?, status = 'answered' WHERE message_id = ?",
-            (response, message_id),
-        )
-        # Also add a user message to the thread for display purposes
-        user_msg = ThreadMessage(
-            message_id=_new_id(),
-            thread_id=msg.thread_id,
-            role="user",
-            content=response,
-            created_at=now,
-            message_type="text",
-            status="sent",
-        )
-        conn.execute(
-            """INSERT INTO messages
-               (message_id, thread_id, role, content, created_at,
-                message_type, response_type, choices, response, status)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                user_msg.message_id,
-                user_msg.thread_id,
-                user_msg.role,
-                user_msg.content,
-                user_msg.created_at,
-                user_msg.message_type,
-                "none",
-                None,
-                None,
-                user_msg.status,
-            ),
-        )
-        # Touch thread updated_at
-        conn.execute(
-            "UPDATE threads SET updated_at = ? WHERE thread_id = ?",
-            (now, msg.thread_id),
-        )
-        conn.commit()
-
-        msg.response = response
-        msg.status = "answered"
-        return msg
+        rows = conn.execute(
+            "SELECT * FROM thread_events WHERE migration_id = ? "
+            "ORDER BY id ASC",
+            (migration_id,),
+        ).fetchall()
+        return [ThreadEvent.from_row(dict(r)) for r in rows]
     finally:
         if own_conn:
             conn.close()
 
 
-def respond_to_thread(
-    thread_id: str,
-    response: str,
-    conn: sqlite3.Connection | None = None,
-) -> ThreadMessage | None:
-    """Respond to the latest pending question in a thread.
+# ---------------------------------------------------------------------------
+# Auto-init on first import (best-effort; failures are non-fatal so
+# this module can be imported in environments without a writable
+# data dir, e.g. doc generation).
+# ---------------------------------------------------------------------------
 
-    Convenience wrapper: finds the pending question and responds to it.
-    """
-    own_conn = conn is None
-    if own_conn:
-        conn = get_connection()
+
+def _init_schema_safe() -> None:
     try:
-        pending = get_pending_question(thread_id, conn=conn)
-        if pending is None:
-            return None
-        return respond_to_message(pending.message_id, response, conn=conn)
-    finally:
-        if own_conn:
-            conn.close()
+        conn = get_connection()
+        conn.close()
+    except Exception as e:
+        logger.warning("Threads store schema init skipped: %s", e)
+
+
+_init_schema_safe()

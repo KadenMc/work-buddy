@@ -1689,6 +1689,214 @@
       "contracts"
     ]
   },
+  "conversations/conversation_ask": {
+    "kind": "capability",
+    "name": "Conversation Ask",
+    "description": "Ask a question in a conversation and optionally wait for the user's response.",
+    "capability_name": "conversation_ask",
+    "category": "conversations",
+    "aliases": [
+      "chat question",
+      "ask user",
+      "conversation question",
+      "follow up question"
+    ],
+    "parameters": {
+      "conversation_id": {
+        "type": "string",
+        "description": "Conversation ID",
+        "required": true
+      },
+      "question": {
+        "type": "string",
+        "description": "Question text",
+        "required": true
+      },
+      "response_type": {
+        "type": "string",
+        "description": "freeform (default), boolean, or choice"
+      },
+      "choices": {
+        "type": "array",
+        "description": "For choice type: [{key, label}] or [str]"
+      },
+      "timeout_seconds": {
+        "type": "integer",
+        "description": "Block and wait for response (max 110s)"
+      }
+    },
+    "tags": [
+      "conversations",
+      "conversation",
+      "ask"
+    ],
+    "parents": [
+      "conversations"
+    ]
+  },
+  "conversations/conversation_close": {
+    "kind": "capability",
+    "name": "Conversation Close",
+    "description": "Close a conversation.",
+    "capability_name": "conversation_close",
+    "category": "conversations",
+    "aliases": [
+      "end conversation",
+      "close chat",
+      "finish conversation",
+      "wrap up conversation",
+      "close dashboard chat"
+    ],
+    "parameters": {
+      "conversation_id": {
+        "type": "string",
+        "description": "Conversation ID",
+        "required": true
+      }
+    },
+    "tags": [
+      "conversations",
+      "conversation",
+      "close"
+    ],
+    "parents": [
+      "conversations"
+    ]
+  },
+  "conversations/conversation_create": {
+    "kind": "capability",
+    "name": "Conversation Create",
+    "description": "Create a new conversation with the user. Opens a chat sidebar on the dashboard.",
+    "capability_name": "conversation_create",
+    "category": "conversations",
+    "aliases": [
+      "chat",
+      "conversation",
+      "follow up",
+      "multi-turn",
+      "side chat"
+    ],
+    "parameters": {
+      "title": {
+        "type": "string",
+        "description": "Conversation title",
+        "required": true
+      },
+      "message": {
+        "type": "string",
+        "description": "Optional initial agent message"
+      },
+      "source": {
+        "type": "string",
+        "description": "Source identifier (auto-detected if omitted)"
+      }
+    },
+    "tags": [
+      "conversations",
+      "conversation",
+      "create"
+    ],
+    "parents": [
+      "conversations"
+    ]
+  },
+  "conversations/conversation_list": {
+    "kind": "capability",
+    "name": "Conversation List",
+    "description": "List conversations.",
+    "capability_name": "conversation_list",
+    "category": "conversations",
+    "aliases": [
+      "list chats",
+      "active conversations",
+      "open conversations",
+      "what conversations are active",
+      "recent conversations",
+      "conversation directory"
+    ],
+    "parameters": {
+      "status": {
+        "type": "string",
+        "description": "Filter: 'open' (default), 'closed', or 'all'"
+      }
+    },
+    "tags": [
+      "conversations",
+      "conversation",
+      "list"
+    ],
+    "parents": [
+      "conversations"
+    ]
+  },
+  "conversations/conversation_poll": {
+    "kind": "capability",
+    "name": "Conversation Poll",
+    "description": "Check if the latest question in a conversation has been answered.",
+    "capability_name": "conversation_poll",
+    "category": "conversations",
+    "aliases": [
+      "check conversation",
+      "conversation response",
+      "poll chat",
+      "has user answered",
+      "conversation answered",
+      "check for reply"
+    ],
+    "parameters": {
+      "conversation_id": {
+        "type": "string",
+        "description": "Conversation ID",
+        "required": true
+      },
+      "timeout_seconds": {
+        "type": "integer",
+        "description": "Block and wait (max 110s)"
+      }
+    },
+    "tags": [
+      "conversations",
+      "conversation",
+      "poll"
+    ],
+    "parents": [
+      "conversations"
+    ]
+  },
+  "conversations/conversation_send": {
+    "kind": "capability",
+    "name": "Conversation Send",
+    "description": "Send a message in an existing conversation (fire-and-forget, no response expected).",
+    "capability_name": "conversation_send",
+    "category": "conversations",
+    "aliases": [
+      "chat message",
+      "conversation message",
+      "send chat message",
+      "post in conversation",
+      "speak in conversation"
+    ],
+    "parameters": {
+      "conversation_id": {
+        "type": "string",
+        "description": "Conversation ID",
+        "required": true
+      },
+      "message": {
+        "type": "string",
+        "description": "Message content",
+        "required": true
+      }
+    },
+    "tags": [
+      "conversations",
+      "conversation",
+      "send"
+    ],
+    "parents": [
+      "conversations"
+    ]
+  },
   "context/datacore_compile_plan": {
     "kind": "capability",
     "name": "Datacore Compile Plan",
@@ -3602,6 +3810,7 @@
       "contract_health",
       "contract_wip_check",
       "contracts_summary",
+      "conversation_list",
       "datacore_compile_plan",
       "datacore_evaluate",
       "datacore_fullquery",
@@ -3643,7 +3852,6 @@
       "task_review_inbox",
       "task_scattered",
       "task_stale_check",
-      "thread_list",
       "triage_item_detail",
       "weekly_review_data"
     ],
@@ -3659,7 +3867,7 @@
   "status/mcp_registry_reload": {
     "kind": "capability",
     "name": "Mcp Registry Reload",
-    "description": "Invalidate and rebuild the capability registry. Use after code changes to pick up new capabilities without restarting the MCP server.",
+    "description": "HEAVY: invalidate and rebuild the capability registry. Re-probes every tool, purges work_buddy.* from sys.modules, rebuilds every capability (~6-8s). Use ONLY after code changes to existing capability callables. For transient tool-probe failures (capability stuck in disabled state), use work_buddy.recovery.recheck_disabled_capability(name) instead — it re-probes only the relevant tools with a 30s cool-down. See architecture/capability-registry.",
     "capability_name": "mcp_registry_reload",
     "category": "status",
     "aliases": [
@@ -3679,177 +3887,6 @@
     ],
     "parents": [
       "status"
-    ]
-  },
-  "memory/memory_prune": {
-    "kind": "capability",
-    "name": "Memory Prune",
-    "description": "Delete memories from the bank. CONSENT-GATED, IRREVERSIBLE. Call with no args to list documents for review. Then provide document_id to delete a specific document's memories, or memory_type to bulk-delete a category (world/experience/observation).",
-    "capability_name": "memory_prune",
-    "category": "memory",
-    "aliases": [
-      "forget memories",
-      "delete memory bank",
-      "clear memory",
-      "remove memories",
-      "prune hindsight",
-      "wipe memories"
-    ],
-    "parameters": {
-      "document_id": {
-        "type": "str",
-        "description": "Delete a specific document and its derived memories",
-        "required": false
-      },
-      "memory_type": {
-        "type": "str",
-        "description": "Bulk delete by type: world, experience, or observation",
-        "required": false
-      }
-    },
-    "requires": [
-      "hindsight"
-    ],
-    "tags": [
-      "memory",
-      "prune"
-    ],
-    "parents": [
-      "memory"
-    ]
-  },
-  "memory/memory_read": {
-    "kind": "capability",
-    "name": "Memory Read",
-    "description": "Read from personal memory (Hindsight). No LLM cost. Modes: 'search' (default) — semantic + keyword recall, use descriptive topic phrases with specific entity names for best results; 'model' — fetch a mental model by ID; 'recent' — list latest memories.",
-    "capability_name": "memory_read",
-    "category": "memory",
-    "aliases": [
-      "what do I remember",
-      "recall memory",
-      "search hindsight",
-      "retrieve memories",
-      "personal memory search",
-      "remember what I told you",
-      "recall my preferences",
-      "search personal memory"
-    ],
-    "parameters": {
-      "query": {
-        "type": "str",
-        "description": "Descriptive topic phrase for search mode. Use specific terminology and entity names (e.g. named work-pattern vocabulary) rather than generic labels like 'blindspots'. Ignored for model/recent modes.",
-        "required": false
-      },
-      "mode": {
-        "type": "str",
-        "description": "search (default) — semantic + keyword recall. model — fetch a mental model (self-profile, work-patterns, blindspots, preferences, current-constraints). recent — list N most recent memories.",
-        "required": false
-      },
-      "model_id": {
-        "type": "str",
-        "description": "Mental model ID for mode=model (default: self-profile)",
-        "required": false
-      },
-      "limit": {
-        "type": "int",
-        "description": "Max memories for mode=recent (default 20)",
-        "required": false
-      },
-      "budget": {
-        "type": "str",
-        "description": "Retrieval depth for mode=search: low (fast, default), mid, high",
-        "required": false
-      }
-    },
-    "requires": [
-      "hindsight"
-    ],
-    "tags": [
-      "memory",
-      "read"
-    ],
-    "parents": [
-      "memory"
-    ]
-  },
-  "memory/memory_reflect": {
-    "kind": "capability",
-    "name": "Memory Reflect",
-    "description": "LLM-powered reasoning over memories. CONSENT-GATED: triggers a server-side LLM call against your Anthropic API key (~1-3K tokens per call). Use memory_read for free retrieval first.",
-    "capability_name": "memory_reflect",
-    "category": "memory",
-    "aliases": [
-      "reason about memories",
-      "analyze my memories",
-      "LLM reflection on memory",
-      "think about memories",
-      "memory synthesis",
-      "synthesize from memory"
-    ],
-    "parameters": {
-      "query": {
-        "type": "str",
-        "description": "Question to reason about using memory",
-        "required": true
-      },
-      "budget": {
-        "type": "str",
-        "description": "Retrieval depth: low (default), mid, high",
-        "required": false
-      }
-    },
-    "requires": [
-      "hindsight"
-    ],
-    "tags": [
-      "memory",
-      "reflect"
-    ],
-    "parents": [
-      "memory"
-    ]
-  },
-  "memory/memory_write": {
-    "kind": "capability",
-    "name": "Memory Write",
-    "description": "Store a personal fact, preference, or constraint in memory",
-    "capability_name": "memory_write",
-    "category": "memory",
-    "aliases": [
-      "remember this",
-      "save to memory",
-      "store a preference",
-      "add memory",
-      "record fact",
-      "save to hindsight",
-      "memorize this"
-    ],
-    "parameters": {
-      "content": {
-        "type": "str",
-        "description": "The fact or preference to remember",
-        "required": true
-      },
-      "kind": {
-        "type": "str",
-        "description": "Memory kind: preference, habit, constraint, blindspot, relationship, decision, life-context (default preference)",
-        "required": false
-      },
-      "domain": {
-        "type": "str",
-        "description": "Domain: work, life, health (default life)",
-        "required": false
-      }
-    },
-    "requires": [
-      "hindsight"
-    ],
-    "tags": [
-      "memory",
-      "write"
-    ],
-    "parents": [
-      "memory"
     ]
   },
   "tasks/namespace_lookup": {
@@ -4685,6 +4722,62 @@
     ],
     "parents": [
       "notifications"
+    ]
+  },
+  "context/resolution_surface_pool": {
+    "kind": "capability",
+    "name": "Resolution Surface Pool",
+    "description": "Open the dashboard Resolution Surface over pending Clarify proposals. Aggregates unreviewed ClarifyEntries, composes a presentation (Slice 3 multi-record schema or legacy single-action), dispatches the modal, and (on response) executes the user's decisions via the Clarify executor. On-demand — nothing fires automatically. Slice 3 rename of triage_review_pool; the legacy name is kept as a search alias so old callers still resolve.",
+    "capability_name": "resolution_surface_pool",
+    "category": "context",
+    "aliases": [
+      "review clarify proposals",
+      "open resolution surface",
+      "drain clarify pool",
+      "review pending clarify",
+      "triage_review_pool",
+      "review triage proposals",
+      "open triage modal",
+      "drain triage pool",
+      "review pending triage"
+    ],
+    "parameters": {
+      "source": {
+        "type": "str",
+        "description": "Optional source filter (e.g. 'journal_thread', 'chrome_tab').",
+        "required": false
+      },
+      "adapter": {
+        "type": "str",
+        "description": "Optional adapter-name filter (e.g. 'journal_triage').",
+        "required": false
+      },
+      "since": {
+        "type": "str",
+        "description": "ISO timestamp; only entries created at-or-after are included.",
+        "required": false
+      },
+      "max_items": {
+        "type": "int",
+        "description": "Safety cap on pending entries loaded (default 100).",
+        "required": false
+      },
+      "dispatch": {
+        "type": "bool",
+        "description": "False to compose the presentation without opening the modal.",
+        "required": false
+      }
+    },
+    "mutates_state": true,
+    "retry_policy": "manual",
+    "tags": [
+      "context",
+      "resolution",
+      "surface",
+      "pool"
+    ],
+    "parents": [
+      "context"
     ]
   },
   "operations/retry": {
@@ -5853,6 +5946,52 @@
       "tasks"
     ]
   },
+  "tasks/task_search": {
+    "kind": "capability",
+    "name": "Task Search",
+    "description": "Search tasks by description text via the SQLite store. Bridge-independent — works even when Obsidian isn't running. Returns task records (full task_metadata rows) ordered most-recently-updated first. For full-text search over task NOTE bodies (the [[uuid|📓]]-linked detail files), use context_search(source='task_note') instead — that's hybrid retrieval over note content; this is exact-text search over the line description.",
+    "capability_name": "task_search",
+    "category": "tasks",
+    "aliases": [
+      "find task",
+      "search tasks",
+      "find a task by name",
+      "look up task",
+      "task by description",
+      "tasks containing",
+      "search task descriptions"
+    ],
+    "parameters": {
+      "query": {
+        "type": "str",
+        "description": "Substring to search for in task description text. Empty string returns nothing.",
+        "required": true
+      },
+      "limit": {
+        "type": "int",
+        "description": "Max results (default 50)",
+        "required": false
+      },
+      "include_archived": {
+        "type": "bool",
+        "description": "Include archived tasks (default False)",
+        "required": false
+      },
+      "include_done": {
+        "type": "bool",
+        "description": "Include completed tasks (default True)",
+        "required": false
+      }
+    },
+    "tags": [
+      "tasks",
+      "task",
+      "search"
+    ],
+    "parents": [
+      "tasks"
+    ]
+  },
   "tasks/task_set_tags": {
     "kind": "capability",
     "name": "Task Set Tags",
@@ -5985,216 +6124,51 @@
       "tasks"
     ]
   },
-  "threads/thread_ask": {
+  "tasks/task_update_description": {
     "kind": "capability",
-    "name": "Thread Ask",
-    "description": "Ask a question in a thread and optionally wait for the user's response.",
-    "capability_name": "thread_ask",
-    "category": "threads",
+    "name": "Task Update Description",
+    "description": "Rewrite the description text on a task line. Preserves checkbox, #todo, #projects/*, namespace tags, wikilinks, 🆔 + ID, plugin emojis (📅, ✅, urgency). Updates the store's description column in lockstep. Use this instead of filesystem-direct edits — it routes through the same consent-aware, retry-aware path as the other mutations and avoids the read-modify-write race on the master task list.",
+    "capability_name": "task_update_description",
+    "category": "tasks",
     "aliases": [
-      "chat question",
-      "ask user",
-      "thread question",
-      "follow up question"
+      "rename task",
+      "rewrite task",
+      "edit task description",
+      "change task text",
+      "update task wording",
+      "rephrase task",
+      "rewrite task line"
     ],
     "parameters": {
-      "thread_id": {
-        "type": "string",
-        "description": "Thread ID",
+      "task_id": {
+        "type": "str",
+        "description": "Task ID (e.g., 't-a3f8c1e2')",
         "required": true
       },
-      "question": {
-        "type": "string",
-        "description": "Question text",
+      "new_description": {
+        "type": "str",
+        "description": "New description text. Single line; whitespace is collapsed.",
         "required": true
       },
-      "response_type": {
-        "type": "string",
-        "description": "freeform (default), boolean, or choice"
-      },
-      "choices": {
-        "type": "array",
-        "description": "For choice type: [{key, label}] or [str]"
-      },
-      "timeout_seconds": {
-        "type": "integer",
-        "description": "Block and wait for response (max 110s)"
+      "file_path": {
+        "type": "str",
+        "description": "Vault-relative path. Default: tasks/master-task-list.md",
+        "required": false
       }
     },
+    "requires": [
+      "obsidian"
+    ],
+    "mutates_state": true,
+    "retry_policy": "verify_first",
     "tags": [
-      "threads",
-      "thread",
-      "ask"
+      "tasks",
+      "task",
+      "update",
+      "description"
     ],
     "parents": [
-      "threads"
-    ]
-  },
-  "threads/thread_close": {
-    "kind": "capability",
-    "name": "Thread Close",
-    "description": "Close a conversation thread.",
-    "capability_name": "thread_close",
-    "category": "threads",
-    "aliases": [
-      "end conversation",
-      "close chat",
-      "finish thread",
-      "wrap up conversation",
-      "close dashboard chat",
-      "end thread"
-    ],
-    "parameters": {
-      "thread_id": {
-        "type": "string",
-        "description": "Thread ID",
-        "required": true
-      }
-    },
-    "tags": [
-      "threads",
-      "thread",
-      "close"
-    ],
-    "parents": [
-      "threads"
-    ]
-  },
-  "threads/thread_create": {
-    "kind": "capability",
-    "name": "Thread Create",
-    "description": "Create a new conversation thread with the user. Opens a chat sidebar on the dashboard.",
-    "capability_name": "thread_create",
-    "category": "threads",
-    "aliases": [
-      "chat",
-      "conversation",
-      "follow up",
-      "multi-turn",
-      "side chat"
-    ],
-    "parameters": {
-      "title": {
-        "type": "string",
-        "description": "Thread title",
-        "required": true
-      },
-      "message": {
-        "type": "string",
-        "description": "Optional initial agent message"
-      },
-      "source": {
-        "type": "string",
-        "description": "Source identifier (auto-detected if omitted)"
-      }
-    },
-    "tags": [
-      "threads",
-      "thread",
-      "create"
-    ],
-    "parents": [
-      "threads"
-    ]
-  },
-  "threads/thread_list": {
-    "kind": "capability",
-    "name": "Thread List",
-    "description": "List conversation threads.",
-    "capability_name": "thread_list",
-    "category": "threads",
-    "aliases": [
-      "list chats",
-      "active threads",
-      "conversations",
-      "open threads",
-      "what threads are active",
-      "recent conversations",
-      "thread directory"
-    ],
-    "parameters": {
-      "status": {
-        "type": "string",
-        "description": "Filter: 'open' (default), 'closed', or 'all'"
-      }
-    },
-    "tags": [
-      "threads",
-      "thread",
-      "list"
-    ],
-    "parents": [
-      "threads"
-    ]
-  },
-  "threads/thread_poll": {
-    "kind": "capability",
-    "name": "Thread Poll",
-    "description": "Check if the latest question in a thread has been answered.",
-    "capability_name": "thread_poll",
-    "category": "threads",
-    "aliases": [
-      "check thread",
-      "thread response",
-      "poll chat",
-      "has user answered",
-      "thread answered",
-      "check for reply",
-      "thread question status"
-    ],
-    "parameters": {
-      "thread_id": {
-        "type": "string",
-        "description": "Thread ID",
-        "required": true
-      },
-      "timeout_seconds": {
-        "type": "integer",
-        "description": "Block and wait (max 110s)"
-      }
-    },
-    "tags": [
-      "threads",
-      "thread",
-      "poll"
-    ],
-    "parents": [
-      "threads"
-    ]
-  },
-  "threads/thread_send": {
-    "kind": "capability",
-    "name": "Thread Send",
-    "description": "Send a message in an existing thread (fire-and-forget, no response expected).",
-    "capability_name": "thread_send",
-    "category": "threads",
-    "aliases": [
-      "chat message",
-      "thread message",
-      "send chat message",
-      "post in thread",
-      "speak in conversation",
-      "fire thread message"
-    ],
-    "parameters": {
-      "thread_id": {
-        "type": "string",
-        "description": "Thread ID",
-        "required": true
-      },
-      "message": {
-        "type": "string",
-        "description": "Message content",
-        "required": true
-      }
-    },
-    "tags": [
-      "threads",
-      "thread",
-      "send"
-    ],
-    "parents": [
-      "threads"
+      "tasks"
     ]
   },
   "context/triage_execute": {
@@ -6282,6 +6256,48 @@
       "context"
     ]
   },
+  "context/triage_pool_quarantine_entry": {
+    "kind": "capability",
+    "name": "Triage Pool Quarantine Entry",
+    "description": "Quarantine a single pool entry by (run_id, item_id). Lighter-weight counterpart to triage_pool_sweep — used when the caller already knows a specific entry is stale (e.g. an 'open in app' action click returned email_message_not_found). Idempotent.",
+    "capability_name": "triage_pool_quarantine_entry",
+    "category": "context",
+    "aliases": [
+      "quarantine pool entry",
+      "drop one triage card",
+      "mark triage entry gone",
+      "remove pool entry source removed"
+    ],
+    "parameters": {
+      "run_id": {
+        "type": "str",
+        "description": "Pool run id (visible on the Review-card group as pool_run_id).",
+        "required": true
+      },
+      "item_id": {
+        "type": "str",
+        "description": "TriageItem id (visible on the Review-card item as id).",
+        "required": true
+      },
+      "reason": {
+        "type": "str",
+        "description": "Quarantine reason. Defaults to 'source_removed' to match the sweep's reason taxonomy.",
+        "required": false
+      }
+    },
+    "mutates_state": true,
+    "retry_policy": "manual",
+    "tags": [
+      "context",
+      "triage",
+      "pool",
+      "quarantine",
+      "entry"
+    ],
+    "parents": [
+      "context"
+    ]
+  },
   "context/triage_pool_sweep": {
     "kind": "capability",
     "name": "Triage Pool Sweep",
@@ -6327,14 +6343,12 @@
   "context/triage_review_pool": {
     "kind": "capability",
     "name": "Triage Review Pool",
-    "description": "Open the dashboard review modal over pending background-triage proposals. Aggregates unreviewed PoolEntries, composes a presentation, dispatches the modal, and (on response) executes the user's decisions via the existing triage executor. On-demand — nothing fires automatically.",
+    "description": "Legacy alias for ``resolution_surface_pool`` (Slice 3 rename). Identical behavior — opens the dashboard Resolution Surface over pending Clarify proposals. Prefer ``resolution_surface_pool`` for new callers.",
     "capability_name": "triage_review_pool",
     "category": "context",
     "aliases": [
-      "review triage proposals",
-      "open triage modal",
-      "drain triage pool",
-      "review pending triage"
+      "legacy",
+      "deprecated"
     ],
     "parameters": {
       "source": {
@@ -6397,11 +6411,6 @@
         "description": "The id of the item this verdict applies to.",
         "required": true
       },
-      "recommended_action": {
-        "type": "str",
-        "description": "One of: close, group, create_task, record_into_task, leave.",
-        "required": true
-      },
       "rationale": {
         "type": "str",
         "description": "One-to-three-sentence justification.",
@@ -6409,7 +6418,7 @@
       },
       "group_intent": {
         "type": "str",
-        "description": "Short noun-phrase naming the underlying intent (≤8 words, distinct from the action name and the rationale). Used as the group title in the review UI.",
+        "description": "Short noun-phrase naming the underlying intent (≤8 words, distinct from the action name and the rationale). Used as the card title in the Resolution Surface.",
         "required": false
       },
       "confidence": {
@@ -6417,19 +6426,39 @@
         "description": "Optional [0,1] confidence score.",
         "required": false
       },
+      "records": {
+        "type": "list",
+        "description": "Slice 3+: list of records produced from the captured item. Each is {destination: 'task'|'reference'|'calendar_only'|'delete', task_proposal/reference_proposal/calendar_proposal/delete_reason: ...}. Empty list = 'no record produced'. Mutually exclusive with refusal.",
+        "required": false
+      },
+      "refusal": {
+        "type": "dict",
+        "description": "Slice 3+: {question: '...', missing_context: [...]} when the agent doesn't have enough context to commit a verdict. Renders as a clarification card on the Resolution Surface. Mutually exclusive with records.",
+        "required": false
+      },
+      "pipeline_blocker": {
+        "type": "dict",
+        "description": "Slice 1.5: typed stop reason per ROADMAP §3.3. String (just kind) or dict with kind + optional detail. Surfaced as a typed badge on the Resolution Surface card.",
+        "required": false
+      },
+      "recommended_action": {
+        "type": "str",
+        "description": "Legacy: one of close, group, create_task, record_into_task, leave. Required ONLY when records/refusal are not provided.",
+        "required": false
+      },
       "target_task_id": {
         "type": "str",
-        "description": "For record_into_task: the existing task id.",
+        "description": "Legacy: for record_into_task, the existing task id.",
         "required": false
       },
       "suggested_task_text": {
         "type": "str",
-        "description": "For create_task: the proposed task body.",
+        "description": "Legacy: for create_task, the proposed task body.",
         "required": false
       },
       "related_item_ids": {
         "type": "list",
-        "description": "Other item_ids from this run that belong to the same cluster.",
+        "description": "Legacy: other item_ids from this run that belong to the same cluster.",
         "required": false
       }
     },
