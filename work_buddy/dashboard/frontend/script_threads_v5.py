@@ -659,11 +659,29 @@ def _threads_v5_script() -> str:
             ? card.querySelectorAll('.threads-v5-card-footer button')
             : [];
         for (const b of buttons) { b.disabled = true; }
+        // Wave G — bundle any edits the user made in the right pane
+        // (intent rewrite, action parameter overrides) into the
+        // request body for the accept/redirect path. The accept
+        // route's _v5_post_action merges body data into the
+        // transition data that lands in the state_transition event,
+        // so edits become part of the durable audit log even when
+        // the action dispatcher doesn't yet act on them.
+        let mergedBody = body || {};
+        if (action === 'accept' || action === 'redirect') {
+            try {
+                if (typeof window.threadCardCollectEdits === 'function') {
+                    const edits = window.threadCardCollectEdits(threadId);
+                    if (edits) {
+                        mergedBody = Object.assign({}, mergedBody, edits);
+                    }
+                }
+            } catch(e) { /* edits are optional */ }
+        }
         try {
             const resp = await fetch(url, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(body || {}),
+                body: JSON.stringify(mergedBody),
             });
             if (!resp.ok) {
                 const err = await resp.json().catch(() => ({}));

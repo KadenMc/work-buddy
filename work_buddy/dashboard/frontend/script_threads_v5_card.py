@@ -101,6 +101,42 @@ def _threads_v5_card_script() -> str:
         // No re-render — the user is typing
     };
 
+    // Wave G — capture edits to action parameters in the right-pane
+    // form. Each input/textarea/select wires
+    // ``oninput="threadCardEditActionParam(tid, actId, paramName, this.value)"``.
+    // We store under ``s.edited.action_params[actionId][paramName]``.
+    // On Accept, threadCommitAction merges this into the request
+    // body so the user's edits flow through the FSM transition
+    // event log (and, eventually, the action dispatcher).
+    window.threadCardEditActionParam = function (
+        threadId, actionId, paramName, value,
+    ) {
+        const s = _state(threadId);
+        if (!s.edited.action_params) s.edited.action_params = {};
+        if (!s.edited.action_params[actionId]) {
+            s.edited.action_params[actionId] = {};
+        }
+        s.edited.action_params[actionId][paramName] = value;
+        // No re-render — the user is typing
+    };
+
+    // Public helper — the commit handler in script_threads_v5.py
+    // calls this to assemble the request body for /api/threads/<id>/accept.
+    // Returns ``null`` if there are no edits (so we don't pollute
+    // the request).
+    window.threadCardCollectEdits = function (threadId) {
+        const s = _state(threadId);
+        const out = {};
+        if (s.edited.intent !== undefined) {
+            out.intent_override = s.edited.intent;
+        }
+        if (s.edited.action_params
+            && Object.keys(s.edited.action_params).length > 0) {
+            out.action_overrides = s.edited.action_params;
+        }
+        return Object.keys(out).length > 0 ? out : null;
+    };
+
     // ----- Card rendering ----------------------------------------------
 
     window.renderConfirmationCard = function renderConfirmationCard(thread) {

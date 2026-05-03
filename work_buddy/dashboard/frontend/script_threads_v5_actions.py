@@ -76,53 +76,78 @@ def _threads_v5_actions_script() -> str:
 
     window.renderActionInRightPane = function (thread, action) {
         const fn = window._actionRenderers[action.name];
+        const opts = {
+            threadId: thread.thread_id,
+            actionId: action.id,
+            // Helper for renderers — produces the input event
+            // attribute string that captures edits via the
+            // global threadCardEditActionParam helper.
+            paramHandler: function (paramName) {
+                const tid = JSON.stringify(thread.thread_id);
+                const aid = JSON.stringify(action.id);
+                const pname = JSON.stringify(paramName);
+                return 'oninput="threadCardEditActionParam('
+                       + tid + ', ' + aid + ', ' + pname + ', this.value)"'
+                       + ' onchange="threadCardEditActionParam('
+                       + tid + ', ' + aid + ', ' + pname + ', this.value)"';
+            },
+        };
         if (typeof fn === "function") {
-            return fn(action, { threadId: thread.thread_id });
+            return fn(action, opts);
         }
-        return window.renderActionGeneric(action, { threadId: thread.thread_id });
+        return window.renderActionGeneric(action, opts);
     };
 
     // ----- Specialized renderers -------------------------------------
 
     // create_calendar_event
-    window.registerActionRenderer("create_calendar_event", function (action) {
+    window.registerActionRenderer("create_calendar_event", function (action, opts) {
         const p = action.parameters || {};
+        const h = (opts && opts.paramHandler) || (() => '');
         return ''
             + '<div class="threads-v5-action create_calendar_event">'
             + '<h4>Create calendar event</h4>'
             + _field("Title",
                 '<input type="text" class="threads-v5-input" '
+                + h("title") + ' '
                 + 'value="' + _esc(p.title || "") + '">')
             + _field("When",
                 '<input type="datetime-local" class="threads-v5-input" '
+                + h("datetime") + ' '
                 + 'value="' + _esc((p.datetime || "").slice(0, 16)) + '">')
             + _field("Duration (min)",
                 '<input type="number" class="threads-v5-input" '
+                + h("duration_minutes") + ' '
                 + 'value="' + _esc(p.duration_minutes || 60) + '">')
             + (p.location !== undefined ? _field("Location",
                 '<input type="text" class="threads-v5-input" '
+                + h("location") + ' '
                 + 'value="' + _esc(p.location || "") + '">') : '')
             + '</div>';
     });
 
     // create_task
-    window.registerActionRenderer("create_task", function (action) {
+    window.registerActionRenderer("create_task", function (action, opts) {
         const p = action.parameters || {};
+        const h = (opts && opts.paramHandler) || (() => '');
         return ''
             + '<div class="threads-v5-action create_task">'
             + '<h4>Create task</h4>'
             + _field("Description",
-                '<textarea class="threads-v5-textarea" rows="3">'
+                '<textarea class="threads-v5-textarea" rows="3" '
+                + h("description") + '>'
                 + _esc(p.description || p.text || "") + '</textarea>')
             + _field("Due date",
                 '<input type="date" class="threads-v5-input" '
+                + h("due_date") + ' '
                 + 'value="' + _esc(p.due_date || "") + '">')
             + _field("Namespace",
                 '<input type="text" class="threads-v5-input" '
+                + h("namespace") + ' '
                 + 'value="' + _esc(p.namespace || "") + '" '
                 + 'placeholder="paper/ecg-classifier">')
             + _field("Priority",
-                '<select class="threads-v5-input">'
+                '<select class="threads-v5-input" ' + h("priority") + '>'
                 + ['low', 'medium', 'high'].map(o =>
                     '<option ' + ((p.priority || "medium") === o ? 'selected' : '')
                     + '>' + o + '</option>').join('')
@@ -131,21 +156,25 @@ def _threads_v5_actions_script() -> str:
     });
 
     // send_email
-    window.registerActionRenderer("send_email", function (action) {
+    window.registerActionRenderer("send_email", function (action, opts) {
         const p = action.parameters || {};
+        const h = (opts && opts.paramHandler) || (() => '');
         const to = Array.isArray(p.to) ? p.to.join(', ') : (p.to || "");
         return ''
             + '<div class="threads-v5-action send_email">'
             + '<h4>Send email</h4>'
             + _field("To",
                 '<input type="email" class="threads-v5-input" '
+                + h("to") + ' '
                 + 'value="' + _esc(to) + '" '
                 + 'placeholder="comma-separated">')
             + _field("Subject",
                 '<input type="text" class="threads-v5-input" '
+                + h("subject") + ' '
                 + 'value="' + _esc(p.subject || "") + '">')
             + _field("Body",
-                '<textarea class="threads-v5-textarea" rows="10">'
+                '<textarea class="threads-v5-textarea" rows="10" '
+                + h("body") + '>'
                 + _esc(p.body || "") + '</textarea>')
             + '<div class="threads-v5-action-warn">'
             + 'Email is irreversible — once sent, it cannot be unsent. '
@@ -154,17 +183,20 @@ def _threads_v5_actions_script() -> str:
     });
 
     // file_reference (Slice 6 — file content into the vault)
-    window.registerActionRenderer("file_reference", function (action) {
+    window.registerActionRenderer("file_reference", function (action, opts) {
         const p = action.parameters || {};
+        const h = (opts && opts.paramHandler) || (() => '');
         return ''
             + '<div class="threads-v5-action file_reference">'
             + '<h4>File reference</h4>'
             + _field("Destination path",
                 '<input type="text" class="threads-v5-input" '
+                + h("path") + ' '
                 + 'value="' + _esc(p.path || "") + '" '
                 + 'placeholder="Research/ECG/aug.md">')
             + _field("Content",
-                '<textarea class="threads-v5-textarea" rows="6">'
+                '<textarea class="threads-v5-textarea" rows="6" '
+                + h("content") + '>'
                 + _esc(p.content || "") + '</textarea>')
             + (p.append_to_existing
                 ? '<p class="threads-v5-stage-note">Will append to existing file.</p>'
