@@ -266,6 +266,14 @@ def process_one_pending(worker_id: str) -> Optional[dict[str, Any]]:
         summary["outcome"] = "failed"
         return summary
 
+    # Stage 5: combined-inference fast path. Single LLM call, three
+    # FSM transitions. Each transition still goes through the
+    # autonomy-gated branch resolver, so policy still decides whether
+    # to surface or skip — combined inference is a *call-count*
+    # optimization, not a policy bypass.
+    if target == InferenceTarget.COMBINED:
+        return _process_combined(entry, thread, summary)
+
     inferring_state = _TARGET_TO_INFERRING.get(target)
     if inferring_state is None:
         queue.fail(entry.id, f"Unknown inference target: {target!r}")
@@ -350,6 +358,211 @@ def process_one_pending(worker_id: str) -> Optional[dict[str, Any]]:
             thread_id, store.get_thread(thread_id).fsm_state.value,
         )
         summary["outcome"] = "done"
+    return summary
+
+
+# ---------------------------------------------------------------------------
+# Combined-inference processing (Stage 5)
+# ---------------------------------------------------------------------------
+
+
+def _process_combined(
+    entry, thread, summary: dict[str, Any],
+) -> dict[str, Any]:
+    """Run a single COMBINED-target LLM call and walk the FSM through
+    intent → context → action.
+
+    The call returns a payload shaped like::
+
+        {
+          "intent":   {"intent": "...", "supporting_refs": [...]},
+          "context":  {"associated_refs": [...], "reasoning": "..."},
+          "action":   {"kind": "...", "name": "...", ...,
+                       "irreversibility": "...", "regret_potential": "...",
+                       "risk_amplifier": bool},
+          "confidence": 0.92
+        }
+
+    The worker:
+
+    1. Records three ``*_inferred`` events (intent, context, action)
+       with the combined payload split per-target.
+    2. Records one ``combined_inferred_meta`` audit event so the
+       trace is honest about "this was a single call".
+    3. Walks the FSM by firing TRIG_INFERENCE_DONE three times.
+       Each transition goes through the autonomy-gated branch
+       resolver. If at any step the resolver lands on a wait
+       state (low confidence or policy denied), we stop and let
+       the user resolve before the remaining payloads are surfaced.
+
+    The remaining (unconsumed) target payloads are still recorded
+    in the event log as informational ``*_inferred`` events; they
+    just don't trigger further FSM transitions until the user
+    confirms the current pause point.
+    """
+    from work_buddy.threads.events import (
+        ACTOR_AGENT,
+        KIND_COMBINED_INFERRED_META,
+    )
+    thread_id = thread.thread_id
+
+    # Move into INFERRING_INTENT first (signals "the agent is working").
+    store.update_thread_state(
+        thread_id, fsm_state=FSMState.INFERRING_INTENT.value,
+    )
+
+    tier = ReasoningTier(entry.tier_hint) if entry.tier_hint else None
+    try:
+        proposal = inference.run(
+            thread,
+            InferenceTarget.COMBINED,
+            tier=tier,
+            record_event=False,  # we record per-target events ourselves
+        )
+    except Exception as e:
+        logger.exception(
+            "Combined inference failed for thread %s: %s", thread_id, e,
+        )
+        queue.fail(entry.id, f"{type(e).__name__}: {e}")
+        fresh_parent = store.latest_event_id(thread_id)
+        try:
+            engine.transition(
+                thread_id, TRIG_INFERENCE_FAILED,
+                data={"error": str(e), "queue_entry_id": entry.id},
+                parent_event_id=fresh_parent,
+                fire_side_effects=True,
+            )
+        except engine.InvalidTransition:
+            pass
+        summary["outcome"] = "failed"
+        return summary
+
+    payload = proposal.payload or {}
+    overall_confidence = proposal.confidence
+    intent_p = payload.get("intent") or {}
+    context_p = payload.get("context") or {}
+    action_p = payload.get("action") or {}
+
+    # Record per-target *_inferred events. We use the same shape
+    # that inference.run() would have produced for staged inference,
+    # so downstream code (search-blob refresh, render data) doesn't
+    # need to special-case combined output.
+    for kind, sub_payload in (
+        (KIND_INTENT_INFERRED, intent_p),
+        (KIND_CONTEXT_INFERRED, context_p),
+        (KIND_ACTION_INFERRED, action_p),
+    ):
+        store.append_event(ThreadEvent(
+            thread_id=thread_id,
+            kind=kind,
+            actor=ACTOR_AGENT,
+            inference_tier=proposal.tier_used.value,
+            data={
+                "target": kind.replace("_inferred", ""),
+                "payload": sub_payload,
+                "confidence": overall_confidence,
+                "tier_used": proposal.tier_used.value,
+                "model_used": proposal.model_used,
+                "cost_usd": proposal.cost_usd,
+                "reasoning_trace_pointer": proposal.reasoning_trace_pointer,
+                "from_combined_call": True,
+            },
+        ))
+
+    # Audit event records the call provenance (one LLM call, three
+    # *_inferred events). Useful when reading the event log later
+    # to understand why three "inferred" events all carry the same
+    # cost, model, and timestamp.
+    store.append_event(ThreadEvent(
+        thread_id=thread_id,
+        kind=KIND_COMBINED_INFERRED_META,
+        actor=ACTOR_AGENT,
+        inference_tier=proposal.tier_used.value,
+        data={
+            "queue_entry_id": entry.id,
+            "model_used": proposal.model_used,
+            "cost_usd": proposal.cost_usd,
+            "tier_used": proposal.tier_used.value,
+            "overall_confidence": overall_confidence,
+        },
+    ))
+
+    queue.complete(entry.id, {"proposal": proposal.to_dict()})
+
+    # Refresh search blob now that intent/action events are recorded.
+    try:
+        from work_buddy.threads.search import update_search_blob
+        update_search_blob(thread_id)
+    except Exception as e:
+        logger.warning(
+            "Combined search-blob refresh failed for %s: %s", thread_id, e,
+        )
+
+    # Walk the FSM. Each transition fires the autonomy-gated branch
+    # resolver. If the resolver auto-advances, we move into the
+    # next INFERRING_* state (manually, since AWAITING_INFERENCE →
+    # INFERRING_* is owned by the worker, not the FSM table). If
+    # the resolver lands on a wait state, we stop — the remaining
+    # target events have been recorded but FSM advancement halts
+    # until the user resolves.
+    summary["outcome"] = "done"
+    fresh_parent = store.latest_event_id(thread_id)
+    for stage_idx, (target_name, sub_payload, next_inferring_state) in enumerate((
+        ("intent", intent_p, FSMState.INFERRING_CONTEXT),
+        ("context", context_p, FSMState.INFERRING_ACTION),
+        ("action", action_p, None),  # last stage, no follow-on inferring
+    )):
+        # Build transition data with target-specific payload merged
+        # in (so the autonomy resolver sees fields like
+        # irreversibility, regret_potential, etc. for the action).
+        data = {
+            "target": target_name,
+            "confidence": overall_confidence,
+            "tier_used": proposal.tier_used.value,
+            "model_used": proposal.model_used,
+            "queue_entry_id": entry.id,
+            "from_combined_call": True,
+            **sub_payload,
+        }
+        try:
+            result = engine.transition(
+                thread_id, TRIG_INFERENCE_DONE,
+                data=data,
+                parent_event_id=fresh_parent,
+                fire_side_effects=True,
+            )
+            summary["next_state"] = result.next_state.value
+            fresh_parent = store.latest_event_id(thread_id)
+        except engine.InvalidTransition:
+            logger.warning(
+                "TRIG_INFERENCE_DONE not valid for thread %s in state %s "
+                "during combined inference stage %d; halting walk",
+                thread_id,
+                store.get_thread(thread_id).fsm_state.value,
+                stage_idx,
+            )
+            break
+
+        # If the resolver landed on a wait state, the user must
+        # resolve before we advance further. Halt the walk; the
+        # remaining target payloads have been recorded as events
+        # for the audit log but won't drive transitions until the
+        # user confirms / clarifies.
+        if not result.next_state == FSMState.AWAITING_INFERENCE:
+            break
+        if next_inferring_state is None:
+            break
+
+        # Resolver auto-advanced. Move the cache into the next
+        # INFERRING_* state and loop. This mirrors the
+        # AWAITING_INFERENCE → INFERRING_* manual-cache update
+        # the staged worker does on dequeue.
+        store.update_thread_state(
+            thread_id, fsm_state=next_inferring_state.value,
+        )
+        # parent_event_id was bumped; re-read for the next transition.
+        fresh_parent = store.latest_event_id(thread_id)
+
     return summary
 
 

@@ -96,6 +96,59 @@ def build_resolution_request(
 # ---------------------------------------------------------------------------
 
 
+def _surfaces_for(rr: ResolutionRequest) -> Optional[list[str]]:
+    """Decide which notification surfaces should fan out for this
+    Resolution Request.
+
+    Phase 5a of the autonomy plan: not every wait state warrants a
+    multi-surface ping. The user should only be paged across
+    Telegram/Obsidian when the FSM hits a *legitimate* pause — an
+    action approval, or an error/clarification path the agent can't
+    self-resolve.
+
+    Returns:
+        A list of surface names to target (e.g. ``["dashboard"]``)
+        or None to deliver to ALL available surfaces (the previous
+        default behaviour).
+
+    Rules:
+    - ``AWAITING_CONFIRMATION`` (action approval): all surfaces.
+      This is the legitimate "I'm about to mutate the world" pause.
+    - Any clarification state (``AWAITING_*_CLARIFICATION``,
+      ``AWAITING_REDIRECT``): all surfaces. The agent is stuck and
+      genuinely needs the user's input.
+    - ``AWAITING_REVIEW`` (post-execution review, opt-in by the
+      action template): all surfaces. The user opted in.
+    - ``DONE_CLEANUP_UNSUCCESSFUL``: all surfaces. Cleanup failed
+      and the user has to choose retry vs accept-failure.
+    - Any intent/context confirmation that DID still surface (i.e.
+      the autonomy resolver chose AWAITING_*_CONFIRMATION because
+      confidence was low or the policy is conservative): dashboard
+      only. This is "the agent isn't sure" — important to see, but
+      not worth a Telegram interruption.
+    """
+    state = rr.fsm_state
+    if state == FSMState.AWAITING_CONFIRMATION:
+        return None  # all surfaces
+    if state in (
+        FSMState.AWAITING_INTENT_CLARIFICATION,
+        FSMState.AWAITING_CONTEXT_CLARIFICATION,
+        FSMState.AWAITING_ACTION_CLARIFICATION,
+        FSMState.AWAITING_REDIRECT,
+        FSMState.AWAITING_REVIEW,
+        FSMState.DONE_CLEANUP_UNSUCCESSFUL,
+    ):
+        return None
+    if state in (
+        FSMState.AWAITING_INTENT_CONFIRMATION,
+        FSMState.AWAITING_CONTEXT_CONFIRMATION,
+    ):
+        return ["dashboard"]
+    # Defensive default: any state we forgot to map → dashboard only.
+    # Better to under-page than to over-page.
+    return ["dashboard"]
+
+
 def publish(rr: ResolutionRequest) -> Optional[str]:
     """Publish a ResolutionRequest as a workflow-view Notification.
 
@@ -104,6 +157,11 @@ def publish(rr: ResolutionRequest) -> Optional[str]:
     (best-effort — the FSM transition has already landed
     atomically; failure to surface a card is degraded UX, not a
     correctness issue).
+
+    Surface targeting is decided by ``_surfaces_for(rr)``: the
+    legitimate user-pause states (action approval, clarifications,
+    post-execution review, failed cleanup) fan out everywhere; the
+    intent/context confirmation states only land in the dashboard.
     """
     view_id = f"{_PUBLISHED_VIEW_PREFIX}{rr.thread_id}"
 
@@ -125,6 +183,7 @@ def publish(rr: ResolutionRequest) -> Optional[str]:
             title=title,
             body=body,
             response_type=ResponseType.NONE.value,  # custom card has its own affordances
+            surfaces=_surfaces_for(rr),
             custom_template={
                 "type": "resolution_request",
                 "thread_id": rr.thread_id,

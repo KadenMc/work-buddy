@@ -64,16 +64,47 @@ def kill_process_on_port(port: int, *, wait_seconds: float = 5.0) -> bool:
     This function's new verify-the-port-is-actually-free contract
     prevents that silent-failure mode.
     """
+    import logging
     import signal
     import time as _time
 
+    log = logging.getLogger(__name__)
+
+    # CRITICAL: distinguish "no PIDs found" from "PID lookup failed".
+    # On Windows, Get-NetTCPConnection inside PowerShell can take
+    # 6–15s on a cold console (profile load + cmdlet JIT). The previous
+    # 5s subprocess timeout combined with `except Exception: pids =
+    # set()` produced a SILENT FALSE POSITIVE — the function returned
+    # True ("port cleaned") even when the lookup never completed,
+    # leaving the old process bound to the port. The new sidecar's
+    # _start_child then spawned a child that died on bind while the
+    # orphan kept serving requests with stale code, with health probes
+    # cheerfully reporting 200 OK against the wrong process.
+    #
+    # Fix: use _is_port_listening (cheap, no subprocess) as the
+    # ground-truth signal. Only return True when we have evidence the
+    # port is free; on lookup failure, refuse rather than guess.
+    if not _is_port_listening(port):
+        return True
     try:
         pids = _find_pids_on_port(port)
-    except Exception:
-        pids = set()
+    except Exception as exc:
+        log.error(
+            "kill_process_on_port(%d): PID lookup failed (%s: %s); "
+            "refusing to claim port is free.",
+            port, type(exc).__name__, exc,
+        )
+        return False
 
     if not pids:
-        return True
+        # Port held but lookup says no PIDs — could be IPv6-only listener
+        # or a permission-restricted process. Can't kill what we can't
+        # identify; refuse rather than mislead.
+        log.error(
+            "kill_process_on_port(%d): port is held but PID lookup "
+            "returned empty; cannot claim port is free.", port,
+        )
+        return False
 
     # First pass: polite SIGTERM
     for pid in pids:
@@ -85,26 +116,38 @@ def kill_process_on_port(port: int, *, wait_seconds: float = 5.0) -> bool:
     # Poll until the port is free OR we time out
     deadline = _time.monotonic() + wait_seconds
     escalated = False
+    last_lookup_exc: Exception | None = None
     while _time.monotonic() < deadline:
         _time.sleep(0.2)
+        # Cheap pre-check: port free? — done.
+        if not _is_port_listening(port):
+            return True
         try:
             still_held = _find_pids_on_port(port)
-        except Exception:
-            still_held = set()
-        if not still_held:
-            return True
+            last_lookup_exc = None
+        except Exception as exc:
+            # Lookup failed mid-loop. Don't pretend the port is free —
+            # but we still know the original PIDs to escalate against.
+            last_lookup_exc = exc
+            still_held = pids
         # Halfway through the window, escalate to force-kill
         if not escalated and _time.monotonic() > (deadline - wait_seconds / 2):
             escalated = True
             for pid in still_held:
                 _force_kill_pid(pid)
 
-    # Final check after escalation completed
-    try:
-        remaining = _find_pids_on_port(port)
-    except Exception:
-        remaining = set()
-    return not remaining
+    # Final answer must be truthful. _is_port_listening is the
+    # ground-truth signal — never claim "free" without it agreeing.
+    if not _is_port_listening(port):
+        return True
+    if last_lookup_exc is not None:
+        log.error(
+            "kill_process_on_port(%d): port still held after %.1fs; "
+            "lookup last raised %s: %s",
+            port, wait_seconds,
+            type(last_lookup_exc).__name__, last_lookup_exc,
+        )
+    return False
 
 
 def _force_kill_pid(pid: int) -> None:
@@ -166,14 +209,56 @@ def _find_pids_on_port(port: int) -> set[int]:
 
 
 def _find_pids_on_port_windows(port: int) -> set[int]:
-    """Use PowerShell Get-NetTCPConnection to find PIDs on a port."""
+    """Find PIDs of Windows processes listening on ``port``.
+
+    Tries fast path first (``netstat -ano`` — no PowerShell cold start),
+    falls back to PowerShell ``Get-NetTCPConnection`` if netstat parsing
+    fails. Both paths use ``-NoProfile`` and a generous timeout because
+    PowerShell on Windows is notoriously slow on first invocation
+    (6–15s with profile load) — and the previous 5s timeout was the
+    direct cause of a long-lived orphan-gateway bug.
+    """
+    # Fast path: netstat is a native Win32 tool, ~50–200ms cold.
+    # Output columns: Proto Local Foreign State PID
+    try:
+        result = subprocess.run(
+            ["netstat", "-ano", "-p", "TCP"],
+            capture_output=True, text=True, timeout=10,
+        )
+        pids: set[int] = set()
+        suffix = f":{port}"
+        for line in result.stdout.splitlines():
+            parts = line.split()
+            # Match LISTENING rows with Local addr ending in :<port>.
+            # Layout: TCP <local> <foreign> <state> <pid>
+            if len(parts) < 5 or parts[0] != "TCP":
+                continue
+            local = parts[1]
+            state = parts[3]
+            if state != "LISTENING":
+                continue
+            # Local can be 0.0.0.0:5126 or [::]:5126 — both end with :port
+            if not local.endswith(suffix):
+                continue
+            pid_str = parts[-1]
+            if pid_str.isdigit() and int(pid_str) > 0:
+                pids.add(int(pid_str))
+        if pids:
+            return pids
+        # No matches: either truly free or netstat output unparseable.
+        # Fall through to PowerShell to disambiguate.
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass  # fall through
+
+    # Slow path: PowerShell. Use -NoProfile to skip 5–10s of profile
+    # loading, and bump timeout to 30s to ride out cmdlet JIT.
     result = subprocess.run(
         [
-            "powershell.exe", "-Command",
+            "powershell.exe", "-NoProfile", "-Command",
             f"Get-NetTCPConnection -LocalPort {port} -ErrorAction SilentlyContinue "
             "| Select-Object -ExpandProperty OwningProcess",
         ],
-        capture_output=True, text=True, timeout=5,
+        capture_output=True, text=True, timeout=30,
     )
     pids = set()
     for line in result.stdout.strip().split("\n"):

@@ -118,6 +118,14 @@ class InferenceTarget(str, Enum):
     CONTEXT = "context"
     ACTION = "action"
     AUTONOMY = "autonomy"  # forward-looking; not used in Stage 2 bootstrap
+    # Stage 5 (combined inference): a single LLM call that returns
+    # intent + context + action together. Used when the source
+    # pipeline or per-thread autonomy axis opts in. The worker
+    # records three separate *_inferred events from one COMBINED
+    # call so the FSM and audit log stay shaped the same way as
+    # staged inference; a follow-up `combined_inferred_meta` event
+    # records that they all came from a single call.
+    COMBINED = "combined"
 
 
 class ReasoningTier(str, Enum):

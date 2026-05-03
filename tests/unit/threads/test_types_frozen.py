@@ -384,20 +384,29 @@ class TestTransitionTable:
     """Pin the canonical transitions. Failures here mean the FSM
     spec moved without a corresponding DESIGN.md update."""
 
-    def test_inferring_intent_done_goes_to_intent_confirmation(self):
+    def test_inferring_intent_done_branches_via_autonomy(self):
+        # The cell now branches on policy: PLAN_THEN_REVIEW + high
+        # confidence → AWAITING_INFERENCE (skip the confirmation);
+        # default policy → AWAITING_INTENT_CONFIRMATION. The table
+        # records the branch label; the engine's resolver picks the
+        # state at runtime.
         out = lookup(FSMState.INFERRING_INTENT, TRIG_INFERENCE_DONE)
-        assert out.next_state == FSMState.AWAITING_INTENT_CONFIRMATION
+        assert out.next_state is None
+        assert out.next_state_via_branch == "intent_review_or_advance"
         assert not out.unspecified
 
     def test_inferring_intent_failed_goes_to_clarification(self):
         out = lookup(FSMState.INFERRING_INTENT, TRIG_INFERENCE_FAILED)
         assert out.next_state == FSMState.AWAITING_INTENT_CLARIFICATION
 
-    def test_inferring_action_done_goes_to_awaiting_confirmation(self):
-        # NOT awaiting_action_confirmation — that state was merged into
-        # awaiting_confirmation per DESIGN.md correction #8.
+    def test_inferring_action_done_branches_via_autonomy(self):
+        # Same branching shape as intent: under a fully autonomous
+        # policy with low risk → EXECUTING; under PLAN_THEN_REVIEW
+        # → AWAITING_CONFIRMATION (the legitimate user-review point).
         out = lookup(FSMState.INFERRING_ACTION, TRIG_INFERENCE_DONE)
-        assert out.next_state == FSMState.AWAITING_CONFIRMATION
+        assert out.next_state is None
+        assert out.next_state_via_branch == "action_review_or_execute"
+        assert not out.unspecified
 
     def test_redirect_loops_back_to_awaiting_inference(self):
         for s in (

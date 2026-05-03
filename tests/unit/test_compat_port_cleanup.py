@@ -29,23 +29,39 @@ import pytest
 from work_buddy import compat
 
 
-def test_kill_returns_true_when_no_pids_on_port(monkeypatch):
-    """Happy path: nothing holds the port, cleanup is a no-op True."""
-    monkeypatch.setattr(compat, "_find_pids_on_port", lambda p: set())
+def test_kill_returns_true_when_port_is_free(monkeypatch):
+    """Happy path: port isn't even listening → cleanup is a no-op True
+    without ever invoking the PID lookup."""
+    monkeypatch.setattr(compat, "_is_port_listening", lambda p, **kw: False)
+
+    def forbidden_find(p):
+        raise AssertionError(
+            "Free-port fast path must not invoke _find_pids_on_port"
+        )
+    monkeypatch.setattr(compat, "_find_pids_on_port", forbidden_find)
     assert compat.kill_process_on_port(5126) is True
 
 
 def test_kill_sends_sigterm_then_verifies_empty(monkeypatch):
     """SIGTERM actually cleared the port → return True without
-    needing the escalation path."""
-    calls = {"found": [{1234}, set()]}  # first call has PID; second is empty
-    killed = []
+    needing the escalation path. Ground truth is _is_port_listening,
+    not the PID enumerator."""
+    # Port is held at first, then becomes free after SIGTERM.
+    listen_state = {"held": True}
+    monkeypatch.setattr(
+        compat, "_is_port_listening",
+        lambda p, **kw: listen_state["held"],
+    )
+
+    killed: list[tuple[int, int]] = []
 
     def fake_find(p):
-        return calls["found"].pop(0) if calls["found"] else set()
+        return {1234} if listen_state["held"] else set()
 
     def fake_kill(pid, sig):
         killed.append((pid, sig))
+        # SIGTERM worked: PID releases the port.
+        listen_state["held"] = False
 
     monkeypatch.setattr(compat, "_find_pids_on_port", fake_find)
     monkeypatch.setattr(compat.os, "kill", fake_kill)
@@ -56,21 +72,24 @@ def test_kill_sends_sigterm_then_verifies_empty(monkeypatch):
 
 def test_kill_escalates_to_force_kill_when_sigterm_ignored(monkeypatch):
     """The real-world failure mode: SIGTERM does nothing on Windows.
-    We must escalate and verify."""
-    # PID sticks around until _force_kill_pid is called, then goes away.
-    state = {"alive": {9999}}
+    We must escalate and verify via the port-listening ground truth."""
+    listen_state = {"held": True}
+    monkeypatch.setattr(
+        compat, "_is_port_listening",
+        lambda p, **kw: listen_state["held"],
+    )
 
     def fake_find(p):
-        return set(state["alive"])
+        return {9999} if listen_state["held"] else set()
 
     def fake_kill(pid, sig):
         pass  # SIGTERM silently ignored (the Windows bug)
 
-    force_killed = []
+    force_killed: list[int] = []
 
     def fake_force(pid):
         force_killed.append(pid)
-        state["alive"].discard(pid)
+        listen_state["held"] = False  # taskkill /F worked
 
     monkeypatch.setattr(compat, "_find_pids_on_port", fake_find)
     monkeypatch.setattr(compat.os, "kill", fake_kill)
@@ -84,10 +103,10 @@ def test_kill_escalates_to_force_kill_when_sigterm_ignored(monkeypatch):
 def test_kill_returns_false_when_orphan_cannot_be_killed(monkeypatch):
     """Port still held after escalation → return False so the caller
     doesn't try to bind and produce a silently-dead child."""
-    state = {"alive": {9999}}
+    monkeypatch.setattr(compat, "_is_port_listening", lambda p, **kw: True)
 
     def fake_find(p):
-        return set(state["alive"])
+        return {9999}
 
     def fake_kill(pid, sig):
         pass
@@ -106,14 +125,47 @@ def test_kill_returns_false_when_orphan_cannot_be_killed(monkeypatch):
     )
 
 
-def test_kill_exceptions_during_find_do_not_crash(monkeypatch):
-    """Best-effort: an exception in the pid-scan shouldn't propagate."""
-    def fake_find(p):
-        raise RuntimeError("boom")
+def test_kill_returns_false_when_pid_lookup_raises_on_held_port(monkeypatch):
+    """REGRESSION: 2026-05-02 — PowerShell Get-NetTCPConnection timed out
+    at the function's 5s subprocess timeout. The exception was caught
+    silently, ``pids = set()`` was returned, and the function reported
+    True ("port cleaned") even though the orphan PID 16684 was still
+    bound to port 5126. The new sidecar's ``_start_child`` then spawned
+    a child that died on bind, while the orphan kept serving requests
+    against stale code.
 
-    monkeypatch.setattr(compat, "_find_pids_on_port", fake_find)
-    # Shouldn't raise. True because no pids were seen.
-    assert compat.kill_process_on_port(5126, wait_seconds=0.1) is True
+    Contract: if the port is provably held but the PID enumerator
+    raised, refuse rather than guess. The caller will know the cleanup
+    failed and abort the spawn — far better than a silent zombie that
+    answers /health checks with the wrong bytecode for 27 hours.
+    """
+    monkeypatch.setattr(compat, "_is_port_listening", lambda p, **kw: True)
+
+    def slow_find_that_times_out(p):
+        # Mimics subprocess.TimeoutExpired bubbling up from a slow
+        # PowerShell cold start.
+        import subprocess
+        raise subprocess.TimeoutExpired(cmd="powershell", timeout=5)
+
+    monkeypatch.setattr(compat, "_find_pids_on_port", slow_find_that_times_out)
+    # No mock for os.kill — the lookup raises before we get there.
+    result = compat.kill_process_on_port(5126, wait_seconds=0.5)
+    assert result is False, (
+        "When PID lookup fails on a held port, must NOT claim port is "
+        "free. The previous silent-True behavior caused PID 16684 to "
+        "survive multiple 'restarts' on 2026-05-02, serving stale "
+        "registry data with no diagnostic to surface the gap."
+    )
+
+
+def test_kill_returns_false_when_port_held_but_pids_empty(monkeypatch):
+    """If the port is listening but PID lookup returns empty (e.g.
+    IPv6-only listener missed by parser, or permission-restricted
+    process), refuse to claim free. Same reasoning as the timeout
+    case: silent True is worse than honest False."""
+    monkeypatch.setattr(compat, "_is_port_listening", lambda p, **kw: True)
+    monkeypatch.setattr(compat, "_find_pids_on_port", lambda p: set())
+    assert compat.kill_process_on_port(5126, wait_seconds=0.3) is False
 
 
 # ---------------------------------------------------------------------------
@@ -208,25 +260,85 @@ def test_find_pids_fast_path_does_not_spawn_subprocess(monkeypatch):
 def test_find_pids_falls_through_when_port_is_held(monkeypatch):
     """Port is listening → the expensive PID enumeration path must run.
 
-    Semantics unchanged when the port actually has a holder: we still
-    shell out to find the PID so we can kill it.
+    Two-stage path on Windows: netstat fast path first; if it doesn't
+    produce a parseable result, fall back to PowerShell. Either way we
+    must end up with the PID — silent empty-set is the bug we're
+    guarding against (see 2026-05-02 regression in
+    test_kill_returns_false_when_pid_lookup_raises_on_held_port).
     """
     monkeypatch.setattr(compat, "_is_port_listening", lambda p, **kw: True)
     monkeypatch.setattr(compat, "IS_WINDOWS", True)
 
-    called = {"run": 0}
+    called: list[list[str]] = []
 
     def fake_run(cmd, **kw):
-        called["run"] += 1
+        called.append(cmd)
+
         class _R:
-            stdout = "4242\n"
             returncode = 0
+            stderr = ""
+            # netstat output the helper can parse:
+            # "  TCP    0.0.0.0:5126           0.0.0.0:0              LISTENING       4242"
+            if cmd and cmd[0] == "netstat":
+                stdout = (
+                    "Active Connections\n\n"
+                    "  Proto  Local Address          Foreign Address        State           PID\n"
+                    "  TCP    0.0.0.0:5126           0.0.0.0:0              LISTENING       4242\n"
+                )
+            else:
+                # PowerShell fallback shape
+                stdout = "4242\n"
+
         return _R()
 
     monkeypatch.setattr(compat.subprocess, "run", fake_run)
     pids = compat._find_pids_on_port(5126)
     assert pids == {4242}
-    assert called["run"] == 1, "held port must fall through to PID enumeration"
+    # Fast path should resolve in one call; we don't fall through to
+    # PowerShell when netstat already returned the PID.
+    assert len(called) == 1, (
+        "netstat fast path should resolve held ports without invoking "
+        "PowerShell (which can take 6–15s on cold start)"
+    )
+    assert called[0][0] == "netstat", (
+        "netstat must be tried before PowerShell — PowerShell cold "
+        "start was the direct cause of the silent-True bug on 2026-05-02"
+    )
+
+
+def test_find_pids_falls_back_to_powershell_when_netstat_fails(monkeypatch):
+    """If netstat is missing or returns unparseable output, the helper
+    must still find the PID via PowerShell — never silently empty."""
+    monkeypatch.setattr(compat, "_is_port_listening", lambda p, **kw: True)
+    monkeypatch.setattr(compat, "IS_WINDOWS", True)
+
+    called: list[list[str]] = []
+
+    def fake_run(cmd, **kw):
+        called.append(cmd)
+        if cmd[0] == "netstat":
+            raise FileNotFoundError("no netstat in this PATH")
+
+        class _R:
+            stdout = "9876\n"
+            returncode = 0
+            stderr = ""
+
+        return _R()
+
+    monkeypatch.setattr(compat.subprocess, "run", fake_run)
+    pids = compat._find_pids_on_port(5126)
+    assert pids == {9876}
+    assert len(called) == 2
+    assert called[0][0] == "netstat"
+    assert called[1][0] == "powershell.exe"
+    # CRITICAL: -NoProfile prevents 5–10s of profile loading on cold
+    # PowerShell. Without it, the previous 5s subprocess timeout (now
+    # 30s) would silently kick in and return empty pids.
+    assert "-NoProfile" in called[1], (
+        "PowerShell fallback must use -NoProfile — profile loading was "
+        "a contributor to the >5s timeouts that masked the orphan PID"
+    )
 
 
 def test_is_port_listening_returns_false_for_closed_port():

@@ -88,6 +88,21 @@ KIND_LATER = "later"
 KIND_SOURCE_CLEANED_UP = "source_cleaned_up"
 KIND_CLEANUP_FAILED = "cleanup_failed"
 
+# Stage 5 (autonomy runtime): per-decision audit emitted by the
+# autonomy-gated branch resolvers. Records which axes passed/failed
+# when the FSM picked between auto-advance and surfacing a card.
+# Never user-facing in the dashboard list (filtered like
+# state_transition); visible in the thread detail view + the
+# mid-process toggle.
+KIND_AUTO_ADVANCE_DECISION = "auto_advance_decision"
+
+# Stage 5 (combined inference): emitted alongside the three
+# *_inferred events when a single LLM call satisfied all three
+# targets at once. Carries the per-target attribution of the
+# combined call so the audit trace remains honest about
+# "this was one call, not three."
+KIND_COMBINED_INFERRED_META = "combined_inferred_meta"
+
 
 ALL_KINDS: frozenset[str] = frozenset({
     KIND_INCITING_EVENT,
@@ -128,6 +143,8 @@ ALL_KINDS: frozenset[str] = frozenset({
     KIND_LATER,
     KIND_SOURCE_CLEANED_UP,
     KIND_CLEANUP_FAILED,
+    KIND_AUTO_ADVANCE_DECISION,
+    KIND_COMBINED_INFERRED_META,
 })
 
 

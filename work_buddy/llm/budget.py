@@ -150,6 +150,18 @@ def register_cost_source(caller_kind: str, fn: CostFn) -> None:
     _COST_SOURCES[caller_kind] = fn
 
 
+def reset_cost_sources() -> None:
+    """Test-only: restore the default cost sources.
+
+    Tests that override the cost source for fault-injection (e.g.
+    "what if cumulative=$99?") leak that override into the
+    process-global state. Bootstrap teardown calls this so the
+    next test starts from the canonical default.
+    """
+    _COST_SOURCES.clear()
+    _COST_SOURCES["thread"] = _default_thread_cost_source
+
+
 def cumulative_cost_for(caller_id: str, caller_kind: str) -> float:
     """Return cumulative LLM cost in USD for a caller. 0.0 if no
     cost source is registered for ``caller_kind``."""

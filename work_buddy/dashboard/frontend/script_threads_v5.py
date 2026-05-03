@@ -131,10 +131,11 @@ def _threads_v5_script() -> str:
     if (!window._topLevelCache) window._topLevelCache = null;
     if (!window._topLevelFilters) {
         window._topLevelFilters = {
-            q: '',           // search query
-            state: '',        // FSM state filter
-            subtype: '',      // '' | 'task'
+            q: '',                    // search query
+            state: '',                 // FSM state filter
+            subtype: '',               // '' | 'task'
             show_later: false,
+            include_mid_process: false, // Phase 4: show in-flight states
         };
     }
 
@@ -145,6 +146,7 @@ def _threads_v5_script() -> str:
         if (f.state) params.set('state', f.state);
         if (f.subtype) params.set('subtype', f.subtype);
         if (f.show_later) params.set('show_later', '1');
+        if (f.include_mid_process) params.set('include_mid_process', '1');
         return params.toString();
     }
 
@@ -226,6 +228,17 @@ def _threads_v5_script() -> str:
               + (f.show_later ? ' checked' : '')
               + ' onchange="threadsSetFilter(\'show_later\', this.checked)">'
               + ' Show deferred</label>';
+        // Phase 4: surface in-flight states (AWAITING_INFERENCE,
+        // INFERRING_*, EXECUTING, MONITORING, CLEANING_UP). Off by
+        // default — these are agent-internal states the user can't
+        // act on. Useful for "what's the agent doing right now?"
+        // and for debugging.
+        html += '<label class="threads-v5-show-mid-process" '
+              + 'title="Show threads currently being inferred or executing — useful for auditing what the agent is doing without surfacing a card.">'
+              + '<input type="checkbox"'
+              + (f.include_mid_process ? ' checked' : '')
+              + ' onchange="threadsSetFilter(\'include_mid_process\', this.checked)">'
+              + ' Show mid-process</label>';
         html += '</div>';
         return html;
     }
@@ -265,9 +278,16 @@ def _threads_v5_script() -> str:
         const hasLater = !!t.has_been_later;
         const stateLabel = (t.fsm_state || "").replace(/_/g, " ");
         const intent = (t.intent && t.intent.text) || t.title || t.thread_id;
+        // Phase 4: mid_process display_mode → muted styling, no
+        // action affordances. The user can still click through to
+        // the detail view to inspect the event log.
+        const isMidProcess = t.display_mode === "mid_process";
+        const midProcessClass = isMidProcess
+            ? ' threads-v5-mid-process' : '';
         return (
             '<li class="threads-v5-toplist-card'
-            + (urgent ? ' threads-v5-urgent' : '') + '" '
+            + (urgent ? ' threads-v5-urgent' : '')
+            + midProcessClass + '" '
             +   'onclick="threadsPushPath(\'' + _esc(t.thread_id) + '\')">'
             + '<div class="threads-v5-toplist-meta">'
             +   (urgent
@@ -646,6 +666,30 @@ def _threads_v5_styles() -> str:
 
 .threads-v5-toplist-card.threads-v5-urgent {
     border-left-color: #c0392b;
+}
+
+/* Phase 4: mid-process cards. Visible only when "Show mid-process"
+   is toggled on. Muted so they're clearly distinguishable from
+   actionable cards the user is meant to act on. */
+.threads-v5-toplist-card.threads-v5-mid-process {
+    opacity: 0.55;
+    border-left-style: dashed;
+    border-left-color: var(--text-muted, #888);
+    cursor: default;
+}
+
+.threads-v5-toplist-card.threads-v5-mid-process:hover {
+    opacity: 0.75;
+    border-color: var(--text-muted, #888);
+}
+
+.threads-v5-show-mid-process {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 12px;
+    color: var(--text-muted, #888);
+    cursor: help;
 }
 
 .threads-v5-toplist-meta {

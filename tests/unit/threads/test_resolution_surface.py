@@ -74,6 +74,49 @@ class TestBuild:
 # ---------------------------------------------------------------------------
 
 
+class TestSurfaceTargeting:
+    """Phase 5a: low-stakes confirmations land in dashboard only;
+    legitimate user-pause states fan out across all surfaces."""
+
+    def test_action_approval_targets_all_surfaces(self):
+        t = Thread(fsm_state=FSMState.AWAITING_CONFIRMATION)
+        rr = rs.build_resolution_request(t)
+        # None means "all available" in the SurfaceDispatcher's
+        # contract.
+        assert rs._surfaces_for(rr) is None
+
+    def test_clarification_targets_all_surfaces(self):
+        for state in (
+            FSMState.AWAITING_INTENT_CLARIFICATION,
+            FSMState.AWAITING_CONTEXT_CLARIFICATION,
+            FSMState.AWAITING_ACTION_CLARIFICATION,
+            FSMState.AWAITING_REDIRECT,
+        ):
+            t = Thread(fsm_state=state)
+            rr = rs.build_resolution_request(t)
+            assert rs._surfaces_for(rr) is None, state
+
+    def test_intent_confirmation_dashboard_only(self):
+        t = Thread(fsm_state=FSMState.AWAITING_INTENT_CONFIRMATION)
+        rr = rs.build_resolution_request(t)
+        assert rs._surfaces_for(rr) == ["dashboard"]
+
+    def test_context_confirmation_dashboard_only(self):
+        t = Thread(fsm_state=FSMState.AWAITING_CONTEXT_CONFIRMATION)
+        rr = rs.build_resolution_request(t)
+        assert rs._surfaces_for(rr) == ["dashboard"]
+
+    def test_review_state_targets_all_surfaces(self):
+        t = Thread(fsm_state=FSMState.AWAITING_REVIEW)
+        rr = rs.build_resolution_request(t)
+        assert rs._surfaces_for(rr) is None
+
+    def test_failed_cleanup_targets_all_surfaces(self):
+        t = Thread(fsm_state=FSMState.DONE_CLEANUP_UNSUCCESSFUL)
+        rr = rs.build_resolution_request(t)
+        assert rs._surfaces_for(rr) is None
+
+
 class TestPublish:
     def test_publish_swallows_dispatcher_errors(self, fresh_db, monkeypatch):
         """If the notifications subsystem can't be reached (no

@@ -60,6 +60,13 @@ TRIG_TIMEOUT = "timeout"
 # Cascade from a parent's force-close
 TRIG_PARENT_FORCE_CLOSE = "parent_force_close"
 
+# Stage 4 follow-up: explicit kickoff from PROPOSED. The Stage-1
+# transition table was silent on PROPOSED outgoing transitions
+# beyond dismiss/timeout — newly-spawned threads sat dead-ended
+# in PROPOSED forever. This trigger fires from the spawn helpers
+# right after the inciting events land.
+TRIG_BEGIN_INFERENCE = "begin_inference"
+
 # Stage 4: cleanup triggers (UX.md §6.5)
 TRIG_CLEANUP_REQUESTED = "cleanup_requested"
 TRIG_CLEANUP_SUCCEEDED = "cleanup_succeeded"
@@ -145,25 +152,39 @@ TRANSITION_TABLE: dict[tuple[FSMState, str], TransitionOutcome] = {
     # absence as an oversight in the spec rather than an
     # intentional rejection.
     (FSMState.PROPOSED, TRIG_PARENT_FORCE_CLOSE): _t(FSMState.DISMISSED),
+    # Stage 4 follow-up: kickoff transition. Spawn helpers fire
+    # this immediately after creating a Thread + recording the
+    # inciting events. Without it, threads sit dead-ended in
+    # PROPOSED with nothing in the queue.
+    (FSMState.PROPOSED, TRIG_BEGIN_INFERENCE): _t(FSMState.AWAITING_INFERENCE),
 
     # --- awaiting_inference -------------------------------------------
     (FSMState.AWAITING_INFERENCE, TRIG_DISMISSED_BY_USER): _t(FSMState.DISMISSED),
     (FSMState.AWAITING_INFERENCE, TRIG_PARENT_FORCE_CLOSE): _t(FSMState.DISMISSED),
 
     # --- inferring_intent ---------------------------------------------
-    (FSMState.INFERRING_INTENT, TRIG_INFERENCE_DONE): _t(FSMState.AWAITING_INTENT_CONFIRMATION),
+    # The TRIG_INFERENCE_DONE cell branches: under PLAN_THEN_REVIEW
+    # (or a policy that auto-advances confirmations with sufficient
+    # confidence), the resolver returns AWAITING_INFERENCE so the
+    # next inference target runs. Otherwise it returns
+    # AWAITING_INTENT_CONFIRMATION. See work_buddy.threads.autonomy_branch.
+    (FSMState.INFERRING_INTENT, TRIG_INFERENCE_DONE): _branch("intent_review_or_advance"),
     (FSMState.INFERRING_INTENT, TRIG_INFERENCE_FAILED): _t(FSMState.AWAITING_INTENT_CLARIFICATION),
     (FSMState.INFERRING_INTENT, TRIG_DISMISSED_BY_USER): _t(FSMState.DISMISSED),
     (FSMState.INFERRING_INTENT, TRIG_PARENT_FORCE_CLOSE): _t(FSMState.DISMISSED),
 
     # --- inferring_context --------------------------------------------
-    (FSMState.INFERRING_CONTEXT, TRIG_INFERENCE_DONE): _t(FSMState.AWAITING_CONTEXT_CONFIRMATION),
+    (FSMState.INFERRING_CONTEXT, TRIG_INFERENCE_DONE): _branch("context_review_or_advance"),
     (FSMState.INFERRING_CONTEXT, TRIG_INFERENCE_FAILED): _t(FSMState.AWAITING_CONTEXT_CLARIFICATION),
     (FSMState.INFERRING_CONTEXT, TRIG_DISMISSED_BY_USER): _t(FSMState.DISMISSED),
     (FSMState.INFERRING_CONTEXT, TRIG_PARENT_FORCE_CLOSE): _t(FSMState.DISMISSED),
 
     # --- inferring_action ---------------------------------------------
-    (FSMState.INFERRING_ACTION, TRIG_INFERENCE_DONE): _t(FSMState.AWAITING_CONFIRMATION),
+    # Similar branch: under a fully autonomous policy the resolver
+    # returns EXECUTING; under PLAN_THEN_REVIEW (the default), it
+    # returns AWAITING_CONFIRMATION so the user reviews before
+    # mutating anything.
+    (FSMState.INFERRING_ACTION, TRIG_INFERENCE_DONE): _branch("action_review_or_execute"),
     (FSMState.INFERRING_ACTION, TRIG_INFERENCE_FAILED): _t(FSMState.AWAITING_ACTION_CLARIFICATION),
     (FSMState.INFERRING_ACTION, TRIG_DISMISSED_BY_USER): _t(FSMState.DISMISSED),
     (FSMState.INFERRING_ACTION, TRIG_PARENT_FORCE_CLOSE): _t(FSMState.DISMISSED),

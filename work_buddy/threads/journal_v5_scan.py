@@ -1,27 +1,29 @@
-"""journal_v5_scan — produce v5 Threads from a daily journal scan.
+"""journal_v5_scan — canonical journal → v5 Thread spawn pipeline.
 
-Stage 4 testing helper. Calls the existing journal segmenter
+Calls the existing journal segmenter
 (``work_buddy.clarify.adapters.journal.collect_same_day_candidates``)
 and spawns a v5 Thread per TriageItem via the spawn helper from
 ``source_pipelines.py``.
 
-Distinct from ``journal_triage_scan``: that capability runs the full
-v4 Clarify pipeline (segment → enrich → LLM verdict pass → ClarifyPool
-entry). This capability runs ONLY the segment step and writes
-straight to v5 Threads. Useful for:
-
-- Stage 4 UI testing: get real Threads into the dashboard.
-- Post-cutover production: once Stage 4.14 drops the pool layer,
-  this becomes the canonical journal → Thread path.
+Distinct from the v4 ``journal_triage_scan``: that capability runs
+the full Clarify pipeline (segment → enrich → LLM verdict pass →
+ClarifyPool entry). This capability runs ONLY the segment step and
+writes straight to v5 Threads. Once Stage 4.14 retires the v4 pool,
+this becomes the only journal-to-Thread path; the v4 capability is
+removed at that point.
 
 Each spawned Thread:
 - ``inciting_event_summary['source'] = 'journal_note'`` so the
-  journal-note cleanup adapter applies.
+  journal-note cleanup adapter applies (the dashboard's "Clean Up"
+  button deletes the inciting line from the vault).
 - ``note_path`` derived as ``journal/<YYYY-MM-DD>.md`` (matches
   ``work_buddy/journal.py``'s vault-rel convention).
 - ``line_text`` taken as the first non-empty line of the segment's
-  raw text (sufficient handle for the cleanup adapter's exact-text
-  match).
+  raw text — used by the cleanup adapter for exact-text matching.
+- ``autonomy_policy`` set via ``default_spawn_policy()`` to
+  ``plan_then_review``: the agent auto-advances through intent and
+  context inference and pauses at action approval. Configurable via
+  ``threads.default_autonomy_composition`` in ``config.yaml``.
 """
 
 from __future__ import annotations

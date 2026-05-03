@@ -198,6 +198,20 @@ def decompose_thread(
                 "siblings keep default order_index=0", e,
             )
 
+        # Stage 4 follow-up: kick each child off PROPOSED so it
+        # actually progresses through inference. Without this,
+        # decomposed sub-threads dead-end the same way top-level
+        # threads did before _kickoff_inference was added.
+        try:
+            from work_buddy.threads.source_pipelines import _kickoff_inference
+            for cid in child_ids:
+                _kickoff_inference(cid)
+        except Exception as e:
+            logger.warning(
+                "Sub-thread kickoff after decompose failed: %s; "
+                "children sit in PROPOSED until manually advanced", e,
+            )
+
         return child_ids
     finally:
         if own_conn:

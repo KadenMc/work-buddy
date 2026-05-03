@@ -63,7 +63,10 @@ def proposed_thread(fresh_db):
 
 class TestBasicTransition:
     def test_inferring_intent_done_advances_to_confirmation(self, fresh_db):
-        # Push the Thread into INFERRING_INTENT first
+        # Push the Thread into INFERRING_INTENT first. The default
+        # AutonomyPolicy() has empty auto_advance_states, so the
+        # autonomy resolver will route to AWAITING_INTENT_CONFIRMATION
+        # (no auto-advance).
         t = Thread(fsm_state=FSMState.INFERRING_INTENT)
         store.insert_thread(t)
 
@@ -76,13 +79,25 @@ class TestBasicTransition:
         fetched = store.get_thread(t.thread_id)
         assert fetched.fsm_state == FSMState.AWAITING_INTENT_CONFIRMATION
 
-        # An event was written
+        # The transition wrote two events: the canonical
+        # state_transition + the autonomy audit. The audit is a
+        # follow-up record; the state_transition is what advances
+        # the thread.
         events = store.list_events(t.thread_id)
-        assert len(events) == 1
-        assert events[0].kind == KIND_STATE_TRANSITION
-        assert events[0].data["from"] == "inferring_intent"
-        assert events[0].data["to"] == "awaiting_intent_confirmation"
-        assert events[0].data["intent"] == "schedule"
+        kinds = [e.kind for e in events]
+        assert KIND_STATE_TRANSITION in kinds
+        st_event = next(e for e in events if e.kind == KIND_STATE_TRANSITION)
+        assert st_event.data["from"] == "inferring_intent"
+        assert st_event.data["to"] == "awaiting_intent_confirmation"
+        assert st_event.data["intent"] == "schedule"
+        # The audit event records the no-auto-advance decision.
+        from work_buddy.threads.events import KIND_AUTO_ADVANCE_DECISION
+        assert KIND_AUTO_ADVANCE_DECISION in kinds
+        audit = next(
+            e for e in events if e.kind == KIND_AUTO_ADVANCE_DECISION
+        )
+        assert audit.data["advance"] is False
+        assert audit.data["target"] == "intent"
 
     def test_dismiss_from_proposed_lands_terminal(self, proposed_thread):
         result = engine.transition(
@@ -363,9 +378,21 @@ class TestEndToEnd:
         )
         assert result.next_state == FSMState.DONE
 
-        # Six events total
+        # Five state_transition events plus two auto_advance_decision
+        # audit events (one for intent_review_or_advance, one for
+        # action_review_or_execute) = 7 total. The default
+        # AutonomyPolicy() doesn't auto-advance, so each branch
+        # resolver lands on the surface-to-user state and records its
+        # decision.
         events = store.list_events(t.thread_id)
-        assert len(events) == 5  # only state_transition events; no inciting
+        from work_buddy.threads.events import (
+            KIND_AUTO_ADVANCE_DECISION,
+        )
+        st_events = [e for e in events if e.kind == KIND_STATE_TRANSITION]
+        audit_events = [e for e in events if e.kind == KIND_AUTO_ADVANCE_DECISION]
+        assert len(st_events) == 5
+        assert len(audit_events) == 2
+        assert all(a.data["advance"] is False for a in audit_events)
 
     def test_walk_with_redirect(self, fresh_db):
         t = Thread(fsm_state=FSMState.AWAITING_INTENT_CONFIRMATION)

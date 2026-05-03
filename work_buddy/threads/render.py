@@ -137,6 +137,20 @@ def build_render_data(thread_id: str) -> Optional[dict[str, Any]]:
     if thread.fsm_state.value == "done_cleanup_unsuccessful":
         cleanup_failure = _latest_cleanup_failure(events)
 
+    # display_mode tells the frontend how to render the thread:
+    # - "actionable": full card with affordances (Accept / Edit /
+    #   Redirect). The default for any wait state.
+    # - "mid_process": muted card with a "currently inferring..."
+    #   status line, no action buttons. Surfaced only via the
+    #   "Show mid-process" toggle (Phase 4 of the autonomy plan).
+    # - "terminal": done/dismissed/handed-off — read-only.
+    if thread.fsm_state.is_terminal:
+        display_mode = "terminal"
+    elif thread.fsm_state.is_wait_state:
+        display_mode = "actionable"
+    else:
+        display_mode = "mid_process"
+
     return {
         "thread_id": thread.thread_id,
         "parent_id": thread.parent_id,
@@ -145,6 +159,7 @@ def build_render_data(thread_id: str) -> Optional[dict[str, Any]]:
         "urgency": urgency,
         "fsm_state": thread.fsm_state.value,
         "card_kind": card_kind,
+        "display_mode": display_mode,
         "intent": {"text": intent_text, "editable": True},
         "context_items": context_items,
         "actions": actions,

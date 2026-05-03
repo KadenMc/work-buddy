@@ -98,8 +98,140 @@ def bootstrap_v5(*, clear_first: bool = False) -> None:
     #    chrome adapter lands in 4.13 alongside the pipeline).
     cleanup_adapters.register_default_adapters()
 
+    # 7. Real LLM runner (replaces the Stage-2 stub). Without this,
+    # inference workers would call _stub_runner and write empty
+    # proposals with confidence=0 — the FSM advances but every
+    # thread looks "the agent had nothing."
+    _register_real_llm_runner()
+
     _BOOTSTRAPPED = True
     logger.info("v5 bootstrap complete")
+
+
+def _register_real_llm_runner() -> None:
+    """Bind the v5 Inference layer to the existing LLMRunner.
+
+    Adapter shape (per inference.LLMRunnerFn):
+        fn(prompt, schema, tier, thread) -> {payload, confidence,
+                                              model, cost_usd,
+                                              trace_pointer}
+    """
+    try:
+        from work_buddy.threads import inference
+        from work_buddy.threads.enums import ReasoningTier
+        from work_buddy.llm import LLMRunner, ModelTier
+
+        # Cache one LLMRunner instance — it's threadsafe.
+        runner = LLMRunner()
+
+        # Map v5 ReasoningTier -> v4 ModelTier. The lower 5 are
+        # 1:1; AGENT_HEADLESS / USER are v5-only and shouldn't
+        # reach this path (they're handled by the worker before
+        # the LLM call).
+        _TIER_MAP = {
+            ReasoningTier.LOCAL_TOOL_CALLING: ModelTier.LOCAL_TOOL_CALLING,
+            ReasoningTier.LOCAL_FAST: ModelTier.LOCAL_FAST,
+            ReasoningTier.FRONTIER_FAST: ModelTier.FRONTIER_FAST,
+            ReasoningTier.FRONTIER_BALANCED: ModelTier.FRONTIER_BALANCED,
+            ReasoningTier.FRONTIER_BEST: ModelTier.FRONTIER_BEST,
+        }
+
+        def _real_runner(prompt, schema, tier, thread):
+            """Adapter from inference.run() to LLMRunner.call()."""
+            llm_tier = _TIER_MAP.get(tier, ModelTier.FRONTIER_FAST)
+            # Build a minimal user prompt: prompt template + thread
+            # context (inciting summary + intent if present).
+            summary = thread.inciting_event_summary or {}
+            user_msg = (
+                "Thread inciting source:\n"
+                f"  source: {summary.get('source')}\n"
+                f"  description: {summary.get('description') or summary.get('label') or '(none)'}\n\n"
+                "Context items: "
+                f"{[ci.label for ci in thread.context_items]}\n\n"
+                "Task:\n"
+                f"{prompt}\n\n"
+                "Reply with structured JSON matching the schema."
+            )
+            try:
+                resp = runner.call(
+                    tier=llm_tier,
+                    system="You are an inference module for a task-management "
+                           "system. Reply with concise structured JSON only.",
+                    user=user_msg,
+                    output_schema=schema,
+                    trace_id=f"v5-inference:{thread.thread_id}",
+                )
+                if resp.is_error():
+                    logger.warning(
+                        "v5 LLM runner: error response: %s", resp.content[:200],
+                    )
+                    return {
+                        "payload": {}, "confidence": 0.0,
+                        "model": None, "cost_usd": 0.0,
+                        "trace_pointer": None,
+                    }
+                payload = resp.structured_output or {}
+                confidence = float(payload.get("confidence") or 0.0)
+                cost = getattr(resp, "cost_usd", 0.0) or 0.0
+                model = getattr(resp, "model_used", None)
+                return {
+                    "payload": payload,
+                    "confidence": confidence,
+                    "model": model,
+                    "cost_usd": cost,
+                    "trace_pointer": None,
+                }
+            except Exception as e:
+                logger.warning("v5 LLM runner: exception: %s", e)
+                return {
+                    "payload": {}, "confidence": 0.0,
+                    "model": None, "cost_usd": 0.0,
+                    "trace_pointer": None,
+                }
+
+        inference.set_llm_runner(_real_runner)
+        logger.info("v5 LLM runner registered (LLMRunner-backed)")
+    except Exception as e:
+        logger.warning(
+            "Could not register real LLM runner — inference will use "
+            "the stub (returns empty proposals). Reason: %s", e,
+        )
+
+
+def bootstrap_for_subprocess(*, subprocess_name: str) -> bool:
+    """One-call bootstrap helper for any subprocess that may
+    spawn or transition Threads.
+
+    Each Python subprocess (sidecar daemon, dashboard, MCP gateway,
+    one-off CLI invocations, …) has its own module-level state, so
+    every process that fires FSM transitions needs its own
+    ``bootstrap_v5()`` call to register state-entry handlers + the
+    real LLM runner. Without this, transitions land in-memory but
+    the queue handlers never fire and threads dead-end.
+
+    This helper consolidates the boilerplate (try/except, logging)
+    so every subprocess can call a single one-liner at startup.
+
+    Args:
+        subprocess_name: Logged for diagnostic visibility — appears
+            in startup logs as e.g. "v5 bootstrap (sidecar)".
+
+    Returns:
+        True if bootstrap succeeded, False on failure (logged).
+        Callers may continue regardless; v5 just won't process
+        Threads in the failed subprocess.
+    """
+    try:
+        bootstrap_v5()
+        logger.info("v5 bootstrap (%s) complete", subprocess_name)
+        return True
+    except Exception as e:
+        logger.warning(
+            "v5 bootstrap failed in %s subprocess; that process will "
+            "continue without v5 FSM wiring: %s",
+            subprocess_name, e,
+        )
+        return False
 
 
 def teardown_v5() -> None:
@@ -109,5 +241,12 @@ def teardown_v5() -> None:
     engine.clear_state_entry_handlers()
     queue.clear_admission_hooks()
     from work_buddy.threads.cleanup import clear_cleanup_adapters
+    from work_buddy.threads import inference
     clear_cleanup_adapters()
+    inference.reset_llm_runner()
+    # Reset budget cost sources too — tests that inject a fake
+    # cumulative cost (e.g. "what if cumulative=$99?") leak their
+    # override into the process-global state otherwise.
+    budget.reset_cost_sources()
+    budget.clear_caller_budgets()
     _BOOTSTRAPPED = False

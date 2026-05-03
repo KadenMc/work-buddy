@@ -2490,11 +2490,21 @@ def api_v5_threads_list():
     """List top-level v5 Threads (those with no parent_id).
 
     Query params:
-        ?show_later=1 — include Threads with future resurface_at.
-        ?q=...         — substring search over search_blob.
-        ?state=...     — filter by FSM state.
-        ?subtype=...   — 'task' for Tasks-only.
-        ?limit=N       — page size (default 100).
+        ?show_later=1         — include Threads with future resurface_at.
+        ?q=...                — substring search over search_blob.
+        ?state=...            — filter by FSM state.
+        ?subtype=...          — 'task' for Tasks-only.
+        ?limit=N              — page size (default 100).
+        ?show_all=1           — include non-actionable states
+                                (PROPOSED, terminal, …). Default:
+                                actionable wait states only.
+        ?include_mid_process=1 — also include the in-flight
+                                inferring/executing/monitoring
+                                states. Layered on top of the
+                                default "actionable only" filter so
+                                the user can see "what's the agent
+                                doing right now?" without dropping
+                                the actionable filter entirely.
     """
     try:
         from work_buddy.threads.render import build_render_data
@@ -2503,6 +2513,8 @@ def api_v5_threads_list():
         state = request.args.get("state") or None
         subtype = request.args.get("subtype") or None
         include_future = request.args.get("show_later") == "1"
+        actionable_only = request.args.get("show_all") != "1"
+        include_mid_process = request.args.get("include_mid_process") == "1"
         limit = int(request.args.get("limit", 100))
         threads_models = search_threads(
             q,
@@ -2510,6 +2522,8 @@ def api_v5_threads_list():
             state=state,
             subtype=subtype,
             show_later=include_future,
+            actionable_only=actionable_only,
+            include_mid_process=include_mid_process,
             limit=limit,
         )
         threads = []
@@ -3564,20 +3578,12 @@ def main():
     _start_acknowledge_poller()
 
     # v5 Stage 4: bootstrap the v5 Thread system in the dashboard's
-    # process. Each subprocess (sidecar daemon, dashboard, conductor)
-    # has its own module-level state, so each needs to call
-    # bootstrap_v5() to get the FSM handlers + cleanup adapters
-    # registered. The daemon does this in its run(); the dashboard
-    # needs the same here so /api/threads endpoints have access to
-    # cleanup adapters and other bootstrap-registered handlers.
-    try:
-        from work_buddy.threads.bootstrap import bootstrap_v5
-        bootstrap_v5()
-    except Exception as e:
-        logger.warning(
-            "v5 Thread bootstrap failed in dashboard process; "
-            "/api/threads endpoints may have reduced functionality: %s", e,
-        )
+    # process. Each subprocess has its own module-level state, so
+    # each needs its own bootstrap call to get the FSM handlers +
+    # cleanup adapters registered. The shared helper centralizes
+    # the try/except + logging so each call site is one line.
+    from work_buddy.threads.bootstrap import bootstrap_for_subprocess
+    bootstrap_for_subprocess(subprocess_name="dashboard")
 
     # Mark this process so that ``events.publish_auto`` (used by the
     # cross-cutting mutators in clarify/, tasks/, health/, etc.) routes

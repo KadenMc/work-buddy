@@ -98,9 +98,14 @@ def spawn_thread_from_journal_item(
         payload={"raw_text": raw_text[:500]},
     )
 
+    # Apply default autonomy (PLAN_THEN_REVIEW unless overridden in
+    # config). The bare AutonomyPolicy() default would block every
+    # wait state and force the user to confirm every inference step.
+    from work_buddy.threads.autonomy import default_spawn_policy
     thread = Thread(
         context_items=(ctx_item,),
         inciting_event_summary=inciting,
+        autonomy_policy=default_spawn_policy(),
     )
     try:
         store.insert_thread(thread)
@@ -124,12 +129,36 @@ def spawn_thread_from_journal_item(
             thread.thread_id,
             parent_event_id=store.latest_event_id(thread.thread_id),
         )
+        # Kickoff transition PROPOSED -> AWAITING_INFERENCE. Fires
+        # the bootstrap-registered handler that enqueues into the
+        # LLM-call queue. Without this, the thread dead-ends.
+        _kickoff_inference(thread.thread_id)
         return thread.thread_id
     except Exception as e:
         logger.warning(
             "spawn_thread_from_journal_item: insert failed: %s", e,
         )
         return None
+
+
+def _kickoff_inference(thread_id: str) -> None:
+    """Fire PROPOSED -> AWAITING_INFERENCE for a freshly-spawned
+    Thread. Non-fatal — logs on failure (the thread is already
+    persisted; user can manually trigger via dashboard later)."""
+    try:
+        from work_buddy.threads import engine
+        from work_buddy.threads.fsm import TRIG_BEGIN_INFERENCE
+        engine.transition(
+            thread_id, TRIG_BEGIN_INFERENCE,
+            actor="inciting",
+            fire_side_effects=True,
+        )
+    except Exception as e:
+        logger.warning(
+            "_kickoff_inference for %s failed: %s — thread will sit "
+            "in PROPOSED until manually advanced",
+            thread_id, e,
+        )
 
 
 def spawn_threads_from_journal_scan(
@@ -172,7 +201,11 @@ def spawn_parent_thread_from_chrome_scrape(
         "description": summary or "Chrome triage",
         "title": summary or "Chrome triage",
     }
-    parent = Thread(inciting_event_summary=inciting)
+    from work_buddy.threads.autonomy import default_spawn_policy
+    parent = Thread(
+        inciting_event_summary=inciting,
+        autonomy_policy=default_spawn_policy(),
+    )
     try:
         store.insert_thread(parent)
         e1 = store.append_event(ThreadEvent(
@@ -192,6 +225,16 @@ def spawn_parent_thread_from_chrome_scrape(
             parent.thread_id,
             parent_event_id=store.latest_event_id(parent.thread_id),
         )
+        # NOTE: chrome_scrape parent does NOT kickoff inference —
+        # the inference target for a "scrape root" isn't well-defined;
+        # the meaningful work is on the per-tab sub-threads spawned
+        # via decompose. The decompose path leaves the parent in
+        # MONITORING (not PROPOSED), so no kickoff needed here. Each
+        # spawned sub-thread (in PROPOSED) gets its own kickoff via
+        # _kickoff_inference if the spawner chooses (Stage 4.13's
+        # spawn_threads_from_chrome_scrape calls decompose_thread,
+        # which spawns sub-threads in PROPOSED — those need
+        # kickoff too; see decompose's own integration).
         return parent.thread_id
     except Exception as e:
         logger.warning(

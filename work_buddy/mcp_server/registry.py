@@ -3257,45 +3257,33 @@ def _journal_capabilities() -> list[Capability]:
             # retry-on-timeout needed (would just stack queued passes).
             auto_retry=False,
         ),
-        # ── v5 testing helper: seed sample threads ─────────────
-        Capability(
-            name="threads_v5_seed_test_data",
-            description=(
-                "Seed ~10 sample v5 Threads covering every card kind "
-                "(confirmation / consent / clarification / review / "
-                "redirect / cleanup-failure) + a parent with 4 sub-"
-                "threads + a Later'd thread. Used to exercise the "
-                "Threads tab UI without needing real LLM calls. Safe "
-                "to run repeatedly (creates new fresh ids each time)."
-            ),
-            category="threads",
-            search_aliases=[
-                "seed test threads",
-                "v5 sample data",
-                "fabricate test threads",
-                "populate threads dashboard",
-            ],
-            parameters={},
-            callable=(lambda **kw: __import__(
-                "work_buddy.threads.seed_test_data",
-                fromlist=["seed_all"],
-            ).seed_all(**kw)),
-            mutates_state=True,
-            auto_retry=False,
-        ),
-        # ── v5 journal scan (Stage 4 testing helper) ─────────────
+        # NOTE: ``threads_v5_seed_test_data`` was a temporary
+        # scaffolding capability used during Stage 4 to populate the
+        # Threads tab with fake data. It was removed as part of the
+        # autonomy implementation cleanup — real journal/Chrome
+        # source pipelines now produce live threads. The
+        # ``seed_test_data`` Python module remains in
+        # work_buddy/threads/ for any future debugging needs but is
+        # no longer registered as a callable capability.
+
+        # ── v5 journal scan (canonical journal → Thread path) ────
+        # Distinct from the v4 ``journal_triage_scan``: this skips the
+        # v4 verdict-pass + ClarifyPool layer and writes straight to
+        # v5 Threads. Once Stage 4.14 retires the v4 pool, this
+        # becomes the only journal-to-thread path and the v4 capability
+        # is removed.
         Capability(
             name="journal_v5_scan",
             description=(
-                "Segment a daily journal and produce v5 Threads (one per "
-                "candidate). Distinct from journal_triage_scan: this skips "
-                "the v4 verdict pass + ClarifyPool layer and writes "
-                "straight to v5 Threads (work_buddy.threads). Each spawned "
+                "Segment today's journal Running Notes section into "
+                "individual v5 Threads (one per candidate). Each spawned "
                 "Thread carries inciting source='journal_note' so the "
-                "journal-note cleanup adapter applies — clicking 'Clean Up' "
-                "in the v5 Threads tab will delete the inciting line. "
-                "Useful for Stage 4 dashboard testing; safe to run "
-                "repeatedly."
+                "journal-note cleanup adapter applies — clicking 'Clean "
+                "Up' in the v5 Threads tab will delete the inciting "
+                "line. Threads default to the plan_then_review autonomy "
+                "policy: the agent auto-advances through intent + "
+                "context inference and pauses at action approval. "
+                "Idempotent on unchanged content; safe to run repeatedly."
             ),
             category="journal",
             search_aliases=[

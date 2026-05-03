@@ -141,6 +141,15 @@ class AutonomyPolicy:
     # Budget axis: enforced at LLM-call enqueue (DESIGN.md §9.4)
     budget_usd: float = 0.50
 
+    # Stage 5: combined-inference opt-in. When True, the inference
+    # worker dispatches a single LLM call with InferenceTarget.COMBINED
+    # that returns intent + context + action together, then walks the
+    # FSM through inferring_* states without re-enqueuing. Default
+    # False (stage inference target by target). Source pipelines
+    # may opt in based on the inciting context (e.g. multi-tab
+    # Chrome scrapes benefit from seeing all tabs at once).
+    combined_inference: bool = False
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "auto_advance_states": sorted(s.value for s in self.auto_advance_states),
@@ -156,6 +165,7 @@ class AutonomyPolicy:
             "inference_floor_tier": self.inference_floor_tier.value,
             "inference_ceiling_tier": self.inference_ceiling_tier.value,
             "budget_usd": self.budget_usd,
+            "combined_inference": self.combined_inference,
         }
 
     @classmethod
@@ -184,6 +194,7 @@ class AutonomyPolicy:
                 d.get("inference_ceiling_tier", "agent_headless")
             ),
             budget_usd=float(d.get("budget_usd", 0.50)),
+            combined_inference=bool(d.get("combined_inference", False)),
         )
 
 

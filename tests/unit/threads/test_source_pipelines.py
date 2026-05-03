@@ -59,6 +59,26 @@ class TestSpawnFromJournal:
                 "source": "journal_thread", "metadata": {}}
         assert source_pipelines.spawn_thread_from_journal_item(item) is None
 
+    def test_spawn_uses_plan_then_review_autonomy_default(self, fresh_db):
+        """Phase 2: journal-spawned threads should default to
+        plan_then_review (auto-advance intent + context, pause at
+        action). The bare AutonomyPolicy() default would block every
+        wait state — that's the regression this test guards against."""
+        from work_buddy.threads.autonomy import PLAN_THEN_REVIEW
+        item = {
+            "id": "x", "text": "todo", "label": "todo",
+            "source": "journal_thread",
+            "metadata": {"journal_date": "2026-05-12"},
+        }
+        tid = source_pipelines.spawn_thread_from_journal_item(item)
+        assert tid is not None
+        thread = store.get_thread(tid)
+        # The composed policy may differ on a few axes (e.g. budget)
+        # if the user overrides via config; the structural axis we
+        # care about is auto_advance_states matching plan_then_review.
+        assert thread.autonomy_policy.auto_advance_states == \
+            PLAN_THEN_REVIEW.auto_advance_states
+
     def test_inciting_and_thread_created_events_recorded(self, fresh_db):
         item = {
             "id": "x", "text": "todo", "label": "todo",

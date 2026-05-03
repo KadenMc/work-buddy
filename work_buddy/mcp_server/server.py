@@ -130,5 +130,14 @@ def main_http() -> None:
     logger.info("Starting MCP gateway (streamable-http) on port %d", port)
 
     server = _create_server(transport="streamable-http")
+    # Each subprocess that may fire FSM transitions on Threads needs
+    # its own bootstrap call (the sidecar daemon, the dashboard, and
+    # this MCP gateway each have their own module-level state).
+    # Without this, capabilities like journal_v5_scan would advance
+    # a thread to AWAITING_INFERENCE in this process but the
+    # enqueue handler wouldn't be registered, so the thread would
+    # dead-end. The shared helper centralizes the boilerplate.
+    from work_buddy.threads.bootstrap import bootstrap_for_subprocess
+    bootstrap_for_subprocess(subprocess_name="mcp-gateway")
     _warm_registry_in_background()
     server.run(transport="streamable-http")

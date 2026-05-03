@@ -90,6 +90,12 @@ def _default_branch_resolver(ctx: BranchContext) -> FSMState:
         - else stay in MONITORING (engine treats this as a no-op
           rather than a transition; we return MONITORING to make
           that explicit).
+    - ``intent_review_or_advance`` /
+      ``context_review_or_advance`` /
+      ``action_review_or_execute`` (autonomy-gated):
+        - delegate to ``work_buddy.threads.autonomy_branch``,
+          which reads the thread's effective AutonomyPolicy and
+          decides whether to skip the would-be wait state.
     """
     label = ctx.branch_label
     if label == "done_or_review":
@@ -100,6 +106,17 @@ def _default_branch_resolver(ctx: BranchContext) -> FSMState:
         if ctx.data.get("all_terminal"):
             return FSMState.DONE
         return FSMState.MONITORING
+
+    # Autonomy-gated branches. Lazy import to avoid an import cycle
+    # (autonomy_branch imports from autonomy + store, which both
+    # reference engine indirectly through events.OptimisticLockConflict).
+    from work_buddy.threads import autonomy_branch
+    auto_choice = autonomy_branch.resolve_by_label(
+        label, ctx.thread_id, ctx.data,
+    )
+    if auto_choice is not None:
+        return auto_choice
+
     raise InvalidTransition(
         f"Branch label {label!r} has no resolver",
     )
@@ -244,6 +261,15 @@ def transition(
         else:
             expected_parent = parent_event_id
 
+        # If the branch resolver stashed audit metadata for an
+        # auto-advance decision, extract it from the data dict so it
+        # doesn't pollute the state_transition payload. We write the
+        # audit event AFTER state_transition lands so the resolver
+        # can stay pure (no DB writes during resolution → no
+        # optimistic-lock invalidation).
+        from work_buddy.threads.autonomy_branch import _AUDIT_DATA_KEY
+        autonomy_audit = data.pop(_AUDIT_DATA_KEY, None)
+
         # Append the transition event
         event = store.append_event(
             ThreadEvent(
@@ -270,6 +296,35 @@ def transition(
             conn=conn,
         )
 
+        # If the resolver stashed audit data, append the
+        # auto_advance_decision event now using the just-written
+        # state_transition event as the parent_event_id.
+        if autonomy_audit is not None:
+            from work_buddy.threads.events import KIND_AUTO_ADVANCE_DECISION
+            try:
+                audit_event = store.append_event(
+                    ThreadEvent(
+                        thread_id=thread_id,
+                        kind=KIND_AUTO_ADVANCE_DECISION,
+                        actor=ACTOR_FSM_ENGINE,
+                        data=autonomy_audit,
+                        parent_event_id=event.id,
+                    ),
+                    conn=conn,
+                )
+                # Bump the cache's parent_event_id to the audit event so
+                # subsequent transitions read the right lock target.
+                store.update_thread_state(
+                    thread_id,
+                    parent_event_id=audit_event.id,
+                    conn=conn,
+                )
+            except Exception as audit_exc:
+                logger.warning(
+                    "auto_advance_decision audit write failed for %s: %s",
+                    thread_id, audit_exc,
+                )
+
         result = TransitionResult(
             thread_id=thread_id,
             prev_state=thread.fsm_state,
@@ -288,6 +343,25 @@ def transition(
     return result
 
 
+_BRANCH_REACH: dict[str, set[FSMState]] = {
+    "done_or_review": {FSMState.DONE, FSMState.AWAITING_REVIEW},
+    "done_when_all_subthreads_terminal": {
+        FSMState.DONE, FSMState.MONITORING,
+    },
+    # Autonomy-gated: either advance to the next inference or
+    # surface the confirmation card.
+    "intent_review_or_advance": {
+        FSMState.AWAITING_INFERENCE, FSMState.AWAITING_INTENT_CONFIRMATION,
+    },
+    "context_review_or_advance": {
+        FSMState.AWAITING_INFERENCE, FSMState.AWAITING_CONTEXT_CONFIRMATION,
+    },
+    "action_review_or_execute": {
+        FSMState.EXECUTING, FSMState.AWAITING_CONFIRMATION,
+    },
+}
+
+
 def reachable_states_from(state: FSMState) -> set[FSMState]:
     """Static analysis helper: every state reachable in one trigger
     from ``state`` (branched transitions return all possible
@@ -298,10 +372,6 @@ def reachable_states_from(state: FSMState) -> set[FSMState]:
             continue
         if out.next_state is not None:
             reach.add(out.next_state)
-        elif out.next_state_via_branch == "done_or_review":
-            reach.add(FSMState.DONE)
-            reach.add(FSMState.AWAITING_REVIEW)
-        elif out.next_state_via_branch == "done_when_all_subthreads_terminal":
-            reach.add(FSMState.DONE)
-            reach.add(FSMState.MONITORING)
+        elif out.next_state_via_branch in _BRANCH_REACH:
+            reach.update(_BRANCH_REACH[out.next_state_via_branch])
     return reach

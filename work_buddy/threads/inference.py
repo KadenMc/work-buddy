@@ -78,9 +78,15 @@ TARGETS: dict[InferenceTarget, TargetSpec] = {
         output_schema={
             "type": "object",
             "required": ["intent", "confidence"],
+            "additionalProperties": False,
             "properties": {
                 "intent": {"type": "string"},
-                "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                # Confidence is in [0, 1] by convention but we
+                # don't constrain it in the schema — Anthropic's
+                # structured-output schema validator rejects
+                # minimum/maximum on number types. The runner
+                # clamps the value at use time.
+                "confidence": {"type": "number"},
                 "supporting_refs": {
                     "type": "array",
                     "items": {"type": "string"},
@@ -101,13 +107,25 @@ TARGETS: dict[InferenceTarget, TargetSpec] = {
         output_schema={
             "type": "object",
             "required": ["associated_refs", "confidence"],
+            "additionalProperties": False,
             "properties": {
                 "associated_refs": {
                     "type": "array",
+                    # Items are open-shape ContextItem dicts; we keep
+                    # them as bare objects (no additionalProperties:
+                    # false) so the model can include source-specific
+                    # fields. If Anthropic's schema validator rejects
+                    # this nested untyped object too, we'll need to
+                    # enumerate the expected ContextItem keys here.
                     "items": {"type": "object"},
                 },
                 "reasoning": {"type": "string"},
-                "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                # Confidence is in [0, 1] by convention but we
+                # don't constrain it in the schema — Anthropic's
+                # structured-output schema validator rejects
+                # minimum/maximum on number types. The runner
+                # clamps the value at use time.
+                "confidence": {"type": "number"},
             },
         },
     ),
@@ -124,17 +142,112 @@ TARGETS: dict[InferenceTarget, TargetSpec] = {
         output_schema={
             "type": "object",
             "required": ["kind", "confidence"],
+            "additionalProperties": False,
             "properties": {
                 "kind": {
                     "type": "string",
                     "enum": ["standard", "improvised", "suggestion"],
                 },
                 "name": {"type": "string"},
+                # parameters is intentionally an open dict — each
+                # Standard Action declares its own parameter shape;
+                # we don't validate them at the inference layer.
                 "parameters": {"type": "object"},
                 "plan_summary": {"type": "string"},
                 "rationale": {"type": "string"},
-                "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                # Confidence is in [0, 1] by convention but we
+                # don't constrain it in the schema — Anthropic's
+                # structured-output schema validator rejects
+                # minimum/maximum on number types. The runner
+                # clamps the value at use time.
+                "confidence": {"type": "number"},
                 "blocked_on": {"type": "string"},
+            },
+        },
+    ),
+    # Stage 5: combined inference. Returns intent + context + action
+    # in one LLM call. The worker records three separate *_inferred
+    # events from the single call so the FSM and audit log shape
+    # stays the same as staged inference; a follow-up
+    # combined_inferred_meta event records that they all came from
+    # one call. Default tier is FRONTIER_BALANCED — combined is more
+    # demanding than each individual target and benefits from the
+    # extra capability.
+    InferenceTarget.COMBINED: TargetSpec(
+        target=InferenceTarget.COMBINED,
+        event_kind="combined_inferred",  # virtual; per-target events
+                                          # are recorded separately
+        default_tier=ReasoningTier.FRONTIER_BALANCED,
+        prompt_template=(
+            "Given the Thread's inciting context and event log, infer "
+            "in one pass:\n"
+            "1. The user's intent — a single concise phrase.\n"
+            "2. The relevant context items (vault notes, Chrome tabs, "
+            "calendar events, contracts).\n"
+            "3. The next action to propose. Pick a Standard Action "
+            "from the Action Catalog if one fits; otherwise produce "
+            "an Improvised plan or a Suggestion. Declare the action's "
+            "irreversibility and regret_potential ('low'|'medium'|'high') "
+            "and risk_amplifier (true/false) so the autonomy layer can "
+            "decide whether to auto-execute or surface for approval.\n"
+            "Return all three in the structured response, with a "
+            "single overall confidence."
+        ),
+        output_schema={
+            "type": "object",
+            "required": ["intent", "context", "action", "confidence"],
+            "additionalProperties": False,
+            "properties": {
+                "intent": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["intent"],
+                    "properties": {
+                        "intent": {"type": "string"},
+                        "supporting_refs": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        },
+                    },
+                },
+                "context": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["associated_refs"],
+                    "properties": {
+                        "associated_refs": {
+                            "type": "array",
+                            "items": {"type": "object"},
+                        },
+                        "reasoning": {"type": "string"},
+                    },
+                },
+                "action": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["kind"],
+                    "properties": {
+                        "kind": {
+                            "type": "string",
+                            "enum": ["standard", "improvised", "suggestion"],
+                        },
+                        "name": {"type": "string"},
+                        "parameters": {"type": "object"},
+                        "plan_summary": {"type": "string"},
+                        "rationale": {"type": "string"},
+                        "blocked_on": {"type": "string"},
+                        "irreversibility": {
+                            "type": "string",
+                            "enum": ["low", "medium", "high"],
+                        },
+                        "regret_potential": {
+                            "type": "string",
+                            "enum": ["low", "medium", "high"],
+                        },
+                        "risk_amplifier": {"type": "boolean"},
+                    },
+                },
+                "confidence": {"type": "number"},
             },
         },
     ),
@@ -205,6 +318,14 @@ def set_llm_runner(fn: LLMRunnerFn) -> None:
 
 def get_llm_runner() -> LLMRunnerFn:
     return _RUNNER
+
+
+def reset_llm_runner() -> None:
+    """Test-only: restore the stub runner. Used by teardown_v5 so a
+    bootstrap_v5 in one test doesn't leak its real runner into
+    sibling tests in the same process."""
+    global _RUNNER
+    _RUNNER = _stub_runner
 
 
 # ---------------------------------------------------------------------------

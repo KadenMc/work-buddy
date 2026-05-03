@@ -129,6 +129,30 @@ class TestBuildRenderData:
         assert data["actions"][0]["kind"] == "suggestion"
         assert "mom" in data["actions"][0]["plan_summary"]
 
+    def test_display_mode_actionable_for_wait_state(self, fresh_db):
+        """Phase 4: render data carries display_mode so the frontend
+        knows whether to show the full card (actionable), a muted
+        in-flight indicator (mid_process), or read-only (terminal)."""
+        from work_buddy.threads.enums import FSMState
+        t = Thread(fsm_state=FSMState.AWAITING_INTENT_CONFIRMATION)
+        store.insert_thread(t)
+        data = render.build_render_data(t.thread_id)
+        assert data["display_mode"] == "actionable"
+
+    def test_display_mode_mid_process_for_inferring(self, fresh_db):
+        from work_buddy.threads.enums import FSMState
+        t = Thread(fsm_state=FSMState.INFERRING_INTENT)
+        store.insert_thread(t)
+        data = render.build_render_data(t.thread_id)
+        assert data["display_mode"] == "mid_process"
+
+    def test_display_mode_terminal_for_done(self, fresh_db):
+        from work_buddy.threads.enums import FSMState
+        t = Thread(fsm_state=FSMState.DONE)
+        store.insert_thread(t)
+        data = render.build_render_data(t.thread_id)
+        assert data["display_mode"] == "terminal"
+
     def test_can_clean_up_reflects_adapter(self, fresh_db):
         from work_buddy.threads.cleanup import CleanupAdapter, CleanupResult
         cleanup.register_cleanup_adapter(CleanupAdapter(

@@ -127,6 +127,48 @@ def get_composition(name: str) -> AutonomyPolicy:
     return SAVED_COMPOSITIONS[name]
 
 
+# Default composition for newly-spawned threads. Source pipelines
+# (journal scan, chrome scrape, decompose) call ``default_spawn_policy()``
+# to set ``Thread.autonomy_policy`` instead of accepting the bare
+# ``AutonomyPolicy()`` zero default — which would block every wait
+# state and force the user to confirm every inference step.
+#
+# ``plan_then_review`` is the right shape for most spawns: auto-advance
+# through intent + context confirmations when confidence is sufficient,
+# then pause at AWAITING_CONFIRMATION so the user reviews the proposed
+# action before any mutation happens.
+#
+# Override via config.yaml:
+#
+#     threads:
+#       default_autonomy_composition: end_to_end  # or hands_off, etc.
+DEFAULT_SPAWN_COMPOSITION = "plan_then_review"
+
+
+def default_spawn_policy() -> AutonomyPolicy:
+    """Return the AutonomyPolicy applied to newly-spawned threads.
+
+    Reads ``threads.default_autonomy_composition`` from config, falls
+    back to ``DEFAULT_SPAWN_COMPOSITION`` if config is unavailable
+    or the named composition doesn't exist. Best-effort — never
+    raises; returns a safe default on any failure.
+    """
+    name = DEFAULT_SPAWN_COMPOSITION
+    try:
+        from work_buddy.config import load_config
+        cfg = load_config()
+        configured = (cfg or {}).get("threads", {}).get(
+            "default_autonomy_composition",
+        )
+        if isinstance(configured, str) and configured in SAVED_COMPOSITIONS:
+            name = configured
+    except Exception:
+        # Config unavailable (test env, sidecar startup race, etc.);
+        # fall back to the hard-coded default below.
+        pass
+    return SAVED_COMPOSITIONS.get(name, PLAN_THEN_REVIEW)
+
+
 # ---------------------------------------------------------------------------
 # Composition merging
 # ---------------------------------------------------------------------------
@@ -148,6 +190,7 @@ _AXIS_NAMES: tuple[str, ...] = (
     "inference_floor_tier",
     "inference_ceiling_tier",
     "budget_usd",
+    "combined_inference",
 )
 
 
@@ -253,6 +296,13 @@ def _is_more_conservative_or_equal(
         return tier_rank(child_value) <= tier_rank(parent_value)
     if axis == "budget_usd":
         return float(child_value) <= float(parent_value)
+    if axis == "combined_inference":
+        # Combined inference is a *capability* axis, not a risk axis
+        # — it changes how inference runs, not what risk the agent is
+        # allowed to take. Child can freely toggle independently of
+        # parent. We treat any child value as more-conservative-or-
+        # equal so override-down accepts both directions.
+        return True
     raise KeyError(f"Unknown axis {axis!r}")
 
 
