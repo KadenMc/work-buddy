@@ -556,23 +556,78 @@ def spawn_parent_thread_from_chrome_scrape(
     *,
     scrape_id: Optional[str] = None,
     summary: Optional[str] = None,
+    parent_relationship: str = "decompose",
+    originating_scrape_id: Optional[str] = None,
+    cluster_label: Optional[str] = None,
+    cluster_index: Optional[int] = None,
+    cluster_size: Optional[int] = None,
 ) -> Optional[str]:
-    """Create the parent Thread for a Chrome triage scrape.
+    """Create a parent Thread for a Chrome triage scrape.
 
-    Returns the new thread_id. Sub-Threads are spawned via
-    decompose with the scraped tabs as source items.
+    Stage 5: when called with ``parent_relationship='group'`` this
+    becomes a group-relationship parent — one of N sibling group-
+    parents that together represent one Chrome scrape's cluster set.
+    Each cluster gets its own parent; items can move between
+    siblings via the move endpoint.
+
+    Args:
+        scrape_id: per-scrape id (legacy; carried in inciting summary).
+        summary: short title shown in the dashboard list.
+        parent_relationship: 'decompose' (legacy single-parent
+            behaviour) or 'group' (Stage 5 multi-parent).
+        originating_scrape_id: sibling-scope id for group-parents.
+            REQUIRED when ``parent_relationship='group'`` — siblings
+            recognise each other by this id.
+        cluster_label / cluster_index / cluster_size: optional
+            cluster metadata for group-parents (carried in the
+            inciting summary so the dashboard can show "Cluster 2 of
+            5: 'Research'").
+
+    Returns the new thread_id. Sub-Threads are spawned by the caller
+    (``spawn_threads_from_chrome_scrape``).
     """
-    inciting = {
+    inciting: dict[str, Any] = {
         "source": "chrome_scrape",
         "scrape_id": scrape_id,
-        "description": summary or "Chrome triage",
-        "title": summary or "Chrome triage",
     }
+    # Title: prefer cluster-aware label when supplied; fall back to
+    # the scrape-wide summary.
+    if cluster_label:
+        title = cluster_label
+        if cluster_index is not None and cluster_size is not None:
+            inciting["description"] = (
+                f"{cluster_label} (cluster {cluster_index + 1} of "
+                f"{cluster_size})"
+            )
+        else:
+            inciting["description"] = cluster_label
+    else:
+        title = summary or "Chrome triage"
+        inciting["description"] = summary or "Chrome triage"
+    inciting["title"] = title
+    if cluster_index is not None:
+        inciting["cluster_index"] = cluster_index
+    if cluster_size is not None:
+        inciting["cluster_size"] = cluster_size
+
     from work_buddy.threads.autonomy import default_spawn_policy
-    parent = Thread(
-        inciting_event_summary=inciting,
-        autonomy_policy=default_spawn_policy(),
-    )
+    # Group-parents start in MONITORING immediately — they have no
+    # action of their own to infer and exist purely as containers.
+    # Decompose-parents start in PROPOSED and walk through inference
+    # the legacy way.
+    if parent_relationship == "group":
+        parent = Thread(
+            inciting_event_summary=inciting,
+            autonomy_policy=default_spawn_policy(),
+            parent_relationship="group",
+            originating_scrape_id=originating_scrape_id,
+            fsm_state=FSMState.MONITORING,
+        )
+    else:
+        parent = Thread(
+            inciting_event_summary=inciting,
+            autonomy_policy=default_spawn_policy(),
+        )
     try:
         store.insert_thread(parent)
         e1 = store.append_event(ThreadEvent(
@@ -585,23 +640,17 @@ def spawn_parent_thread_from_chrome_scrape(
             thread_id=parent.thread_id,
             kind=KIND_THREAD_CREATED,
             actor="inciting",
-            data={"source_pipeline": "chrome_triage"},
+            data={
+                "source_pipeline": "chrome_triage",
+                "parent_relationship": parent_relationship,
+                "originating_scrape_id": originating_scrape_id,
+            },
             parent_event_id=e1.id,
         ))
         store.update_thread_state(
             parent.thread_id,
             parent_event_id=store.latest_event_id(parent.thread_id),
         )
-        # NOTE: chrome_scrape parent does NOT kickoff inference —
-        # the inference target for a "scrape root" isn't well-defined;
-        # the meaningful work is on the per-tab sub-threads spawned
-        # via decompose. The decompose path leaves the parent in
-        # MONITORING (not PROPOSED), so no kickoff needed here. Each
-        # spawned sub-thread (in PROPOSED) gets its own kickoff via
-        # _kickoff_inference if the spawner chooses (Stage 4.13's
-        # spawn_threads_from_chrome_scrape calls decompose_thread,
-        # which spawns sub-threads in PROPOSED — those need
-        # kickoff too; see decompose's own integration).
         return parent.thread_id
     except Exception as e:
         logger.warning(
@@ -635,24 +684,77 @@ def spawn_threads_from_chrome_scrape(
     tabs: list[dict[str, Any]],
     scrape_id: Optional[str] = None,
     summary: Optional[str] = None,
+    clusters: Optional[list[dict[str, Any]]] = None,
+    use_grouping: bool = True,
 ) -> Optional[dict[str, Any]]:
     """End-to-end Chrome scrape → v5 Thread tree.
 
-    Creates the parent Thread (chrome_scrape inciting source) AND
-    spawns sub-Threads via the decompose action (one per tab).
-    Stage 4.7's write-time linearization runs automatically inside
-    decompose so the resulting sub-thread order is semantic.
+    Stage 5 (this PR): spawns one **group-parent per cluster**. Each
+    cluster's tabs become sub-threads of that cluster's parent; items
+    can move between sibling group-parents via
+    ``grouping.move_thread_to_parent``. The ``originating_scrape_id``
+    is shared across all spawned parents so the move op recognises
+    them as siblings.
+
+    Falls back to the legacy single-decompose-parent shape when:
+    - ``use_grouping`` is explicitly False (callers that want the
+      pre-Stage-5 behaviour).
+    - ``clusters`` is empty / None (no clustering output → can't
+      partition).
+
+    Args:
+        tabs: list of tab dicts (id, url, title, window_id, ...).
+        scrape_id: per-scrape id (legacy; carried in inciting summary).
+        summary: scrape-wide short title.
+        clusters: optional clustering output. Each entry:
+            ``{"label": str, "tab_ids": [str, ...]}``. Tabs not
+            referenced by any cluster fall into a synthetic
+            "Ungrouped" cluster so nothing is silently dropped.
+        use_grouping: when True (default) AND clusters are supplied,
+            use the Stage 5 group-relationship pattern. When False,
+            spawn the legacy single-decompose-parent shape.
 
     Returns:
-        {
-            'parent_id': str,
-            'sub_thread_ids': list[str],
-            'count': int,
-        }
-        or None on failure (logged).
+        Stage 5 grouping shape:
+            ``{"parents": [{"parent_id": str, "label": str,
+                            "sub_thread_ids": [str, ...]}, ...],
+               "originating_scrape_id": str,
+               "total_count": int,
+               "parent_count": int}``
+
+        Legacy shape (when use_grouping=False or no clusters):
+            ``{"parent_id": str, "sub_thread_ids": [str, ...],
+               "count": int}``
+
+        None on failure (logged).
     """
     if not tabs:
         return None
+
+    legacy_mode = (not use_grouping) or not clusters
+    if legacy_mode:
+        return _spawn_chrome_scrape_legacy(
+            tabs=tabs, scrape_id=scrape_id, summary=summary,
+        )
+
+    # Stage 5 grouping path.
+    return _spawn_chrome_scrape_grouped(
+        tabs=tabs,
+        scrape_id=scrape_id,
+        summary=summary,
+        clusters=clusters,
+    )
+
+
+def _spawn_chrome_scrape_legacy(
+    *,
+    tabs: list[dict[str, Any]],
+    scrape_id: Optional[str],
+    summary: Optional[str],
+) -> Optional[dict[str, Any]]:
+    """Pre-Stage-5 single-decompose-parent path (kept for callers that
+    explicitly opt out of grouping, and for the empty-clusters
+    fallback). All tabs become sub-threads of one big parent."""
     parent_id = spawn_parent_thread_from_chrome_scrape(
         scrape_id=scrape_id, summary=summary,
     )
@@ -675,7 +777,7 @@ def spawn_threads_from_chrome_scrape(
         }
     except Exception as e:
         logger.warning(
-            "spawn_threads_from_chrome_scrape: decompose failed: %s", e,
+            "spawn_threads_from_chrome_scrape (legacy): decompose failed: %s", e,
         )
         return {
             "parent_id": parent_id,
@@ -683,6 +785,116 @@ def spawn_threads_from_chrome_scrape(
             "count": 0,
             "error": str(e),
         }
+
+
+def _spawn_chrome_scrape_grouped(
+    *,
+    tabs: list[dict[str, Any]],
+    scrape_id: Optional[str],
+    summary: Optional[str],
+    clusters: list[dict[str, Any]],
+) -> Optional[dict[str, Any]]:
+    """Stage 5 path: one group-parent per cluster, sharing an
+    ``originating_scrape_id`` so the move op recognises them as
+    siblings.
+
+    Tabs not assigned to any cluster fall into a synthetic
+    "Ungrouped" cluster (single sibling) so nothing is silently
+    dropped on the floor.
+    """
+    # Generate the sibling-scope id. All parents in this scrape share
+    # this id; the move op rejects cross-scope moves.
+    originating_scrape_id = scrape_id or uuid.uuid4().hex[:12]
+
+    # Build a tab_id -> tab map for fast cluster expansion.
+    tabs_by_id: dict[str, dict[str, Any]] = {}
+    for t in tabs:
+        tid = str(t.get("id") or t.get("tab_id") or "")
+        if tid:
+            tabs_by_id[tid] = t
+
+    # Track which tabs ended up in a cluster; the leftovers become
+    # the "Ungrouped" sibling.
+    used_tab_ids: set[str] = set()
+    cluster_specs: list[tuple[str, list[dict[str, Any]]]] = []
+    for cluster in clusters:
+        label = cluster.get("label") or "Group"
+        cluster_tab_ids = cluster.get("tab_ids") or []
+        cluster_tabs: list[dict[str, Any]] = []
+        for tid in cluster_tab_ids:
+            tab = tabs_by_id.get(str(tid))
+            if tab is not None and str(tid) not in used_tab_ids:
+                cluster_tabs.append(tab)
+                used_tab_ids.add(str(tid))
+        if cluster_tabs:
+            cluster_specs.append((label, cluster_tabs))
+
+    leftover = [
+        tabs_by_id[tid] for tid in tabs_by_id
+        if tid not in used_tab_ids
+    ]
+    if leftover:
+        cluster_specs.append(("Ungrouped", leftover))
+
+    if not cluster_specs:
+        # No tabs ended up bucketed at all — treat like empty input.
+        return None
+
+    parents_out: list[dict[str, Any]] = []
+    total_count = 0
+    cluster_count = len(cluster_specs)
+    from work_buddy.threads.decompose import decompose_thread
+    for idx, (label, cluster_tabs) in enumerate(cluster_specs):
+        parent_id = spawn_parent_thread_from_chrome_scrape(
+            scrape_id=scrape_id,
+            summary=summary,
+            parent_relationship="group",
+            originating_scrape_id=originating_scrape_id,
+            cluster_label=label,
+            cluster_index=idx,
+            cluster_size=cluster_count,
+        )
+        if parent_id is None:
+            continue
+        try:
+            ctx_items = [chrome_tab_to_context_item(t) for t in cluster_tabs]
+            sub_ids = decompose_thread(
+                parent_id, ctx_items,
+                inciting_summary_extra={
+                    "scrape_id": scrape_id,
+                    "originating_scrape_id": originating_scrape_id,
+                    "source_pipeline": "chrome_triage",
+                    "cluster_label": label,
+                },
+            )
+            parents_out.append({
+                "parent_id": parent_id,
+                "label": label,
+                "cluster_index": idx,
+                "sub_thread_ids": sub_ids,
+                "count": len(sub_ids),
+            })
+            total_count += len(sub_ids)
+        except Exception as e:
+            logger.warning(
+                "spawn_threads_from_chrome_scrape: cluster %s decompose "
+                "failed: %s", label, e,
+            )
+            parents_out.append({
+                "parent_id": parent_id,
+                "label": label,
+                "cluster_index": idx,
+                "sub_thread_ids": [],
+                "count": 0,
+                "error": str(e),
+            })
+
+    return {
+        "parents": parents_out,
+        "originating_scrape_id": originating_scrape_id,
+        "total_count": total_count,
+        "parent_count": len(parents_out),
+    }
 
 
 # ---------------------------------------------------------------------------
