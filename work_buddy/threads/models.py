@@ -250,6 +250,21 @@ class Thread:
     order_index: int = 0                       # write-time linearization
     search_blob: str = ""                      # denormalized search
 
+    # Stage 5: parent-child relationship discriminator. 'decompose' is
+    # the canonical fanout pattern (parent → action → N children, each
+    # FSM-executes; cascade-on-terminal advances parent to DONE). 'group'
+    # is the new pattern: parent is a re-organisable container; items
+    # can move between sibling group-parents via move_thread_to_parent.
+    # Default 'decompose' preserves all v4/Stage-4 behaviour.
+    parent_relationship: str = "decompose"
+
+    # Stage 5: sibling-scope id. Group-parents from one inference run
+    # share an originating_scrape_id (e.g. one Chrome scrape → N
+    # group-parents, all with the same id). Items can only move
+    # between parents that share this id. NULL for decompose parents
+    # and pre-Stage-5 data.
+    originating_scrape_id: Optional[str] = None
+
     # ------------------------------------------------------------------
     # Convenience predicates
     # ------------------------------------------------------------------
@@ -261,6 +276,19 @@ class Thread:
     @property
     def is_task(self) -> bool:
         return self.subtype == "task"
+
+    @property
+    def is_group_parent(self) -> bool:
+        """True iff this Thread is a group-relationship parent.
+
+        Stage 5 helper for the move-between-groups op + the cascade
+        auto-DISMISS branch. Note: leaf threads (those with parent_id
+        set) carry their own ``parent_relationship``, but it's only
+        meaningful when this Thread itself acts as a parent. Callers
+        should typically check ``parent_id IS NULL`` first or simply
+        consult the parent before allowing a move.
+        """
+        return self.parent_relationship == "group"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -280,6 +308,8 @@ class Thread:
             "resurface_at": self.resurface_at,
             "order_index": self.order_index,
             "search_blob": self.search_blob,
+            "parent_relationship": self.parent_relationship,
+            "originating_scrape_id": self.originating_scrape_id,
         }
 
     @classmethod
@@ -325,6 +355,8 @@ class Thread:
             resurface_at=row.get("resurface_at"),
             order_index=row.get("order_index") or 0,
             search_blob=row.get("search_blob") or "",
+            parent_relationship=row.get("parent_relationship") or "decompose",
+            originating_scrape_id=row.get("originating_scrape_id"),
         )
 
 

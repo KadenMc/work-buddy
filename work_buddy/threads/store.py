@@ -73,6 +73,23 @@ CREATE TABLE IF NOT EXISTS threads (
     parent_id                  TEXT,
     subtype                    TEXT,           -- 'task' | NULL
 
+    -- Stage 5: parent-child relationship discriminator. 'decompose' is
+    -- the canonical v5 fanout pattern (parent has a decompose action;
+    -- children FSM-execute independently; cascade-on-terminal advances
+    -- parent to DONE when all children terminal). 'group' is the new
+    -- pattern: parent is a re-organisable container; items can move
+    -- between sibling group-parents via the move_thread_to_parent op.
+    -- See data/designs/gtd/reimagined/DECISIONS.md (Stage 5).
+    parent_relationship        TEXT NOT NULL DEFAULT 'decompose',
+
+    -- Stage 5: scope id for sibling-group validation. Parents from one
+    -- inference run share an originating_scrape_id (e.g. one Chrome
+    -- scrape produces N group-parents, all with the same id). Items
+    -- can only move between parents that share this id — preventing
+    -- "yesterday's tabs land in today's group" mistakes.
+    -- NULL for non-group parents and for legacy data.
+    originating_scrape_id      TEXT,
+
     -- Current-state cache (DESIGN.md says events are canonical;
     -- this column exists for query convenience)
     fsm_state                  TEXT NOT NULL DEFAULT 'proposed',
@@ -124,6 +141,8 @@ CREATE INDEX IF NOT EXISTS idx_threads_parent_order
     ON threads(parent_id, order_index);
 CREATE INDEX IF NOT EXISTS idx_threads_resurface
     ON threads(resurface_at);
+CREATE INDEX IF NOT EXISTS idx_threads_originating_scrape
+    ON threads(originating_scrape_id) WHERE originating_scrape_id IS NOT NULL;
 
 
 CREATE TABLE IF NOT EXISTS thread_events (
@@ -212,12 +231,43 @@ def _migrate_stage_4(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_stage_5(conn: sqlite3.Connection) -> None:
+    """Add Stage 5 columns to an existing DB (idempotent).
+
+    Stage 5 introduces the ``group`` parent-relationship pattern. New
+    columns:
+
+    - ``parent_relationship`` — discriminator between 'decompose' (v4
+      and earlier behaviour, the default) and 'group' (Stage 5).
+      Existing rows default to 'decompose' so behaviour is preserved.
+    - ``originating_scrape_id`` — sibling-group scope id (NULL for
+      decompose parents and pre-Stage-5 data). Two group-parents with
+      the same id are siblings; items can move freely between them.
+
+    Same pattern as ``_migrate_stage_4`` — runs before ``executescript``
+    so the index-creation pass at the end of ``_SCHEMA`` doesn't fail
+    on missing columns.
+    """
+    has_table = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='threads'"
+    ).fetchone() is not None
+    if not has_table:
+        return
+    _add_column_if_missing(
+        conn, "threads", "parent_relationship",
+        "TEXT NOT NULL DEFAULT 'decompose'",
+    )
+    _add_column_if_missing(
+        conn, "threads", "originating_scrape_id", "TEXT",
+    )
+
+
 def get_connection() -> sqlite3.Connection:
     """Open the threads DB with WAL + FK enforcement; ensure schema.
 
-    Order matters: pre-existing tables get Stage-4 columns added
-    before the index-creation pass, so the index DDL doesn't fail
-    on missing columns.
+    Order matters: pre-existing tables get Stage-4 / Stage-5 columns
+    added before the index-creation pass, so the index DDL doesn't
+    fail on missing columns.
     """
     path = _db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -226,6 +276,7 @@ def get_connection() -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     _migrate_stage_4(conn)
+    _migrate_stage_5(conn)
     conn.executescript(_SCHEMA)
     conn.commit()
     return conn
@@ -268,17 +319,21 @@ def insert_thread(
     try:
         conn.execute(
             """INSERT INTO threads
-               (thread_id, parent_id, subtype, fsm_state, parent_event_id,
+               (thread_id, parent_id, subtype,
+                parent_relationship, originating_scrape_id,
+                fsm_state, parent_event_id,
                 autonomy_policy_json, context_items_json,
                 risk_profile_json, inciting_event_summary_json,
                 current_focus_thread_id,
                 created_at, updated_at, archived_at,
                 resurface_at, order_index, search_blob)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 thread.thread_id,
                 thread.parent_id,
                 thread.subtype,
+                getattr(thread, "parent_relationship", "decompose"),
+                getattr(thread, "originating_scrape_id", None),
                 thread.fsm_state.value,
                 thread.parent_event_id,
                 _dump_json(thread.autonomy_policy.to_dict()),
@@ -389,6 +444,9 @@ def update_thread_state(
     resurface_at: Any = _UPDATE_SENTINEL,
     order_index: Optional[int] = None,
     search_blob: Optional[str] = None,
+    parent_id: Any = _UPDATE_SENTINEL,
+    parent_relationship: Optional[str] = None,
+    originating_scrape_id: Any = _UPDATE_SENTINEL,
     conn: Optional[sqlite3.Connection] = None,
 ) -> bool:
     """Update mutable fields of the current-state cache.
@@ -401,8 +459,12 @@ def update_thread_state(
     transition event; ad-hoc callers should generally not use this
     directly.
 
-    ``resurface_at`` accepts ``None`` explicitly (clear the value) —
-    use the sentinel to distinguish "don't touch" from "set NULL".
+    ``resurface_at`` / ``parent_id`` / ``originating_scrape_id`` accept
+    ``None`` explicitly (clear the value) — use the sentinel to
+    distinguish "don't touch" from "set NULL".
+
+    Stage 5: ``parent_id`` writes are how the move-between-groups op
+    rewrites a child's parent pointer.
     """
     own_conn = conn is None
     if own_conn:
@@ -431,6 +493,15 @@ def update_thread_state(
         if search_blob is not None:
             sets.append("search_blob = ?")
             params.append(search_blob)
+        if parent_id is not _UPDATE_SENTINEL:
+            sets.append("parent_id = ?")
+            params.append(parent_id)
+        if parent_relationship is not None:
+            sets.append("parent_relationship = ?")
+            params.append(parent_relationship)
+        if originating_scrape_id is not _UPDATE_SENTINEL:
+            sets.append("originating_scrape_id = ?")
+            params.append(originating_scrape_id)
         params.append(thread_id)
         cur = conn.execute(
             f"UPDATE threads SET {', '.join(sets)} WHERE thread_id = ?",

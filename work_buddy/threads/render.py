@@ -251,6 +251,13 @@ def build_render_data(thread_id: str) -> Optional[dict[str, Any]]:
         "can_clean_up": cleanup.can_clean_up(thread),
         "sub_thread_count": sub_count,
         "sub_thread_state_counts": sub_thread_state_counts,
+        # Stage 5: relationship discriminator + sibling-scope id. The
+        # frontend uses these to choose between the standard sub-thread
+        # mini-card list (decompose) and the multi-column group view
+        # (group). Always emitted so the dashboard can rely on the
+        # field being present.
+        "parent_relationship": getattr(thread, "parent_relationship", "decompose"),
+        "originating_scrape_id": getattr(thread, "originating_scrape_id", None),
         "has_been_later": _has_been_later(events),
         "resurface_at": getattr(thread, "resurface_at", None),
         "parent_event_id": thread.parent_event_id,

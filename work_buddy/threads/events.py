@@ -74,6 +74,15 @@ KIND_SUBTHREADS_SPAWNED = "subthreads_spawned"
 KIND_SUBTHREAD_TERMINAL_REPORTED = "subthread_terminal_reported"
 KIND_PARENT_FORCE_CLOSE = "parent_force_close"
 
+# Stage 5: group-relationship item moves. Recorded on BOTH the old and
+# new parent when an item moves between sibling group-parents (the two
+# events share a migration_id). Data carries item_id, from_parent,
+# to_parent, and the originating_scrape_id sibling-scope id so an
+# auditor can reconstruct the move from either side. Never recorded
+# for decompose-relationship parents — moving sub-threads between
+# decompose-parents is semantically nonsense.
+KIND_ITEM_MOVED = "item_moved"
+
 # Budget / loop
 KIND_BUDGET_WARNING = "budget_warning"
 KIND_LOOP_DETECTED = "loop_detected"
@@ -136,6 +145,7 @@ ALL_KINDS: frozenset[str] = frozenset({
     KIND_SUBTHREADS_SPAWNED,
     KIND_SUBTHREAD_TERMINAL_REPORTED,
     KIND_PARENT_FORCE_CLOSE,
+    KIND_ITEM_MOVED,
     KIND_BUDGET_WARNING,
     KIND_LOOP_DETECTED,
     KIND_ESCALATED_TO_USER,
