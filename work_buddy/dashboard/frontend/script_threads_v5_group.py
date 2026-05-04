@@ -71,6 +71,15 @@ def _group_view_script() -> str:
             lastFocused: null,
             groupsByUmbrella: {},
             errorByUmbrella: {},
+            // Per-source action library (universal + per-source
+            // descriptors). Keyed by umbrella id; same shape as the
+            // /groups endpoint's ``action_options`` field. Populated
+            // alongside groupsByUmbrella on each lazy-fetch / refresh.
+            actionOptionsByUmbrella: {},
+            // Which column's chip dropdown is currently open. Set on
+            // dropdown open; cleared on outside click / selection /
+            // re-render.
+            openActionChipFor: null,
         };
     }
 
@@ -110,12 +119,16 @@ def _group_view_script() -> str:
 
     // ---- Cache primitives -------------------------------------------
 
-    function _setGroupsForUmbrella(umbrellaId, groups) {
+    function _setGroupsForUmbrella(umbrellaId, groups, actionOptions) {
         window._groupState.groupsByUmbrella[umbrellaId] = groups;
+        if (actionOptions !== undefined) {
+            window._groupState.actionOptionsByUmbrella[umbrellaId] =
+                Array.isArray(actionOptions) ? actionOptions : [];
+        }
         delete window._groupState.errorByUmbrella[umbrellaId];
     }
 
-    function _replaceGroupsInPlace(umbrellaId, fresh) {
+    function _replaceGroupsInPlace(umbrellaId, fresh, actionOptions) {
         // Mutate the existing array in place when possible so any
         // references held by event-bus handlers stay valid.
         const cache = window._groupState.groupsByUmbrella;
@@ -123,8 +136,12 @@ def _group_view_script() -> str:
         if (existing && Array.isArray(existing)) {
             existing.length = 0;
             for (const g of fresh) existing.push(g);
+            if (actionOptions !== undefined) {
+                window._groupState.actionOptionsByUmbrella[umbrellaId] =
+                    Array.isArray(actionOptions) ? actionOptions : [];
+            }
         } else {
-            _setGroupsForUmbrella(umbrellaId, fresh);
+            _setGroupsForUmbrella(umbrellaId, fresh, actionOptions);
         }
     }
 
@@ -133,7 +150,11 @@ def _group_view_script() -> str:
                      + '/groups')
             .then(r => r.ok ? r.json() : Promise.reject(r.statusText))
             .then(data => {
-                _replaceGroupsInPlace(umbrellaId, data.groups || []);
+                _replaceGroupsInPlace(
+                    umbrellaId,
+                    data.groups || [],
+                    data.action_options,
+                );
                 if (typeof window._renderActiveThread === "function") {
                     window._renderActiveThread();
                 }
@@ -263,7 +284,11 @@ def _group_view_script() -> str:
         fetch('/api/threads/' + encodeURIComponent(umbrellaId) + '/groups')
             .then(r => r.ok ? r.json() : Promise.reject(r.statusText))
             .then(data => {
-                _setGroupsForUmbrella(umbrellaId, data.groups || []);
+                _setGroupsForUmbrella(
+                    umbrellaId,
+                    data.groups || [],
+                    data.action_options,
+                );
                 if (typeof window._renderActiveThread === "function") {
                     window._renderActiveThread();
                 }
@@ -306,6 +331,8 @@ def _group_view_script() -> str:
             const s = (g.fsm_state || '').toLowerCase();
             return s !== 'done' && s !== 'dismissed' && s !== 'handed_off';
         });
+        const actionOptions = window._groupState
+            .actionOptionsByUmbrella[umbrellaId] || [];
         let html = '<div class="threads-v5-group-toolbar">'
             + (liveChildren.length > 0
                 ? '<button class="threads-v5-group-approve-all" '
@@ -334,7 +361,7 @@ def _group_view_script() -> str:
                 + '</div>';
         } else {
             for (const g of groups) {
-                html += _renderColumn(g);
+                html += _renderColumn(g, actionOptions);
             }
         }
         html += _renderNewGroupZone(umbrellaId);
@@ -342,13 +369,177 @@ def _group_view_script() -> str:
         return html;
     }
 
-    function _renderColumn(child) {
+    // ---- Action chip --------------------------------------------------
+    //
+    // The chip lives in the column header (between the meta line and
+    // the items list). It shows the current proposed_action's label,
+    // and on click toggles a dropdown of every per_group action in the
+    // umbrella's action_options. Selecting one POSTs to
+    // /api/threads/<id>/set_action_proposal and refreshes the cache.
+    //
+    // We read the current proposal off the standard render dict's
+    // ``actions[0]`` (which is the latest action_inferred event's
+    // payload — the runner's synthetic proposal lands there too).
+
+    function _currentActionForChild(child) {
+        const actions = child.actions || [];
+        if (actions.length === 0) return null;
+        const a = actions[0];
+        // The render layer flattens payload.name to actions[0].name in
+        // some shapes; be defensive about both.
+        const name = a.name || (a.payload && a.payload.name) || "";
+        if (!name) return null;
+        return {
+            capability_name: name,
+            rationale: a.rationale || (a.data && a.data.rationale) || null,
+        };
+    }
+
+    function _findActionDescriptor(capabilityName, actionOptions) {
+        if (!capabilityName) return null;
+        for (const d of actionOptions) {
+            if (d.capability_name === capabilityName) return d;
+        }
+        return null;
+    }
+
+    function _renderActionChip(child, actionOptions) {
+        const sId = child.thread_id;
+        const perGroup = (actionOptions || []).filter(
+            d => d.cardinality === "per_group",
+        );
+        if (perGroup.length === 0) return "";
+        const current = _currentActionForChild(child);
+        const currentDescriptor = current
+            ? _findActionDescriptor(current.capability_name, perGroup)
+            : null;
+        const chipLabel = currentDescriptor
+            ? currentDescriptor.label
+            : 'Pick action';
+        const isOpen = window._groupState.openActionChipFor === sId;
+
+        let html = '<div class="threads-v5-group-action-chip-wrap">'
+            + '<button class="threads-v5-group-action-chip'
+            +   (currentDescriptor ? ' has-proposal' : '')
+            +   (isOpen ? ' open' : '') + '" '
+            +   'title="' + _esc(currentDescriptor
+                ? (current.rationale || currentDescriptor.description)
+                : 'Pick a per-group action') + '" '
+            +   'onclick="event.stopPropagation();'
+            +     'threadsGroupToggleActionChip(\''
+            +     _esc(sId) + '\')">'
+            +   '<span class="threads-v5-group-action-chip-arrow">&rarr;</span> '
+            +   _esc(chipLabel)
+            +   ' <span class="threads-v5-group-action-chip-caret">&#9662;</span>'
+            + '</button>';
+
+        if (isOpen) {
+            html += '<div class="threads-v5-group-action-chip-menu" '
+                +   'onclick="event.stopPropagation();">';
+            for (const d of perGroup) {
+                const isCurrent = currentDescriptor
+                    && currentDescriptor.capability_name === d.capability_name;
+                html += '<button class="threads-v5-group-action-chip-option'
+                    +     (isCurrent ? ' current' : '') + '" '
+                    +     'title="' + _esc(d.description || '') + '" '
+                    +     'onclick="event.stopPropagation();'
+                    +       'threadsGroupSetActionProposal(\''
+                    +       _esc(sId) + '\', \''
+                    +       _esc(d.capability_name) + '\')">'
+                    +     '<span class="label">' + _esc(d.label) + '</span>'
+                    +     (d.description
+                            ? '<span class="desc">'
+                                + _esc(d.description.length > 80
+                                    ? d.description.slice(0, 77) + '...'
+                                    : d.description)
+                                + '</span>'
+                            : '')
+                    + '</button>';
+            }
+            // Add a "Clear proposal" affordance when a proposal exists.
+            if (currentDescriptor) {
+                html += '<button class="threads-v5-group-action-chip-option '
+                    +     'clear" '
+                    +     'onclick="event.stopPropagation();'
+                    +       'threadsGroupSetActionProposal(\''
+                    +       _esc(sId) + '\', null)">'
+                    +     '<span class="label">Clear proposal</span>'
+                    +     '<span class="desc">'
+                    +       'No batch action; user reviews individually.'
+                    +     '</span>'
+                    + '</button>';
+            }
+            html += '</div>';
+        }
+        html += '</div>';
+        return html;
+    }
+
+    window.threadsGroupToggleActionChip = function (threadId) {
+        if (window._groupState.openActionChipFor === threadId) {
+            window._groupState.openActionChipFor = null;
+        } else {
+            window._groupState.openActionChipFor = threadId;
+        }
+        if (typeof window._renderActiveThread === "function") {
+            window._renderActiveThread();
+        }
+    };
+
+    window.threadsGroupSetActionProposal = function (threadId, capabilityName) {
+        // capabilityName === null → clear
+        const body = capabilityName === null
+            ? { capability_name: null }
+            : { capability_name: capabilityName, confidence: 1.0 };
+        // Close the dropdown immediately so the next render reflects.
+        window._groupState.openActionChipFor = null;
+        fetch('/api/threads/' + encodeURIComponent(threadId)
+              + '/set_action_proposal', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        })
+        .then(r => r.json().then(b => ({ ok: r.ok, body: b })))
+        .then(({ ok, body }) => {
+            if (!ok) {
+                _groupToast(
+                    'Action update failed',
+                    body.error || 'Could not update action proposal',
+                );
+                return;
+            }
+            // Refresh the active umbrella's cache so the chip re-paints
+            // with the new proposal.
+            const state = window._threadsState;
+            if (state && state.path && state.path.length > 0) {
+                _refreshGroups(state.path[state.path.length - 1]);
+            }
+        })
+        .catch(e => _groupToast('Action update failed', String(e)));
+    };
+
+    // Close the chip dropdown when the user clicks elsewhere on the
+    // page. Wired once at module load.
+    if (!window._threadsGroupChipDismissInstalled) {
+        window._threadsGroupChipDismissInstalled = true;
+        document.addEventListener('click', function () {
+            if (window._groupState.openActionChipFor) {
+                window._groupState.openActionChipFor = null;
+                if (typeof window._renderActiveThread === "function") {
+                    window._renderActiveThread();
+                }
+            }
+        });
+    }
+
+    function _renderColumn(child, actionOptions) {
         const items = child.context_items || [];
         const sId = child.thread_id;
         const stateLabel = child.fsm_state || "";
         const intentText = (child.intent && child.intent.text) || "";
         const showIntent = intentText && intentText !== child.title;
         const itemCount = items.length;
+        actionOptions = actionOptions || [];
         let html = '<div class="threads-v5-group-column" '
             + 'data-parent-id="' + _esc(sId) + '" '
             + 'ondragover="event.preventDefault();'
@@ -393,6 +584,7 @@ def _group_view_script() -> str:
         html += '<div class="threads-v5-group-column-meta">'
             +     itemCount + ' item' + (itemCount === 1 ? '' : 's')
             +   '</div>'
+            + _renderActionChip(child, actionOptions)
             + '</div>'
             + '<ul class="threads-v5-group-items">';
         if (itemCount === 0) {
@@ -1193,6 +1385,120 @@ def _group_view_styles() -> str:
     color: var(--text-muted, #888);
     margin-top: 3px;
     text-transform: lowercase;
+}
+
+/* Action chip — sits in each column header between the meta line
+ * and the items list. Shows the LLM-proposed (or user-overridden)
+ * per-group action; click opens a dropdown of every available
+ * per-group action.
+ *
+ * The chip surfaces in two visual states:
+ *   - has-proposal: solid accent border, accent text. Communicates
+ *     "this column has an action queued; Approve all will run it."
+ *   - no proposal: dashed muted border, "Pick action" prompt.
+ */
+.threads-v5-group-action-chip-wrap {
+    position: relative;
+    margin-top: 8px;
+    /* Stop propagation visually — the chip is inside the
+     * column-header-clickable area, but its click handler stops
+     * propagation so opening the dropdown doesn't drill into the
+     * sub-thread. */
+}
+.threads-v5-group-action-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: transparent;
+    border: 1px dashed var(--border, #333);
+    border-radius: 12px;
+    color: var(--text-muted, #888);
+    padding: 3px 10px;
+    font-size: 11px;
+    font-family: inherit;
+    cursor: pointer;
+    transition: border-color 80ms, color 80ms, background-color 80ms;
+}
+.threads-v5-group-action-chip:hover,
+.threads-v5-group-action-chip.open {
+    background: var(--bg-tertiary, #232323);
+    color: var(--text, #ddd);
+    border-color: var(--text-muted, #888);
+}
+.threads-v5-group-action-chip.has-proposal {
+    border-style: solid;
+    border-color: var(--accent, #4a7fc1);
+    color: var(--accent, #4a7fc1);
+    background: rgba(74, 127, 193, 0.06);
+}
+.threads-v5-group-action-chip.has-proposal:hover {
+    background: rgba(74, 127, 193, 0.14);
+    color: var(--accent, #4a7fc1);
+}
+.threads-v5-group-action-chip-arrow {
+    font-weight: 600;
+}
+.threads-v5-group-action-chip-caret {
+    font-size: 10px;
+    color: inherit;
+    margin-left: 2px;
+}
+
+.threads-v5-group-action-chip-menu {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    z-index: 10;
+    min-width: 240px;
+    max-width: 360px;
+    background: var(--bg-secondary, #1a1a1a);
+    border: 1px solid var(--border, #333);
+    border-radius: 6px;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
+    padding: 4px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+.threads-v5-group-action-chip-option {
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    padding: 6px 10px;
+    cursor: pointer;
+    font-family: inherit;
+    text-align: left;
+    color: var(--text, #ddd);
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+.threads-v5-group-action-chip-option:hover {
+    background: var(--bg-tertiary, #232323);
+    border-color: var(--border, #333);
+}
+.threads-v5-group-action-chip-option.current {
+    background: rgba(74, 127, 193, 0.12);
+    border-color: var(--accent, #4a7fc1);
+}
+.threads-v5-group-action-chip-option .label {
+    font-size: 12px;
+    font-weight: 600;
+}
+.threads-v5-group-action-chip-option .desc {
+    font-size: 11px;
+    color: var(--text-muted, #888);
+    line-height: 1.3;
+}
+.threads-v5-group-action-chip-option.clear {
+    border-top: 1px solid var(--border, #333);
+    margin-top: 2px;
+    padding-top: 8px;
+    border-radius: 0 0 4px 4px;
+}
+.threads-v5-group-action-chip-option.clear .label {
+    color: var(--text-muted, #aaa);
+    font-weight: 500;
 }
 
 .threads-v5-group-newzone {
