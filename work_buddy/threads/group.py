@@ -250,9 +250,9 @@ def group_thread(
         # Kick each child off PROPOSED so it walks through inference
         # like a decompose-spawned child.
         try:
-            from work_buddy.threads.source_pipelines import _kickoff_inference
+            from work_buddy.threads.kickoff import kickoff_inference
             for cid in child_ids:
-                _kickoff_inference(cid)
+                kickoff_inference(cid)
         except Exception as e:
             logger.warning(
                 "Group-child kickoff after group_thread failed: %s; "
@@ -706,8 +706,8 @@ def spawn_empty_group(
         # user later moves items in. (An empty child has nothing to
         # infer immediately; inference will rerun once items land.)
         try:
-            from work_buddy.threads.source_pipelines import _kickoff_inference
-            _kickoff_inference(child.thread_id)
+            from work_buddy.threads.kickoff import kickoff_inference
+            kickoff_inference(child.thread_id)
         except Exception as e:
             logger.warning(
                 "spawn_empty_group: kickoff failed for %s: %s",

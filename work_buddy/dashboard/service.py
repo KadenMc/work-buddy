@@ -2088,16 +2088,18 @@ def api_v5_threads_list():
         return jsonify({"threads": [], "error": str(exc)}), 500
 
 
-# A small allowlist of v5 dashboard-triggerable capabilities. We
+# A small allowlist of dashboard-triggerable capabilities. We
 # intentionally don't expose the full registry — the user's
 # workflow is "MCP from agent for power", "dashboard buttons for
 # common nudges." Adding a capability here is a deliberate UX
-# decision (each appears as a button somewhere in the v5 UI).
+# decision (each appears as a button somewhere in the UI).
 _DASHBOARD_RUNNABLE_CAPABILITIES: dict[str, dict] = {
-    "journal_v5_scan": {
+    "run_source_pipeline": {
         "description": (
-            "Segment today's journal Running Notes into v5 Threads. "
-            "Wired to the empty-state CTA on the Threads tab."
+            "Run a source pipeline end-to-end (Chrome triage / "
+            "journal backlog) → produces a group umbrella + group "
+            "sub-threads with per-cluster action proposals. Wired to "
+            "the empty-state CTA on the Threads tab."
         ),
         "mutates_state": True,
     },

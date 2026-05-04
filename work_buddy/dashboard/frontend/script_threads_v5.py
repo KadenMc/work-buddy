@@ -263,20 +263,16 @@ def _threads_v5_script() -> str:
         renderThreads();
     };
 
-    // Run journal_v5_scan via the dashboard's MCP-style endpoint.
-    // Falls back to a friendly message on error so the empty-state
-    // CTA never throws an unhandled rejection.
+    // Trigger the journal-backlog source pipeline via the dashboard's
+    // gateway shim. Falls back to a friendly message on error so the
+    // empty-state CTA never throws an unhandled rejection.
     window.threadsRunJournalScan = function () {
         const btns = document.querySelectorAll('.threads-v5-empty-cta');
         for (const b of btns) { b.disabled = true; }
-        // The dashboard exposes `/api/run/<capability>` as a
-        // gateway shim so we can trigger capabilities from the UI.
-        // If that route doesn't exist (the capability has to come
-        // from the MCP gateway), we surface a helpful message.
-        fetch('/api/run/journal_v5_scan', {
+        fetch('/api/run/run_source_pipeline', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({}),
+            body: JSON.stringify({source: 'journal_backlog'}),
         })
             .then(r => r.ok ? r.json() : Promise.reject(r.status))
             .then(data => {
@@ -285,8 +281,9 @@ def _threads_v5_script() -> str:
             })
             .catch(err => {
                 alert('Could not run scan: ' + err
-                      + '. Run "journal_v5_scan" via the MCP gateway '
-                      + '(e.g. wb_run from an agent), or open Obsidian '
+                      + '. Run "run_source_pipeline" via the MCP '
+                      + 'gateway (e.g. wb_run from an agent with '
+                      + 'source="journal_backlog"), or open Obsidian '
                       + 'and ensure the work-buddy plugin is enabled.');
                 for (const b of btns) { b.disabled = false; }
             });
@@ -451,8 +448,9 @@ def _threads_v5_script() -> str:
                 html += '<div class="threads-v5-empty-cta-row">';
                 html += '<button class="threads-v5-empty-cta" '
                       + 'onclick="threadsRunJournalScan()" '
-                      + 'title="Segment today\'s journal Running Notes '
-                      + 'into v5 Threads via the journal_v5_scan capability">'
+                      + 'title="Run the journal-backlog source pipeline '
+                      + 'on today\'s Running Notes (segment + cluster + '
+                      + 'spawn group threads)">'
                       + 'Scan today\'s journal'
                       + '</button>';
                 html += '<button class="threads-v5-empty-cta" '
