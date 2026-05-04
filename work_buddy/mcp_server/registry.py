@@ -801,6 +801,7 @@ def _build_registry() -> dict[str, Capability | WorkflowDefinition]:
         ("status", _status_capabilities),
         ("journal", _journal_capabilities),
         ("memory", _memory_capabilities),
+        ("pipelines", _pipeline_capabilities),
         ("threads", _thread_capabilities),
         ("tasks", _task_capabilities),
         ("context", _context_capabilities),
@@ -4219,6 +4220,51 @@ def _task_capabilities() -> list[Capability]:
                 "too many contracts",
                 "how many active commitments",
                 "over WIP",
+            ],
+        ),
+    ]
+
+
+def _pipeline_capabilities() -> list[Capability]:
+    """The unified ``run_source_pipeline`` entry point.
+
+    Replaces the per-source ``journal_v5_scan`` capability and serves
+    as the single MCP/wb_run entry for triggering any source-pipeline
+    run (Chrome, journal, future). Slash commands +
+    ``daily-journal/process-backlog`` workflow dispatch through this.
+    """
+    from work_buddy.pipelines.capability import run_source_pipeline
+
+    return [
+        Capability(
+            name="run_source_pipeline",
+            description=(
+                "Run an end-to-end source pipeline: collect raw items, "
+                "annotate with LLM tags + summary, embedding-cluster, "
+                "Sonnet-refine cluster boundaries + per-cluster action "
+                "proposals, and spawn a group umbrella thread + group "
+                "sub-threads with the items as ContextItems. Replaces "
+                "the per-source journal/chrome scan entry points."
+            ),
+            category="threads",
+            parameters={
+                "source": {"type": "str", "description": "Registered pipeline name (e.g. 'chrome_triage', 'journal_backlog')", "required": True},
+                "journal_date": {"type": "str", "description": "Journal pipeline: YYYY-MM-DD; defaults to today", "required": False},
+                "profile": {"type": "str", "description": "Journal pipeline: override segmentation tier profile", "required": False},
+                "engagement_window": {"type": "str", "description": "Chrome pipeline: engagement lookback (e.g. '12h', '24h')", "required": False},
+                "include_summaries": {"type": "bool", "description": "Chrome pipeline: attach cached Haiku summaries (default True)", "required": False},
+                "summary": {"type": "str", "description": "Chrome pipeline: human-readable scrape summary for the umbrella title", "required": False},
+                "scrape_id": {"type": "str", "description": "Chrome pipeline: per-scrape id surfaced in audit metadata", "required": False},
+            },
+            callable=run_source_pipeline,
+            mutates_state=True,
+            search_aliases=[
+                "run pipeline",
+                "process backlog",
+                "scan journal",
+                "triage chrome",
+                "run source pipeline",
+                "spawn group threads",
             ],
         ),
     ]

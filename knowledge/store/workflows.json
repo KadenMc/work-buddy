@@ -716,74 +716,26 @@
   "daily-journal/process-backlog": {
     "kind": "workflow",
     "name": "Process Backlog",
-    "description": "Process the Running Notes backlog: line-range segmentation, per-thread tag/summary manifest, tag-similarity clustering, user MERGE/SPLIT review, routing to tasks/considerations/notes, and consent-gated rewrite of the section.",
+    "description": "Process today's Running Notes backlog through the unified source pipeline: collect line-range segments, annotate with Haiku-generated tags + summaries, embedding-fused cluster, Sonnet-refine cluster boundaries + propose a per-group action, and spawn a group umbrella thread + group sub-threads with the segments as ContextItems. The user reviews and refines via the dashboard column grid.",
     "workflow_name": "process-backlog",
     "execution": "main",
     "steps": [
       {
-        "id": "extract",
-        "name": "Read Running Notes section from journal",
+        "id": "run-pipeline",
+        "name": "Run journal backlog source pipeline",
         "step_type": "code",
         "depends_on": [],
         "execution": "main",
-        "auto_run": true
-      },
-      {
-        "id": "segment",
-        "name": "Line-range segmentation into thread groups",
-        "step_type": "code",
-        "depends_on": [
-          "extract"
-        ],
-        "execution": "main",
-        "auto_run": true
-      },
-      {
-        "id": "manifest",
-        "name": "Generate per-thread tags + summaries",
-        "step_type": "code",
-        "depends_on": [
-          "segment"
-        ],
-        "execution": "main",
-        "auto_run": true
-      },
-      {
-        "id": "cluster",
-        "name": "Cluster threads by tag similarity",
-        "step_type": "code",
-        "depends_on": [
-          "manifest"
-        ],
-        "execution": "main",
-        "auto_run": true
-      },
-      {
-        "id": "review",
-        "name": "Present clusters and collect user MERGE/SPLIT/TAG decisions",
-        "step_type": "reasoning",
-        "depends_on": [
-          "cluster"
-        ],
-        "execution": "main"
-      },
-      {
-        "id": "route",
-        "name": "Execute routing decisions per thread",
-        "step_type": "reasoning",
-        "depends_on": [
-          "review"
-        ],
-        "execution": "main"
-      },
-      {
-        "id": "rewrite",
-        "name": "Rewrite Running Notes; remove processed lines (consent-gated)",
-        "step_type": "reasoning",
-        "depends_on": [
-          "route"
-        ],
-        "execution": "main"
+        "auto_run": {
+          "callable": "work_buddy.pipelines.run_source_pipeline",
+          "kwargs": {
+            "source": "journal_backlog"
+          }
+        },
+        "visibility": {
+          "mode": "summary"
+        },
+        "invokes": []
       }
     ],
     "tags": [
@@ -796,17 +748,7 @@
     ],
     "allow_override": false,
     "step_instructions": {
-      "extract": "Auto-run. Read the Running Notes section from today's journal via ``read_running_notes(same_day=True)``. Strip carry-over banners with ``strip_banners`` (banner_date_map preserved for later attribution). Pass the cleaned text and banner_date_map to the next step.",
-      "segment": "Auto-run. Call ``work_buddy.triage.adapters.journal._segment_with_escalation`` with the cleaned text and banner_date_map. Output: a list of thread dicts (id, raw_text, line_count, source_dates, has_multi_flag, lines). Ids are locally-generated 6-hex tokens. The escalation chain (configured in ``triage.segment.tier_chain``, default LOCAL_FAST → FRONTIER_FAST) handles validation failures automatically. If segmentation returns ``None`` for all tiers, fail the workflow with the audit log already emitted by the adapter.",
-      "review-clusters": "(main, reasoning)\n\nAgentic step. The agent reviews clustering results and confirms merge/split decisions with the user. Behavioral instructions (confidence thresholds, presentation format, merge/split procedures) are in the slash command, not here.\n\n**Applying decisions (data contracts):**\n- **MERGE clusters**: Combine thread lists, concatenate raw text, union tags\n- **SPLIT cluster**: Move specified threads to their own new unit or an existing cluster\n- **MOVE singleton**: Add to specified cluster\n\n**Output:** Final list of information units (merged/cleaned clusters), each with combined raw text, unified tags, and a summary. These become the routing input items for the next step.",
-      "route": "Reasoning step. For each information unit, propose a destination:\n\n- ``destination_type=task`` → ``task_text``, ``urgency``, optional ``project`` / ``due_date``.\n- ``destination_type=consideration`` → ``title``, ``project``, ``consideration_type``, ``status``, ``body``, optional ``review_date``.\n- ``destination_type=note`` → ``content``, ``note_path`` (must be relative; vault traversal rejected).\n- ``action=delete`` → the unit is dropped (with a one-line ``reason``).\n- ``action=skip`` → leave it in Running Notes for next time.\n- ``action=split`` → the unit's thread fans out to multiple destinations; provide a ``splits`` list with per-split decisions and a ``rewrite_map[id]`` text/None pair for the rewrite step.\n\nConfirm proposals with the user, then call ``work_buddy.journal_backlog.execute_routing_plan(plan, vault_root)``. The capability is consent-gated. Capture the returned routing_record for the rewrite step.",
-      "rewrite": "Reasoning step (consent-gated). Call ``work_buddy.journal_backlog.rewrite_running_notes(journal_path, original_text, threads, routing_record, original_file_content, rewrite_map)``. The function:\n\n- Drops lines belonging to routed/deleted threads.\n- Keeps lines belonging to skipped threads.\n- Replaces split threads' lines with explicit text from ``rewrite_map`` (if any).\n- Multi-thread overlap: a line is kept if ANY of its memberships is a keep-decision — conservative against silent data loss.\n- Unassigned lines (blanks, ``---`` separators, structural content) are always kept.\n\nReturns ``{success, file, message, preview}``. Confirm the preview with the user before granting consent. The capability checks the file hasn't changed on disk since the rewrite was prepared and refuses to write if it has.",
-      "manifest": "Auto-run. Call ``work_buddy.journal_backlog.build_thread_manifest(threads)``. Each thread gets a ``{id, tags, summary}`` entry via FRONTIER_FAST (Haiku). Per-thread errors don't abort: failed entries have ``tags=[]`` and an ``error`` field; downstream cluster step skips them gracefully. The content-aware LLM cache means repeated runs on identical thread text hit cleanly.",
-      "cluster": "Auto-run. Call ``work_buddy.journal_backlog.linearize_threads(manifest)`` to seriate by Jaccard tag similarity (break_threshold=0.15) and ``generate_clustered_review(threads, manifest, journal_date, source_dates)`` to render markdown for the review step. Returns clusters (list of lists) plus the rendered markdown.",
-      "review": "Reasoning step. Present the cluster review markdown to the user. Collect their MERGE / SPLIT / TAG decisions per cluster:\n\n- **MERGE**: combine threads (the user names the resulting cluster).\n- **SPLIT**: extract a thread from its current cluster into its own (or into another existing cluster).\n- **TAG**: edit the manifest tags for a thread without changing cluster membership.\n\nApply the decisions in-memory: produce a final list of ``information_units`` (each is a list of thread dicts with combined raw_text, unified tags, agreed summary). Do NOT route yet — routing comes next."
-    },
-    "content": {
-      "full": "Process the Running Notes backlog from today (or a given date) by segmenting into threads, clustering by topic, routing to vault destinations, and rewriting the section with only open items remaining.\n\n## Substrate\n\nThis workflow runs on the **line-range segmentation** substrate (introduced when the tagged-text path was retired). The model partitions numbered input lines into groups; ids and per-thread metadata are computed on our side. See ``architecture/llm-runner`` for the segmenter's escalation contract and ``work_buddy.triage.adapters.journal._segment_with_escalation`` for the entry point.\n\n## Step ownership\n\n- Auto-run code steps (extract, segment, manifest, cluster) execute deterministic Python with no per-call agent reasoning. Each is a single capability invocation.\n- Reasoning steps (review, route, rewrite) involve user judgment or consent: clustering decisions, routing destinations, file-write confirmation.\n\n## Failure modes\n\n- Segmentation exhausts all tiers \\u2192 audit log fires from the adapter; workflow surfaces the failure to the user with the per-tier outcome breakdown.\n- Manifest builder errors per-thread \\u2192 failed entries marked but workflow continues; the cluster step gracefully handles entries with empty tags.\n- Routing partially succeeds \\u2192 ``execute_routing_plan`` returns per-item results; user can decide to retry the failed items or proceed with the rewrite for the successful ones.\n- Rewrite consent declined \\u2192 the file isn't modified; ``preview`` is still returned so the user can inspect what would have changed.\n- Concurrent edit of the journal file \\u2192 rewrite refuses to write (compares ``original_file_content`` vs current disk content)."
+      "run-pipeline": "Auto-run. Call ``work_buddy.pipelines.run_source_pipeline(source='journal_backlog', journal_date=...)``. The pipeline runs collect → annotate → precluster → refine → spawn end-to-end and returns the umbrella thread id + child group thread ids + per-cluster action proposals. The umbrella becomes visible on the dashboard's Threads tab; the user reviews + drag-drops items between groups + picks per-group actions via the column header action chip; approving the umbrella runs each child's chosen action through the standard FSM dispatch path."
     }
   },
   "context/review-latest-bundle": {

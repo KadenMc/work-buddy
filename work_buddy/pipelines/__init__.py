@@ -34,6 +34,11 @@ from work_buddy.pipelines.actions import (
     ActionDescriptor,
     ActionLibrary,
 )
+from work_buddy.pipelines.capability import (
+    PIPELINES,
+    UnknownSourceError,
+    run_source_pipeline,
+)
 from work_buddy.pipelines.llm_cluster_refinement import refine_clusters
 from work_buddy.pipelines.protocol import SourcePipeline
 from work_buddy.pipelines.runner import run_pipeline
@@ -50,8 +55,11 @@ __all__ = [
     "ActionProposal",
     "CapturedItem",
     "ClusterSpec",
+    "PIPELINES",
     "PipelineRun",
     "SourcePipeline",
+    "UnknownSourceError",
     "refine_clusters",
     "run_pipeline",
+    "run_source_pipeline",
 ]
