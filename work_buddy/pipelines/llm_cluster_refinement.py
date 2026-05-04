@@ -45,11 +45,13 @@ logger = logging.getLogger(__name__)
 # against locally before trusting the response.
 REFINE_OUTPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
+    "additionalProperties": False,
     "properties": {
         "clusters": {
             "type": "array",
             "items": {
                 "type": "object",
+                "additionalProperties": False,
                 "properties": {
                     "label": {"type": "string"},
                     "item_ids": {
@@ -61,21 +63,22 @@ REFINE_OUTPUT_SCHEMA: dict[str, Any] = {
                             {"type": "null"},
                             {
                                 "type": "object",
+                                "additionalProperties": False,
                                 "properties": {
                                     "capability_name": {"type": "string"},
                                     "rationale": {"type": "string"},
-                                    "confidence": {
-                                        "type": "number",
-                                        "minimum": 0.0,
-                                        "maximum": 1.0,
-                                    },
+                                    # Range constraint enforced in
+                                    # Python validator (Anthropic's
+                                    # strict structured-output mode
+                                    # rejects minimum/maximum).
+                                    "confidence": {"type": "number"},
                                 },
                                 "required": ["capability_name"],
                             },
                         ],
                     },
                 },
-                "required": ["label", "item_ids"],
+                "required": ["label", "item_ids", "proposed_action"],
             },
         },
     },

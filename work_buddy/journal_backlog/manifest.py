@@ -50,10 +50,11 @@ _MANIFEST_SCHEMA: dict[str, Any] = {
     "required": ["tags", "summary"],
     "properties": {
         "tags": {
+            # Anthropic's structured-output validator rejects ``minItems``
+            # / ``maxItems`` on arrays. Keep the constraint in the system
+            # prompt instead: "1 to 6 tags".
             "type": "array",
             "items": {"type": "string"},
-            "minItems": 1,
-            "maxItems": 6,
         },
         "summary": {"type": "string"},
     },
