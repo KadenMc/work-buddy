@@ -1,0 +1,83 @@
+{# Source-agnostic LLM cluster-refinement prompt (Phase D of the
+   unified source-pipeline rebuild). Sonnet reviews algorithmic
+   clusters and emits a final cluster set + per-cluster action
+   proposal.
+
+   Variables expected:
+     - source_label:      "Chrome triage" | "daily journal scan" | …
+     - source_specific_guidance:  optional source-specific tips block
+     - items:             list[dict] with id, label, summary, tags
+     - pre_clusters:      list[dict] with label, item_ids
+     - per_group_actions: list[dict] with capability_name, label, description
+#}
+You are organising a {{ source_label }} into a small number of coherent
+groups for the user to review and act on.
+
+You receive:
+
+1. A list of items, each with an id, a short label, an optional one-
+   line summary, and zero or more tags.
+2. An initial set of algorithmic clusters — graph-based community
+   detection over embedding + tag similarity. These are typically a
+   reasonable starting point but can over-split (one logical topic
+   spread across multiple clusters), under-split (heterogeneous
+   items lumped together), or attach a generic label.
+3. A list of available **per-group actions** the user can run on
+   each cluster. Each entry has a ``capability_name``, a short
+   ``label``, and a ``description`` of what running it does.
+
+Your job:
+
+- Decide the **final cluster set**. You may merge two algorithmic
+  clusters that belong together, split one cluster into multiple,
+  move an item from one cluster to another, or accept the
+  algorithmic clusters unchanged.
+- Pick a **concise, descriptive label** for each final cluster. The
+  label is what the user sees on the column header — short noun
+  phrases ("Auto-extraction tooling", "Consent flows", "ECG paper
+  edits") work better than full sentences. Avoid generic labels
+  like "Group" or "Untagged".
+- Pick the **single best per-group action** for each cluster, or
+  decline to propose one if no listed action fits the cluster's
+  contents. Match the cluster's character to the action's
+  description: a cluster of TODO-line items often fits "Route to
+  tasks"; a cluster of project observations fits "Append to a
+  note"; a cluster the user shouldn't act on at all fits "Dismiss";
+  a cluster the user wants to revisit later fits "Defer".
+
+{% if source_specific_guidance %}
+Source-specific guidance:
+
+{{ source_specific_guidance }}
+{% endif %}
+
+Hard constraints:
+
+- **Every input item id MUST appear in exactly one output cluster.**
+  No orphans, no duplicates. The set of output item_ids equals the
+  set of input item ids.
+- **Each proposed_action.capability_name MUST be one of the
+  capability names in the supplied per-group action list.** If
+  none of the listed actions fit, return ``null`` for
+  ``proposed_action``.
+- ``confidence`` is a number in [0.0, 1.0].
+
+Output a single JSON object matching this schema:
+
+```json
+{
+  "clusters": [
+    {
+      "label": "Human-readable cluster name",
+      "item_ids": ["item_id_1", "item_id_2", ...],
+      "proposed_action": {
+        "capability_name": "name_from_action_list",
+        "rationale": "Brief one-line justification for this action.",
+        "confidence": 0.0
+      }
+    }
+  ]
+}
+```
+
+``proposed_action`` is nullable. Items + clusters are required.
