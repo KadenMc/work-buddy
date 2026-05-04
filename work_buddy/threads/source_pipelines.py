@@ -290,6 +290,123 @@ def spawn_parent_thread_from_journal_scan(
         return None
 
 
+def _similarity_merge_journal_items(
+    items: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Run the similarity-merge pass on TriageItem-shaped journal items.
+
+    Adapts TriageItem dicts (``id`` / ``text`` / ``label`` / ``metadata``)
+    to the segment shape ``work_buddy.journal_backlog.similarity`` expects
+    (``id`` / ``raw_text`` / ``line_count`` / ``source_dates`` /
+    ``has_multi_flag``), runs the merge plan, and converts back. Items that
+    aren't part of any merge pass through untouched.
+
+    The merge plan is best-effort. Any exception (embedding service
+    pathology, missing optional dependency, etc.) is logged and the
+    original items are returned with ``embed_status='error'`` so the spawn
+    isn't blocked on a similarity-layer failure.
+
+    Returns ``(merged_items, plan_meta)``. ``plan_meta`` mirrors
+    ``similarity.merge_segments``'s second return value plus an extra
+    ``error`` key if the merge raised.
+    """
+    if len(items) < 2:
+        return list(items), {
+            "before_count": len(items),
+            "after_count": len(items),
+            "applied_merges": 0,
+            "embed_status": "skipped",
+            "embedded": 0,
+            "skipped": 0,
+        }
+
+    try:
+        from work_buddy.journal_backlog.similarity import merge_segments
+    except Exception as e:
+        logger.warning(
+            "Could not import journal-backlog similarity merge (%s); "
+            "skipping merge pass.", e,
+        )
+        return list(items), {
+            "before_count": len(items),
+            "after_count": len(items),
+            "applied_merges": 0,
+            "embed_status": "import_error",
+            "embedded": 0,
+            "skipped": 0,
+            "error": str(e),
+        }
+
+    # TriageItem -> segment shape
+    segments: list[dict[str, Any]] = []
+    for it in items:
+        md = it.get("metadata") or {}
+        segments.append({
+            "id": it.get("id"),
+            "raw_text": it.get("text") or "",
+            "line_count": md.get("line_count") or 0,
+            "source_dates": md.get("source_dates") or [],
+            "has_multi_flag": bool(md.get("has_multi_flag")),
+        })
+
+    try:
+        merged_segments, meta = merge_segments(segments)
+    except Exception as e:
+        logger.warning(
+            "Similarity merge raised (%s); spawning unmerged items.", e,
+        )
+        return list(items), {
+            "before_count": len(items),
+            "after_count": len(items),
+            "applied_merges": 0,
+            "embed_status": "error",
+            "embedded": 0,
+            "skipped": 0,
+            "error": str(e),
+        }
+
+    # Map back to TriageItem shape. For unmerged segments we return the
+    # original item unchanged; for merged segments we synthesise a new
+    # TriageItem whose text is the concatenated raw_text and whose
+    # metadata reflects the merger.
+    by_id = {it.get("id"): it for it in items}
+    merged_items: list[dict[str, Any]] = []
+    for seg in merged_segments:
+        sid = seg["id"]
+        if "merged_from" not in seg:
+            # Unchanged — pass through original.
+            merged_items.append(by_id.get(sid) or {
+                "id": sid,
+                "text": seg.get("raw_text", ""),
+                "source": "journal_thread",
+                "metadata": {},
+            })
+            continue
+        # Merged — first member's TriageItem provides the metadata
+        # template; we overwrite text with the merged raw_text and
+        # annotate metadata with the merge audit fields.
+        primary = by_id.get(sid) or {}
+        new_metadata = dict(primary.get("metadata") or {})
+        new_metadata["line_count"] = seg.get("line_count", 0)
+        new_metadata["source_dates"] = seg.get("source_dates", [])
+        new_metadata["has_multi_flag"] = seg.get("has_multi_flag", False)
+        new_metadata["merged_from"] = list(seg.get("merged_from", []))
+        new_metadata["merge_score"] = float(seg.get("merge_score", 0.0))
+        merged = dict(primary)
+        merged["text"] = seg.get("raw_text", "")
+        merged["metadata"] = new_metadata
+        # The label was a one-line summary of the original first segment;
+        # after merging, prefix it with " (+N merged)" so the spawned
+        # sub-thread surfaces the merger to the user.
+        n_extra = max(0, len(seg.get("merged_from", [])) - 1)
+        if n_extra:
+            label = primary.get("label") or "(journal item)"
+            merged["label"] = f"{label} (+{n_extra} merged)"
+        merged_items.append(merged)
+
+    return merged_items, meta
+
+
 def spawn_threads_from_journal_scan(
     items: list[dict[str, Any]],
     *,
@@ -332,15 +449,53 @@ def spawn_threads_from_journal_scan(
         # Fall back to "unknown" — the cleanup adapter still works
         # because each child carries its own note_path.
         journal_date = "unknown"
+
+    # 2026-05-04: similarity-based merge BEFORE spawning sub-threads.
+    # The line-range LLM partition occasionally over-splits a single
+    # topic into multiple segments (e.g. one TODO header in one group,
+    # its evidence bullets in another). Run an embedding + tag +
+    # proximity fusion pass to fold those back together so we don't
+    # spawn N sub-threads for what is conceptually one item.
+    #
+    # Failure mode is benign: if the embedding service is down, the
+    # fusion collapses to tag + proximity only and very few merges
+    # fire. If the merge plan itself fails, we log and proceed with
+    # the unmerged items — never block the spawn.
+    merged_items, merge_meta = _similarity_merge_journal_items(items)
+
     parent_id = spawn_parent_thread_from_journal_scan(
         journal_date=journal_date,
-        item_count=len(items),
+        item_count=len(merged_items),
     )
     if parent_id is None:
         return {"parent_id": None, "sub_thread_ids": [], "count": 0}
+
+    # Record the merge plan on the parent's event log so the user can
+    # audit what the merger did. Best-effort.
+    if merge_meta.get("applied_merges"):
+        try:
+            store.append_event(ThreadEvent(
+                thread_id=parent_id,
+                kind="similarity_merge_applied",
+                actor="inciting",
+                data={
+                    "before_count": merge_meta["before_count"],
+                    "after_count": merge_meta["after_count"],
+                    "applied_merges": merge_meta["applied_merges"],
+                    "embed_status": merge_meta["embed_status"],
+                    "embedded": merge_meta.get("embedded"),
+                    "skipped": merge_meta.get("skipped"),
+                },
+            ))
+        except Exception as e:
+            logger.warning(
+                "similarity_merge_applied event for journal parent %s "
+                "failed: %s", parent_id, e,
+            )
+
     note_path = f"journal/{journal_date}.md"
     sub_ids: list[str] = []
-    for item in items:
+    for item in merged_items:
         tid = spawn_thread_from_journal_item(
             item,
             note_path=note_path,
