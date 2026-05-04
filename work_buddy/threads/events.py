@@ -98,6 +98,12 @@ KIND_CONTEXT_ITEM_MOVED = "context_item_moved"
 # deleted_child_id and had_items count.
 KIND_GROUP_DELETED = "group_deleted"
 
+# Universal-action audit. Recorded by ``threads.universal_actions.thread_rename``
+# whenever the title is changed (e.g. via the action-chip "Rename" affordance,
+# or by the LLM cluster-refinement step overriding an algorithmic cluster
+# label).
+KIND_THREAD_RENAMED = "thread_renamed"
+
 # Budget / loop
 KIND_BUDGET_WARNING = "budget_warning"
 KIND_LOOP_DETECTED = "loop_detected"
@@ -164,6 +170,7 @@ ALL_KINDS: frozenset[str] = frozenset({
     KIND_GROUPS_SPAWNED,
     KIND_CONTEXT_ITEM_MOVED,
     KIND_GROUP_DELETED,
+    KIND_THREAD_RENAMED,
     KIND_BUDGET_WARNING,
     KIND_LOOP_DETECTED,
     KIND_ESCALATED_TO_USER,

@@ -801,6 +801,7 @@ def _build_registry() -> dict[str, Capability | WorkflowDefinition]:
         ("status", _status_capabilities),
         ("journal", _journal_capabilities),
         ("memory", _memory_capabilities),
+        ("threads", _thread_capabilities),
         ("tasks", _task_capabilities),
         ("context", _context_capabilities),
         ("projects", _project_capabilities),
@@ -4009,6 +4010,89 @@ def _task_capabilities() -> list[Capability]:
                 "how many active commitments",
                 "over WIP",
             ],
+        ),
+    ]
+
+
+def _thread_capabilities() -> list[Capability]:
+    """Universal thread actions — apply to any thread regardless of
+    source. Wired into the per-source action library by the pipelines
+    runner so every group sub-thread carries dismiss / defer / rename
+    affordances on its action chip alongside any source-specific
+    actions.
+    """
+    from work_buddy.threads.universal_actions import (
+        thread_defer,
+        thread_dismiss,
+        thread_rename,
+    )
+
+    return [
+        Capability(
+            name="thread_dismiss",
+            description=(
+                "Mark a thread as dismissed via the standard FSM "
+                "transition. For group sub-threads this is the "
+                "'do nothing with this cluster' action. For umbrellas "
+                "it cascades through the existing dismiss flow."
+            ),
+            category="threads",
+            is_action=True,
+            intrinsic_amplifiers={
+                "irreversibility": "low",
+                "regret_potential": "low",
+            },
+            parameters={
+                "thread_id": {"type": "str", "description": "Thread to dismiss", "required": True},
+                "reason": {"type": "str", "description": "Optional free-text reason recorded on the dismiss event", "required": False},
+            },
+            callable=thread_dismiss,
+            mutates_state=True,
+            search_aliases=["dismiss thread", "skip thread", "ignore thread", "drop thread"],
+        ),
+        Capability(
+            name="thread_defer",
+            description=(
+                "Defer a thread so it resurfaces at a future time. "
+                "Sets the cached resurface_at field; the existing Later "
+                "mechanic re-surfaces the thread when the time arrives."
+            ),
+            category="threads",
+            is_action=True,
+            intrinsic_amplifiers={
+                "irreversibility": "low",
+                "regret_potential": "low",
+            },
+            parameters={
+                "thread_id": {"type": "str", "description": "Thread to defer", "required": True},
+                "duration_hours": {"type": "float", "description": "Hours to wait before resurfacing (default 24)", "required": False},
+                "resurface_at": {"type": "str", "description": "Absolute ISO timestamp to resurface at (overrides duration_hours)", "required": False},
+            },
+            callable=thread_defer,
+            mutates_state=True,
+            search_aliases=["snooze thread", "later", "remind me later", "defer thread"],
+        ),
+        Capability(
+            name="thread_rename",
+            description=(
+                "Rewrite a thread's title (and description) — used by "
+                "the action-chip 'Rename' affordance and by the LLM "
+                "cluster-refinement step when it overrides an "
+                "algorithmic cluster label."
+            ),
+            category="threads",
+            is_action=True,
+            intrinsic_amplifiers={
+                "irreversibility": "low",
+                "regret_potential": "low",
+            },
+            parameters={
+                "thread_id": {"type": "str", "description": "Thread to rename", "required": True},
+                "new_title": {"type": "str", "description": "New title (also used as description)", "required": True},
+            },
+            callable=thread_rename,
+            mutates_state=True,
+            search_aliases=["rename thread", "change thread title", "edit cluster label"],
         ),
     ]
 
