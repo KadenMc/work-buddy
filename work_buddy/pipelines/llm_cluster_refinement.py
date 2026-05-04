@@ -192,32 +192,33 @@ def _call_llm(
 ) -> dict[str, Any] | None:
     """Render the prompt + run the LLM. Returns the parsed JSON dict
     on success, or None on any failure."""
-    from work_buddy.llm.call import llm_call
+    from work_buddy.llm import LLMRunner, ModelTier
 
     system = _render_system_prompt(source_name, per_group_actions)
     user = _render_user_payload(items, pre, per_group_actions)
 
-    result = llm_call(
+    resp = LLMRunner().call(
+        tier=ModelTier.FRONTIER_BALANCED,
         system=system,
         user=user,
         output_schema=REFINE_OUTPUT_SCHEMA,
-        tier="sonnet",
         max_tokens=4096,
         temperature=0.2,
+        cache_ttl_minutes=0,
+        trace_id=f"refine_clusters_{source_name}",
     )
-    if result.get("error"):
+    if resp.is_error():
         logger.warning(
-            "refine_clusters [%s]: llm_call returned error: %s",
-            source_name, result["error"],
+            "refine_clusters [%s]: LLMRunner returned error: %s",
+            source_name, resp.error,
         )
         return None
-    parsed = result.get("parsed")
+    parsed = resp.structured_output
     if not isinstance(parsed, dict):
         logger.warning(
-            "refine_clusters [%s]: llm_call returned no parsed JSON "
-            "(model=%s, content_len=%d)",
-            source_name, result.get("model"),
-            len(result.get("content") or ""),
+            "refine_clusters [%s]: LLMRunner returned no structured output "
+            "(content_len=%d)",
+            source_name, len(resp.content or ""),
         )
         return None
     return parsed
