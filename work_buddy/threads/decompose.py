@@ -233,6 +233,14 @@ def cascade_terminal_to_parent(
     fired, or None if no parent / parent isn't monitoring / not
     all children terminal yet.
 
+    Stage 5: for group-relationship parents the cascade still fires
+    "all terminal → DONE" (a group whose every child has been
+    accepted/dismissed/handed-off has also achieved its purpose, the
+    user just doesn't have to act anymore). The OTHER cascade —
+    "moved last item out → auto-DISMISS" — runs through
+    :func:`cascade_after_item_moved`, not here, because a move isn't
+    a terminal-state entry.
+
     Wired via engine.register_state_entry_handler on each terminal
     state in Stage 2.9 bootstrap.
     """
@@ -282,6 +290,62 @@ def cascade_terminal_to_parent(
             conn=conn,
             # Fire side effects so any monitoring-completion
             # handler downstream gets called too.
+            fire_side_effects=True,
+        )
+        return result.next_state.value
+    finally:
+        if own_conn:
+            conn.close()
+
+
+def cascade_after_item_moved(
+    parent_id: str, *, conn=None,
+) -> Optional[str]:
+    """When an item moves OUT of a group-parent, auto-DISMISS the
+    parent if it has no children remaining.
+
+    The cascade-on-terminal path (:func:`cascade_terminal_to_parent`)
+    only fires when a child enters a terminal state. A move is not a
+    terminal entry — the moved item is still alive under a different
+    parent. So group-parents need a separate hook fired by the move
+    operation in source_pipelines: after rewriting an item's parent_id,
+    the move op calls this function with the OLD parent_id.
+
+    Auto-DISMISS rule: if the parent's relationship is 'group' AND
+    it has zero remaining children, transition parent to DISMISSED.
+    For decompose-relationship parents this is a no-op — moves don't
+    happen between decompose-parents (the move endpoint rejects them).
+
+    Returns the parent's new state value if a transition fired,
+    None otherwise.
+    """
+    own_conn = conn is None
+    if own_conn:
+        conn = store.get_connection()
+    try:
+        parent = store.get_thread(parent_id, conn=conn)
+        if parent is None:
+            return None
+        if parent.parent_relationship != "group":
+            return None
+        if parent.fsm_state != FSMState.MONITORING:
+            # Group-parents start in MONITORING; if it's already in a
+            # terminal state, nothing more to cascade. If it's somehow
+            # in another state (shouldn't happen), be defensive.
+            return None
+        children = store.list_threads(parent_id=parent.thread_id, conn=conn)
+        if children:
+            return None
+        # No children left — auto-DISMISS.
+        result = engine.transition(
+            parent.thread_id,
+            TRIG_DISMISSED_BY_USER,
+            data={
+                "reason": "group_emptied",
+                "auto_dismissed_by_cascade": True,
+            },
+            actor=ACTOR_FSM_ENGINE,
+            conn=conn,
             fire_side_effects=True,
         )
         return result.next_state.value

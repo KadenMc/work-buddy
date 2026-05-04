@@ -2424,6 +2424,104 @@ def api_v5_thread_later(thread_id: str):
         return jsonify({"error": str(exc)}), 500
 
 
+@app.post("/api/threads/<thread_id>/move_parent")
+def api_v5_thread_move_parent(thread_id: str):
+    """Stage 5: move a sub-thread between sibling group-parents.
+
+    Body: ``{"new_parent_id": "<thread_id>"}``
+
+    Validation rules enforced by ``grouping.move_thread_to_parent``:
+    - Source and destination must both be group-relationship parents.
+    - Both must share the same ``originating_scrape_id`` (so today's
+      Chrome scrape can't accidentally suck in yesterday's tabs).
+    - Source != destination.
+
+    On success, returns the move result dict with the audit
+    ``migration_id`` and a flag indicating whether the source parent
+    just auto-dismissed (it does when it has no children left).
+    """
+    blocked = _reject_read_only()
+    if blocked:
+        return blocked
+    body = request.get_json(silent=True) or {}
+    new_parent_id = body.get("new_parent_id")
+    if not new_parent_id:
+        return jsonify({"error": "new_parent_id required"}), 400
+    try:
+        from work_buddy.threads.grouping import (
+            MoveValidationError,
+            move_thread_to_parent,
+        )
+        result = move_thread_to_parent(thread_id, new_parent_id)
+        return jsonify(result)
+    except MoveValidationError as e:
+        # 422 — semantically valid request, semantically rejected.
+        return jsonify({"error": str(e), "reason": e.reason}), 422
+    except Exception as exc:
+        logger.exception(
+            "v5 move_parent failed for %s -> %s: %s",
+            thread_id, new_parent_id, exc,
+        )
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.post("/api/threads/<thread_id>/group_submit")
+def api_v5_thread_group_submit(thread_id: str):
+    """Stage 5: bulk-accept every awaiting_confirmation child of a
+    group-parent.
+
+    Body (optional): ``{"actor": "user"}`` — defaults to "user".
+
+    Returns a per-item result list. One bad item never blocks the
+    rest; the dashboard's "Submitted N, M failed" toast reads from
+    the returned counts.
+    """
+    blocked = _reject_read_only()
+    if blocked:
+        return blocked
+    body = request.get_json(silent=True) or {}
+    actor = body.get("actor") or "user"
+    try:
+        from work_buddy.threads.grouping import (
+            MoveValidationError,
+            bulk_submit_group,
+        )
+        result = bulk_submit_group(thread_id, actor=actor)
+        return jsonify(result)
+    except MoveValidationError as e:
+        return jsonify({"error": str(e), "reason": e.reason}), 422
+    except Exception as exc:
+        logger.exception(
+            "v5 group_submit failed for %s: %s", thread_id, exc,
+        )
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.get("/api/threads/<thread_id>/group_siblings")
+def api_v5_thread_group_siblings(thread_id: str):
+    """Stage 5: list sibling group-parents in the same scrape.
+
+    Used by the dashboard's group-view to render the multi-column
+    layout (active group + siblings side-by-side). Returns rendered
+    thread dicts (same shape as ``/api/threads/<id>``).
+    """
+    try:
+        from work_buddy.threads.grouping import list_sibling_group_parents
+        from work_buddy.threads.render import build_render_data
+        siblings = list_sibling_group_parents(thread_id, include_self=True)
+        out = []
+        for s in siblings:
+            rendered = build_render_data(s.thread_id)
+            if rendered is not None:
+                out.append(rendered)
+        return jsonify({"siblings": out, "parent_id": thread_id})
+    except Exception as exc:
+        logger.exception(
+            "v5 group_siblings failed for %s: %s", thread_id, exc,
+        )
+        return jsonify({"siblings": [], "error": str(exc)}), 500
+
+
 # ---------------------------------------------------------------------------
 # Conversation API (renamed from Thread chat in v5 Stage 1)
 # ---------------------------------------------------------------------------
