@@ -409,25 +409,42 @@ def _threads_v5_card_script() -> str:
     }
 
     function _renderIntentSection(thread, s) {
-        // Intent: NO X-flag (UX.md §5.2). Only editable.
+        // 2026-05-03 PM: per user feedback the intent now follows the
+        // same inline-buttons pattern as context items and actions.
+        // The earlier UX.md §5.2 stance ("Intent: NO X-flag, only
+        // editable") was overruled — users WILL want to flag a wrong
+        // intent inference, and the flag-then-edit-then-Accept loop
+        // mirrors how they handle bad context/action proposals.
         const text = (thread.intent && thread.intent.text) || "(no intent inferred)";
         const editedText = s.edited.intent !== undefined
             ? s.edited.intent
             : text;
         const conf = thread.intent && thread.intent.confidence;
+        // Use the synthetic id "intent" for flag tracking. The Accept
+        // disabler in _renderFooter checks ``s.flagged.size > 0``, so
+        // a flagged intent blocks Accept just like a flagged context
+        // item or action.
+        const flagged = s.flagged.has("intent");
+        const tid = _esc(thread.thread_id);
         return (
             '<div class="threads-v5-section">'
             + '<div class="threads-v5-section-label">Intent'
             +   _confidenceBadge(conf)
             + '</div>'
-            + '<div class="threads-v5-intent">'
-            +   _esc(editedText)
+            + '<div class="threads-v5-item threads-v5-intent-item'
+            +   (flagged ? ' threads-v5-flagged' : '') + '">'
+            +   '<div class="threads-v5-item-label threads-v5-intent">'
+            +     _esc(editedText)
+            +   '</div>'
+            +   '<div class="threads-v5-item-actions">'
+            +     _flagBtn(thread.thread_id, "intent", flagged)
+            +     '<button class="threads-v5-edit-btn" '
+            +       'title="Edit intent" '
+            +       'onclick="threadCardFocus(\'' + tid + '\', \'intent\')">'
+            +       _icon("edit")
+            +     '</button>'
+            +   '</div>'
             + '</div>'
-            + '<button class="threads-v5-edit-btn" '
-            +   'title="Edit intent" '
-            +   'onclick="threadCardFocus(\'' + _esc(thread.thread_id) + '\', \'intent\')">'
-            +   _icon("edit")
-            + '</button>'
             + '</div>'
         );
     }
@@ -476,11 +493,18 @@ def _threads_v5_card_script() -> str:
                   + '</div>';
             html += '<div class="threads-v5-item-actions">';
             html += _flagBtn(thread.thread_id, ci.id, flagged);
-            html += '<button class="threads-v5-edit-btn" '
-                  + 'title="Edit context item" '
+            // 2026-05-03: context items are VIEW-ONLY in the right
+            // pane (the inspector pretty-prints fields, no edit
+            // form). Keep the right-pane drill-in but render it
+            // with an expand-arrow chevron so the affordance reads
+            // as "see more" rather than the misleading "Edit" the
+            // user noticed. Tooltip and aria-label spell it out.
+            html += '<button class="threads-v5-edit-btn threads-v5-expand-btn" '
+                  + 'title="Expand for full context-item details" '
+                  + 'aria-label="Expand context item" '
                   + 'onclick="threadCardFocus(\'' + _esc(thread.thread_id) + '\', \''
                   + _esc(ci.id) + '\')">'
-                  + _icon("edit") + '</button>';
+                  + _icon("chevron-right") + '</button>';
             html += '</div>';
             html += '</li>';
         }
@@ -1339,6 +1363,13 @@ def _threads_v5_card_script() -> str:
             // intent / context items / actions (user-feedback fix #5).
             "edit": '<path d="M12 20h9"></path>'
                 + '<path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path>',
+            // Right-chevron — used as the "expand for more info"
+            // affordance on view-only items (e.g. context items).
+            // Reads as "drill in" rather than "toggle visibility"
+            // (user-feedback 2026-05-03 PM): the eye icon was
+            // considered for view-only entries but the expand-
+            // arrow vibe matched the user's intent better.
+            "chevron-right": '<polyline points="9 6 15 12 9 18"></polyline>',
         };
         const p = paths[name] || '';
         return '<svg class="threads-v5-icon" width="16" height="16" '
