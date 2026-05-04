@@ -3401,6 +3401,136 @@ def _journal_capabilities() -> list[Capability]:
             mutates_state=True,
             auto_retry=False,
         ),
+        # ----------------------------------------------------------------
+        # Journal-backlog per-thread actions — backing the journal
+        # pipeline's per-group action library. Each walks the target
+        # thread's ``context_items`` and routes through the existing
+        # ``journal_backlog/route.py`` primitives (consent-gated).
+        # ----------------------------------------------------------------
+        Capability(
+            name="journal_route_to_tasks",
+            description=(
+                "Walk a journal-group thread's context items and create "
+                "one task per item in the master task list. Each item's "
+                "label becomes the task text. Continue-on-error: a single "
+                "failed item doesn't block the rest."
+            ),
+            category="journal",
+            is_action=True,
+            intrinsic_amplifiers={
+                "irreversibility": "low",
+                "regret_potential": "low",
+            },
+            parameters={
+                "thread_id": {"type": "str", "description": "Group sub-thread to route", "required": True},
+                "vault_root": {"type": "str", "description": "Override the configured vault root", "required": False},
+                "urgency": {"type": "str", "description": "low | medium (default) | high", "required": False},
+                "project": {"type": "str", "description": "Project slug applied to every created task", "required": False},
+            },
+            callable=(lambda **kw: __import__(
+                "work_buddy.journal_backlog.thread_actions",
+                fromlist=["journal_route_to_tasks"],
+            ).journal_route_to_tasks(**kw)),
+            requires=["obsidian"],
+            mutates_state=True,
+            search_aliases=[
+                "create tasks from journal group",
+                "route group to task list",
+                "spin out group as tasks",
+            ],
+        ),
+        Capability(
+            name="journal_route_to_considerations",
+            description=(
+                "Walk a journal-group thread's context items and create "
+                "one consideration note per item. Each item's label "
+                "becomes the title; raw text becomes the body."
+            ),
+            category="journal",
+            is_action=True,
+            intrinsic_amplifiers={
+                "irreversibility": "low",
+                "regret_potential": "low",
+            },
+            parameters={
+                "thread_id": {"type": "str", "description": "Group sub-thread to route", "required": True},
+                "vault_root": {"type": "str", "description": "Override the configured vault root", "required": False},
+                "project": {"type": "str", "description": "Project slug for all new considerations (default 'inbox')", "required": False},
+                "type": {"type": "str", "description": "Consideration type (default 'consideration')", "required": False},
+                "status": {"type": "str", "description": "Initial status (default 'open')", "required": False},
+            },
+            callable=(lambda **kw: __import__(
+                "work_buddy.journal_backlog.thread_actions",
+                fromlist=["journal_route_to_considerations"],
+            ).journal_route_to_considerations(**kw)),
+            requires=["obsidian"],
+            mutates_state=True,
+            search_aliases=[
+                "create considerations from journal group",
+                "route group to considerations",
+            ],
+        ),
+        Capability(
+            name="journal_append_to_note",
+            description=(
+                "Append all items in a journal-group thread as bullets "
+                "to a single existing vault note. Useful for "
+                "project-observation clusters."
+            ),
+            category="journal",
+            is_action=True,
+            intrinsic_amplifiers={
+                "irreversibility": "low",
+                "regret_potential": "low",
+            },
+            parameters={
+                "thread_id": {"type": "str", "description": "Group sub-thread to route", "required": True},
+                "note_path": {"type": "str", "description": "Vault-relative note to append to", "required": True},
+                "vault_root": {"type": "str", "description": "Override the configured vault root", "required": False},
+                "bullet_prefix": {"type": "str", "description": "Bullet marker (default '- ')", "required": False},
+            },
+            callable=(lambda **kw: __import__(
+                "work_buddy.journal_backlog.thread_actions",
+                fromlist=["journal_append_to_note"],
+            ).journal_append_to_note(**kw)),
+            requires=["obsidian"],
+            mutates_state=True,
+            search_aliases=[
+                "append journal group to note",
+                "log group items to project note",
+            ],
+        ),
+        Capability(
+            name="journal_rewrite_running_notes",
+            description=(
+                "Remove processed lines from today's daily note. "
+                "Consent-gated wrapper around "
+                "``journal_backlog.rewrite_running_notes``. Umbrella-"
+                "level cleanup: typically run after all the umbrella's "
+                "groups have been routed."
+            ),
+            category="journal",
+            is_action=True,
+            intrinsic_amplifiers={
+                "irreversibility": "moderate",
+                "regret_potential": "moderate",
+            },
+            parameters={
+                "preview": {"type": "dict", "description": "Output of build_rewrite_preview", "required": True},
+                "vault_root": {"type": "str", "description": "Override the configured vault root", "required": False},
+            },
+            callable=(lambda **kw: __import__(
+                "work_buddy.journal_backlog.rewrite",
+                fromlist=["rewrite_running_notes"],
+            ).rewrite_running_notes(**kw)),
+            requires=["obsidian"],
+            mutates_state=True,
+            search_aliases=[
+                "rewrite daily note",
+                "remove processed journal lines",
+                "clean up running notes",
+            ],
+        ),
     ]
 
 
