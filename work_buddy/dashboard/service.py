@@ -2497,6 +2497,74 @@ def api_v5_thread_group_submit(thread_id: str):
         return jsonify({"error": str(exc)}), 500
 
 
+def _linearize_children_for_display(children: list) -> list:
+    """Reorder a column's children so visually-similar items sit
+    adjacent (Stage 5 polish).
+
+    Uses :func:`work_buddy.journal_backlog.clustering.linearize_threads`
+    — Jaccard tag-similarity seriation. Each child's "tags" are the
+    union of ``namespace_tags`` and inline ``#tag`` tokens extracted
+    from the inciting summary's description / label.
+
+    Returns a new list with the same items in linearized order. On
+    any failure (missing optional dependency, etc.) returns the
+    input unchanged — display order is a polish concern, not a
+    correctness one.
+    """
+    if not children or len(children) < 3:
+        # 1-2 items: nothing to linearize.
+        return children
+    try:
+        from work_buddy.journal_backlog.clustering import linearize_threads
+        from work_buddy.journal_backlog.similarity import extract_inline_tags
+    except Exception:
+        return children
+    entries = []
+    for ch in children:
+        tags: list[str] = list(ch.get("namespace_tags") or [])
+        # Pull inline tags from any text field that might carry them.
+        inciting = ch.get("inciting_event_summary") or {}
+        text_blob = " ".join(filter(None, [
+            inciting.get("description"),
+            inciting.get("label"),
+            inciting.get("title"),
+            ch.get("title"),
+        ]))
+        try:
+            tags.extend(extract_inline_tags(text_blob))
+        except Exception:
+            pass
+        # Dedupe lower-cased.
+        seen: set[str] = set()
+        clean: list[str] = []
+        for t in tags:
+            tl = (t or "").lower()
+            if tl and tl not in seen:
+                seen.add(tl)
+                clean.append(tl)
+        entries.append({
+            "id": ch.get("thread_id"),
+            "tags": clean,
+        })
+    try:
+        clusters = linearize_threads(entries, break_threshold=0.15)
+    except Exception:
+        return children
+    by_id = {ch.get("thread_id"): ch for ch in children}
+    out: list = []
+    for cluster in clusters:
+        for entry in cluster:
+            ch = by_id.get(entry["id"])
+            if ch is not None:
+                out.append(ch)
+    # Fall through anything missing in case of bug.
+    seen_ids = {ch.get("thread_id") for ch in out}
+    for ch in children:
+        if ch.get("thread_id") not in seen_ids:
+            out.append(ch)
+    return out
+
+
 @app.get("/api/threads/<thread_id>/group_siblings")
 def api_v5_thread_group_siblings(thread_id: str):
     """Stage 5: list sibling group-parents in the same scrape, with
@@ -2505,7 +2573,9 @@ def api_v5_thread_group_siblings(thread_id: str):
 
     Each returned sibling has the standard render shape (same as
     ``/api/threads/<id>``) PLUS a ``children_render`` list — one
-    rendered dict per child sub-thread, ordered by ``order_index``.
+    rendered dict per child sub-thread, with display order
+    determined by ``linearize_threads`` (Jaccard tag similarity)
+    so visually-similar items sit adjacent in the column.
     """
     try:
         from work_buddy.threads.grouping import list_sibling_group_parents
@@ -2524,6 +2594,8 @@ def api_v5_thread_group_siblings(thread_id: str):
                 children = list_render_data(parent_id=s.thread_id, limit=200)
             except Exception:
                 children = []
+            # Reorder for display so similar items cluster visually.
+            children = _linearize_children_for_display(children)
             rendered["children_render"] = children
             out.append(rendered)
         return jsonify({"siblings": out, "parent_id": thread_id})
