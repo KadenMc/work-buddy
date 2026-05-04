@@ -269,7 +269,7 @@ def _group_view_script() -> str:
                 +   '</div>'
                 +   '<div class="threads-v5-group-suggestion-actions">'
                 +     '<button class="threads-v5-group-suggestion-accept" '
-                +       'title="Move first item into the second item\\'s group" '
+                +       'title="Move first item into the second item&#39;s group" '
                 +       'onclick="threadsGroupAcceptSuggestion(\''
                 +         _esc(s.ids[0]) + '\', \'' + _esc(s.ids[1]) + '\', \''
                 +         _esc(key) + '\')">'
