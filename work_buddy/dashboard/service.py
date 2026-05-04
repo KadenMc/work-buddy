@@ -2465,6 +2465,35 @@ def api_v5_thread_move_parent(thread_id: str):
         return jsonify({"error": str(exc)}), 500
 
 
+@app.get("/api/threads/<thread_id>/group_suggestions")
+def api_v5_thread_group_suggestions(thread_id: str):
+    """Stage 5 stretch: cross-group merge suggestions.
+
+    Runs the embedding-fused similarity layer (``journal_backlog.
+    similarity.plan_merges``) over every non-terminal item across
+    every sibling group-parent in the scrape. Returns pairs whose
+    fused score crosses the threshold AND that currently sit in
+    different group-parents — those are the candidate "the system
+    thinks this tab belongs in the other group" suggestions for the
+    side panel.
+
+    Empty list when:
+    - Active thread isn't a group-parent.
+    - Embedding service is unavailable (graceful — toast doesn't
+      fire; the panel just stays empty).
+    - Fewer than 2 cross-group items exceed the threshold.
+    """
+    try:
+        from work_buddy.threads.grouping import suggest_cross_group_merges
+        result = suggest_cross_group_merges(thread_id)
+        return jsonify(result)
+    except Exception as exc:
+        logger.exception(
+            "v5 group_suggestions failed for %s: %s", thread_id, exc,
+        )
+        return jsonify({"suggestions": [], "error": str(exc)}), 500
+
+
 @app.post("/api/threads/<thread_id>/spawn_sibling_group")
 def api_v5_thread_spawn_sibling_group(thread_id: str):
     """Stage 5 stretch: create a new sibling group-parent in the same

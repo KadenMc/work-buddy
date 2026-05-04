@@ -385,6 +385,142 @@ def list_sibling_group_parents(
             conn.close()
 
 
+def suggest_cross_group_merges(
+    parent_id: str,
+    *,
+    threshold: float = 0.55,
+    conn=None,
+) -> dict[str, Any]:
+    """Suggest items that look similar across sibling group-parents.
+
+    Composes the embedding-fused similarity layer from
+    ``work_buddy.journal_backlog.similarity`` over every item under
+    the active scrape (all siblings' children combined). Pairs above
+    ``threshold`` are returned as suggestions; for each pair we
+    annotate the source group(s) so the dashboard can show
+    "[Code] tab X likely belongs with [Research] tab Y" with one
+    click to move.
+
+    Skipped pairs:
+    - Both items already in the same parent (no move needed).
+    - Either item is in a terminal state (already resolved).
+
+    Returns ``{"suggestions": [{...}], "scope": str | None,
+                 "embed_status": str}``.
+
+    Best-effort: if the similarity layer is unavailable the result
+    is ``{"suggestions": []}`` — the side panel just stays empty.
+    """
+    own_conn = conn is None
+    if own_conn:
+        conn = store.get_connection()
+    try:
+        active = store.get_thread(parent_id, conn=conn)
+        if active is None or active.parent_relationship != "group":
+            return {
+                "suggestions": [],
+                "scope": None,
+                "embed_status": "skipped",
+            }
+        scope = active.originating_scrape_id
+        if not scope:
+            return {
+                "suggestions": [],
+                "scope": None,
+                "embed_status": "skipped",
+            }
+        siblings = list_sibling_group_parents(parent_id, conn=conn)
+        # Gather every non-terminal child across all siblings, with
+        # each child's parent annotation.
+        items: list[dict[str, Any]] = []
+        item_to_parent: dict[str, str] = {}
+        item_to_label: dict[str, str] = {}
+        from work_buddy.threads.render import build_render_data
+        for sib in siblings:
+            children = store.list_threads(parent_id=sib.thread_id, conn=conn)
+            for ch in children:
+                if ch.is_terminal:
+                    continue
+                # Build a similarity-friendly segment shape: id +
+                # raw_text. The render dict's title + intent is the
+                # most informative blob we have at this point.
+                rendered = build_render_data(ch.thread_id)
+                if rendered is None:
+                    continue
+                inciting = ch.inciting_event_summary or {}
+                raw = " ".join(filter(None, [
+                    rendered.get("title"),
+                    (rendered.get("intent") or {}).get("text"),
+                    inciting.get("description"),
+                    inciting.get("label"),
+                ]))
+                if not raw.strip():
+                    continue
+                items.append({
+                    "id": ch.thread_id,
+                    "raw_text": raw,
+                })
+                item_to_parent[ch.thread_id] = sib.thread_id
+                item_to_label[ch.thread_id] = (
+                    rendered.get("title") or ch.thread_id
+                )
+        if len(items) < 2:
+            return {
+                "suggestions": [],
+                "scope": scope,
+                "embed_status": "ok",
+            }
+        try:
+            from work_buddy.journal_backlog.similarity import plan_merges
+        except Exception as e:
+            logger.warning(
+                "suggest_cross_group_merges: similarity unavailable (%s); "
+                "no suggestions.", e,
+            )
+            return {
+                "suggestions": [],
+                "scope": scope,
+                "embed_status": "unavailable",
+                "error": str(e),
+            }
+        plan = plan_merges(items, threshold=threshold)
+        suggestions: list[dict[str, Any]] = []
+        for m in plan.get("merges") or []:
+            ids = m.get("ids") or []
+            if len(ids) < 2:
+                continue
+            a, b = ids[0], ids[1]
+            pa = item_to_parent.get(a)
+            pb = item_to_parent.get(b)
+            if pa is None or pb is None:
+                continue
+            # We only surface CROSS-group suggestions in this panel —
+            # within-group similarity is already reflected by the
+            # linearize_threads display order on each column.
+            if pa == pb:
+                continue
+            suggestions.append({
+                "ids": [a, b],
+                "labels": [item_to_label.get(a, a),
+                            item_to_label.get(b, b)],
+                "from_parent": pa,
+                "to_parent": pb,
+                "fused_score": m.get("fused_score"),
+                "embedding_sim": m.get("embedding_sim"),
+                "tag_sim": m.get("tag_sim"),
+                "reason": m.get("reason"),
+            })
+        return {
+            "suggestions": suggestions,
+            "scope": scope,
+            "embed_status": plan.get("embed_status", "ok"),
+            "scanned_items": len(items),
+        }
+    finally:
+        if own_conn:
+            conn.close()
+
+
 def bulk_submit_group(
     parent_id: str,
     *,

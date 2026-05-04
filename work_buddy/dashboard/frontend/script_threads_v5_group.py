@@ -105,6 +105,7 @@ def _group_view_script() -> str:
         // Header — scrape-wide info + selection toolbar.
         const selCount = window._groupState.selected.size;
         let html = '<div class="threads-v5-group-view">'
+            + _renderSuggestionsPanel(activeId)
             +   '<div class="threads-v5-group-header">'
             +     '<div class="threads-v5-group-title">'
             +       _esc(active.title || "Group view")
@@ -219,6 +220,143 @@ def _group_view_script() -> str:
         html += '</div></li>';
         return html;
     }
+
+    // ---- Suggested cross-group merges --------------------------------
+    //
+    // Lazy-fetched from /group_suggestions per active parent_id; cached
+    // in window._groupState.suggestionsByParent. The panel only
+    // appears when there's at least one suggestion. Each suggestion
+    // has Accept / Dismiss buttons:
+    //   Accept → fires move op for the FIRST id in the pair into the
+    //            SECOND id's parent (i.e. follows the system's
+    //            recommendation).
+    //   Dismiss → adds the pair to a session-only "ignored" set so
+    //            the same pair doesn't re-surface this session.
+
+    function _renderSuggestionsPanel(activeId) {
+        const cached = (window._groupState.suggestionsByParent || {})[activeId];
+        if (!cached) {
+            // Trigger lazy fetch on first render. Don't show a
+            // loading shell — suggestions are passive; if they
+            // arrive a beat later, the panel just appears.
+            _fetchSuggestions(activeId);
+            return '';
+        }
+        const ignored = window._groupState.suggestionsIgnored || new Set();
+        const live = (cached.suggestions || []).filter(s => {
+            const key = _suggestionKey(s);
+            return !ignored.has(key);
+        });
+        if (live.length === 0) return '';
+        let html = '<div class="threads-v5-group-suggestions">'
+            + '<div class="threads-v5-group-suggestions-header">'
+            +   'Suggested moves '
+            +   '<span class="threads-v5-group-suggestions-count">'
+            +     '(' + live.length + ')'
+            +   '</span>'
+            + '</div>'
+            + '<ul class="threads-v5-group-suggestions-list">';
+        for (const s of live) {
+            const key = _suggestionKey(s);
+            const score = s.fused_score
+                ? Math.round(s.fused_score * 100) + '%'
+                : '';
+            html += '<li class="threads-v5-group-suggestion">'
+                +   '<div class="threads-v5-group-suggestion-text">'
+                +     _esc(s.labels[0]) + ' &harr; ' + _esc(s.labels[1])
+                +     (score ? ' <span class="threads-v5-group-suggestion-score">'
+                                 + score + '</span>' : '')
+                +   '</div>'
+                +   '<div class="threads-v5-group-suggestion-actions">'
+                +     '<button class="threads-v5-group-suggestion-accept" '
+                +       'title="Move first item into the second item\\'s group" '
+                +       'onclick="threadsGroupAcceptSuggestion(\''
+                +         _esc(s.ids[0]) + '\', \'' + _esc(s.ids[1]) + '\', \''
+                +         _esc(key) + '\')">'
+                +       'Accept &rarr;'
+                +     '</button>'
+                +     '<button class="threads-v5-group-suggestion-dismiss" '
+                +       'title="Hide this suggestion" '
+                +       'onclick="threadsGroupDismissSuggestion(\''
+                +         _esc(key) + '\')">'
+                +       '&times;'
+                +     '</button>'
+                +   '</div>'
+                + '</li>';
+        }
+        html += '</ul></div>';
+        return html;
+    }
+
+    function _suggestionKey(s) {
+        // Order-independent key so accept/dismiss hits the right pair.
+        const ids = (s.ids || []).slice().sort();
+        return ids.join('|');
+    }
+
+    function _fetchSuggestions(activeId) {
+        if (!window._groupState.suggestionsByParent) {
+            window._groupState.suggestionsByParent = {};
+        }
+        // Mark as in-flight so we don't re-fire on every render.
+        window._groupState.suggestionsByParent[activeId] = {
+            suggestions: [],
+            inflight: true,
+        };
+        fetch('/api/threads/' + encodeURIComponent(activeId) + '/group_suggestions')
+            .then(r => r.ok ? r.json() : Promise.reject(r.statusText))
+            .then(data => {
+                window._groupState.suggestionsByParent[activeId] = {
+                    suggestions: data.suggestions || [],
+                };
+                if (typeof window._renderActiveThread === "function"
+                    && (data.suggestions || []).length > 0) {
+                    window._renderActiveThread();
+                }
+            })
+            .catch(err => {
+                // Silent failure — suggestions are passive.
+                window._groupState.suggestionsByParent[activeId] = {
+                    suggestions: [],
+                    error: String(err),
+                };
+            });
+    }
+
+    window.threadsGroupAcceptSuggestion = function (sourceId, targetId, key) {
+        // Mark dismissed first so the panel hides immediately even
+        // if the move call is slow.
+        if (!window._groupState.suggestionsIgnored) {
+            window._groupState.suggestionsIgnored = new Set();
+        }
+        window._groupState.suggestionsIgnored.add(key);
+        // Find the target's parent_id from the rendered DOM (already
+        // there) so the move goes to the right destination column.
+        const targetEl = document.querySelector(
+            '.threads-v5-group-item[data-thread-id="' + targetId + '"]'
+        );
+        if (!targetEl) {
+            // Suggestion stale (e.g., target moved or terminal).
+            window._renderActiveThread && window._renderActiveThread();
+            return;
+        }
+        const destParent = targetEl.dataset.parentId;
+        // Move just this one item; clear any wider selection so we
+        // don't accidentally drag others along.
+        window._groupState.selected.clear();
+        window._groupState.selected.add(sourceId);
+        _moveBatch([sourceId], destParent);
+    };
+
+    window.threadsGroupDismissSuggestion = function (key) {
+        if (!window._groupState.suggestionsIgnored) {
+            window._groupState.suggestionsIgnored = new Set();
+        }
+        window._groupState.suggestionsIgnored.add(key);
+        if (typeof window._renderActiveThread === "function") {
+            window._renderActiveThread();
+        }
+    };
 
     function _renderNewGroupZone(referenceParentId) {
         return '<div class="threads-v5-group-newzone" '
@@ -857,6 +995,96 @@ def _group_view_styles() -> str:
 .threads-v5-group-newzone-icon {
     font-size: 28px;
     line-height: 1;
+}
+
+/* Suggested cross-group merges — passive side panel above the
+ * columns. Cards have Accept (follow the suggestion → move) and
+ * Dismiss (hide for the rest of the session). Suggestions come
+ * from the embedding-fused similarity layer in
+ * journal_backlog.similarity, which we built in PR #75. */
+.threads-v5-group-suggestions {
+    margin-bottom: 14px;
+    background: var(--bg-secondary, #1a1a1a);
+    border: 1px solid var(--border, #333);
+    border-left: 3px solid #c0a040;  /* warm yellow → "tip" */
+    border-radius: 6px;
+    padding: 10px 12px;
+}
+.threads-v5-group-suggestions-header {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-muted, #aaa);
+    margin-bottom: 6px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+.threads-v5-group-suggestions-count {
+    color: var(--text-muted, #888);
+    font-weight: 400;
+}
+.threads-v5-group-suggestions-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+.threads-v5-group-suggestion {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 4px 6px;
+    border-radius: 4px;
+    font-size: 12px;
+}
+.threads-v5-group-suggestion:hover {
+    background: var(--bg-tertiary, #232323);
+}
+.threads-v5-group-suggestion-text {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.threads-v5-group-suggestion-score {
+    color: var(--text-muted, #888);
+    font-size: 11px;
+    margin-left: 6px;
+}
+.threads-v5-group-suggestion-actions {
+    flex: 0 0 auto;
+    display: flex;
+    gap: 4px;
+}
+.threads-v5-group-suggestion-accept {
+    background: transparent;
+    color: var(--accent, #4a7fc1);
+    border: 1px solid var(--accent, #4a7fc1);
+    border-radius: 3px;
+    padding: 2px 8px;
+    font-size: 11px;
+    cursor: pointer;
+}
+.threads-v5-group-suggestion-accept:hover {
+    background: var(--accent, #4a7fc1);
+    color: white;
+}
+.threads-v5-group-suggestion-dismiss {
+    background: transparent;
+    color: var(--text-muted, #888);
+    border: 1px solid transparent;
+    border-radius: 3px;
+    padding: 2px 8px;
+    font-size: 14px;
+    cursor: pointer;
+    line-height: 1;
+}
+.threads-v5-group-suggestion-dismiss:hover {
+    color: var(--text, #ddd);
+    border-color: var(--border, #333);
 }
 
 .threads-v5-group-help {

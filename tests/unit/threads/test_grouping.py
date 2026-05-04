@@ -369,3 +369,43 @@ class TestSpawnSiblingGroup:
         with pytest.raises(grouping.MoveValidationError) as exc:
             grouping.spawn_sibling_group("nope")
         assert exc.value.reason == "reference_not_group"
+
+
+# ---------------------------------------------------------------------------
+# suggest_cross_group_merges
+# ---------------------------------------------------------------------------
+
+
+class TestCrossGroupSuggestions:
+    def test_returns_empty_for_decompose_parent(self, fresh_db):
+        d = _make_decompose_parent()
+        result = grouping.suggest_cross_group_merges(d.thread_id)
+        assert result["suggestions"] == []
+        assert result["embed_status"] == "skipped"
+
+    def test_returns_empty_when_scope_missing(self, fresh_db):
+        g = models.Thread(
+            fsm_state=FSMState.MONITORING,
+            parent_relationship="group",
+            originating_scrape_id=None,
+        )
+        store.insert_thread(g)
+        result = grouping.suggest_cross_group_merges(g.thread_id)
+        assert result["suggestions"] == []
+
+    def test_returns_empty_when_fewer_than_two_items(self, fresh_db):
+        g = _make_group_parent("scrape-A")
+        result = grouping.suggest_cross_group_merges(g.thread_id)
+        assert result["suggestions"] == []
+
+    def test_skips_within_group_pairs(self, fresh_db):
+        # When two items are in the SAME group, no suggestion should
+        # surface — within-group similarity is conveyed by display
+        # ordering, not by a "move" suggestion.
+        g1 = _make_group_parent("scrape-A")
+        c1 = _make_child(g1)
+        c2 = _make_child(g1)
+        # Same-group; no cross-group suggestions possible.
+        result = grouping.suggest_cross_group_merges(g1.thread_id)
+        for s in result.get("suggestions", []):
+            assert s["from_parent"] != s["to_parent"]
