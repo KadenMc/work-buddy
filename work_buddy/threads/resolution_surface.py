@@ -1,11 +1,11 @@
 """ResolutionRequest publisher — bridges the FSM to the dashboard.
 
-Stage 2.5 deliverable. When the FSM transitions a Thread into a
+When the FSM transitions a Thread into a
 wait state (any ``awaiting_*``), this module publishes a
 ResolutionRequest as a workflow-view Notification carrying the
 Stage-1.9 Resolution Surface payload (``type='resolution_request'``).
 
-The frontend (``script_resolution_surface_v5.py``) renders the
+The frontend (``script_resolution_surface.py``) renders the
 matching card kind based on payload.card_kind.
 
 Wiring

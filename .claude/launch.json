@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "wb-dashboard",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["-e", "setInterval(()=>{}, 1000); console.log('keepalive for sidecar dashboard on 5127')"],
+      "port": 5127
+    }
+  ]
+}

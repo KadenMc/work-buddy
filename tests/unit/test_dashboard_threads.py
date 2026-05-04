@@ -224,13 +224,16 @@ class TestRunCapabilityEndpoint:
         assert "not exposed to the dashboard" in body["error"].lower() \
             or "not exposed" in body["error"].lower()
 
-    def test_journal_v5_scan_is_in_allowlist(self):
-        """Whitelist regression: ``journal_v5_scan`` must remain
-        in the allowlist; the empty-state CTA depends on it."""
+    def test_run_source_pipeline_is_in_allowlist(self):
+        """Allowlist regression: ``run_source_pipeline`` must remain
+        in the allowlist; the empty-state CTA depends on it. (Replaces
+        the old ``journal_v5_scan`` allowlist entry which was removed
+        when the unified pipeline rebuild collapsed per-source scan
+        capabilities into one.)"""
         from work_buddy.dashboard.service import (
             _DASHBOARD_RUNNABLE_CAPABILITIES,
         )
-        assert "journal_v5_scan" in _DASHBOARD_RUNNABLE_CAPABILITIES
+        assert "run_source_pipeline" in _DASHBOARD_RUNNABLE_CAPABILITIES
 
 
 # ---------------------------------------------------------------------------
@@ -260,3 +263,37 @@ class TestRiskHighlightInList:
         match = [x for x in threads if x["thread_id"] == t.thread_id]
         assert match
         assert match[0]["risk_highlight"] == "high"
+
+
+# ---------------------------------------------------------------------------
+# Stage 5 grouping endpoints
+# ---------------------------------------------------------------------------
+
+
+def _make_group_parent(scope: str = "scrape-A"):
+    from work_buddy.threads.enums import FSMState
+    t = Thread(
+        fsm_state=FSMState.MONITORING,
+        parent_relationship="group",
+        originating_scrape_id=scope,
+    )
+    store.insert_thread(t)
+    return t
+
+
+def _make_child_under(parent, fsm_state="awaiting_confirmation"):
+    from work_buddy.threads.enums import FSMState
+    state = fsm_state if isinstance(fsm_state, FSMState) else FSMState(fsm_state)
+    c = Thread(parent_id=parent.thread_id, fsm_state=state)
+    store.insert_thread(c)
+    return c
+
+
+# NOTE: ``TestMoveParentEndpoint``, ``TestGroupSiblingsEndpoint``,
+# ``TestGroupSubmitEndpoint`` were removed during the unified
+# source-pipeline rebuild. The endpoints they covered
+# (``/move_parent``, ``/group_siblings``, ``/group_submit``) were
+# replaced earlier by ``/move_item``, ``/groups``, ``/approve_all``;
+# tests for those new endpoints live in the per-feature test
+# modules under ``tests/unit/threads/`` (group ops) and
+# ``tests/unit/pipelines/`` (pipeline-level integration).

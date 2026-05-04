@@ -1,11 +1,10 @@
 {
   "threads": {
     "kind": "system",
-    "name": "Threads (v5 universal-entity primitive)",
-    "description": "The Thread is the universal entity for 'context that may need an action' in v5. Replaces v4's PoolEntry (folded into states) and ActionItem (folded into sub-Threads). Task survives as a subclass.",
+    "name": "Threads — universal-entity primitive",
+    "description": "The Thread is the universal entity for 'context that may need an action'. Replaces the older split between PoolEntry (now folded into states) and ActionItem (now folded into sub-Threads). Task survives as a subclass.",
     "tags": [
       "threads",
-      "v5",
       "fsm",
       "resolution",
       "core"
@@ -17,7 +16,8 @@
       "threads/llm-call-queue",
       "threads/action-catalog",
       "threads/autonomy",
-      "threads/aggregator"
+      "threads/aggregator",
+      "threads/grouping"
     ],
     "content": {
       "summary": "v5 collapses v4's overlapping entities into one primitive: Thread. A Thread has FSM state, an event log, an autonomy policy, optional parent_id (for sub-threads), optional subtype ('task' for the master-list contract). Stage 1: types frozen, schemas migrated, scaffolding in place. Stage 2 wires the engine. Stage 3 migrates v4 data. Stage 4 redesigns surfaces.",
@@ -31,8 +31,7 @@
     "tags": [
       "threads",
       "fsm",
-      "resolution",
-      "v5"
+      "resolution"
     ],
     "parents": [
       "threads"
@@ -49,8 +48,7 @@
     "tags": [
       "threads",
       "resolution",
-      "execution",
-      "v5"
+      "execution"
     ],
     "parents": [
       "threads"
@@ -67,8 +65,7 @@
     "tags": [
       "threads",
       "events",
-      "audit",
-      "v5"
+      "audit"
     ],
     "parents": [
       "threads"
@@ -86,7 +83,6 @@
       "threads",
       "llm",
       "queue",
-      "v5",
       "infrastructure"
     ],
     "parents": [
@@ -104,8 +100,7 @@
     "tags": [
       "threads",
       "actions",
-      "catalog",
-      "v5"
+      "catalog"
     ],
     "parents": [
       "threads"
@@ -121,8 +116,7 @@
     "description": "Per-Thread policy composed from orthogonal axes. Saved compositions are configuration, not types. Sub-threads override DOWN axis-by-axis only. Stage 5 wired the runtime — auto-advance branch resolvers gate every INFERRING_* → AWAITING_*_CONFIRMATION transition.",
     "tags": [
       "threads",
-      "autonomy",
-      "v5"
+      "autonomy"
     ],
     "parents": [
       "threads"
@@ -134,12 +128,11 @@
   },
   "threads/aggregator": {
     "kind": "system",
-    "name": "Aggregator (read-only synthesis of v4 entities as v5 Threads)",
-    "description": "Lets v5 query paths see v4 task_metadata / task_action_items / ClarifyPool data without a migration. Stage 3 cutover replaces this with real migrated rows.",
+    "name": "Aggregator — read-only synthesis of legacy entities as Threads",
+    "description": "Lets Thread query paths see legacy task_metadata / task_action_items / ClarifyPool data without a migration. Cutover by replacing this with real migrated rows.",
     "tags": [
       "threads",
       "aggregator",
-      "v5",
       "migration"
     ],
     "parents": [
@@ -149,5 +142,36 @@
       "summary": "Read-only. Maps v4 tasks → Task(Thread), action items → sub-Threads, ClarifyPool entries → Threads in awaiting_intent_confirmation. ID prefixes (agg-task-, agg-ai-, agg-pool-) make synthesised threads distinguishable from real v5 threads.",
       "full": "Located at ``work_buddy/threads/aggregator.py``. Public API: ``list_threads_aggregated``, ``get_thread_aggregated``, ``aggregator_summary``. State mappings:\n\n- task ``inbox`` → PROPOSED; ``focused``/``mit`` → AWAITING_CONFIRMATION; ``done`` or archived → DONE; ``snoozed`` → AWAITING_REDIRECT.\n- action item ``pending`` → AWAITING_CONFIRMATION; ``in_progress`` → EXECUTING; ``done`` → DONE; ``skipped`` → DISMISSED.\n- pool entry ``pending`` → AWAITING_INTENT_CONFIRMATION; ``reviewed`` (approved) → DONE; everything else → DISMISSED.\n\nDual-schema authorship handling: prefers post-PR-70 ``authorship`` enum if present; falls back to deriving from ``user_authored`` + ``approved_at`` columns. The aggregator works against both shapes."
     }
+  },
+  "threads/grouping": {
+    "name": "Threads — group-relationship pattern",
+    "kind": "system",
+    "description": "Parent-child relationship pattern alongside 'decompose'. Group umbrellas hold N group sub-threads; each child carries its items as ContextItems and supports per-cluster actions (close-tabs, route-to-tasks, etc.) proposed by the shared LLM cluster-refinement step. Drag-and-drop moves items between sibling children.",
+    "parents": [
+      "threads"
+    ],
+    "children": [],
+    "tags": [
+      "grouping",
+      "chrome-scrape",
+      "drag-and-drop"
+    ],
+    "aliases": [
+      "group-parent",
+      "group view",
+      "parent_relationship",
+      "drag and drop sub-thread",
+      "move_thread_to_parent",
+      "originating_scrape_id",
+      "sibling group"
+    ],
+    "content": {
+      "summary": "Stage 5 introduces a second parent-child pattern. Decompose (Stage 4 default): parent has an action, children FSM-execute, cascade-on-terminal advances parent to DONE. Group (new): parent is a container; items can move between sibling parents (same originating_scrape_id); empty parent auto-DISMISSES. Currently used by Chrome scrape (one parent per Louvain cluster).",
+      "full": "## Two relationship patterns\n\n**Decompose** (Stage 4 default, parent_relationship='decompose'):\n\n- Parent has its own action (the canonical example: 'decompose' fanout).\n- Children each carry an action_inferred event and FSM-execute independently.\n- Cascade-on-terminal: parent advances to DONE when ALL children are terminal (work_buddy/threads/decompose.py:cascade_terminal_to_parent).\n- Moving sub-threads between decompose-parents is semantically nonsense -- the move endpoint rejects it with reason='source_not_group'.\n\n**Group** (Stage 5, parent_relationship='group'):\n\n- Parent is a container; no action of its own.\n- Items can move between sibling group-parents via grouping.move_thread_to_parent(thread_id, new_parent_id).\n- 'Sibling' = group-parents sharing the same originating_scrape_id. The move endpoint rejects cross-scope moves to prevent yesterday's items leaking into today's groups.\n- Cascade extension: when an item moves OUT, cascade_after_item_moved checks the OLD parent. If it has 0 children remaining, the parent auto-DISMISSES. The original 'all terminal -> DONE' cascade still fires if every remaining child reaches terminal naturally.\n- Group-parents start in MONITORING immediately on spawn; they skip the inference walk that decompose-parents go through.\n\n## Audit trail: KIND_ITEM_MOVED\n\nEach move records two paired events sharing a migration_id -- one on the old parent (direction='outgoing') and one on the new parent (direction='incoming'). Data: item_id, from_parent, to_parent, originating_scrape_id, direction. Use migration_id to correlate the two halves when reconstructing history.\n\n## Frontend\n\nWhen a group-parent is the active thread, the dashboard renders the multi-column group view (script_threads_v5_group.py) instead of the standard single-card layout. The dispatcher at script_threads_v5.renderThreadDetail checks thread.parent_relationship === 'group'.\n\nAffordances:\n\n- Drag any item onto another column -> moves it (and any multi-selection) into that group.\n- Drop on the '+' new-group zone -> spawns a fresh sibling group via POST /api/threads/<id>/spawn_sibling_group and moves the selection into it.\n- 'Submit all (N)' on each column -> bulk-accepts every awaiting_confirmation child via POST /group_submit.\n- Multi-select: shift-click for range, ctrl/cmd-click for toggle, x to toggle the keyboard-focused item, Shift-j/k to extend selection (j=up, k=down), m to open a numbered move-to prompt.\n- Suggested cross-group merges: a passive panel above the columns lists pairs the embedding-fused similarity layer (journal_backlog.similarity.plan_merges) thinks belong together. Each suggestion has Accept (apply the move) and Dismiss (hide for the session).\n\n## Backend module map\n\n- work_buddy/threads/grouping.py -- move_thread_to_parent, list_sibling_group_parents, bulk_submit_group, spawn_sibling_group, suggest_cross_group_merges.\n- work_buddy/threads/decompose.py -- cascade_after_item_moved (auto-DISMISS hook fired by the move op).\n- work_buddy/threads/source_pipelines.py::spawn_threads_from_chrome_scrape -- spawns one group-parent per cluster when given a cluster manifest; falls back to the legacy single-decompose-parent shape when use_grouping=False or no clusters supplied.\n- work_buddy/threads/store.py:_migrate_stage_5 -- adds parent_relationship + originating_scrape_id columns + partial index on the latter.\n- Endpoints (in work_buddy/dashboard/service.py): POST /move_parent, POST /group_submit, POST /spawn_sibling_group, GET /group_siblings, GET /group_suggestions.\n\n## Currently active pipelines\n\n- **Chrome scrape**: spawns N group-parents (one per Louvain cluster from clarify/cluster.py); leftover unclustered tabs fall into a synthetic 'Ungrouped' sibling.\n- **Journal scan**: stays decompose. Mis-segmentations are caught by the spawn-time similarity-merge layer (journal_backlog/similarity.py, PR #75). Whether journal scan should also become a group pipeline is an open follow-up.\n"
+    },
+    "context_before": [],
+    "context_after": [],
+    "dev_notes": "## Implementation patterns\n\n**Move op runs OUTSIDE the FSM engine.** parent_id is a cache field, not an FSM state. The move op is a direct update_thread_state(parent_id=...) call followed by paired KIND_ITEM_MOVED events on both old and new parent. The cascade is the one piece of FSM activity it triggers (auto-DISMISS via engine.transition(TRIG_DISMISSED_BY_USER)).\n\n**Validation is centralised in _validate_move.** Every MoveValidationError carries a stable reason string the frontend uses to show targeted toasts. Reasons: destination_not_found, destination_not_group, source_orphan, source_not_group, missing_scrape_scope, scope_mismatch, same_parent, item_not_found.\n\n**Sibling discovery via partial index.** idx_threads_originating_scrape is WHERE originating_scrape_id IS NOT NULL so it stays small even on a DB with thousands of decompose-parents.\n\n**Default parent_relationship is 'decompose' everywhere.** All existing data + every existing test fixture gets the legacy behaviour. group is opt-in at spawn time only -- there's no API to convert a decompose-parent into a group-parent or vice versa, by design.\n\n**Group-parents skip the standard render's confirmation card.** script_threads_v5.renderThreadDetail dispatches on parent_relationship; if 'group', it calls renderGroupView from script_threads_v5_group.py instead.\n\n**Multi-select state lives on window._groupState.selected** (a Set), survives morphdom re-renders because it's not in the DOM. The render reads from the Set to apply .selected classes so visual state recovers after every render.\n\n**The 'Ungrouped' sibling is synthetic.** When a Chrome scrape's cluster manifest leaves some tabs unreferenced, _spawn_chrome_scrape_grouped synthesises one extra group-parent labeled 'Ungrouped' so nothing is silently dropped. It's a normal sibling otherwise -- items can move into and out of it freely.\n\n**originating_scrape_id defaults to a uuid hex** if the caller doesn't supply scrape_id. Callers that want to correlate external state (Chrome capture id, etc.) should pass scrape_id explicitly so the value is meaningful.\n",
+    "scope": "system"
   }
 }

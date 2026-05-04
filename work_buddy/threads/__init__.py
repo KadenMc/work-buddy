@@ -31,7 +31,7 @@ Modules in this package
                   AutonomyPolicy, Proposal.
 - ``events``   — ThreadEvent, event-kind catalog, OptimisticLockConflict.
 - ``fsm``      — TRANSITION_TABLE (DESIGN.md §7.6) plus lookup
-                  helpers. Stage 1 ships data only; the engine
+                  helpers. This module ships data only; the engine
                   wiring lands in Stage 2.
 
 Module boundaries (load-bearing)

@@ -1,6 +1,6 @@
 """Sub-thread spawning + decompose Standard Action.
 
-Stage 2.8 deliverable. Per DESIGN.md §5.4 + §10.5:
+Per DESIGN.md §5.4 + §10.5:
 
 - A Thread can spawn sub-threads via the ``decompose`` Standard
   Action. Sub-threads have ``parent_id`` set; the same Thread
@@ -26,7 +26,7 @@ Public API
 - ``force_close_parent(thread_id, *, actor)`` — closes the parent
   and cascades parent_force_close to live children.
 
-Stage 2.8 ships the spawn + cascade mechanics. Wiring decompose
+This module ships the spawn + cascade mechanics. Wiring decompose
 as a callable Standard Action in the registry (so action
 inference can propose it) lands in Stage 2.x as the catalog
 grows.
@@ -47,7 +47,7 @@ from work_buddy.threads.events import (
     ThreadEvent,
 )
 from work_buddy.threads.fsm import (
-    TRIG_DISMISSED_BY_USER,
+    TRIG_DISMISSED_BY_USER,  # used by force_close_parent
     TRIG_EXECUTION_DONE,
     TRIG_PARENT_FORCE_CLOSE,
 )
@@ -184,7 +184,7 @@ def decompose_thread(
             conn=conn,
         )
 
-        # Stage 4.7: write-time linearization. Compute the semantic
+        # write-time linearization. Compute the semantic
         # order across the spawned children and persist
         # ``order_index`` on each. Per UX.md §8.2, this is the only
         # write-side trigger; render-time NEVER recomputes.
@@ -203,9 +203,9 @@ def decompose_thread(
         # decomposed sub-threads dead-end the same way top-level
         # threads did before _kickoff_inference was added.
         try:
-            from work_buddy.threads.source_pipelines import _kickoff_inference
+            from work_buddy.threads.kickoff import kickoff_inference
             for cid in child_ids:
-                _kickoff_inference(cid)
+                kickoff_inference(cid)
         except Exception as e:
             logger.warning(
                 "Sub-thread kickoff after decompose failed: %s; "
@@ -232,6 +232,13 @@ def cascade_terminal_to_parent(
     Returns the parent's resulting state value if a transition
     fired, or None if no parent / parent isn't monitoring / not
     all children terminal yet.
+
+    for group-relationship umbrella parents the cascade
+    still fires "all terminal → DONE" (an umbrella whose every group
+    child has been accepted/dismissed/handed-off has also achieved
+    its purpose). v2 doesn't have an empty-group auto-DISMISS — empty
+    group sub-threads stay visible with a manual X-button delete (see
+    ``threads.group.delete_group_subthread``).
 
     Wired via engine.register_state_entry_handler on each terminal
     state in Stage 2.9 bootstrap.
@@ -288,6 +295,15 @@ def cascade_terminal_to_parent(
     finally:
         if own_conn:
             conn.close()
+
+
+# NOTE: ``cascade_after_item_moved`` (auto-DISMISS empty group on
+# thread-level move) was removed in the v2 group rework. Items now
+# move at ContextItem granularity (``threads.group.move_item``); empty
+# group sub-threads stay visible by design with a manual X-button
+# delete (see ``threads.group.delete_group_subthread``). Threads still
+# auto-advance via :func:`cascade_terminal_to_parent` when all
+# children reach a terminal state.
 
 
 def cascade_handler(transition_result) -> None:

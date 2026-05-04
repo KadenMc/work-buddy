@@ -5,7 +5,7 @@ Visual + local-state only — backend wiring lands in Stage 4.3.
 
 Exposed:
 - ``window.renderConfirmationCard(threadData)`` — returns HTML for
-  the card. Used by ``renderThreadDetail`` (in script_threads_v5.py).
+  the card. Used by ``renderThreadDetail`` (in script_threads.py).
 - ``window.threadCardState`` — per-card local state (X-flags, edits,
   focused element). Persists in-page until card refresh.
 
@@ -33,7 +33,7 @@ The card data shape (mocked in 4.2; real backend in 4.3):
 from __future__ import annotations
 
 
-def _threads_v5_card_script() -> str:
+def _threads_card_script() -> str:
     return r"""
 // ===========================================================================
 // Stage 4.2 — Confirmation card layout (visual only)
@@ -170,7 +170,7 @@ def _threads_v5_card_script() -> str:
         // No re-render — the user is typing
     };
 
-    // Public helper — the commit handler in script_threads_v5.py
+    // Public helper — the commit handler in script_threads.py
     // calls this to assemble the request body for /api/threads/<id>/accept.
     // Returns ``null`` if there are no edits (so we don't pollute
     // the request).
@@ -191,7 +191,7 @@ def _threads_v5_card_script() -> str:
 
     window.renderConfirmationCard = function renderConfirmationCard(thread) {
         if (!thread) {
-            return '<div class="threads-v5-card-empty">No thread loaded.</div>';
+            return '<div class="threads-card-empty">No thread loaded.</div>';
         }
         // Dispatch by card_kind (Stage 4.5 — UX.md §4.2).
         // Defaults to 'confirmation' for backward compatibility.
@@ -213,8 +213,8 @@ def _threads_v5_card_script() -> str:
         // show an X to clear focus and return to full-width body.
         const focused = !!s.focusedId;
 
-        let html = '<div class="threads-v5-card threads-v5-kind-' + kind
-                 + (focused ? ' threads-v5-with-right-pane' : ' threads-v5-full-width')
+        let html = '<div class="threads-card threads-kind-' + kind
+                 + (focused ? ' threads-with-right-pane' : ' threads-full-width')
                  + '" '
                  + 'data-thread-id="' + _esc(thread.thread_id) + '">';
 
@@ -223,8 +223,8 @@ def _threads_v5_card_script() -> str:
             html += _renderRiskBanner(thread);
         }
 
-        html += '<div class="threads-v5-card-body">';
-        html += '<div class="threads-v5-card-left">';
+        html += '<div class="threads-card-body">';
+        html += '<div class="threads-card-left">';
         html += _renderHeader(thread);
         html += _renderIntentSection(thread, s);
         html += _renderContextSection(thread, s);
@@ -233,8 +233,8 @@ def _threads_v5_card_script() -> str:
         html += _renderSubThreadsLink(thread);
         html += '</div>';
         if (focused) {
-            html += '<div class="threads-v5-card-right">';
-            html += '<button class="threads-v5-right-close" '
+            html += '<div class="threads-card-right">';
+            html += '<button class="threads-right-close" '
                   +   'title="Close editor (Esc)" '
                   +   'onclick="threadCardFocus(\'' + _esc(thread.thread_id) + '\', null)">'
                   +   _icon("x") + '</button>';
@@ -279,7 +279,7 @@ def _threads_v5_card_script() -> str:
         }
         if (riskBits.length === 0) return '';
         return (
-            '<div class="threads-v5-risk-banner">'
+            '<div class="threads-risk-banner">'
             + _icon("alert-triangle")
             + ' <strong>Consent gate:</strong> '
             + 'high-impact action — ' + _esc(riskBits.join(', '))
@@ -329,28 +329,28 @@ def _threads_v5_card_script() -> str:
         const risk = thread.risk_highlight;
         let riskPill = '';
         if (risk === "high") {
-            riskPill = '<span class="threads-v5-risk-pill high">HIGH RISK</span>';
+            riskPill = '<span class="threads-risk-pill high">HIGH RISK</span>';
         } else if (risk === "medium") {
-            riskPill = '<span class="threads-v5-risk-pill medium">MEDIUM RISK</span>';
+            riskPill = '<span class="threads-risk-pill medium">MEDIUM RISK</span>';
         } else if (risk === "low") {
-            riskPill = '<span class="threads-v5-risk-pill low">LOW RISK</span>';
+            riskPill = '<span class="threads-risk-pill low">LOW RISK</span>';
         }
         // Relative timestamp — "5m ago" / "just now" / "2h ago".
         // Derived from latest_activity (most recent event ts).
         const ts = thread.latest_activity
-            ? '<span class="threads-v5-timestamp" '
+            ? '<span class="threads-timestamp" '
               + 'title="' + _esc(thread.latest_activity) + '">'
               + _relativeTime(thread.latest_activity) + '</span>'
             : '';
         return (
-            '<div class="threads-v5-card-header">'
-            + '<div class="threads-v5-card-title">'
+            '<div class="threads-card-header">'
+            + '<div class="threads-card-title">'
             +   _esc(thread.title || thread.thread_id)
             + '</div>'
-            + '<div class="threads-v5-card-meta">'
-            +   '<span class="threads-v5-state">' + _esc(stateLabel) + '</span>'
+            + '<div class="threads-card-meta">'
+            +   '<span class="threads-state">' + _esc(stateLabel) + '</span>'
             +   (urgent
-                    ? '<span class="threads-v5-urgency-pill high">SURFACE NOW</span>'
+                    ? '<span class="threads-urgency-pill high">SURFACE NOW</span>'
                     : '')
             +   riskPill
             +   ts
@@ -398,7 +398,7 @@ def _threads_v5_card_script() -> str:
             return _esc(tgt + conf);
         });
         return (
-            '<div class="threads-v5-auto-advance" '
+            '<div class="threads-auto-advance" '
             +   'title="The agent auto-advanced past these stages '
             +     'because confidence was sufficient and the policy '
             +     'allowed it.">'
@@ -427,18 +427,18 @@ def _threads_v5_card_script() -> str:
         const flagged = s.flagged.has("intent");
         const tid = _esc(thread.thread_id);
         return (
-            '<div class="threads-v5-section">'
-            + '<div class="threads-v5-section-label">Intent'
+            '<div class="threads-section">'
+            + '<div class="threads-section-label">Intent'
             +   _confidenceBadge(conf)
             + '</div>'
-            + '<div class="threads-v5-item threads-v5-intent-item'
-            +   (flagged ? ' threads-v5-flagged' : '') + '">'
-            +   '<div class="threads-v5-item-label threads-v5-intent">'
+            + '<div class="threads-item threads-intent-item'
+            +   (flagged ? ' threads-flagged' : '') + '">'
+            +   '<div class="threads-item-label threads-intent">'
             +     _esc(editedText)
             +   '</div>'
-            +   '<div class="threads-v5-item-actions">'
+            +   '<div class="threads-item-actions">'
             +     _flagBtn(thread.thread_id, "intent", flagged)
-            +     '<button class="threads-v5-edit-btn" '
+            +     '<button class="threads-edit-btn" '
             +       'title="Edit intent" '
             +       'onclick="threadCardFocus(\'' + tid + '\', \'intent\')">'
             +       _icon("edit")
@@ -459,7 +459,7 @@ def _threads_v5_card_script() -> str:
         let cls = "low";
         if (conf >= 0.8) cls = "high";
         else if (conf >= 0.5) cls = "medium";
-        return ' <span class="threads-v5-confidence ' + cls + '" '
+        return ' <span class="threads-confidence ' + cls + '" '
              + 'title="Agent self-reported confidence">'
              + pct + '%</span>';
     }
@@ -469,42 +469,54 @@ def _threads_v5_card_script() -> str:
         const ctxConf = thread.context && thread.context.confidence;
         if (items.length === 0) {
             return (
-                '<div class="threads-v5-section">'
-                + '<div class="threads-v5-section-label">Context (none inferred)'
+                '<div class="threads-section">'
+                + '<div class="threads-section-label">Context (none inferred)'
                 +   _confidenceBadge(ctxConf)
                 + '</div>'
                 + '</div>'
             );
         }
-        let html = '<div class="threads-v5-section">';
-        html += '<div class="threads-v5-section-label">Context ('
+        let html = '<div class="threads-section">';
+        html += '<div class="threads-section-label">Context ('
               + items.length + ')'
               + _confidenceBadge(ctxConf)
               + '</div>';
-        html += '<ul class="threads-v5-list">';
+        html += '<ul class="threads-list">';
         for (const ci of items) {
             const flagged = s.flagged.has(ci.id);
-            html += '<li class="threads-v5-item'
-                  + (flagged ? ' threads-v5-flagged' : '') + '">';
-            html += '<div class="threads-v5-item-label">'
+            const tid = _esc(thread.thread_id);
+            const cid = _esc(ci.id);
+            // The whole ``<li>`` is the click target — clicking the
+            // card opens the right-pane inspector. Inner action
+            // buttons (flag / chevron) call event.stopPropagation so
+            // they don't double-fire the inspector open. The chevron
+            // is kept for visual affordance but is now redundant
+            // with the card click.
+            html += '<li class="threads-item threads-item-clickable'
+                  + (flagged ? ' threads-flagged' : '') + '" '
+                  + 'role="button" tabindex="0" '
+                  + 'title="Click to expand for full context-item details" '
+                  + 'onclick="threadCardFocus(\'' + tid + '\', \'' + cid + '\')" '
+                  + 'onkeydown="if(event.key===\'Enter\'||event.key===\' \''
+                  + '){event.preventDefault();'
+                  + 'threadCardFocus(\'' + tid + '\', \'' + cid + '\')}">';
+            html += '<div class="threads-item-label">'
                   + _esc(ci.label || ci.id) + '</div>';
-            html += '<div class="threads-v5-item-source">'
+            html += '<div class="threads-item-source">'
                   + _esc(ci.source || "") + (ci.type ? " · " + _esc(ci.type) : "")
                   + '</div>';
-            html += '<div class="threads-v5-item-actions">';
+            html += '<div class="threads-item-actions" '
+                  + 'onclick="event.stopPropagation()">';
+            // _flagBtn already stops propagation in its onclick;
+            // wrapping the actions div is belt-and-braces so any
+            // future inline action button doesn't accidentally
+            // double-fire the card click.
             html += _flagBtn(thread.thread_id, ci.id, flagged);
-            // 2026-05-03: context items are VIEW-ONLY in the right
-            // pane (the inspector pretty-prints fields, no edit
-            // form). Keep the right-pane drill-in but render it
-            // with an expand-arrow chevron so the affordance reads
-            // as "see more" rather than the misleading "Edit" the
-            // user noticed. Tooltip and aria-label spell it out.
-            html += '<button class="threads-v5-edit-btn threads-v5-expand-btn" '
-                  + 'title="Expand for full context-item details" '
-                  + 'aria-label="Expand context item" '
-                  + 'onclick="threadCardFocus(\'' + _esc(thread.thread_id) + '\', \''
-                  + _esc(ci.id) + '\')">'
-                  + _icon("chevron-right") + '</button>';
+            // Chevron stays as a visual hint that the card opens
+            // an inspector. It used to be the only click target;
+            // now it's redundant but inexpensive.
+            html += '<span class="threads-expand-hint" aria-hidden="true">'
+                  + _icon("chevron-right") + '</span>';
             html += '</div>';
             html += '</li>';
         }
@@ -517,8 +529,8 @@ def _threads_v5_card_script() -> str:
         const actions = thread.actions || [];
         if (actions.length === 0) {
             return (
-                '<div class="threads-v5-section">'
-                + '<div class="threads-v5-section-label">Actions (none inferred)</div>'
+                '<div class="threads-section">'
+                + '<div class="threads-section-label">Actions (none inferred)</div>'
                 + '</div>'
             );
         }
@@ -534,31 +546,31 @@ def _threads_v5_card_script() -> str:
             'done_cleanup_successful', 'done_cleanup_unsuccessful',
         ]);
         const actionPerformed = POST_ACTION_STATES.has(thread.fsm_state);
-        let html = '<div class="threads-v5-section">';
-        html += '<div class="threads-v5-section-label">Actions ('
+        let html = '<div class="threads-section">';
+        html += '<div class="threads-section-label">Actions ('
               + actions.length + ')</div>';
-        html += '<ul class="threads-v5-list">';
+        html += '<ul class="threads-list">';
         for (const a of actions) {
             const flagged = s.flagged.has(a.id);
             const blocked = !!a.context_blocked;
-            html += '<li class="threads-v5-item'
-                  + (flagged ? ' threads-v5-flagged' : '')
-                  + (blocked ? ' threads-v5-ctx-blocked' : '') + '">';
+            html += '<li class="threads-item'
+                  + (flagged ? ' threads-flagged' : '')
+                  + (blocked ? ' threads-ctx-blocked' : '') + '">';
             // Action label: kind icon + name + small kind chip
             // (so the user sees both "Research..." and that it's
             // an improvised plan, not a Standard Action).
             const kindChip = a.kind
-                ? ' <span class="threads-v5-kind-chip ' + _esc(a.kind) + '">'
+                ? ' <span class="threads-kind-chip ' + _esc(a.kind) + '">'
                   + _esc(a.kind) + '</span>'
                 : '';
-            html += '<div class="threads-v5-item-label">'
+            html += '<div class="threads-item-label">'
                   + _kindIcon(a.kind, a.name) + ' ' + _esc(a.name || a.id)
                   + kindChip
                   + _confidenceBadge(a.confidence)
                   + '</div>';
             const summary = a.plan_summary || _summariseParams(a.parameters);
             if (summary) {
-                html += '<div class="threads-v5-item-summary">'
+                html += '<div class="threads-item-summary">'
                       + _esc(summary) + '</div>';
             }
             // Risk metadata disclosure — declared by the agent for
@@ -574,8 +586,8 @@ def _threads_v5_card_script() -> str:
                 const cls = (a.irreversibility === "high"
                              || a.regret_potential === "high"
                              || a.risk_amplifier === true)
-                    ? 'threads-v5-risk-row threads-v5-risk-high'
-                    : 'threads-v5-risk-row';
+                    ? 'threads-risk-row threads-risk-high'
+                    : 'threads-risk-row';
                 html += '<div class="' + cls + '" '
                       + 'title="Risk metadata declared by the agent">'
                       + _icon("alert-circle") + ' '
@@ -585,13 +597,13 @@ def _threads_v5_card_script() -> str:
             // Show the agent's rationale inline if present (helpful
             // for improvised actions the user might want to redirect).
             if (a.rationale) {
-                html += '<div class="threads-v5-item-rationale">'
+                html += '<div class="threads-item-rationale">'
                       + '<em>Why:</em> ' + _esc(a.rationale)
                       + '</div>';
             }
             // Suggestion-only: show what the agent is blocked on.
             if (a.kind === "suggestion" && a.blocked_on) {
-                html += '<div class="threads-v5-item-blocked">'
+                html += '<div class="threads-item-blocked">'
                       + '<em>Blocked on:</em> ' + _esc(a.blocked_on)
                       + '</div>';
             }
@@ -600,17 +612,17 @@ def _threads_v5_card_script() -> str:
             // ✓ / ⊘ glyph + reason on hover.
             const statuses = a.context_statuses || [];
             if (statuses.length > 0) {
-                html += '<div class="threads-v5-item-contexts">Requires: '
+                html += '<div class="threads-item-contexts">Requires: '
                       + statuses.map(s => {
                           const cls = s.available
-                              ? 'threads-v5-ctx-ok'
+                              ? 'threads-ctx-ok'
                               : (s.kind === 'user_only'
-                                    ? 'threads-v5-ctx-user'
-                                    : 'threads-v5-ctx-down');
+                                    ? 'threads-ctx-user'
+                                    : 'threads-ctx-down');
                           const glyph = s.available ? '✓'
                                        : (s.kind === 'user_only' ? '◐' : '⊘');
                           const title = s.reason ? ' title="' + _esc(s.reason) + '"' : '';
-                          return '<span class="threads-v5-ctx ' + cls + '"'
+                          return '<span class="threads-ctx ' + cls + '"'
                                  + title + '>'
                                  + glyph + ' ' + _esc(s.token)
                                  + '</span>';
@@ -618,14 +630,14 @@ def _threads_v5_card_script() -> str:
                       + '</div>';
             } else if (Array.isArray(a.required_contexts) && a.required_contexts.length) {
                 // Fallback when status lookup wasn't run
-                html += '<div class="threads-v5-item-contexts">Requires: '
+                html += '<div class="threads-item-contexts">Requires: '
                       + a.required_contexts.map(_esc).join(', ')
                       + '</div>';
             }
             if (!actionPerformed) {
-                html += '<div class="threads-v5-item-actions">';
+                html += '<div class="threads-item-actions">';
                 html += _flagBtn(thread.thread_id, a.id, flagged);
-                html += '<button class="threads-v5-edit-btn" '
+                html += '<button class="threads-edit-btn" '
                       + 'title="Edit action" '
                       + 'onclick="threadCardFocus(\'' + _esc(thread.thread_id) + '\', \''
                       + _esc(a.id) + '\')">'
@@ -642,13 +654,13 @@ def _threads_v5_card_script() -> str:
     function _renderNamespaceTagsSection(thread, s) {
         const tags = thread.namespace_tags || [];
         return (
-            '<div class="threads-v5-section">'
-            + '<div class="threads-v5-section-label">Namespace tags</div>'
-            + '<div class="threads-v5-tags">'
+            '<div class="threads-section">'
+            + '<div class="threads-section-label">Namespace tags</div>'
+            + '<div class="threads-tags">'
             +   (tags.length > 0
-                    ? tags.map(t => '<span class="threads-v5-tag">'
+                    ? tags.map(t => '<span class="threads-tag">'
                                   + _esc(t) + '</span>').join('')
-                    : '<em class="threads-v5-empty">(none)</em>')
+                    : '<em class="threads-empty">(none)</em>')
             + '</div>'
             + _renderTimelineLink(thread)
             + '</div>'
@@ -661,9 +673,9 @@ def _threads_v5_card_script() -> str:
     // affordance that opens the inspector.
     function _renderTimelineLink(thread) {
         return (
-            '<div class="threads-v5-timeline-link-row">'
+            '<div class="threads-timeline-link-row">'
             + '<a href="#" '
-            +   'class="threads-v5-timeline-link" '
+            +   'class="threads-timeline-link" '
             +   'title="Open the full event log for this thread" '
             +   'onclick="event.preventDefault();threadsOpenInspector(\'evlog\')">'
             +   _icon("list") + ' View timeline'
@@ -682,17 +694,32 @@ def _threads_v5_card_script() -> str:
         // own ID, creating a self-referencing breadcrumb. Replaced
         // with inline sub-thread mini-cards (UX.md §3.2 + §8.4 —
         // "sub-thread list shows children of that Thread").
+        // 2026-05-04: group-parents render the multi-column drag/
+        // drop grid here in place of the flat list — see
+        // script_threads_group.py:renderGroupSubThreads. The
+        // section header + aggregated state badges stay; the body
+        // is the only thing that swaps.
+        const isGroup = thread.parent_relationship === 'group'
+            && typeof window.renderGroupSubThreads === 'function';
         const n = thread.sub_thread_count || 0;
-        if (n === 0) return '';
+        // Group-parents always render the section: sibling columns
+        // may have content even when this group has zero children
+        // of its own. Non-group parents hide the section at count=0.
+        if (n === 0 && !isGroup) return '';
         const counts = thread.sub_thread_state_counts || {};
         const badges = _renderStateBadges(counts);
-        let html = '<div class="threads-v5-section">'
-                 + '<div class="threads-v5-section-label">'
+        let html = '<div class="threads-section">'
+                 + '<div class="threads-section-label">'
                  +   'Sub-threads (' + n + ')'
                  + '</div>';
         if (badges) {
-            html += '<div class="threads-v5-state-badges">'
+            html += '<div class="threads-state-badges">'
                   + badges + '</div>';
+        }
+        if (isGroup) {
+            html += window.renderGroupSubThreads(thread);
+            html += '</div>';
+            return html;
         }
         // Lazy-load the sub-thread list. The first render shows a
         // placeholder; we fetch /api/threads/<id>/sub asynchronously
@@ -703,7 +730,7 @@ def _threads_v5_card_script() -> str:
         if (cached) {
             html += _renderSubThreadCards(cached);
         } else {
-            html += '<div class="threads-v5-subthread-loading" '
+            html += '<div class="threads-subthread-loading" '
                   + 'data-parent-id="' + _esc(thread.thread_id) + '">'
                   + 'Loading sub-threads...</div>';
             // Trigger async fetch on next tick
@@ -736,34 +763,34 @@ def _threads_v5_card_script() -> str:
 
     function _renderSubThreadCards(subThreads) {
         if (!subThreads || subThreads.length === 0) {
-            return '<p class="threads-v5-empty">'
+            return '<p class="threads-empty">'
                  + '<em>(no sub-threads loaded)</em></p>';
         }
-        let html = '<ul class="threads-v5-subthread-list">';
+        let html = '<ul class="threads-subthread-list">';
         for (const sub of subThreads) {
             const stateLabel = _friendlyState(sub.fsm_state);
             const intent = (sub.intent && sub.intent.text)
                             || sub.title || sub.thread_id;
-            const cls = 'threads-v5-subthread-card '
+            const cls = 'threads-subthread-card '
                 + (sub.display_mode === 'mid_process'
-                    ? 'threads-v5-mid-process' : '')
+                    ? 'threads-mid-process' : '')
                 + (sub.display_mode === 'terminal'
-                    ? 'threads-v5-terminal' : '');
+                    ? 'threads-terminal' : '');
             html += '<li class="' + cls + '" '
                   + 'onclick="threadsPushPath(\''
                   +   _esc(sub.thread_id) + '\')">'
-                  + '<div class="threads-v5-subthread-meta">'
-                  +   '<span class="threads-v5-subthread-state">'
+                  + '<div class="threads-subthread-meta">'
+                  +   '<span class="threads-subthread-state">'
                   +     _esc(stateLabel) + '</span>'
                   +   (sub.risk_highlight
-                        ? '<span class="threads-v5-toplist-risk-dot '
+                        ? '<span class="threads-toplist-risk-dot '
                             + _esc(sub.risk_highlight) + '"></span>'
                         : '')
                   + '</div>'
-                  + '<div class="threads-v5-subthread-title">'
+                  + '<div class="threads-subthread-title">'
                   +   _esc(sub.title || sub.thread_id) + '</div>'
                   + (intent && intent !== sub.title
-                        ? '<div class="threads-v5-subthread-intent">'
+                        ? '<div class="threads-subthread-intent">'
                           + _esc(intent.length > 140
                               ? intent.slice(0, 137) + '...' : intent)
                           + '</div>'
@@ -785,19 +812,19 @@ def _threads_v5_card_script() -> str:
     function _renderSubThreadActionsPreview(sub) {
         const actions = sub.actions || [];
         if (actions.length === 0) return '';
-        let html = '<div class="threads-v5-subthread-actions">';
+        let html = '<div class="threads-subthread-actions">';
         for (const a of actions) {
             const name = a.name || a.id || "(unnamed)";
             const kind = a.kind || "";
-            html += '<div class="threads-v5-subthread-action">'
+            html += '<div class="threads-subthread-action">'
                   +   _kindIcon(a.kind, a.name) + ' '
-                  +   '<span class="threads-v5-subthread-action-name">'
+                  +   '<span class="threads-subthread-action-name">'
                   +     _esc(name) + '</span>'
                   +   (kind
-                        ? ' <span class="threads-v5-kind-chip ' + _esc(kind) + '">'
+                        ? ' <span class="threads-kind-chip ' + _esc(kind) + '">'
                           + _esc(kind) + '</span>'
                         : '')
-                  +   '<button class="threads-v5-subthread-edit-btn" '
+                  +   '<button class="threads-subthread-edit-btn" '
                   +     'title="Edit this proposed action (opens the right-pane editor)" '
                   +     'aria-label="Edit proposed action" '
                   +     'onclick="event.stopPropagation();'
@@ -871,7 +898,7 @@ def _threads_v5_card_script() -> str:
         for (const k of ORDER) {
             if (k in counts && counts[k] > 0) {
                 seen.add(k);
-                parts.push('<span class="threads-v5-state-badge" '
+                parts.push('<span class="threads-state-badge" '
                     + 'title="' + _esc(k) + '">'
                     + counts[k] + ' ' + _esc(PRETTY[k] || k)
                     + '</span>');
@@ -880,7 +907,7 @@ def _threads_v5_card_script() -> str:
         // Any unrecognized states still appear at the end.
         for (const k of Object.keys(counts)) {
             if (!seen.has(k) && counts[k] > 0) {
-                parts.push('<span class="threads-v5-state-badge">'
+                parts.push('<span class="threads-state-badge">'
                     + counts[k] + ' ' + _esc(k) + '</span>');
             }
         }
@@ -891,7 +918,7 @@ def _threads_v5_card_script() -> str:
         const focused = s.focusedId;
         if (!focused) {
             return (
-                '<div class="threads-v5-right-empty">'
+                '<div class="threads-right-empty">'
                 + '<p>Click any item or action on the left to edit it here.</p>'
                 + '</div>'
             );
@@ -902,31 +929,31 @@ def _threads_v5_card_script() -> str:
                 : ((thread.intent && thread.intent.text) || "");
             const tidJs = _esc(thread.thread_id);
             return (
-                '<div class="threads-v5-right-editor">'
+                '<div class="threads-right-editor">'
                 + '<h4>Edit intent</h4>'
-                + '<p class="threads-v5-editor-hint">'
+                + '<p class="threads-editor-hint">'
                 +   '<kbd>Enter</kbd> to confirm &middot; '
                 +   '<kbd>Shift</kbd>+<kbd>Enter</kbd> for newline &middot; '
                 +   '<kbd>Esc</kbd> to discard'
                 + '</p>'
-                + '<textarea class="threads-v5-textarea" rows="6" autofocus '
+                + '<textarea class="threads-textarea" rows="6" autofocus '
                 +   'oninput="threadCardEditIntent(\'' + tidJs + '\', this.value)" '
                 +   'onkeydown="return threadCardEditorKeydown(event, \''
                 +     tidJs + '\', \'intent\')"'
                 + '>' + _esc(edited) + '</textarea>'
-                + '<div class="threads-v5-editor-actions">'
-                +   '<button class="threads-v5-editor-btn threads-v5-editor-btn-cancel" '
+                + '<div class="threads-editor-actions">'
+                +   '<button class="threads-editor-btn threads-editor-btn-cancel" '
                 +     'title="Discard edit (Esc)" '
                 +     'onclick="threadCardDiscardIntentEdit(\'' + tidJs + '\')">'
-                +     '<span class="threads-v5-editor-icon">&times;</span>'
-                +     '<span class="threads-v5-editor-label">Discard</span>'
+                +     '<span class="threads-editor-icon">&times;</span>'
+                +     '<span class="threads-editor-label">Discard</span>'
                 +   '</button>'
-                +   '<button class="threads-v5-editor-btn threads-v5-editor-btn-confirm" '
+                +   '<button class="threads-editor-btn threads-editor-btn-confirm" '
                 +     'title="Confirm edit (Enter). The edit is staged; click Accept on '
                 +       'the main card to commit it to the thread." '
                 +     'onclick="threadCardConfirmIntentEdit(\'' + tidJs + '\')">'
-                +     '<span class="threads-v5-editor-icon">&#x21A9;</span>'
-                +     '<span class="threads-v5-editor-label">Confirm</span>'
+                +     '<span class="threads-editor-icon">&#x21A9;</span>'
+                +     '<span class="threads-editor-label">Confirm</span>'
                 +   '</button>'
                 + '</div>'
                 + '</div>'
@@ -937,7 +964,7 @@ def _threads_v5_card_script() -> str:
         const target = _findById(thread, focused);
         if (!target) {
             return (
-                '<div class="threads-v5-right-empty">'
+                '<div class="threads-right-empty">'
                 + '<p>(focused element ' + _esc(focused) + ' not found)</p>'
                 + '</div>'
             );
@@ -948,7 +975,7 @@ def _threads_v5_card_script() -> str:
         if (target._kind === "action"
             && typeof window.renderActionInRightPane === "function") {
             return (
-                '<div class="threads-v5-right-editor">'
+                '<div class="threads-right-editor">'
                 + window.renderActionInRightPane(thread, target)
                 + '</div>'
             );
@@ -958,7 +985,7 @@ def _threads_v5_card_script() -> str:
         // as a key/value table; long values truncated with click-
         // to-expand. Much friendlier than the prior JSON dump.
         return (
-            '<div class="threads-v5-right-editor">'
+            '<div class="threads-right-editor">'
             + '<h4>Context item &middot; <code>' + _esc(focused) + '</code></h4>'
             + _renderContextItemInspector(target)
             + '</div>'
@@ -966,7 +993,7 @@ def _threads_v5_card_script() -> str:
     }
 
     function _renderContextItemInspector(item) {
-        let html = '<table class="threads-v5-ci-table">';
+        let html = '<table class="threads-ci-table">';
         const rows = [
             ["Label", item.label],
             ["Source", item.source],
@@ -980,21 +1007,54 @@ def _threads_v5_card_script() -> str:
         const payload = item.payload || {};
         const payloadKeys = Object.keys(payload);
         if (payloadKeys.length > 0) {
-            html += '<tr><th colspan="2" class="threads-v5-ci-payload-header">'
+            html += '<tr><th colspan="2" class="threads-ci-payload-header">'
                   + 'Payload</th></tr>';
             for (const k of payloadKeys) {
-                let v = payload[k];
-                if (typeof v === "object") {
-                    v = JSON.stringify(v);
-                }
-                let s = String(v);
-                if (s.length > 200) s = s.slice(0, 200) + "…";
+                const raw = payload[k];
+                if (raw === undefined || raw === null || raw === "") continue;
                 html += '<tr><th>' + _esc(k) + '</th>'
-                      + '<td><code>' + _esc(s) + '</code></td></tr>';
+                      + '<td>'
+                      + _renderPayloadValue(k, raw)
+                      + '</td></tr>';
             }
         }
         html += '</table>';
         return html;
+    }
+
+    function _renderPayloadValue(key, raw) {
+        // Multi-line strings (raw_text, body, etc.) need preserved
+        // newlines + a scrollable box so the inspector doesn't blow
+        // up vertically. Anything ≤ 1 line of plain text stays as the
+        // pre-existing inline ``<code>`` shape.
+        if (typeof raw === "object") {
+            const json = JSON.stringify(raw, null, 2);
+            return _renderScrollableBlock(json, /*language*/ "json");
+        }
+        const s = String(raw);
+        // URLs render as a clickable link.
+        if (typeof raw === "string" && /^https?:\/\//.test(s)) {
+            const href = _esc(s);
+            const display = s.length > 80 ? s.slice(0, 77) + "…" : s;
+            return '<a href="' + href + '" target="_blank" rel="noopener" '
+                 + 'class="threads-ci-payload-link">'
+                 + _esc(display) + '</a>';
+        }
+        const isMultiLine = s.includes("\n");
+        if (isMultiLine || s.length > 200) {
+            return _renderScrollableBlock(s, /*language*/ "text");
+        }
+        return '<code>' + _esc(s) + '</code>';
+    }
+
+    function _renderScrollableBlock(text, language) {
+        // ``<pre>`` preserves whitespace + newlines verbatim. We give
+        // it a fixed max-height so it scrolls vertically once content
+        // exceeds ~6 lines (CSS controls the exact threshold).
+        return '<pre class="threads-ci-payload-block" '
+             + 'data-lang="' + _esc(language || "text") + '">'
+             + _esc(text)
+             + '</pre>';
     }
 
     function _renderFooter(thread, hasFlags) {
@@ -1011,28 +1071,28 @@ def _threads_v5_card_script() -> str:
             : "Approve and commit";
         const tid = _esc(thread.thread_id);
         return (
-            '<div class="threads-v5-card-footer">'
-            +   '<button class="threads-v5-btn-icon threads-v5-btn-destructive" '
+            '<div class="threads-card-footer">'
+            +   '<button class="threads-btn-icon threads-btn-destructive" '
             +     'title="Dismiss this thread" '
             +     'onclick="threadCommitAction(\'' + tid + '\', \'dismiss\')">'
             +     _icon("trash") + '</button>'
             +   (cleanupShown
-                    ? '<button class="threads-v5-btn-icon threads-v5-btn-neutral" '
+                    ? '<button class="threads-btn-icon threads-btn-neutral" '
                     +   'title="Clean up inciting event source" '
                     +   'onclick="threadCommitAction(\'' + tid + '\', \'cleanup\')">'
                     +   _icon("broom") + '</button>'
                     : '')
-            +   '<button class="threads-v5-btn-icon threads-v5-btn-neutral" '
+            +   '<button class="threads-btn-icon threads-btn-neutral" '
             +     'title="Later — left-click defers 6h; right-click for options" '
             +     'onclick="threadCommitAction(\'' + tid + '\', \'later\', {hours: 6})" '
             +     'oncontextmenu="event.preventDefault();'
             +     'threadsShowLaterPopup(this, \'' + tid + '\')">'
             +     _icon("clock") + '</button>'
-            +   '<button class="threads-v5-btn-icon threads-v5-btn-redirect" '
+            +   '<button class="threads-btn-icon threads-btn-redirect" '
             +     'title="Redirect — give the agent feedback and re-infer" '
             +     'onclick="threadCommitAction(\'' + tid + '\', \'redirect\')">'
             +     _icon("corner-up-left") + '</button>'
-            +   '<button class="threads-v5-btn-icon threads-v5-btn-accept" '
+            +   '<button class="threads-btn-icon threads-btn-accept" '
             +     (acceptDisabled ? 'disabled ' : '')
             +     'title="' + _esc(acceptTitle) + '" '
             +     (acceptDisabled
@@ -1056,25 +1116,25 @@ def _threads_v5_card_script() -> str:
         const tid = _esc(thread.thread_id);
         const promptText = _clarificationPromptFor(thread.fsm_state);
         const stored = window._clarifyInput[thread.thread_id] || "";
-        let html = '<div class="threads-v5-card threads-v5-kind-clarification" '
+        let html = '<div class="threads-card threads-kind-clarification" '
                  + 'data-thread-id="' + tid + '">';
         html += _renderHeader(thread);
-        html += '<div class="threads-v5-card-body threads-v5-clarify-body">';
-        html += '<p class="threads-v5-clarify-prompt">' + _esc(promptText)
+        html += '<div class="threads-card-body threads-clarify-body">';
+        html += '<p class="threads-clarify-prompt">' + _esc(promptText)
               + '</p>';
-        html += '<textarea class="threads-v5-clarify-textarea" rows="6" '
+        html += '<textarea class="threads-clarify-textarea" rows="6" '
               + 'placeholder="Tell the agent what you mean..." '
               + 'oninput="threadClarifyInput(\'' + tid + '\', this.value)">'
               + _esc(stored) + '</textarea>';
         if (thread.context_items && thread.context_items.length > 0) {
-            html += '<div class="threads-v5-clarify-context">';
-            html += '<div class="threads-v5-section-label">Context the agent has so far</div>';
-            html += '<ul class="threads-v5-list">';
+            html += '<div class="threads-clarify-context">';
+            html += '<div class="threads-section-label">Context the agent has so far</div>';
+            html += '<ul class="threads-list">';
             for (const ci of thread.context_items) {
-                html += '<li class="threads-v5-item">';
-                html += '<div class="threads-v5-item-label">'
+                html += '<li class="threads-item">';
+                html += '<div class="threads-item-label">'
                       + _esc(ci.label || ci.id) + '</div>';
-                html += '<div class="threads-v5-item-source">'
+                html += '<div class="threads-item-source">'
                       + _esc(ci.source || "") + '</div>';
                 html += '</li>';
             }
@@ -1102,24 +1162,24 @@ def _threads_v5_card_script() -> str:
         const tid = _esc(thread.thread_id);
         const cleanupShown = !!thread.can_clean_up;
         return (
-            '<div class="threads-v5-card-footer">'
-            +   '<button class="threads-v5-btn-icon threads-v5-btn-destructive" '
+            '<div class="threads-card-footer">'
+            +   '<button class="threads-btn-icon threads-btn-destructive" '
             +     'title="Dismiss this thread" '
             +     'onclick="threadCommitAction(\'' + tid + '\', \'dismiss\')">'
             +     _icon("trash") + '</button>'
             +   (cleanupShown
-                    ? '<button class="threads-v5-btn-icon threads-v5-btn-neutral" '
+                    ? '<button class="threads-btn-icon threads-btn-neutral" '
                     +   'title="Clean up inciting event source" '
                     +   'onclick="threadCommitAction(\'' + tid + '\', \'cleanup\')">'
                     +   _icon("broom") + '</button>'
                     : '')
-            +   '<button class="threads-v5-btn-icon threads-v5-btn-neutral" '
+            +   '<button class="threads-btn-icon threads-btn-neutral" '
             +     'title="Later — left-click defers 6h; right-click for options" '
             +     'onclick="threadCommitAction(\'' + tid + '\', \'later\', {hours: 6})" '
             +     'oncontextmenu="event.preventDefault();'
             +     'threadsShowLaterPopup(this, \'' + tid + '\')">'
             +     _icon("clock") + '</button>'
-            +   '<button class="threads-v5-btn-icon threads-v5-btn-accept" '
+            +   '<button class="threads-btn-icon threads-btn-accept" '
             +     'title="Submit clarification" '
             +     'onclick="threadCommitAction(\'' + tid + '\', \'accept\', {input: window._clarifyInput[\'' + tid + '\'] || \'\'})">'
             +     _icon("check") + '</button>'
@@ -1132,44 +1192,44 @@ def _threads_v5_card_script() -> str:
     function _renderReview(thread) {
         const tid = _esc(thread.thread_id);
         const ctx = thread.review_context || {};
-        let html = '<div class="threads-v5-card threads-v5-kind-review" '
+        let html = '<div class="threads-card threads-kind-review" '
                  + 'data-thread-id="' + tid + '">';
         html += _renderHeader(thread);
-        html += '<div class="threads-v5-card-body threads-v5-review-body">';
-        html += '<div class="threads-v5-review-status">'
+        html += '<div class="threads-card-body threads-review-body">';
+        html += '<div class="threads-review-status">'
               + 'Result: ' + _esc(ctx.status || 'completed')
               + '</div>';
         if (ctx.summary) {
-            html += '<div class="threads-v5-review-summary">'
+            html += '<div class="threads-review-summary">'
                   + _esc(ctx.summary) + '</div>';
         }
         if (ctx.output) {
-            html += '<pre class="threads-v5-review-output">'
+            html += '<pre class="threads-review-output">'
                   + _esc(typeof ctx.output === "string"
                         ? ctx.output
                         : JSON.stringify(ctx.output, null, 2))
                   + '</pre>';
         }
         if (ctx.run_id) {
-            html += '<p class="threads-v5-review-run">Run ID: <code>'
+            html += '<p class="threads-review-run">Run ID: <code>'
                   + _esc(ctx.run_id) + '</code></p>';
         }
         html += '</div>';
         // UX.md §4.4.3: Review cards have NO Dismiss (action's done).
         // Footer: Later / Redirect / Mark done — unified icon row
         // (user-feedback fix #6).
-        html += '<div class="threads-v5-card-footer">'
-              +   '<button class="threads-v5-btn-icon threads-v5-btn-neutral" '
+        html += '<div class="threads-card-footer">'
+              +   '<button class="threads-btn-icon threads-btn-neutral" '
               +     'title="Later — left-click defers 6h; right-click for options" '
               +     'onclick="threadCommitAction(\'' + tid + '\', \'later\', {hours: 6})" '
               +     'oncontextmenu="event.preventDefault();'
               +     'threadsShowLaterPopup(this, \'' + tid + '\')">'
               +     _icon("clock") + '</button>'
-              +   '<button class="threads-v5-btn-icon threads-v5-btn-redirect" '
+              +   '<button class="threads-btn-icon threads-btn-redirect" '
               +     'title="Redirect — give the agent feedback and re-infer" '
               +     'onclick="threadCommitAction(\'' + tid + '\', \'redirect\')">'
               +     _icon("corner-up-left") + '</button>'
-              +   '<button class="threads-v5-btn-icon threads-v5-btn-accept" '
+              +   '<button class="threads-btn-icon threads-btn-accept" '
               +     'title="Mark done" '
               +     'onclick="threadCommitAction(\'' + tid + '\', \'accept\')">'
               +     _icon("check") + '</button>'
@@ -1190,11 +1250,11 @@ def _threads_v5_card_script() -> str:
         const tid = _esc(thread.thread_id);
         const fc = thread.failure_context || {};
         const stored = window._redirectInput[thread.thread_id] || "";
-        let html = '<div class="threads-v5-card threads-v5-kind-redirect" '
+        let html = '<div class="threads-card threads-kind-redirect" '
                  + 'data-thread-id="' + tid + '">';
         html += _renderHeader(thread);
-        html += '<div class="threads-v5-card-body threads-v5-redirect-body">';
-        html += '<div class="threads-v5-redirect-failure">'
+        html += '<div class="threads-card-body threads-redirect-body">';
+        html += '<div class="threads-redirect-failure">'
               + '<strong>Execution failed.</strong>';
         if (fc.error) {
             html += ' Error: <code>' + _esc(fc.error) + '</code>';
@@ -1203,9 +1263,9 @@ def _threads_v5_card_script() -> str:
             html += ' Step: <code>' + _esc(fc.step) + '</code>';
         }
         html += '</div>';
-        html += '<p class="threads-v5-redirect-prompt">'
+        html += '<p class="threads-redirect-prompt">'
               + 'Tell the agent what to do now.</p>';
-        html += '<textarea class="threads-v5-redirect-textarea" rows="5" '
+        html += '<textarea class="threads-redirect-textarea" rows="5" '
               + 'placeholder="Describe what went wrong / what to try..." '
               + 'oninput="threadRedirectInput(\'' + tid + '\', this.value)">'
               + _esc(stored) + '</textarea>';
@@ -1213,24 +1273,24 @@ def _threads_v5_card_script() -> str:
         // Footer: Trash / Broom / Later / Submit redirect — unified
         // icon row (user-feedback fix #6).
         const cleanupShown = !!thread.can_clean_up;
-        html += '<div class="threads-v5-card-footer">'
-              +   '<button class="threads-v5-btn-icon threads-v5-btn-destructive" '
+        html += '<div class="threads-card-footer">'
+              +   '<button class="threads-btn-icon threads-btn-destructive" '
               +     'title="Dismiss this thread" '
               +     'onclick="threadCommitAction(\'' + tid + '\', \'dismiss\')">'
               +     _icon("trash") + '</button>'
               +   (cleanupShown
-                    ? '<button class="threads-v5-btn-icon threads-v5-btn-neutral" '
+                    ? '<button class="threads-btn-icon threads-btn-neutral" '
                     +   'title="Clean up inciting event source" '
                     +   'onclick="threadCommitAction(\'' + tid + '\', \'cleanup\')">'
                     +   _icon("broom") + '</button>'
                     : '')
-              +   '<button class="threads-v5-btn-icon threads-v5-btn-neutral" '
+              +   '<button class="threads-btn-icon threads-btn-neutral" '
               +     'title="Later — left-click defers 6h; right-click for options" '
               +     'onclick="threadCommitAction(\'' + tid + '\', \'later\', {hours: 6})" '
               +     'oncontextmenu="event.preventDefault();'
               +     'threadsShowLaterPopup(this, \'' + tid + '\')">'
               +     _icon("clock") + '</button>'
-              +   '<button class="threads-v5-btn-icon threads-v5-btn-redirect" '
+              +   '<button class="threads-btn-icon threads-btn-redirect" '
               +     'title="Submit redirect feedback" '
               +     'onclick="threadCommitAction(\'' + tid + '\', \'redirect\', {feedback: window._redirectInput[\'' + tid + '\'] || \'\'})">'
               +     _icon("corner-up-left") + '</button>'
@@ -1244,39 +1304,39 @@ def _threads_v5_card_script() -> str:
     function _renderCleanupFailure(thread) {
         const tid = _esc(thread.thread_id);
         const cf = thread.cleanup_failure || {};
-        let html = '<div class="threads-v5-card threads-v5-kind-cleanup-failure" '
+        let html = '<div class="threads-card threads-kind-cleanup-failure" '
                  + 'data-thread-id="' + tid + '">';
         html += _renderHeader(thread);
-        html += '<div class="threads-v5-card-body threads-v5-cleanup-fail-body">';
-        html += '<div class="threads-v5-cleanup-fail-banner">'
+        html += '<div class="threads-card-body threads-cleanup-fail-body">';
+        html += '<div class="threads-cleanup-fail-banner">'
               + _icon("alert-triangle")
               + ' <strong>Cleanup failed.</strong></div>';
         if (cf.detail) {
-            html += '<p class="threads-v5-cleanup-fail-detail">'
+            html += '<p class="threads-cleanup-fail-detail">'
                   + _esc(cf.detail) + '</p>';
         }
-        html += '<p class="threads-v5-stage-note">'
+        html += '<p class="threads-stage-note">'
               + 'You can retry the cleanup or accept the failure '
               + '(closes this Thread without further action).</p>';
         html += '</div>';
         // Footer: Trash / Later / Accept failure / Retry — unified
         // icon row (user-feedback fix #6).
-        html += '<div class="threads-v5-card-footer">'
-              +   '<button class="threads-v5-btn-icon threads-v5-btn-destructive" '
+        html += '<div class="threads-card-footer">'
+              +   '<button class="threads-btn-icon threads-btn-destructive" '
               +     'title="Dismiss this thread" '
               +     'onclick="threadCommitAction(\'' + tid + '\', \'dismiss\')">'
               +     _icon("trash") + '</button>'
-              +   '<button class="threads-v5-btn-icon threads-v5-btn-neutral" '
+              +   '<button class="threads-btn-icon threads-btn-neutral" '
               +     'title="Later — left-click defers 6h; right-click for options" '
               +     'onclick="threadCommitAction(\'' + tid + '\', \'later\', {hours: 6})" '
               +     'oncontextmenu="event.preventDefault();'
               +     'threadsShowLaterPopup(this, \'' + tid + '\')">'
               +     _icon("clock") + '</button>'
-              +   '<button class="threads-v5-btn-icon threads-v5-btn-neutral" '
+              +   '<button class="threads-btn-icon threads-btn-neutral" '
               +     'title="Accept the failure and close this thread" '
               +     'onclick="threadCommitAction(\'' + tid + '\', \'accept-cleanup-failure\')">'
               +     _icon("check") + '</button>'
-              +   '<button class="threads-v5-btn-icon threads-v5-btn-redirect" '
+              +   '<button class="threads-btn-icon threads-btn-redirect" '
               +     'title="Retry cleanup" '
               +     'onclick="threadCommitAction(\'' + tid + '\', \'retry-cleanup\')">'
               +     _icon("refresh-cw") + '</button>'
@@ -1306,8 +1366,8 @@ def _threads_v5_card_script() -> str:
     }
 
     function _flagBtn(threadId, itemId, flagged) {
-        return '<button class="threads-v5-flag-btn'
-             + (flagged ? ' threads-v5-flag-on' : '') + '" '
+        return '<button class="threads-flag-btn'
+             + (flagged ? ' threads-flag-on' : '') + '" '
              + 'title="' + (flagged ? 'Unflag' : 'Flag as wrong') + '" '
              + 'onclick="threadCardToggleFlag(\'' + _esc(threadId) + '\', \''
              + _esc(itemId) + '\')">'
@@ -1419,7 +1479,7 @@ def _threads_v5_card_script() -> str:
             "chevron-right": '<polyline points="9 6 15 12 9 18"></polyline>',
         };
         const p = paths[name] || '';
-        return '<svg class="threads-v5-icon" width="16" height="16" '
+        return '<svg class="threads-icon" width="16" height="16" '
              + 'viewBox="0 0 24 24" fill="none" stroke="currentColor" '
              + 'stroke-width="2" stroke-linecap="round" '
              + 'stroke-linejoin="round">' + p + '</svg>';
@@ -1428,11 +1488,11 @@ def _threads_v5_card_script() -> str:
 """
 
 
-def _threads_v5_card_styles() -> str:
+def _threads_card_styles() -> str:
     return r"""
 /* Stage 4.2 — Confirmation card layout */
 
-.threads-v5-card {
+.threads-card {
     max-width: 1100px;
     margin: 1.5em auto;
     background: var(--bg-secondary, #1a1a1a);
@@ -1442,24 +1502,24 @@ def _threads_v5_card_styles() -> str:
     color: var(--text, #ddd);
 }
 
-.threads-v5-card-empty {
+.threads-card-empty {
     padding: 2em;
     color: var(--text-muted, #888);
     text-align: center;
 }
 
-.threads-v5-card-header {
+.threads-card-header {
     padding: 16px 20px;
     border-bottom: 1px solid var(--border, #333);
 }
 
-.threads-v5-card-title {
+.threads-card-title {
     font-size: 17px;
     font-weight: 600;
     margin-bottom: 4px;
 }
 
-.threads-v5-card-meta {
+.threads-card-meta {
     display: flex;
     gap: 8px;
     align-items: center;
@@ -1467,11 +1527,11 @@ def _threads_v5_card_styles() -> str:
     color: var(--text-muted, #888);
 }
 
-.threads-v5-state {
+.threads-state {
     text-transform: capitalize;
 }
 
-.threads-v5-urgency-pill.high {
+.threads-urgency-pill.high {
     background: #c0392b;
     color: white;
     padding: 2px 8px;
@@ -1482,32 +1542,32 @@ def _threads_v5_card_styles() -> str:
 
 /* Two-pane body — right pane only renders when something is
    focused (user-feedback fix #1, 2026-05-03 morning). */
-.threads-v5-card-body {
+.threads-card-body {
     display: grid;
     grid-template-columns: 1fr;
     min-height: 280px;
 }
 
-.threads-v5-card.threads-v5-with-right-pane .threads-v5-card-body {
+.threads-card.threads-with-right-pane .threads-card-body {
     grid-template-columns: 1fr 360px;
 }
 
-.threads-v5-card-left {
+.threads-card-left {
     padding: 16px 20px;
 }
 
-.threads-v5-card.threads-v5-with-right-pane .threads-v5-card-left {
+.threads-card.threads-with-right-pane .threads-card-left {
     border-right: 1px solid var(--border, #333);
 }
 
-.threads-v5-card-right {
+.threads-card-right {
     padding: 16px 20px;
     background: var(--bg-tertiary, #0f0f0f);
     position: relative;
 }
 
 /* X button on the right pane — close + return to full width */
-.threads-v5-right-close {
+.threads-right-close {
     position: absolute;
     top: 8px;
     right: 8px;
@@ -1519,16 +1579,16 @@ def _threads_v5_card_styles() -> str:
     border-radius: 4px;
     line-height: 0;
 }
-.threads-v5-right-close:hover {
+.threads-right-close:hover {
     background: var(--bg-secondary, #1a1a1a);
     color: var(--text, #ddd);
 }
 
-.threads-v5-section {
+.threads-section {
     margin-bottom: 20px;
 }
 
-.threads-v5-section-label {
+.threads-section-label {
     font-size: 11px;
     text-transform: uppercase;
     letter-spacing: 0.5px;
@@ -1536,7 +1596,7 @@ def _threads_v5_card_styles() -> str:
     margin-bottom: 6px;
 }
 
-.threads-v5-intent {
+.threads-intent {
     color: var(--text, #ddd);
     line-height: 1.45;
     font-size: 14px;
@@ -1551,7 +1611,7 @@ def _threads_v5_card_styles() -> str:
    become icon-only (pencil) with tooltip on hover, matching the
    footer's icon-only style. Square shape so they sit cleanly
    alongside the X-flag button. */
-.threads-v5-edit-btn {
+.threads-edit-btn {
     background: transparent;
     color: var(--text-muted, #888);
     border: 1px solid var(--border, #333);
@@ -1563,18 +1623,18 @@ def _threads_v5_card_styles() -> str:
     justify-content: center;
     line-height: 0;
 }
-.threads-v5-edit-btn:hover {
+.threads-edit-btn:hover {
     background: var(--bg-tertiary, #0f0f0f);
     color: var(--text, #ddd);
 }
 
-.threads-v5-list {
+.threads-list {
     list-style: none;
     padding: 0;
     margin: 0;
 }
 
-.threads-v5-item {
+.threads-item {
     padding: 10px 14px;
     background: var(--bg-tertiary, #0f0f0f);
     border-radius: 6px;
@@ -1585,22 +1645,49 @@ def _threads_v5_card_styles() -> str:
     grid-template-columns: 1fr auto;
     gap: 8px;
     align-items: center;
+    transition: background-color 80ms, border-color 80ms;
+}
+
+/* Clickable context cards — whole row opens the right-pane
+ * inspector. Hover hint + cursor + focus ring for keyboard users. */
+.threads-item-clickable {
+    cursor: pointer;
+}
+.threads-item-clickable:hover {
+    background: var(--bg-secondary, #1a1a1a);
+    border-color: var(--accent, #4a7fc1);
+}
+.threads-item-clickable:focus-visible {
+    outline: 2px solid var(--accent, #4a7fc1);
+    outline-offset: 2px;
+}
+/* The chevron is now a visual hint, not a click target. Brighten
+ * on row hover to reinforce the affordance. */
+.threads-item-clickable .threads-expand-hint {
+    color: var(--text-muted, #666);
+    display: inline-flex;
+    align-items: center;
+    transition: color 80ms, transform 80ms;
+}
+.threads-item-clickable:hover .threads-expand-hint {
+    color: var(--accent, #4a7fc1);
+    transform: translateX(2px);
 }
 
 /* X-flagged element styling: muted-red left-border + faded text */
-.threads-v5-item.threads-v5-flagged {
+.threads-item.threads-flagged {
     border-left-color: #c0392b;
     opacity: 0.55;
 }
 
 /* Context-blocked action: amber left-border + slightly faded */
-.threads-v5-item.threads-v5-ctx-blocked {
+.threads-item.threads-ctx-blocked {
     border-left-color: #b8860b;
     opacity: 0.85;
 }
 
 /* Per-context status pill */
-.threads-v5-ctx {
+.threads-ctx {
     display: inline-block;
     padding: 1px 6px;
     border-radius: 3px;
@@ -1608,42 +1695,42 @@ def _threads_v5_card_styles() -> str:
     font-family: var(--font-mono, monospace);
     font-size: 11px;
 }
-.threads-v5-ctx-ok {
+.threads-ctx-ok {
     background: rgba(50, 150, 80, 0.15);
     color: #6dd99a;
 }
-.threads-v5-ctx-down {
+.threads-ctx-down {
     background: rgba(180, 100, 30, 0.15);
     color: #d8a06d;
 }
-.threads-v5-ctx-user {
+.threads-ctx-user {
     background: rgba(100, 100, 180, 0.15);
     color: #9da4d4;
 }
 
-.threads-v5-item-label {
+.threads-item-label {
     font-size: 14px;
     color: var(--text, #ddd);
     grid-column: 1;
 }
 
-.threads-v5-item-summary,
-.threads-v5-item-source,
-.threads-v5-item-contexts {
+.threads-item-summary,
+.threads-item-source,
+.threads-item-contexts {
     font-size: 12px;
     color: var(--text-muted, #888);
     grid-column: 1;
     margin-top: 2px;
 }
 
-.threads-v5-item-source code {
+.threads-item-source code {
     background: var(--bg, #0a0a0a);
     padding: 1px 6px;
     border-radius: 3px;
     font-size: 11px;
 }
 
-.threads-v5-item-actions {
+.threads-item-actions {
     grid-column: 2;
     grid-row: 1 / span 4;
     display: flex;
@@ -1651,7 +1738,7 @@ def _threads_v5_card_styles() -> str:
     align-items: center;
 }
 
-.threads-v5-flag-btn {
+.threads-flag-btn {
     background: transparent;
     color: var(--text-muted, #888);
     border: 1px solid var(--border, #333);
@@ -1660,23 +1747,23 @@ def _threads_v5_card_styles() -> str:
     cursor: pointer;
     line-height: 0;
 }
-.threads-v5-flag-btn:hover {
+.threads-flag-btn:hover {
     color: #e74c3c;
     border-color: #c0392b;
 }
-.threads-v5-flag-btn.threads-v5-flag-on {
+.threads-flag-btn.threads-flag-on {
     background: #c0392b;
     color: white;
     border-color: #c0392b;
 }
 
 /* Tags */
-.threads-v5-tags {
+.threads-tags {
     display: flex;
     flex-wrap: wrap;
     gap: 4px;
 }
-.threads-v5-tag {
+.threads-tag {
     background: var(--bg-tertiary, #0f0f0f);
     color: var(--text-muted, #888);
     border: 1px solid var(--border, #333);
@@ -1685,34 +1772,34 @@ def _threads_v5_card_styles() -> str:
     font-size: 11px;
     font-family: var(--font-mono, monospace);
 }
-.threads-v5-empty {
+.threads-empty {
     color: var(--text-muted, #666);
     font-size: 12px;
 }
 
 /* Sub-thread link */
-.threads-v5-subthread-link {
+.threads-subthread-link {
     color: var(--accent, #4a7fc1);
     text-decoration: none;
     font-size: 13px;
 }
-.threads-v5-subthread-link:hover { text-decoration: underline; }
+.threads-subthread-link:hover { text-decoration: underline; }
 
 /* Right pane */
-.threads-v5-right-empty {
+.threads-right-empty {
     color: var(--text-muted, #888);
     font-size: 12px;
     font-style: italic;
     padding: 1em;
 }
 
-.threads-v5-right-editor h4 {
+.threads-right-editor h4 {
     margin: 0 0 0.6em 0;
     font-size: 13px;
     color: var(--text, #ddd);
 }
 
-.threads-v5-textarea {
+.threads-textarea {
     width: 100%;
     background: var(--bg, #0a0a0a);
     color: var(--text, #ddd);
@@ -1726,12 +1813,12 @@ def _threads_v5_card_styles() -> str:
 
 /* Editor hint line — small grey caption above the textarea
  * explaining Enter / Shift+Enter / Esc semantics. */
-.threads-v5-editor-hint {
+.threads-editor-hint {
     color: var(--text-muted, #888);
     font-size: 11px;
     margin: 0 0 6px 0;
 }
-.threads-v5-editor-hint kbd {
+.threads-editor-hint kbd {
     background: var(--bg-tertiary, #1a1a1a);
     border: 1px solid var(--border, #333);
     border-radius: 3px;
@@ -1743,13 +1830,13 @@ def _threads_v5_card_styles() -> str:
 /* Editor action buttons (Discard / Confirm) — sit below the
  * textarea, right-aligned. Mirror the dashboard's neutral / accent
  * button colour pair so the pair reads as cancel/submit. */
-.threads-v5-editor-actions {
+.threads-editor-actions {
     display: flex;
     justify-content: flex-end;
     gap: 8px;
     margin-top: 8px;
 }
-.threads-v5-editor-btn {
+.threads-editor-btn {
     display: inline-flex;
     align-items: center;
     gap: 6px;
@@ -1761,29 +1848,29 @@ def _threads_v5_card_styles() -> str:
     font-size: 12px;
     cursor: pointer;
 }
-.threads-v5-editor-btn:hover {
+.threads-editor-btn:hover {
     background: var(--bg-tertiary, #1a1a1a);
 }
-.threads-v5-editor-btn-confirm {
+.threads-editor-btn-confirm {
     border-color: var(--accent, #4a7fc1);
     color: var(--accent, #4a7fc1);
 }
-.threads-v5-editor-btn-confirm:hover {
+.threads-editor-btn-confirm:hover {
     background: var(--accent, #4a7fc1);
     color: #fff;
 }
-.threads-v5-editor-btn-cancel {
+.threads-editor-btn-cancel {
     color: var(--text-muted, #888);
 }
-.threads-v5-editor-icon {
+.threads-editor-icon {
     font-size: 14px;
     line-height: 1;
 }
-.threads-v5-editor-label {
+.threads-editor-label {
     font-size: 12px;
 }
 
-.threads-v5-json-view {
+.threads-json-view {
     background: var(--bg, #0a0a0a);
     color: var(--text-muted, #aaa);
     border: 1px solid var(--border, #333);
@@ -1795,7 +1882,7 @@ def _threads_v5_card_styles() -> str:
 }
 
 /* Footer */
-.threads-v5-card-footer {
+.threads-card-footer {
     border-top: 1px solid var(--border, #333);
     padding: 12px 20px;
     display: flex;
@@ -1807,14 +1894,14 @@ def _threads_v5_card_styles() -> str:
     background: var(--bg, #0a0a0a);
 }
 
-.threads-v5-footer-secondary,
-.threads-v5-footer-primary {
+.threads-footer-secondary,
+.threads-footer-primary {
     display: flex;
     gap: 8px;
     align-items: center;
 }
 
-.threads-v5-btn-icon {
+.threads-btn-icon {
     background: transparent;
     color: var(--text-muted, #888);
     border: 1px solid var(--border, #333);
@@ -1824,11 +1911,11 @@ def _threads_v5_card_styles() -> str:
     line-height: 0;
     transition: color 100ms, background 100ms, border-color 100ms;
 }
-.threads-v5-btn-icon:hover:not(:disabled) {
+.threads-btn-icon:hover:not(:disabled) {
     color: var(--text, #ddd);
     background: var(--bg-tertiary, #1a1a1a);
 }
-.threads-v5-btn-icon:disabled {
+.threads-btn-icon:disabled {
     opacity: 0.4;
     cursor: not-allowed;
 }
@@ -1837,38 +1924,38 @@ def _threads_v5_card_styles() -> str:
    icons. Themed via CSS variables to stay consistent with the
    dashboard's existing color palette. Hover slightly intensifies
    the color. */
-.threads-v5-btn-icon.threads-v5-btn-destructive {
+.threads-btn-icon.threads-btn-destructive {
     color: #c66464;
     border-color: rgba(198, 100, 100, 0.4);
 }
-.threads-v5-btn-icon.threads-v5-btn-destructive:hover:not(:disabled) {
+.threads-btn-icon.threads-btn-destructive:hover:not(:disabled) {
     color: #ff8888;
     background: rgba(198, 100, 100, 0.08);
     border-color: rgba(198, 100, 100, 0.6);
 }
-.threads-v5-btn-icon.threads-v5-btn-neutral {
+.threads-btn-icon.threads-btn-neutral {
     color: var(--text-muted, #888);
 }
-.threads-v5-btn-icon.threads-v5-btn-redirect {
+.threads-btn-icon.threads-btn-redirect {
     color: #d99868;
     border-color: rgba(217, 152, 104, 0.4);
 }
-.threads-v5-btn-icon.threads-v5-btn-redirect:hover:not(:disabled) {
+.threads-btn-icon.threads-btn-redirect:hover:not(:disabled) {
     color: #ffb888;
     background: rgba(217, 152, 104, 0.08);
     border-color: rgba(217, 152, 104, 0.6);
 }
-.threads-v5-btn-icon.threads-v5-btn-accept {
+.threads-btn-icon.threads-btn-accept {
     color: #66cc66;
     border-color: rgba(102, 204, 102, 0.4);
 }
-.threads-v5-btn-icon.threads-v5-btn-accept:hover:not(:disabled) {
+.threads-btn-icon.threads-btn-accept:hover:not(:disabled) {
     color: #88dd88;
     background: rgba(102, 204, 102, 0.1);
     border-color: rgba(102, 204, 102, 0.6);
 }
 
-.threads-v5-btn {
+.threads-btn {
     border: 1px solid transparent;
     border-radius: 6px;
     padding: 7px 14px;
@@ -1879,35 +1966,35 @@ def _threads_v5_card_styles() -> str:
     gap: 6px;
 }
 
-.threads-v5-btn-primary {
+.threads-btn-primary {
     background: var(--accent, #4a7fc1);
     color: white;
 }
-.threads-v5-btn-primary:disabled {
+.threads-btn-primary:disabled {
     background: var(--bg-tertiary, #2a2a2a);
     color: var(--text-muted, #666);
     cursor: not-allowed;
 }
-.threads-v5-btn-primary:hover:not(:disabled) {
+.threads-btn-primary:hover:not(:disabled) {
     filter: brightness(1.1);
 }
 
-.threads-v5-btn-secondary {
+.threads-btn-secondary {
     background: var(--bg-tertiary, #2a2a2a);
     color: var(--text, #ddd);
     border-color: var(--border, #333);
 }
-.threads-v5-btn-secondary:hover {
+.threads-btn-secondary:hover {
     background: var(--bg, #1a1a1a);
 }
 
-.threads-v5-icon {
+.threads-icon {
     display: inline-block;
     vertical-align: middle;
 }
 
 /* Stage 4.5 — Consent risk banner */
-.threads-v5-risk-banner {
+.threads-risk-banner {
     background: #4a2424;
     color: #fbcaca;
     padding: 10px 18px;
@@ -1918,7 +2005,7 @@ def _threads_v5_card_styles() -> str:
 /* Wave A/B (2026-05-03) — Risk pill on the card header.
    Color-codes the consent card so the user can see at a glance
    whether they're about to approve something with real risk. */
-.threads-v5-risk-pill {
+.threads-risk-pill {
     display: inline-block;
     margin-left: 8px;
     padding: 2px 8px;
@@ -1928,17 +2015,17 @@ def _threads_v5_card_styles() -> str:
     letter-spacing: 0.5px;
     text-transform: uppercase;
 }
-.threads-v5-risk-pill.high {
+.threads-risk-pill.high {
     background: #4a2424;
     color: #ff8888;
     border: 1px solid #ff5555;
 }
-.threads-v5-risk-pill.medium {
+.threads-risk-pill.medium {
     background: #4a3624;
     color: #ffbb88;
     border: 1px solid #ff9955;
 }
-.threads-v5-risk-pill.low {
+.threads-risk-pill.low {
     background: #244a2c;
     color: #88dd88;
     border: 1px solid #66cc66;
@@ -1947,7 +2034,7 @@ def _threads_v5_card_styles() -> str:
 /* Confidence badge — inline chip showing agent self-reported
    confidence on intent / context / action sections. Helps the
    user calibrate trust at a glance. */
-.threads-v5-confidence {
+.threads-confidence {
     display: inline-block;
     padding: 1px 6px;
     margin-left: 6px;
@@ -1956,22 +2043,22 @@ def _threads_v5_card_styles() -> str:
     font-weight: 500;
     vertical-align: 1px;
 }
-.threads-v5-confidence.high {
+.threads-confidence.high {
     background: rgba(102, 204, 102, 0.15);
     color: #88dd88;
 }
-.threads-v5-confidence.medium {
+.threads-confidence.medium {
     background: rgba(255, 153, 85, 0.15);
     color: #ffbb88;
 }
-.threads-v5-confidence.low {
+.threads-confidence.low {
     background: rgba(255, 85, 85, 0.15);
     color: #ff8888;
 }
 
 /* Auto-advance breadcrumb — shows the agent's recent autonomy
    decisions (intent + context auto-advanced under PLAN_THEN_REVIEW). */
-.threads-v5-auto-advance {
+.threads-auto-advance {
     margin-top: 8px;
     padding: 6px 12px;
     background: rgba(74, 127, 193, 0.08);
@@ -1986,7 +2073,7 @@ def _threads_v5_card_styles() -> str:
 }
 
 /* Relative timestamp in card header */
-.threads-v5-timestamp {
+.threads-timestamp {
     margin-left: auto;
     font-size: 11px;
     color: var(--text-muted, #888);
@@ -1996,7 +2083,7 @@ def _threads_v5_card_styles() -> str:
 
 /* Action kind chip — small badge next to the action name showing
    "standard" | "improvised" | "suggestion". */
-.threads-v5-kind-chip {
+.threads-kind-chip {
     display: inline-block;
     margin-left: 6px;
     padding: 1px 7px;
@@ -2009,22 +2096,22 @@ def _threads_v5_card_styles() -> str:
     background: rgba(170, 170, 170, 0.12);
     color: var(--text-muted, #aaa);
 }
-.threads-v5-kind-chip.standard {
+.threads-kind-chip.standard {
     background: rgba(74, 127, 193, 0.15);
     color: #88bbee;
 }
-.threads-v5-kind-chip.improvised {
+.threads-kind-chip.improvised {
     background: rgba(255, 153, 85, 0.15);
     color: #ffaa66;
 }
-.threads-v5-kind-chip.suggestion {
+.threads-kind-chip.suggestion {
     background: rgba(170, 170, 170, 0.12);
     color: var(--text-muted, #aaa);
 }
 
 /* Risk-disclosure row inside an action item.
    Surfaces irreversibility / regret_potential / risk_amplifier. */
-.threads-v5-risk-row {
+.threads-risk-row {
     margin-top: 4px;
     font-size: 11px;
     color: var(--text-muted, #888);
@@ -2032,13 +2119,13 @@ def _threads_v5_card_styles() -> str:
     align-items: center;
     gap: 4px;
 }
-.threads-v5-risk-row.threads-v5-risk-high {
+.threads-risk-row.threads-risk-high {
     color: #ff8888;
 }
 
 /* Rationale + blocked-on inline text */
-.threads-v5-item-rationale,
-.threads-v5-item-blocked {
+.threads-item-rationale,
+.threads-item-blocked {
     margin-top: 4px;
     font-size: 12px;
     color: var(--text-muted, #aaa);
@@ -2048,7 +2135,7 @@ def _threads_v5_card_styles() -> str:
 /* User-feedback followup (2026-05-03): inline sub-thread list
    under the parent's detail view. Each is a small clickable
    card that drills into the sub-thread when clicked. */
-.threads-v5-subthread-list {
+.threads-subthread-list {
     list-style: none;
     padding: 0;
     margin: 8px 0 0 0;
@@ -2056,7 +2143,7 @@ def _threads_v5_card_styles() -> str:
     flex-direction: column;
     gap: 6px;
 }
-.threads-v5-subthread-card {
+.threads-subthread-card {
     background: var(--bg-tertiary, #0f0f0f);
     border: 1px solid var(--border, #333);
     border-radius: 6px;
@@ -2064,18 +2151,18 @@ def _threads_v5_card_styles() -> str:
     cursor: pointer;
     transition: border-color 80ms, background 80ms;
 }
-.threads-v5-subthread-card:hover {
+.threads-subthread-card:hover {
     border-color: var(--accent, #4a7fc1);
     background: var(--bg-secondary, #1a1a1a);
 }
-.threads-v5-subthread-card.threads-v5-mid-process {
+.threads-subthread-card.threads-mid-process {
     opacity: 0.6;
     border-style: dashed;
 }
-.threads-v5-subthread-card.threads-v5-terminal {
+.threads-subthread-card.threads-terminal {
     opacity: 0.55;
 }
-.threads-v5-subthread-meta {
+.threads-subthread-meta {
     display: flex;
     gap: 8px;
     align-items: center;
@@ -2084,14 +2171,14 @@ def _threads_v5_card_styles() -> str:
     margin-bottom: 4px;
     text-transform: capitalize;
 }
-.threads-v5-subthread-title {
+.threads-subthread-title {
     color: var(--text, #ddd);
     font-weight: 500;
     font-size: 13px;
     line-height: 1.3;
     margin-bottom: 2px;
 }
-.threads-v5-subthread-intent {
+.threads-subthread-intent {
     color: var(--text-muted, #aaa);
     font-size: 12px;
     line-height: 1.4;
@@ -2100,12 +2187,12 @@ def _threads_v5_card_styles() -> str:
 /* Inline action preview on a sub-thread mini-card.
  * One row per proposed action with a tiny edit-pencil that opens the
  * sub-thread already focused on that action's right-pane editor. */
-.threads-v5-subthread-actions {
+.threads-subthread-actions {
     margin-top: 6px;
     border-top: 1px dashed rgba(80,80,80,0.4);
     padding-top: 6px;
 }
-.threads-v5-subthread-action {
+.threads-subthread-action {
     display: flex;
     align-items: center;
     gap: 6px;
@@ -2113,7 +2200,7 @@ def _threads_v5_card_styles() -> str:
     color: var(--text-muted, #aaa);
     padding: 2px 0;
 }
-.threads-v5-subthread-action-name {
+.threads-subthread-action-name {
     color: var(--text, #ddd);
     overflow: hidden;
     text-overflow: ellipsis;
@@ -2121,7 +2208,7 @@ def _threads_v5_card_styles() -> str:
     flex: 1 1 auto;
     min-width: 0;
 }
-.threads-v5-subthread-edit-btn {
+.threads-subthread-edit-btn {
     background: transparent;
     border: none;
     padding: 2px 6px;
@@ -2130,12 +2217,12 @@ def _threads_v5_card_styles() -> str:
     border-radius: 3px;
     flex: 0 0 auto;
 }
-.threads-v5-subthread-edit-btn:hover {
+.threads-subthread-edit-btn:hover {
     color: var(--accent, #4a7fc1);
     background: var(--bg-tertiary, #1a1a1a);
 }
 
-.threads-v5-subthread-loading {
+.threads-subthread-loading {
     color: var(--text-muted, #888);
     font-size: 12px;
     font-style: italic;
@@ -2143,12 +2230,12 @@ def _threads_v5_card_styles() -> str:
 }
 
 /* Wave I — sub-thread aggregated state badges */
-.threads-v5-state-badges {
+.threads-state-badges {
     margin-top: 6px;
     font-size: 11px;
     color: var(--text-muted, #888);
 }
-.threads-v5-state-badge {
+.threads-state-badge {
     display: inline-block;
     padding: 1px 6px;
     border-radius: 8px;
@@ -2160,11 +2247,11 @@ def _threads_v5_card_styles() -> str:
 }
 
 /* Wave C — timeline / event-log link */
-.threads-v5-timeline-link-row {
+.threads-timeline-link-row {
     margin-top: 10px;
     text-align: right;
 }
-.threads-v5-timeline-link {
+.threads-timeline-link {
     color: var(--text-muted, #888);
     text-decoration: none;
     font-size: 11px;
@@ -2173,17 +2260,17 @@ def _threads_v5_card_styles() -> str:
     gap: 4px;
     cursor: pointer;
 }
-.threads-v5-timeline-link:hover {
+.threads-timeline-link:hover {
     color: var(--accent, #4a7fc1);
 }
 
 /* Context-item inspector table in the right pane. */
-.threads-v5-ci-table {
+.threads-ci-table {
     width: 100%;
     border-collapse: collapse;
     font-size: 13px;
 }
-.threads-v5-ci-table th {
+.threads-ci-table th {
     text-align: left;
     color: var(--text-muted, #888);
     font-weight: 500;
@@ -2191,18 +2278,18 @@ def _threads_v5_card_styles() -> str:
     width: 30%;
     vertical-align: top;
 }
-.threads-v5-ci-table td {
+.threads-ci-table td {
     padding: 4px 0;
     vertical-align: top;
     word-break: break-word;
 }
-.threads-v5-ci-payload-header {
+.threads-ci-payload-header {
     padding-top: 12px !important;
     color: var(--text, #ddd) !important;
     font-weight: 600 !important;
     border-top: 1px solid var(--border, #333);
 }
-.threads-v5-ci-table code {
+.threads-ci-table code {
     font-family: ui-monospace, monospace;
     font-size: 12px;
     background: var(--bg, #1a1a1a);
@@ -2210,17 +2297,55 @@ def _threads_v5_card_styles() -> str:
     border-radius: 3px;
 }
 
+/* Multi-line payload block — preserves newlines, scrolls vertically
+ * once content exceeds ~6 lines so the inspector stays readable
+ * even for journal segments (raw_text) or pasted JSON blobs. */
+.threads-ci-payload-block {
+    margin: 2px 0;
+    padding: 8px 10px;
+    background: var(--bg, #1a1a1a);
+    border: 1px solid var(--border, #333);
+    border-radius: 4px;
+    font-family: ui-monospace, SFMono-Regular, monospace;
+    font-size: 12px;
+    line-height: 1.45;
+    color: var(--text, #ddd);
+    /* ~6 lines visible; scroll past that. ``ch`` for horizontal
+     * sanity, but mostly we expect long vertical content. */
+    max-height: calc(1.45em * 6 + 16px);
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    /* Soft border accent based on language to hint type — JSON gets
+     * a slightly different shade than plain text. */
+}
+.threads-ci-payload-block[data-lang="json"] {
+    border-left: 3px solid var(--accent, #4a7fc1);
+}
+.threads-ci-payload-block[data-lang="text"] {
+    border-left: 3px solid var(--text-muted, #555);
+}
+
+.threads-ci-payload-link {
+    color: var(--accent, #4a7fc1);
+    text-decoration: none;
+    word-break: break-all;
+}
+.threads-ci-payload-link:hover {
+    text-decoration: underline;
+}
+
 /* Clarification card */
-.threads-v5-clarify-body {
+.threads-clarify-body {
     padding: 20px;
     display: block;
 }
-.threads-v5-clarify-prompt {
+.threads-clarify-prompt {
     color: var(--text, #ddd);
     font-size: 14px;
     margin: 0 0 12px 0;
 }
-.threads-v5-clarify-textarea {
+.threads-clarify-textarea {
     width: 100%;
     padding: 10px 12px;
     background: var(--bg, #0a0a0a);
@@ -2232,25 +2357,25 @@ def _threads_v5_card_styles() -> str:
     resize: vertical;
     margin-bottom: 14px;
 }
-.threads-v5-clarify-context { margin-top: 12px; }
+.threads-clarify-context { margin-top: 12px; }
 
 /* Review card */
-.threads-v5-review-body {
+.threads-review-body {
     padding: 20px;
     display: block;
 }
-.threads-v5-review-status {
+.threads-review-status {
     font-size: 14px;
     color: var(--text, #ddd);
     margin-bottom: 8px;
     font-weight: 600;
 }
-.threads-v5-review-summary {
+.threads-review-summary {
     color: var(--text-muted, #aaa);
     margin-bottom: 8px;
     font-size: 13px;
 }
-.threads-v5-review-output {
+.threads-review-output {
     background: var(--bg, #0a0a0a);
     border: 1px solid var(--border, #333);
     border-radius: 6px;
@@ -2260,22 +2385,22 @@ def _threads_v5_card_styles() -> str:
     max-height: 280px;
     color: var(--text-muted, #aaa);
 }
-.threads-v5-review-run {
+.threads-review-run {
     font-size: 12px;
     color: var(--text-muted, #888);
 }
-.threads-v5-review-run code {
+.threads-review-run code {
     background: var(--bg, #0a0a0a);
     padding: 1px 6px;
     border-radius: 3px;
 }
 
 /* Redirect card */
-.threads-v5-redirect-body {
+.threads-redirect-body {
     padding: 20px;
     display: block;
 }
-.threads-v5-redirect-failure {
+.threads-redirect-failure {
     background: #2c1c1c;
     color: #f3a3a3;
     padding: 10px 14px;
@@ -2283,17 +2408,17 @@ def _threads_v5_card_styles() -> str:
     margin-bottom: 14px;
     font-size: 13px;
 }
-.threads-v5-redirect-failure code {
+.threads-redirect-failure code {
     background: rgba(0,0,0,0.4);
     padding: 1px 6px;
     border-radius: 3px;
 }
-.threads-v5-redirect-prompt {
+.threads-redirect-prompt {
     color: var(--text, #ddd);
     margin: 0 0 8px 0;
     font-size: 14px;
 }
-.threads-v5-redirect-textarea {
+.threads-redirect-textarea {
     width: 100%;
     padding: 10px 12px;
     background: var(--bg, #0a0a0a);
@@ -2306,11 +2431,11 @@ def _threads_v5_card_styles() -> str:
 }
 
 /* Cleanup-failure card */
-.threads-v5-cleanup-fail-body {
+.threads-cleanup-fail-body {
     padding: 20px;
     display: block;
 }
-.threads-v5-cleanup-fail-banner {
+.threads-cleanup-fail-banner {
     background: #4a2424;
     color: #fbcaca;
     padding: 10px 14px;
@@ -2318,7 +2443,7 @@ def _threads_v5_card_styles() -> str:
     margin-bottom: 14px;
     font-size: 13px;
 }
-.threads-v5-cleanup-fail-detail {
+.threads-cleanup-fail-detail {
     color: var(--text-muted, #aaa);
     font-size: 13px;
     margin-bottom: 12px;

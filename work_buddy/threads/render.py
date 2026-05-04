@@ -3,7 +3,7 @@
 Converts a Thread + its event log into the JSON shape the
 confirmation card consumes. UX.md §4 + per-section data shapes.
 
-Stage 4.3 deliverable. The builder is pure (no FSM mutations);
+The builder is pure (no FSM mutations);
 the endpoints layer on top of this.
 """
 
@@ -72,10 +72,17 @@ def build_render_data(thread_id: str) -> Optional[dict[str, Any]]:
     # context_inferred events that added to the list. For 4.3 we
     # use thread.context_items as source of truth — Stage 4.5+
     # consolidates the two.
+    #
+    # Stage 5 v2: we MUST preserve ``ContextItem.id`` (the canonical
+    # source-pipeline-assigned id like ``journal_t_926fa6`` or a
+    # Chrome tab id) because the ``threads.group.move_item``
+    # operation targets items by their stable id. Synthetic
+    # display-only ``ci-{i}`` indexes break the move endpoint.
     context_items = []
     for i, ci in enumerate(thread.context_items, start=1):
         context_items.append({
-            "id": f"ci-{i}",
+            "id": ci.id,
+            "display_index": i,  # 1-based display order
             "label": ci.label or ci.id,
             "source": ci.source,
             "type": ci.type,
@@ -251,6 +258,13 @@ def build_render_data(thread_id: str) -> Optional[dict[str, Any]]:
         "can_clean_up": cleanup.can_clean_up(thread),
         "sub_thread_count": sub_count,
         "sub_thread_state_counts": sub_thread_state_counts,
+        # relationship discriminator + sibling-scope id. The
+        # frontend uses these to choose between the standard sub-thread
+        # mini-card list (decompose) and the multi-column group view
+        # (group). Always emitted so the dashboard can rely on the
+        # field being present.
+        "parent_relationship": getattr(thread, "parent_relationship", "decompose"),
+        "originating_scrape_id": getattr(thread, "originating_scrape_id", None),
         "has_been_later": _has_been_later(events),
         "resurface_at": getattr(thread, "resurface_at", None),
         "parent_event_id": thread.parent_event_id,
@@ -454,7 +468,7 @@ def _latest_cleanup_failure(events) -> Optional[dict[str, Any]]:
 def _attach_context_status(action: dict[str, Any]) -> dict[str, Any]:
     """Add a `context_statuses` field to an action dict.
 
-    Stage 4.11: each required-context token gets an availability
+    each required-context token gets an availability
     status object so the UI can render the per-action indicator.
     """
     try:

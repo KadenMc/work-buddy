@@ -1,6 +1,6 @@
 """Autonomy composition — Omegaconf-style merging of policies.
 
-Stage 2.7 deliverable. Per DESIGN.md §11, autonomy is **a per-Thread
+Per DESIGN.md §11, autonomy is **a per-Thread
 policy composed from orthogonal axes**, not an enum. Saved
 compositions get names for reuse; the name is just a saved
 composition.

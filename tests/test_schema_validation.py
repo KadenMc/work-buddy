@@ -200,32 +200,36 @@ check(
 )
 
 
-# ── Test 5: Chrome-triage store loading ─────────────────────────
+# ── Test 5: Store loading parses result_schema ─────────────────
 
-print("\n=== Test 5: Chrome-triage workflow from knowledge store ===")
+print("\n=== Test 5: result_schema parsed from knowledge store ===")
 
+# task-new is a stable fixture: two reasoning steps (plan, confirm) carry
+# result_schema. Validates that _discover_workflows_from_store correctly
+# threads result_schema through into WorkflowStep.
 store_wfs = _discover_workflows_from_store()
-wf = next((w for w in store_wfs if w.name == "chrome-triage"), None)
+wf = next((w for w in store_wfs if w.name == "task-new"), None)
 check("Workflow loaded from store", wf is not None)
-check("11 steps", wf is not None and len(wf.steps) == 11, f"got {len(wf.steps) if wf else 0}")
 
 if wf:
     step_lookup = {s.id: s for s in wf.steps}
-    rac = step_lookup.get("resolve-and-clarify")
+    plan = step_lookup.get("plan")
     check(
-        "resolve-and-clarify has result_schema",
-        rac is not None and rac.result_schema is not None,
+        "plan has result_schema",
+        plan is not None and plan.result_schema is not None,
     )
     check(
         "result_schema has required_keys",
-        rac.result_schema.get("required_keys") == ["groups_by_action", "total_groups", "total_items"],
-        str(rac.result_schema.get("required_keys")),
+        plan is not None
+        and plan.result_schema is not None
+        and plan.result_schema.get("required_keys") == ["task_text"],
+        str(plan.result_schema.get("required_keys")) if plan and plan.result_schema else "",
     )
 
-    br = step_lookup.get("build-recommendations")
+    confirm = step_lookup.get("confirm")
     check(
-        "build-recommendations has result_schema",
-        br is not None and br.result_schema is not None,
+        "confirm has result_schema",
+        confirm is not None and confirm.result_schema is not None,
     )
 
 

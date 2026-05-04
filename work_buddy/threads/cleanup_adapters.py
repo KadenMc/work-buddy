@@ -1,7 +1,7 @@
 """Cleanup adapter implementations.
 
 Each adapter knows how to mutate one inciting source.
-Stage 4.4 ships the journal-note adapter (the canonical case);
+This module ships the journal-note adapter (the canonical case);
 Stage 4.13 adds the Chrome adapter.
 
 Per UX.md §6:
@@ -152,17 +152,17 @@ def register_default_adapters() -> None:
     # Stage 4.13 — Chrome-tab adapter ships as a stub (closing tabs
     # from Python isn't supported by the existing native-messaging
     # host). The stub registers so the UI's Clean Up button shows on
-    # Chrome-tab Threads with an honest "not yet wired" message
-    # rather than disappearing.
+    # Chrome-tab Threads (legacy per-tab sub-threads) — adapter now
+    # calls the working ``chrome_collector.close_tabs`` mutator.
     try:
-        from work_buddy.threads.source_pipelines import (
+        from work_buddy.collectors.chrome_cleanup_adapter import (
             register_chrome_tab_cleanup_adapter,
         )
         register_chrome_tab_cleanup_adapter()
         logger.info(
-            "v5 cleanup: registered default adapters "
-            "[journal_note, chrome_tab(stub)]",
+            "cleanup: registered default adapters "
+            "[journal_note, chrome_tab]",
         )
     except Exception as e:
         logger.warning("Chrome-tab adapter registration failed: %s", e)
-        logger.info("v5 cleanup: registered default adapters [journal_note]")
+        logger.info("cleanup: registered default adapters [journal_note]")

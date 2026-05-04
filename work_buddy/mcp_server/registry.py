@@ -712,7 +712,33 @@ def _warm_knowledge_index() -> None:
     # Build dense vectors in background (embedding service may be slow).
     # Two parallel signals: content (asymmetric 768-d) and aliases (symmetric
     # 1024-d). Each is independent — if one fails, the other still lands.
+    #
+    # Cold-start race fix (2026-05-04): the warmup thread previously fired
+    # embed batches immediately after the registry build, which was often
+    # 30-40s before the embedding service finished its first model load.
+    # The batches timed out, the service returned None, and the user saw
+    # ``Embedding service unavailable during knowledge alias dense build``
+    # warnings on every cold sidecar start. Now we poll
+    # ``embedding.client.wait_until_available`` (~30s budget) before either
+    # build fires. If the wait times out we log an INFO line and return —
+    # search still works via BM25 fallback; the next periodic rebuild
+    # picks up the dense signals once the service warms up.
     def _build_dense() -> None:
+        try:
+            from work_buddy.embedding.client import wait_until_available
+        except Exception as e:  # defensive — embedding module shouldn't fail to import
+            logger.info(
+                "knowledge-dense-warmup: embedding client unavailable "
+                "(%s); skipping dense build for this cycle.", e,
+            )
+            return
+        if not wait_until_available(timeout_s=30.0, interval_s=0.5):
+            logger.info(
+                "knowledge-dense-warmup: embedding service didn't reach "
+                "'ok' within 30s; skipping dense build. Search will use "
+                "BM25-only ranking until the next periodic rebuild.",
+            )
+            return
         try:
             idx._build_content_vectors(expected_generation=gen)
         except Exception:
@@ -775,6 +801,8 @@ def _build_registry() -> dict[str, Capability | WorkflowDefinition]:
         ("status", _status_capabilities),
         ("journal", _journal_capabilities),
         ("memory", _memory_capabilities),
+        ("pipelines", _pipeline_capabilities),
+        ("threads", _thread_capabilities),
         ("tasks", _task_capabilities),
         ("context", _context_capabilities),
         ("projects", _project_capabilities),
@@ -2319,10 +2347,20 @@ def _context_capabilities() -> list[Capability]:
         ),
 
         # ── Chrome tab mutations ────────────────────────────────
+        # All three are flagged is_action=True so they show up in
+        # the per-source action library / action chip dropdown for
+        # Chrome group sub-threads. The thread-level route capabilities
+        # (chrome_route_to_tasks, chrome_route_to_umbrella_task) are
+        # registered alongside.
         Capability(
             name="chrome_tab_close",
-            description="Close specified Chrome tabs by tab ID. Returns count of closed/missing tabs. Use after triage decisions.",
+            description="Close specified Chrome tabs by tab ID. Returns count of closed/missing tabs.",
             category="context",
+            is_action=True,
+            intrinsic_amplifiers={
+                "irreversibility": "moderate",
+                "regret_potential": "moderate",
+            },
             parameters={
                 "tab_ids": {"type": "list", "description": "List of Chrome tab IDs (integers) to close", "required": True},
             },
@@ -2343,6 +2381,11 @@ def _context_capabilities() -> list[Capability]:
             name="chrome_tab_group",
             description="Create a Chrome tab group or add tabs to an existing group. Returns the group ID.",
             category="context",
+            is_action=True,
+            intrinsic_amplifiers={
+                "irreversibility": "low",
+                "regret_potential": "low",
+            },
             parameters={
                 "tab_ids": {"type": "list", "description": "List of Chrome tab IDs to group", "required": True},
                 "title": {"type": "str", "description": "Group title displayed in Chrome", "required": False},
@@ -2366,6 +2409,11 @@ def _context_capabilities() -> list[Capability]:
             name="chrome_tab_move",
             description="Move Chrome tabs to a specific position or window.",
             category="context",
+            is_action=True,
+            intrinsic_amplifiers={
+                "irreversibility": "low",
+                "regret_potential": "low",
+            },
             parameters={
                 "tab_ids": {"type": "list", "description": "List of Chrome tab IDs to move", "required": True},
                 "index": {"type": "int", "description": "Position index (-1 = end of window)", "required": False},
@@ -2382,6 +2430,66 @@ def _context_capabilities() -> list[Capability]:
             ],
             requires=["chrome_extension"],
             mutates_state=True,
+        ),
+        Capability(
+            name="chrome_route_to_tasks",
+            description=(
+                "Walk a Chrome-group thread's tabs and create one task "
+                "per tab. Each tab's title becomes the task text; the "
+                "URL goes into a linked summary note."
+            ),
+            category="context",
+            is_action=True,
+            intrinsic_amplifiers={
+                "irreversibility": "low",
+                "regret_potential": "low",
+            },
+            parameters={
+                "thread_id": {"type": "str", "description": "Chrome group sub-thread to route", "required": True},
+                "urgency": {"type": "str", "description": "low | medium (default) | high", "required": False},
+                "project": {"type": "str", "description": "Project slug applied to every created task", "required": False},
+            },
+            callable=(lambda **kw: __import__(
+                "work_buddy.collectors.chrome_thread_actions",
+                fromlist=["chrome_route_to_tasks"],
+            ).chrome_route_to_tasks(**kw)),
+            requires=["obsidian"],
+            mutates_state=True,
+            search_aliases=[
+                "create tasks from chrome group",
+                "tabs to task list",
+                "spin out tabs as tasks",
+            ],
+        ),
+        Capability(
+            name="chrome_route_to_umbrella_task",
+            description=(
+                "Create a single task representing the whole Chrome "
+                "group. The cluster label becomes the task text; the "
+                "tabs are listed in the linked summary note."
+            ),
+            category="context",
+            is_action=True,
+            intrinsic_amplifiers={
+                "irreversibility": "low",
+                "regret_potential": "low",
+            },
+            parameters={
+                "thread_id": {"type": "str", "description": "Chrome group sub-thread to route", "required": True},
+                "urgency": {"type": "str", "description": "low | medium (default) | high", "required": False},
+                "project": {"type": "str", "description": "Project slug for the task", "required": False},
+                "title_override": {"type": "str", "description": "Override the task text; defaults to the cluster label", "required": False},
+            },
+            callable=(lambda **kw: __import__(
+                "work_buddy.collectors.chrome_thread_actions",
+                fromlist=["chrome_route_to_umbrella_task"],
+            ).chrome_route_to_umbrella_task(**kw)),
+            requires=["obsidian"],
+            mutates_state=True,
+            search_aliases=[
+                "create umbrella task from chrome group",
+                "single task for tab group",
+            ],
         ),
         Capability(
             name="llm_costs",
@@ -3293,45 +3401,13 @@ def _journal_capabilities() -> list[Capability]:
         # work_buddy/threads/ for any future debugging needs but is
         # no longer registered as a callable capability.
 
-        # ── v5 journal scan (canonical journal → Thread path) ────
-        # Distinct from the v4 ``journal_triage_scan``: this skips the
-        # v4 verdict-pass + ClarifyPool layer and writes straight to
-        # v5 Threads. Once Stage 4.14 retires the v4 pool, this
-        # becomes the only journal-to-thread path and the v4 capability
-        # is removed.
-        Capability(
-            name="journal_v5_scan",
-            description=(
-                "Segment today's journal Running Notes section into "
-                "individual v5 Threads (one per candidate). Each spawned "
-                "Thread carries inciting source='journal_note' so the "
-                "journal-note cleanup adapter applies — clicking 'Clean "
-                "Up' in the v5 Threads tab will delete the inciting "
-                "line. Threads default to the plan_then_review autonomy "
-                "policy: the agent auto-advances through intent + "
-                "context inference and pauses at action approval. "
-                "Idempotent on unchanged content; safe to run repeatedly."
-            ),
-            category="journal",
-            search_aliases=[
-                "v5 journal scan",
-                "journal v5",
-                "spawn v5 threads from journal",
-                "daily journal threads",
-            ],
-            parameters={
-                "journal_date": {"type": "str", "description": "YYYY-MM-DD. Default: today.", "required": False},
-                "profile": {"type": "str", "description": "Override the configured triage.segment_profile.", "required": False},
-                "dry_run": {"type": "bool", "description": "Segment + return items without spawning Threads.", "required": False},
-            },
-            callable=(lambda **kw: __import__(
-                "work_buddy.threads.journal_v5_scan",
-                fromlist=["journal_v5_scan"],
-            ).journal_v5_scan(**kw)),
-            requires=["obsidian"],
-            mutates_state=True,
-            auto_retry=False,
-        ),
+        # The legacy ``journal_v5_scan`` capability is gone — the
+        # canonical entry point is now ``run_source_pipeline`` (see
+        # ``_pipeline_capabilities()``), which dispatches to
+        # ``JournalBacklogPipeline`` end-to-end. The unified pipeline
+        # subsumes segmentation + manifest tagging + clustering + LLM
+        # refinement + per-cluster action proposals into one call.
+
         # ── Inline-selection triage producer ────────────────────
         Capability(
             name="inline_triage_scan",
@@ -3373,6 +3449,136 @@ def _journal_capabilities() -> list[Capability]:
             requires=["obsidian"],
             mutates_state=True,
             auto_retry=False,
+        ),
+        # ----------------------------------------------------------------
+        # Journal-backlog per-thread actions — backing the journal
+        # pipeline's per-group action library. Each walks the target
+        # thread's ``context_items`` and routes through the existing
+        # ``journal_backlog/route.py`` primitives (consent-gated).
+        # ----------------------------------------------------------------
+        Capability(
+            name="journal_route_to_tasks",
+            description=(
+                "Walk a journal-group thread's context items and create "
+                "one task per item in the master task list. Each item's "
+                "label becomes the task text. Continue-on-error: a single "
+                "failed item doesn't block the rest."
+            ),
+            category="journal",
+            is_action=True,
+            intrinsic_amplifiers={
+                "irreversibility": "low",
+                "regret_potential": "low",
+            },
+            parameters={
+                "thread_id": {"type": "str", "description": "Group sub-thread to route", "required": True},
+                "vault_root": {"type": "str", "description": "Override the configured vault root", "required": False},
+                "urgency": {"type": "str", "description": "low | medium (default) | high", "required": False},
+                "project": {"type": "str", "description": "Project slug applied to every created task", "required": False},
+            },
+            callable=(lambda **kw: __import__(
+                "work_buddy.journal_backlog.thread_actions",
+                fromlist=["journal_route_to_tasks"],
+            ).journal_route_to_tasks(**kw)),
+            requires=["obsidian"],
+            mutates_state=True,
+            search_aliases=[
+                "create tasks from journal group",
+                "route group to task list",
+                "spin out group as tasks",
+            ],
+        ),
+        Capability(
+            name="journal_route_to_considerations",
+            description=(
+                "Walk a journal-group thread's context items and create "
+                "one consideration note per item. Each item's label "
+                "becomes the title; raw text becomes the body."
+            ),
+            category="journal",
+            is_action=True,
+            intrinsic_amplifiers={
+                "irreversibility": "low",
+                "regret_potential": "low",
+            },
+            parameters={
+                "thread_id": {"type": "str", "description": "Group sub-thread to route", "required": True},
+                "vault_root": {"type": "str", "description": "Override the configured vault root", "required": False},
+                "project": {"type": "str", "description": "Project slug for all new considerations (default 'inbox')", "required": False},
+                "type": {"type": "str", "description": "Consideration type (default 'consideration')", "required": False},
+                "status": {"type": "str", "description": "Initial status (default 'open')", "required": False},
+            },
+            callable=(lambda **kw: __import__(
+                "work_buddy.journal_backlog.thread_actions",
+                fromlist=["journal_route_to_considerations"],
+            ).journal_route_to_considerations(**kw)),
+            requires=["obsidian"],
+            mutates_state=True,
+            search_aliases=[
+                "create considerations from journal group",
+                "route group to considerations",
+            ],
+        ),
+        Capability(
+            name="journal_append_to_note",
+            description=(
+                "Append all items in a journal-group thread as bullets "
+                "to a single existing vault note. Useful for "
+                "project-observation clusters."
+            ),
+            category="journal",
+            is_action=True,
+            intrinsic_amplifiers={
+                "irreversibility": "low",
+                "regret_potential": "low",
+            },
+            parameters={
+                "thread_id": {"type": "str", "description": "Group sub-thread to route", "required": True},
+                "note_path": {"type": "str", "description": "Vault-relative note to append to", "required": True},
+                "vault_root": {"type": "str", "description": "Override the configured vault root", "required": False},
+                "bullet_prefix": {"type": "str", "description": "Bullet marker (default '- ')", "required": False},
+            },
+            callable=(lambda **kw: __import__(
+                "work_buddy.journal_backlog.thread_actions",
+                fromlist=["journal_append_to_note"],
+            ).journal_append_to_note(**kw)),
+            requires=["obsidian"],
+            mutates_state=True,
+            search_aliases=[
+                "append journal group to note",
+                "log group items to project note",
+            ],
+        ),
+        Capability(
+            name="journal_rewrite_running_notes",
+            description=(
+                "Remove processed lines from today's daily note. "
+                "Consent-gated wrapper around "
+                "``journal_backlog.rewrite_running_notes``. Umbrella-"
+                "level cleanup: typically run after all the umbrella's "
+                "groups have been routed."
+            ),
+            category="journal",
+            is_action=True,
+            intrinsic_amplifiers={
+                "irreversibility": "moderate",
+                "regret_potential": "moderate",
+            },
+            parameters={
+                "preview": {"type": "dict", "description": "Output of build_rewrite_preview", "required": True},
+                "vault_root": {"type": "str", "description": "Override the configured vault root", "required": False},
+            },
+            callable=(lambda **kw: __import__(
+                "work_buddy.journal_backlog.rewrite",
+                fromlist=["rewrite_running_notes"],
+            ).rewrite_running_notes(**kw)),
+            requires=["obsidian"],
+            mutates_state=True,
+            search_aliases=[
+                "rewrite daily note",
+                "remove processed journal lines",
+                "clean up running notes",
+            ],
         ),
     ]
 
@@ -3983,6 +4189,134 @@ def _task_capabilities() -> list[Capability]:
                 "how many active commitments",
                 "over WIP",
             ],
+        ),
+    ]
+
+
+def _pipeline_capabilities() -> list[Capability]:
+    """The unified ``run_source_pipeline`` entry point.
+
+    Replaces the per-source ``journal_v5_scan`` capability and serves
+    as the single MCP/wb_run entry for triggering any source-pipeline
+    run (Chrome, journal, future). Slash commands +
+    ``daily-journal/process-backlog`` workflow dispatch through this.
+    """
+    from work_buddy.pipelines.capability import run_source_pipeline
+
+    return [
+        Capability(
+            name="run_source_pipeline",
+            description=(
+                "Run an end-to-end source pipeline: collect raw items, "
+                "annotate with LLM tags + summary, embedding-cluster, "
+                "Sonnet-refine cluster boundaries + per-cluster action "
+                "proposals, and spawn a group umbrella thread + group "
+                "sub-threads with the items as ContextItems. Replaces "
+                "the per-source journal/chrome scan entry points."
+            ),
+            category="threads",
+            parameters={
+                "source": {"type": "str", "description": "Registered pipeline name (e.g. 'chrome_triage', 'journal_backlog')", "required": True},
+                "journal_date": {"type": "str", "description": "Journal pipeline: YYYY-MM-DD; defaults to today", "required": False},
+                "profile": {"type": "str", "description": "Journal pipeline: override segmentation tier profile", "required": False},
+                "engagement_window": {"type": "str", "description": "Chrome pipeline: engagement lookback (e.g. '12h', '24h')", "required": False},
+                "include_summaries": {"type": "bool", "description": "Chrome pipeline: attach cached Haiku summaries (default True)", "required": False},
+                "summary": {"type": "str", "description": "Chrome pipeline: human-readable scrape summary for the umbrella title", "required": False},
+                "scrape_id": {"type": "str", "description": "Chrome pipeline: per-scrape id surfaced in audit metadata", "required": False},
+            },
+            callable=run_source_pipeline,
+            mutates_state=True,
+            search_aliases=[
+                "run pipeline",
+                "process backlog",
+                "scan journal",
+                "triage chrome",
+                "run source pipeline",
+                "spawn group threads",
+            ],
+        ),
+    ]
+
+
+def _thread_capabilities() -> list[Capability]:
+    """Universal thread actions — apply to any thread regardless of
+    source. Wired into the per-source action library by the pipelines
+    runner so every group sub-thread carries dismiss / defer / rename
+    affordances on its action chip alongside any source-specific
+    actions.
+    """
+    from work_buddy.threads.universal_actions import (
+        thread_defer,
+        thread_dismiss,
+        thread_rename,
+    )
+
+    return [
+        Capability(
+            name="thread_dismiss",
+            description=(
+                "Mark a thread as dismissed via the standard FSM "
+                "transition. For group sub-threads this is the "
+                "'do nothing with this cluster' action. For umbrellas "
+                "it cascades through the existing dismiss flow."
+            ),
+            category="threads",
+            is_action=True,
+            intrinsic_amplifiers={
+                "irreversibility": "low",
+                "regret_potential": "low",
+            },
+            parameters={
+                "thread_id": {"type": "str", "description": "Thread to dismiss", "required": True},
+                "reason": {"type": "str", "description": "Optional free-text reason recorded on the dismiss event", "required": False},
+            },
+            callable=thread_dismiss,
+            mutates_state=True,
+            search_aliases=["dismiss thread", "skip thread", "ignore thread", "drop thread"],
+        ),
+        Capability(
+            name="thread_defer",
+            description=(
+                "Defer a thread so it resurfaces at a future time. "
+                "Sets the cached resurface_at field; the existing Later "
+                "mechanic re-surfaces the thread when the time arrives."
+            ),
+            category="threads",
+            is_action=True,
+            intrinsic_amplifiers={
+                "irreversibility": "low",
+                "regret_potential": "low",
+            },
+            parameters={
+                "thread_id": {"type": "str", "description": "Thread to defer", "required": True},
+                "duration_hours": {"type": "float", "description": "Hours to wait before resurfacing (default 24)", "required": False},
+                "resurface_at": {"type": "str", "description": "Absolute ISO timestamp to resurface at (overrides duration_hours)", "required": False},
+            },
+            callable=thread_defer,
+            mutates_state=True,
+            search_aliases=["snooze thread", "later", "remind me later", "defer thread"],
+        ),
+        Capability(
+            name="thread_rename",
+            description=(
+                "Rewrite a thread's title (and description) — used by "
+                "the action-chip 'Rename' affordance and by the LLM "
+                "cluster-refinement step when it overrides an "
+                "algorithmic cluster label."
+            ),
+            category="threads",
+            is_action=True,
+            intrinsic_amplifiers={
+                "irreversibility": "low",
+                "regret_potential": "low",
+            },
+            parameters={
+                "thread_id": {"type": "str", "description": "Thread to rename", "required": True},
+                "new_title": {"type": "str", "description": "New title (also used as description)", "required": True},
+            },
+            callable=thread_rename,
+            mutates_state=True,
+            search_aliases=["rename thread", "change thread title", "edit cluster label"],
         ),
     ]
 

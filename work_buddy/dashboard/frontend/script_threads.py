@@ -11,7 +11,7 @@ UX.md §2 (navigation) and §11 (URLs) are the spec.
 from __future__ import annotations
 
 
-def _threads_v5_script() -> str:
+def _threads_script() -> str:
     return r"""
 // ===========================================================================
 // Threads tab v5 — Stage 4.1 URL routing + recursive UI scaffold
@@ -165,14 +165,14 @@ def _threads_v5_script() -> str:
         // cached. The cache is populated by renderThreadDetail's
         // fetch, so by the time the breadcrumb renders fully, the
         // titles are usually available.
-        let html = '<nav class="threads-v5-breadcrumbs">';
-        html += '<button class="threads-v5-back" '
+        let html = '<nav class="threads-breadcrumbs">';
+        html += '<button class="threads-back" '
               + 'onclick="threadsBack()" '
               + (path.length === 0 ? 'disabled' : '')
               + ' title="Back">&larr; Back</button>';
-        html += '<span class="threads-v5-crumb-sep">Threads</span>';
+        html += '<span class="threads-crumb-sep">Threads</span>';
         for (let i = 0; i < path.length; i++) {
-            html += '<span class="threads-v5-crumb-sep">/</span>';
+            html += '<span class="threads-crumb-sep">/</span>';
             const isLast = (i === path.length - 1);
             const segment = path[i];
             const cached = (window._threadDetailCache || {})[segment];
@@ -189,13 +189,13 @@ def _threads_v5_script() -> str:
             }
             const titleAttr = ' title="' + _esc(fullTitle) + '"';
             if (isLast) {
-                html += '<span class="threads-v5-crumb threads-v5-crumb-current"'
+                html += '<span class="threads-crumb threads-crumb-current"'
                       + titleAttr + '>'
                       + _esc(label) + '</span>';
             } else {
                 const subPath = path.slice(0, i + 1);
                 const json = JSON.stringify(subPath).replace(/"/g, "&quot;");
-                html += '<a href="#" class="threads-v5-crumb"' + titleAttr + ' '
+                html += '<a href="#" class="threads-crumb"' + titleAttr + ' '
                       + 'onclick="event.preventDefault();threadsSetPath('
                       + json + ')">' + _esc(label) + '</a>';
             }
@@ -263,20 +263,16 @@ def _threads_v5_script() -> str:
         renderThreads();
     };
 
-    // Run journal_v5_scan via the dashboard's MCP-style endpoint.
-    // Falls back to a friendly message on error so the empty-state
-    // CTA never throws an unhandled rejection.
+    // Trigger the journal-backlog source pipeline via the dashboard's
+    // gateway shim. Falls back to a friendly message on error so the
+    // empty-state CTA never throws an unhandled rejection.
     window.threadsRunJournalScan = function () {
-        const btns = document.querySelectorAll('.threads-v5-empty-cta');
+        const btns = document.querySelectorAll('.threads-empty-cta');
         for (const b of btns) { b.disabled = true; }
-        // The dashboard exposes `/api/run/<capability>` as a
-        // gateway shim so we can trigger capabilities from the UI.
-        // If that route doesn't exist (the capability has to come
-        // from the MCP gateway), we surface a helpful message.
-        fetch('/api/run/journal_v5_scan', {
+        fetch('/api/run/run_source_pipeline', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({}),
+            body: JSON.stringify({source: 'journal_backlog'}),
         })
             .then(r => r.ok ? r.json() : Promise.reject(r.status))
             .then(data => {
@@ -285,8 +281,9 @@ def _threads_v5_script() -> str:
             })
             .catch(err => {
                 alert('Could not run scan: ' + err
-                      + '. Run "journal_v5_scan" via the MCP gateway '
-                      + '(e.g. wb_run from an agent), or open Obsidian '
+                      + '. Run "run_source_pipeline" via the MCP '
+                      + 'gateway (e.g. wb_run from an agent with '
+                      + 'source="journal_backlog"), or open Obsidian '
                       + 'and ensure the work-buddy plugin is enabled.');
                 for (const b of btns) { b.disabled = false; }
             });
@@ -314,7 +311,7 @@ def _threads_v5_script() -> str:
                     window._renderActiveThread();
                 }
             });
-        return '<div class="threads-v5-loading">Loading Threads...</div>';
+        return '<div class="threads-loading">Loading Threads...</div>';
     }
 
     function _renderFilterBar() {
@@ -338,12 +335,12 @@ def _threads_v5_script() -> str:
             ['', 'All'],
             ['task', 'Tasks only'],
         ];
-        let html = '<div class="threads-v5-filter-bar">';
-        html += '<input type="text" class="threads-v5-search" '
+        let html = '<div class="threads-filter-bar">';
+        html += '<input type="text" class="threads-search" '
               + 'placeholder="Search threads..." '
               + 'value="' + _esc(f.q) + '" '
               + 'oninput="threadsSetFilter(\'q\', this.value)">';
-        html += '<select class="threads-v5-filter-select" '
+        html += '<select class="threads-filter-select" '
               + 'onchange="threadsSetFilter(\'state\', this.value)">';
         for (const [v, label] of stateOpts) {
             html += '<option value="' + _esc(v) + '"'
@@ -351,7 +348,7 @@ def _threads_v5_script() -> str:
                   + _esc(label) + '</option>';
         }
         html += '</select>';
-        html += '<select class="threads-v5-filter-select" '
+        html += '<select class="threads-filter-select" '
               + 'onchange="threadsSetFilter(\'subtype\', this.value)">';
         for (const [v, label] of subtypeOpts) {
             html += '<option value="' + _esc(v) + '"'
@@ -365,7 +362,7 @@ def _threads_v5_script() -> str:
             ['surface_now', 'Surface now'],
             ['defer', 'Defer'],
         ];
-        html += '<select class="threads-v5-filter-select" '
+        html += '<select class="threads-filter-select" '
               + 'title="Filter by urgency level — surface_now is the '
               + 'subset of threads that have requested immediate '
               + 'attention via the inciting context." '
@@ -376,13 +373,13 @@ def _threads_v5_script() -> str:
                   + _esc(label) + '</option>';
         }
         html += '</select>';
-        html += '<label class="threads-v5-show-later">'
+        html += '<label class="threads-show-later">'
               + '<input type="checkbox"'
               + (f.show_later ? ' checked' : '')
               + ' onchange="threadsSetFilter(\'show_later\', this.checked)">'
               + ' Show deferred</label>';
         // Wave C: has-cleanup filter chip per UX.md §10.3.
-        html += '<label class="threads-v5-show-later" '
+        html += '<label class="threads-show-later" '
               + 'title="Show only threads whose inciting source has a '
               + 'registered cleanup adapter (you can hit Clean Up to '
               + 'mutate the source).">'
@@ -394,7 +391,7 @@ def _threads_v5_script() -> str:
         // actionable-only filter so terminal threads (done /
         // dismissed / handed_off) also show up. Useful for audit
         // and review.
-        html += '<label class="threads-v5-show-later" '
+        html += '<label class="threads-show-later" '
               + 'title="Disable the default actionable-only filter — '
               + 'show ALL threads including done, dismissed, and '
               + 'pre-PROPOSED states.">'
@@ -407,7 +404,7 @@ def _threads_v5_script() -> str:
         // default — these are agent-internal states the user can't
         // act on. Useful for "what's the agent doing right now?"
         // and for debugging.
-        html += '<label class="threads-v5-show-mid-process" '
+        html += '<label class="threads-show-mid-process" '
               + 'title="Show threads currently being inferred or executing — useful for auditing what the agent is doing without surfacing a card.">'
               + '<input type="checkbox"'
               + (f.include_mid_process ? ' checked' : '')
@@ -422,11 +419,11 @@ def _threads_v5_script() -> str:
     };
 
     function _renderTopLevelHtml(threads) {
-        let html = '<div class="threads-v5-top">';
-        html += '<h2>Threads <span class="threads-v5-count">('
+        let html = '<div class="threads-top">';
+        html += '<h2>Threads <span class="threads-count">('
               + (Array.isArray(threads) ? threads.length : 0) + ')</span></h2>';
         html += _renderFilterBar();
-        html += '<p class="threads-v5-kbd-hint">'
+        html += '<p class="threads-kbd-hint">'
               + '<kbd>j</kbd>/<kbd>k</kbd> nav · '
               + '<kbd>Enter</kbd> open · '
               + '<kbd>/</kbd> search · '
@@ -436,7 +433,7 @@ def _threads_v5_script() -> str:
             const f = window._topLevelFilters || {};
             const filtered = !!(f.q || f.state || f.subtype);
             if (filtered) {
-                html += '<p class="threads-v5-empty-state">'
+                html += '<p class="threads-empty-state">'
                       + 'No Threads match the current filters. '
                       + '<a href="#" onclick="threadsClearFilters();return false;">Clear filters</a>'
                       + '</p>';
@@ -445,17 +442,18 @@ def _threads_v5_script() -> str:
                 // and "what should I do." Surfaces the two real
                 // source pipelines so the user can produce some
                 // threads without leaving the dashboard.
-                html += '<div class="threads-v5-empty-state">';
+                html += '<div class="threads-empty-state">';
                 html += '<p>No active Threads. As source scanners run, '
                       + 'they\'ll surface here.</p>';
-                html += '<div class="threads-v5-empty-cta-row">';
-                html += '<button class="threads-v5-empty-cta" '
+                html += '<div class="threads-empty-cta-row">';
+                html += '<button class="threads-empty-cta" '
                       + 'onclick="threadsRunJournalScan()" '
-                      + 'title="Segment today\'s journal Running Notes '
-                      + 'into v5 Threads via the journal_v5_scan capability">'
+                      + 'title="Run the journal-backlog source pipeline '
+                      + 'on today\'s Running Notes (segment + cluster + '
+                      + 'spawn group threads)">'
                       + 'Scan today\'s journal'
                       + '</button>';
-                html += '<button class="threads-v5-empty-cta" '
+                html += '<button class="threads-empty-cta" '
                       + 'onclick="threadsToggleMidProcess()" '
                       + 'title="Show in-flight states (inferring, executing, '
                       + 'monitoring) — useful for auditing what the agent '
@@ -468,7 +466,7 @@ def _threads_v5_script() -> str:
             html += '</div>';
             return html;
         }
-        html += '<ul class="threads-v5-toplist">';
+        html += '<ul class="threads-toplist">';
         for (const t of threads) {
             html += _renderTopLevelCard(t);
         }
@@ -515,18 +513,18 @@ def _threads_v5_script() -> str:
         // the detail view to inspect the event log.
         const isMidProcess = t.display_mode === "mid_process";
         const midProcessClass = isMidProcess
-            ? ' threads-v5-mid-process' : '';
+            ? ' threads-mid-process' : '';
         return (
-            '<li class="threads-v5-toplist-card'
-            + (urgent ? ' threads-v5-urgent' : '')
+            '<li class="threads-toplist-card'
+            + (urgent ? ' threads-urgent' : '')
             + midProcessClass + '" '
             +   'onclick="threadsPushPath(\'' + _esc(t.thread_id) + '\')">'
-            + '<div class="threads-v5-toplist-meta">'
+            + '<div class="threads-toplist-meta">'
             +   (urgent
-                    ? '<span class="threads-v5-urgency-pill high">!</span>'
+                    ? '<span class="threads-urgency-pill high">!</span>'
                     : '')
             +   (hasLater
-                    ? '<span class="threads-v5-later-icon" '
+                    ? '<span class="threads-later-icon" '
                     +   'title="This thread has been deferred at least once">'
                     +   '<svg width="12" height="12" viewBox="0 0 24 24" '
                     +     'fill="none" stroke="currentColor" stroke-width="2" '
@@ -536,24 +534,24 @@ def _threads_v5_script() -> str:
                     +   '</svg>'
                     +   '</span>'
                     : '')
-            +   '<span class="threads-v5-toplist-state">'
+            +   '<span class="threads-toplist-state">'
             +     _esc(stateLabel) + '</span>'
             +   (t.risk_highlight
-                    ? '<span class="threads-v5-toplist-risk-dot '
+                    ? '<span class="threads-toplist-risk-dot '
                     +   _esc(t.risk_highlight) + '" '
                     +   'title="Risk level: ' + _esc(t.risk_highlight)
                     +   '"></span>'
                     : '')
             + '</div>'
-            + '<div class="threads-v5-toplist-title">'
+            + '<div class="threads-toplist-title">'
             +   _esc(t.title || t.thread_id) + '</div>'
-            + '<div class="threads-v5-toplist-intent">'
+            + '<div class="threads-toplist-intent">'
             +   _esc(intent.length > 200
                         ? intent.slice(0, 197) + '...' : intent)
             + '</div>'
-            + '<div class="threads-v5-toplist-row-actions" '
+            + '<div class="threads-toplist-row-actions" '
             +   'onclick="event.stopPropagation()">'
-            +   '<button class="threads-v5-btn-icon" '
+            +   '<button class="threads-btn-icon" '
             +     'title="Later — left-click defers 6h; right-click for options" '
             +     'onclick="threadCommitAction(\'' + _esc(t.thread_id)
             +     '\', \'later\', {hours: 6})" '
@@ -579,11 +577,22 @@ def _threads_v5_script() -> str:
         // until the user commits something (Accept / Redirect /
         // etc.) which calls invalidateThreadCache.
         if (typeof window.renderConfirmationCard !== "function") {
-            return '<div class="threads-v5-detail">'
+            return '<div class="threads-detail">'
                  + '<p>Card module not loaded.</p></div>';
         }
         const cached = window._threadDetailCache[threadId];
         if (cached) {
+            // Stage 5 (revised 2026-05-04): group-parents render
+            // through the standard confirmation card just like
+            // decompose-parents. The card's sub-threads section
+            // detects ``parent_relationship === 'group'`` and swaps
+            // its flat list for the multi-column drag/drop grid via
+            // ``window.renderGroupSubThreads`` — see
+            // script_threads_card.py:_renderSubThreadsLink and
+            // script_threads_group.py. Earlier wave had a
+            // top-level diversion that hid the standard header,
+            // intent, namespace tags, actions, and timeline button
+            // from group-parents — fixed here.
             return window.renderConfirmationCard(cached);
         }
         // Trigger async fetch and re-render
@@ -609,14 +618,14 @@ def _threads_v5_script() -> str:
         // Render a fetch-error card if we already failed once.
         const failed = (window._threadDetailErrors || {})[threadId];
         if (failed) {
-            return '<div class="threads-v5-detail threads-v5-fetch-error">'
+            return '<div class="threads-detail threads-fetch-error">'
                  + '<h2>Couldn’t load this thread</h2>'
-                 + '<p class="threads-v5-error-msg">' + _esc(failed) + '</p>'
-                 + '<p class="threads-v5-error-hint">'
+                 + '<p class="threads-error-msg">' + _esc(failed) + '</p>'
+                 + '<p class="threads-error-hint">'
                  +   'Usually a transient sidecar restart. Retry, or pick '
                  +   'another thread from the list.'
                  + '</p>'
-                 + '<button class="threads-v5-retry-btn" '
+                 + '<button class="threads-retry-btn" '
                  +   'onclick="(function(){'
                  +     'delete (window._threadDetailErrors||{})[\'' + _esc(threadId) + '\'];'
                  +     'delete window._threadDetailCache[\'' + _esc(threadId) + '\'];'
@@ -624,7 +633,7 @@ def _threads_v5_script() -> str:
                  +   '})()">Retry</button>'
                  + '</div>';
         }
-        return '<div class="threads-v5-loading">Loading thread '
+        return '<div class="threads-loading">Loading thread '
              + _esc(threadId) + '...</div>';
     }
 
@@ -656,12 +665,12 @@ def _threads_v5_script() -> str:
 
     window.threadsShowLaterPopup = function (anchorEl, threadId) {
         // Remove any existing popup
-        document.querySelectorAll('.threads-v5-later-popup').forEach(p => p.remove());
+        document.querySelectorAll('.threads-later-popup').forEach(p => p.remove());
         const popup = document.createElement('div');
-        popup.className = 'threads-v5-later-popup threads-v5-later-popup-row';
+        popup.className = 'threads-later-popup threads-later-popup-row';
         for (const d of _laterDurations) {
             const btn = document.createElement('button');
-            btn.className = 'threads-v5-later-option';
+            btn.className = 'threads-later-option';
             btn.textContent = d.label;
             btn.onclick = (e) => {
                 e.stopPropagation();
@@ -693,7 +702,7 @@ def _threads_v5_script() -> str:
         // little padding from the card's right edge keeps the popup
         // visually inside its container instead of brushing the edge.
         const card = anchorEl.closest(
-            '.threads-v5-card, .threads-v5-mini-card'
+            '.threads-card, .threads-mini-card'
         );
         let rightEdge;
         if (card) {
@@ -731,10 +740,10 @@ def _threads_v5_script() -> str:
         // Wave E — visual loading state on the triggering button
         // (and its siblings, since the user shouldn't double-click).
         const card = document.querySelector(
-            '.threads-v5-card[data-thread-id="' + threadId + '"]'
+            '.threads-card[data-thread-id="' + threadId + '"]'
         );
         const buttons = card
-            ? card.querySelectorAll('.threads-v5-card-footer button')
+            ? card.querySelectorAll('.threads-card-footer button')
             : [];
         for (const b of buttons) { b.disabled = true; }
         // Wave G — bundle any edits the user made in the right pane
@@ -806,19 +815,19 @@ def _threads_v5_script() -> str:
     // 3.5s; click to dismiss early. Stacks if multiple fire in
     // quick succession.
     function _toast(kind, message) {
-        let host = document.getElementById("threads-v5-toast-host");
+        let host = document.getElementById("threads-toast-host");
         if (!host) {
             host = document.createElement("div");
-            host.id = "threads-v5-toast-host";
+            host.id = "threads-toast-host";
             document.body.appendChild(host);
         }
         const t = document.createElement("div");
-        t.className = "threads-v5-toast threads-v5-toast-" + (kind || "ok");
+        t.className = "threads-toast threads-toast-" + (kind || "ok");
         t.textContent = String(message || "");
         t.addEventListener("click", () => t.remove());
         host.appendChild(t);
         setTimeout(() => {
-            try { t.classList.add("threads-v5-toast-fading"); } catch(e) {}
+            try { t.classList.add("threads-toast-fading"); } catch(e) {}
             setTimeout(() => { try { t.remove(); } catch(e) {} }, 400);
         }, 3500);
     }
@@ -841,15 +850,15 @@ def _threads_v5_script() -> str:
             return _renderEventLogInspector();
         }
         return (
-            '<div class="threads-v5-modal-backdrop" '
+            '<div class="threads-modal-backdrop" '
             +   'onclick="threadsCloseInspector()">'
-            + '<div class="threads-v5-modal" onclick="event.stopPropagation()">'
-            +   '<div class="threads-v5-modal-header">'
+            + '<div class="threads-modal" onclick="event.stopPropagation()">'
+            +   '<div class="threads-modal-header">'
             +     '<span>Inspector: ' + _esc(itemId) + '</span>'
             +     '<button onclick="threadsCloseInspector()" '
-            +       'class="threads-v5-modal-close">&times;</button>'
+            +       'class="threads-modal-close">&times;</button>'
             +   '</div>'
-            +   '<div class="threads-v5-modal-body">'
+            +   '<div class="threads-modal-body">'
             +     '<p>Click an event in the thread\'s timeline to '
             +     'inspect it (timeline button on the card body).</p>'
             +   '</div>'
@@ -864,22 +873,22 @@ def _threads_v5_script() -> str:
     function _renderEventLogInspector() {
         const state = window._threadsState || { path: [] };
         const tid = state.path[state.path.length - 1] || '';
-        let html = '<div class="threads-v5-modal-backdrop" '
+        let html = '<div class="threads-modal-backdrop" '
                  + 'onclick="threadsCloseInspector()">'
-                 + '<div class="threads-v5-modal threads-v5-modal-wide" '
+                 + '<div class="threads-modal threads-modal-wide" '
                  +   'onclick="event.stopPropagation()">'
-                 + '<div class="threads-v5-modal-header">'
+                 + '<div class="threads-modal-header">'
                  +   '<span>Event log: <code>' + _esc(tid) + '</code></span>'
                  +   '<button onclick="threadsCloseInspector()" '
-                 +     'class="threads-v5-modal-close">&times;</button>'
+                 +     'class="threads-modal-close">&times;</button>'
                  + '</div>'
-                 + '<div class="threads-v5-modal-body">'
-                 +   '<div id="threads-v5-evlog-content">Loading...</div>'
+                 + '<div class="threads-modal-body">'
+                 +   '<div id="threads-evlog-content">Loading...</div>'
                  + '</div>'
                  + '</div></div>';
         // Lazy-fetch the events on first render. The inspector
         // markup is a placeholder; the events go inside
-        // #threads-v5-evlog-content.
+        // #threads-evlog-content.
         if (tid) {
             setTimeout(() => _loadEventLog(tid), 0);
         }
@@ -890,14 +899,14 @@ def _threads_v5_script() -> str:
         fetch('/api/threads/' + encodeURIComponent(threadId) + '/events')
             .then(r => r.ok ? r.json() : Promise.reject(r.statusText))
             .then(data => {
-                const target = document.getElementById('threads-v5-evlog-content');
+                const target = document.getElementById('threads-evlog-content');
                 if (!target) return;
                 target.innerHTML = _renderEventLogList(data.events || []);
             })
             .catch(err => {
-                const target = document.getElementById('threads-v5-evlog-content');
+                const target = document.getElementById('threads-evlog-content');
                 if (target) {
-                    target.innerHTML = '<p class="threads-v5-empty-state">'
+                    target.innerHTML = '<p class="threads-empty-state">'
                                      + 'Failed to load event log: '
                                      + _esc(String(err)) + '</p>';
                 }
@@ -906,13 +915,13 @@ def _threads_v5_script() -> str:
 
     function _renderEventLogList(events) {
         if (events.length === 0) {
-            return '<p class="threads-v5-empty-state">No events yet.</p>';
+            return '<p class="threads-empty-state">No events yet.</p>';
         }
-        let html = '<p class="threads-v5-evlog-hint">'
+        let html = '<p class="threads-evlog-hint">'
                  + 'Click any row to expand its full payload (model, tier, '
                  + 'and all event data).'
                  + '</p>';
-        html += '<table class="threads-v5-evlog-table">';
+        html += '<table class="threads-evlog-table">';
         html += '<thead><tr>'
               + '<th></th>'  // expander column
               + '<th>#</th>'
@@ -930,28 +939,28 @@ def _threads_v5_script() -> str:
             const tierModel = _tierModelCell(e);
             const evid = _esc(String(e.id));
             // Main row: click anywhere to toggle the detail row.
-            html += '<tr class="threads-v5-evlog-row" '
+            html += '<tr class="threads-evlog-row" '
                   +   'onclick="threadsToggleEvlogRow(\'' + evid + '\')">'
-                  + '<td class="threads-v5-evlog-toggle" '
+                  + '<td class="threads-evlog-toggle" '
                   +   'aria-label="Expand row">'
-                  +   '<span class="threads-v5-evlog-caret" '
+                  +   '<span class="threads-evlog-caret" '
                   +     'id="ev-caret-' + evid + '">&#x25B8;</span>'
                   + '</td>'
                   + '<td><code>' + evid + '</code></td>'
                   + '<td>' + rel + '</td>'
                   + '<td><code>' + _esc(e.kind) + '</code></td>'
                   + '<td>' + _esc(e.actor || '') + '</td>'
-                  + '<td class="threads-v5-evlog-tier">' + tierModel + '</td>'
-                  + '<td class="threads-v5-evlog-summary">' + summary + '</td>'
+                  + '<td class="threads-evlog-tier">' + tierModel + '</td>'
+                  + '<td class="threads-evlog-summary">' + summary + '</td>'
                   + '</tr>';
             // Hidden detail row: pretty-printed JSON payload.
             const data = e.data || {};
             const detail = _esc(JSON.stringify(data, null, 2));
-            html += '<tr class="threads-v5-evlog-detail" '
+            html += '<tr class="threads-evlog-detail" '
                   +   'id="ev-detail-' + evid + '" '
                   +   'style="display:none">'
-                  + '<td colspan="7" class="threads-v5-evlog-detail-cell">'
-                  +   '<pre class="threads-v5-evlog-payload">' + detail + '</pre>'
+                  + '<td colspan="7" class="threads-evlog-detail-cell">'
+                  +   '<pre class="threads-evlog-payload">' + detail + '</pre>'
                   + '</td>'
                   + '</tr>';
         }
@@ -980,7 +989,7 @@ def _threads_v5_script() -> str:
         if (!tier && !model) return '';
         const parts = [];
         if (tier) parts.push('<code>' + _esc(tier) + '</code>');
-        if (model) parts.push('<span class="threads-v5-evlog-model" '
+        if (model) parts.push('<span class="threads-evlog-model" '
                             + 'title="model used">'
                             + _esc(model) + '</span>');
         return parts.join('<br>');
@@ -1040,7 +1049,7 @@ def _threads_v5_script() -> str:
         renderThreads();
     };
 
-    // Exposed so card-state mutators (in script_threads_v5_card.py)
+    // Exposed so card-state mutators (in script_threads_card.py)
     // can trigger a re-render after toggling X-flags or changing
     // focus, without re-implementing renderThreads here.
     window._renderActiveThread = renderThreads;
@@ -1118,7 +1127,7 @@ def _threads_v5_script() -> str:
             } else if (k === "/") {
                 ev.preventDefault();
                 const search = document.querySelector(
-                    ".threads-v5-search"
+                    ".threads-search"
                 );
                 if (search) search.focus();
             } else if (k === "t") {
@@ -1153,7 +1162,7 @@ def _threads_v5_script() -> str:
 
     function _kbdMove(delta) {
         const cards = document.querySelectorAll(
-            ".threads-v5-toplist-card"
+            ".threads-toplist-card"
         );
         if (cards.length === 0) return;
         let idx = window._threadsKbdIndex;
@@ -1163,7 +1172,7 @@ def _threads_v5_script() -> str:
         window._threadsKbdIndex = idx;
         // Apply visual focus
         cards.forEach((c, i) => {
-            c.classList.toggle("threads-v5-kbd-focus", i === idx);
+            c.classList.toggle("threads-kbd-focus", i === idx);
         });
         cards[idx].scrollIntoView({block: "nearest", behavior: "smooth"});
     }
@@ -1171,35 +1180,42 @@ def _threads_v5_script() -> str:
     function _kbdOpenFocused() {
         const idx = window._threadsKbdIndex;
         const cards = document.querySelectorAll(
-            ".threads-v5-toplist-card"
+            ".threads-toplist-card"
         );
         if (idx >= 0 && cards[idx]) cards[idx].click();
     }
 
     function _kbdToggleHelp() {
-        let el = document.getElementById("threads-v5-kbd-help");
+        let el = document.getElementById("threads-kbd-help");
         if (el) { el.remove(); return; }
         el = document.createElement("div");
-        el.id = "threads-v5-kbd-help";
-        el.className = "threads-v5-modal-backdrop";
+        el.id = "threads-kbd-help";
+        el.className = "threads-modal-backdrop";
         el.onclick = () => el.remove();
-        el.innerHTML = '<div class="threads-v5-modal" '
+        el.innerHTML = '<div class="threads-modal" '
             + 'onclick="event.stopPropagation()" '
             + 'style="max-width:480px">'
-            + '<div class="threads-v5-modal-header">'
+            + '<div class="threads-modal-header">'
             + '<span>Keyboard shortcuts</span>'
-            + '<button class="threads-v5-modal-close" '
-            + 'onclick="document.getElementById(\'threads-v5-kbd-help\').remove()">&times;</button>'
+            + '<button class="threads-modal-close" '
+            + 'onclick="document.getElementById(\'threads-kbd-help\').remove()">&times;</button>'
             + '</div>'
-            + '<div class="threads-v5-modal-body">'
-            + '<table class="threads-v5-ci-table">'
+            + '<div class="threads-modal-body">'
+            + '<table class="threads-ci-table">'
             + '<tr><th><kbd>j</kbd></th><td>Move focus up (inverted vim)</td></tr>'
             + '<tr><th><kbd>k</kbd></th><td>Move focus down (inverted vim)</td></tr>'
             + '<tr><th><kbd>Enter</kbd> or <kbd>o</kbd></th><td>Open focused thread</td></tr>'
-            + '<tr><th><kbd>Escape</kbd></th><td>Close inspector / go back</td></tr>'
+            + '<tr><th><kbd>Escape</kbd></th><td>Close inspector / go back / clear group selection</td></tr>'
             + '<tr><th><kbd>/</kbd></th><td>Focus the search box</td></tr>'
             + '<tr><th><kbd>t</kbd></th><td>View timeline (when in a thread)</td></tr>'
             + '<tr><th><kbd>?</kbd></th><td>Toggle this help</td></tr>'
+            + '<tr><th colspan="2" style="padding-top:1em;color:var(--text-muted,#888)">In a group view:</th></tr>'
+            + '<tr><th><kbd>x</kbd></th><td>Toggle selection on focused item</td></tr>'
+            + '<tr><th><kbd>Shift</kbd>+<kbd>j</kbd>/<kbd>k</kbd></th><td>Extend selection up/down</td></tr>'
+            + '<tr><th><kbd>m</kbd></th><td>Move selection to another group (numbered prompt)</td></tr>'
+            + '<tr><th>Click + drag</th><td>Move item (whole selection moves with it)</td></tr>'
+            + '<tr><th><kbd>Shift</kbd>+click</th><td>Range-select between items</td></tr>'
+            + '<tr><th><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+click</th><td>Toggle one item</td></tr>'
             + '</table>'
             + '</div></div>';
         document.body.appendChild(el);
@@ -1259,7 +1275,7 @@ def _threads_v5_script() -> str:
 """
 
 
-def _threads_v5_styles() -> str:
+def _threads_styles() -> str:
     return r"""
 /* Stage 4.1 — placeholder + breadcrumbs + inspector modal scaffold */
 
@@ -1267,7 +1283,7 @@ def _threads_v5_styles() -> str:
     padding: 0;
 }
 
-.threads-v5-placeholder {
+.threads-placeholder {
     max-width: 720px;
     margin: 3em auto;
     padding: 1.5em 2em;
@@ -1277,13 +1293,13 @@ def _threads_v5_styles() -> str:
     color: var(--text, #ddd);
 }
 
-.threads-v5-stage-note {
+.threads-stage-note {
     color: var(--text-muted, #888);
     font-size: 13px;
     margin-top: 1em;
 }
 
-.threads-v5-stage-note code {
+.threads-stage-note code {
     background: var(--bg-tertiary, #2a2a2a);
     padding: 1px 6px;
     border-radius: 3px;
@@ -1291,7 +1307,7 @@ def _threads_v5_styles() -> str:
 }
 
 /* Breadcrumb bar */
-.threads-v5-breadcrumbs {
+.threads-breadcrumbs {
     padding: 12px 20px;
     border-bottom: 1px solid var(--border, #333);
     background: var(--bg-secondary, #1a1a1a);
@@ -1302,7 +1318,7 @@ def _threads_v5_styles() -> str:
     color: var(--text-muted, #888);
 }
 
-.threads-v5-back {
+.threads-back {
     background: var(--bg-tertiary, #2a2a2a);
     color: var(--text, #ddd);
     border: 1px solid var(--border, #333);
@@ -1313,33 +1329,33 @@ def _threads_v5_styles() -> str:
     margin-right: 8px;
 }
 
-.threads-v5-back:disabled {
+.threads-back:disabled {
     opacity: 0.4;
     cursor: default;
 }
 
-.threads-v5-crumb {
+.threads-crumb {
     color: var(--accent, #4a7fc1);
     text-decoration: none;
     font-family: var(--font-mono, monospace);
 }
 
-.threads-v5-crumb:hover {
+.threads-crumb:hover {
     text-decoration: underline;
 }
 
-.threads-v5-crumb-current {
+.threads-crumb-current {
     color: var(--text, #ddd);
     font-family: var(--font-mono, monospace);
     font-weight: 600;
 }
 
-.threads-v5-crumb-sep {
+.threads-crumb-sep {
     color: var(--text-muted, #666);
 }
 
 /* Top-level + detail panes */
-.threads-v5-top, .threads-v5-detail {
+.threads-top, .threads-detail {
     max-width: 1100px;
     margin: 2em auto;
     padding: 1.5em 2em;
@@ -1349,36 +1365,36 @@ def _threads_v5_styles() -> str:
     color: var(--text, #ddd);
 }
 
-.threads-v5-top h2, .threads-v5-detail h2 {
+.threads-top h2, .threads-detail h2 {
     margin-top: 0;
 }
 
-.threads-v5-count {
+.threads-count {
     color: var(--text-muted, #888);
     font-weight: 400;
     font-size: 80%;
 }
 
-.threads-v5-empty-state {
+.threads-empty-state {
     color: var(--text-muted, #888);
     font-style: italic;
     margin-top: 1.5em;
 }
 
-.threads-v5-empty-state a {
+.threads-empty-state a {
     color: var(--accent, #4a7fc1);
     text-decoration: none;
 }
-.threads-v5-empty-state a:hover { text-decoration: underline; }
+.threads-empty-state a:hover { text-decoration: underline; }
 
-.threads-v5-empty-cta-row {
+.threads-empty-cta-row {
     display: flex;
     gap: 12px;
     margin-top: 18px;
     flex-wrap: wrap;
 }
 
-.threads-v5-empty-cta {
+.threads-empty-cta {
     background: var(--bg-secondary, #1a1a1a);
     color: var(--text, #ddd);
     border: 1px solid var(--border, #333);
@@ -1389,29 +1405,29 @@ def _threads_v5_styles() -> str:
     cursor: pointer;
     transition: border-color 80ms, background 80ms;
 }
-.threads-v5-empty-cta:hover:not(:disabled) {
+.threads-empty-cta:hover:not(:disabled) {
     border-color: var(--accent, #4a7fc1);
     background: var(--bg, #0f0f0f);
 }
-.threads-v5-empty-cta:disabled {
+.threads-empty-cta:disabled {
     opacity: 0.6;
     cursor: wait;
 }
 
-.threads-v5-loading {
+.threads-loading {
     color: var(--text-muted, #888);
     text-align: center;
     padding: 2em;
 }
 
 /* Top-level Thread cards (list view) */
-.threads-v5-toplist {
+.threads-toplist {
     list-style: none;
     padding: 0;
     margin: 0;
 }
 
-.threads-v5-toplist-card {
+.threads-toplist-card {
     background: var(--bg-tertiary, #0f0f0f);
     border: 1px solid var(--border, #333);
     border-left: 3px solid transparent;
@@ -1425,31 +1441,31 @@ def _threads_v5_styles() -> str:
     align-items: center;
 }
 
-.threads-v5-toplist-card:hover {
+.threads-toplist-card:hover {
     border-color: var(--accent, #4a7fc1);
     background: var(--bg-secondary, #1a1a1a);
 }
 
-.threads-v5-toplist-card.threads-v5-urgent {
+.threads-toplist-card.threads-urgent {
     border-left-color: #c0392b;
 }
 
 /* Phase 4: mid-process cards. Visible only when "Show mid-process"
    is toggled on. Muted so they're clearly distinguishable from
    actionable cards the user is meant to act on. */
-.threads-v5-toplist-card.threads-v5-mid-process {
+.threads-toplist-card.threads-mid-process {
     opacity: 0.55;
     border-left-style: dashed;
     border-left-color: var(--text-muted, #888);
     cursor: default;
 }
 
-.threads-v5-toplist-card.threads-v5-mid-process:hover {
+.threads-toplist-card.threads-mid-process:hover {
     opacity: 0.75;
     border-color: var(--text-muted, #888);
 }
 
-.threads-v5-show-mid-process {
+.threads-show-mid-process {
     display: inline-flex;
     align-items: center;
     gap: 4px;
@@ -1458,7 +1474,7 @@ def _threads_v5_styles() -> str:
     cursor: help;
 }
 
-.threads-v5-toplist-meta {
+.threads-toplist-meta {
     grid-row: 1;
     grid-column: 1;
     display: flex;
@@ -1470,16 +1486,16 @@ def _threads_v5_styles() -> str:
     text-transform: capitalize;
 }
 
-.threads-v5-toplist-state {
+.threads-toplist-state {
     text-transform: capitalize;
 }
 
-.threads-v5-later-icon {
+.threads-later-icon {
     color: var(--text-muted, #666);
     line-height: 0;
 }
 
-.threads-v5-toplist-title {
+.threads-toplist-title {
     grid-row: 2;
     grid-column: 1;
     font-weight: 600;
@@ -1487,7 +1503,7 @@ def _threads_v5_styles() -> str:
     color: var(--text, #ddd);
 }
 
-.threads-v5-toplist-intent {
+.threads-toplist-intent {
     grid-row: 3;
     grid-column: 1;
     font-size: 12px;
@@ -1495,7 +1511,7 @@ def _threads_v5_styles() -> str:
     margin-top: 4px;
 }
 
-.threads-v5-toplist-row-actions {
+.threads-toplist-row-actions {
     grid-row: 1 / span 3;
     grid-column: 2;
     display: flex;
@@ -1504,7 +1520,7 @@ def _threads_v5_styles() -> str:
 }
 
 /* Stage 4.8 — search + filter bar */
-.threads-v5-filter-bar {
+.threads-filter-bar {
     display: flex;
     gap: 10px;
     align-items: center;
@@ -1512,7 +1528,7 @@ def _threads_v5_styles() -> str:
     flex-wrap: wrap;
 }
 
-.threads-v5-search {
+.threads-search {
     flex: 1 1 320px;
     background: var(--bg-tertiary, #0f0f0f);
     color: var(--text, #ddd);
@@ -1522,7 +1538,7 @@ def _threads_v5_styles() -> str:
     font-size: 13px;
 }
 
-.threads-v5-filter-select {
+.threads-filter-select {
     background: var(--bg-tertiary, #0f0f0f);
     color: var(--text, #ddd);
     border: 1px solid var(--border, #333);
@@ -1531,7 +1547,7 @@ def _threads_v5_styles() -> str:
     font-size: 13px;
 }
 
-.threads-v5-show-later {
+.threads-show-later {
     color: var(--text-muted, #888);
     font-size: 12px;
     display: flex;
@@ -1542,9 +1558,9 @@ def _threads_v5_styles() -> str:
 /* Stage 4.10 — Later hover popup. 2026-05-03: rendered as a
  * horizontal row by default (was a vertical column) and positioned
  * above the anchor so the right-edge entries stay on-screen. The
- * `.threads-v5-later-popup-row` modifier flips the column layout
+ * `.threads-later-popup-row` modifier flips the column layout
  * back to row + tightens padding for a more compact ribbon. */
-.threads-v5-later-popup {
+.threads-later-popup {
     background: var(--bg, #0a0a0a);
     border: 1px solid var(--border, #333);
     border-radius: 6px;
@@ -1556,14 +1572,14 @@ def _threads_v5_styles() -> str:
     gap: 2px;
     min-width: 140px;
 }
-.threads-v5-later-popup-row {
+.threads-later-popup-row {
     flex-direction: row;
     flex-wrap: nowrap;
     min-width: 0;
     gap: 2px;
 }
 
-.threads-v5-later-option {
+.threads-later-option {
     background: transparent;
     color: var(--text, #ddd);
     border: none;
@@ -1574,22 +1590,22 @@ def _threads_v5_styles() -> str:
     cursor: pointer;
     white-space: nowrap;
 }
-.threads-v5-later-popup-row .threads-v5-later-option {
+.threads-later-popup-row .threads-later-option {
     text-align: center;
     padding: 6px 10px;
 }
-.threads-v5-later-option:hover {
+.threads-later-option:hover {
     background: var(--bg-tertiary, #1a1a1a);
 }
 
-.threads-v5-demo-row {
+.threads-demo-row {
     display: flex;
     gap: 8px;
     flex-wrap: wrap;
     margin-top: 1em;
 }
 
-.threads-v5-demo-btn {
+.threads-demo-btn {
     background: var(--accent, #4a7fc1);
     color: white;
     border: none;
@@ -1599,12 +1615,12 @@ def _threads_v5_styles() -> str:
     cursor: pointer;
 }
 
-.threads-v5-demo-btn:hover {
+.threads-demo-btn:hover {
     filter: brightness(1.1);
 }
 
 /* Modal scaffold */
-.threads-v5-modal-backdrop {
+.threads-modal-backdrop {
     position: fixed;
     top: 0; left: 0; right: 0; bottom: 0;
     background: rgba(0, 0, 0, 0.55);
@@ -1614,7 +1630,7 @@ def _threads_v5_styles() -> str:
     justify-content: center;
 }
 
-.threads-v5-modal {
+.threads-modal {
     background: var(--bg, #0d0d0d);
     border: 1px solid var(--border, #333);
     border-radius: 10px;
@@ -1626,7 +1642,7 @@ def _threads_v5_styles() -> str:
     overflow: hidden;
 }
 
-.threads-v5-modal-header {
+.threads-modal-header {
     padding: 14px 20px;
     border-bottom: 1px solid var(--border, #333);
     display: flex;
@@ -1636,7 +1652,7 @@ def _threads_v5_styles() -> str:
     font-weight: 600;
 }
 
-.threads-v5-modal-close {
+.threads-modal-close {
     background: transparent;
     color: var(--text-muted, #888);
     border: none;
@@ -1645,38 +1661,38 @@ def _threads_v5_styles() -> str:
     line-height: 1;
 }
 
-.threads-v5-modal-body {
+.threads-modal-body {
     padding: 18px 20px;
     color: var(--text, #ddd);
     overflow-y: auto;
 }
 
 /* Wave C — wide modal for event-log inspector */
-.threads-v5-modal-wide {
+.threads-modal-wide {
     max-width: 1100px;
     width: 90%;
 }
 
-.threads-v5-evlog-table {
+.threads-evlog-table {
     width: 100%;
     border-collapse: collapse;
     font-size: 13px;
 }
-.threads-v5-evlog-table th {
+.threads-evlog-table th {
     text-align: left;
     padding: 8px 12px 8px 0;
     color: var(--text-muted, #888);
     font-weight: 500;
     border-bottom: 1px solid var(--border, #333);
 }
-.threads-v5-evlog-table td {
+.threads-evlog-table td {
     padding: 6px 12px 6px 0;
     border-bottom: 1px solid rgba(60,60,60,0.4);
     color: var(--text, #ddd);
     vertical-align: top;
     word-break: break-word;
 }
-.threads-v5-evlog-table code {
+.threads-evlog-table code {
     font-family: ui-monospace, monospace;
     font-size: 12px;
     background: var(--bg-secondary, #1a1a1a);
@@ -1690,46 +1706,46 @@ def _threads_v5_styles() -> str:
  * surfaced model/tier metadata that's useful for debugging. Rows
  * are now click-to-expand with a caret glyph and a detail row that
  * pretty-prints the full event payload. */
-.threads-v5-evlog-hint {
+.threads-evlog-hint {
     font-size: 12px;
     color: var(--text-muted, #888);
     margin: 0 0 10px 0;
 }
-.threads-v5-evlog-row {
+.threads-evlog-row {
     cursor: pointer;
 }
-.threads-v5-evlog-row:hover {
+.threads-evlog-row:hover {
     background: rgba(255,255,255,0.03);
 }
-.threads-v5-evlog-toggle {
+.threads-evlog-toggle {
     width: 18px;
     color: var(--text-muted, #888);
     user-select: none;
 }
-.threads-v5-evlog-caret {
+.threads-evlog-caret {
     display: inline-block;
     transition: transform 80ms ease;
 }
-.threads-v5-evlog-tier {
+.threads-evlog-tier {
     font-size: 12px;
     color: var(--text-muted, #888);
 }
-.threads-v5-evlog-model {
+.threads-evlog-model {
     font-family: ui-monospace, monospace;
     font-size: 11px;
     color: var(--text-muted, #aaa);
 }
-.threads-v5-evlog-summary {
+.threads-evlog-summary {
     /* Allow long words but don't aggressively truncate — the detail
      * row carries the full picture so we don't need to clamp here. */
     max-width: 480px;
 }
-.threads-v5-evlog-detail-cell {
+.threads-evlog-detail-cell {
     background: var(--bg, #0a0a0a);
     padding: 0 0 6px 0 !important;
     border-bottom: 1px solid var(--border, #333) !important;
 }
-.threads-v5-evlog-payload {
+.threads-evlog-payload {
     margin: 4px 12px 4px 36px;
     padding: 10px 12px;
     background: var(--bg-secondary, #1a1a1a);
@@ -1746,18 +1762,18 @@ def _threads_v5_styles() -> str:
 
 /* Wave C — keyboard navigation. The currently-focused row in the
    threads list gets a subtle highlight so j/k feel responsive. */
-.threads-v5-toplist-card.threads-v5-kbd-focus {
+.threads-toplist-card.threads-kbd-focus {
     outline: 2px solid var(--accent, #4a7fc1);
     outline-offset: -1px;
 }
 
-.threads-v5-kbd-hint {
+.threads-kbd-hint {
     margin: 8px 0 0 0;
     font-size: 11px;
     color: var(--text-muted, #666);
     text-align: right;
 }
-.threads-v5-kbd-hint kbd {
+.threads-kbd-hint kbd {
     background: var(--bg-secondary, #1a1a1a);
     border: 1px solid var(--border, #333);
     border-radius: 3px;
@@ -1768,7 +1784,7 @@ def _threads_v5_styles() -> str:
 }
 
 /* Wave E — toast confirmation feedback for commit actions */
-#threads-v5-toast-host {
+#threads-toast-host {
     position: fixed;
     bottom: 24px;
     right: 24px;
@@ -1778,7 +1794,7 @@ def _threads_v5_styles() -> str:
     gap: 8px;
     pointer-events: none;
 }
-.threads-v5-toast {
+.threads-toast {
     pointer-events: auto;
     background: var(--bg-secondary, #1a1a1a);
     color: var(--text, #ddd);
@@ -1793,21 +1809,21 @@ def _threads_v5_styles() -> str:
     transition: opacity 350ms ease;
     border-left: 3px solid var(--accent, #4a7fc1);
 }
-.threads-v5-toast.threads-v5-toast-ok {
+.threads-toast.threads-toast-ok {
     border-left-color: #66cc66;
 }
-.threads-v5-toast.threads-v5-toast-error {
+.threads-toast.threads-toast-error {
     border-left-color: #ff5555;
     color: #ffaaaa;
 }
-.threads-v5-toast.threads-v5-toast-fading {
+.threads-toast.threads-toast-fading {
     opacity: 0;
 }
 
 /* Wave E — risk indicator on top-level list cards.
    Mirrors the detail-view risk pill so the user can scan the
    list and see which threads have risky actions queued. */
-.threads-v5-toplist-risk-dot {
+.threads-toplist-risk-dot {
     display: inline-block;
     width: 8px;
     height: 8px;
@@ -1815,7 +1831,7 @@ def _threads_v5_styles() -> str:
     margin-left: 6px;
     vertical-align: middle;
 }
-.threads-v5-toplist-risk-dot.high { background: #ff5555; }
-.threads-v5-toplist-risk-dot.medium { background: #ff9955; }
-.threads-v5-toplist-risk-dot.low { background: #66cc66; }
+.threads-toplist-risk-dot.high { background: #ff5555; }
+.threads-toplist-risk-dot.medium { background: #ff9955; }
+.threads-toplist-risk-dot.low { background: #66cc66; }
 """

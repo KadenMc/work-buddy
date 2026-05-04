@@ -409,7 +409,7 @@ def _migrate_pool_entry(
     v4_to_v5: dict[str, str],
     report: MigrationReport,
 ) -> Optional[str]:
-    """Stage 4.14: pool entries are NOT migrated.
+    """pool entries are NOT migrated.
 
     Per the v5 architectural correction (UX.md §14), ClarifyPool
     entries are a v4 caching layer; the inciting source for v5

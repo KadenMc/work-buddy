@@ -2088,16 +2088,18 @@ def api_v5_threads_list():
         return jsonify({"threads": [], "error": str(exc)}), 500
 
 
-# A small allowlist of v5 dashboard-triggerable capabilities. We
+# A small allowlist of dashboard-triggerable capabilities. We
 # intentionally don't expose the full registry — the user's
 # workflow is "MCP from agent for power", "dashboard buttons for
 # common nudges." Adding a capability here is a deliberate UX
-# decision (each appears as a button somewhere in the v5 UI).
+# decision (each appears as a button somewhere in the UI).
 _DASHBOARD_RUNNABLE_CAPABILITIES: dict[str, dict] = {
-    "journal_v5_scan": {
+    "run_source_pipeline": {
         "description": (
-            "Segment today's journal Running Notes into v5 Threads. "
-            "Wired to the empty-state CTA on the Threads tab."
+            "Run a source pipeline end-to-end (Chrome triage / "
+            "journal backlog) → produces a group umbrella + group "
+            "sub-threads with per-cluster action proposals. Wired to "
+            "the empty-state CTA on the Threads tab."
         ),
         "mutates_state": True,
     },
@@ -2422,6 +2424,414 @@ def api_v5_thread_later(thread_id: str):
     except Exception as exc:
         logger.exception("v5 later failed for %s: %s", thread_id, exc)
         return jsonify({"error": str(exc)}), 500
+
+
+@app.post("/api/threads/<src_id>/move_item")
+def api_v5_thread_move_item(src_id: str):
+    """Stage 5 v2: move a single ContextItem from one group child to
+    another sibling group child.
+
+    Body: ``{"item_id": "<context_item_id>", "dest_thread_id":
+    "<sibling_thread_id>"}``
+
+    Both ``src_id`` and ``dest_thread_id`` must share the same
+    umbrella parent (``parent_id``), and that umbrella must have
+    ``parent_relationship == 'group'``. Enforced by
+    ``threads.group.move_item``.
+
+    Returns ``{"migration_id": str, "item": {ContextItemDict}}`` on
+    success, 422 on validation failure (cross-umbrella, item not
+    present, etc.), 500 on server error.
+    """
+    blocked = _reject_read_only()
+    if blocked:
+        return blocked
+    body = request.get_json(silent=True) or {}
+    item_id = body.get("item_id")
+    dest_thread_id = body.get("dest_thread_id")
+    if not item_id or not dest_thread_id:
+        return jsonify(
+            {"error": "item_id and dest_thread_id required"},
+        ), 400
+    try:
+        from work_buddy.threads.group import GroupRefused, move_item
+        result = move_item(item_id, src_id, dest_thread_id)
+        return jsonify(result)
+    except GroupRefused as e:
+        return jsonify({"error": str(e), "reason": "validation"}), 422
+    except Exception as exc:
+        logger.exception(
+            "v5 move_item failed for %s/%s -> %s: %s",
+            src_id, item_id, dest_thread_id, exc,
+        )
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.post("/api/threads/<umbrella_id>/spawn_empty_group")
+def api_v5_thread_spawn_empty_group(umbrella_id: str):
+    """Stage 5 v2: add an empty group child under ``umbrella_id``.
+
+    Drives the "+ New group" drop zone in the column UI — drop
+    selected items onto the zone → the frontend posts here to spawn
+    an empty child, then immediately fires :func:`move_item` for
+    each selected item.
+
+    Body (optional): ``{"label": "New group"}``.
+
+    Returns ``{"new_thread_id": str, "umbrella_id": str, "label":
+    str}``.
+    """
+    blocked = _reject_read_only()
+    if blocked:
+        return blocked
+    body = request.get_json(silent=True) or {}
+    label = (body.get("label") or "").strip() or "New group"
+    try:
+        from work_buddy.threads.group import GroupRefused, spawn_empty_group
+        new_id = spawn_empty_group(umbrella_id, label)
+        return jsonify({
+            "new_thread_id": new_id,
+            "umbrella_id": umbrella_id,
+            "label": label,
+        })
+    except GroupRefused as e:
+        return jsonify({"error": str(e), "reason": "validation"}), 422
+    except Exception as exc:
+        logger.exception(
+            "v5 spawn_empty_group failed for %s: %s", umbrella_id, exc,
+        )
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.post("/api/threads/<thread_id>/set_action_proposal")
+def api_v5_thread_set_action_proposal(thread_id: str):
+    """Override or clear the per-thread proposed action.
+
+    Driven by the dashboard's column-header action chip dropdown:
+    when the user picks a different action than the LLM proposed,
+    the frontend POSTs here with the new ``capability_name`` (or
+    null to clear). We append a fresh ``action_inferred`` event
+    flagged ``synthetic=True, from_user_override=True``; the
+    standard FSM dispatch picks it up at approval time.
+
+    Body::
+
+        {
+          "capability_name": "<name>",        # null to clear
+          "parameters": {...},                # optional, default {}
+          "rationale": "<text>",              # optional
+          "confidence": 1.0                   # default 1.0 for user overrides
+        }
+    """
+    blocked = _reject_read_only()
+    if blocked:
+        return blocked
+    body = request.get_json(silent=True) or {}
+    capability_name = body.get("capability_name")
+    try:
+        from work_buddy.threads import store
+        from work_buddy.threads.events import (
+            ACTOR_USER, KIND_ACTION_INFERRED, ThreadEvent,
+        )
+        thread = store.get_thread(thread_id)
+        if thread is None:
+            return jsonify({"error": "thread not found"}), 404
+
+        if capability_name is None:
+            # Clear: record an event with payload.name = "" and
+            # synthetic.cleared = True. The card renderer treats
+            # empty name as "no proposed action" without needing a
+            # separate event kind.
+            payload = {"kind": "standard", "name": ""}
+            data = {
+                "target": "action",
+                "payload": payload,
+                "confidence": 0.0,
+                "synthetic": True,
+                "from_user_override": True,
+                "cleared": True,
+            }
+        else:
+            payload = {
+                "kind": "standard",
+                "name": str(capability_name),
+                "parameters": dict(body.get("parameters") or {}),
+                "rationale": body.get("rationale"),
+                "irreversibility": "low",
+                "regret_potential": "low",
+                "risk_amplifier": False,
+            }
+            data = {
+                "target": "action",
+                "payload": payload,
+                "confidence": float(body.get("confidence") or 1.0),
+                "synthetic": True,
+                "from_user_override": True,
+            }
+        store.append_event(ThreadEvent(
+            thread_id=thread_id,
+            kind=KIND_ACTION_INFERRED,
+            actor=ACTOR_USER,
+            data=data,
+            parent_event_id=thread.parent_event_id,
+        ))
+        store.update_thread_state(
+            thread_id,
+            parent_event_id=store.latest_event_id(thread_id),
+        )
+        return jsonify({
+            "thread_id": thread_id,
+            "capability_name": capability_name,
+        })
+    except Exception as exc:
+        logger.exception(
+            "v5 set_action_proposal failed for %s: %s", thread_id, exc,
+        )
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.post("/api/threads/<thread_id>/delete_group_subthread")
+def api_v5_thread_delete_group_subthread(thread_id: str):
+    """Stage 5 v2: dismiss a group child via the column-header X
+    button. Empty children stay visible by default — user explicitly
+    deletes them once they're sure.
+
+    Returns ``{"dismissed": <thread_id>, "umbrella_id": <umbrella_id>}``.
+    """
+    blocked = _reject_read_only()
+    if blocked:
+        return blocked
+    try:
+        from work_buddy.threads.group import (
+            GroupRefused, delete_group_subthread,
+        )
+        result = delete_group_subthread(thread_id)
+        return jsonify(result)
+    except GroupRefused as e:
+        return jsonify({"error": str(e), "reason": "validation"}), 422
+    except Exception as exc:
+        logger.exception(
+            "v5 delete_group_subthread failed for %s: %s", thread_id, exc,
+        )
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.post("/api/threads/<umbrella_id>/approve_all")
+def api_v5_thread_approve_all(umbrella_id: str):
+    """Stage 5 v2: cascade Accept to every non-terminal child of the
+    umbrella. Children execute their proposed actions.
+
+    Continues on per-child failure — returns ``{approved: [...],
+    failed: [{child_thread_id, error}, ...], skipped_terminal: [...]}``
+    so the frontend can surface "Approved N/M; K failed" once.
+    """
+    blocked = _reject_read_only()
+    if blocked:
+        return blocked
+    body = request.get_json(silent=True) or {}
+    actor = body.get("actor") or "user"
+    try:
+        from work_buddy.threads.group import (
+            GroupRefused, cascade_approve_umbrella,
+        )
+        result = cascade_approve_umbrella(umbrella_id, actor=actor)
+        return jsonify(result)
+    except GroupRefused as e:
+        return jsonify({"error": str(e), "reason": "validation"}), 422
+    except Exception as exc:
+        logger.exception(
+            "v5 approve_all failed for %s: %s", umbrella_id, exc,
+        )
+        return jsonify({"error": str(exc)}), 500
+
+
+# Suggestions endpoint — stubbed for now. The pre-v2 implementation
+# operated at thread granularity and isn't directly portable to the
+# new umbrella+items model. Returning an empty list keeps the panel
+# rendering cleanly until v2 suggestions are designed.
+@app.get("/api/threads/<thread_id>/group_suggestions")
+def api_v5_thread_group_suggestions(thread_id: str):
+    """Stage 5 v2: stub — cross-group item-level suggestions are not
+    yet implemented in the new model."""
+    return jsonify({"suggestions": []})
+
+
+def _linearize_children_for_display(children: list) -> list:
+    """Reorder a column's children so visually-similar items sit
+    adjacent (Stage 5 polish).
+
+    Uses :func:`work_buddy.journal_backlog.clustering.linearize_threads`
+    — Jaccard tag-similarity seriation. Each child's "tags" are the
+    union of ``namespace_tags`` and inline ``#tag`` tokens extracted
+    from the inciting summary's description / label.
+
+    Returns a new list with the same items in linearized order. On
+    any failure (missing optional dependency, etc.) returns the
+    input unchanged — display order is a polish concern, not a
+    correctness one.
+    """
+    if not children or len(children) < 3:
+        # 1-2 items: nothing to linearize.
+        return children
+    try:
+        from work_buddy.journal_backlog.clustering import linearize_threads
+        from work_buddy.journal_backlog.similarity import extract_inline_tags
+    except Exception:
+        return children
+    entries = []
+    for ch in children:
+        tags: list[str] = list(ch.get("namespace_tags") or [])
+        # Pull inline tags from any text field that might carry them.
+        inciting = ch.get("inciting_event_summary") or {}
+        text_blob = " ".join(filter(None, [
+            inciting.get("description"),
+            inciting.get("label"),
+            inciting.get("title"),
+            ch.get("title"),
+        ]))
+        try:
+            tags.extend(extract_inline_tags(text_blob))
+        except Exception:
+            pass
+        # Dedupe lower-cased.
+        seen: set[str] = set()
+        clean: list[str] = []
+        for t in tags:
+            tl = (t or "").lower()
+            if tl and tl not in seen:
+                seen.add(tl)
+                clean.append(tl)
+        entries.append({
+            "id": ch.get("thread_id"),
+            "tags": clean,
+        })
+    try:
+        clusters = linearize_threads(entries, break_threshold=0.15)
+    except Exception:
+        return children
+    by_id = {ch.get("thread_id"): ch for ch in children}
+    out: list = []
+    for cluster in clusters:
+        for entry in cluster:
+            ch = by_id.get(entry["id"])
+            if ch is not None:
+                out.append(ch)
+    # Fall through anything missing in case of bug.
+    seen_ids = {ch.get("thread_id") for ch in out}
+    for ch in children:
+        if ch.get("thread_id") not in seen_ids:
+            out.append(ch)
+    return out
+
+
+@app.get("/api/threads/<umbrella_id>/groups")
+def api_v5_thread_groups(umbrella_id: str):
+    """List the children of a group umbrella, with each child's
+    ``context_items`` rendered inline AND the umbrella's per-source
+    ``action_options`` so the dashboard can paint the multi-column
+    grid + the per-column action chip in one fetch.
+
+    Returns::
+
+        {
+          "umbrella_id": str,
+          "source": str | None,    # umbrella's source pipeline name
+          "groups": [
+            {<standard thread render dict>,
+             "context_items": [{ContextItemDict}, ...]},
+            ...
+          ],
+          "action_options": [
+            {capability_name, label, description, cardinality, icon},
+            ...
+          ]
+        }
+
+    ``action_options`` covers BOTH per-source (Chrome / journal / …)
+    AND universal actions (dismiss / defer / rename) so the chip
+    dropdown can show the union without the frontend needing to
+    figure out which library applies.
+
+    404 if the thread isn't a group umbrella.
+    """
+    try:
+        from work_buddy.threads import store
+        from work_buddy.threads.render import build_render_data
+        umbrella = store.get_thread(umbrella_id)
+        if umbrella is None:
+            return jsonify({"error": "umbrella not found"}), 404
+        if umbrella.parent_relationship != "group":
+            return jsonify({
+                "error": "not a group umbrella",
+                "reason": "wrong_relationship",
+            }), 404
+        children = store.list_threads(parent_id=umbrella_id)
+        groups_out: list[dict] = []
+        for c in children:
+            rendered = build_render_data(c.thread_id)
+            if rendered is None:
+                continue
+            groups_out.append(rendered)
+
+        action_options, source_name = _resolve_action_library_for_umbrella(
+            umbrella,
+        )
+
+        return jsonify({
+            "umbrella_id": umbrella_id,
+            "source": source_name,
+            "groups": groups_out,
+            "action_options": action_options,
+        })
+    except Exception as exc:
+        logger.exception(
+            "v5 groups failed for %s: %s", umbrella_id, exc,
+        )
+        return jsonify({"groups": [], "error": str(exc)}), 500
+
+
+def _resolve_action_library_for_umbrella(umbrella) -> tuple[list[dict], str | None]:
+    """Resolve the umbrella's source name and merge per-source +
+    universal actions into a single ordered descriptor list for the
+    frontend.
+
+    Returns ``(descriptor_list, source_name)``. Empty list if the
+    umbrella's source isn't registered or pipelines/universal-actions
+    fail to import (defensive).
+    """
+    inciting = umbrella.inciting_event_summary or {}
+    source_name = (
+        inciting.get("source_pipeline")
+        or inciting.get("source")
+    )
+    try:
+        from work_buddy.pipelines.capability import PIPELINES
+        from work_buddy.pipelines.universal_actions import (
+            UNIVERSAL_ACTION_LIBRARY,
+        )
+    except Exception as e:
+        logger.warning(
+            "groups endpoint: pipeline imports failed: %s", e,
+        )
+        return [], source_name
+
+    factory = PIPELINES.get(source_name)
+    if factory is None:
+        # Unknown source — surface universal actions only so the chip
+        # still works for legacy umbrellas.
+        return UNIVERSAL_ACTION_LIBRARY.to_list(), source_name
+
+    try:
+        pipeline_lib = factory().action_library
+    except Exception as e:
+        logger.warning(
+            "groups endpoint: %s.action_library failed: %s",
+            source_name, e,
+        )
+        return UNIVERSAL_ACTION_LIBRARY.to_list(), source_name
+
+    merged = UNIVERSAL_ACTION_LIBRARY.merged_with(pipeline_lib)
+    return merged.to_list(), source_name
 
 
 # ---------------------------------------------------------------------------

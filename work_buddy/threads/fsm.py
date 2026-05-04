@@ -67,7 +67,7 @@ TRIG_PARENT_FORCE_CLOSE = "parent_force_close"
 # right after the inciting events land.
 TRIG_BEGIN_INFERENCE = "begin_inference"
 
-# Stage 4: cleanup triggers (UX.md §6.5)
+# cleanup triggers (UX.md §6.5)
 TRIG_CLEANUP_REQUESTED = "cleanup_requested"
 TRIG_CLEANUP_SUCCEEDED = "cleanup_succeeded"
 TRIG_CLEANUP_FAILED = "cleanup_failed"
@@ -345,7 +345,7 @@ STATE_ENTRY_SIDE_EFFECTS: dict[FSMState, str] = {
     FSMState.HANDED_OFF:
         "record thread_handed_off event",
 
-    # Stage 4: cleanup states (UX.md §6.4)
+    # cleanup states (UX.md §6.4)
     FSMState.CLEANING_UP:
         "invoke registered cleanup adapter (work_buddy.threads.cleanup); "
         "fires cleanup_succeeded or cleanup_failed trigger",

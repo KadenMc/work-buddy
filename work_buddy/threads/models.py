@@ -141,7 +141,7 @@ class AutonomyPolicy:
     # Budget axis: enforced at LLM-call enqueue (DESIGN.md §9.4)
     budget_usd: float = 0.50
 
-    # Stage 5: combined-inference opt-in. When True, the inference
+    # combined-inference opt-in. When True, the inference
     # worker dispatches a single LLM call with InferenceTarget.COMBINED
     # that returns intent + context + action together, then walks the
     # FSM through inferring_* states without re-enqueuing. Default
@@ -250,6 +250,21 @@ class Thread:
     order_index: int = 0                       # write-time linearization
     search_blob: str = ""                      # denormalized search
 
+    # parent-child relationship discriminator. 'decompose' is
+    # the canonical fanout pattern (parent → action → N children, each
+    # FSM-executes; cascade-on-terminal advances parent to DONE). 'group'
+    # is the new pattern: parent is a re-organisable container; items
+    # can move between sibling group-parents via move_thread_to_parent.
+    # Default 'decompose' preserves all v4/Stage-4 behaviour.
+    parent_relationship: str = "decompose"
+
+    # sibling-scope id. Group-parents from one inference run
+    # share an originating_scrape_id (e.g. one Chrome scrape → N
+    # group-parents, all with the same id). Items can only move
+    # between parents that share this id. NULL for decompose parents
+    # and pre-Stage-5 data.
+    originating_scrape_id: Optional[str] = None
+
     # ------------------------------------------------------------------
     # Convenience predicates
     # ------------------------------------------------------------------
@@ -261,6 +276,19 @@ class Thread:
     @property
     def is_task(self) -> bool:
         return self.subtype == "task"
+
+    @property
+    def is_group_parent(self) -> bool:
+        """True iff this Thread is a group-relationship parent.
+
+        Stage 5 helper for the move-between-groups op + the cascade
+        auto-DISMISS branch. Note: leaf threads (those with parent_id
+        set) carry their own ``parent_relationship``, but it's only
+        meaningful when this Thread itself acts as a parent. Callers
+        should typically check ``parent_id IS NULL`` first or simply
+        consult the parent before allowing a move.
+        """
+        return self.parent_relationship == "group"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -280,6 +308,8 @@ class Thread:
             "resurface_at": self.resurface_at,
             "order_index": self.order_index,
             "search_blob": self.search_blob,
+            "parent_relationship": self.parent_relationship,
+            "originating_scrape_id": self.originating_scrape_id,
         }
 
     @classmethod
@@ -325,6 +355,8 @@ class Thread:
             resurface_at=row.get("resurface_at"),
             order_index=row.get("order_index") or 0,
             search_blob=row.get("search_blob") or "",
+            parent_relationship=row.get("parent_relationship") or "decompose",
+            originating_scrape_id=row.get("originating_scrape_id"),
         )
 
 
@@ -339,7 +371,7 @@ class Task(Thread):
 
     Subtype is fixed at ``'task'``; do not mutate.
 
-    Stage 1: type only. Stage 2 wires the methods.
+    type only. Stage 2 wires the methods.
     """
 
     subtype: str = "task"
@@ -428,7 +460,7 @@ class Proposal:
     """Inference output. Recorded as a ``*_inferred`` event with full
     provenance.
 
-    Stage 1: type. Stage 2: inference layer produces these.
+    type. inference layer produces these.
     """
 
     target: str  # InferenceTarget value

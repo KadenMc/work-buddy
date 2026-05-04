@@ -1,6 +1,6 @@
 """Read-only aggregator: synthesize v4 entities as v5 Threads.
 
-Stage 1.10 deliverable. The aggregator lets v5 query paths see v4
+The aggregator lets v5 query paths see v4
 data WITHOUT the v4 entities being migrated yet. Stage 3 (cutover)
 performs the real migration; until then the aggregator is the
 bridge.
@@ -322,7 +322,7 @@ def list_threads_aggregated(
 ) -> list[Thread]:
     """Unified read-only listing across all v4 sources.
 
-    Filters apply post-conversion. Stage 1: simple in-memory filter.
+    Filters apply post-conversion. simple in-memory filter.
     Stage 2 may add pushdown filtering for performance.
     """
     out: list[Thread] = []
