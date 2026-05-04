@@ -323,14 +323,21 @@ def _group_view_script() -> str:
     function _renderColumns(umbrella, groups) {
         const umbrellaId = umbrella.thread_id;
         const selCount = window._groupState.selected.size;
-        // Approve-all button: visible when at least one child is
-        // non-terminal. The cascade runs Accept on each
-        // awaiting_confirmation / awaiting_consent child via
-        // /approve_all.
-        const liveChildren = groups.filter(g => {
+        // Hide terminal children from the column grid entirely —
+        // dismissing a group via the column header X (or via the
+        // action chip's "Dismiss") should make the column disappear,
+        // not linger as a "Dismissed" pill. The audit trail
+        // (KIND_GROUP_DELETED on the umbrella + the child's terminal
+        // state in the standard threads list) is preserved
+        // server-side; this is a UI-only filter.
+        const isTerminal = g => {
             const s = (g.fsm_state || '').toLowerCase();
-            return s !== 'done' && s !== 'dismissed' && s !== 'handed_off';
-        });
+            return s === 'done' || s === 'dismissed' || s === 'handed_off';
+        };
+        const visibleGroups = groups.filter(g => !isTerminal(g));
+        // Approve-all button: counts non-terminal children only,
+        // since terminal ones are already done.
+        const liveChildren = visibleGroups;
         const actionOptions = window._groupState
             .actionOptionsByUmbrella[umbrellaId] || [];
         let html = '<div class="threads-v5-group-toolbar">'
@@ -354,13 +361,15 @@ def _group_view_script() -> str:
             + '</div>'
             + '</div>'
             + '<div class="threads-v5-group-columns">';
-        if (groups.length === 0) {
+        if (visibleGroups.length === 0) {
             html += '<div class="threads-v5-group-empty-col" '
                 +   'style="flex:1 1 auto;">'
-                +   'No groups yet. Drop here to create the first one.'
+                +   (groups.length === 0
+                        ? 'No groups yet. Drop here to create the first one.'
+                        : 'All groups dismissed. Drop here to start fresh.')
                 + '</div>';
         } else {
-            for (const g of groups) {
+            for (const g of visibleGroups) {
                 html += _renderColumn(g, actionOptions);
             }
         }

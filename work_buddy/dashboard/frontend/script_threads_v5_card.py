@@ -484,27 +484,39 @@ def _threads_v5_card_script() -> str:
         html += '<ul class="threads-v5-list">';
         for (const ci of items) {
             const flagged = s.flagged.has(ci.id);
-            html += '<li class="threads-v5-item'
-                  + (flagged ? ' threads-v5-flagged' : '') + '">';
+            const tid = _esc(thread.thread_id);
+            const cid = _esc(ci.id);
+            // The whole ``<li>`` is the click target — clicking the
+            // card opens the right-pane inspector. Inner action
+            // buttons (flag / chevron) call event.stopPropagation so
+            // they don't double-fire the inspector open. The chevron
+            // is kept for visual affordance but is now redundant
+            // with the card click.
+            html += '<li class="threads-v5-item threads-v5-item-clickable'
+                  + (flagged ? ' threads-v5-flagged' : '') + '" '
+                  + 'role="button" tabindex="0" '
+                  + 'title="Click to expand for full context-item details" '
+                  + 'onclick="threadCardFocus(\'' + tid + '\', \'' + cid + '\')" '
+                  + 'onkeydown="if(event.key===\'Enter\'||event.key===\' \''
+                  + '){event.preventDefault();'
+                  + 'threadCardFocus(\'' + tid + '\', \'' + cid + '\')}">';
             html += '<div class="threads-v5-item-label">'
                   + _esc(ci.label || ci.id) + '</div>';
             html += '<div class="threads-v5-item-source">'
                   + _esc(ci.source || "") + (ci.type ? " · " + _esc(ci.type) : "")
                   + '</div>';
-            html += '<div class="threads-v5-item-actions">';
+            html += '<div class="threads-v5-item-actions" '
+                  + 'onclick="event.stopPropagation()">';
+            // _flagBtn already stops propagation in its onclick;
+            // wrapping the actions div is belt-and-braces so any
+            // future inline action button doesn't accidentally
+            // double-fire the card click.
             html += _flagBtn(thread.thread_id, ci.id, flagged);
-            // 2026-05-03: context items are VIEW-ONLY in the right
-            // pane (the inspector pretty-prints fields, no edit
-            // form). Keep the right-pane drill-in but render it
-            // with an expand-arrow chevron so the affordance reads
-            // as "see more" rather than the misleading "Edit" the
-            // user noticed. Tooltip and aria-label spell it out.
-            html += '<button class="threads-v5-edit-btn threads-v5-expand-btn" '
-                  + 'title="Expand for full context-item details" '
-                  + 'aria-label="Expand context item" '
-                  + 'onclick="threadCardFocus(\'' + _esc(thread.thread_id) + '\', \''
-                  + _esc(ci.id) + '\')">'
-                  + _icon("chevron-right") + '</button>';
+            // Chevron stays as a visual hint that the card opens
+            // an inspector. It used to be the only click target;
+            // now it's redundant but inexpensive.
+            html += '<span class="threads-v5-expand-hint" aria-hidden="true">'
+                  + _icon("chevron-right") + '</span>';
             html += '</div>';
             html += '</li>';
         }
@@ -1633,6 +1645,33 @@ def _threads_v5_card_styles() -> str:
     grid-template-columns: 1fr auto;
     gap: 8px;
     align-items: center;
+    transition: background-color 80ms, border-color 80ms;
+}
+
+/* Clickable context cards — whole row opens the right-pane
+ * inspector. Hover hint + cursor + focus ring for keyboard users. */
+.threads-v5-item-clickable {
+    cursor: pointer;
+}
+.threads-v5-item-clickable:hover {
+    background: var(--bg-secondary, #1a1a1a);
+    border-color: var(--accent, #4a7fc1);
+}
+.threads-v5-item-clickable:focus-visible {
+    outline: 2px solid var(--accent, #4a7fc1);
+    outline-offset: 2px;
+}
+/* The chevron is now a visual hint, not a click target. Brighten
+ * on row hover to reinforce the affordance. */
+.threads-v5-item-clickable .threads-v5-expand-hint {
+    color: var(--text-muted, #666);
+    display: inline-flex;
+    align-items: center;
+    transition: color 80ms, transform 80ms;
+}
+.threads-v5-item-clickable:hover .threads-v5-expand-hint {
+    color: var(--accent, #4a7fc1);
+    transform: translateX(2px);
 }
 
 /* X-flagged element styling: muted-red left-border + faded text */
