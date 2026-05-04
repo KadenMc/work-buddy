@@ -645,28 +645,44 @@ def _threads_v5_script() -> str:
             };
             popup.appendChild(btn);
         }
-        // Position above the anchor, clamped to viewport. User-feedback
-        // (2026-05-03): the popup used to render below the button as a
-        // vertical column, so the rightmost durations slid off-screen
-        // and became unclickable. Now it renders as a horizontal row
-        // ABOVE the button, with a left-edge clamp so it never escapes
-        // the viewport on the right.
+        // Position above the anchor, right-aligned with the parent
+        // card. User-feedback iterations:
+        //   v1 (column, below anchor) — right options slid off-screen.
+        //   v2 (row, centered on anchor) — popped far to the left of
+        //       the Later button, awkward to reach.
+        //   v3 (this) — render above, right-edge aligned to the
+        //       enclosing card with a small padding so the rightmost
+        //       durations sit close to where the user's mouse is. Falls
+        //       back to viewport-right if no card ancestor is found.
         document.body.appendChild(popup);
         const rect = anchorEl.getBoundingClientRect();
         const popRect = popup.getBoundingClientRect();
         const margin = 6;
+        const cardPad = 12;
         let top = rect.top - popRect.height - margin;
         if (top < margin) {
             // No room above — fall back to below the anchor.
             top = rect.bottom + margin;
         }
-        let left = rect.left;
-        // Center horizontally on the anchor for the row layout.
-        left = rect.left + (rect.width / 2) - (popRect.width / 2);
-        // Clamp to viewport (both edges).
+        // Find the nearest card ancestor and right-align with it. A
+        // little padding from the card's right edge keeps the popup
+        // visually inside its container instead of brushing the edge.
+        const card = anchorEl.closest(
+            '.threads-v5-card, .threads-v5-mini-card'
+        );
+        let rightEdge;
+        if (card) {
+            const cardRect = card.getBoundingClientRect();
+            rightEdge = cardRect.right - cardPad;
+        } else {
+            rightEdge = window.innerWidth - margin;
+        }
+        let left = rightEdge - popRect.width;
+        // Clamp so the popup never falls off the left edge of the
+        // viewport (small viewport / very narrow card).
+        if (left < margin) left = margin;
         const maxLeft = window.innerWidth - popRect.width - margin;
         if (left > maxLeft) left = maxLeft;
-        if (left < margin) left = margin;
         popup.style.position = 'fixed';
         popup.style.top = top + 'px';
         popup.style.left = left + 'px';

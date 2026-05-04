@@ -905,8 +905,10 @@ def _threads_v5_card_script() -> str:
                 + '</div>'
             );
         }
-        // Actions go through the action-renderer registry.
-        if (target.kind === "action"
+        // Actions go through the action-renderer registry. The
+        // discriminator is ``_kind`` to avoid colliding with the
+        // action's own ``kind`` field (see _findById).
+        if (target._kind === "action"
             && typeof window.renderActionInRightPane === "function") {
             return (
                 '<div class="threads-v5-right-editor">'
@@ -1289,11 +1291,19 @@ def _threads_v5_card_script() -> str:
     }
 
     function _findById(thread, id) {
+        // 2026-05-03 PM: use ``_kind`` (underscore-prefixed) as the
+        // discriminator so it doesn't collide with the action's own
+        // ``kind`` field (``"standard"`` / ``"improvised"`` /
+        // ``"suggestion"`` / ``"clarification"``). The earlier
+        // implementation did ``Object.assign({kind:"action"}, a)``,
+        // and ``a.kind`` won the merge — so the right-pane dispatcher
+        // saw e.g. ``"improvised"``, fell through the action branch,
+        // and rendered the action as a "Context item" inspector.
         for (const ci of (thread.context_items || [])) {
-            if (ci.id === id) return Object.assign({ kind: "context" }, ci);
+            if (ci.id === id) return Object.assign({ _kind: "context" }, ci);
         }
         for (const a of (thread.actions || [])) {
-            if (a.id === id) return Object.assign({ kind: "action" }, a);
+            if (a.id === id) return Object.assign({ _kind: "action" }, a);
         }
         return null;
     }
