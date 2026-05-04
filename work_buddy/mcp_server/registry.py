@@ -2346,10 +2346,20 @@ def _context_capabilities() -> list[Capability]:
         ),
 
         # ── Chrome tab mutations ────────────────────────────────
+        # All three are flagged is_action=True so they show up in
+        # the per-source action library / action chip dropdown for
+        # Chrome group sub-threads. The thread-level route capabilities
+        # (chrome_route_to_tasks, chrome_route_to_umbrella_task) are
+        # registered alongside.
         Capability(
             name="chrome_tab_close",
-            description="Close specified Chrome tabs by tab ID. Returns count of closed/missing tabs. Use after triage decisions.",
+            description="Close specified Chrome tabs by tab ID. Returns count of closed/missing tabs.",
             category="context",
+            is_action=True,
+            intrinsic_amplifiers={
+                "irreversibility": "moderate",
+                "regret_potential": "moderate",
+            },
             parameters={
                 "tab_ids": {"type": "list", "description": "List of Chrome tab IDs (integers) to close", "required": True},
             },
@@ -2370,6 +2380,11 @@ def _context_capabilities() -> list[Capability]:
             name="chrome_tab_group",
             description="Create a Chrome tab group or add tabs to an existing group. Returns the group ID.",
             category="context",
+            is_action=True,
+            intrinsic_amplifiers={
+                "irreversibility": "low",
+                "regret_potential": "low",
+            },
             parameters={
                 "tab_ids": {"type": "list", "description": "List of Chrome tab IDs to group", "required": True},
                 "title": {"type": "str", "description": "Group title displayed in Chrome", "required": False},
@@ -2393,6 +2408,11 @@ def _context_capabilities() -> list[Capability]:
             name="chrome_tab_move",
             description="Move Chrome tabs to a specific position or window.",
             category="context",
+            is_action=True,
+            intrinsic_amplifiers={
+                "irreversibility": "low",
+                "regret_potential": "low",
+            },
             parameters={
                 "tab_ids": {"type": "list", "description": "List of Chrome tab IDs to move", "required": True},
                 "index": {"type": "int", "description": "Position index (-1 = end of window)", "required": False},
@@ -2409,6 +2429,66 @@ def _context_capabilities() -> list[Capability]:
             ],
             requires=["chrome_extension"],
             mutates_state=True,
+        ),
+        Capability(
+            name="chrome_route_to_tasks",
+            description=(
+                "Walk a Chrome-group thread's tabs and create one task "
+                "per tab. Each tab's title becomes the task text; the "
+                "URL goes into a linked summary note."
+            ),
+            category="context",
+            is_action=True,
+            intrinsic_amplifiers={
+                "irreversibility": "low",
+                "regret_potential": "low",
+            },
+            parameters={
+                "thread_id": {"type": "str", "description": "Chrome group sub-thread to route", "required": True},
+                "urgency": {"type": "str", "description": "low | medium (default) | high", "required": False},
+                "project": {"type": "str", "description": "Project slug applied to every created task", "required": False},
+            },
+            callable=(lambda **kw: __import__(
+                "work_buddy.collectors.chrome_thread_actions",
+                fromlist=["chrome_route_to_tasks"],
+            ).chrome_route_to_tasks(**kw)),
+            requires=["obsidian"],
+            mutates_state=True,
+            search_aliases=[
+                "create tasks from chrome group",
+                "tabs to task list",
+                "spin out tabs as tasks",
+            ],
+        ),
+        Capability(
+            name="chrome_route_to_umbrella_task",
+            description=(
+                "Create a single task representing the whole Chrome "
+                "group. The cluster label becomes the task text; the "
+                "tabs are listed in the linked summary note."
+            ),
+            category="context",
+            is_action=True,
+            intrinsic_amplifiers={
+                "irreversibility": "low",
+                "regret_potential": "low",
+            },
+            parameters={
+                "thread_id": {"type": "str", "description": "Chrome group sub-thread to route", "required": True},
+                "urgency": {"type": "str", "description": "low | medium (default) | high", "required": False},
+                "project": {"type": "str", "description": "Project slug for the task", "required": False},
+                "title_override": {"type": "str", "description": "Override the task text; defaults to the cluster label", "required": False},
+            },
+            callable=(lambda **kw: __import__(
+                "work_buddy.collectors.chrome_thread_actions",
+                fromlist=["chrome_route_to_umbrella_task"],
+            ).chrome_route_to_umbrella_task(**kw)),
+            requires=["obsidian"],
+            mutates_state=True,
+            search_aliases=[
+                "create umbrella task from chrome group",
+                "single task for tab group",
+            ],
         ),
         Capability(
             name="llm_costs",
