@@ -584,14 +584,17 @@ def _threads_v5_script() -> str:
         }
         const cached = window._threadDetailCache[threadId];
         if (cached) {
-            // Stage 5: group-relationship parents render through the
-            // multi-column group view instead of the single
-            // confirmation card. Decompose-parents and leaf threads
-            // keep the standard renderer.
-            if (cached.parent_relationship === "group"
-                && typeof window.renderGroupView === "function") {
-                return window.renderGroupView(cached);
-            }
+            // Stage 5 (revised 2026-05-04): group-parents render
+            // through the standard confirmation card just like
+            // decompose-parents. The card's sub-threads section
+            // detects ``parent_relationship === 'group'`` and swaps
+            // its flat list for the multi-column drag/drop grid via
+            // ``window.renderGroupSubThreads`` — see
+            // script_threads_v5_card.py:_renderSubThreadsLink and
+            // script_threads_v5_group.py. Earlier wave had a
+            // top-level diversion that hid the standard header,
+            // intent, namespace tags, actions, and timeline button
+            // from group-parents — fixed here.
             return window.renderConfirmationCard(cached);
         }
         // Trigger async fetch and re-render

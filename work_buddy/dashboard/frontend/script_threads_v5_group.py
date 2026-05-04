@@ -1,9 +1,20 @@
-"""Group-view frontend — multi-column re-organisable layout.
+"""Group-view frontend — multi-column re-organisable layout slotted
+into the standard thread detail UI's "Sub-threads" section.
 
-Activates when the active thread has ``parent_relationship === 'group'``.
-Renders the parent + its sibling group-parents (same
-``originating_scrape_id``) side-by-side as columns; each column lists
-its child items with drag handles + inline action previews. Items can:
+The renderer here exposes ``window.renderGroupSubThreads(thread)``,
+which the standard ``renderConfirmationCard``'s sub-threads section
+calls when ``parent_relationship === 'group'``. This means group-
+parents reuse the **whole** standard thread UI — breadcrumbs, intent,
+namespace tags, thread actions, state badge, timeline button — and
+the only swap is the section body: a flat list becomes a horizontally
+laid-out grid of columns, one per sibling group-parent in the scrape.
+
+Each column shows its sibling's title, intent (truncated), state
+badge, and item count. Sibling column headers are clickable and use
+``threadsPushPath`` — drilling into "B" pushes that path normally,
+breadcrumbs and back-button work as for any sub-thread navigation.
+
+Items in any column can:
 
 - Drag-and-drop between columns (reuses the vanilla HTML5 D&D pattern
   from ``script_triage.py:668-677``; no library).
@@ -248,9 +259,12 @@ def _group_view_script() -> str:
         _wire();
     }
 
-    // Public API: invoked by script_threads_v5.renderThreadDetail
+    // Public API: invoked by script_threads_v5_card._renderSubThreadsLink
     // when the active thread has parent_relationship === 'group'.
-    window.renderGroupView = function (thread) {
+    // Returns just the in-section markup (suggestions banner + columns
+    // + new-group drop zone). The standard card supplies the section
+    // wrapper, the "Sub-threads (N)" label, and aggregated state badges.
+    window.renderGroupSubThreads = function (thread) {
         if (!thread) {
             return '<div class="threads-v5-group-empty">No thread loaded.</div>';
         }
@@ -280,7 +294,7 @@ def _group_view_script() -> str:
                     window._renderActiveThread();
                 }
             });
-        return '<div class="threads-v5-group-loading">Loading group view...</div>';
+        return '<div class="threads-v5-group-loading">Loading group columns...</div>';
     };
 
     function _renderFetchError(parentId, msg) {
@@ -296,39 +310,33 @@ def _group_view_script() -> str:
 
     function _renderColumns(active, siblings) {
         const activeId = active.thread_id;
-        // Header — scrape-wide info + selection toolbar.
         const selCount = window._groupState.selected.size;
-        let html = '<div class="threads-v5-group-view">'
-            + _renderSuggestionsPanel(activeId)
-            +   '<div class="threads-v5-group-header">'
-            +     '<div class="threads-v5-group-title">'
-            +       _esc(active.title || "Group view")
-            +     '</div>'
-            +     '<div class="threads-v5-group-meta">'
-            +       siblings.length + ' group'
-            +       (siblings.length === 1 ? '' : 's') + ' in this scrape'
-            +       (selCount > 0
-                        ? ' &middot; <strong>' + selCount + ' selected</strong>'
-                        : '')
-            +     '</div>'
-            +   '</div>'
-            +   '<div class="threads-v5-group-columns">';
+        // Slim selection bar — only visible while a selection exists.
+        // Replaces the (deleted) outer "X groups in this scrape · N
+        // selected" header line. Refreshed in-place by
+        // _refreshSelectionClasses.
+        let html = _renderSuggestionsPanel(activeId)
+            + '<div class="threads-v5-group-selection-bar'
+            +   (selCount > 0 ? ' show' : '') + '">'
+            +   '<span class="count">'
+            +     selCount + ' selected'
+            +   '</span>'
+            +   '<span class="hint">'
+            +     'drag to another column to move &middot; '
+            +     '<kbd>m</kbd> move-to &middot; <kbd>Esc</kbd> clear'
+            +   '</span>'
+            + '</div>'
+            + '<div class="threads-v5-group-columns">';
         for (const sib of siblings) {
             html += _renderColumn(sib, sib.thread_id === activeId);
         }
-        // Drop-here-to-spawn-a-new-group zone (stretch goal). Visible
-        // only when there's at least one sibling to use as a
-        // reference for scope inheritance.
+        // Drop-here-to-spawn-a-new-group zone. Visible only when
+        // there's at least one sibling to use as a reference for
+        // scope inheritance.
         if (siblings.length > 0) {
             html += _renderNewGroupZone(activeId);
         }
-        html += '</div>'
-            + '<p class="threads-v5-group-help">'
-            +   '<kbd>x</kbd> select &middot; <kbd>Shift</kbd>+click range '
-            +   '&middot; <kbd>m</kbd> move-to &middot; drag any item to '
-            +   'another group to move it (whole selection moves together)'
-            + '</p>'
-            + '</div>';
+        html += '</div>';
         return html;
     }
 
@@ -337,23 +345,59 @@ def _group_view_script() -> str:
         const sId = sib.thread_id;
         const stateCounts = sib.sub_thread_state_counts || {};
         const awaitingCount = stateCounts.awaiting_confirmation || 0;
+        const stateLabel = sib.fsm_state || "";
+        const intentText = (sib.intent && sib.intent.text) || "";
+        const showIntent = intentText && intentText !== sib.title;
+        const headerClickable = !isActive;
         let html = '<div class="threads-v5-group-column'
             + (isActive ? ' threads-v5-group-column-active' : '') + '" '
             + 'data-parent-id="' + _esc(sId) + '" '
             + 'ondragover="event.preventDefault();this.classList.add(\'drag-over\');" '
             + 'ondragleave="this.classList.remove(\'drag-over\');" '
             + 'ondrop="threadsGroupDropOnColumn(event, \'' + _esc(sId) + '\')">'
-            + '<div class="threads-v5-group-column-header">'
-            +   '<div class="threads-v5-group-column-title">'
-            +     _esc(sib.title || sId)
-            +   '</div>'
-            +   '<div class="threads-v5-group-column-meta">'
+            + '<div class="threads-v5-group-column-header'
+            +   (headerClickable
+                    ? ' threads-v5-group-column-header-clickable'
+                    : '') + '"'
+            +   (headerClickable
+                    ? ' role="link"'
+                    +   ' tabindex="0"'
+                    +   ' title="Open ' + _esc(sib.title || sId) + '"'
+                    +   ' onclick="threadsPushPath(\''
+                    +     _esc(sId) + '\')"'
+                    +   ' onkeydown="if(event.key===\'Enter\'||event.key===\' \''
+                    +     '){event.preventDefault();threadsPushPath(\''
+                    +     _esc(sId) + '\')}"'
+                    : '')
+            + '>'
+            +   '<div class="threads-v5-group-column-title-row">'
+            +     '<span class="threads-v5-group-column-title">'
+            +       _esc(sib.title || sId) + '</span>'
+            +     (stateLabel
+                    ? '<span class="threads-v5-group-column-state">'
+                        + _esc(stateLabel) + '</span>'
+                    : '')
+            +     (isActive
+                    ? '<span class="threads-v5-group-column-active-pill">'
+                        + 'you are here</span>'
+                    : '')
+            +   '</div>';
+        if (showIntent) {
+            html += '<div class="threads-v5-group-column-intent" '
+                +   'title="' + _esc(intentText) + '">'
+                +   _esc(intentText.length > 110
+                            ? intentText.slice(0, 107) + '...' : intentText)
+                + '</div>';
+        }
+        html += '<div class="threads-v5-group-column-meta">'
             +     items.length + ' item' + (items.length === 1 ? '' : 's')
             +     (awaitingCount > 0
                     ? ' &middot; ' + awaitingCount + ' awaiting'
                     : '')
             +   '</div>';
         if (awaitingCount > 0) {
+            // event.stopPropagation prevents the header's navigation
+            // onclick from firing when clicking the submit-all button.
             html += '<button class="threads-v5-group-submit-all" '
                 +   'title="Accept every awaiting_confirmation item in this group" '
                 +   'onclick="event.stopPropagation();threadsGroupSubmitAll(\''
@@ -775,13 +819,14 @@ def _group_view_script() -> str:
             const tid = el.dataset.threadId;
             el.classList.toggle('selected', sel.has(tid));
         });
-        // Update header selection-count without a full re-render.
-        const meta = document.querySelector('.threads-v5-group-meta');
-        if (meta) {
-            const base = meta.textContent.split('·')[0].trim();
-            meta.innerHTML = sel.size > 0
-                ? base + ' &middot; <strong>' + sel.size + ' selected</strong>'
-                : base;
+        // Update the slim selection bar without a full re-render.
+        const bar = document.querySelector(
+            '.threads-v5-group-selection-bar'
+        );
+        if (bar) {
+            const cnt = bar.querySelector('.count');
+            if (cnt) cnt.textContent = sel.size + ' selected';
+            bar.classList.toggle('show', sel.size > 0);
         }
     }
 
@@ -942,14 +987,11 @@ def _group_view_script() -> str:
 
 def _group_view_styles() -> str:
     return r"""
-/* Stage 5: group-view multi-column layout. Activates when the active
- * thread has parent_relationship === 'group'. Columns are flex
- * children that wrap on narrow viewports.
+/* Stage 5: group-view multi-column layout. Renders inside the
+ * standard thread-detail card's "Sub-threads" section when the
+ * active thread has parent_relationship === 'group'. Columns are
+ * flex children that wrap on narrow viewports.
  */
-.threads-v5-group-view {
-    padding: 16px 20px;
-    color: var(--text, #ddd);
-}
 .threads-v5-group-empty,
 .threads-v5-group-loading {
     padding: 2em;
@@ -960,19 +1002,37 @@ def _group_view_styles() -> str:
     color: var(--text, #ddd);
 }
 
-.threads-v5-group-header {
-    margin-bottom: 14px;
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-}
-.threads-v5-group-title {
-    font-size: 18px;
-    font-weight: 600;
-}
-.threads-v5-group-meta {
-    color: var(--text-muted, #888);
+/* Slim selection bar — only visible while items are selected. */
+.threads-v5-group-selection-bar {
+    display: none;
+    align-items: center;
+    gap: 12px;
+    margin: 0 0 10px 0;
+    padding: 6px 10px;
+    background: var(--bg-tertiary, #232323);
+    border: 1px solid var(--accent, #4a7fc1);
+    border-radius: 6px;
     font-size: 12px;
+    color: var(--text, #ddd);
+}
+.threads-v5-group-selection-bar.show {
+    display: flex;
+}
+.threads-v5-group-selection-bar .count {
+    font-weight: 600;
+    color: var(--accent, #4a7fc1);
+}
+.threads-v5-group-selection-bar .hint {
+    color: var(--text-muted, #888);
+    font-size: 11px;
+}
+.threads-v5-group-selection-bar kbd {
+    background: var(--bg, #0a0a0a);
+    border: 1px solid var(--border, #333);
+    border-radius: 3px;
+    padding: 0 4px;
+    font-family: ui-monospace, SFMono-Regular, monospace;
+    font-size: 10px;
 }
 
 .threads-v5-group-columns {
@@ -1005,14 +1065,66 @@ def _group_view_styles() -> str:
     padding-bottom: 6px;
     border-bottom: 1px solid var(--border, #333);
 }
+/* Non-active columns: header is a clickable link to navigate into
+ * that sibling group-parent (uses threadsPushPath). The drag handle
+ * + items below stay independent. */
+.threads-v5-group-column-header-clickable {
+    cursor: pointer;
+    border-radius: 4px;
+    margin: -4px -4px 8px -4px;
+    padding: 4px 4px 6px 4px;
+    transition: background-color 80ms;
+}
+.threads-v5-group-column-header-clickable:hover,
+.threads-v5-group-column-header-clickable:focus-visible {
+    background: var(--bg-tertiary, #232323);
+    outline: none;
+}
+
+.threads-v5-group-column-title-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
 .threads-v5-group-column-title {
     font-size: 14px;
     font-weight: 600;
 }
+.threads-v5-group-column-state {
+    font-size: 10px;
+    background: var(--bg, #0a0a0a);
+    border: 1px solid var(--border, #333);
+    border-radius: 3px;
+    padding: 1px 5px;
+    color: var(--text-muted, #888);
+    text-transform: capitalize;
+    white-space: nowrap;
+}
+.threads-v5-group-column-active-pill {
+    font-size: 10px;
+    background: var(--accent, #4a7fc1);
+    color: white;
+    border-radius: 3px;
+    padding: 1px 6px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+}
+.threads-v5-group-column-intent {
+    font-size: 11px;
+    color: var(--text-muted, #aaa);
+    margin-top: 4px;
+    line-height: 1.35;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+}
 .threads-v5-group-column-meta {
     font-size: 11px;
     color: var(--text-muted, #888);
-    margin-top: 2px;
+    margin-top: 4px;
 }
 .threads-v5-group-submit-all {
     margin-top: 6px;
@@ -1224,20 +1336,6 @@ def _group_view_styles() -> str:
 .threads-v5-group-suggestion-dismiss:hover {
     color: var(--text, #ddd);
     border-color: var(--border, #333);
-}
-
-.threads-v5-group-help {
-    margin-top: 14px;
-    color: var(--text-muted, #666);
-    font-size: 11px;
-}
-.threads-v5-group-help kbd {
-    background: var(--bg-tertiary, #1a1a1a);
-    border: 1px solid var(--border, #333);
-    border-radius: 3px;
-    padding: 1px 4px;
-    font-family: ui-monospace, SFMono-Regular, monospace;
-    font-size: 10px;
 }
 
 /* Self-contained transient toast — does not register a workflow-view,

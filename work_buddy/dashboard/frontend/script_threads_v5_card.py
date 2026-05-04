@@ -682,8 +682,18 @@ def _threads_v5_card_script() -> str:
         // own ID, creating a self-referencing breadcrumb. Replaced
         // with inline sub-thread mini-cards (UX.md §3.2 + §8.4 —
         // "sub-thread list shows children of that Thread").
+        // 2026-05-04: group-parents render the multi-column drag/
+        // drop grid here in place of the flat list — see
+        // script_threads_v5_group.py:renderGroupSubThreads. The
+        // section header + aggregated state badges stay; the body
+        // is the only thing that swaps.
+        const isGroup = thread.parent_relationship === 'group'
+            && typeof window.renderGroupSubThreads === 'function';
         const n = thread.sub_thread_count || 0;
-        if (n === 0) return '';
+        // Group-parents always render the section: sibling columns
+        // may have content even when this group has zero children
+        // of its own. Non-group parents hide the section at count=0.
+        if (n === 0 && !isGroup) return '';
         const counts = thread.sub_thread_state_counts || {};
         const badges = _renderStateBadges(counts);
         let html = '<div class="threads-v5-section">'
@@ -693,6 +703,11 @@ def _threads_v5_card_script() -> str:
         if (badges) {
             html += '<div class="threads-v5-state-badges">'
                   + badges + '</div>';
+        }
+        if (isGroup) {
+            html += window.renderGroupSubThreads(thread);
+            html += '</div>';
+            return html;
         }
         // Lazy-load the sub-thread list. The first render shows a
         // placeholder; we fetch /api/threads/<id>/sub asynchronously
