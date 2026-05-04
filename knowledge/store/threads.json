@@ -1,11 +1,10 @@
 {
   "threads": {
     "kind": "system",
-    "name": "Threads (v5 universal-entity primitive)",
-    "description": "The Thread is the universal entity for 'context that may need an action' in v5. Replaces v4's PoolEntry (folded into states) and ActionItem (folded into sub-Threads). Task survives as a subclass.",
+    "name": "Threads — universal-entity primitive",
+    "description": "The Thread is the universal entity for 'context that may need an action'. Replaces the older split between PoolEntry (now folded into states) and ActionItem (now folded into sub-Threads). Task survives as a subclass.",
     "tags": [
       "threads",
-      "v5",
       "fsm",
       "resolution",
       "core"
@@ -32,8 +31,7 @@
     "tags": [
       "threads",
       "fsm",
-      "resolution",
-      "v5"
+      "resolution"
     ],
     "parents": [
       "threads"
@@ -50,8 +48,7 @@
     "tags": [
       "threads",
       "resolution",
-      "execution",
-      "v5"
+      "execution"
     ],
     "parents": [
       "threads"
@@ -68,8 +65,7 @@
     "tags": [
       "threads",
       "events",
-      "audit",
-      "v5"
+      "audit"
     ],
     "parents": [
       "threads"
@@ -87,7 +83,6 @@
       "threads",
       "llm",
       "queue",
-      "v5",
       "infrastructure"
     ],
     "parents": [
@@ -105,8 +100,7 @@
     "tags": [
       "threads",
       "actions",
-      "catalog",
-      "v5"
+      "catalog"
     ],
     "parents": [
       "threads"
@@ -122,8 +116,7 @@
     "description": "Per-Thread policy composed from orthogonal axes. Saved compositions are configuration, not types. Sub-threads override DOWN axis-by-axis only. Stage 5 wired the runtime — auto-advance branch resolvers gate every INFERRING_* → AWAITING_*_CONFIRMATION transition.",
     "tags": [
       "threads",
-      "autonomy",
-      "v5"
+      "autonomy"
     ],
     "parents": [
       "threads"
@@ -135,12 +128,11 @@
   },
   "threads/aggregator": {
     "kind": "system",
-    "name": "Aggregator (read-only synthesis of v4 entities as v5 Threads)",
-    "description": "Lets v5 query paths see v4 task_metadata / task_action_items / ClarifyPool data without a migration. Stage 3 cutover replaces this with real migrated rows.",
+    "name": "Aggregator — read-only synthesis of legacy entities as Threads",
+    "description": "Lets Thread query paths see legacy task_metadata / task_action_items / ClarifyPool data without a migration. Cutover by replacing this with real migrated rows.",
     "tags": [
       "threads",
       "aggregator",
-      "v5",
       "migration"
     ],
     "parents": [
@@ -152,16 +144,14 @@
     }
   },
   "threads/grouping": {
-    "name": "Threads — group relationship pattern (Stage 5)",
+    "name": "Threads — group-relationship pattern",
     "kind": "system",
-    "description": "Second parent-child relationship pattern in v5 Threads, alongside the original 'decompose' fanout. Group-parents are re-organisable containers: items can move between sibling group-parents via the move op, the parent has no decompose action of its own, and an empty group-parent auto-DISMISSES. Discriminator: parent_relationship: 'decompose' | 'group'.",
+    "description": "Parent-child relationship pattern alongside 'decompose'. Group umbrellas hold N group sub-threads; each child carries its items as ContextItems and supports per-cluster actions (close-tabs, route-to-tasks, etc.) proposed by the shared LLM cluster-refinement step. Drag-and-drop moves items between sibling children.",
     "parents": [
       "threads"
     ],
     "children": [],
     "tags": [
-      "v5",
-      "stage5",
       "grouping",
       "chrome-scrape",
       "drag-and-drop"

@@ -147,9 +147,19 @@ class TestActionProposalRecording:
             ClusterSpec(label="No action", item_ids=("i2",)),
         ]
         pipeline = _StubPipeline(items=items, clusters=clusters)
-        result = run_pipeline(
-            pipeline, universal_actions=ActionLibrary([]),
-        )
+        # Stub refine_clusters so the real Sonnet call doesn't fire
+        # and overwrite our prepared proposed_action. (Pre-Phase-D
+        # the runner used a passthrough stub; now the real LLM call
+        # is wired, so test mocking is needed.)
+        from work_buddy.pipelines import runner as runner_mod
+        original = runner_mod.refine_clusters
+        runner_mod.refine_clusters = lambda items, pre, **kw: list(pre)
+        try:
+            result = run_pipeline(
+                pipeline, universal_actions=ActionLibrary([]),
+            )
+        finally:
+            runner_mod.refine_clusters = original
         assert len(result.action_proposals) == 1
         # The "With action" child has an action_inferred event.
         with_action_child_id = result.child_thread_ids[0]

@@ -1209,7 +1209,7 @@ def _threads_v5_script() -> str:
             + '<tr><th><kbd>/</kbd></th><td>Focus the search box</td></tr>'
             + '<tr><th><kbd>t</kbd></th><td>View timeline (when in a thread)</td></tr>'
             + '<tr><th><kbd>?</kbd></th><td>Toggle this help</td></tr>'
-            + '<tr><th colspan="2" style="padding-top:1em;color:var(--text-muted,#888)">In a group view (Stage 5):</th></tr>'
+            + '<tr><th colspan="2" style="padding-top:1em;color:var(--text-muted,#888)">In a group view:</th></tr>'
             + '<tr><th><kbd>x</kbd></th><td>Toggle selection on focused item</td></tr>'
             + '<tr><th><kbd>Shift</kbd>+<kbd>j</kbd>/<kbd>k</kbd></th><td>Extend selection up/down</td></tr>'
             + '<tr><th><kbd>m</kbd></th><td>Move selection to another group (numbered prompt)</td></tr>'

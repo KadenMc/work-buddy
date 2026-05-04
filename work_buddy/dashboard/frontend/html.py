@@ -51,7 +51,7 @@ def _html() -> str:
     <div class="tab-bar-left">
         <button class="tab-btn active" data-tab="overview">Overview</button>
         <button class="tab-btn" data-tab="threads"
-                title="v5 Threads — unified resolution surface">Threads</button>
+                title="Threads — unified resolution surface">Threads</button>
         <button class="tab-btn" data-tab="today"
                 title="What should I do right now? Slice 5b /wb-task-me view.">Today</button>
         <button class="tab-btn" data-tab="tasks">Tasks</button>
@@ -84,9 +84,8 @@ def _html() -> str:
 
 </div>
 
-<!-- THREADS (v5) — Unified resolution surface for v5 Threads. Stage
-     4 ships this incrementally; the panel is rendered by
-     window.loadThreads in script_threads_v5.py. -->
+<!-- THREADS — Unified resolution surface. The panel is rendered
+     by window.loadThreads (in the threads frontend module). -->
 <div class="tab-panel" id="panel-threads">
     <div class="loading">Loading Threads...</div>
 </div>
