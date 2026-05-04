@@ -719,3 +719,5 @@ def test_build_threads_from_range_reconstructs_raw_text() -> None:
     assert threads[0]["raw_text"] == "- alpha\n- beta\n- gamma"
     assert threads[0]["line_count"] == 3
     assert threads[1]["raw_text"] == "- delta\n- epsilon"
+
+

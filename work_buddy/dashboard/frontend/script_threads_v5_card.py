@@ -101,6 +101,56 @@ def _threads_v5_card_script() -> str:
         // No re-render — the user is typing
     };
 
+    // 2026-05-03 — explicit confirm/discard for the intent editor.
+    // The right-pane editor used to have no submit button, just the
+    // implicit "edits flow into the next Accept click" path; users
+    // had no way to lock in or back out of an edit without touching
+    // the card. Now the editor has a ↩ confirm and × discard, plus
+    // Enter / Esc keyboard semantics (Shift+Enter still inserts a
+    // newline). Confirming locks the edit into ``s.edited.intent``
+    // and closes the right pane; discarding clears the edit and
+    // closes the right pane. The actual FSM commit still happens
+    // when the user clicks Accept on the main card — the right
+    // pane is for staging edits, not for executing them.
+    window.threadCardConfirmIntentEdit = function (threadId) {
+        const s = _state(threadId);
+        s.focusedId = null;
+        if (typeof window._renderActiveThread === "function") {
+            window._renderActiveThread();
+        }
+    };
+    window.threadCardDiscardIntentEdit = function (threadId) {
+        const s = _state(threadId);
+        delete s.edited.intent;
+        s.focusedId = null;
+        if (typeof window._renderActiveThread === "function") {
+            window._renderActiveThread();
+        }
+    };
+    // Keyboard handler shared by every Threads textarea. Attach via
+    // ``onkeydown="return threadCardEditorKeydown(event, '<tid>', 'intent')"``.
+    // Returns false to prevent the default newline insertion when we
+    // intercept Enter / Esc; passes through Shift+Enter as a newline.
+    window.threadCardEditorKeydown = function (event, threadId, target) {
+        if (event.key === "Enter" && !event.shiftKey
+            && !event.ctrlKey && !event.metaKey && !event.altKey) {
+            event.preventDefault();
+            if (target === "intent") {
+                window.threadCardConfirmIntentEdit(threadId);
+            }
+            return false;
+        }
+        if (event.key === "Escape") {
+            event.preventDefault();
+            if (target === "intent") {
+                window.threadCardDiscardIntentEdit(threadId);
+            }
+            return false;
+        }
+        // Shift+Enter / plain typing: pass through.
+        return true;
+    };
+
     // Wave G — capture edits to action parameters in the right-pane
     // form. Each input/textarea/select wires
     // ``oninput="threadCardEditActionParam(tid, actId, paramName, this.value)"``.
@@ -359,25 +409,42 @@ def _threads_v5_card_script() -> str:
     }
 
     function _renderIntentSection(thread, s) {
-        // Intent: NO X-flag (UX.md §5.2). Only editable.
+        // 2026-05-03 PM: per user feedback the intent now follows the
+        // same inline-buttons pattern as context items and actions.
+        // The earlier UX.md §5.2 stance ("Intent: NO X-flag, only
+        // editable") was overruled — users WILL want to flag a wrong
+        // intent inference, and the flag-then-edit-then-Accept loop
+        // mirrors how they handle bad context/action proposals.
         const text = (thread.intent && thread.intent.text) || "(no intent inferred)";
         const editedText = s.edited.intent !== undefined
             ? s.edited.intent
             : text;
         const conf = thread.intent && thread.intent.confidence;
+        // Use the synthetic id "intent" for flag tracking. The Accept
+        // disabler in _renderFooter checks ``s.flagged.size > 0``, so
+        // a flagged intent blocks Accept just like a flagged context
+        // item or action.
+        const flagged = s.flagged.has("intent");
+        const tid = _esc(thread.thread_id);
         return (
             '<div class="threads-v5-section">'
             + '<div class="threads-v5-section-label">Intent'
             +   _confidenceBadge(conf)
             + '</div>'
-            + '<div class="threads-v5-intent">'
-            +   _esc(editedText)
+            + '<div class="threads-v5-item threads-v5-intent-item'
+            +   (flagged ? ' threads-v5-flagged' : '') + '">'
+            +   '<div class="threads-v5-item-label threads-v5-intent">'
+            +     _esc(editedText)
+            +   '</div>'
+            +   '<div class="threads-v5-item-actions">'
+            +     _flagBtn(thread.thread_id, "intent", flagged)
+            +     '<button class="threads-v5-edit-btn" '
+            +       'title="Edit intent" '
+            +       'onclick="threadCardFocus(\'' + tid + '\', \'intent\')">'
+            +       _icon("edit")
+            +     '</button>'
+            +   '</div>'
             + '</div>'
-            + '<button class="threads-v5-edit-btn" '
-            +   'title="Edit intent" '
-            +   'onclick="threadCardFocus(\'' + _esc(thread.thread_id) + '\', \'intent\')">'
-            +   _icon("edit")
-            + '</button>'
             + '</div>'
         );
     }
@@ -426,11 +493,18 @@ def _threads_v5_card_script() -> str:
                   + '</div>';
             html += '<div class="threads-v5-item-actions">';
             html += _flagBtn(thread.thread_id, ci.id, flagged);
-            html += '<button class="threads-v5-edit-btn" '
-                  + 'title="Edit context item" '
+            // 2026-05-03: context items are VIEW-ONLY in the right
+            // pane (the inspector pretty-prints fields, no edit
+            // form). Keep the right-pane drill-in but render it
+            // with an expand-arrow chevron so the affordance reads
+            // as "see more" rather than the misleading "Edit" the
+            // user noticed. Tooltip and aria-label spell it out.
+            html += '<button class="threads-v5-edit-btn threads-v5-expand-btn" '
+                  + 'title="Expand for full context-item details" '
+                  + 'aria-label="Expand context item" '
                   + 'onclick="threadCardFocus(\'' + _esc(thread.thread_id) + '\', \''
                   + _esc(ci.id) + '\')">'
-                  + _icon("edit") + '</button>';
+                  + _icon("chevron-right") + '</button>';
             html += '</div>';
             html += '</li>';
         }
@@ -694,9 +768,46 @@ def _threads_v5_card_script() -> str:
                               ? intent.slice(0, 137) + '...' : intent)
                           + '</div>'
                         : '')
+                  + _renderSubThreadActionsPreview(sub)
                   + '</li>';
         }
         html += '</ul>';
+        return html;
+    }
+
+    // Inline preview of a sub-thread's proposed actions on the mini-card.
+    // Closes the gap from v4: the user could see what was about to happen
+    // without entering each thread, and could go straight to editing the
+    // proposed action with a single click. The action-edit pencil opens
+    // the sub-thread WITH its right-pane editor already focused on the
+    // action, so the "edit before entering" affordance is one click away
+    // even if we don't render a full action editor inline.
+    function _renderSubThreadActionsPreview(sub) {
+        const actions = sub.actions || [];
+        if (actions.length === 0) return '';
+        let html = '<div class="threads-v5-subthread-actions">';
+        for (const a of actions) {
+            const name = a.name || a.id || "(unnamed)";
+            const kind = a.kind || "";
+            html += '<div class="threads-v5-subthread-action">'
+                  +   _kindIcon(a.kind, a.name) + ' '
+                  +   '<span class="threads-v5-subthread-action-name">'
+                  +     _esc(name) + '</span>'
+                  +   (kind
+                        ? ' <span class="threads-v5-kind-chip ' + _esc(kind) + '">'
+                          + _esc(kind) + '</span>'
+                        : '')
+                  +   '<button class="threads-v5-subthread-edit-btn" '
+                  +     'title="Edit this proposed action (opens the right-pane editor)" '
+                  +     'aria-label="Edit proposed action" '
+                  +     'onclick="event.stopPropagation();'
+                  +       'threadsOpenSubThreadAction(\''
+                  +       _esc(sub.thread_id) + '\', \'' + _esc(a.id) + '\')">'
+                  +     _icon("edit")
+                  +   '</button>'
+                  + '</div>';
+        }
+        html += '</div>';
         return html;
     }
 
@@ -789,12 +900,35 @@ def _threads_v5_card_script() -> str:
             const edited = s.edited.intent !== undefined
                 ? s.edited.intent
                 : ((thread.intent && thread.intent.text) || "");
+            const tidJs = _esc(thread.thread_id);
             return (
                 '<div class="threads-v5-right-editor">'
                 + '<h4>Edit intent</h4>'
-                + '<textarea class="threads-v5-textarea" rows="6" '
-                +   'oninput="threadCardEditIntent(\'' + _esc(thread.thread_id)
-                +     '\', this.value)">' + _esc(edited) + '</textarea>'
+                + '<p class="threads-v5-editor-hint">'
+                +   '<kbd>Enter</kbd> to confirm &middot; '
+                +   '<kbd>Shift</kbd>+<kbd>Enter</kbd> for newline &middot; '
+                +   '<kbd>Esc</kbd> to discard'
+                + '</p>'
+                + '<textarea class="threads-v5-textarea" rows="6" autofocus '
+                +   'oninput="threadCardEditIntent(\'' + tidJs + '\', this.value)" '
+                +   'onkeydown="return threadCardEditorKeydown(event, \''
+                +     tidJs + '\', \'intent\')"'
+                + '>' + _esc(edited) + '</textarea>'
+                + '<div class="threads-v5-editor-actions">'
+                +   '<button class="threads-v5-editor-btn threads-v5-editor-btn-cancel" '
+                +     'title="Discard edit (Esc)" '
+                +     'onclick="threadCardDiscardIntentEdit(\'' + tidJs + '\')">'
+                +     '<span class="threads-v5-editor-icon">&times;</span>'
+                +     '<span class="threads-v5-editor-label">Discard</span>'
+                +   '</button>'
+                +   '<button class="threads-v5-editor-btn threads-v5-editor-btn-confirm" '
+                +     'title="Confirm edit (Enter). The edit is staged; click Accept on '
+                +       'the main card to commit it to the thread." '
+                +     'onclick="threadCardConfirmIntentEdit(\'' + tidJs + '\')">'
+                +     '<span class="threads-v5-editor-icon">&#x21A9;</span>'
+                +     '<span class="threads-v5-editor-label">Confirm</span>'
+                +   '</button>'
+                + '</div>'
                 + '</div>'
             );
         }
@@ -808,8 +942,10 @@ def _threads_v5_card_script() -> str:
                 + '</div>'
             );
         }
-        // Actions go through the action-renderer registry.
-        if (target.kind === "action"
+        // Actions go through the action-renderer registry. The
+        // discriminator is ``_kind`` to avoid colliding with the
+        // action's own ``kind`` field (see _findById).
+        if (target._kind === "action"
             && typeof window.renderActionInRightPane === "function") {
             return (
                 '<div class="threads-v5-right-editor">'
@@ -1192,11 +1328,19 @@ def _threads_v5_card_script() -> str:
     }
 
     function _findById(thread, id) {
+        // 2026-05-03 PM: use ``_kind`` (underscore-prefixed) as the
+        // discriminator so it doesn't collide with the action's own
+        // ``kind`` field (``"standard"`` / ``"improvised"`` /
+        // ``"suggestion"`` / ``"clarification"``). The earlier
+        // implementation did ``Object.assign({kind:"action"}, a)``,
+        // and ``a.kind`` won the merge — so the right-pane dispatcher
+        // saw e.g. ``"improvised"``, fell through the action branch,
+        // and rendered the action as a "Context item" inspector.
         for (const ci of (thread.context_items || [])) {
-            if (ci.id === id) return Object.assign({ kind: "context" }, ci);
+            if (ci.id === id) return Object.assign({ _kind: "context" }, ci);
         }
         for (const a of (thread.actions || [])) {
-            if (a.id === id) return Object.assign({ kind: "action" }, a);
+            if (a.id === id) return Object.assign({ _kind: "action" }, a);
         }
         return null;
     }
@@ -1266,6 +1410,13 @@ def _threads_v5_card_script() -> str:
             // intent / context items / actions (user-feedback fix #5).
             "edit": '<path d="M12 20h9"></path>'
                 + '<path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path>',
+            // Right-chevron — used as the "expand for more info"
+            // affordance on view-only items (e.g. context items).
+            // Reads as "drill in" rather than "toggle visibility"
+            // (user-feedback 2026-05-03 PM): the eye icon was
+            // considered for view-only entries but the expand-
+            // arrow vibe matched the user's intent better.
+            "chevron-right": '<polyline points="9 6 15 12 9 18"></polyline>',
         };
         const p = paths[name] || '';
         return '<svg class="threads-v5-icon" width="16" height="16" '
@@ -1571,6 +1722,65 @@ def _threads_v5_card_styles() -> str:
     font-family: inherit;
     font-size: 13px;
     resize: vertical;
+}
+
+/* Editor hint line — small grey caption above the textarea
+ * explaining Enter / Shift+Enter / Esc semantics. */
+.threads-v5-editor-hint {
+    color: var(--text-muted, #888);
+    font-size: 11px;
+    margin: 0 0 6px 0;
+}
+.threads-v5-editor-hint kbd {
+    background: var(--bg-tertiary, #1a1a1a);
+    border: 1px solid var(--border, #333);
+    border-radius: 3px;
+    padding: 1px 4px;
+    font-family: ui-monospace, SFMono-Regular, monospace;
+    font-size: 10px;
+}
+
+/* Editor action buttons (Discard / Confirm) — sit below the
+ * textarea, right-aligned. Mirror the dashboard's neutral / accent
+ * button colour pair so the pair reads as cancel/submit. */
+.threads-v5-editor-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 8px;
+}
+.threads-v5-editor-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: transparent;
+    color: var(--text, #ddd);
+    border: 1px solid var(--border, #333);
+    border-radius: 5px;
+    padding: 6px 12px;
+    font-size: 12px;
+    cursor: pointer;
+}
+.threads-v5-editor-btn:hover {
+    background: var(--bg-tertiary, #1a1a1a);
+}
+.threads-v5-editor-btn-confirm {
+    border-color: var(--accent, #4a7fc1);
+    color: var(--accent, #4a7fc1);
+}
+.threads-v5-editor-btn-confirm:hover {
+    background: var(--accent, #4a7fc1);
+    color: #fff;
+}
+.threads-v5-editor-btn-cancel {
+    color: var(--text-muted, #888);
+}
+.threads-v5-editor-icon {
+    font-size: 14px;
+    line-height: 1;
+}
+.threads-v5-editor-label {
+    font-size: 12px;
 }
 
 .threads-v5-json-view {
@@ -1886,6 +2096,45 @@ def _threads_v5_card_styles() -> str:
     font-size: 12px;
     line-height: 1.4;
 }
+
+/* Inline action preview on a sub-thread mini-card.
+ * One row per proposed action with a tiny edit-pencil that opens the
+ * sub-thread already focused on that action's right-pane editor. */
+.threads-v5-subthread-actions {
+    margin-top: 6px;
+    border-top: 1px dashed rgba(80,80,80,0.4);
+    padding-top: 6px;
+}
+.threads-v5-subthread-action {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--text-muted, #aaa);
+    padding: 2px 0;
+}
+.threads-v5-subthread-action-name {
+    color: var(--text, #ddd);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1 1 auto;
+    min-width: 0;
+}
+.threads-v5-subthread-edit-btn {
+    background: transparent;
+    border: none;
+    padding: 2px 6px;
+    color: var(--text-muted, #888);
+    cursor: pointer;
+    border-radius: 3px;
+    flex: 0 0 auto;
+}
+.threads-v5-subthread-edit-btn:hover {
+    color: var(--accent, #4a7fc1);
+    background: var(--bg-tertiary, #1a1a1a);
+}
+
 .threads-v5-subthread-loading {
     color: var(--text-muted, #888);
     font-size: 12px;

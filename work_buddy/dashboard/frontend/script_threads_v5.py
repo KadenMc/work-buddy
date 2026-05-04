@@ -56,6 +56,31 @@ def _threads_v5_script() -> str:
         renderThreads();
     };
 
+    // 2026-05-04: open a sub-thread AND focus the right-pane editor on
+    // a specific action in one click. Mirrors the v4 affordance where
+    // the user could see proposed actions on each card and jump
+    // straight to editing one without first entering the thread. The
+    // navigation still pushes the path (so the breadcrumb / URL hash /
+    // back-button all work normally), and we set ``focusedId`` on the
+    // sub-thread's per-card state so its right-pane renders the action
+    // editor immediately.
+    window.threadsOpenSubThreadAction = function (threadId, actionId) {
+        if (!threadId) return;
+        if (typeof window.threadCardFocus === "function" && actionId) {
+            try { window.threadCardFocus(threadId, actionId); } catch(e) {}
+        }
+        // threadCardFocus already triggers a re-render via
+        // _renderActiveThread, but the path push has to happen too so
+        // the rest of the dashboard (breadcrumb, hash, back-nav) is
+        // consistent. Push *after* focus so the renderer sees the
+        // focusedId on the very first frame after navigation.
+        window._threadsState.path.push(threadId);
+        window._threadsState.inspect = null;
+        try { _autoDismissResolutionToasts(threadId); } catch(e) {}
+        if (typeof _persistHash === "function") _persistHash();
+        renderThreads();
+    };
+
     // Auto-dismiss any toast or workflow-tab chip for this
     // thread. Used when the user navigates into a thread — the
     // toast becomes redundant once they're looking at the card
@@ -633,7 +658,7 @@ def _threads_v5_script() -> str:
         // Remove any existing popup
         document.querySelectorAll('.threads-v5-later-popup').forEach(p => p.remove());
         const popup = document.createElement('div');
-        popup.className = 'threads-v5-later-popup';
+        popup.className = 'threads-v5-later-popup threads-v5-later-popup-row';
         for (const d of _laterDurations) {
             const btn = document.createElement('button');
             btn.className = 'threads-v5-later-option';
@@ -645,12 +670,47 @@ def _threads_v5_script() -> str:
             };
             popup.appendChild(btn);
         }
-        // Position near the anchor
-        const rect = anchorEl.getBoundingClientRect();
-        popup.style.position = 'fixed';
-        popup.style.top = (rect.bottom + 4) + 'px';
-        popup.style.left = rect.left + 'px';
+        // Position above the anchor, right-aligned with the parent
+        // card. User-feedback iterations:
+        //   v1 (column, below anchor) — right options slid off-screen.
+        //   v2 (row, centered on anchor) — popped far to the left of
+        //       the Later button, awkward to reach.
+        //   v3 (this) — render above, right-edge aligned to the
+        //       enclosing card with a small padding so the rightmost
+        //       durations sit close to where the user's mouse is. Falls
+        //       back to viewport-right if no card ancestor is found.
         document.body.appendChild(popup);
+        const rect = anchorEl.getBoundingClientRect();
+        const popRect = popup.getBoundingClientRect();
+        const margin = 6;
+        const cardPad = 12;
+        let top = rect.top - popRect.height - margin;
+        if (top < margin) {
+            // No room above — fall back to below the anchor.
+            top = rect.bottom + margin;
+        }
+        // Find the nearest card ancestor and right-align with it. A
+        // little padding from the card's right edge keeps the popup
+        // visually inside its container instead of brushing the edge.
+        const card = anchorEl.closest(
+            '.threads-v5-card, .threads-v5-mini-card'
+        );
+        let rightEdge;
+        if (card) {
+            const cardRect = card.getBoundingClientRect();
+            rightEdge = cardRect.right - cardPad;
+        } else {
+            rightEdge = window.innerWidth - margin;
+        }
+        let left = rightEdge - popRect.width;
+        // Clamp so the popup never falls off the left edge of the
+        // viewport (small viewport / very narrow card).
+        if (left < margin) left = margin;
+        const maxLeft = window.innerWidth - popRect.width - margin;
+        if (left > maxLeft) left = maxLeft;
+        popup.style.position = 'fixed';
+        popup.style.top = top + 'px';
+        popup.style.left = left + 'px';
 
         // Click-outside-to-close
         const close = (ev) => {
@@ -848,12 +908,18 @@ def _threads_v5_script() -> str:
         if (events.length === 0) {
             return '<p class="threads-v5-empty-state">No events yet.</p>';
         }
-        let html = '<table class="threads-v5-evlog-table">';
+        let html = '<p class="threads-v5-evlog-hint">'
+                 + 'Click any row to expand its full payload (model, tier, '
+                 + 'and all event data).'
+                 + '</p>';
+        html += '<table class="threads-v5-evlog-table">';
         html += '<thead><tr>'
+              + '<th></th>'  // expander column
               + '<th>#</th>'
               + '<th>When</th>'
               + '<th>Kind</th>'
               + '<th>Actor</th>'
+              + '<th>Tier / Model</th>'
               + '<th>Summary</th>'
               + '</tr></thead><tbody>';
         for (const e of events) {
@@ -861,16 +927,63 @@ def _threads_v5_script() -> str:
             const ts = e.timestamp || '';
             const rel = ts ? ('<span title="' + _esc(ts) + '">'
                               + _summariseTime(ts) + '</span>') : '';
-            html += '<tr>'
-                  + '<td><code>' + _esc(String(e.id)) + '</code></td>'
+            const tierModel = _tierModelCell(e);
+            const evid = _esc(String(e.id));
+            // Main row: click anywhere to toggle the detail row.
+            html += '<tr class="threads-v5-evlog-row" '
+                  +   'onclick="threadsToggleEvlogRow(\'' + evid + '\')">'
+                  + '<td class="threads-v5-evlog-toggle" '
+                  +   'aria-label="Expand row">'
+                  +   '<span class="threads-v5-evlog-caret" '
+                  +     'id="ev-caret-' + evid + '">&#x25B8;</span>'
+                  + '</td>'
+                  + '<td><code>' + evid + '</code></td>'
                   + '<td>' + rel + '</td>'
                   + '<td><code>' + _esc(e.kind) + '</code></td>'
                   + '<td>' + _esc(e.actor || '') + '</td>'
-                  + '<td>' + summary + '</td>'
+                  + '<td class="threads-v5-evlog-tier">' + tierModel + '</td>'
+                  + '<td class="threads-v5-evlog-summary">' + summary + '</td>'
+                  + '</tr>';
+            // Hidden detail row: pretty-printed JSON payload.
+            const data = e.data || {};
+            const detail = _esc(JSON.stringify(data, null, 2));
+            html += '<tr class="threads-v5-evlog-detail" '
+                  +   'id="ev-detail-' + evid + '" '
+                  +   'style="display:none">'
+                  + '<td colspan="7" class="threads-v5-evlog-detail-cell">'
+                  +   '<pre class="threads-v5-evlog-payload">' + detail + '</pre>'
+                  + '</td>'
                   + '</tr>';
         }
         html += '</tbody></table>';
         return html;
+    }
+
+    // Toggle an event-log row's detail panel. Idempotent — clicking
+    // again re-collapses it. Updates the caret glyph too.
+    window.threadsToggleEvlogRow = function (eventId) {
+        const detail = document.getElementById('ev-detail-' + eventId);
+        const caret = document.getElementById('ev-caret-' + eventId);
+        if (!detail || !caret) return;
+        const open = detail.style.display !== 'none';
+        detail.style.display = open ? 'none' : 'table-row';
+        caret.innerHTML = open ? '&#x25B8;' : '&#x25BE;';
+    };
+
+    // Pull the model + tier hint for the Tier/Model column. Inferred
+    // events carry both ``inference_tier`` (engine column) and
+    // ``data.model_used`` / ``data.tier_used``.
+    function _tierModelCell(e) {
+        const d = e.data || {};
+        const tier = d.tier_used || e.inference_tier || '';
+        const model = d.model_used || '';
+        if (!tier && !model) return '';
+        const parts = [];
+        if (tier) parts.push('<code>' + _esc(tier) + '</code>');
+        if (model) parts.push('<span class="threads-v5-evlog-model" '
+                            + 'title="model used">'
+                            + _esc(model) + '</span>');
+        return parts.join('<br>');
     }
 
     function _summariseEvent(e) {
@@ -898,6 +1011,13 @@ def _threads_v5_script() -> str:
         if (e.kind === 'action_inferred') {
             const p = d.payload || {};
             return _esc((p.kind || '?') + ' / ' + (p.name || '(unnamed)'));
+        }
+        if (e.kind === 'inciting_event') {
+            // The user noticed the inciting_event row was being
+            // truncated mid-line. Surface the description / label
+            // (whichever is most informative) and lean on the
+            // detail row for the full payload.
+            return _esc(d.description || d.label || d.title || d.line_text || '(see full payload)');
         }
         return _esc(JSON.stringify(d).slice(0, 80));
     }
@@ -1419,7 +1539,11 @@ def _threads_v5_styles() -> str:
     gap: 4px;
 }
 
-/* Stage 4.10 — Later hover popup */
+/* Stage 4.10 — Later hover popup. 2026-05-03: rendered as a
+ * horizontal row by default (was a vertical column) and positioned
+ * above the anchor so the right-edge entries stay on-screen. The
+ * `.threads-v5-later-popup-row` modifier flips the column layout
+ * back to row + tightens padding for a more compact ribbon. */
 .threads-v5-later-popup {
     background: var(--bg, #0a0a0a);
     border: 1px solid var(--border, #333);
@@ -1432,6 +1556,12 @@ def _threads_v5_styles() -> str:
     gap: 2px;
     min-width: 140px;
 }
+.threads-v5-later-popup-row {
+    flex-direction: row;
+    flex-wrap: nowrap;
+    min-width: 0;
+    gap: 2px;
+}
 
 .threads-v5-later-option {
     background: transparent;
@@ -1442,6 +1572,11 @@ def _threads_v5_styles() -> str:
     text-align: left;
     font-size: 13px;
     cursor: pointer;
+    white-space: nowrap;
+}
+.threads-v5-later-popup-row .threads-v5-later-option {
+    text-align: center;
+    padding: 6px 10px;
 }
 .threads-v5-later-option:hover {
     background: var(--bg-tertiary, #1a1a1a);
@@ -1548,6 +1683,65 @@ def _threads_v5_styles() -> str:
     padding: 1px 5px;
     border-radius: 3px;
     color: var(--text-muted, #aaa);
+}
+
+/* Event log — expandable rows. User-feedback (2026-05-03): the
+ * single-line summary truncated long inciting events and never
+ * surfaced model/tier metadata that's useful for debugging. Rows
+ * are now click-to-expand with a caret glyph and a detail row that
+ * pretty-prints the full event payload. */
+.threads-v5-evlog-hint {
+    font-size: 12px;
+    color: var(--text-muted, #888);
+    margin: 0 0 10px 0;
+}
+.threads-v5-evlog-row {
+    cursor: pointer;
+}
+.threads-v5-evlog-row:hover {
+    background: rgba(255,255,255,0.03);
+}
+.threads-v5-evlog-toggle {
+    width: 18px;
+    color: var(--text-muted, #888);
+    user-select: none;
+}
+.threads-v5-evlog-caret {
+    display: inline-block;
+    transition: transform 80ms ease;
+}
+.threads-v5-evlog-tier {
+    font-size: 12px;
+    color: var(--text-muted, #888);
+}
+.threads-v5-evlog-model {
+    font-family: ui-monospace, monospace;
+    font-size: 11px;
+    color: var(--text-muted, #aaa);
+}
+.threads-v5-evlog-summary {
+    /* Allow long words but don't aggressively truncate — the detail
+     * row carries the full picture so we don't need to clamp here. */
+    max-width: 480px;
+}
+.threads-v5-evlog-detail-cell {
+    background: var(--bg, #0a0a0a);
+    padding: 0 0 6px 0 !important;
+    border-bottom: 1px solid var(--border, #333) !important;
+}
+.threads-v5-evlog-payload {
+    margin: 4px 12px 4px 36px;
+    padding: 10px 12px;
+    background: var(--bg-secondary, #1a1a1a);
+    border: 1px solid var(--border, #333);
+    border-radius: 4px;
+    font-family: ui-monospace, SFMono-Regular, monospace;
+    font-size: 11px;
+    color: var(--text-muted, #aaa);
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 360px;
+    overflow: auto;
 }
 
 /* Wave C — keyboard navigation. The currently-focused row in the

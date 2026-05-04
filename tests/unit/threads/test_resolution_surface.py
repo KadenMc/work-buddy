@@ -75,17 +75,20 @@ class TestBuild:
 
 
 class TestSurfaceTargeting:
-    """Phase 5a: low-stakes confirmations land in dashboard only;
-    legitimate user-pause states fan out across all surfaces."""
+    """2026-05-03: the v5 Threads tab is the canonical surface for
+    thread state, so notifications NEVER target ``dashboard`` —
+    they'd just clutter the workflow-views top bar with one tab per
+    thread. Off-dashboard pings (Telegram / Obsidian) still fire for
+    legitimate user-pause states; quiet states publish nothing."""
 
-    def test_action_approval_targets_all_surfaces(self):
+    OFF_DASHBOARD = ["telegram", "obsidian"]
+
+    def test_action_approval_targets_off_dashboard(self):
         t = Thread(fsm_state=FSMState.AWAITING_CONFIRMATION)
         rr = rs.build_resolution_request(t)
-        # None means "all available" in the SurfaceDispatcher's
-        # contract.
-        assert rs._surfaces_for(rr) is None
+        assert rs._surfaces_for(rr) == self.OFF_DASHBOARD
 
-    def test_clarification_targets_all_surfaces(self):
+    def test_clarification_targets_off_dashboard(self):
         for state in (
             FSMState.AWAITING_INTENT_CLARIFICATION,
             FSMState.AWAITING_CONTEXT_CLARIFICATION,
@@ -94,27 +97,42 @@ class TestSurfaceTargeting:
         ):
             t = Thread(fsm_state=state)
             rr = rs.build_resolution_request(t)
-            assert rs._surfaces_for(rr) is None, state
+            assert rs._surfaces_for(rr) == self.OFF_DASHBOARD, state
 
-    def test_intent_confirmation_dashboard_only(self):
+    def test_intent_confirmation_publishes_nothing(self):
+        # Threads tab is enough; the user can scan the tab without a
+        # parallel workflow-view chip.
         t = Thread(fsm_state=FSMState.AWAITING_INTENT_CONFIRMATION)
         rr = rs.build_resolution_request(t)
-        assert rs._surfaces_for(rr) == ["dashboard"]
+        assert rs._surfaces_for(rr) is None
 
-    def test_context_confirmation_dashboard_only(self):
+    def test_context_confirmation_publishes_nothing(self):
         t = Thread(fsm_state=FSMState.AWAITING_CONTEXT_CONFIRMATION)
         rr = rs.build_resolution_request(t)
-        assert rs._surfaces_for(rr) == ["dashboard"]
+        assert rs._surfaces_for(rr) is None
 
-    def test_review_state_targets_all_surfaces(self):
+    def test_review_state_targets_off_dashboard(self):
         t = Thread(fsm_state=FSMState.AWAITING_REVIEW)
         rr = rs.build_resolution_request(t)
-        assert rs._surfaces_for(rr) is None
+        assert rs._surfaces_for(rr) == self.OFF_DASHBOARD
 
-    def test_failed_cleanup_targets_all_surfaces(self):
+    def test_failed_cleanup_targets_off_dashboard(self):
         t = Thread(fsm_state=FSMState.DONE_CLEANUP_UNSUCCESSFUL)
         rr = rs.build_resolution_request(t)
-        assert rs._surfaces_for(rr) is None
+        assert rs._surfaces_for(rr) == self.OFF_DASHBOARD
+
+    def test_no_surface_ever_includes_dashboard(self):
+        # Regression: every thread-related publish path must skip the
+        # dashboard surface entirely.
+        for state in FSMState:
+            if not state.is_wait_state:
+                continue
+            t = Thread(fsm_state=state)
+            rr = rs.build_resolution_request(t)
+            surfaces = rs._surfaces_for(rr) or []
+            assert "dashboard" not in surfaces, (
+                f"{state} routed to dashboard surface"
+            )
 
 
 class TestPublish:
