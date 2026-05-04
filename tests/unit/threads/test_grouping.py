@@ -312,3 +312,60 @@ class TestCascadeAfterItemMoved:
         assert result == "dismissed"
         g_after = store.get_thread(g.thread_id)
         assert g_after.fsm_state == FSMState.DISMISSED
+
+
+# ---------------------------------------------------------------------------
+# spawn_sibling_group
+# ---------------------------------------------------------------------------
+
+
+class TestSpawnSiblingGroup:
+    def test_creates_sibling_with_inherited_scope(self, fresh_db):
+        g1 = _make_group_parent("scrape-A")
+        result = grouping.spawn_sibling_group(g1.thread_id, label="My new group")
+        assert result["originating_scrape_id"] == "scrape-A"
+        assert result["label"] == "My new group"
+        new_parent = store.get_thread(result["parent_id"])
+        assert new_parent.parent_relationship == "group"
+        assert new_parent.originating_scrape_id == "scrape-A"
+        assert new_parent.fsm_state == FSMState.MONITORING
+
+    def test_appears_in_sibling_list(self, fresh_db):
+        g1 = _make_group_parent("scrape-A")
+        result = grouping.spawn_sibling_group(g1.thread_id)
+        sibs = grouping.list_sibling_group_parents(g1.thread_id)
+        ids = {s.thread_id for s in sibs}
+        assert g1.thread_id in ids
+        assert result["parent_id"] in ids
+
+    def test_can_move_into_new_sibling(self, fresh_db):
+        g1 = _make_group_parent("scrape-A")
+        c = _make_child(g1)
+        # Keep g1 alive after the move so we don't auto-DISMISS it.
+        _make_child(g1)
+        result = grouping.spawn_sibling_group(g1.thread_id)
+        mv = grouping.move_thread_to_parent(c.thread_id, result["parent_id"])
+        assert mv["to_parent"] == result["parent_id"]
+
+    def test_rejects_non_group_reference(self, fresh_db):
+        d = _make_decompose_parent()
+        with pytest.raises(grouping.MoveValidationError) as exc:
+            grouping.spawn_sibling_group(d.thread_id)
+        assert exc.value.reason == "reference_not_group"
+
+    def test_rejects_reference_without_scope(self, fresh_db):
+        # A group-parent with no originating_scrape_id can't have siblings.
+        g = models.Thread(
+            fsm_state=FSMState.MONITORING,
+            parent_relationship="group",
+            originating_scrape_id=None,
+        )
+        store.insert_thread(g)
+        with pytest.raises(grouping.MoveValidationError) as exc:
+            grouping.spawn_sibling_group(g.thread_id)
+        assert exc.value.reason == "reference_missing_scope"
+
+    def test_unknown_reference_rejected(self, fresh_db):
+        with pytest.raises(grouping.MoveValidationError) as exc:
+            grouping.spawn_sibling_group("nope")
+        assert exc.value.reason == "reference_not_group"

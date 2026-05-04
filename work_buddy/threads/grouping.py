@@ -231,6 +231,115 @@ def move_thread_to_parent(
             conn.close()
 
 
+def spawn_sibling_group(
+    reference_parent_id: str,
+    *,
+    label: str = "New group",
+    actor: str = "user",
+    conn=None,
+) -> dict[str, Any]:
+    """Create a new sibling group-parent under the same scrape.
+
+    Used by the dashboard's "drop here to create a new group" zone:
+    the user drags items into an empty area, the frontend calls this
+    to spawn a fresh sibling, then immediately calls the move op to
+    redirect the dragged items into it.
+
+    Args:
+        reference_parent_id: any existing group-parent in the scrape.
+            The new sibling inherits its ``originating_scrape_id``.
+        label: short title for the new group; user can rename later
+            via the standard intent-edit flow.
+        actor: who initiated; recorded on the inciting event.
+
+    Returns ``{"parent_id": str, "originating_scrape_id": str,
+                 "label": str}``.
+
+    Raises ``MoveValidationError`` if the reference isn't a group-
+    parent or has no scope id.
+    """
+    own_conn = conn is None
+    if own_conn:
+        conn = store.get_connection()
+    try:
+        ref = store.get_thread(reference_parent_id, conn=conn)
+        if ref is None or ref.parent_relationship != "group":
+            raise MoveValidationError(
+                "reference_not_group",
+                "Reference parent must be a group-relationship "
+                "parent in the target scrape.",
+            )
+        scope = ref.originating_scrape_id
+        if not scope:
+            raise MoveValidationError(
+                "reference_missing_scope",
+                "Reference parent has no originating_scrape_id; "
+                "can't create siblings without a scope.",
+            )
+        from work_buddy.threads.autonomy import default_spawn_policy
+        from work_buddy.threads.enums import FSMState
+        from work_buddy.threads.events import (
+            KIND_INCITING_EVENT,
+            KIND_THREAD_CREATED,
+        )
+        from work_buddy.threads.models import Thread
+        # Inherit the reference's inciting source field so cleanup
+        # adapters / dashboard filters keep working.
+        ref_inciting = ref.inciting_event_summary or {}
+        inciting = {
+            "source": ref_inciting.get("source", "chrome_scrape"),
+            "scrape_id": ref_inciting.get("scrape_id"),
+            "title": label,
+            "description": label,
+            "user_created_sibling": True,
+        }
+        new_parent = Thread(
+            inciting_event_summary=inciting,
+            autonomy_policy=default_spawn_policy(),
+            parent_relationship="group",
+            originating_scrape_id=scope,
+            fsm_state=FSMState.MONITORING,
+        )
+        store.insert_thread(new_parent, conn=conn)
+        e1 = store.append_event(
+            ThreadEvent(
+                thread_id=new_parent.thread_id,
+                kind=KIND_INCITING_EVENT,
+                actor=actor,
+                data=inciting,
+            ),
+            conn=conn,
+        )
+        store.append_event(
+            ThreadEvent(
+                thread_id=new_parent.thread_id,
+                kind=KIND_THREAD_CREATED,
+                actor=actor,
+                data={
+                    "source_pipeline": "user_spawn_sibling",
+                    "parent_relationship": "group",
+                    "originating_scrape_id": scope,
+                    "reference_parent_id": reference_parent_id,
+                },
+                parent_event_id=e1.id,
+            ),
+            conn=conn,
+        )
+        store.update_thread_state(
+            new_parent.thread_id,
+            parent_event_id=store.latest_event_id(new_parent.thread_id),
+            conn=conn,
+        )
+        return {
+            "parent_id": new_parent.thread_id,
+            "originating_scrape_id": scope,
+            "label": label,
+        }
+    finally:
+        if own_conn:
+            conn.close()
+
+
 def list_sibling_group_parents(
     parent_id: str,
     *,

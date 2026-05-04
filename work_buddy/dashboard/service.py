@@ -2465,6 +2465,39 @@ def api_v5_thread_move_parent(thread_id: str):
         return jsonify({"error": str(exc)}), 500
 
 
+@app.post("/api/threads/<thread_id>/spawn_sibling_group")
+def api_v5_thread_spawn_sibling_group(thread_id: str):
+    """Stage 5 stretch: create a new sibling group-parent in the same
+    scrape as ``thread_id`` (the reference parent).
+
+    Body (optional): ``{"label": "New group"}``. The label is
+    user-renameable via the standard intent-edit flow once the new
+    group is open in the right pane.
+
+    Returns the new parent_id + scope + label so the frontend can
+    immediately follow up with a move op into it.
+    """
+    blocked = _reject_read_only()
+    if blocked:
+        return blocked
+    body = request.get_json(silent=True) or {}
+    label = (body.get("label") or "New group").strip() or "New group"
+    try:
+        from work_buddy.threads.grouping import (
+            MoveValidationError,
+            spawn_sibling_group,
+        )
+        result = spawn_sibling_group(thread_id, label=label)
+        return jsonify(result)
+    except MoveValidationError as e:
+        return jsonify({"error": str(e), "reason": e.reason}), 422
+    except Exception as exc:
+        logger.exception(
+            "v5 spawn_sibling_group failed for %s: %s", thread_id, exc,
+        )
+        return jsonify({"error": str(exc)}), 500
+
+
 @app.post("/api/threads/<thread_id>/group_submit")
 def api_v5_thread_group_submit(thread_id: str):
     """Stage 5: bulk-accept every awaiting_confirmation child of a

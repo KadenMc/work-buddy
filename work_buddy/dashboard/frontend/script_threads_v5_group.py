@@ -121,6 +121,12 @@ def _group_view_script() -> str:
         for (const sib of siblings) {
             html += _renderColumn(sib, sib.thread_id === activeId);
         }
+        // Drop-here-to-spawn-a-new-group zone (stretch goal). Visible
+        // only when there's at least one sibling to use as a
+        // reference for scope inheritance.
+        if (siblings.length > 0) {
+            html += _renderNewGroupZone(activeId);
+        }
         html += '</div>'
             + '<p class="threads-v5-group-help">'
             +   '<kbd>x</kbd> select &middot; <kbd>Shift</kbd>+click range '
@@ -214,6 +220,17 @@ def _group_view_script() -> str:
         return html;
     }
 
+    function _renderNewGroupZone(referenceParentId) {
+        return '<div class="threads-v5-group-newzone" '
+            + 'ondragover="event.preventDefault();this.classList.add(\'drag-over\');" '
+            + 'ondragleave="this.classList.remove(\'drag-over\');" '
+            + 'ondrop="threadsGroupDropOnNewZone(event, \''
+            +   _esc(referenceParentId) + '\')">'
+            + '<div class="threads-v5-group-newzone-icon">+</div>'
+            + 'Drop here to create a new group'
+            + '</div>';
+    }
+
     // ---- Drag-and-drop handlers ----------------------------------------
 
     window.threadsGroupDragStart = function (ev, threadId) {
@@ -249,6 +266,58 @@ def _group_view_script() -> str:
                 el.classList.remove('dragging-multi');
                 el.classList.remove('drag-over');
             });
+    };
+
+    window.threadsGroupDropOnNewZone = function (ev, referenceParentId) {
+        ev.preventDefault();
+        const zone = ev.currentTarget || ev.target.closest(
+            '.threads-v5-group-newzone'
+        );
+        if (zone) zone.classList.remove('drag-over');
+        const sel = Array.from(window._groupState.selected);
+        if (sel.length === 0) return;
+        // Optional label prompt — fall back to "New group" if cancelled.
+        let label = window.prompt(
+            'Name for the new group? (Leave blank for "New group")', ''
+        );
+        if (label === null) return;  // explicit cancel
+        label = (label || '').trim() || 'New group';
+        // Spawn the sibling, then move the dragged selection into it.
+        fetch('/api/threads/' + encodeURIComponent(referenceParentId)
+              + '/spawn_sibling_group', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ label: label }),
+        })
+        .then(r => r.json().then(b => ({ ok: r.ok, body: b })))
+        .then(({ ok, body }) => {
+            if (!ok) {
+                if (typeof window.showToast === "function") {
+                    window.showToast(
+                        'New group failed',
+                        body.error || 'Could not spawn sibling group',
+                        'threads-view',
+                        'group-spawn-err-' + Date.now(),
+                        { expandable: false, view_type: 'generic' },
+                        false, false,
+                    );
+                }
+                return;
+            }
+            const newParentId = body.parent_id;
+            _moveBatch(sel, newParentId);
+        })
+        .catch(e => {
+            if (typeof window.showToast === "function") {
+                window.showToast(
+                    'New group failed', String(e),
+                    'threads-view',
+                    'group-spawn-err-' + Date.now(),
+                    { expandable: false, view_type: 'generic' },
+                    false, false,
+                );
+            }
+        });
     };
 
     window.threadsGroupDropOnColumn = function (ev, destParentId) {
@@ -763,6 +832,31 @@ def _group_view_styles() -> str:
 .threads-v5-group-item-action {
     display: inline-block;
     margin-right: 8px;
+}
+
+.threads-v5-group-newzone {
+    flex: 0 0 240px;
+    min-height: 140px;
+    border: 2px dashed var(--border, #333);
+    border-radius: 8px;
+    color: var(--text-muted, #888);
+    font-size: 12px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 16px;
+    transition: border-color 80ms, color 80ms;
+}
+.threads-v5-group-newzone.drag-over {
+    border-color: var(--accent, #4a7fc1);
+    color: var(--accent, #4a7fc1);
+    background: rgba(74, 127, 193, 0.05);
+}
+.threads-v5-group-newzone-icon {
+    font-size: 28px;
+    line-height: 1;
 }
 
 .threads-v5-group-help {
