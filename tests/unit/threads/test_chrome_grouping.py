@@ -1,17 +1,19 @@
-"""Tests for the Stage 5 grouped Chrome-scrape spawn path.
+"""Tests for the Stage 5 v2 grouped Chrome-scrape spawn path.
+
+v2 model: one umbrella thread per scrape (parent_relationship='group')
++ N child sub-threads (one per cluster), with each child holding its
+cluster's tabs as ``context_items``. Items move between siblings via
+``threads.group.move_item``.
 
 The legacy single-decompose-parent shape is preserved when callers
 opt out via ``use_grouping=False`` or when no clusters are supplied.
-The new grouped shape spawns one group-parent per cluster; tabs not
-referenced fall into a synthetic "Ungrouped" sibling.
 """
 
 from __future__ import annotations
 
 import pytest
 
-from work_buddy.threads import models, source_pipelines, store
-from work_buddy.threads.enums import FSMState
+from work_buddy.threads import source_pipelines, store
 
 
 @pytest.fixture
@@ -32,90 +34,81 @@ def _tab(tid: str, title: str = "", url: str = "") -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Grouped path (the new Stage 5 default)
+# v2 grouped path: umbrella + N group children
 # ---------------------------------------------------------------------------
 
 
 class TestGroupedSpawn:
-    def test_spawns_one_parent_per_cluster(self, fresh_db):
+    def test_spawns_one_umbrella_with_one_child_per_cluster(self, fresh_db):
         tabs = [_tab(f"t{i}") for i in range(1, 5)]
         clusters = [
-            {"label": "Code", "tab_ids": ["t1", "t2"]},
-            {"label": "Research", "tab_ids": ["t3", "t4"]},
+            {"label": "Code", "item_ids": ["t1", "t2"]},
+            {"label": "Research", "item_ids": ["t3", "t4"]},
         ]
         out = source_pipelines.spawn_threads_from_chrome_scrape(
             tabs=tabs, clusters=clusters,
         )
         assert out is not None
-        assert "parents" in out
-        assert out["parent_count"] == 2  # no leftovers, no Ungrouped
-        labels = [p["label"] for p in out["parents"]]
-        assert labels == ["Code", "Research"]
+        assert out["umbrella_id"]
+        assert out["child_count"] == 2  # no leftovers, no Ungrouped
         assert out["total_count"] == 4
+        # Umbrella is parent_relationship='group'
+        umbrella = store.get_thread(out["umbrella_id"])
+        assert umbrella.parent_relationship == "group"
 
-    def test_all_parents_share_originating_scrape_id(self, fresh_db):
+    def test_children_hold_tabs_as_context_items(self, fresh_db):
         tabs = [_tab(f"t{i}") for i in range(1, 4)]
         clusters = [
-            {"label": "A", "tab_ids": ["t1"]},
-            {"label": "B", "tab_ids": ["t2", "t3"]},
+            {"label": "A", "item_ids": ["t1"]},
+            {"label": "B", "item_ids": ["t2", "t3"]},
         ]
         out = source_pipelines.spawn_threads_from_chrome_scrape(
             tabs=tabs, clusters=clusters,
         )
-        assert out is not None
-        scope = out["originating_scrape_id"]
-        assert scope
-        for p in out["parents"]:
-            parent = store.get_thread(p["parent_id"])
-            assert parent.originating_scrape_id == scope
-            assert parent.parent_relationship == "group"
-            assert parent.fsm_state == FSMState.MONITORING
+        children = store.list_threads(parent_id=out["umbrella_id"])
+        # Each child carries its cluster's tabs as ContextItems
+        # (no per-tab sub-threads; tabs are not threads).
+        labels_to_items = {
+            c.inciting_event_summary.get("cluster_label"):
+            sorted(it.id for it in c.context_items)
+            for c in children
+        }
+        assert labels_to_items["A"] == ["t1"]
+        assert labels_to_items["B"] == ["t2", "t3"]
 
-    def test_unassigned_tabs_become_ungrouped_sibling(self, fresh_db):
+    def test_unassigned_tabs_become_ungrouped_child(self, fresh_db):
         tabs = [_tab(f"t{i}") for i in range(1, 5)]
         clusters = [
-            {"label": "Just-one", "tab_ids": ["t1"]},
+            {"label": "Just-one", "item_ids": ["t1"]},
         ]
         out = source_pipelines.spawn_threads_from_chrome_scrape(
             tabs=tabs, clusters=clusters,
         )
-        assert out is not None
-        assert out["parent_count"] == 2
-        labels = [p["label"] for p in out["parents"]]
+        assert out["child_count"] == 2  # Just-one + Ungrouped
+        children = store.list_threads(parent_id=out["umbrella_id"])
+        labels = [
+            c.inciting_event_summary.get("cluster_label") for c in children
+        ]
         assert "Just-one" in labels
         assert "Ungrouped" in labels
         ungrouped = next(
-            p for p in out["parents"] if p["label"] == "Ungrouped"
+            c for c in children
+            if c.inciting_event_summary.get("cluster_label") == "Ungrouped"
         )
-        assert ungrouped["count"] == 3
+        # Three leftover tabs t2, t3, t4
+        assert len(ungrouped.context_items) == 3
 
-    def test_explicit_scrape_id_carried_through(self, fresh_db):
+    def test_legacy_tab_ids_key_still_accepted(self, fresh_db):
+        # Backward compatibility: the older Chrome-clustering output
+        # used "tab_ids" instead of "item_ids". group_thread accepts
+        # both so existing callers don't break.
         tabs = [_tab("t1"), _tab("t2")]
-        clusters = [{"label": "X", "tab_ids": ["t1", "t2"]}]
-        out = source_pipelines.spawn_threads_from_chrome_scrape(
-            tabs=tabs,
-            scrape_id="my-scrape-id",
-            clusters=clusters,
-        )
-        # When the caller supplies scrape_id we use it verbatim as
-        # the sibling-scope id.
-        assert out["originating_scrape_id"] == "my-scrape-id"
-
-    def test_cluster_metadata_in_inciting_summary(self, fresh_db):
-        tabs = [_tab("t1"), _tab("t2"), _tab("t3")]
-        clusters = [
-            {"label": "Code", "tab_ids": ["t1", "t2"]},
-            {"label": "Misc", "tab_ids": ["t3"]},
-        ]
+        clusters = [{"label": "Legacy", "tab_ids": ["t1", "t2"]}]
         out = source_pipelines.spawn_threads_from_chrome_scrape(
             tabs=tabs, clusters=clusters,
         )
-        for p in out["parents"]:
-            parent = store.get_thread(p["parent_id"])
-            inciting = parent.inciting_event_summary or {}
-            assert inciting["title"] == p["label"]
-            assert inciting["cluster_index"] == p["cluster_index"]
-            assert inciting["cluster_size"] == 2  # two real clusters
+        assert out["child_count"] == 1
+        assert out["total_count"] == 2
 
     def test_empty_tabs_returns_none(self, fresh_db):
         out = source_pipelines.spawn_threads_from_chrome_scrape(tabs=[])

@@ -74,14 +74,29 @@ KIND_SUBTHREADS_SPAWNED = "subthreads_spawned"
 KIND_SUBTHREAD_TERMINAL_REPORTED = "subthread_terminal_reported"
 KIND_PARENT_FORCE_CLOSE = "parent_force_close"
 
-# Stage 5: group-relationship item moves. Recorded on BOTH the old and
-# new parent when an item moves between sibling group-parents (the two
-# events share a migration_id). Data carries item_id, from_parent,
-# to_parent, and the originating_scrape_id sibling-scope id so an
-# auditor can reconstruct the move from either side. Never recorded
-# for decompose-relationship parents — moving sub-threads between
-# decompose-parents is semantically nonsense.
+# Stage 5 (initial design — kept for backward compat with any pre-v2
+# scrapes still in DBs that haven't been wiped). Recorded a thread-
+# level move between sibling group-parents.
 KIND_ITEM_MOVED = "item_moved"
+
+# Stage 5 v2 (group as umbrella → group sub-threads → ContextItems).
+#
+# Emitted on ``threads.group.group_thread`` when an umbrella spawns
+# its children. Mirrors KIND_SUBTHREADS_SPAWNED's payload shape:
+#   {child_thread_ids: [...], child_labels: [...], source_count: int,
+#    cluster_count: int, [user_created: bool]}
+KIND_GROUPS_SPAWNED = "groups_spawned"
+
+# Stage 5 v2: a single ContextItem moved between two sibling group
+# children. Paired events on src + dest share a migration_id. Data
+# carries direction ("out"|"in"), item_id, src_thread_id,
+# dest_thread_id, and umbrella_id.
+KIND_CONTEXT_ITEM_MOVED = "context_item_moved"
+
+# Stage 5 v2: user explicitly deleted a group child via the
+# header X button. Recorded on the umbrella for audit. Data carries
+# deleted_child_id and had_items count.
+KIND_GROUP_DELETED = "group_deleted"
 
 # Budget / loop
 KIND_BUDGET_WARNING = "budget_warning"
@@ -146,6 +161,9 @@ ALL_KINDS: frozenset[str] = frozenset({
     KIND_SUBTHREAD_TERMINAL_REPORTED,
     KIND_PARENT_FORCE_CLOSE,
     KIND_ITEM_MOVED,
+    KIND_GROUPS_SPAWNED,
+    KIND_CONTEXT_ITEM_MOVED,
+    KIND_GROUP_DELETED,
     KIND_BUDGET_WARNING,
     KIND_LOOP_DETECTED,
     KIND_ESCALATED_TO_USER,

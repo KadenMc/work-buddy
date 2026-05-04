@@ -1,58 +1,61 @@
-"""Group-view frontend — multi-column re-organisable layout slotted
-into the standard thread detail UI's "Sub-threads" section.
+"""Group-view frontend (v2) — multi-column drag/drop layout slotted
+into the standard thread detail UI's "Sub-threads" section, for
+group-relationship **umbrella** threads only.
 
-The renderer here exposes ``window.renderGroupSubThreads(thread)``,
+Architecture
+------------
+
+The renderer here exposes ``window.renderGroupSubThreads(umbrella)``,
 which the standard ``renderConfirmationCard``'s sub-threads section
-calls when ``parent_relationship === 'group'``. This means group-
-parents reuse the **whole** standard thread UI — breadcrumbs, intent,
-namespace tags, thread actions, state badge, timeline button — and
-the only swap is the section body: a flat list becomes a horizontally
-laid-out grid of columns, one per sibling group-parent in the scrape.
+calls when ``parent_relationship === 'group'`` (i.e., the user is
+looking at an umbrella thread). The rendered grid shows:
 
-Each column shows its sibling's title, intent (truncated), state
-badge, and item count. Sibling column headers are clickable and use
-``threadsPushPath`` — drilling into "B" pushes that path normally,
-breadcrumbs and back-button work as for any sub-thread navigation.
+- **One column per child sub-thread** (each child = "a group" — e.g.
+  "Code", "Research", "Ungrouped"). The child is itself a normal
+  Thread with FSM/intent/actions; clicking its column header drills
+  into that child via ``threadsPushPath`` (standard navigation).
+- **Each column body shows the child's** ``context_items`` **as
+  draggable cards**. Items are pipeline-specific:
 
-Items in any column can:
+  - Chrome: tabs (id, label=title, payload.url)
+  - Journal: segmented lines (id, label=first line, payload.raw_text)
 
-- Drag-and-drop between columns (reuses the vanilla HTML5 D&D pattern
-  from ``script_triage.py:668-677``; no library).
-- Multi-select via shift-click or keyboard (``x`` toggles selection
-  on the focused card; ``Shift-j/k`` extends a range; ``m`` opens a
-  move-to-prompt for the active selection).
-- Click to open the standard right-pane editor.
+Drag an item card from column A to column B → ``move_item`` (POST
+``/api/threads/<src>/move_item``) rewrites the ``context_items``
+tuples on both children. Optimistic update applies first; SSE
+``thread.state_changed`` triggers a debounced ``GET /groups``
+reconciliation.
 
-Per-column controls:
+What used to be here (pre-v2)
+-----------------------------
 
-- "Submit all" button — bulk-accepts every child in
-  ``awaiting_confirmation`` via the ``POST /group_submit`` endpoint.
-- Item count badge.
+- ``move_thread_to_parent`` operated at thread granularity (each tab
+  was a sub-thread). Replaced by item-level :func:`move_item`.
+- A "Submit all" button per column. Replaced by an umbrella-level
+  ``Approve all`` button (see ``script_threads_v5_card`` —
+  ``cascade_approve_umbrella`` runs Accept on every non-terminal
+  child).
+- "Items moved" success toast on every drag. Removed — the move is
+  visible right under the cursor; the toast was noise. Toasts now
+  fire ONLY on partial failures.
+- A cross-sibling cache keyed by every sibling's thread_id. The new
+  cache is keyed by **umbrella_id** (one umbrella per scrape; no
+  cross-sibling sharing required).
 
-State is module-scoped and survives ``morphdom`` re-renders:
+Module-scoped state (survives morphdom re-renders)
+--------------------------------------------------
 
-- ``window._groupState.selected: Set<thread_id>`` — currently selected
-  items; cleared on any successful move so the next drag starts
-  fresh.
-- ``window._groupState.dragSource: thread_id | null`` — the item the
-  cursor is currently dragging (set on ``dragstart``, cleared on
-  ``dragend``).
-- ``window._groupState.lastFocused: thread_id | null`` — anchor for
-  shift-click range selection.
-- ``window._groupState.siblingsByParent: { threadId: [renderedSibling, ...] }``
-  — the **same** siblings array is keyed under every sibling
-  thread_id in the scrape. Swapping between siblings therefore
-  doesn't re-fetch, and a single in-place mutation (optimistic
-  move, SSE-driven refresh) updates every keyed view at once.
-- ``window._groupStateBusWired`` — guard so the
-  ``thread.state_changed`` SSE handler installs exactly once across
-  morphdom re-renders. The handler debounces a real refresh (250
-  ms) so a cascade of FSM events from one move coalesces into a
-  single ``GET /group_siblings``.
+- ``window._groupState.selected: Set<item_id>`` — currently selected
+  ContextItem ids; cleared on any successful move.
+- ``window._groupState.dragSource: item_id | null``
+- ``window._groupState.lastFocused: item_id | null``
+- ``window._groupState.groupsByUmbrella: { umbrella_id: groups[] }``
+  — the cache. ``groups[i]`` is a child render dict with its
+  ``context_items`` array.
+- ``window._groupStateBusWired`` — once-guard for the SSE handler.
 
-Toasts are self-contained (``_groupToast``); they don't talk to the
-``/api/workflow-views`` registry, so the tab they create dismisses
-itself locally without 404 noise on the dismiss endpoint.
+Toasts use ``_groupToast`` (self-contained, no workflow-views
+roundtrip) so dismiss never 404s.
 """
 
 from __future__ import annotations
@@ -66,8 +69,8 @@ def _group_view_script() -> str:
             selected: new Set(),
             dragSource: null,
             lastFocused: null,
-            siblingsByParent: {},
-            siblingErrors: {},
+            groupsByUmbrella: {},
+            errorByUmbrella: {},
         };
     }
 
@@ -77,9 +80,10 @@ def _group_view_script() -> str:
         return d.innerHTML;
     }
 
-    // Self-contained toast — does NOT register a workflow-view, so
-    // there's no /api/workflow-views/.../dismiss 404 when it goes
-    // away. Three-second auto-dismiss; multiple stack vertically.
+    // Self-contained transient toast — does NOT register a
+    // workflow-view, so there's no /api/workflow-views/.../dismiss
+    // 404 when it goes away. Three-second auto-dismiss; multiple
+    // stack vertically.
     function _groupToast(title, body) {
         let host = document.getElementById('threads-v5-group-toast-host');
         if (!host) {
@@ -104,107 +108,88 @@ def _group_view_script() -> str:
         }, 3000);
     }
 
-    // Cross-sibling cache primitives -------------------------------
-    //
-    // The /group_siblings response contains EVERY sibling in the
-    // scrape; we share that single array under each sibling's
-    // thread_id key. So swapping between siblings reads from cache,
-    // and an in-place mutation (optimistic move, SSE refresh)
-    // updates every keyed view simultaneously.
-    function _setSiblings(siblings) {
-        const cache = window._groupState.siblingsByParent;
-        const errs = window._groupState.siblingErrors;
-        for (const sib of siblings) {
-            cache[sib.thread_id] = siblings;
-            delete errs[sib.thread_id];
-        }
+    // ---- Cache primitives -------------------------------------------
+
+    function _setGroupsForUmbrella(umbrellaId, groups) {
+        window._groupState.groupsByUmbrella[umbrellaId] = groups;
+        delete window._groupState.errorByUmbrella[umbrellaId];
     }
 
-    function _replaceSiblingsInPlace(parentId, fresh) {
-        // Mutate the existing array (if any) so cross-keyed
-        // references stay valid. New sibling thread_ids get keyed
-        // via _setSiblings.
-        const cache = window._groupState.siblingsByParent;
-        const existing = cache[parentId];
+    function _replaceGroupsInPlace(umbrellaId, fresh) {
+        // Mutate the existing array in place when possible so any
+        // references held by event-bus handlers stay valid.
+        const cache = window._groupState.groupsByUmbrella;
+        const existing = cache[umbrellaId];
         if (existing && Array.isArray(existing)) {
             existing.length = 0;
-            for (const sib of fresh) existing.push(sib);
-            _setSiblings(existing);
+            for (const g of fresh) existing.push(g);
         } else {
-            _setSiblings(fresh);
+            _setGroupsForUmbrella(umbrellaId, fresh);
         }
     }
 
-    function _recountStates(items) {
-        const counts = {};
-        for (const it of items) {
-            const s = it.fsm_state;
-            if (!s) continue;
-            counts[s] = (counts[s] || 0) + 1;
-        }
-        return counts;
-    }
-
-    // Apply a move locally so the user sees the item jump columns
-    // immediately. The server-side response is best-effort merged
-    // afterwards via _refreshSiblings (debounced through the SSE
-    // handler) — if the server disagrees, the morphdom diff
-    // reconciles silently.
-    function _applyOptimisticMove(threadIds, destParentId) {
-        const cache = window._groupState.siblingsByParent;
-        const moved = new Set(threadIds);
-        let siblings = null;
-        for (const key in cache) {
-            const arr = cache[key];
-            if (!arr) continue;
-            const has = arr.some(s =>
-                (s.children_render || []).some(
-                    c => moved.has(c.thread_id)
-                )
-            );
-            if (has) { siblings = arr; break; }
-        }
-        if (!siblings) return false;
-        const destSib = siblings.find(s => s.thread_id === destParentId);
-        if (!destSib) return false;
-        const moving = [];
-        for (const sib of siblings) {
-            const orig = sib.children_render || [];
-            const kept = [];
-            for (const item of orig) {
-                if (moved.has(item.thread_id)) moving.push(item);
-                else kept.push(item);
-            }
-            if (orig.length === kept.length) continue;
-            sib.children_render = kept;
-            sib.sub_thread_state_counts = _recountStates(kept);
-        }
-        destSib.children_render = (destSib.children_render || [])
-            .concat(moving);
-        destSib.sub_thread_state_counts =
-            _recountStates(destSib.children_render);
-        return true;
-    }
-
-    function _refreshSiblings(parentId) {
-        return fetch('/api/threads/' + encodeURIComponent(parentId)
-                     + '/group_siblings')
+    function _refreshGroups(umbrellaId) {
+        return fetch('/api/threads/' + encodeURIComponent(umbrellaId)
+                     + '/groups')
             .then(r => r.ok ? r.json() : Promise.reject(r.statusText))
             .then(data => {
-                _replaceSiblingsInPlace(parentId, data.siblings || []);
+                _replaceGroupsInPlace(umbrellaId, data.groups || []);
                 if (typeof window._renderActiveThread === "function") {
                     window._renderActiveThread();
                 }
             })
             .catch(err => {
-                // Don't blow away the cached view on a transient
-                // failure; just log.
                 console.warn('[group-view] refresh failed:', err);
             });
     }
 
-    // SSE wiring — debounced so a cascade of FSM events from a
-    // single move coalesces into one /group_siblings call.
+    // ---- Optimistic move (item-level) -------------------------------
+    //
+    // Pulls a ContextItem from src.context_items, appends to
+    // dest.context_items. The cached groups arrays are mutated in
+    // place. Returns true if applied; false if the move couldn't be
+    // resolved locally (e.g., item not found in cache).
+    function _applyOptimisticMove(itemIds, srcThreadIds, destThreadId) {
+        const groupsCache = window._groupState.groupsByUmbrella;
+        // Find the umbrella that contains all of src + dest (we expect
+        // exactly one).
+        let groups = null;
+        for (const key in groupsCache) {
+            const arr = groupsCache[key];
+            if (!arr) continue;
+            const ids = new Set(arr.map(g => g.thread_id));
+            if (ids.has(destThreadId)
+                && srcThreadIds.every(s => ids.has(s))) {
+                groups = arr;
+                break;
+            }
+        }
+        if (!groups) return false;
+        const dest = groups.find(g => g.thread_id === destThreadId);
+        if (!dest) return false;
+        const movedItems = [];
+        for (let i = 0; i < itemIds.length; i++) {
+            const itemId = itemIds[i];
+            const srcId = srcThreadIds[i];
+            const src = groups.find(g => g.thread_id === srcId);
+            if (!src) continue;
+            const items = src.context_items || [];
+            const ix = items.findIndex(it => it.id === itemId);
+            if (ix < 0) continue;
+            const [pulled] = items.splice(ix, 1);
+            movedItems.push(pulled);
+        }
+        if (movedItems.length === 0) return false;
+        if (!dest.context_items) dest.context_items = [];
+        for (const it of movedItems) dest.context_items.push(it);
+        return true;
+    }
+
+    // ---- SSE wiring (one-time) --------------------------------------
+    //
+    // Debounce the refresh — a cascade of FSM events from one move op
+    // (e.g., child cleanup → parent advance) coalesces into one
+    // /groups GET.
     let _refreshTimer = null;
     function _scheduleRefreshForActive() {
         if (_refreshTimer) clearTimeout(_refreshTimer);
@@ -213,10 +198,11 @@ def _group_view_script() -> str:
             const state = window._threadsState;
             if (!state || !state.path || state.path.length === 0) return;
             const activeId = state.path[state.path.length - 1];
-            // Only refresh if the active view is currently a group.
-            const cache = window._groupState.siblingsByParent;
+            // Refresh only if the active view is currently an
+            // umbrella with a populated cache.
+            const cache = window._groupState.groupsByUmbrella;
             if (!cache[activeId]) return;
-            _refreshSiblings(activeId);
+            _refreshGroups(activeId);
         }, 250);
     }
 
@@ -232,23 +218,19 @@ def _group_view_script() -> str:
                 try {
                     const tid = payload && payload.thread_id;
                     if (!tid) return;
-                    const cache = window._groupState.siblingsByParent;
-                    // Cheap relevance check: is this thread one of
-                    // our cached siblings or one of their children?
+                    // Relevant if this thread is an umbrella we have
+                    // cached, OR a child of one.
+                    const cache = window._groupState.groupsByUmbrella;
                     let touched = false;
-                    for (const key in cache) {
-                        const arr = cache[key];
-                        if (!arr) continue;
-                        for (const sib of arr) {
-                            if (sib.thread_id === tid
-                                || (sib.children_render || []).some(
-                                    c => c.thread_id === tid
-                                )) {
-                                touched = true;
-                                break;
+                    if (cache[tid]) {
+                        touched = true;
+                    } else {
+                        for (const umbId in cache) {
+                            const arr = cache[umbId] || [];
+                            if (arr.some(g => g.thread_id === tid)) {
+                                touched = true; break;
                             }
                         }
-                        if (touched) break;
                     }
                     if (touched) _scheduleRefreshForActive();
                 } catch (e) {
@@ -259,63 +241,80 @@ def _group_view_script() -> str:
         _wire();
     }
 
-    // Public API: invoked by script_threads_v5_card._renderSubThreadsLink
-    // when the active thread has parent_relationship === 'group'.
-    // Returns just the in-section markup (suggestions banner + columns
-    // + new-group drop zone). The standard card supplies the section
-    // wrapper, the "Sub-threads (N)" label, and aggregated state badges.
-    window.renderGroupSubThreads = function (thread) {
-        if (!thread) {
-            return '<div class="threads-v5-group-empty">No thread loaded.</div>';
+    // ---- Public API: render the columns under the umbrella's
+    //      Sub-threads section ----------------------------------------
+
+    window.renderGroupSubThreads = function (umbrella) {
+        if (!umbrella) {
+            return '<div class="threads-v5-group-empty">'
+                +   'No umbrella thread loaded.'
+                + '</div>';
         }
-        const parentId = thread.thread_id;
-        const cached = window._groupState.siblingsByParent[parentId];
+        const umbrellaId = umbrella.thread_id;
+        const cached = window._groupState.groupsByUmbrella[umbrellaId];
         if (cached) {
-            return _renderColumns(thread, cached);
+            return _renderColumns(umbrella, cached);
         }
-        const failed = window._groupState.siblingErrors[parentId];
+        const failed = window._groupState.errorByUmbrella[umbrellaId];
         if (failed) {
-            return _renderFetchError(parentId, failed);
+            return _renderFetchError(umbrellaId, failed);
         }
-        // Lazy-fetch siblings for this group. The response covers
-        // EVERY sibling so we key it under each one — sibling-swap
-        // is a cache hit afterwards.
-        fetch('/api/threads/' + encodeURIComponent(parentId) + '/group_siblings')
+        // Lazy-fetch.
+        fetch('/api/threads/' + encodeURIComponent(umbrellaId) + '/groups')
             .then(r => r.ok ? r.json() : Promise.reject(r.statusText))
             .then(data => {
-                _setSiblings(data.siblings || []);
+                _setGroupsForUmbrella(umbrellaId, data.groups || []);
                 if (typeof window._renderActiveThread === "function") {
                     window._renderActiveThread();
                 }
             })
             .catch(err => {
-                window._groupState.siblingErrors[parentId] = String(err);
+                window._groupState.errorByUmbrella[umbrellaId] =
+                    String(err);
                 if (typeof window._renderActiveThread === "function") {
                     window._renderActiveThread();
                 }
             });
-        return '<div class="threads-v5-group-loading">Loading group columns...</div>';
+        return '<div class="threads-v5-group-loading">'
+            +   'Loading group columns...'
+            + '</div>';
     };
 
-    function _renderFetchError(parentId, msg) {
-        return '<div class="threads-v5-group-empty threads-v5-group-fetch-error">'
-            + '<h3>Couldn’t load sibling groups</h3>'
+    function _renderFetchError(umbrellaId, msg) {
+        return '<div class="threads-v5-group-empty '
+            +   'threads-v5-group-fetch-error">'
+            + '<h3>Couldn’t load groups</h3>'
             + '<p>' + _esc(msg) + '</p>'
-            + '<button class="threads-v5-retry-btn" onclick="(function(){'
-            +   'delete window._groupState.siblingErrors[\'' + _esc(parentId) + '\'];'
-            +   'window._renderActiveThread && window._renderActiveThread();'
-            + '})()">Retry</button>'
+            + '<button class="threads-v5-retry-btn" '
+            +   'onclick="(function(){'
+            +     'delete window._groupState.errorByUmbrella[\''
+            +       _esc(umbrellaId) + '\'];'
+            +     'window._renderActiveThread '
+            +       '&& window._renderActiveThread();'
+            +   '})()">Retry</button>'
             + '</div>';
     }
 
-    function _renderColumns(active, siblings) {
-        const activeId = active.thread_id;
+    function _renderColumns(umbrella, groups) {
+        const umbrellaId = umbrella.thread_id;
         const selCount = window._groupState.selected.size;
-        // Slim selection bar — only visible while a selection exists.
-        // Replaces the (deleted) outer "X groups in this scrape · N
-        // selected" header line. Refreshed in-place by
-        // _refreshSelectionClasses.
-        let html = _renderSuggestionsPanel(activeId)
+        // Approve-all button: visible when at least one child is
+        // non-terminal. The cascade runs Accept on each
+        // awaiting_confirmation / awaiting_consent child via
+        // /approve_all.
+        const liveChildren = groups.filter(g => {
+            const s = (g.fsm_state || '').toLowerCase();
+            return s !== 'done' && s !== 'dismissed' && s !== 'handed_off';
+        });
+        let html = '<div class="threads-v5-group-toolbar">'
+            + (liveChildren.length > 0
+                ? '<button class="threads-v5-group-approve-all" '
+                    + 'title="Run Accept on every non-terminal group" '
+                    + 'onclick="threadsGroupApproveAll(\''
+                    +   _esc(umbrellaId) + '\')">'
+                    + 'Approve all (' + liveChildren.length + ')'
+                + '</button>'
+                : '')
             + '<div class="threads-v5-group-selection-bar'
             +   (selCount > 0 ? ' show' : '') + '">'
             +   '<span class="count">'
@@ -326,60 +325,60 @@ def _group_view_script() -> str:
             +     '<kbd>m</kbd> move-to &middot; <kbd>Esc</kbd> clear'
             +   '</span>'
             + '</div>'
+            + '</div>'
             + '<div class="threads-v5-group-columns">';
-        for (const sib of siblings) {
-            html += _renderColumn(sib, sib.thread_id === activeId);
+        if (groups.length === 0) {
+            html += '<div class="threads-v5-group-empty-col" '
+                +   'style="flex:1 1 auto;">'
+                +   'No groups yet. Drop here to create the first one.'
+                + '</div>';
+        } else {
+            for (const g of groups) {
+                html += _renderColumn(g);
+            }
         }
-        // Drop-here-to-spawn-a-new-group zone. Visible only when
-        // there's at least one sibling to use as a reference for
-        // scope inheritance.
-        if (siblings.length > 0) {
-            html += _renderNewGroupZone(activeId);
-        }
+        html += _renderNewGroupZone(umbrellaId);
         html += '</div>';
         return html;
     }
 
-    function _renderColumn(sib, isActive) {
-        const items = sib.children_render || [];
-        const sId = sib.thread_id;
-        const stateCounts = sib.sub_thread_state_counts || {};
-        const awaitingCount = stateCounts.awaiting_confirmation || 0;
-        const stateLabel = sib.fsm_state || "";
-        const intentText = (sib.intent && sib.intent.text) || "";
-        const showIntent = intentText && intentText !== sib.title;
-        const headerClickable = !isActive;
-        let html = '<div class="threads-v5-group-column'
-            + (isActive ? ' threads-v5-group-column-active' : '') + '" '
+    function _renderColumn(child) {
+        const items = child.context_items || [];
+        const sId = child.thread_id;
+        const stateLabel = child.fsm_state || "";
+        const intentText = (child.intent && child.intent.text) || "";
+        const showIntent = intentText && intentText !== child.title;
+        const itemCount = items.length;
+        let html = '<div class="threads-v5-group-column" '
             + 'data-parent-id="' + _esc(sId) + '" '
-            + 'ondragover="event.preventDefault();this.classList.add(\'drag-over\');" '
+            + 'ondragover="event.preventDefault();'
+            +   'this.classList.add(\'drag-over\');" '
             + 'ondragleave="this.classList.remove(\'drag-over\');" '
-            + 'ondrop="threadsGroupDropOnColumn(event, \'' + _esc(sId) + '\')">'
-            + '<div class="threads-v5-group-column-header'
-            +   (headerClickable
-                    ? ' threads-v5-group-column-header-clickable'
-                    : '') + '"'
-            +   (headerClickable
-                    ? ' role="link"'
-                    +   ' tabindex="0"'
-                    +   ' title="Open ' + _esc(sib.title || sId) + '"'
-                    +   ' onclick="threadsPushPath(\''
-                    +     _esc(sId) + '\')"'
-                    +   ' onkeydown="if(event.key===\'Enter\'||event.key===\' \''
-                    +     '){event.preventDefault();threadsPushPath(\''
-                    +     _esc(sId) + '\')}"'
-                    : '')
-            + '>'
+            + 'ondrop="threadsGroupDropOnColumn(event, \'' + _esc(sId)
+            +   '\')">'
+            + '<div class="threads-v5-group-column-header '
+            +   'threads-v5-group-column-header-clickable" '
+            +   'role="link" tabindex="0" '
+            +   'title="Open ' + _esc(child.title || sId) + '" '
+            +   'onclick="threadsGroupHeaderClick(event, \''
+            +     _esc(sId) + '\')" '
+            +   'onkeydown="if(event.key===\'Enter\'||event.key===\' \'){'
+            +     'event.preventDefault();'
+            +     'threadsPushPath(\'' + _esc(sId) + '\')}">'
+            +   '<button class="threads-v5-group-column-delete-x" '
+            +     'title="Delete group sub-thread" '
+            +     'onclick="event.stopPropagation();'
+            +       'threadsGroupDeleteSubthread(\''
+            +       _esc(sId) + '\', '
+            +       (itemCount > 0 ? 'true' : 'false') + ')">'
+            +     '&times;'
+            +   '</button>'
             +   '<div class="threads-v5-group-column-title-row">'
             +     '<span class="threads-v5-group-column-title">'
-            +       _esc(sib.title || sId) + '</span>'
+            +       _esc(child.title || sId) + '</span>'
             +     (stateLabel
                     ? '<span class="threads-v5-group-column-state">'
                         + _esc(stateLabel) + '</span>'
-                    : '')
-            +     (isActive
-                    ? '<span class="threads-v5-group-column-active-pill">'
-                        + 'you are here</span>'
                     : '')
             +   '</div>';
         if (showIntent) {
@@ -390,24 +389,11 @@ def _group_view_script() -> str:
                 + '</div>';
         }
         html += '<div class="threads-v5-group-column-meta">'
-            +     items.length + ' item' + (items.length === 1 ? '' : 's')
-            +     (awaitingCount > 0
-                    ? ' &middot; ' + awaitingCount + ' awaiting'
-                    : '')
-            +   '</div>';
-        if (awaitingCount > 0) {
-            // event.stopPropagation prevents the header's navigation
-            // onclick from firing when clicking the submit-all button.
-            html += '<button class="threads-v5-group-submit-all" '
-                +   'title="Accept every awaiting_confirmation item in this group" '
-                +   'onclick="event.stopPropagation();threadsGroupSubmitAll(\''
-                +     _esc(sId) + '\')">'
-                +   'Submit all (' + awaitingCount + ')'
-                + '</button>';
-        }
-        html += '</div>'
+            +     itemCount + ' item' + (itemCount === 1 ? '' : 's')
+            +   '</div>'
+            + '</div>'
             + '<ul class="threads-v5-group-items">';
-        if (items.length === 0) {
+        if (itemCount === 0) {
             html += '<li class="threads-v5-group-empty-col">'
                 +   '(empty — drop items here)'
                 + '</li>';
@@ -421,221 +407,82 @@ def _group_view_script() -> str:
     }
 
     function _renderItemCard(item, parentId) {
-        const tid = item.thread_id;
-        const selected = window._groupState.selected.has(tid);
-        const stateLabel = item.fsm_state || "";
-        const intent = (item.intent && item.intent.text) || item.title || tid;
-        const actions = item.actions || [];
+        const iId = item.id;
+        const selected = window._groupState.selected.has(iId);
+        const label = item.label || iId;
+        const url = (item.payload && item.payload.url) || '';
+        const source = item.source || '';
+        const type = item.type || '';
         let html = '<li class="threads-v5-group-item'
             + (selected ? ' selected' : '') + '" '
-            + 'data-thread-id="' + _esc(tid) + '" '
+            + 'data-item-id="' + _esc(iId) + '" '
             + 'data-parent-id="' + _esc(parentId) + '" '
             + 'draggable="true" '
-            + 'ondragstart="threadsGroupDragStart(event, \'' + _esc(tid) + '\')" '
-            + 'ondragend="threadsGroupDragEnd(event, \'' + _esc(tid) + '\')" '
-            + 'onclick="threadsGroupItemClick(event, \'' + _esc(tid) + '\')">'
-            + '<div class="threads-v5-group-item-handle" title="Drag to move to another group">&#8801;</div>'
+            + 'ondragstart="threadsGroupDragStart(event, \''
+            +   _esc(iId) + '\')" '
+            + 'ondragend="threadsGroupDragEnd(event, \''
+            +   _esc(iId) + '\')" '
+            + 'onclick="threadsGroupItemClick(event, \''
+            +   _esc(iId) + '\')">'
+            + '<div class="threads-v5-group-item-handle" '
+            +   'title="Drag to move to another group">&#8801;</div>'
             + '<div class="threads-v5-group-item-body">'
-            +   '<div class="threads-v5-group-item-title">'
-            +     _esc(item.title || tid)
-            +   '</div>'
-            +   '<div class="threads-v5-group-item-state">'
-            +     _esc(stateLabel) + '</div>';
-        if (intent && intent !== item.title) {
-            html += '<div class="threads-v5-group-item-intent">'
-                +   _esc(intent.length > 100 ? intent.slice(0, 97) + '...' : intent)
+            +   '<div class="threads-v5-group-item-title" '
+            +     'title="' + _esc(label) + '">'
+            +     _esc(label.length > 90
+                        ? label.slice(0, 87) + '...' : label)
+            +   '</div>';
+        if (url) {
+            html += '<div class="threads-v5-group-item-url" '
+                +   'title="' + _esc(url) + '">'
+                +   _esc(url.length > 80 ? url.slice(0, 77) + '...' : url)
                 + '</div>';
         }
-        if (actions.length > 0) {
-            html += '<div class="threads-v5-group-item-actions">';
-            for (const a of actions) {
-                html += '<span class="threads-v5-group-item-action">'
-                    +   '&rarr; ' + _esc(a.name || a.id || "(unnamed)")
-                    + '</span>';
-            }
-            html += '</div>';
+        if (source || type) {
+            html += '<div class="threads-v5-group-item-meta">'
+                +   _esc(source)
+                +   (source && type ? ' &middot; ' : '')
+                +   _esc(type)
+                + '</div>';
         }
         html += '</div></li>';
         return html;
     }
 
-    // ---- Suggested cross-group merges --------------------------------
-    //
-    // Lazy-fetched from /group_suggestions per active parent_id; cached
-    // in window._groupState.suggestionsByParent. The panel only
-    // appears when there's at least one suggestion. Each suggestion
-    // has Accept / Dismiss buttons:
-    //   Accept → fires move op for the FIRST id in the pair into the
-    //            SECOND id's parent (i.e. follows the system's
-    //            recommendation).
-    //   Dismiss → adds the pair to a session-only "ignored" set so
-    //            the same pair doesn't re-surface this session.
-
-    function _renderSuggestionsPanel(activeId) {
-        const cached = (window._groupState.suggestionsByParent || {})[activeId];
-        if (!cached) {
-            // Trigger lazy fetch on first render. Don't show a
-            // loading shell — suggestions are passive; if they
-            // arrive a beat later, the panel just appears.
-            _fetchSuggestions(activeId);
-            return '';
-        }
-        const ignored = window._groupState.suggestionsIgnored || new Set();
-        const live = (cached.suggestions || []).filter(s => {
-            const key = _suggestionKey(s);
-            return !ignored.has(key);
-        });
-        if (live.length === 0) return '';
-        let html = '<div class="threads-v5-group-suggestions">'
-            + '<div class="threads-v5-group-suggestions-header">'
-            +   'Suggested moves '
-            +   '<span class="threads-v5-group-suggestions-count">'
-            +     '(' + live.length + ')'
-            +   '</span>'
-            + '</div>'
-            + '<ul class="threads-v5-group-suggestions-list">';
-        for (const s of live) {
-            const key = _suggestionKey(s);
-            const score = s.fused_score
-                ? Math.round(s.fused_score * 100) + '%'
-                : '';
-            html += '<li class="threads-v5-group-suggestion">'
-                +   '<div class="threads-v5-group-suggestion-text">'
-                +     _esc(s.labels[0]) + ' &harr; ' + _esc(s.labels[1])
-                +     (score ? ' <span class="threads-v5-group-suggestion-score">'
-                                 + score + '</span>' : '')
-                +   '</div>'
-                +   '<div class="threads-v5-group-suggestion-actions">'
-                +     '<button class="threads-v5-group-suggestion-accept" '
-                +       'title="Move first item into the second item&#39;s group" '
-                +       'onclick="threadsGroupAcceptSuggestion(\''
-                +         _esc(s.ids[0]) + '\', \'' + _esc(s.ids[1]) + '\', \''
-                +         _esc(key) + '\')">'
-                +       'Accept &rarr;'
-                +     '</button>'
-                +     '<button class="threads-v5-group-suggestion-dismiss" '
-                +       'title="Hide this suggestion" '
-                +       'onclick="threadsGroupDismissSuggestion(\''
-                +         _esc(key) + '\')">'
-                +       '&times;'
-                +     '</button>'
-                +   '</div>'
-                + '</li>';
-        }
-        html += '</ul></div>';
-        return html;
-    }
-
-    function _suggestionKey(s) {
-        // Order-independent key so accept/dismiss hits the right pair.
-        const ids = (s.ids || []).slice().sort();
-        return ids.join('|');
-    }
-
-    function _fetchSuggestions(activeId) {
-        if (!window._groupState.suggestionsByParent) {
-            window._groupState.suggestionsByParent = {};
-        }
-        // Mark as in-flight so we don't re-fire on every render.
-        window._groupState.suggestionsByParent[activeId] = {
-            suggestions: [],
-            inflight: true,
-        };
-        fetch('/api/threads/' + encodeURIComponent(activeId) + '/group_suggestions')
-            .then(r => r.ok ? r.json() : Promise.reject(r.statusText))
-            .then(data => {
-                window._groupState.suggestionsByParent[activeId] = {
-                    suggestions: data.suggestions || [],
-                };
-                if (typeof window._renderActiveThread === "function"
-                    && (data.suggestions || []).length > 0) {
-                    window._renderActiveThread();
-                }
-            })
-            .catch(err => {
-                // Silent failure — suggestions are passive.
-                window._groupState.suggestionsByParent[activeId] = {
-                    suggestions: [],
-                    error: String(err),
-                };
-            });
-    }
-
-    window.threadsGroupAcceptSuggestion = function (sourceId, targetId, key) {
-        // Mark dismissed first so the panel hides immediately even
-        // if the move call is slow.
-        if (!window._groupState.suggestionsIgnored) {
-            window._groupState.suggestionsIgnored = new Set();
-        }
-        window._groupState.suggestionsIgnored.add(key);
-        // Find the target's parent_id from the rendered DOM (already
-        // there) so the move goes to the right destination column.
-        const targetEl = document.querySelector(
-            '.threads-v5-group-item[data-thread-id="' + targetId + '"]'
-        );
-        if (!targetEl) {
-            // Suggestion stale (e.g., target moved or terminal).
-            window._renderActiveThread && window._renderActiveThread();
-            return;
-        }
-        const destParent = targetEl.dataset.parentId;
-        // Move just this one item; clear any wider selection so we
-        // don't accidentally drag others along.
-        window._groupState.selected.clear();
-        window._groupState.selected.add(sourceId);
-        _moveBatch([sourceId], destParent);
-    };
-
-    window.threadsGroupDismissSuggestion = function (key) {
-        if (!window._groupState.suggestionsIgnored) {
-            window._groupState.suggestionsIgnored = new Set();
-        }
-        window._groupState.suggestionsIgnored.add(key);
-        if (typeof window._renderActiveThread === "function") {
-            window._renderActiveThread();
-        }
-    };
-
-    function _renderNewGroupZone(referenceParentId) {
+    function _renderNewGroupZone(umbrellaId) {
         return '<div class="threads-v5-group-newzone" '
-            + 'ondragover="event.preventDefault();this.classList.add(\'drag-over\');" '
+            + 'ondragover="event.preventDefault();'
+            +   'this.classList.add(\'drag-over\');" '
             + 'ondragleave="this.classList.remove(\'drag-over\');" '
             + 'ondrop="threadsGroupDropOnNewZone(event, \''
-            +   _esc(referenceParentId) + '\')">'
+            +   _esc(umbrellaId) + '\')">'
             + '<div class="threads-v5-group-newzone-icon">+</div>'
             + 'Drop here to create a new group'
             + '</div>';
     }
 
-    // ---- Drag-and-drop handlers ----------------------------------------
+    // ---- Drag-and-drop handlers ------------------------------------
 
-    window.threadsGroupDragStart = function (ev, threadId) {
-        // If the dragged item isn't already in the selection, select it
-        // alone — this matches the user expectation that drag operates
-        // on the visually-grabbed item plus any explicit multi-selection.
+    window.threadsGroupDragStart = function (ev, itemId) {
         const sel = window._groupState.selected;
-        if (!sel.has(threadId)) {
+        if (!sel.has(itemId)) {
             sel.clear();
-            sel.add(threadId);
-            // Refresh selection visuals without a full re-render.
+            sel.add(itemId);
             document.querySelectorAll('.threads-v5-group-item.selected')
                 .forEach(el => el.classList.remove('selected'));
             const me = document.querySelector(
-                '.threads-v5-group-item[data-thread-id="' + threadId + '"]'
+                '.threads-v5-group-item[data-item-id="' + itemId + '"]'
             );
             if (me) me.classList.add('selected');
         }
-        window._groupState.dragSource = threadId;
+        window._groupState.dragSource = itemId;
         ev.dataTransfer.effectAllowed = "move";
-        // Fingerprint so the drop target can sanity-check.
-        try { ev.dataTransfer.setData("text/plain", threadId); } catch(e) {}
-        // Mark all selected items as dragging-multi so the user sees
-        // them lift together visually.
+        try { ev.dataTransfer.setData("text/plain", itemId); } catch(e) {}
         document.querySelectorAll('.threads-v5-group-item.selected')
             .forEach(el => el.classList.add('dragging-multi'));
     };
 
-    window.threadsGroupDragEnd = function (ev, threadId) {
+    window.threadsGroupDragEnd = function (ev, itemId) {
         window._groupState.dragSource = null;
         document.querySelectorAll('.dragging-multi, .drag-over')
             .forEach(el => {
@@ -644,43 +491,74 @@ def _group_view_script() -> str:
             });
     };
 
-    window.threadsGroupDropOnNewZone = function (ev, referenceParentId) {
+    window.threadsGroupDropOnNewZone = function (ev, umbrellaId) {
         ev.preventDefault();
         const zone = ev.currentTarget || ev.target.closest(
             '.threads-v5-group-newzone'
         );
         if (zone) zone.classList.remove('drag-over');
         const sel = Array.from(window._groupState.selected);
-        if (sel.length === 0) return;
-        // Optional label prompt — fall back to "New group" if cancelled.
-        let label = window.prompt(
-            'Name for the new group? (Leave blank for "New group")', ''
+        if (sel.length === 0) {
+            // Allow user to spawn an empty group with no items
+            // selected — useful for "I want to start fresh and put
+            // things here later."
+            const labelOnly = window.prompt(
+                'Name for the new group? (Leave blank for "New group")',
+                '',
+            );
+            if (labelOnly === null) return;
+            _spawnEmptyGroup(umbrellaId, (labelOnly || '').trim());
+            return;
+        }
+        const label = window.prompt(
+            'Name for the new group? (Leave blank for "New group")', '',
         );
-        if (label === null) return;  // explicit cancel
-        label = (label || '').trim() || 'New group';
-        // Spawn the sibling, then move the dragged selection into it.
-        fetch('/api/threads/' + encodeURIComponent(referenceParentId)
-              + '/spawn_sibling_group', {
+        if (label === null) return;
+        const cleaned = (label || '').trim() || 'New group';
+        fetch('/api/threads/' + encodeURIComponent(umbrellaId)
+              + '/spawn_empty_group', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ label: label }),
+            body: JSON.stringify({ label: cleaned }),
         })
         .then(r => r.json().then(b => ({ ok: r.ok, body: b })))
         .then(({ ok, body }) => {
             if (!ok) {
-                _groupToast(
-                    'New group failed',
-                    body.error || 'Could not spawn sibling group'
-                );
+                _groupToast('New group failed',
+                    body.error || 'Could not create group');
                 return;
             }
-            const newParentId = body.parent_id;
-            _moveBatch(sel, newParentId);
+            const newGroupId = body.new_thread_id;
+            // We need to fetch fresh groups so the new column appears
+            // in cache, then move the items. Refresh first.
+            return _refreshGroups(umbrellaId).then(() => {
+                _moveItems(sel, newGroupId);
+            });
         })
         .catch(e => {
             _groupToast('New group failed', String(e));
         });
     };
+
+    function _spawnEmptyGroup(umbrellaId, label) {
+        const cleaned = label || 'New group';
+        fetch('/api/threads/' + encodeURIComponent(umbrellaId)
+              + '/spawn_empty_group', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ label: cleaned }),
+        })
+        .then(r => r.json().then(b => ({ ok: r.ok, body: b })))
+        .then(({ ok, body }) => {
+            if (!ok) {
+                _groupToast('New group failed',
+                    body.error || 'Could not create group');
+                return;
+            }
+            _refreshGroups(umbrellaId);
+        })
+        .catch(e => _groupToast('New group failed', String(e)));
+    }
 
     window.threadsGroupDropOnColumn = function (ev, destParentId) {
         ev.preventDefault();
@@ -690,121 +568,206 @@ def _group_view_script() -> str:
         if (col) col.classList.remove('drag-over');
         const sel = Array.from(window._groupState.selected);
         if (sel.length === 0) return;
-        // Filter: don't move items already in the destination.
-        const targets = sel.filter(tid => {
+        // Filter: don't move items already in this destination.
+        const filtered = sel.filter(itemId => {
             const el = document.querySelector(
-                '.threads-v5-group-item[data-thread-id="' + tid + '"]'
+                '.threads-v5-group-item[data-item-id="' + itemId + '"]'
             );
             return el && el.dataset.parentId !== destParentId;
         });
-        if (targets.length === 0) {
+        if (filtered.length === 0) {
             window._groupState.selected.clear();
             window._renderActiveThread && window._renderActiveThread();
             return;
         }
-        _moveBatch(targets, destParentId);
+        _moveItems(filtered, destParentId);
     };
 
-    function _moveBatch(threadIds, destParentId) {
-        const total = threadIds.length;
-        // Optimistic update — items jump columns immediately so the
-        // user gets instant feedback. The server-driven refresh
-        // (debounced SSE handler) reconciles whatever the server
-        // actually did via morphdom.
-        const optimistic = _applyOptimisticMove(threadIds, destParentId);
+    function _moveItems(itemIds, destParentId) {
+        // Map each item id back to its current source column.
+        const srcByItem = {};
+        for (const iId of itemIds) {
+            const el = document.querySelector(
+                '.threads-v5-group-item[data-item-id="' + iId + '"]'
+            );
+            if (el) srcByItem[iId] = el.dataset.parentId;
+        }
+        const total = itemIds.length;
+        const srcThreadIds = itemIds.map(i => srcByItem[i]);
+        const optimistic = _applyOptimisticMove(
+            itemIds, srcThreadIds, destParentId,
+        );
         window._groupState.selected.clear();
         if (optimistic && typeof window._renderActiveThread === "function") {
             window._renderActiveThread();
         }
         let ok = 0, failed = 0;
         const failures = [];
-        const promises = threadIds.map(tid =>
-            fetch('/api/threads/' + encodeURIComponent(tid) + '/move_parent', {
+        const promises = itemIds.map(iId => {
+            const srcId = srcByItem[iId];
+            if (!srcId) {
+                failed++;
+                failures.push('source unknown for ' + iId);
+                return Promise.resolve();
+            }
+            return fetch('/api/threads/' + encodeURIComponent(srcId)
+                         + '/move_item', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ new_parent_id: destParentId }),
+                body: JSON.stringify({
+                    item_id: iId,
+                    dest_thread_id: destParentId,
+                }),
             })
             .then(r => r.json().then(b => ({ ok: r.ok, body: b })))
             .then(({ ok: ok2, body }) => {
                 if (ok2) ok++;
-                else { failed++; failures.push(body.reason || body.error); }
+                else { failed++; failures.push(body.error || 'unknown'); }
             })
-            .catch(e => { failed++; failures.push(String(e)); })
-        );
+            .catch(e => { failed++; failures.push(String(e)); });
+        });
         Promise.all(promises).then(() => {
-            const msg = (
-                ok === total
-                    ? 'Moved ' + ok + ' item' + (ok === 1 ? '' : 's')
-                    : 'Moved ' + ok + ' / ' + total
-                       + (failed
-                           ? ' (' + failed + ' failed: '
-                              + (failures[0] || 'unknown')
-                              + (failures.length > 1
-                                  ? ', ...' : '') + ')'
-                           : '')
-            );
-            _groupToast(
-                ok === total ? "Items moved" : "Move partial",
-                msg
-            );
+            // ONLY toast on partial failure. Successful moves are
+            // visually obvious right under the cursor; the user
+            // already saw the optimistic update land.
             if (failed > 0) {
-                // Optimistic update may have over-promised; force a
-                // hard refresh from the server.
+                _groupToast(
+                    'Move partial',
+                    'Moved ' + ok + ' / ' + total
+                        + ' (' + failed + ' failed: '
+                        + (failures[0] || 'unknown')
+                        + (failures.length > 1 ? ', ...' : '') + ')',
+                );
+                // Force a hard refresh — optimistic state may be
+                // ahead of the server.
                 const state = window._threadsState;
                 if (state && state.path && state.path.length > 0) {
-                    _refreshSiblings(state.path[state.path.length - 1]);
+                    _refreshGroups(state.path[state.path.length - 1]);
                 }
             }
-            // The SSE event-bus handler will _scheduleRefreshForActive
-            // once cascade events arrive (auto-DISMISS of empty
-            // groups, etc.); no explicit re-render needed here.
+            // SSE handler will _scheduleRefreshForActive when cascade
+            // events arrive (none expected for plain move-item, but
+            // the umbrella's parent_event_id bumps from move_item land
+            // as state-changed too).
         });
     }
 
-    // ---- Selection handlers --------------------------------------------
+    // ---- Header click + delete X --------------------------------------
 
-    window.threadsGroupItemClick = function (ev, threadId) {
-        // Plain click WITHOUT shift/ctrl/cmd → open the thread in the
-        // standard right-pane editor (existing behaviour).
-        // Shift/Ctrl/Cmd click → toggle selection.
-        if (ev.shiftKey) {
-            ev.preventDefault();
-            _extendSelection(threadId);
-            _refreshSelectionClasses();
-            return;
-        }
-        if (ev.ctrlKey || ev.metaKey) {
-            ev.preventDefault();
-            window._groupState.selected.has(threadId)
-                ? window._groupState.selected.delete(threadId)
-                : window._groupState.selected.add(threadId);
-            window._groupState.lastFocused = threadId;
-            _refreshSelectionClasses();
-            return;
-        }
-        // Plain click — clear selection, open the item.
-        window._groupState.selected.clear();
-        window._groupState.lastFocused = threadId;
+    window.threadsGroupHeaderClick = function (ev, threadId) {
+        // Plain click on header → drill into that group sub-thread
+        // via standard navigation.
         if (typeof window.threadsPushPath === "function") {
             window.threadsPushPath(threadId);
         }
     };
 
-    function _extendSelection(toThreadId) {
-        // Extend the selection to a range from lastFocused -> toThreadId.
-        // Walks all items in DOM order so the "between" range is the
-        // visual one the user expects.
+    window.threadsGroupDeleteSubthread = function (threadId, hadItems) {
+        if (hadItems && !window.confirm(
+            'Delete this group sub-thread? It still has items inside; '
+            + 'they will be dismissed along with it.\n\nIf you wanted to '
+            + 'reassign them, drag them to another column first.'
+        )) return;
+        fetch('/api/threads/' + encodeURIComponent(threadId)
+              + '/delete_group_subthread', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({}),
+        })
+        .then(r => r.json().then(b => ({ ok: r.ok, body: b })))
+        .then(({ ok, body }) => {
+            if (!ok) {
+                _groupToast('Delete failed',
+                    body.error || 'Could not delete group sub-thread');
+                return;
+            }
+            const umbrellaId = body.umbrella_id;
+            if (umbrellaId) _refreshGroups(umbrellaId);
+        })
+        .catch(e => _groupToast('Delete failed', String(e)));
+    };
+
+    // ---- Approve all -------------------------------------------------
+
+    window.threadsGroupApproveAll = function (umbrellaId) {
+        if (!window.confirm(
+            'Approve every non-terminal group? Each group will run its '
+            + 'proposed actions.'
+        )) return;
+        fetch('/api/threads/' + encodeURIComponent(umbrellaId)
+              + '/approve_all', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({}),
+        })
+        .then(r => r.json().then(b => ({ ok: r.ok, body: b })))
+        .then(({ ok, body }) => {
+            if (!ok) {
+                _groupToast('Approve failed',
+                    body.error || 'Cascade approve failed');
+                return;
+            }
+            const approved = (body.approved || []).length;
+            const failed = (body.failed || []).length;
+            const skipped = (body.skipped_terminal || []).length;
+            const total = approved + failed;
+            const msg = (failed > 0
+                ? 'Approved ' + approved + ' / ' + total
+                    + ' (' + failed + ' failed: '
+                    + (body.failed[0].error || 'unknown') + ')'
+                : 'Approved ' + approved + ' group'
+                    + (approved === 1 ? '' : 's')
+                    + (skipped > 0
+                        ? ' (' + skipped + ' already terminal)'
+                        : ''));
+            _groupToast('Approve all', msg);
+            _refreshGroups(umbrellaId);
+        })
+        .catch(e => _groupToast('Approve failed', String(e)));
+    };
+
+    // ---- Selection handlers (item-level) ----------------------------
+
+    window.threadsGroupItemClick = function (ev, itemId) {
+        if (ev.shiftKey) {
+            ev.preventDefault();
+            _extendSelection(itemId);
+            _refreshSelectionClasses();
+            return;
+        }
+        if (ev.ctrlKey || ev.metaKey) {
+            ev.preventDefault();
+            window._groupState.selected.has(itemId)
+                ? window._groupState.selected.delete(itemId)
+                : window._groupState.selected.add(itemId);
+            window._groupState.lastFocused = itemId;
+            _refreshSelectionClasses();
+            return;
+        }
+        // Plain click — toggle selection (items aren't navigable
+        // threads; clicking a card is a way to mark it).
+        ev.preventDefault();
+        if (window._groupState.selected.has(itemId)) {
+            window._groupState.selected.delete(itemId);
+        } else {
+            window._groupState.selected.add(itemId);
+            window._groupState.lastFocused = itemId;
+        }
+        _refreshSelectionClasses();
+    };
+
+    function _extendSelection(toItemId) {
         const all = Array.from(document.querySelectorAll(
             '.threads-v5-group-item'
         ));
-        const ids = all.map(el => el.dataset.threadId);
+        const ids = all.map(el => el.dataset.itemId);
         const anchor = window._groupState.lastFocused;
         const a = anchor ? ids.indexOf(anchor) : -1;
-        const b = ids.indexOf(toThreadId);
+        const b = ids.indexOf(toItemId);
         if (b < 0) return;
         if (a < 0) {
-            window._groupState.selected.add(toThreadId);
-            window._groupState.lastFocused = toThreadId;
+            window._groupState.selected.add(toItemId);
+            window._groupState.lastFocused = toItemId;
             return;
         }
         const [lo, hi] = a < b ? [a, b] : [b, a];
@@ -816,10 +779,9 @@ def _group_view_script() -> str:
     function _refreshSelectionClasses() {
         const sel = window._groupState.selected;
         document.querySelectorAll('.threads-v5-group-item').forEach(el => {
-            const tid = el.dataset.threadId;
-            el.classList.toggle('selected', sel.has(tid));
+            const iId = el.dataset.itemId;
+            el.classList.toggle('selected', sel.has(iId));
         });
-        // Update the slim selection bar without a full re-render.
         const bar = document.querySelector(
             '.threads-v5-group-selection-bar'
         );
@@ -830,60 +792,17 @@ def _group_view_script() -> str:
         }
     }
 
-    // ---- Bulk submit ---------------------------------------------------
-
-    window.threadsGroupSubmitAll = function (parentId) {
-        if (!window.confirm(
-            'Submit all awaiting items in this group? Each item will run '
-            + 'through Accept individually.'
-        )) return;
-        fetch('/api/threads/' + encodeURIComponent(parentId)
-              + '/group_submit', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({}),
-        })
-        .then(r => r.json().then(b => ({ ok: r.ok, body: b })))
-        .then(({ ok, body }) => {
-            if (!ok) {
-                _groupToast(
-                    'Submit failed',
-                    body.error || 'Group submit failed'
-                );
-                return;
-            }
-            const submitted = body.submitted || 0;
-            const failed = body.failed || 0;
-            const skipped = body.skipped || 0;
-            const msg = 'Submitted ' + submitted
-                + (failed ? ', ' + failed + ' failed' : '')
-                + (skipped ? ', ' + skipped + ' skipped' : '');
-            _groupToast('Group submitted', msg);
-            // Server-side state changes will arrive over SSE and the
-            // bus handler will refresh — no need to nuke caches here.
-        })
-        .catch(e => {
-            _groupToast('Submit failed', String(e));
-        });
-    };
-
-    // ---- Keyboard handler — extends script_threads_v5's j/k --------------
-    //
-    // Installed once at module load. We listen on keydown and dispatch
-    // group-specific keys (x / m / Shift-j/k) when the active thread
-    // is a group-parent. Keys we don't handle pass through to the
-    // existing j/k handler.
+    // ---- Keyboard handler — extends script_threads_v5's j/k --------
 
     if (!window._threadsGroupKbdInstalled) {
         window._threadsGroupKbdInstalled = true;
         document.addEventListener("keydown", function (ev) {
-            // Only act when a group-parent is the active detail.
             const state = window._threadsState;
             if (!state || !state.path || state.path.length === 0) return;
             const activeId = state.path[state.path.length - 1];
             const cached = (window._threadDetailCache || {})[activeId];
+            // Only fire on group umbrella threads.
             if (!cached || cached.parent_relationship !== "group") return;
-            // Don't fire when the user is typing.
             const tgt = ev.target;
             if (tgt && /^(INPUT|TEXTAREA|SELECT)$/.test(tgt.tagName)) return;
             const k = ev.key;
@@ -895,7 +814,6 @@ def _group_view_script() -> str:
                 ev.preventDefault();
                 _promptMove();
             } else if (k === "J" || k === "K") {
-                // Shift-j / Shift-k: extend selection by one step.
                 ev.preventDefault();
                 _stepFocus(k === "J" ? -1 : 1, true);
             } else if (k === "Escape") {
@@ -912,16 +830,16 @@ def _group_view_script() -> str:
         const focusedEl = document.querySelector(
             '.threads-v5-group-item.threads-v5-kbd-focus'
         ) || document.querySelector(
-            '.threads-v5-group-item[data-thread-id="'
+            '.threads-v5-group-item[data-item-id="'
             + (window._groupState.lastFocused || '') + '"]'
         );
         if (!focusedEl) return;
-        const tid = focusedEl.dataset.threadId;
-        if (window._groupState.selected.has(tid)) {
-            window._groupState.selected.delete(tid);
+        const iId = focusedEl.dataset.itemId;
+        if (window._groupState.selected.has(iId)) {
+            window._groupState.selected.delete(iId);
         } else {
-            window._groupState.selected.add(tid);
-            window._groupState.lastFocused = tid;
+            window._groupState.selected.add(iId);
+            window._groupState.lastFocused = iId;
         }
     }
 
@@ -932,17 +850,17 @@ def _group_view_script() -> str:
         if (all.length === 0) return;
         const focused = window._groupState.lastFocused;
         let idx = focused
-            ? all.findIndex(el => el.dataset.threadId === focused)
+            ? all.findIndex(el => el.dataset.itemId === focused)
             : -1;
         if (idx < 0) idx = 0;
         let next = idx + delta;
         if (next < 0) next = 0;
         if (next >= all.length) next = all.length - 1;
-        const nextTid = all[next].dataset.threadId;
+        const nextIid = all[next].dataset.itemId;
         if (extendSelection) {
-            window._groupState.selected.add(nextTid);
+            window._groupState.selected.add(nextIid);
         }
-        window._groupState.lastFocused = nextTid;
+        window._groupState.lastFocused = nextIid;
         all.forEach(el => el.classList.remove('threads-v5-kbd-focus'));
         all[next].classList.add('threads-v5-kbd-focus');
         all[next].scrollIntoView({ block: 'nearest', behavior: 'smooth' });
@@ -954,32 +872,45 @@ def _group_view_script() -> str:
         if (sel.length === 0) {
             _groupToast(
                 'Nothing selected',
-                'Press x to select items first.'
+                'Press x to select items first.',
             );
             return;
         }
-        // Pull sibling labels from the cache so the user picks by label.
         const state = window._threadsState;
         const activeId = state.path[state.path.length - 1];
-        const sibs = (window._groupState.siblingsByParent[activeId] || []);
-        const candidates = sibs.filter(s => s.thread_id !== activeId);
+        const groups = (
+            window._groupState.groupsByUmbrella[activeId] || []
+        );
+        // Active source columns = the columns containing the
+        // selected items. We want to move SOMEWHERE ELSE.
+        const sourceParents = new Set();
+        for (const iId of sel) {
+            const el = document.querySelector(
+                '.threads-v5-group-item[data-item-id="' + iId + '"]'
+            );
+            if (el) sourceParents.add(el.dataset.parentId);
+        }
+        const candidates = groups.filter(
+            g => !sourceParents.has(g.thread_id)
+        );
         if (candidates.length === 0) {
             _groupToast(
                 'No other groups',
-                'This scrape only has one group.'
+                'This umbrella only has one group. Drop on the '
+                    + '"+ New group" zone to create another.',
             );
             return;
         }
-        const lines = candidates.map((s, i) =>
-            (i + 1) + ') ' + (s.title || s.thread_id)
+        const lines = candidates.map((g, i) =>
+            (i + 1) + ') ' + (g.title || g.thread_id)
         ).join('\n');
         const pick = window.prompt(
             'Move ' + sel.length + ' item' + (sel.length === 1 ? '' : 's')
-                + ' to which group?\n\n' + lines + '\n\nEnter a number:'
+                + ' to which group?\n\n' + lines + '\n\nEnter a number:',
         );
         const n = parseInt(pick, 10);
         if (!n || n < 1 || n > candidates.length) return;
-        _moveBatch(sel, candidates[n - 1].thread_id);
+        _moveItems(sel, candidates[n - 1].thread_id);
     }
 })();
 """
@@ -987,10 +918,10 @@ def _group_view_script() -> str:
 
 def _group_view_styles() -> str:
     return r"""
-/* Stage 5: group-view multi-column layout. Renders inside the
+/* Stage 5 v2: group-view multi-column layout. Renders inside the
  * standard thread-detail card's "Sub-threads" section when the
- * active thread has parent_relationship === 'group'. Columns are
- * flex children that wrap on narrow viewports.
+ * active thread is a group umbrella (parent_relationship === 'group').
+ * Columns are flex children that wrap on narrow viewports.
  */
 .threads-v5-group-empty,
 .threads-v5-group-loading {
@@ -1002,18 +933,40 @@ def _group_view_styles() -> str:
     color: var(--text, #ddd);
 }
 
+/* Toolbar above the columns. Holds Approve-all + selection bar. */
+.threads-v5-group-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 10px;
+    flex-wrap: wrap;
+}
+.threads-v5-group-approve-all {
+    background: var(--accent, #4a7fc1);
+    color: white;
+    border: 1px solid var(--accent, #4a7fc1);
+    border-radius: 4px;
+    padding: 6px 14px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+}
+.threads-v5-group-approve-all:hover {
+    filter: brightness(1.1);
+}
+
 /* Slim selection bar — only visible while items are selected. */
 .threads-v5-group-selection-bar {
     display: none;
     align-items: center;
     gap: 12px;
-    margin: 0 0 10px 0;
     padding: 6px 10px;
     background: var(--bg-tertiary, #232323);
     border: 1px solid var(--accent, #4a7fc1);
     border-radius: 6px;
     font-size: 12px;
     color: var(--text, #ddd);
+    flex: 1 1 auto;
 }
 .threads-v5-group-selection-bar.show {
     display: flex;
@@ -1051,23 +1004,19 @@ def _group_view_styles() -> str:
     border-radius: 8px;
     padding: 10px;
     transition: border-color 80ms, background-color 80ms;
+    position: relative;
 }
 .threads-v5-group-column.drag-over {
     border-color: var(--accent, #4a7fc1);
     background: var(--bg-tertiary, #232323);
-}
-.threads-v5-group-column-active {
-    box-shadow: 0 0 0 1px var(--accent, #4a7fc1);
 }
 
 .threads-v5-group-column-header {
     margin-bottom: 8px;
     padding-bottom: 6px;
     border-bottom: 1px solid var(--border, #333);
+    position: relative;
 }
-/* Non-active columns: header is a clickable link to navigate into
- * that sibling group-parent (uses threadsPushPath). The drag handle
- * + items below stay independent. */
 .threads-v5-group-column-header-clickable {
     cursor: pointer;
     border-radius: 4px;
@@ -1081,11 +1030,40 @@ def _group_view_styles() -> str:
     outline: none;
 }
 
+/* X / Delete group sub-thread button — top-right of the header,
+ * visible on hover. */
+.threads-v5-group-column-delete-x {
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: 22px;
+    height: 22px;
+    border: none;
+    background: transparent;
+    color: var(--text-muted, #888);
+    font-size: 16px;
+    line-height: 1;
+    cursor: pointer;
+    border-radius: 4px;
+    opacity: 0;
+    transition: opacity 80ms, background 80ms, color 80ms;
+}
+.threads-v5-group-column-header:hover
+    .threads-v5-group-column-delete-x,
+.threads-v5-group-column-delete-x:focus-visible {
+    opacity: 1;
+}
+.threads-v5-group-column-delete-x:hover {
+    background: rgba(220, 60, 60, 0.18);
+    color: #ff8080;
+}
+
 .threads-v5-group-column-title-row {
     display: flex;
     align-items: center;
     gap: 6px;
     flex-wrap: wrap;
+    padding-right: 24px;  /* room for the X button */
 }
 .threads-v5-group-column-title {
     font-size: 14px;
@@ -1100,15 +1078,6 @@ def _group_view_styles() -> str:
     color: var(--text-muted, #888);
     text-transform: capitalize;
     white-space: nowrap;
-}
-.threads-v5-group-column-active-pill {
-    font-size: 10px;
-    background: var(--accent, #4a7fc1);
-    color: white;
-    border-radius: 3px;
-    padding: 1px 6px;
-    text-transform: uppercase;
-    letter-spacing: 0.4px;
 }
 .threads-v5-group-column-intent {
     font-size: 11px;
@@ -1125,19 +1094,6 @@ def _group_view_styles() -> str:
     font-size: 11px;
     color: var(--text-muted, #888);
     margin-top: 4px;
-}
-.threads-v5-group-submit-all {
-    margin-top: 6px;
-    background: var(--accent, #4a7fc1);
-    color: white;
-    border: 1px solid var(--accent, #4a7fc1);
-    border-radius: 4px;
-    padding: 3px 10px;
-    font-size: 11px;
-    cursor: pointer;
-}
-.threads-v5-group-submit-all:hover {
-    filter: brightness(1.1);
 }
 
 .threads-v5-group-items {
@@ -1159,6 +1115,8 @@ def _group_view_styles() -> str:
     border-radius: 4px;
 }
 
+/* Item card — represents a ContextItem (Chrome tab, journal line,
+ * etc.), NOT a thread. */
 .threads-v5-group-item {
     display: flex;
     gap: 6px;
@@ -1203,24 +1161,20 @@ def _group_view_styles() -> str:
     text-overflow: ellipsis;
     white-space: nowrap;
 }
-.threads-v5-group-item-state {
-    font-size: 10px;
-    color: var(--text-muted, #888);
-    text-transform: capitalize;
-}
-.threads-v5-group-item-intent {
-    font-size: 11px;
-    color: var(--text-muted, #aaa);
-    margin-top: 3px;
-}
-.threads-v5-group-item-actions {
-    margin-top: 4px;
+.threads-v5-group-item-url {
     font-size: 11px;
     color: var(--accent, #4a7fc1);
+    margin-top: 2px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: ui-monospace, SFMono-Regular, monospace;
 }
-.threads-v5-group-item-action {
-    display: inline-block;
-    margin-right: 8px;
+.threads-v5-group-item-meta {
+    font-size: 10px;
+    color: var(--text-muted, #888);
+    margin-top: 3px;
+    text-transform: lowercase;
 }
 
 .threads-v5-group-newzone {
@@ -1237,7 +1191,9 @@ def _group_view_styles() -> str:
     gap: 6px;
     padding: 16px;
     transition: border-color 80ms, color 80ms;
+    cursor: pointer;
 }
+.threads-v5-group-newzone:hover,
 .threads-v5-group-newzone.drag-over {
     border-color: var(--accent, #4a7fc1);
     color: var(--accent, #4a7fc1);
@@ -1246,96 +1202,6 @@ def _group_view_styles() -> str:
 .threads-v5-group-newzone-icon {
     font-size: 28px;
     line-height: 1;
-}
-
-/* Suggested cross-group merges — passive side panel above the
- * columns. Cards have Accept (follow the suggestion → move) and
- * Dismiss (hide for the rest of the session). Suggestions come
- * from the embedding-fused similarity layer in
- * journal_backlog.similarity, which we built in PR #75. */
-.threads-v5-group-suggestions {
-    margin-bottom: 14px;
-    background: var(--bg-secondary, #1a1a1a);
-    border: 1px solid var(--border, #333);
-    border-left: 3px solid #c0a040;  /* warm yellow → "tip" */
-    border-radius: 6px;
-    padding: 10px 12px;
-}
-.threads-v5-group-suggestions-header {
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--text-muted, #aaa);
-    margin-bottom: 6px;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-}
-.threads-v5-group-suggestions-count {
-    color: var(--text-muted, #888);
-    font-weight: 400;
-}
-.threads-v5-group-suggestions-list {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-}
-.threads-v5-group-suggestion {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 10px;
-    padding: 4px 6px;
-    border-radius: 4px;
-    font-size: 12px;
-}
-.threads-v5-group-suggestion:hover {
-    background: var(--bg-tertiary, #232323);
-}
-.threads-v5-group-suggestion-text {
-    flex: 1 1 auto;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-.threads-v5-group-suggestion-score {
-    color: var(--text-muted, #888);
-    font-size: 11px;
-    margin-left: 6px;
-}
-.threads-v5-group-suggestion-actions {
-    flex: 0 0 auto;
-    display: flex;
-    gap: 4px;
-}
-.threads-v5-group-suggestion-accept {
-    background: transparent;
-    color: var(--accent, #4a7fc1);
-    border: 1px solid var(--accent, #4a7fc1);
-    border-radius: 3px;
-    padding: 2px 8px;
-    font-size: 11px;
-    cursor: pointer;
-}
-.threads-v5-group-suggestion-accept:hover {
-    background: var(--accent, #4a7fc1);
-    color: white;
-}
-.threads-v5-group-suggestion-dismiss {
-    background: transparent;
-    color: var(--text-muted, #888);
-    border: 1px solid transparent;
-    border-radius: 3px;
-    padding: 2px 8px;
-    font-size: 14px;
-    cursor: pointer;
-    line-height: 1;
-}
-.threads-v5-group-suggestion-dismiss:hover {
-    color: var(--text, #ddd);
-    border-color: var(--border, #333);
 }
 
 /* Self-contained transient toast — does not register a workflow-view,

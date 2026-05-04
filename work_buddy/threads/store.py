@@ -447,6 +447,7 @@ def update_thread_state(
     parent_id: Any = _UPDATE_SENTINEL,
     parent_relationship: Optional[str] = None,
     originating_scrape_id: Any = _UPDATE_SENTINEL,
+    context_items: Any = _UPDATE_SENTINEL,
     conn: Optional[sqlite3.Connection] = None,
 ) -> bool:
     """Update mutable fields of the current-state cache.
@@ -459,12 +460,19 @@ def update_thread_state(
     transition event; ad-hoc callers should generally not use this
     directly.
 
-    ``resurface_at`` / ``parent_id`` / ``originating_scrape_id`` accept
-    ``None`` explicitly (clear the value) — use the sentinel to
-    distinguish "don't touch" from "set NULL".
+    ``resurface_at`` / ``parent_id`` / ``originating_scrape_id`` /
+    ``context_items`` accept ``None`` explicitly (clear / empty
+    tuple) — use the sentinel to distinguish "don't touch" from
+    "set empty".
 
     Stage 5: ``parent_id`` writes are how the move-between-groups op
     rewrites a child's parent pointer.
+
+    Stage 5 v2: ``context_items`` writes are how
+    ``threads.group.move_item`` rewrites the cached items tuple on
+    src + dest sibling group children. Pass any iterable of
+    ``ContextItem`` (or ``None`` to clear); the value is serialised
+    to ``context_items_json``.
     """
     own_conn = conn is None
     if own_conn:
@@ -502,6 +510,17 @@ def update_thread_state(
         if originating_scrape_id is not _UPDATE_SENTINEL:
             sets.append("originating_scrape_id = ?")
             params.append(originating_scrape_id)
+        if context_items is not _UPDATE_SENTINEL:
+            sets.append("context_items_json = ?")
+            if context_items is None:
+                params.append("[]")
+            else:
+                params.append(
+                    json.dumps([
+                        c.to_dict() if hasattr(c, "to_dict") else c
+                        for c in context_items
+                    ])
+                )
         params.append(thread_id)
         cur = conn.execute(
             f"UPDATE threads SET {', '.join(sets)} WHERE thread_id = ?",

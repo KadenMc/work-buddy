@@ -2424,119 +2424,117 @@ def api_v5_thread_later(thread_id: str):
         return jsonify({"error": str(exc)}), 500
 
 
-@app.post("/api/threads/<thread_id>/move_parent")
-def api_v5_thread_move_parent(thread_id: str):
-    """Stage 5: move a sub-thread between sibling group-parents.
+@app.post("/api/threads/<src_id>/move_item")
+def api_v5_thread_move_item(src_id: str):
+    """Stage 5 v2: move a single ContextItem from one group child to
+    another sibling group child.
 
-    Body: ``{"new_parent_id": "<thread_id>"}``
+    Body: ``{"item_id": "<context_item_id>", "dest_thread_id":
+    "<sibling_thread_id>"}``
 
-    Validation rules enforced by ``grouping.move_thread_to_parent``:
-    - Source and destination must both be group-relationship parents.
-    - Both must share the same ``originating_scrape_id`` (so today's
-      Chrome scrape can't accidentally suck in yesterday's tabs).
-    - Source != destination.
+    Both ``src_id`` and ``dest_thread_id`` must share the same
+    umbrella parent (``parent_id``), and that umbrella must have
+    ``parent_relationship == 'group'``. Enforced by
+    ``threads.group.move_item``.
 
-    On success, returns the move result dict with the audit
-    ``migration_id`` and a flag indicating whether the source parent
-    just auto-dismissed (it does when it has no children left).
+    Returns ``{"migration_id": str, "item": {ContextItemDict}}`` on
+    success, 422 on validation failure (cross-umbrella, item not
+    present, etc.), 500 on server error.
     """
     blocked = _reject_read_only()
     if blocked:
         return blocked
     body = request.get_json(silent=True) or {}
-    new_parent_id = body.get("new_parent_id")
-    if not new_parent_id:
-        return jsonify({"error": "new_parent_id required"}), 400
+    item_id = body.get("item_id")
+    dest_thread_id = body.get("dest_thread_id")
+    if not item_id or not dest_thread_id:
+        return jsonify(
+            {"error": "item_id and dest_thread_id required"},
+        ), 400
     try:
-        from work_buddy.threads.grouping import (
-            MoveValidationError,
-            move_thread_to_parent,
-        )
-        result = move_thread_to_parent(thread_id, new_parent_id)
+        from work_buddy.threads.group import GroupRefused, move_item
+        result = move_item(item_id, src_id, dest_thread_id)
         return jsonify(result)
-    except MoveValidationError as e:
-        # 422 — semantically valid request, semantically rejected.
-        return jsonify({"error": str(e), "reason": e.reason}), 422
+    except GroupRefused as e:
+        return jsonify({"error": str(e), "reason": "validation"}), 422
     except Exception as exc:
         logger.exception(
-            "v5 move_parent failed for %s -> %s: %s",
-            thread_id, new_parent_id, exc,
+            "v5 move_item failed for %s/%s -> %s: %s",
+            src_id, item_id, dest_thread_id, exc,
         )
         return jsonify({"error": str(exc)}), 500
 
 
-@app.get("/api/threads/<thread_id>/group_suggestions")
-def api_v5_thread_group_suggestions(thread_id: str):
-    """Stage 5 stretch: cross-group merge suggestions.
+@app.post("/api/threads/<umbrella_id>/spawn_empty_group")
+def api_v5_thread_spawn_empty_group(umbrella_id: str):
+    """Stage 5 v2: add an empty group child under ``umbrella_id``.
 
-    Runs the embedding-fused similarity layer (``journal_backlog.
-    similarity.plan_merges``) over every non-terminal item across
-    every sibling group-parent in the scrape. Returns pairs whose
-    fused score crosses the threshold AND that currently sit in
-    different group-parents — those are the candidate "the system
-    thinks this tab belongs in the other group" suggestions for the
-    side panel.
+    Drives the "+ New group" drop zone in the column UI — drop
+    selected items onto the zone → the frontend posts here to spawn
+    an empty child, then immediately fires :func:`move_item` for
+    each selected item.
 
-    Empty list when:
-    - Active thread isn't a group-parent.
-    - Embedding service is unavailable (graceful — toast doesn't
-      fire; the panel just stays empty).
-    - Fewer than 2 cross-group items exceed the threshold.
-    """
-    try:
-        from work_buddy.threads.grouping import suggest_cross_group_merges
-        result = suggest_cross_group_merges(thread_id)
-        return jsonify(result)
-    except Exception as exc:
-        logger.exception(
-            "v5 group_suggestions failed for %s: %s", thread_id, exc,
-        )
-        return jsonify({"suggestions": [], "error": str(exc)}), 500
+    Body (optional): ``{"label": "New group"}``.
 
-
-@app.post("/api/threads/<thread_id>/spawn_sibling_group")
-def api_v5_thread_spawn_sibling_group(thread_id: str):
-    """Stage 5 stretch: create a new sibling group-parent in the same
-    scrape as ``thread_id`` (the reference parent).
-
-    Body (optional): ``{"label": "New group"}``. The label is
-    user-renameable via the standard intent-edit flow once the new
-    group is open in the right pane.
-
-    Returns the new parent_id + scope + label so the frontend can
-    immediately follow up with a move op into it.
+    Returns ``{"new_thread_id": str, "umbrella_id": str, "label":
+    str}``.
     """
     blocked = _reject_read_only()
     if blocked:
         return blocked
     body = request.get_json(silent=True) or {}
-    label = (body.get("label") or "New group").strip() or "New group"
+    label = (body.get("label") or "").strip() or "New group"
     try:
-        from work_buddy.threads.grouping import (
-            MoveValidationError,
-            spawn_sibling_group,
-        )
-        result = spawn_sibling_group(thread_id, label=label)
-        return jsonify(result)
-    except MoveValidationError as e:
-        return jsonify({"error": str(e), "reason": e.reason}), 422
+        from work_buddy.threads.group import GroupRefused, spawn_empty_group
+        new_id = spawn_empty_group(umbrella_id, label)
+        return jsonify({
+            "new_thread_id": new_id,
+            "umbrella_id": umbrella_id,
+            "label": label,
+        })
+    except GroupRefused as e:
+        return jsonify({"error": str(e), "reason": "validation"}), 422
     except Exception as exc:
         logger.exception(
-            "v5 spawn_sibling_group failed for %s: %s", thread_id, exc,
+            "v5 spawn_empty_group failed for %s: %s", umbrella_id, exc,
         )
         return jsonify({"error": str(exc)}), 500
 
 
-@app.post("/api/threads/<thread_id>/group_submit")
-def api_v5_thread_group_submit(thread_id: str):
-    """Stage 5: bulk-accept every awaiting_confirmation child of a
-    group-parent.
+@app.post("/api/threads/<thread_id>/delete_group_subthread")
+def api_v5_thread_delete_group_subthread(thread_id: str):
+    """Stage 5 v2: dismiss a group child via the column-header X
+    button. Empty children stay visible by default — user explicitly
+    deletes them once they're sure.
 
-    Body (optional): ``{"actor": "user"}`` — defaults to "user".
+    Returns ``{"dismissed": <thread_id>, "umbrella_id": <umbrella_id>}``.
+    """
+    blocked = _reject_read_only()
+    if blocked:
+        return blocked
+    try:
+        from work_buddy.threads.group import (
+            GroupRefused, delete_group_subthread,
+        )
+        result = delete_group_subthread(thread_id)
+        return jsonify(result)
+    except GroupRefused as e:
+        return jsonify({"error": str(e), "reason": "validation"}), 422
+    except Exception as exc:
+        logger.exception(
+            "v5 delete_group_subthread failed for %s: %s", thread_id, exc,
+        )
+        return jsonify({"error": str(exc)}), 500
 
-    Returns a per-item result list. One bad item never blocks the
-    rest; the dashboard's "Submitted N, M failed" toast reads from
-    the returned counts.
+
+@app.post("/api/threads/<umbrella_id>/approve_all")
+def api_v5_thread_approve_all(umbrella_id: str):
+    """Stage 5 v2: cascade Accept to every non-terminal child of the
+    umbrella. Children execute their proposed actions.
+
+    Continues on per-child failure — returns ``{approved: [...],
+    failed: [{child_thread_id, error}, ...], skipped_terminal: [...]}``
+    so the frontend can surface "Approved N/M; K failed" once.
     """
     blocked = _reject_read_only()
     if blocked:
@@ -2544,19 +2542,29 @@ def api_v5_thread_group_submit(thread_id: str):
     body = request.get_json(silent=True) or {}
     actor = body.get("actor") or "user"
     try:
-        from work_buddy.threads.grouping import (
-            MoveValidationError,
-            bulk_submit_group,
+        from work_buddy.threads.group import (
+            GroupRefused, cascade_approve_umbrella,
         )
-        result = bulk_submit_group(thread_id, actor=actor)
+        result = cascade_approve_umbrella(umbrella_id, actor=actor)
         return jsonify(result)
-    except MoveValidationError as e:
-        return jsonify({"error": str(e), "reason": e.reason}), 422
+    except GroupRefused as e:
+        return jsonify({"error": str(e), "reason": "validation"}), 422
     except Exception as exc:
         logger.exception(
-            "v5 group_submit failed for %s: %s", thread_id, exc,
+            "v5 approve_all failed for %s: %s", umbrella_id, exc,
         )
         return jsonify({"error": str(exc)}), 500
+
+
+# Suggestions endpoint — stubbed for now. The pre-v2 implementation
+# operated at thread granularity and isn't directly portable to the
+# new umbrella+items model. Returning an empty list keeps the panel
+# rendering cleanly until v2 suggestions are designed.
+@app.get("/api/threads/<thread_id>/group_suggestions")
+def api_v5_thread_group_suggestions(thread_id: str):
+    """Stage 5 v2: stub — cross-group item-level suggestions are not
+    yet implemented in the new model."""
+    return jsonify({"suggestions": []})
 
 
 def _linearize_children_for_display(children: list) -> list:
@@ -2627,45 +2635,59 @@ def _linearize_children_for_display(children: list) -> list:
     return out
 
 
-@app.get("/api/threads/<thread_id>/group_siblings")
-def api_v5_thread_group_siblings(thread_id: str):
-    """Stage 5: list sibling group-parents in the same scrape, with
-    each sibling's child items rendered inline so the multi-column
-    group view can lay out the whole scrape in one fetch.
+@app.get("/api/threads/<umbrella_id>/groups")
+def api_v5_thread_groups(umbrella_id: str):
+    """Stage 5 v2: list the children of a group umbrella, with each
+    child's ``context_items`` (the actual items inside that group:
+    Chrome tabs, journal lines, etc.) rendered inline so the frontend
+    can paint the whole multi-column grid in one fetch.
 
-    Each returned sibling has the standard render shape (same as
-    ``/api/threads/<id>``) PLUS a ``children_render`` list — one
-    rendered dict per child sub-thread, with display order
-    determined by ``linearize_threads`` (Jaccard tag similarity)
-    so visually-similar items sit adjacent in the column.
+    Returns::
+
+        {
+          "umbrella_id": str,
+          "groups": [
+            {<standard thread render dict>,
+             "context_items": [{ContextItemDict}, ...]},
+            ...
+          ]
+        }
+
+    The standard render shape includes thread_id, title, fsm_state,
+    intent, actions, etc. — same as ``GET /api/threads/<id>``. The
+    ``context_items`` field is **already** part of the standard
+    render in v2 (now that items live there); this endpoint just
+    bundles all children of the umbrella in one round trip.
+
+    404 if the thread isn't a group umbrella.
     """
     try:
-        from work_buddy.threads.grouping import list_sibling_group_parents
-        from work_buddy.threads.render import (
-            build_render_data, list_render_data,
-        )
-        siblings = list_sibling_group_parents(thread_id, include_self=True)
-        out = []
-        for s in siblings:
-            rendered = build_render_data(s.thread_id)
+        from work_buddy.threads import store
+        from work_buddy.threads.render import build_render_data
+        umbrella = store.get_thread(umbrella_id)
+        if umbrella is None:
+            return jsonify({"error": "umbrella not found"}), 404
+        if umbrella.parent_relationship != "group":
+            return jsonify({
+                "error": "not a group umbrella",
+                "reason": "wrong_relationship",
+            }), 404
+        children = store.list_threads(parent_id=umbrella_id)
+        groups_out: list[dict] = []
+        for c in children:
+            rendered = build_render_data(c.thread_id)
             if rendered is None:
                 continue
-            # Pull the child render dicts so the frontend doesn't
-            # need a separate /sub fetch per column.
-            try:
-                children = list_render_data(parent_id=s.thread_id, limit=200)
-            except Exception:
-                children = []
-            # Reorder for display so similar items cluster visually.
-            children = _linearize_children_for_display(children)
-            rendered["children_render"] = children
-            out.append(rendered)
-        return jsonify({"siblings": out, "parent_id": thread_id})
+            groups_out.append(rendered)
+        return jsonify({
+            "umbrella_id": umbrella_id,
+            "groups": groups_out,
+        })
     except Exception as exc:
         logger.exception(
-            "v5 group_siblings failed for %s: %s", thread_id, exc,
+            "v5 groups failed for %s: %s", umbrella_id, exc,
         )
-        return jsonify({"siblings": [], "error": str(exc)}), 500
+        return jsonify({"groups": [], "error": str(exc)}), 500
 
 
 # ---------------------------------------------------------------------------
