@@ -380,6 +380,8 @@ def _group_view_script() -> str:
                     ? '<span class="threads-v5-group-column-state">'
                         + _esc(stateLabel) + '</span>'
                     : '')
+            +     '<span class="threads-v5-group-column-enter" '
+            +       'aria-hidden="true">&rarr;</span>'
             +   '</div>';
         if (showIntent) {
             html += '<div class="threads-v5-group-column-intent" '
@@ -729,6 +731,10 @@ def _group_view_script() -> str:
     // ---- Selection handlers (item-level) ----------------------------
 
     window.threadsGroupItemClick = function (ev, itemId) {
+        // Shift/Ctrl/Cmd-click → multi-select for batch ops. Plain
+        // click does nothing: items are observations (URLs / journal
+        // lines), not navigable threads. To "enter" a group, click
+        // its column header. To move an item, drag it.
         if (ev.shiftKey) {
             ev.preventDefault();
             _extendSelection(itemId);
@@ -744,16 +750,10 @@ def _group_view_script() -> str:
             _refreshSelectionClasses();
             return;
         }
-        // Plain click — toggle selection (items aren't navigable
-        // threads; clicking a card is a way to mark it).
-        ev.preventDefault();
-        if (window._groupState.selected.has(itemId)) {
-            window._groupState.selected.delete(itemId);
-        } else {
-            window._groupState.selected.add(itemId);
-            window._groupState.lastFocused = itemId;
-        }
-        _refreshSelectionClasses();
+        // Plain click — no-op. Don't preventDefault either; if the
+        // item card has an embedded link (e.g., URL on a Chrome tab)
+        // future polish could let it open. For now, item cards are
+        // pure drag handles.
     };
 
     function _extendSelection(toItemId) {
@@ -1078,6 +1078,24 @@ def _group_view_styles() -> str:
     color: var(--text-muted, #888);
     text-transform: capitalize;
     white-space: nowrap;
+}
+
+/* Arrow on the right side of the title row hints "click to open
+ * this group sub-thread". Subtle by default; brightens on header
+ * hover. */
+.threads-v5-group-column-enter {
+    margin-left: auto;
+    color: var(--text-muted, #666);
+    font-size: 14px;
+    line-height: 1;
+    transition: color 80ms, transform 80ms;
+}
+.threads-v5-group-column-header-clickable:hover
+    .threads-v5-group-column-enter,
+.threads-v5-group-column-header-clickable:focus-visible
+    .threads-v5-group-column-enter {
+    color: var(--accent, #4a7fc1);
+    transform: translateX(2px);
 }
 .threads-v5-group-column-intent {
     font-size: 11px;

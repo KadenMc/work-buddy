@@ -174,27 +174,28 @@ def spawn_parent_thread_from_journal_scan(
     item_count: int,
     scan_id: Optional[str] = None,
 ) -> Optional[str]:
-    """Create the parent "scan" Thread for a journal scan.
+    """Create the umbrella "scan" Thread for a journal scan (v2).
 
-    User-feedback fix #3 (2026-05-03 morning): a journal scan is
-    a single conceptual unit that produces N TODO-line items. The
-    user observed that each TODO line should be a SUB-THREAD under
-    a parent "scan" thread, not a top-level thread.
+    Stage 5 v2: the journal scan is a **group umbrella** — it
+    spawns N group sub-threads (one per cluster) via
+    :func:`work_buddy.threads.group.group_thread`, each holding
+    its segments as ``context_items``. The umbrella's pre-recorded
+    intent + action reflect the **group** semantics, not decompose.
 
-    The parent has known intent + action (no LLM needed):
-    - Intent: "Process daily notes" (confidence 1.0). Generic
-      because the same parent shape is used regardless of which
-      day(s) the scan covered — distinguishing context lives in
-      `inciting.title` ("Journal scan: 2026-04-30").
-    - Action: standard "decompose" (confidence 1.0).
+    - Intent: "Organize daily notes into groups" (confidence 1.0).
+    - Action: standard ``"group"`` (confidence 1.0). Distinct from
+      ``"decompose"`` — the standard card UI uses
+      ``parent_relationship`` to render the column grid, but the
+      action label is what surfaces to the user as the umbrella's
+      next step (e.g., "Approve all" cascades the group action's
+      effect across children).
 
-    The parent sits in MONITORING from the start; it never goes
+    The umbrella sits in MONITORING from the start; it never goes
     through inference. As children reach terminal states the
     cascade-on-terminal handler (decompose.cascade_terminal_to_parent)
-    advances the parent to DONE when all are terminal. Standard
-    decompose pattern.
+    advances the umbrella to DONE when all are terminal.
 
-    Returns the new parent thread_id, or None on failure.
+    Returns the new umbrella thread_id, or None on failure.
     """
     if scan_id is None:
         scan_id = uuid.uuid4().hex[:8]
@@ -245,7 +246,7 @@ def spawn_parent_thread_from_journal_scan(
             data={
                 "target": "intent",
                 "payload": {
-                    "intent": "Process daily notes",
+                    "intent": "Organize daily notes into groups",
                 },
                 "confidence": 1.0,
                 "tier_used": None,
@@ -261,9 +262,11 @@ def spawn_parent_thread_from_journal_scan(
                 "target": "action",
                 "payload": {
                     "kind": "standard",
-                    "name": "decompose",
+                    "name": "group",
                     "plan_summary": (
-                        "Spawn one sub-thread per inciting line"
+                        "Cluster items into group sub-threads; "
+                        "user re-organizes by drag-drop and "
+                        "approves all groups together."
                     ),
                     "irreversibility": "low",
                     "regret_potential": "low",
@@ -656,8 +659,13 @@ def _build_journal_clusters(
             label = cluster_label(cluster)
         except Exception:
             label = "Group"
+        # ``cluster_label`` returns "Untagged" / "Empty" when there
+        # are no tags to summarise. Use a friendlier "Ungrouped"
+        # consistent with the rest of the v2 group UI naming.
+        if label in ("Untagged", "Empty", "", None):
+            label = "Ungrouped"
         out.append({
-            "label": label or "Group",
+            "label": label,
             "item_ids": [e["id"] for e in cluster],
         })
     return out or [{
