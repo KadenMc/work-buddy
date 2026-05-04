@@ -106,6 +106,44 @@ actions by the runner."""
 
 
 # ---------------------------------------------------------------------------
+# Item conversion
+# ---------------------------------------------------------------------------
+
+
+# Whitelist of metadata fields that are user-meaningful and worth
+# carrying through onto the ``CapturedItem.payload``. Anything else
+# in the journal segmenter's metadata (``thread_id`` — its INTERNAL
+# partition id, ``has_multi_flag`` — its segmenter signal) is
+# implementation plumbing and stays internal.
+_JOURNAL_PAYLOAD_FIELDS: frozenset[str] = frozenset({
+    "journal_date",
+    "note_path",
+    "line_count",
+    "source_dates",
+})
+
+
+def _journal_payload(triage_item: Any) -> dict[str, Any]:
+    """Build the payload dict for a journal CapturedItem.
+
+    Carries through the user-meaningful subset of the segmenter's
+    metadata + the segment's raw text (truncated to 500 chars; the
+    full text lives on the segmenter side). Drops segmenter-internal
+    fields that would surface as confusing payload entries (e.g.,
+    ``thread_id`` — the segmenter's internal partition id, NOT a v5
+    Thread id).
+    """
+    md = triage_item.metadata or {}
+    payload: dict[str, Any] = {
+        k: md[k] for k in _JOURNAL_PAYLOAD_FIELDS if k in md
+    }
+    raw_text = triage_item.text or ""
+    if raw_text:
+        payload["raw_text"] = raw_text[:500]
+    return payload
+
+
+# ---------------------------------------------------------------------------
 # Pipeline implementation
 # ---------------------------------------------------------------------------
 
@@ -161,15 +199,12 @@ class JournalBacklogPipeline:
 
         captured: list[CapturedItem] = []
         for ti in triage_items:
-            payload = dict(ti.metadata or {})
-            raw_text = ti.text or ""
-            payload["raw_text"] = raw_text[:500]
             captured.append(CapturedItem(
                 id=ti.id,
                 source="journal_segment",
                 type="todo_line",
                 label=ti.label or ti.id,
-                payload=payload,
+                payload=_journal_payload(ti),
             ))
         return captured
 
