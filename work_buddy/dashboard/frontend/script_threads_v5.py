@@ -56,6 +56,31 @@ def _threads_v5_script() -> str:
         renderThreads();
     };
 
+    // 2026-05-04: open a sub-thread AND focus the right-pane editor on
+    // a specific action in one click. Mirrors the v4 affordance where
+    // the user could see proposed actions on each card and jump
+    // straight to editing one without first entering the thread. The
+    // navigation still pushes the path (so the breadcrumb / URL hash /
+    // back-button all work normally), and we set ``focusedId`` on the
+    // sub-thread's per-card state so its right-pane renders the action
+    // editor immediately.
+    window.threadsOpenSubThreadAction = function (threadId, actionId) {
+        if (!threadId) return;
+        if (typeof window.threadCardFocus === "function" && actionId) {
+            try { window.threadCardFocus(threadId, actionId); } catch(e) {}
+        }
+        // threadCardFocus already triggers a re-render via
+        // _renderActiveThread, but the path push has to happen too so
+        // the rest of the dashboard (breadcrumb, hash, back-nav) is
+        // consistent. Push *after* focus so the renderer sees the
+        // focusedId on the very first frame after navigation.
+        window._threadsState.path.push(threadId);
+        window._threadsState.inspect = null;
+        try { _autoDismissResolutionToasts(threadId); } catch(e) {}
+        if (typeof _persistHash === "function") _persistHash();
+        renderThreads();
+    };
+
     // Auto-dismiss any toast or workflow-tab chip for this
     // thread. Used when the user navigates into a thread — the
     // toast becomes redundant once they're looking at the card

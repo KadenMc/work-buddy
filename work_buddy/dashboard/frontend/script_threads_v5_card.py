@@ -768,9 +768,46 @@ def _threads_v5_card_script() -> str:
                               ? intent.slice(0, 137) + '...' : intent)
                           + '</div>'
                         : '')
+                  + _renderSubThreadActionsPreview(sub)
                   + '</li>';
         }
         html += '</ul>';
+        return html;
+    }
+
+    // Inline preview of a sub-thread's proposed actions on the mini-card.
+    // Closes the gap from v4: the user could see what was about to happen
+    // without entering each thread, and could go straight to editing the
+    // proposed action with a single click. The action-edit pencil opens
+    // the sub-thread WITH its right-pane editor already focused on the
+    // action, so the "edit before entering" affordance is one click away
+    // even if we don't render a full action editor inline.
+    function _renderSubThreadActionsPreview(sub) {
+        const actions = sub.actions || [];
+        if (actions.length === 0) return '';
+        let html = '<div class="threads-v5-subthread-actions">';
+        for (const a of actions) {
+            const name = a.name || a.id || "(unnamed)";
+            const kind = a.kind || "";
+            html += '<div class="threads-v5-subthread-action">'
+                  +   _kindIcon(a.kind, a.name) + ' '
+                  +   '<span class="threads-v5-subthread-action-name">'
+                  +     _esc(name) + '</span>'
+                  +   (kind
+                        ? ' <span class="threads-v5-kind-chip ' + _esc(kind) + '">'
+                          + _esc(kind) + '</span>'
+                        : '')
+                  +   '<button class="threads-v5-subthread-edit-btn" '
+                  +     'title="Edit this proposed action (opens the right-pane editor)" '
+                  +     'aria-label="Edit proposed action" '
+                  +     'onclick="event.stopPropagation();'
+                  +       'threadsOpenSubThreadAction(\''
+                  +       _esc(sub.thread_id) + '\', \'' + _esc(a.id) + '\')">'
+                  +     _icon("edit")
+                  +   '</button>'
+                  + '</div>';
+        }
+        html += '</div>';
         return html;
     }
 
@@ -2059,6 +2096,45 @@ def _threads_v5_card_styles() -> str:
     font-size: 12px;
     line-height: 1.4;
 }
+
+/* Inline action preview on a sub-thread mini-card.
+ * One row per proposed action with a tiny edit-pencil that opens the
+ * sub-thread already focused on that action's right-pane editor. */
+.threads-v5-subthread-actions {
+    margin-top: 6px;
+    border-top: 1px dashed rgba(80,80,80,0.4);
+    padding-top: 6px;
+}
+.threads-v5-subthread-action {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--text-muted, #aaa);
+    padding: 2px 0;
+}
+.threads-v5-subthread-action-name {
+    color: var(--text, #ddd);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1 1 auto;
+    min-width: 0;
+}
+.threads-v5-subthread-edit-btn {
+    background: transparent;
+    border: none;
+    padding: 2px 6px;
+    color: var(--text-muted, #888);
+    cursor: pointer;
+    border-radius: 3px;
+    flex: 0 0 auto;
+}
+.threads-v5-subthread-edit-btn:hover {
+    color: var(--accent, #4a7fc1);
+    background: var(--bg-tertiary, #1a1a1a);
+}
+
 .threads-v5-subthread-loading {
     color: var(--text-muted, #888);
     font-size: 12px;
