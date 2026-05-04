@@ -74,20 +74,8 @@ Rules:
 2. A line may appear in more than one group if it legitimately bridges
    two threads. No extra flag is needed; overlap itself encodes the
    multi-thread signal.
-3. **Indented continuation lines belong with their parent.** A bullet
-   or numbered list item that's indented MORE than the line above it
-   (or that immediately follows a `#wb/TODO` / `#wb/REFERENCE` /
-   `#wb/QUESTION` tagged line as a sub-list) is a sub-item of the
-   topic above. It must go in the same group as its parent line — not
-   in its own group, and not split across groups. Worked example:
-       4| #wb/TODO research zotero MCP
-       5|   - [ChatGPT chat](url1)
-       6|   - [github.com/foo/bar](url2)
-       7|   - [github.com/baz/qux](url3)
-   Lines 4-7 are ONE group. The bullets on 5-7 are evidence/links for
-   the TODO on line 4 — they don't make sense as standalone threads.
-4. Do NOT include the line content in your output — only line numbers.
-5. Return only the JSON object. No prose, no markdown fences.
+3. Do NOT include the line content in your output — only line numbers.
+4. Return only the JSON object. No prose, no markdown fences.
 """
 
 
