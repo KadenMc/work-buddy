@@ -113,7 +113,7 @@ KIND_ESCALATED_TO_USER = "escalated_to_user"
 # e.g. queue dispatch -> inferring_*).
 KIND_STATE_TRANSITION = "state_transition"
 
-# Stage 4: Later mechanic + cleanup events.
+# Later mechanic + cleanup events.
 KIND_LATER = "later"
 KIND_SOURCE_CLEANED_UP = "source_cleaned_up"
 KIND_CLEANUP_FAILED = "cleanup_failed"

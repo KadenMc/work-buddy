@@ -1,6 +1,4 @@
-"""Cleanup adapter framework — Stage 4 deliverable.
-
-When a user clicks the Clean Up button on a Thread card (UX.md §6),
+"""Cleanup adapter framework — When a user clicks the Clean Up button on a Thread card (UX.md §6),
 the inciting source is mutated (e.g., delete the journal note line).
 Different inciting sources need different mutation logic; each
 source registers a CleanupAdapter.
@@ -9,7 +7,7 @@ The user's intent for Clean Up: "the work this Thread represents
 is already done outside the system — clean up the source so the
 agent doesn't keep proposing it."
 
-Stage 4.0 ships the framework + registry. Stage 4.4 wires the
+This module ships the framework + registry. Stage 4.4 wires the
 journal-note adapter (the canonical first case). Stage 4.13 adds
 the Chrome adapter when the Chrome pipeline migrates to v5.
 

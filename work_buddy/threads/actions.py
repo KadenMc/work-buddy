@@ -1,6 +1,6 @@
 """Action Catalog — typed filtered lens over the capability + workflow registries.
 
-Stage 2.6 deliverable. DESIGN.md §10.2 is explicit: the Action Catalog
+DESIGN.md §10.2 is explicit: the Action Catalog
 is **NOT a separate registry.** It is a filtered view over the existing
 capability and workflow registries:
 

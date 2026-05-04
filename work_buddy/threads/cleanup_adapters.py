@@ -1,7 +1,7 @@
 """Cleanup adapter implementations.
 
 Each adapter knows how to mutate one inciting source.
-Stage 4.4 ships the journal-note adapter (the canonical case);
+This module ships the journal-note adapter (the canonical case);
 Stage 4.13 adds the Chrome adapter.
 
 Per UX.md §6:

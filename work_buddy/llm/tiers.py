@@ -61,7 +61,7 @@ class ModelTier(str, Enum):
     transitions the Thread to a clarification state and asks the
     user via the Resolution Surface. There is no model binding —
     the runner short-circuits to a state-transition rather than
-    invoking an LLM. Stage 1: registered; Stage 2 wires the FSM
+    invoking an LLM. registered; Stage 2 wires the FSM
     short-circuit.
     """
 

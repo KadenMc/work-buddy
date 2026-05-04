@@ -1,4 +1,4 @@
-"""Stage 2.9: bootstrap — wire all v5 state-entry handlers and
+"""bootstrap — wire all v5 state-entry handlers and
 register the budget admission hook.
 
 Sidecar startup calls :func:`bootstrap_v5` once at the start of

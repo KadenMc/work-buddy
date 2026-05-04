@@ -6,7 +6,7 @@ order ONCE and persist it as ``order_index`` on each Thread row.
 Render time NEVER recomputes — list query is just
 ``ORDER BY order_index ASC``.
 
-Stage 4.7 deliverable. The function lives here so both the
+The function lives here so both the
 decompose action AND ad-hoc spawn paths can call it.
 
 Embedding source per sub-thread (per UX.md §8.2):

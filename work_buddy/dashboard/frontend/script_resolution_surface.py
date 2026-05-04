@@ -27,7 +27,7 @@ to keep the v4 path intact while v5 stages roll out.
 from __future__ import annotations
 
 
-def _resolution_surface_v5_script() -> str:
+def _resolution_surface_script() -> str:
     return r"""
 // ---------------------------------------------------------------------------
 // Resolution Surface v5 — DESIGN.md §15
@@ -91,20 +91,20 @@ def _resolution_surface_v5_script() -> str:
         const urgent = payload.urgency === 'surface_now';
         const stateLabel = (payload.fsm_state || '').replace(/_/g, ' ');
         return (
-            '<div class="rsv5-header">'
-            + '<span class="rsv5-kind kind-' + _esc(kind) + '">' + _esc(kind.toUpperCase()) + '</span>'
-            + (urgent ? '<span class="rsv5-urgent">SURFACE NOW</span>' : '')
-            + '<span class="rsv5-state">' + _esc(stateLabel) + '</span>'
-            + '<span class="rsv5-tid">' + _esc(tid) + '</span>'
+            '<div class="rs-header">'
+            + '<span class="rs-kind kind-' + _esc(kind) + '">' + _esc(kind.toUpperCase()) + '</span>'
+            + (urgent ? '<span class="rs-urgent">SURFACE NOW</span>' : '')
+            + '<span class="rs-state">' + _esc(stateLabel) + '</span>'
+            + '<span class="rs-tid">' + _esc(tid) + '</span>'
             + '</div>'
         );
     }
 
     function _renderAffordances(kind, threadId, parentEventId) {
         const buttons = AFFORDANCES[kind] || AFFORDANCES.confirmation;
-        let html = '<div class="rsv5-affordances">';
+        let html = '<div class="rs-affordances">';
         for (const a of buttons) {
-            html += '<button class="rsv5-btn ' + _esc(a.className) + '" '
+            html += '<button class="rs-btn ' + _esc(a.className) + '" '
                 + 'data-action="' + _esc(a.id) + '" '
                 + 'data-thread-id="' + _esc(threadId) + '" '
                 + 'data-parent-event-id="' + _esc(parentEventId || '') + '">'
@@ -125,9 +125,9 @@ def _resolution_surface_v5_script() -> str:
         if (inner && typeof inner === 'object') {
             const keys = Object.keys(inner);
             if (keys.length === 0) {
-                body = '<div class="rsv5-empty">No payload data.</div>';
+                body = '<div class="rs-empty">No payload data.</div>';
             } else {
-                body = '<dl class="rsv5-payload">';
+                body = '<dl class="rs-payload">';
                 for (const k of keys) {
                     body += '<dt>' + _esc(k) + '</dt>';
                     body += '<dd>' + _esc(JSON.stringify(inner[k])) + '</dd>';
@@ -141,7 +141,7 @@ def _resolution_surface_v5_script() -> str:
     async function _submit(action, threadId, parentEventId) {
         // Stage 1.9: stub. Stage 2 POSTs to /api/threads/<id>/resolve
         // with { action, parent_event_id, ... }.
-        console.log('[ResolutionSurface v5] would submit', {
+        console.log('[ResolutionSurface] would submit', {
             action, threadId, parentEventId,
         });
     }
@@ -153,16 +153,16 @@ def _resolution_surface_v5_script() -> str:
         }
         const kind = payload.card_kind || 'confirmation';
         container.innerHTML =
-            '<div class="rsv5-card kind-' + _esc(kind) + '">'
+            '<div class="rs-card kind-' + _esc(kind) + '">'
             + _renderHeader(payload)
-            + '<div class="rsv5-body">'
+            + '<div class="rs-body">'
             + _renderPayloadPreview(payload)
             + '</div>'
             + _renderAffordances(kind, payload.thread_id, payload.parent_event_id)
             + '</div>';
 
         // Wire button clicks
-        container.querySelectorAll('.rsv5-btn').forEach(btn => {
+        container.querySelectorAll('.rs-btn').forEach(btn => {
             btn.addEventListener('click', () => {
                 _submit(
                     btn.dataset.action,
@@ -179,9 +179,9 @@ def _resolution_surface_v5_script() -> str:
 """
 
 
-def _resolution_surface_v5_styles() -> str:
+def _resolution_surface_styles() -> str:
     return r"""
-.rsv5-card {
+.rs-card {
     max-width: 720px;
     margin: 1.5em auto;
     padding: 16px 20px;
@@ -189,14 +189,14 @@ def _resolution_surface_v5_styles() -> str:
     background: var(--bg-secondary, #1a1a1a);
     border: 1px solid var(--border, #333);
 }
-.rsv5-header {
+.rs-header {
     display: flex;
     align-items: center;
     gap: 10px;
     margin-bottom: 14px;
     flex-wrap: wrap;
 }
-.rsv5-kind {
+.rs-kind {
     font-size: 11px;
     font-weight: 700;
     padding: 3px 9px;
@@ -204,12 +204,12 @@ def _resolution_surface_v5_styles() -> str:
     background: var(--bg-tertiary, #2a2a2a);
     color: var(--text, #ddd);
 }
-.rsv5-kind.kind-confirmation { background: #2d4a8a; color: white; }
-.rsv5-kind.kind-clarification { background: #6b3d8a; color: white; }
-.rsv5-kind.kind-consent { background: #8a3d3d; color: white; }
-.rsv5-kind.kind-review { background: #3d6b3d; color: white; }
-.rsv5-kind.kind-redirect { background: #8a6b3d; color: white; }
-.rsv5-urgent {
+.rs-kind.kind-confirmation { background: #2d4a8a; color: white; }
+.rs-kind.kind-clarification { background: #6b3d8a; color: white; }
+.rs-kind.kind-consent { background: #8a3d3d; color: white; }
+.rs-kind.kind-review { background: #3d6b3d; color: white; }
+.rs-kind.kind-redirect { background: #8a6b3d; color: white; }
+.rs-urgent {
     font-size: 11px;
     font-weight: 700;
     padding: 3px 9px;
@@ -218,48 +218,48 @@ def _resolution_surface_v5_styles() -> str:
     color: white;
     text-transform: uppercase;
 }
-.rsv5-state {
+.rs-state {
     font-size: 13px;
     color: var(--text-muted, #888);
     text-transform: capitalize;
 }
-.rsv5-tid {
+.rs-tid {
     margin-left: auto;
     font-family: var(--font-mono, monospace);
     font-size: 12px;
     color: var(--text-muted, #888);
 }
-.rsv5-body { margin-bottom: 16px; }
-.rsv5-payload {
+.rs-body { margin-bottom: 16px; }
+.rs-payload {
     display: grid;
     grid-template-columns: max-content 1fr;
     gap: 4px 12px;
     font-size: 13px;
 }
-.rsv5-payload dt {
+.rs-payload dt {
     font-weight: 600;
     color: var(--text-muted, #888);
 }
-.rsv5-payload dd { margin: 0; word-break: break-word; }
-.rsv5-empty {
+.rs-payload dd { margin: 0; word-break: break-word; }
+.rs-empty {
     font-size: 13px;
     color: var(--text-muted, #888);
     font-style: italic;
 }
-.rsv5-affordances {
+.rs-affordances {
     display: flex;
     gap: 8px;
     justify-content: flex-end;
     flex-wrap: wrap;
 }
-.rsv5-btn {
+.rs-btn {
     padding: 8px 16px;
     border-radius: 6px;
     border: none;
     font-size: 13px;
     cursor: pointer;
 }
-.rsv5-btn.btn-primary { background: var(--accent, #4a7fc1); color: white; }
-.rsv5-btn.btn-secondary { background: var(--bg-tertiary, #2a2a2a); color: var(--text, #ddd); }
-.rsv5-btn.btn-tertiary { background: transparent; color: var(--text-muted, #888); }
+.rs-btn.btn-primary { background: var(--accent, #4a7fc1); color: white; }
+.rs-btn.btn-secondary { background: var(--bg-tertiary, #2a2a2a); color: var(--text, #ddd); }
+.rs-btn.btn-tertiary { background: transparent; color: var(--text-muted, #888); }
 """

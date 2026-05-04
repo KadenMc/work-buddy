@@ -5,7 +5,7 @@ import; literal strings should NOT be sprinkled around the codebase.
 The values match DESIGN.md (data/designs/gtd/reimagined/DESIGN.md)
 exactly.
 
-Stage 1: types only, no behavior. Frozen signatures so downstream
+types only, no behavior. Frozen signatures so downstream
 stages can program against them.
 """
 
@@ -51,7 +51,7 @@ class FSMState(str, Enum):
     HANDED_OFF = "handed_off"
     MONITORING = "monitoring"  # parent-of-decomposed
 
-    # Stage 4: cleanup states (UX.md §6.4)
+    # cleanup states (UX.md §6.4)
     CLEANING_UP = "cleaning_up"
     DONE_CLEANUP_SUCCESSFUL = "done_cleanup_successful"
     DONE_CLEANUP_UNSUCCESSFUL = "done_cleanup_unsuccessful"  # wait state

@@ -1,6 +1,6 @@
 """Inference layer — one entry point parameterized by target.
 
-Stage 2.3 deliverable. DESIGN.md §9.1 explicitly rejects the
+DESIGN.md §9.1 explicitly rejects the
 "three modules" framing; inference is **one class** with a ``target``
 parameter. Routing by target picks the prompt template, output
 schema, default tier, and the event kind to record.
@@ -63,7 +63,7 @@ class TargetSpec:
     output_schema: dict[str, Any]      # caller-overridable; stub here
 
 
-# Default registry — Stage 2 ships stubs; refinement is per-target
+# Default registry — This module ships stubs; refinement is per-target
 # tuning work that lands as use cases come online.
 TARGETS: dict[InferenceTarget, TargetSpec] = {
     InferenceTarget.INTENT: TargetSpec(
@@ -218,7 +218,7 @@ TARGETS: dict[InferenceTarget, TargetSpec] = {
             },
         },
     ),
-    # Stage 5: combined inference. Returns intent + context + action
+    # combined inference. Returns intent + context + action
     # in one LLM call. The worker records three separate *_inferred
     # events from the single call so the FSM and audit log shape
     # stays the same as staged inference; a follow-up
@@ -347,7 +347,7 @@ def register_target(spec: TargetSpec) -> None:
 #         }
 #
 # Stage 2 wires a real runner backed by work_buddy.llm.runner_v2.
-# Stage 2.3 ships the contract + a stub for tests.
+# This module ships the contract + a stub for tests.
 # ---------------------------------------------------------------------------
 
 
@@ -485,7 +485,7 @@ class Inference:
                 data=proposal.to_dict(),
             )
             store.append_event(event, expect_parent_event_id=None, conn=conn)
-            # Stage 4.8: refresh search-blob whenever a new
+            # refresh search-blob whenever a new
             # *_inferred event lands. Best-effort — failure
             # is non-fatal (a stale search blob is degraded UX,
             # not a correctness issue).

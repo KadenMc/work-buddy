@@ -73,7 +73,7 @@ CREATE TABLE IF NOT EXISTS threads (
     parent_id                  TEXT,
     subtype                    TEXT,           -- 'task' | NULL
 
-    -- Stage 5: parent-child relationship discriminator. 'decompose' is
+    -- parent-child relationship discriminator. 'decompose' is
     -- the canonical v5 fanout pattern (parent has a decompose action;
     -- children FSM-execute independently; cascade-on-terminal advances
     -- parent to DONE when all children terminal). 'group' is the new
@@ -82,7 +82,7 @@ CREATE TABLE IF NOT EXISTS threads (
     -- See data/designs/gtd/reimagined/DECISIONS.md (Stage 5).
     parent_relationship        TEXT NOT NULL DEFAULT 'decompose',
 
-    -- Stage 5: scope id for sibling-group validation. Parents from one
+    -- scope id for sibling-group validation. Parents from one
     -- inference run share an originating_scrape_id (e.g. one Chrome
     -- scrape produces N group-parents, all with the same id). Items
     -- can only move between parents that share this id — preventing
@@ -114,16 +114,16 @@ CREATE TABLE IF NOT EXISTS threads (
     updated_at                 TEXT NOT NULL,
     archived_at                TEXT,
 
-    -- Stage 4: Later mechanic (UX.md §13).
+    -- Later mechanic (UX.md §13).
     -- NULL = always visible. ISO 8601 = hide until that time.
     resurface_at               TEXT,
 
-    -- Stage 4: linearization order within siblings (UX.md §8.2).
+    -- linearization order within siblings (UX.md §8.2).
     -- Computed at WRITE time (decompose, sub-thread spawn). NEVER at
     -- render time. Only meaningful when parent_id is non-NULL.
     order_index                INTEGER NOT NULL DEFAULT 0,
 
-    -- Stage 4: search-blob cache (UX.md §10.2). Denormalised,
+    -- search-blob cache (UX.md §10.2). Denormalised,
     -- substring-searchable text rebuilt on Thread state change.
     search_blob                TEXT NOT NULL DEFAULT '',
 
@@ -350,7 +350,7 @@ def insert_thread(
             ),
         )
         conn.commit()
-        # Stage 4.8: best-effort initial search-blob population.
+        # best-effort initial search-blob population.
         # Lazy-import to avoid cycles. Inciting summary alone is
         # enough yield for the first index entry.
         try:
@@ -465,7 +465,7 @@ def update_thread_state(
     tuple) — use the sentinel to distinguish "don't touch" from
     "set empty".
 
-    Stage 5: ``parent_id`` writes are how the move-between-groups op
+    ``parent_id`` writes are how the move-between-groups op
     rewrites a child's parent pointer.
 
     Stage 5 v2: ``context_items`` writes are how

@@ -141,7 +141,7 @@ class AutonomyPolicy:
     # Budget axis: enforced at LLM-call enqueue (DESIGN.md §9.4)
     budget_usd: float = 0.50
 
-    # Stage 5: combined-inference opt-in. When True, the inference
+    # combined-inference opt-in. When True, the inference
     # worker dispatches a single LLM call with InferenceTarget.COMBINED
     # that returns intent + context + action together, then walks the
     # FSM through inferring_* states without re-enqueuing. Default
@@ -250,7 +250,7 @@ class Thread:
     order_index: int = 0                       # write-time linearization
     search_blob: str = ""                      # denormalized search
 
-    # Stage 5: parent-child relationship discriminator. 'decompose' is
+    # parent-child relationship discriminator. 'decompose' is
     # the canonical fanout pattern (parent → action → N children, each
     # FSM-executes; cascade-on-terminal advances parent to DONE). 'group'
     # is the new pattern: parent is a re-organisable container; items
@@ -258,7 +258,7 @@ class Thread:
     # Default 'decompose' preserves all v4/Stage-4 behaviour.
     parent_relationship: str = "decompose"
 
-    # Stage 5: sibling-scope id. Group-parents from one inference run
+    # sibling-scope id. Group-parents from one inference run
     # share an originating_scrape_id (e.g. one Chrome scrape → N
     # group-parents, all with the same id). Items can only move
     # between parents that share this id. NULL for decompose parents
@@ -371,7 +371,7 @@ class Task(Thread):
 
     Subtype is fixed at ``'task'``; do not mutate.
 
-    Stage 1: type only. Stage 2 wires the methods.
+    type only. Stage 2 wires the methods.
     """
 
     subtype: str = "task"
@@ -460,7 +460,7 @@ class Proposal:
     """Inference output. Recorded as a ``*_inferred`` event with full
     provenance.
 
-    Stage 1: type. Stage 2: inference layer produces these.
+    type. inference layer produces these.
     """
 
     target: str  # InferenceTarget value

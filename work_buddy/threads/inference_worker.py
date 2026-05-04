@@ -1,6 +1,6 @@
 """Sidecar inference worker — stateless dispatcher for the LLM-call queue.
 
-Stage 2.4 deliverable. DESIGN.md §14 mandates: workers are
+DESIGN.md §14 mandates: workers are
 **stateless across restarts**, the Thread's event log is the durable
 source of truth, and concurrency safety comes from a combination of
 queue-level atomic dequeue (Stage 1.6) + event-log optimistic lock
@@ -266,7 +266,7 @@ def process_one_pending(worker_id: str) -> Optional[dict[str, Any]]:
         summary["outcome"] = "failed"
         return summary
 
-    # Stage 5: combined-inference fast path. Single LLM call, three
+    # combined-inference fast path. Single LLM call, three
     # FSM transitions. Each transition still goes through the
     # autonomy-gated branch resolver, so policy still decides whether
     # to surface or skip — combined inference is a *call-count*
@@ -581,7 +581,7 @@ def run_poller(
     """Drain the queue, sleeping ``poll_interval_s`` between empty
     pulls. Returns the number of entries processed.
 
-    Stage 2.4 ships a simple loop. Stage 2.x can swap in a richer
+    This module ships a simple loop. Stage 2.x can swap in a richer
     runner with concurrent workers, lease reclamation, etc.
 
     Tests pass ``max_iterations`` to bound the loop and a custom

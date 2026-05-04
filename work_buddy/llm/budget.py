@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 # Per-caller budget store
 # ---------------------------------------------------------------------------
 #
-# Stage 1: in-memory dict keyed by caller_id. Stage 2 reads from
+# in-memory dict keyed by caller_id. Stage 2 reads from
 # (a) the Thread's autonomy_policy.budget_usd for thread callers,
 # (b) configurable per-caller defaults for other callers.
 # ---------------------------------------------------------------------------
@@ -232,7 +232,7 @@ def budget_admission_hook(
         from work_buddy.llm.budget import budget_admission_hook
         register_admission_hook(budget_admission_hook)
 
-    Stage 1: not registered by default — this module just provides
+    not registered by default — this module just provides
     the building blocks. Stage 2 registers it as part of sidecar
     bootstrap.
     """

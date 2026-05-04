@@ -75,219 +75,26 @@
   "browser/chrome-triage": {
     "kind": "workflow",
     "name": "Chrome Triage",
-    "description": "Triage currently-open Chrome tabs through a four-tier pipeline:",
+    "description": "Triage currently-open Chrome tabs through the unified source pipeline: collect tabs, attach cached Haiku summaries + tag signals, embedding-fused cluster (Louvain over embedding+tag+window-gated proximity), Sonnet-refine cluster boundaries + propose a per-cluster action (close all tabs / group in Chrome / route to tasks / etc.), and spawn a group umbrella thread + group sub-threads with the tabs as ContextItems. The user reviews and approves via the dashboard column grid + per-column action chip.",
     "workflow_name": "chrome-triage",
     "execution": "main",
     "steps": [
       {
-        "id": "collect",
-        "name": "Collect currently-open Chrome tabs",
+        "id": "run-pipeline",
+        "name": "Run Chrome triage source pipeline",
         "step_type": "code",
         "depends_on": [],
+        "execution": "main",
         "auto_run": {
-          "callable": "work_buddy.triage.adapters.chrome.chrome_tabs_to_items",
+          "callable": "work_buddy.pipelines.run_source_pipeline",
           "kwargs": {
+            "source": "chrome_triage",
             "engagement_window": "24h",
             "include_summaries": true
           }
         },
         "visibility": {
-          "mode": "none"
-        },
-        "invokes": []
-      },
-      {
-        "id": "extract-and-cluster",
-        "name": "Extract page content and cluster by similarity",
-        "step_type": "code",
-        "depends_on": [
-          "collect"
-        ],
-        "auto_run": {
-          "callable": "work_buddy.triage.adapters.chrome.extract_and_cluster_tabs",
-          "input_map": {
-            "collect_result": "collect"
-          },
-          "timeout": 120
-        },
-        "visibility": {
-          "mode": "none"
-        },
-        "invokes": []
-      },
-      {
-        "id": "summarize",
-        "name": "Haiku-summarize all tabs",
-        "step_type": "code",
-        "depends_on": [
-          "extract-and-cluster"
-        ],
-        "auto_run": {
-          "callable": "work_buddy.triage.adapters.chrome.enrich_items_with_summaries",
-          "input_map": {
-            "clusters_data": "extract-and-cluster"
-          },
-          "timeout": 120
-        },
-        "visibility": {
-          "mode": "none"
-        },
-        "invokes": []
-      },
-      {
-        "id": "intent-group",
-        "name": "Sonnet intent grouping",
-        "step_type": "code",
-        "depends_on": [
-          "summarize"
-        ],
-        "auto_run": {
-          "callable": "work_buddy.triage.recommend.group_intents_from_raw",
-          "input_map": {
-            "clusters_data": "summarize"
-          },
-          "timeout": 90
-        },
-        "visibility": {
-          "mode": "none"
-        },
-        "invokes": []
-      },
-      {
-        "id": "contextualize",
-        "name": "Contextualize intents with task state and activity",
-        "step_type": "code",
-        "depends_on": [
-          "intent-group"
-        ],
-        "auto_run": {
-          "callable": "work_buddy.triage.recommend.contextualize_intents_from_raw",
-          "input_map": {
-            "intent_data": "intent-group"
-          }
-        },
-        "visibility": {
-          "mode": "none"
-        },
-        "invokes": []
-      },
-      {
-        "id": "build-presentation",
-        "name": "Build modal-ready presentation object",
-        "step_type": "code",
-        "depends_on": [
-          "contextualize"
-        ],
-        "auto_run": {
-          "callable": "work_buddy.triage.presentation.build_presentation_from_raw",
-          "input_map": {
-            "contextualize_output": "contextualize",
-            "summarize_output": "summarize"
-          },
-          "timeout": 10
-        },
-        "visibility": {
-          "mode": "summary",
-          "include_keys": [
-            "total_groups",
-            "total_items",
-            "narrative",
-            "groups_by_action"
-          ]
-        },
-        "invokes": []
-      },
-      {
-        "id": "resolve-and-clarify",
-        "name": "Resolve ambiguities and write clarifying questions",
-        "step_type": "reasoning",
-        "depends_on": [
-          "build-presentation"
-        ],
-        "result_schema": {
-          "required_keys": [
-            "groups_by_action",
-            "total_groups",
-            "total_items"
-          ],
-          "key_types": {
-            "groups_by_action": "dict",
-            "total_groups": "int",
-            "total_items": "int",
-            "has_clarifying_questions": "bool"
-          }
-        },
-        "invokes": []
-      },
-      {
-        "id": "dispatch-clarify",
-        "name": "Dispatch clarifying questions modal",
-        "step_type": "code",
-        "depends_on": [
-          "resolve-and-clarify"
-        ],
-        "auto_run": {
-          "callable": "work_buddy.triage.dispatch.dispatch_clarify",
-          "input_map": {
-            "presentation": "resolve-and-clarify"
-          },
-          "timeout": 330
-        },
-        "invokes": []
-      },
-      {
-        "id": "build-recommendations",
-        "name": "Process answers and build final recommendations",
-        "step_type": "reasoning",
-        "depends_on": [
-          "dispatch-clarify"
-        ],
-        "result_schema": {
-          "required_keys": [
-            "groups_by_action",
-            "total_groups",
-            "total_items"
-          ],
-          "key_types": {
-            "groups_by_action": "dict",
-            "total_groups": "int",
-            "total_items": "int"
-          }
-        },
-        "invokes": [
-          "request_poll"
-        ]
-      },
-      {
-        "id": "dispatch-review",
-        "name": "Dispatch review modal and collect decisions",
-        "step_type": "code",
-        "depends_on": [
-          "build-recommendations"
-        ],
-        "auto_run": {
-          "callable": "work_buddy.triage.dispatch.dispatch_review",
-          "input_map": {
-            "presentation": "build-recommendations"
-          },
-          "timeout": 630
-        },
-        "invokes": []
-      },
-      {
-        "id": "execute",
-        "name": "Execute approved triage actions",
-        "step_type": "code",
-        "depends_on": [
-          "dispatch-review"
-        ],
-        "auto_run": {
-          "callable": "work_buddy.triage.execute.execute_from_raw",
-          "input_map": {
-            "decisions": "dispatch-review",
-            "presentation": "build-recommendations"
-          },
-          "timeout": 120
+          "mode": "summary"
         },
         "invokes": []
       }
@@ -301,16 +108,8 @@
       "browser"
     ],
     "allow_override": false,
-    "content": {
-      "summary": "Triage currently-open Chrome tabs through a four-tier pipeline:",
-      "full": "## What NOT to do\n\n- Don't auto-close tabs without user confirmation (the review modal is the confirmation)\n- Don't blindly trust Sonnet's groupings â€” check them against your context in step 7\n- Don't present every singleton individually â€” batch by action\n- Don't explain the pipeline internals â€” just do your reasoning work\n- Don't re-derive what Sonnet already computed â€” validate and refine it\n- Don't dispatch modals yourself â€” the auto_run steps handle that\n"
-    },
     "step_instructions": {
-      "resolve-and-clarify": "Read the `build-presentation` step result. Your job: use your richer context (conversation history, task knowledge, user patterns) to improve the presentation before it reaches the user.\n\n**Step A: Resolve ambiguities you CAN resolve**\n\nScan groups for ambiguities. If the Haiku summary (in `item.summary`) or your contextual knowledge resolves an ambiguity, update the group's action and rationale accordingly. Only use `triage_item_detail` for deeper inspection when summaries are empty or insufficient.\n\n**Step B: Write clarifying questions with theories for what you CANNOT resolve**\n\nFor remaining real-world ambiguities (\"Why this tab?\", \"Has this meeting happened?\", \"Is this exploratory or tracked?\"), create clarifying questions. Each question should include 0-3 **theories** â€” short hypotheses the user can confirm with a checkbox instead of typing.\n\nFormat each entry in `clarifying_questions` as an object:\n```json\n{\n  \"question\": \"Is the Smart Connections support issue resolved?\",\n  \"theories\": [\n    \"Resolved â€” safe to close\",\n    \"Still waiting on a response\"\n  ]\n}\n```\n\nPlain strings are also accepted (backward-compatible, no theories shown). Theories should be mutually non-exclusive (the user can select multiple). Keep them short and actionable â€” they represent plausible answers the user can confirm at a glance.\n\nAdd them PROGRAMMATICALLY to the presentation dict â€” write a Python script that iterates the groups and adds `clarifying_questions` arrays based on your analysis. DO NOT manually write JSON for each group.\n\n**Step C: Clean suggested_task_text**\n\nFor `create_task` groups, ensure `suggested_task_text` contains ONLY the task description â€” no agent reasoning, no conditional logic, no \"if X then Y\". Write it as you would write an actual task title. Example:\n- BAD: \"If Raycast integration is a distinct workstream, create a new task. Otherwise record into t-9fe42d9c.\"\n- GOOD: \"Set up Raycast integration for Work Buddy\"\n\n**Output:** The updated presentation dict (with clarifying_questions added, ambiguities resolved, task text cleaned). Pass this as your step result via `wb_advance`.\n\n**CRITICAL:** Your step result MUST be the **complete presentation dict** â€” the same structure as `build-presentation` output, with your modifications applied. It must contain `groups_by_action`, `total_groups`, `total_items`, etc. Do NOT pass a summary, a file reference, or metadata about your changes. The downstream `dispatch-clarify` auto_run step receives your result directly and checks `groups_by_action` for clarifying questions. If your result is malformed, schema validation will reject it and ask you to retry.",
-      "dispatch-clarify": "Handled automatically. If your presentation has groups with `clarifying_questions`, a dashboard modal opens for the user to answer them. Each question shows theory checkboxes (if provided) alongside a text input. The user can confirm theories, type a freeform answer, or both.\n\nIf no questions exist, this step passes through immediately. The step result will contain either `{\"answers\": {...}}` or `{\"skipped\": true}`. Each answer has shape: `{\"text\": \"...\", \"confirmed_theories\": [\"...\", ...]}`.",
-      "build-recommendations": "Read `step_results[\"dispatch-clarify\"]` to get the user's answers (or confirmation that it was skipped). Also read `step_results[\"build-presentation\"]` for the original presentation.\n\n**If clarifying questions were answered:**\n\nProcess EVERY answer carefully:\n\n1. **Update the group's action** based on what the user said. Do not ignore any answer.\n2. **Update the group's rationale** to reflect the new understanding â€” the old rationale is stale after clarification.\n3. **Preserve ALL detail** from the user's answers. If they mentioned specific tools (e.g., \"Audacity\"), deadlines (\"soon\", \"next week\"), or context (\"it's for my therapy sessions\"), include this in `suggested_task_text` or the group's context field. Do not summarize away specifics.\n4. **Extract metadata**: if the user indicated urgency/timing (\"do this soon\", \"by next week\"), note it in the context so the execute step can set appropriate urgency/dates.\n5. **Move groups between action categories** if the user's answer changes the appropriate action.\n\n**If skipped:** Use the presentation from step 7 as-is.\n\n**If `timeout_recovery` is present in the response:** The `dispatch-clarify` step timed out waiting for user response. You have three options:\n1. **Re-poll:** Call `wb_run(\"request_poll\", {\"notification_id\": \"<request_id from timeout_recovery>\", \"timeout_seconds\": 120})` to check if the user responded late.\n2. **Chat fallback:** Present the clarifying questions directly in chat, collect answers, then update the presentation accordingly.\n3. **Skip:** If the questions aren't critical, proceed with the presentation as-is.\n\n**Output:** The final presentation dict. Pass this as your step result via `wb_advance`. This triggers steps 10 and 11 to auto_run in sequence.\n\n**CRITICAL:** Same rule as step 7 â€” your result must be the complete presentation dict with `groups_by_action`, `total_groups`, `total_items`, etc.",
-      "dispatch-review": "Handled automatically. The presentation is saved to disk and a dashboard modal opens for the user to:\n- Confirm or override group actions (close, create_task, record, group, leave)\n- Set per-item action overrides\n- Drag items between groups\n- Create new groups\n- Assign to existing tasks via search\n- Write new task names\n- Provide override reasons\n\nThe user's decisions are saved to disk alongside the presentation.",
-      "execute": "Handled automatically. For each group decision:\n\n- **close**: Batch-close tabs via Chrome extension API (with stale-tab detection)\n- **group**: Create Chrome tab group\n- **create_task**: Create task in Obsidian with source tab URLs in the note\n- **record_into_task**: Append tab URLs to existing task note\n- **leave**: Log only\n\nPer-item overrides and new groups (negative indices) are handled. Override reasons are included in task notes.\n\n**After step 11 completes**, you receive the execution summary in the `wb_advance` response. Report it to the user:\n\n\"Triaged N tabs: X closed, Y -> new tasks, Z -> existing tasks, W grouped, V left as-is.\"\n\nInclude any errors or skipped-stale tabs if present.\n\n## Timeout handling\n\nThe dispatch steps (8 and 10) poll for user responses with timeouts:\n- **Clarify modal**: 5 minutes\n- **Review modal**: 10 minutes\n\nIf a timeout occurs, the conductor injects a `timeout_recovery` block into your response with:\n- `step_id` and `step_name` of the timed-out step\n- `request_id` for re-polling\n- `hint` with recovery options\n\n**Recovery options:**\n1. **Re-poll:** `wb_run(\"request_poll\", {\"notification_id\": \"<request_id>\", \"timeout_seconds\": 120})` â€” check if user responded late\n2. **Chat fallback:** Present the data in chat and collect decisions interactively â€” this is often the fastest path\n3. **Late response check:** The user may respond on Telegram/Dashboard after timeout â€” the response is still recorded\n\n**State is preserved:** Both dispatch steps save the presentation to disk before dispatching. If the workflow breaks, the saved presentation at `{session_dir}/triage_presentation.json` can be loaded via `load_presentation()` from `work_buddy.triage.presentation`."
+      "run-pipeline": "Auto-run. Call ``work_buddy.pipelines.run_source_pipeline(source='chrome_triage', engagement_window='24h', include_summaries=True)``. The pipeline runs collect → annotate → precluster → refine → spawn end-to-end and returns the umbrella thread id + child group thread ids + per-cluster action proposals. The umbrella becomes visible on the dashboard's Threads tab; the user reviews + drag-drops tabs between groups + picks per-group actions via the column-header action chip; approving the umbrella runs each child's chosen action through the standard FSM dispatch path (calls ``chrome_tab_close`` / ``chrome_tab_group`` / ``chrome_route_to_tasks`` / etc.)."
     }
   },
   "context/collect-and-orient": {

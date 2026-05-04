@@ -3,7 +3,7 @@
 Converts a Thread + its event log into the JSON shape the
 confirmation card consumes. UX.md §4 + per-section data shapes.
 
-Stage 4.3 deliverable. The builder is pure (no FSM mutations);
+The builder is pure (no FSM mutations);
 the endpoints layer on top of this.
 """
 
@@ -258,7 +258,7 @@ def build_render_data(thread_id: str) -> Optional[dict[str, Any]]:
         "can_clean_up": cleanup.can_clean_up(thread),
         "sub_thread_count": sub_count,
         "sub_thread_state_counts": sub_thread_state_counts,
-        # Stage 5: relationship discriminator + sibling-scope id. The
+        # relationship discriminator + sibling-scope id. The
         # frontend uses these to choose between the standard sub-thread
         # mini-card list (decompose) and the multi-column group view
         # (group). Always emitted so the dashboard can rely on the
@@ -468,7 +468,7 @@ def _latest_cleanup_failure(events) -> Optional[dict[str, Any]]:
 def _attach_context_status(action: dict[str, Any]) -> dict[str, Any]:
     """Add a `context_statuses` field to an action dict.
 
-    Stage 4.11: each required-context token gets an availability
+    each required-context token gets an availability
     status object so the UI can render the per-action indicator.
     """
     try:

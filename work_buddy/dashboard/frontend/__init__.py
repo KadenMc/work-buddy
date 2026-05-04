@@ -35,23 +35,23 @@ from .script_resolution import (
     _resolution_surface_script,
     _resolution_surface_styles,
 )
-from .script_resolution_surface_v5 import (
-    _resolution_surface_v5_script,
-    _resolution_surface_v5_styles,
+from .script_resolution_surface import (
+    _resolution_surface_script,
+    _resolution_surface_styles,
 )
 from .script_review import _review_script
 from .script_settings import _settings_script
 from .script_conversations import _conversation_chat_script
-from .script_threads_v5 import _threads_v5_script, _threads_v5_styles
-from .script_threads_v5_card import (
-    _threads_v5_card_script,
-    _threads_v5_card_styles,
+from .script_threads import _threads_script, _threads_styles
+from .script_threads_card import (
+    _threads_card_script,
+    _threads_card_styles,
 )
-from .script_threads_v5_actions import (
-    _threads_v5_actions_script,
-    _threads_v5_actions_styles,
+from .script_threads_actions import (
+    _threads_actions_script,
+    _threads_actions_styles,
 )
-from .script_threads_v5_group import (
+from .script_threads_group import (
     _group_view_script,
     _group_view_styles,
 )
@@ -91,15 +91,15 @@ def render_page() -> str:
         # _triage_review_script). The Resolution Surface mounts onto
         # the existing renderer rather than replacing it.
         _resolution_surface_script(),
-        _resolution_surface_v5_script(),
+        _resolution_surface_script(),
         _review_script(),
         _automation_script(),
         _today_script(),
         _settings_script(),
         _conversation_chat_script(),
-        _threads_v5_script(),
-        _threads_v5_card_script(),
-        _threads_v5_actions_script(),
+        _threads_script(),
+        _threads_card_script(),
+        _threads_actions_script(),
         _group_view_script(),
         _command_palette_script(),
         _costs_script(),
@@ -113,10 +113,10 @@ def render_page() -> str:
     <link rel="icon" type="image/svg+xml" href="/favicon.svg">
     <style>{_styles()}
 {_resolution_surface_styles()}
-{_resolution_surface_v5_styles()}
-{_threads_v5_styles()}
-{_threads_v5_card_styles()}
-{_threads_v5_actions_styles()}
+{_resolution_surface_styles()}
+{_threads_styles()}
+{_threads_card_styles()}
+{_threads_actions_styles()}
 {_group_view_styles()}
 {_automation_styles()}
 {_today_styles()}</style>

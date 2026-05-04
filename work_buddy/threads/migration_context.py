@@ -4,7 +4,7 @@ DESIGN.md §12.4 specifies the atomic operation: move a ContextItem
 from one Thread to another with linked events on both Threads
 sharing a ``migration_id``.
 
-Stage 4.9 deliverable. Module is named ``migration_context`` to
+Module is named ``migration_context`` to
 avoid collision with ``work_buddy/threads/migration.py`` (the v4
 → v5 cutover script).
 

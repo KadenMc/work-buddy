@@ -1,6 +1,6 @@
 """Sub-thread spawning + decompose Standard Action.
 
-Stage 2.8 deliverable. Per DESIGN.md §5.4 + §10.5:
+Per DESIGN.md §5.4 + §10.5:
 
 - A Thread can spawn sub-threads via the ``decompose`` Standard
   Action. Sub-threads have ``parent_id`` set; the same Thread
@@ -26,7 +26,7 @@ Public API
 - ``force_close_parent(thread_id, *, actor)`` — closes the parent
   and cascades parent_force_close to live children.
 
-Stage 2.8 ships the spawn + cascade mechanics. Wiring decompose
+This module ships the spawn + cascade mechanics. Wiring decompose
 as a callable Standard Action in the registry (so action
 inference can propose it) lands in Stage 2.x as the catalog
 grows.
@@ -184,7 +184,7 @@ def decompose_thread(
             conn=conn,
         )
 
-        # Stage 4.7: write-time linearization. Compute the semantic
+        # write-time linearization. Compute the semantic
         # order across the spawned children and persist
         # ``order_index`` on each. Per UX.md §8.2, this is the only
         # write-side trigger; render-time NEVER recomputes.
@@ -233,7 +233,7 @@ def cascade_terminal_to_parent(
     fired, or None if no parent / parent isn't monitoring / not
     all children terminal yet.
 
-    Stage 5: for group-relationship umbrella parents the cascade
+    for group-relationship umbrella parents the cascade
     still fires "all terminal → DONE" (an umbrella whose every group
     child has been accepted/dismissed/handed-off has also achieved
     its purpose). v2 doesn't have an empty-group auto-DISMISS — empty

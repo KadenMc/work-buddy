@@ -32,7 +32,7 @@ What used to be here (pre-v2)
 - ``move_thread_to_parent`` operated at thread granularity (each tab
   was a sub-thread). Replaced by item-level :func:`move_item`.
 - A "Submit all" button per column. Replaced by an umbrella-level
-  ``Approve all`` button (see ``script_threads_v5_card`` —
+  ``Approve all`` button (see ``script_threads_card`` —
   ``cascade_approve_umbrella`` runs Accept on every non-terminal
   child).
 - "Items moved" success toast on every drag. Removed — the move is
@@ -94,19 +94,19 @@ def _group_view_script() -> str:
     // 404 when it goes away. Three-second auto-dismiss; multiple
     // stack vertically.
     function _groupToast(title, body) {
-        let host = document.getElementById('threads-v5-group-toast-host');
+        let host = document.getElementById('threads-group-toast-host');
         if (!host) {
             host = document.createElement('div');
-            host.id = 'threads-v5-group-toast-host';
+            host.id = 'threads-group-toast-host';
             document.body.appendChild(host);
         }
         const t = document.createElement('div');
-        t.className = 'threads-v5-group-toast';
-        t.innerHTML = '<div class="threads-v5-group-toast-title">'
+        t.className = 'threads-group-toast';
+        t.innerHTML = '<div class="threads-group-toast-title">'
             +   _esc(title)
             + '</div>'
             + (body
-                ? '<div class="threads-v5-group-toast-body">'
+                ? '<div class="threads-group-toast-body">'
                     + _esc(body) + '</div>'
                 : '');
         host.appendChild(t);
@@ -267,7 +267,7 @@ def _group_view_script() -> str:
 
     window.renderGroupSubThreads = function (umbrella) {
         if (!umbrella) {
-            return '<div class="threads-v5-group-empty">'
+            return '<div class="threads-group-empty">'
                 +   'No umbrella thread loaded.'
                 + '</div>';
         }
@@ -300,17 +300,17 @@ def _group_view_script() -> str:
                     window._renderActiveThread();
                 }
             });
-        return '<div class="threads-v5-group-loading">'
+        return '<div class="threads-group-loading">'
             +   'Loading group columns...'
             + '</div>';
     };
 
     function _renderFetchError(umbrellaId, msg) {
-        return '<div class="threads-v5-group-empty '
-            +   'threads-v5-group-fetch-error">'
+        return '<div class="threads-group-empty '
+            +   'threads-group-fetch-error">'
             + '<h3>Couldn’t load groups</h3>'
             + '<p>' + _esc(msg) + '</p>'
-            + '<button class="threads-v5-retry-btn" '
+            + '<button class="threads-retry-btn" '
             +   'onclick="(function(){'
             +     'delete window._groupState.errorByUmbrella[\''
             +       _esc(umbrellaId) + '\'];'
@@ -340,16 +340,16 @@ def _group_view_script() -> str:
         const liveChildren = visibleGroups;
         const actionOptions = window._groupState
             .actionOptionsByUmbrella[umbrellaId] || [];
-        let html = '<div class="threads-v5-group-toolbar">'
+        let html = '<div class="threads-group-toolbar">'
             + (liveChildren.length > 0
-                ? '<button class="threads-v5-group-approve-all" '
+                ? '<button class="threads-group-approve-all" '
                     + 'title="Run Accept on every non-terminal group" '
                     + 'onclick="threadsGroupApproveAll(\''
                     +   _esc(umbrellaId) + '\')">'
                     + 'Approve all (' + liveChildren.length + ')'
                 + '</button>'
                 : '')
-            + '<div class="threads-v5-group-selection-bar'
+            + '<div class="threads-group-selection-bar'
             +   (selCount > 0 ? ' show' : '') + '">'
             +   '<span class="count">'
             +     selCount + ' selected'
@@ -360,9 +360,9 @@ def _group_view_script() -> str:
             +   '</span>'
             + '</div>'
             + '</div>'
-            + '<div class="threads-v5-group-columns">';
+            + '<div class="threads-group-columns">';
         if (visibleGroups.length === 0) {
-            html += '<div class="threads-v5-group-empty-col" '
+            html += '<div class="threads-group-empty-col" '
                 +   'style="flex:1 1 auto;">'
                 +   (groups.length === 0
                         ? 'No groups yet. Drop here to create the first one.'
@@ -427,8 +427,8 @@ def _group_view_script() -> str:
             : 'Pick action';
         const isOpen = window._groupState.openActionChipFor === sId;
 
-        let html = '<div class="threads-v5-group-action-chip-wrap">'
-            + '<button class="threads-v5-group-action-chip'
+        let html = '<div class="threads-group-action-chip-wrap">'
+            + '<button class="threads-group-action-chip'
             +   (currentDescriptor ? ' has-proposal' : '')
             +   (isOpen ? ' open' : '') + '" '
             +   'title="' + _esc(currentDescriptor
@@ -437,18 +437,18 @@ def _group_view_script() -> str:
             +   'onclick="event.stopPropagation();'
             +     'threadsGroupToggleActionChip(\''
             +     _esc(sId) + '\')">'
-            +   '<span class="threads-v5-group-action-chip-arrow">&rarr;</span> '
+            +   '<span class="threads-group-action-chip-arrow">&rarr;</span> '
             +   _esc(chipLabel)
-            +   ' <span class="threads-v5-group-action-chip-caret">&#9662;</span>'
+            +   ' <span class="threads-group-action-chip-caret">&#9662;</span>'
             + '</button>';
 
         if (isOpen) {
-            html += '<div class="threads-v5-group-action-chip-menu" '
+            html += '<div class="threads-group-action-chip-menu" '
                 +   'onclick="event.stopPropagation();">';
             for (const d of perGroup) {
                 const isCurrent = currentDescriptor
                     && currentDescriptor.capability_name === d.capability_name;
-                html += '<button class="threads-v5-group-action-chip-option'
+                html += '<button class="threads-group-action-chip-option'
                     +     (isCurrent ? ' current' : '') + '" '
                     +     'title="' + _esc(d.description || '') + '" '
                     +     'onclick="event.stopPropagation();'
@@ -467,7 +467,7 @@ def _group_view_script() -> str:
             }
             // Add a "Clear proposal" affordance when a proposal exists.
             if (currentDescriptor) {
-                html += '<button class="threads-v5-group-action-chip-option '
+                html += '<button class="threads-group-action-chip-option '
                     +     'clear" '
                     +     'onclick="event.stopPropagation();'
                     +       'threadsGroupSetActionProposal(\''
@@ -549,15 +549,15 @@ def _group_view_script() -> str:
         const showIntent = intentText && intentText !== child.title;
         const itemCount = items.length;
         actionOptions = actionOptions || [];
-        let html = '<div class="threads-v5-group-column" '
+        let html = '<div class="threads-group-column" '
             + 'data-parent-id="' + _esc(sId) + '" '
             + 'ondragover="event.preventDefault();'
             +   'this.classList.add(\'drag-over\');" '
             + 'ondragleave="this.classList.remove(\'drag-over\');" '
             + 'ondrop="threadsGroupDropOnColumn(event, \'' + _esc(sId)
             +   '\')">'
-            + '<div class="threads-v5-group-column-header '
-            +   'threads-v5-group-column-header-clickable" '
+            + '<div class="threads-group-column-header '
+            +   'threads-group-column-header-clickable" '
             +   'role="link" tabindex="0" '
             +   'title="Open ' + _esc(child.title || sId) + '" '
             +   'onclick="threadsGroupHeaderClick(event, \''
@@ -565,7 +565,7 @@ def _group_view_script() -> str:
             +   'onkeydown="if(event.key===\'Enter\'||event.key===\' \'){'
             +     'event.preventDefault();'
             +     'threadsPushPath(\'' + _esc(sId) + '\')}">'
-            +   '<button class="threads-v5-group-column-delete-x" '
+            +   '<button class="threads-group-column-delete-x" '
             +     'title="Delete group sub-thread" '
             +     'onclick="event.stopPropagation();'
             +       'threadsGroupDeleteSubthread(\''
@@ -573,31 +573,31 @@ def _group_view_script() -> str:
             +       (itemCount > 0 ? 'true' : 'false') + ')">'
             +     '&times;'
             +   '</button>'
-            +   '<div class="threads-v5-group-column-title-row">'
-            +     '<span class="threads-v5-group-column-title">'
+            +   '<div class="threads-group-column-title-row">'
+            +     '<span class="threads-group-column-title">'
             +       _esc(child.title || sId) + '</span>'
             +     (stateLabel
-                    ? '<span class="threads-v5-group-column-state">'
+                    ? '<span class="threads-group-column-state">'
                         + _esc(stateLabel) + '</span>'
                     : '')
-            +     '<span class="threads-v5-group-column-enter" '
+            +     '<span class="threads-group-column-enter" '
             +       'aria-hidden="true">&rarr;</span>'
             +   '</div>';
         if (showIntent) {
-            html += '<div class="threads-v5-group-column-intent" '
+            html += '<div class="threads-group-column-intent" '
                 +   'title="' + _esc(intentText) + '">'
                 +   _esc(intentText.length > 110
                             ? intentText.slice(0, 107) + '...' : intentText)
                 + '</div>';
         }
-        html += '<div class="threads-v5-group-column-meta">'
+        html += '<div class="threads-group-column-meta">'
             +     itemCount + ' item' + (itemCount === 1 ? '' : 's')
             +   '</div>'
             + _renderActionChip(child, actionOptions)
             + '</div>'
-            + '<ul class="threads-v5-group-items">';
+            + '<ul class="threads-group-items">';
         if (itemCount === 0) {
-            html += '<li class="threads-v5-group-empty-col">'
+            html += '<li class="threads-group-empty-col">'
                 +   '(empty — drop items here)'
                 + '</li>';
         } else {
@@ -616,7 +616,7 @@ def _group_view_script() -> str:
         const url = (item.payload && item.payload.url) || '';
         const source = item.source || '';
         const type = item.type || '';
-        let html = '<li class="threads-v5-group-item'
+        let html = '<li class="threads-group-item'
             + (selected ? ' selected' : '') + '" '
             + 'data-item-id="' + _esc(iId) + '" '
             + 'data-parent-id="' + _esc(parentId) + '" '
@@ -627,22 +627,22 @@ def _group_view_script() -> str:
             +   _esc(iId) + '\')" '
             + 'onclick="threadsGroupItemClick(event, \''
             +   _esc(iId) + '\')">'
-            + '<div class="threads-v5-group-item-handle" '
+            + '<div class="threads-group-item-handle" '
             +   'title="Drag to move to another group">&#8801;</div>'
-            + '<div class="threads-v5-group-item-body">'
-            +   '<div class="threads-v5-group-item-title" '
+            + '<div class="threads-group-item-body">'
+            +   '<div class="threads-group-item-title" '
             +     'title="' + _esc(label) + '">'
             +     _esc(label.length > 90
                         ? label.slice(0, 87) + '...' : label)
             +   '</div>';
         if (url) {
-            html += '<div class="threads-v5-group-item-url" '
+            html += '<div class="threads-group-item-url" '
                 +   'title="' + _esc(url) + '">'
                 +   _esc(url.length > 80 ? url.slice(0, 77) + '...' : url)
                 + '</div>';
         }
         if (source || type) {
-            html += '<div class="threads-v5-group-item-meta">'
+            html += '<div class="threads-group-item-meta">'
                 +   _esc(source)
                 +   (source && type ? ' &middot; ' : '')
                 +   _esc(type)
@@ -653,13 +653,13 @@ def _group_view_script() -> str:
     }
 
     function _renderNewGroupZone(umbrellaId) {
-        return '<div class="threads-v5-group-newzone" '
+        return '<div class="threads-group-newzone" '
             + 'ondragover="event.preventDefault();'
             +   'this.classList.add(\'drag-over\');" '
             + 'ondragleave="this.classList.remove(\'drag-over\');" '
             + 'ondrop="threadsGroupDropOnNewZone(event, \''
             +   _esc(umbrellaId) + '\')">'
-            + '<div class="threads-v5-group-newzone-icon">+</div>'
+            + '<div class="threads-group-newzone-icon">+</div>'
             + 'Drop here to create a new group'
             + '</div>';
     }
@@ -671,17 +671,17 @@ def _group_view_script() -> str:
         if (!sel.has(itemId)) {
             sel.clear();
             sel.add(itemId);
-            document.querySelectorAll('.threads-v5-group-item.selected')
+            document.querySelectorAll('.threads-group-item.selected')
                 .forEach(el => el.classList.remove('selected'));
             const me = document.querySelector(
-                '.threads-v5-group-item[data-item-id="' + itemId + '"]'
+                '.threads-group-item[data-item-id="' + itemId + '"]'
             );
             if (me) me.classList.add('selected');
         }
         window._groupState.dragSource = itemId;
         ev.dataTransfer.effectAllowed = "move";
         try { ev.dataTransfer.setData("text/plain", itemId); } catch(e) {}
-        document.querySelectorAll('.threads-v5-group-item.selected')
+        document.querySelectorAll('.threads-group-item.selected')
             .forEach(el => el.classList.add('dragging-multi'));
     };
 
@@ -697,7 +697,7 @@ def _group_view_script() -> str:
     window.threadsGroupDropOnNewZone = function (ev, umbrellaId) {
         ev.preventDefault();
         const zone = ev.currentTarget || ev.target.closest(
-            '.threads-v5-group-newzone'
+            '.threads-group-newzone'
         );
         if (zone) zone.classList.remove('drag-over');
         const sel = Array.from(window._groupState.selected);
@@ -766,7 +766,7 @@ def _group_view_script() -> str:
     window.threadsGroupDropOnColumn = function (ev, destParentId) {
         ev.preventDefault();
         const col = ev.currentTarget || ev.target.closest(
-            '.threads-v5-group-column'
+            '.threads-group-column'
         );
         if (col) col.classList.remove('drag-over');
         const sel = Array.from(window._groupState.selected);
@@ -774,7 +774,7 @@ def _group_view_script() -> str:
         // Filter: don't move items already in this destination.
         const filtered = sel.filter(itemId => {
             const el = document.querySelector(
-                '.threads-v5-group-item[data-item-id="' + itemId + '"]'
+                '.threads-group-item[data-item-id="' + itemId + '"]'
             );
             return el && el.dataset.parentId !== destParentId;
         });
@@ -791,7 +791,7 @@ def _group_view_script() -> str:
         const srcByItem = {};
         for (const iId of itemIds) {
             const el = document.querySelector(
-                '.threads-v5-group-item[data-item-id="' + iId + '"]'
+                '.threads-group-item[data-item-id="' + iId + '"]'
             );
             if (el) srcByItem[iId] = el.dataset.parentId;
         }
@@ -835,7 +835,7 @@ def _group_view_script() -> str:
             // sub-thread shows the pre-move ``context_items`` from the
             // stale cache. The umbrella's ``groupsByUmbrella`` cache
             // is updated by the optimistic step + SSE refresh, but
-            // ``_threadDetailCache`` is independent (script_threads_v5
+            // ``_threadDetailCache`` is independent (script_threads
             // owns it) and needs explicit invalidation.
             try {
                 if (typeof window.invalidateThreadCache === "function") {
@@ -984,7 +984,7 @@ def _group_view_script() -> str:
 
     function _extendSelection(toItemId) {
         const all = Array.from(document.querySelectorAll(
-            '.threads-v5-group-item'
+            '.threads-group-item'
         ));
         const ids = all.map(el => el.dataset.itemId);
         const anchor = window._groupState.lastFocused;
@@ -1004,12 +1004,12 @@ def _group_view_script() -> str:
 
     function _refreshSelectionClasses() {
         const sel = window._groupState.selected;
-        document.querySelectorAll('.threads-v5-group-item').forEach(el => {
+        document.querySelectorAll('.threads-group-item').forEach(el => {
             const iId = el.dataset.itemId;
             el.classList.toggle('selected', sel.has(iId));
         });
         const bar = document.querySelector(
-            '.threads-v5-group-selection-bar'
+            '.threads-group-selection-bar'
         );
         if (bar) {
             const cnt = bar.querySelector('.count');
@@ -1018,7 +1018,7 @@ def _group_view_script() -> str:
         }
     }
 
-    // ---- Keyboard handler — extends script_threads_v5's j/k --------
+    // ---- Keyboard handler — extends script_threads's j/k --------
 
     if (!window._threadsGroupKbdInstalled) {
         window._threadsGroupKbdInstalled = true;
@@ -1054,9 +1054,9 @@ def _group_view_script() -> str:
 
     function _toggleSelectionAtFocus() {
         const focusedEl = document.querySelector(
-            '.threads-v5-group-item.threads-v5-kbd-focus'
+            '.threads-group-item.threads-kbd-focus'
         ) || document.querySelector(
-            '.threads-v5-group-item[data-item-id="'
+            '.threads-group-item[data-item-id="'
             + (window._groupState.lastFocused || '') + '"]'
         );
         if (!focusedEl) return;
@@ -1071,7 +1071,7 @@ def _group_view_script() -> str:
 
     function _stepFocus(delta, extendSelection) {
         const all = Array.from(document.querySelectorAll(
-            '.threads-v5-group-item'
+            '.threads-group-item'
         ));
         if (all.length === 0) return;
         const focused = window._groupState.lastFocused;
@@ -1087,8 +1087,8 @@ def _group_view_script() -> str:
             window._groupState.selected.add(nextIid);
         }
         window._groupState.lastFocused = nextIid;
-        all.forEach(el => el.classList.remove('threads-v5-kbd-focus'));
-        all[next].classList.add('threads-v5-kbd-focus');
+        all.forEach(el => el.classList.remove('threads-kbd-focus'));
+        all[next].classList.add('threads-kbd-focus');
         all[next].scrollIntoView({ block: 'nearest', behavior: 'smooth' });
         _refreshSelectionClasses();
     }
@@ -1112,7 +1112,7 @@ def _group_view_script() -> str:
         const sourceParents = new Set();
         for (const iId of sel) {
             const el = document.querySelector(
-                '.threads-v5-group-item[data-item-id="' + iId + '"]'
+                '.threads-group-item[data-item-id="' + iId + '"]'
             );
             if (el) sourceParents.add(el.dataset.parentId);
         }
@@ -1149,25 +1149,25 @@ def _group_view_styles() -> str:
  * active thread is a group umbrella (parent_relationship === 'group').
  * Columns are flex children that wrap on narrow viewports.
  */
-.threads-v5-group-empty,
-.threads-v5-group-loading {
+.threads-group-empty,
+.threads-group-loading {
     padding: 2em;
     text-align: center;
     color: var(--text-muted, #888);
 }
-.threads-v5-group-fetch-error {
+.threads-group-fetch-error {
     color: var(--text, #ddd);
 }
 
 /* Toolbar above the columns. Holds Approve-all + selection bar. */
-.threads-v5-group-toolbar {
+.threads-group-toolbar {
     display: flex;
     align-items: center;
     gap: 12px;
     margin-bottom: 10px;
     flex-wrap: wrap;
 }
-.threads-v5-group-approve-all {
+.threads-group-approve-all {
     background: var(--accent, #4a7fc1);
     color: white;
     border: 1px solid var(--accent, #4a7fc1);
@@ -1177,12 +1177,12 @@ def _group_view_styles() -> str:
     font-weight: 600;
     cursor: pointer;
 }
-.threads-v5-group-approve-all:hover {
+.threads-group-approve-all:hover {
     filter: brightness(1.1);
 }
 
 /* Slim selection bar — only visible while items are selected. */
-.threads-v5-group-selection-bar {
+.threads-group-selection-bar {
     display: none;
     align-items: center;
     gap: 12px;
@@ -1194,18 +1194,18 @@ def _group_view_styles() -> str:
     color: var(--text, #ddd);
     flex: 1 1 auto;
 }
-.threads-v5-group-selection-bar.show {
+.threads-group-selection-bar.show {
     display: flex;
 }
-.threads-v5-group-selection-bar .count {
+.threads-group-selection-bar .count {
     font-weight: 600;
     color: var(--accent, #4a7fc1);
 }
-.threads-v5-group-selection-bar .hint {
+.threads-group-selection-bar .hint {
     color: var(--text-muted, #888);
     font-size: 11px;
 }
-.threads-v5-group-selection-bar kbd {
+.threads-group-selection-bar kbd {
     background: var(--bg, #0a0a0a);
     border: 1px solid var(--border, #333);
     border-radius: 3px;
@@ -1214,14 +1214,14 @@ def _group_view_styles() -> str:
     font-size: 10px;
 }
 
-.threads-v5-group-columns {
+.threads-group-columns {
     display: flex;
     gap: 14px;
     flex-wrap: wrap;
     align-items: flex-start;
 }
 
-.threads-v5-group-column {
+.threads-group-column {
     flex: 1 1 280px;
     min-width: 240px;
     max-width: 360px;
@@ -1232,33 +1232,33 @@ def _group_view_styles() -> str:
     transition: border-color 80ms, background-color 80ms;
     position: relative;
 }
-.threads-v5-group-column.drag-over {
+.threads-group-column.drag-over {
     border-color: var(--accent, #4a7fc1);
     background: var(--bg-tertiary, #232323);
 }
 
-.threads-v5-group-column-header {
+.threads-group-column-header {
     margin-bottom: 8px;
     padding-bottom: 6px;
     border-bottom: 1px solid var(--border, #333);
     position: relative;
 }
-.threads-v5-group-column-header-clickable {
+.threads-group-column-header-clickable {
     cursor: pointer;
     border-radius: 4px;
     margin: -4px -4px 8px -4px;
     padding: 4px 4px 6px 4px;
     transition: background-color 80ms;
 }
-.threads-v5-group-column-header-clickable:hover,
-.threads-v5-group-column-header-clickable:focus-visible {
+.threads-group-column-header-clickable:hover,
+.threads-group-column-header-clickable:focus-visible {
     background: var(--bg-tertiary, #232323);
     outline: none;
 }
 
 /* X / Delete group sub-thread button — top-right of the header,
  * visible on hover. */
-.threads-v5-group-column-delete-x {
+.threads-group-column-delete-x {
     position: absolute;
     top: 0;
     right: 0;
@@ -1274,28 +1274,28 @@ def _group_view_styles() -> str:
     opacity: 0;
     transition: opacity 80ms, background 80ms, color 80ms;
 }
-.threads-v5-group-column-header:hover
-    .threads-v5-group-column-delete-x,
-.threads-v5-group-column-delete-x:focus-visible {
+.threads-group-column-header:hover
+    .threads-group-column-delete-x,
+.threads-group-column-delete-x:focus-visible {
     opacity: 1;
 }
-.threads-v5-group-column-delete-x:hover {
+.threads-group-column-delete-x:hover {
     background: rgba(220, 60, 60, 0.18);
     color: #ff8080;
 }
 
-.threads-v5-group-column-title-row {
+.threads-group-column-title-row {
     display: flex;
     align-items: center;
     gap: 6px;
     flex-wrap: wrap;
     padding-right: 24px;  /* room for the X button */
 }
-.threads-v5-group-column-title {
+.threads-group-column-title {
     font-size: 14px;
     font-weight: 600;
 }
-.threads-v5-group-column-state {
+.threads-group-column-state {
     font-size: 10px;
     background: var(--bg, #0a0a0a);
     border: 1px solid var(--border, #333);
@@ -1309,21 +1309,21 @@ def _group_view_styles() -> str:
 /* Arrow on the right side of the title row hints "click to open
  * this group sub-thread". Subtle by default; brightens on header
  * hover. */
-.threads-v5-group-column-enter {
+.threads-group-column-enter {
     margin-left: auto;
     color: var(--text-muted, #666);
     font-size: 14px;
     line-height: 1;
     transition: color 80ms, transform 80ms;
 }
-.threads-v5-group-column-header-clickable:hover
-    .threads-v5-group-column-enter,
-.threads-v5-group-column-header-clickable:focus-visible
-    .threads-v5-group-column-enter {
+.threads-group-column-header-clickable:hover
+    .threads-group-column-enter,
+.threads-group-column-header-clickable:focus-visible
+    .threads-group-column-enter {
     color: var(--accent, #4a7fc1);
     transform: translateX(2px);
 }
-.threads-v5-group-column-intent {
+.threads-group-column-intent {
     font-size: 11px;
     color: var(--text-muted, #aaa);
     margin-top: 4px;
@@ -1334,13 +1334,13 @@ def _group_view_styles() -> str:
     -webkit-line-clamp: 2;
     -webkit-box-orient: vertical;
 }
-.threads-v5-group-column-meta {
+.threads-group-column-meta {
     font-size: 11px;
     color: var(--text-muted, #888);
     margin-top: 4px;
 }
 
-.threads-v5-group-items {
+.threads-group-items {
     list-style: none;
     margin: 0;
     padding: 0;
@@ -1349,7 +1349,7 @@ def _group_view_styles() -> str:
     flex-direction: column;
     gap: 6px;
 }
-.threads-v5-group-empty-col {
+.threads-group-empty-col {
     color: var(--text-muted, #666);
     font-size: 12px;
     font-style: italic;
@@ -1361,7 +1361,7 @@ def _group_view_styles() -> str:
 
 /* Item card — represents a ContextItem (Chrome tab, journal line,
  * etc.), NOT a thread. */
-.threads-v5-group-item {
+.threads-group-item {
     display: flex;
     gap: 6px;
     background: var(--bg, #0a0a0a);
@@ -1372,40 +1372,40 @@ def _group_view_styles() -> str:
     user-select: none;
     transition: background-color 80ms, border-color 80ms;
 }
-.threads-v5-group-item:hover {
+.threads-group-item:hover {
     background: var(--bg-tertiary, #1a1a1a);
 }
-.threads-v5-group-item.selected {
+.threads-group-item.selected {
     border-color: var(--accent, #4a7fc1);
     background: rgba(74, 127, 193, 0.08);
 }
-.threads-v5-group-item.dragging-multi {
+.threads-group-item.dragging-multi {
     opacity: 0.5;
 }
-.threads-v5-group-item.threads-v5-kbd-focus {
+.threads-group-item.threads-kbd-focus {
     outline: 2px solid var(--accent, #4a7fc1);
     outline-offset: -2px;
 }
 
-.threads-v5-group-item-handle {
+.threads-group-item-handle {
     color: var(--text-muted, #666);
     font-size: 14px;
     flex: 0 0 auto;
     line-height: 1.2;
     cursor: grab;
 }
-.threads-v5-group-item-body {
+.threads-group-item-body {
     flex: 1 1 auto;
     min-width: 0;
 }
-.threads-v5-group-item-title {
+.threads-group-item-title {
     font-size: 13px;
     font-weight: 500;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
-.threads-v5-group-item-url {
+.threads-group-item-url {
     font-size: 11px;
     color: var(--accent, #4a7fc1);
     margin-top: 2px;
@@ -1414,7 +1414,7 @@ def _group_view_styles() -> str:
     white-space: nowrap;
     font-family: ui-monospace, SFMono-Regular, monospace;
 }
-.threads-v5-group-item-meta {
+.threads-group-item-meta {
     font-size: 10px;
     color: var(--text-muted, #888);
     margin-top: 3px;
@@ -1431,7 +1431,7 @@ def _group_view_styles() -> str:
  *     "this column has an action queued; Approve all will run it."
  *   - no proposal: dashed muted border, "Pick action" prompt.
  */
-.threads-v5-group-action-chip-wrap {
+.threads-group-action-chip-wrap {
     position: relative;
     margin-top: 8px;
     /* Stop propagation visually — the chip is inside the
@@ -1439,7 +1439,7 @@ def _group_view_styles() -> str:
      * propagation so opening the dropdown doesn't drill into the
      * sub-thread. */
 }
-.threads-v5-group-action-chip {
+.threads-group-action-chip {
     display: inline-flex;
     align-items: center;
     gap: 4px;
@@ -1453,32 +1453,32 @@ def _group_view_styles() -> str:
     cursor: pointer;
     transition: border-color 80ms, color 80ms, background-color 80ms;
 }
-.threads-v5-group-action-chip:hover,
-.threads-v5-group-action-chip.open {
+.threads-group-action-chip:hover,
+.threads-group-action-chip.open {
     background: var(--bg-tertiary, #232323);
     color: var(--text, #ddd);
     border-color: var(--text-muted, #888);
 }
-.threads-v5-group-action-chip.has-proposal {
+.threads-group-action-chip.has-proposal {
     border-style: solid;
     border-color: var(--accent, #4a7fc1);
     color: var(--accent, #4a7fc1);
     background: rgba(74, 127, 193, 0.06);
 }
-.threads-v5-group-action-chip.has-proposal:hover {
+.threads-group-action-chip.has-proposal:hover {
     background: rgba(74, 127, 193, 0.14);
     color: var(--accent, #4a7fc1);
 }
-.threads-v5-group-action-chip-arrow {
+.threads-group-action-chip-arrow {
     font-weight: 600;
 }
-.threads-v5-group-action-chip-caret {
+.threads-group-action-chip-caret {
     font-size: 10px;
     color: inherit;
     margin-left: 2px;
 }
 
-.threads-v5-group-action-chip-menu {
+.threads-group-action-chip-menu {
     position: absolute;
     top: calc(100% + 4px);
     left: 0;
@@ -1494,7 +1494,7 @@ def _group_view_styles() -> str:
     flex-direction: column;
     gap: 2px;
 }
-.threads-v5-group-action-chip-option {
+.threads-group-action-chip-option {
     background: transparent;
     border: 1px solid transparent;
     border-radius: 4px;
@@ -1507,35 +1507,35 @@ def _group_view_styles() -> str:
     flex-direction: column;
     gap: 2px;
 }
-.threads-v5-group-action-chip-option:hover {
+.threads-group-action-chip-option:hover {
     background: var(--bg-tertiary, #232323);
     border-color: var(--border, #333);
 }
-.threads-v5-group-action-chip-option.current {
+.threads-group-action-chip-option.current {
     background: rgba(74, 127, 193, 0.12);
     border-color: var(--accent, #4a7fc1);
 }
-.threads-v5-group-action-chip-option .label {
+.threads-group-action-chip-option .label {
     font-size: 12px;
     font-weight: 600;
 }
-.threads-v5-group-action-chip-option .desc {
+.threads-group-action-chip-option .desc {
     font-size: 11px;
     color: var(--text-muted, #888);
     line-height: 1.3;
 }
-.threads-v5-group-action-chip-option.clear {
+.threads-group-action-chip-option.clear {
     border-top: 1px solid var(--border, #333);
     margin-top: 2px;
     padding-top: 8px;
     border-radius: 0 0 4px 4px;
 }
-.threads-v5-group-action-chip-option.clear .label {
+.threads-group-action-chip-option.clear .label {
     color: var(--text-muted, #aaa);
     font-weight: 500;
 }
 
-.threads-v5-group-newzone {
+.threads-group-newzone {
     flex: 0 0 240px;
     min-height: 140px;
     border: 2px dashed var(--border, #333);
@@ -1551,13 +1551,13 @@ def _group_view_styles() -> str:
     transition: border-color 80ms, color 80ms;
     cursor: pointer;
 }
-.threads-v5-group-newzone:hover,
-.threads-v5-group-newzone.drag-over {
+.threads-group-newzone:hover,
+.threads-group-newzone.drag-over {
     border-color: var(--accent, #4a7fc1);
     color: var(--accent, #4a7fc1);
     background: rgba(74, 127, 193, 0.05);
 }
-.threads-v5-group-newzone-icon {
+.threads-group-newzone-icon {
     font-size: 28px;
     line-height: 1;
 }
@@ -1565,7 +1565,7 @@ def _group_view_styles() -> str:
 /* Self-contained transient toast — does not register a workflow-view,
  * so it has no /api/workflow-views/.../dismiss round-trip on
  * teardown. */
-#threads-v5-group-toast-host {
+#threads-group-toast-host {
     position: fixed;
     bottom: 24px;
     right: 24px;
@@ -1575,7 +1575,7 @@ def _group_view_styles() -> str:
     z-index: 9999;
     pointer-events: none;
 }
-.threads-v5-group-toast {
+.threads-group-toast {
     pointer-events: auto;
     min-width: 220px;
     max-width: 360px;
@@ -1590,16 +1590,16 @@ def _group_view_styles() -> str:
     transform: translateY(8px);
     transition: opacity 180ms ease, transform 180ms ease;
 }
-.threads-v5-group-toast.show {
+.threads-group-toast.show {
     opacity: 1;
     transform: translateY(0);
 }
-.threads-v5-group-toast-title {
+.threads-group-toast-title {
     font-size: 13px;
     font-weight: 600;
     margin-bottom: 2px;
 }
-.threads-v5-group-toast-body {
+.threads-group-toast-body {
     font-size: 12px;
     color: var(--text-muted, #aaa);
 }

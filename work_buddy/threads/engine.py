@@ -1,6 +1,6 @@
 """FSM engine — applies transitions defined in fsm.py to real Threads.
 
-Stage 2.2 deliverable. Brings the Stage-1 transition table to life:
+Brings the Stage-1 transition table to life:
 
     transition(thread_id, trigger, *, actor, data, parent_event_id, ...)
         ↓
