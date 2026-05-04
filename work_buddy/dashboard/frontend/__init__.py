@@ -51,6 +51,10 @@ from .script_threads_v5_actions import (
     _threads_v5_actions_script,
     _threads_v5_actions_styles,
 )
+from .script_threads_v5_group import (
+    _group_view_script,
+    _group_view_styles,
+)
 from .script_today import _today_script, _today_styles
 from .script_triage import _triage_clarify_script, _triage_review_script
 from .script_workflows import _workflow_views_script
@@ -96,6 +100,7 @@ def render_page() -> str:
         _threads_v5_script(),
         _threads_v5_card_script(),
         _threads_v5_actions_script(),
+        _group_view_script(),
         _command_palette_script(),
         _costs_script(),
     ])
@@ -112,6 +117,7 @@ def render_page() -> str:
 {_threads_v5_styles()}
 {_threads_v5_card_styles()}
 {_threads_v5_actions_styles()}
+{_group_view_styles()}
 {_automation_styles()}
 {_today_styles()}</style>
     <script src="/vendor/chart.umd.min.js"></script>

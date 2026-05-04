@@ -2499,21 +2499,33 @@ def api_v5_thread_group_submit(thread_id: str):
 
 @app.get("/api/threads/<thread_id>/group_siblings")
 def api_v5_thread_group_siblings(thread_id: str):
-    """Stage 5: list sibling group-parents in the same scrape.
+    """Stage 5: list sibling group-parents in the same scrape, with
+    each sibling's child items rendered inline so the multi-column
+    group view can lay out the whole scrape in one fetch.
 
-    Used by the dashboard's group-view to render the multi-column
-    layout (active group + siblings side-by-side). Returns rendered
-    thread dicts (same shape as ``/api/threads/<id>``).
+    Each returned sibling has the standard render shape (same as
+    ``/api/threads/<id>``) PLUS a ``children_render`` list — one
+    rendered dict per child sub-thread, ordered by ``order_index``.
     """
     try:
         from work_buddy.threads.grouping import list_sibling_group_parents
-        from work_buddy.threads.render import build_render_data
+        from work_buddy.threads.render import (
+            build_render_data, list_render_data,
+        )
         siblings = list_sibling_group_parents(thread_id, include_self=True)
         out = []
         for s in siblings:
             rendered = build_render_data(s.thread_id)
-            if rendered is not None:
-                out.append(rendered)
+            if rendered is None:
+                continue
+            # Pull the child render dicts so the frontend doesn't
+            # need a separate /sub fetch per column.
+            try:
+                children = list_render_data(parent_id=s.thread_id, limit=200)
+            except Exception:
+                children = []
+            rendered["children_render"] = children
+            out.append(rendered)
         return jsonify({"siblings": out, "parent_id": thread_id})
     except Exception as exc:
         logger.exception(

@@ -584,6 +584,14 @@ def _threads_v5_script() -> str:
         }
         const cached = window._threadDetailCache[threadId];
         if (cached) {
+            // Stage 5: group-relationship parents render through the
+            // multi-column group view instead of the single
+            // confirmation card. Decompose-parents and leaf threads
+            // keep the standard renderer.
+            if (cached.parent_relationship === "group"
+                && typeof window.renderGroupView === "function") {
+                return window.renderGroupView(cached);
+            }
             return window.renderConfirmationCard(cached);
         }
         // Trigger async fetch and re-render
