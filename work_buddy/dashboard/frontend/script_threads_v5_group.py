@@ -28,9 +28,20 @@ State is module-scoped and survives ``morphdom`` re-renders:
   ``dragend``).
 - ``window._groupState.lastFocused: thread_id | null`` — anchor for
   shift-click range selection.
-- ``window._groupState.siblingsByParent: { parentId: [renderedSibling, ...] }``
-  — cached siblings response; invalidated by the move op so a fresh
-  fetch picks up parent-side mutations.
+- ``window._groupState.siblingsByParent: { threadId: [renderedSibling, ...] }``
+  — the **same** siblings array is keyed under every sibling
+  thread_id in the scrape. Swapping between siblings therefore
+  doesn't re-fetch, and a single in-place mutation (optimistic
+  move, SSE-driven refresh) updates every keyed view at once.
+- ``window._groupStateBusWired`` — guard so the
+  ``thread.state_changed`` SSE handler installs exactly once across
+  morphdom re-renders. The handler debounces a real refresh (250
+  ms) so a cascade of FSM events from one move coalesces into a
+  single ``GET /group_siblings``.
+
+Toasts are self-contained (``_groupToast``); they don't talk to the
+``/api/workflow-views`` registry, so the tab they create dismisses
+itself locally without 404 noise on the dismiss endpoint.
 """
 
 from __future__ import annotations
@@ -55,6 +66,188 @@ def _group_view_script() -> str:
         return d.innerHTML;
     }
 
+    // Self-contained toast — does NOT register a workflow-view, so
+    // there's no /api/workflow-views/.../dismiss 404 when it goes
+    // away. Three-second auto-dismiss; multiple stack vertically.
+    function _groupToast(title, body) {
+        let host = document.getElementById('threads-v5-group-toast-host');
+        if (!host) {
+            host = document.createElement('div');
+            host.id = 'threads-v5-group-toast-host';
+            document.body.appendChild(host);
+        }
+        const t = document.createElement('div');
+        t.className = 'threads-v5-group-toast';
+        t.innerHTML = '<div class="threads-v5-group-toast-title">'
+            +   _esc(title)
+            + '</div>'
+            + (body
+                ? '<div class="threads-v5-group-toast-body">'
+                    + _esc(body) + '</div>'
+                : '');
+        host.appendChild(t);
+        requestAnimationFrame(() => t.classList.add('show'));
+        setTimeout(() => {
+            t.classList.remove('show');
+            setTimeout(() => { try { t.remove(); } catch(e) {} }, 200);
+        }, 3000);
+    }
+
+    // Cross-sibling cache primitives -------------------------------
+    //
+    // The /group_siblings response contains EVERY sibling in the
+    // scrape; we share that single array under each sibling's
+    // thread_id key. So swapping between siblings reads from cache,
+    // and an in-place mutation (optimistic move, SSE refresh)
+    // updates every keyed view simultaneously.
+    function _setSiblings(siblings) {
+        const cache = window._groupState.siblingsByParent;
+        const errs = window._groupState.siblingErrors;
+        for (const sib of siblings) {
+            cache[sib.thread_id] = siblings;
+            delete errs[sib.thread_id];
+        }
+    }
+
+    function _replaceSiblingsInPlace(parentId, fresh) {
+        // Mutate the existing array (if any) so cross-keyed
+        // references stay valid. New sibling thread_ids get keyed
+        // via _setSiblings.
+        const cache = window._groupState.siblingsByParent;
+        const existing = cache[parentId];
+        if (existing && Array.isArray(existing)) {
+            existing.length = 0;
+            for (const sib of fresh) existing.push(sib);
+            _setSiblings(existing);
+        } else {
+            _setSiblings(fresh);
+        }
+    }
+
+    function _recountStates(items) {
+        const counts = {};
+        for (const it of items) {
+            const s = it.fsm_state;
+            if (!s) continue;
+            counts[s] = (counts[s] || 0) + 1;
+        }
+        return counts;
+    }
+
+    // Apply a move locally so the user sees the item jump columns
+    // immediately. The server-side response is best-effort merged
+    // afterwards via _refreshSiblings (debounced through the SSE
+    // handler) — if the server disagrees, the morphdom diff
+    // reconciles silently.
+    function _applyOptimisticMove(threadIds, destParentId) {
+        const cache = window._groupState.siblingsByParent;
+        const moved = new Set(threadIds);
+        let siblings = null;
+        for (const key in cache) {
+            const arr = cache[key];
+            if (!arr) continue;
+            const has = arr.some(s =>
+                (s.children_render || []).some(
+                    c => moved.has(c.thread_id)
+                )
+            );
+            if (has) { siblings = arr; break; }
+        }
+        if (!siblings) return false;
+        const destSib = siblings.find(s => s.thread_id === destParentId);
+        if (!destSib) return false;
+        const moving = [];
+        for (const sib of siblings) {
+            const orig = sib.children_render || [];
+            const kept = [];
+            for (const item of orig) {
+                if (moved.has(item.thread_id)) moving.push(item);
+                else kept.push(item);
+            }
+            if (orig.length === kept.length) continue;
+            sib.children_render = kept;
+            sib.sub_thread_state_counts = _recountStates(kept);
+        }
+        destSib.children_render = (destSib.children_render || [])
+            .concat(moving);
+        destSib.sub_thread_state_counts =
+            _recountStates(destSib.children_render);
+        return true;
+    }
+
+    function _refreshSiblings(parentId) {
+        return fetch('/api/threads/' + encodeURIComponent(parentId)
+                     + '/group_siblings')
+            .then(r => r.ok ? r.json() : Promise.reject(r.statusText))
+            .then(data => {
+                _replaceSiblingsInPlace(parentId, data.siblings || []);
+                if (typeof window._renderActiveThread === "function") {
+                    window._renderActiveThread();
+                }
+            })
+            .catch(err => {
+                // Don't blow away the cached view on a transient
+                // failure; just log.
+                console.warn('[group-view] refresh failed:', err);
+            });
+    }
+
+    // SSE wiring — debounced so a cascade of FSM events from a
+    // single move coalesces into one /group_siblings call.
+    let _refreshTimer = null;
+    function _scheduleRefreshForActive() {
+        if (_refreshTimer) clearTimeout(_refreshTimer);
+        _refreshTimer = setTimeout(() => {
+            _refreshTimer = null;
+            const state = window._threadsState;
+            if (!state || !state.path || state.path.length === 0) return;
+            const activeId = state.path[state.path.length - 1];
+            // Only refresh if the active view is currently a group.
+            const cache = window._groupState.siblingsByParent;
+            if (!cache[activeId]) return;
+            _refreshSiblings(activeId);
+        }, 250);
+    }
+
+    if (!window._groupStateBusWired) {
+        window._groupStateBusWired = true;
+        function _wire() {
+            if (!window.eventBus
+                || typeof window.eventBus.on !== "function") {
+                requestAnimationFrame(_wire);
+                return;
+            }
+            window.eventBus.on("thread.state_changed", (payload) => {
+                try {
+                    const tid = payload && payload.thread_id;
+                    if (!tid) return;
+                    const cache = window._groupState.siblingsByParent;
+                    // Cheap relevance check: is this thread one of
+                    // our cached siblings or one of their children?
+                    let touched = false;
+                    for (const key in cache) {
+                        const arr = cache[key];
+                        if (!arr) continue;
+                        for (const sib of arr) {
+                            if (sib.thread_id === tid
+                                || (sib.children_render || []).some(
+                                    c => c.thread_id === tid
+                                )) {
+                                touched = true;
+                                break;
+                            }
+                        }
+                        if (touched) break;
+                    }
+                    if (touched) _scheduleRefreshForActive();
+                } catch (e) {
+                    console.warn('[group-view] bus handler:', e);
+                }
+            });
+        }
+        _wire();
+    }
+
     // Public API: invoked by script_threads_v5.renderThreadDetail
     // when the active thread has parent_relationship === 'group'.
     window.renderGroupView = function (thread) {
@@ -70,12 +263,13 @@ def _group_view_script() -> str:
         if (failed) {
             return _renderFetchError(parentId, failed);
         }
-        // Lazy-fetch siblings for this group
+        // Lazy-fetch siblings for this group. The response covers
+        // EVERY sibling so we key it under each one — sibling-swap
+        // is a cache hit afterwards.
         fetch('/api/threads/' + encodeURIComponent(parentId) + '/group_siblings')
             .then(r => r.ok ? r.json() : Promise.reject(r.statusText))
             .then(data => {
-                window._groupState.siblingsByParent[parentId] =
-                    data.siblings || [];
+                _setSiblings(data.siblings || []);
                 if (typeof window._renderActiveThread === "function") {
                     window._renderActiveThread();
                 }
@@ -430,31 +624,17 @@ def _group_view_script() -> str:
         .then(r => r.json().then(b => ({ ok: r.ok, body: b })))
         .then(({ ok, body }) => {
             if (!ok) {
-                if (typeof window.showToast === "function") {
-                    window.showToast(
-                        'New group failed',
-                        body.error || 'Could not spawn sibling group',
-                        'threads-view',
-                        'group-spawn-err-' + Date.now(),
-                        { expandable: false, view_type: 'generic' },
-                        false, false,
-                    );
-                }
+                _groupToast(
+                    'New group failed',
+                    body.error || 'Could not spawn sibling group'
+                );
                 return;
             }
             const newParentId = body.parent_id;
             _moveBatch(sel, newParentId);
         })
         .catch(e => {
-            if (typeof window.showToast === "function") {
-                window.showToast(
-                    'New group failed', String(e),
-                    'threads-view',
-                    'group-spawn-err-' + Date.now(),
-                    { expandable: false, view_type: 'generic' },
-                    false, false,
-                );
-            }
+            _groupToast('New group failed', String(e));
         });
     };
 
@@ -483,6 +663,15 @@ def _group_view_script() -> str:
 
     function _moveBatch(threadIds, destParentId) {
         const total = threadIds.length;
+        // Optimistic update — items jump columns immediately so the
+        // user gets instant feedback. The server-driven refresh
+        // (debounced SSE handler) reconciles whatever the server
+        // actually did via morphdom.
+        const optimistic = _applyOptimisticMove(threadIds, destParentId);
+        window._groupState.selected.clear();
+        if (optimistic && typeof window._renderActiveThread === "function") {
+            window._renderActiveThread();
+        }
         let ok = 0, failed = 0;
         const failures = [];
         const promises = threadIds.map(tid =>
@@ -499,10 +688,6 @@ def _group_view_script() -> str:
             .catch(e => { failed++; failures.push(String(e)); })
         );
         Promise.all(promises).then(() => {
-            // Invalidate caches so siblings re-fetch with fresh state.
-            _invalidateGroupCaches();
-            window._groupState.selected.clear();
-            // Toast — reuse the shared notifications helper if present.
             const msg = (
                 ok === total
                     ? 'Moved ' + ok + ' item' + (ok === 1 ? '' : 's')
@@ -514,34 +699,22 @@ def _group_view_script() -> str:
                                   ? ', ...' : '') + ')'
                            : '')
             );
-            if (typeof window.showToast === "function") {
-                try {
-                    window.showToast(
-                        ok === total ? "Items moved" : "Move partial",
-                        msg, 'threads-view',
-                        'group-move-' + Date.now(),
-                        { expandable: false, view_type: 'generic' },
-                        false, false,
-                    );
-                } catch(e) { /* toast is best-effort */ }
+            _groupToast(
+                ok === total ? "Items moved" : "Move partial",
+                msg
+            );
+            if (failed > 0) {
+                // Optimistic update may have over-promised; force a
+                // hard refresh from the server.
+                const state = window._threadsState;
+                if (state && state.path && state.path.length > 0) {
+                    _refreshSiblings(state.path[state.path.length - 1]);
+                }
             }
-            // Force a full re-render so column counts update.
-            window._renderActiveThread && window._renderActiveThread();
+            // The SSE event-bus handler will _scheduleRefreshForActive
+            // once cascade events arrive (auto-DISMISS of empty
+            // groups, etc.); no explicit re-render needed here.
         });
-    }
-
-    function _invalidateGroupCaches() {
-        // Both the per-thread detail cache and the sibling cache need
-        // refreshing — moves change parent_id (detail) and child counts
-        // (siblings) on multiple threads at once.
-        window._groupState.siblingsByParent = {};
-        window._groupState.siblingErrors = {};
-        if (typeof window.invalidateThreadCache === "function") {
-            try { window.invalidateThreadCache(); } catch(e) {}
-        }
-        if (typeof window.invalidateTopLevelCache === "function") {
-            try { window.invalidateTopLevelCache(); } catch(e) {}
-        }
     }
 
     // ---- Selection handlers --------------------------------------------
@@ -628,16 +801,10 @@ def _group_view_script() -> str:
         .then(r => r.json().then(b => ({ ok: r.ok, body: b })))
         .then(({ ok, body }) => {
             if (!ok) {
-                if (typeof window.showToast === "function") {
-                    window.showToast(
-                        'Submit failed',
-                        body.error || 'Group submit failed',
-                        'threads-view',
-                        'group-submit-err-' + Date.now(),
-                        { expandable: false, view_type: 'generic' },
-                        false, false,
-                    );
-                }
+                _groupToast(
+                    'Submit failed',
+                    body.error || 'Group submit failed'
+                );
                 return;
             }
             const submitted = body.submitted || 0;
@@ -646,28 +813,12 @@ def _group_view_script() -> str:
             const msg = 'Submitted ' + submitted
                 + (failed ? ', ' + failed + ' failed' : '')
                 + (skipped ? ', ' + skipped + ' skipped' : '');
-            if (typeof window.showToast === "function") {
-                window.showToast(
-                    'Group submitted',
-                    msg, 'threads-view',
-                    'group-submit-' + Date.now(),
-                    { expandable: false, view_type: 'generic' },
-                    false, false,
-                );
-            }
-            _invalidateGroupCaches();
-            window._renderActiveThread && window._renderActiveThread();
+            _groupToast('Group submitted', msg);
+            // Server-side state changes will arrive over SSE and the
+            // bus handler will refresh — no need to nuke caches here.
         })
         .catch(e => {
-            if (typeof window.showToast === "function") {
-                window.showToast(
-                    'Submit failed', String(e),
-                    'threads-view',
-                    'group-submit-err-' + Date.now(),
-                    { expandable: false, view_type: 'generic' },
-                    false, false,
-                );
-            }
+            _groupToast('Submit failed', String(e));
         });
     };
 
@@ -756,16 +907,10 @@ def _group_view_script() -> str:
     function _promptMove() {
         const sel = Array.from(window._groupState.selected);
         if (sel.length === 0) {
-            if (typeof window.showToast === "function") {
-                window.showToast(
-                    'Nothing selected',
-                    'Press x to select items first.',
-                    'threads-view',
-                    'group-move-empty-' + Date.now(),
-                    { expandable: false, view_type: 'generic' },
-                    false, false,
-                );
-            }
+            _groupToast(
+                'Nothing selected',
+                'Press x to select items first.'
+            );
             return;
         }
         // Pull sibling labels from the cache so the user picks by label.
@@ -774,16 +919,10 @@ def _group_view_script() -> str:
         const sibs = (window._groupState.siblingsByParent[activeId] || []);
         const candidates = sibs.filter(s => s.thread_id !== activeId);
         if (candidates.length === 0) {
-            if (typeof window.showToast === "function") {
-                window.showToast(
-                    'No other groups',
-                    'This scrape only has one group.',
-                    'threads-view',
-                    'group-move-only-' + Date.now(),
-                    { expandable: false, view_type: 'generic' },
-                    false, false,
-                );
-            }
+            _groupToast(
+                'No other groups',
+                'This scrape only has one group.'
+            );
             return;
         }
         const lines = candidates.map((s, i) =>
@@ -1099,5 +1238,47 @@ def _group_view_styles() -> str:
     padding: 1px 4px;
     font-family: ui-monospace, SFMono-Regular, monospace;
     font-size: 10px;
+}
+
+/* Self-contained transient toast — does not register a workflow-view,
+ * so it has no /api/workflow-views/.../dismiss round-trip on
+ * teardown. */
+#threads-v5-group-toast-host {
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    z-index: 9999;
+    pointer-events: none;
+}
+.threads-v5-group-toast {
+    pointer-events: auto;
+    min-width: 220px;
+    max-width: 360px;
+    background: var(--bg-secondary, #1a1a1a);
+    border: 1px solid var(--border, #333);
+    border-left: 3px solid var(--accent, #4a7fc1);
+    border-radius: 6px;
+    padding: 10px 14px;
+    color: var(--text, #ddd);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+    opacity: 0;
+    transform: translateY(8px);
+    transition: opacity 180ms ease, transform 180ms ease;
+}
+.threads-v5-group-toast.show {
+    opacity: 1;
+    transform: translateY(0);
+}
+.threads-v5-group-toast-title {
+    font-size: 13px;
+    font-weight: 600;
+    margin-bottom: 2px;
+}
+.threads-v5-group-toast-body {
+    font-size: 12px;
+    color: var(--text-muted, #aaa);
 }
 """

@@ -45,6 +45,11 @@ RESOURCES: dict[str, str] = {
     "cache/knowledge-content":   "cache/knowledge_index/content.npz",
     "cache/knowledge-aliases":   "cache/knowledge_index/aliases.npz",
     "cache/claude-code-usage":   "cache/claude_code_usage.db",
+    # Stage 5 grouping: content-hash → embedding cache for the
+    # journal-similarity merge layer + the cross-group suggestions
+    # endpoint. ``.npz`` suffix is appended at use time by
+    # ``Path.with_suffix(".npz")``.
+    "cache/journal-similarity-embeddings": "cache/journal_similarity/embeddings",
 
     # Chrome integration — rolling data
     "chrome/ledger":             "chrome/tab_ledger.json",

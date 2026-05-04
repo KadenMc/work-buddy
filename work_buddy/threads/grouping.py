@@ -174,6 +174,14 @@ def move_thread_to_parent(
         )
 
         # 2. Record KIND_ITEM_MOVED on the OLD parent (audit half 1).
+        #    The append goes in WITHOUT a parent_event_id lock check
+        #    (None passed → check skipped) — this is a side-channel
+        #    write outside the FSM, similar to how decompose records
+        #    subthreads_spawned. After the append, we MUST bump the
+        #    Thread row's ``parent_event_id`` cache to the freshly
+        #    inserted event ID; otherwise the auto-DISMISS cascade
+        #    below reads stale state and fails optimistic-lock with
+        #    "latest event is X, expected Y".
         old_event_data = {
             "item_id": thread_id,
             "from_parent": old_parent_id,
@@ -191,8 +199,16 @@ def move_thread_to_parent(
             ),
             conn=conn,
         )
+        store.update_thread_state(
+            old_parent_id,
+            parent_event_id=store.latest_event_id(old_parent_id, conn=conn),
+            conn=conn,
+        )
 
         # 3. Record KIND_ITEM_MOVED on the NEW parent (audit half 2).
+        #    Same parent_event_id bump rationale as above — the new
+        #    parent's lock target needs to advance past this event so
+        #    any subsequent FSM transition on it reads consistent state.
         new_event_data = {
             "item_id": thread_id,
             "from_parent": old_parent_id,
@@ -208,6 +224,11 @@ def move_thread_to_parent(
                 data=new_event_data,
                 migration_id=migration_id,
             ),
+            conn=conn,
+        )
+        store.update_thread_state(
+            new_parent_id,
+            parent_event_id=store.latest_event_id(new_parent_id, conn=conn),
             conn=conn,
         )
 

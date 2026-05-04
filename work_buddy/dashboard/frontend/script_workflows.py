@@ -113,7 +113,16 @@ function createWorkflowTab(view) {
 const _viewMeta = {};
 
 async function dismissAndRemoveTab(viewId) {
-    try { await fetch('/api/workflow-views/' + viewId + '/dismiss', { method: 'POST' }); } catch(e) {}
+    // Only POST the dismiss if the workflow view was actually
+    // registered. Without this guard, every call (e.g. from
+    // script_threads_v5.py's _autoDismissResolutionToasts) hits
+    // /api/workflow-views/<id>/dismiss which 404s for thread state
+    // changes that — since PR #75's _surfaces_for change — never
+    // create a workflow view in the first place. Pure frontend-side
+    // cleanup is still safe to run unconditionally.
+    if (_knownViews.has(viewId)) {
+        try { await fetch('/api/workflow-views/' + viewId + '/dismiss', { method: 'POST' }); } catch(e) {}
+    }
     _knownViews.delete(viewId);
     removeWorkflowTab(viewId);
 }
