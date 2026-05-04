@@ -62,18 +62,27 @@ class TestBuildRenderData:
         assert data["intent"]["text"] == "schedule a call"
 
     def test_context_items_from_thread(self, fresh_db):
+        # Stage 5 v2: render preserves the raw ``ContextItem.id`` so
+        # that ``threads.group.move_item`` can target items by stable
+        # source-pipeline-assigned ids (Chrome tab id, journal item
+        # hash, etc.). ``display_index`` carries the 1-based ordering
+        # for frontends that previously relied on ``ci-N`` ordinals.
         t = Thread(
             context_items=(
-                ContextItem(id="raw1", source="chrome", type="tab", label="GitHub", payload={}),
-                ContextItem(id="raw2", source="vault", type="note", label="ECG paper", payload={}),
+                ContextItem(id="raw1", source="chrome", type="tab",
+                            label="GitHub", payload={}),
+                ContextItem(id="raw2", source="vault", type="note",
+                            label="ECG paper", payload={}),
             ),
         )
         store.insert_thread(t)
         data = render.build_render_data(t.thread_id)
         assert len(data["context_items"]) == 2
-        assert data["context_items"][0]["id"] == "ci-1"
+        assert data["context_items"][0]["id"] == "raw1"
+        assert data["context_items"][0]["display_index"] == 1
         assert data["context_items"][0]["label"] == "GitHub"
-        assert data["context_items"][1]["id"] == "ci-2"
+        assert data["context_items"][1]["id"] == "raw2"
+        assert data["context_items"][1]["display_index"] == 2
 
     def test_action_inferred_renders_standard(self, fresh_db):
         t = Thread()

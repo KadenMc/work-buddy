@@ -100,21 +100,28 @@ def journal_v5_scan(
     spawn_result = spawn_threads_from_journal_scan(
         item_dicts, journal_date=effective_date,
     )
-    parent_id = spawn_result.get("parent_id")
-    sub_thread_ids = spawn_result.get("sub_thread_ids") or []
+    # v2 return shape: ``{umbrella_id, child_thread_ids, total_count,
+    # child_count}``. The umbrella replaces the old "parent" thread;
+    # children are group sub-threads (one per tag-similarity cluster),
+    # each holding its segments as ``context_items``.
+    umbrella_id = spawn_result.get("umbrella_id")
+    child_ids = spawn_result.get("child_thread_ids") or []
     logger.info(
-        "journal_v5_scan: spawned parent %s + %d sub-threads for %s",
-        parent_id, len(sub_thread_ids), effective_date,
+        "journal_v5_scan: spawned umbrella %s + %d group children "
+        "for %s (%d items distributed)",
+        umbrella_id, len(child_ids), effective_date,
+        spawn_result.get("total_count") or 0,
     )
     return {
         "status": "ok",
         "journal_date": effective_date,
         "item_count": len(items),
-        "parent_thread_id": parent_id,
-        "sub_thread_ids": sub_thread_ids,
-        # Kept for backward compatibility with any existing callers
-        # that read ``spawned_thread_ids``. New consumers should use
-        # ``parent_thread_id`` + ``sub_thread_ids``.
-        "spawned_thread_ids": sub_thread_ids,
+        "umbrella_id": umbrella_id,
+        "child_thread_ids": child_ids,
+        # Back-compat aliases for any existing callers reading the
+        # old keys. New consumers should use ``umbrella_id`` +
+        # ``child_thread_ids``.
+        "parent_thread_id": umbrella_id,
+        "spawned_thread_ids": child_ids,
         "content_hash": content_hash,
     }

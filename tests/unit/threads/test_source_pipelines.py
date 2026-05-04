@@ -102,10 +102,10 @@ class TestSpawnFromJournal:
         assert thread.context_items[0].payload.get("raw_text") == "raw raw raw"
 
     def test_bulk_spawn(self, fresh_db):
-        """User-feedback fix #3 (2026-05-03 morning): journal scans
-        spawn one parent thread + N sub-threads, NOT N top-level
-        threads. Parent has known intent + action pre-recorded;
-        children are sub-threads with parent_id set."""
+        """Stage 5 v2: journal scans spawn one umbrella +
+        N group children (one per tag-similarity cluster), with the
+        segmented lines as ContextItems on each child. No per-line
+        sub-threads."""
         items = [
             {"id": f"j{i}", "text": f"todo {i}", "label": f"todo {i}",
              "source": "journal_thread",
@@ -115,68 +115,39 @@ class TestSpawnFromJournal:
         result = source_pipelines.spawn_threads_from_journal_scan(
             items, journal_date="2026-05-12",
         )
-        assert result["count"] == 3
-        assert len(result["sub_thread_ids"]) == 3
-        parent_id = result["parent_id"]
-        assert parent_id is not None
-        # Parent shape
-        parent = store.get_thread(parent_id)
-        assert parent.inciting_event_summary["source"] == "journal_scan"
-        assert parent.inciting_event_summary["item_count"] == 3
+        assert result["total_count"] == 3
+        # Items are tagless → one "Untagged" cluster.
+        assert result["child_count"] >= 1
+        assert len(result["child_thread_ids"]) == result["child_count"]
+        umbrella_id = result["umbrella_id"]
+        assert umbrella_id is not None
+        # Umbrella shape — flipped to group by group_thread.
+        umbrella = store.get_thread(umbrella_id)
+        assert umbrella.inciting_event_summary["source"] == "journal_scan"
+        assert umbrella.inciting_event_summary["item_count"] == 3
+        assert umbrella.parent_relationship == "group"
         from work_buddy.threads.enums import FSMState
-        assert parent.fsm_state == FSMState.MONITORING
-        # Children shape
-        for tid in result["sub_thread_ids"]:
+        assert umbrella.fsm_state == FSMState.MONITORING
+        # Children shape — items live as context_items.
+        all_item_ids: set[str] = set()
+        for tid in result["child_thread_ids"]:
             t = store.get_thread(tid)
-            assert t.parent_id == parent_id
-            assert t.inciting_event_summary["note_path"] == "journal/2026-05-12.md"
-            assert t.inciting_event_summary["source"] == "journal_note"
+            assert t.parent_id == umbrella_id
+            for ci in t.context_items:
+                all_item_ids.add(ci.id)
+        # Every input item ended up on some child.
+        assert all_item_ids == {"j0", "j1", "j2"}
 
-    def test_journal_scan_parent_has_synthetic_intent_and_action(
-        self, fresh_db,
-    ):
-        """The parent doesn't go through inference; we pre-record
-        its intent + action with confidence 1.0 (we know them
-        definitionally) so the dashboard renders meaningful
-        content."""
-        items = [{
-            "id": "j1", "text": "todo 1", "label": "todo 1",
-            "source": "journal_thread",
-            "metadata": {"journal_date": "2026-05-12"},
-        }]
-        result = source_pipelines.spawn_threads_from_journal_scan(
-            items, journal_date="2026-05-12",
-        )
-        parent_events = store.list_events(result["parent_id"])
-        kinds = [e.kind for e in parent_events]
-        from work_buddy.threads.events import (
-            KIND_INTENT_INFERRED, KIND_ACTION_INFERRED,
-            KIND_SUBTHREADS_SPAWNED,
-        )
-        assert KIND_INTENT_INFERRED in kinds
-        assert KIND_ACTION_INFERRED in kinds
-        assert KIND_SUBTHREADS_SPAWNED in kinds
-        # Synthetic flag distinguishes these from real LLM inferences
-        intent_event = next(
-            e for e in parent_events if e.kind == KIND_INTENT_INFERRED
-        )
-        assert intent_event.data.get("synthetic") is True
-        assert intent_event.data["confidence"] == 1.0
-        # Standard "decompose" action
-        action_event = next(
-            e for e in parent_events if e.kind == KIND_ACTION_INFERRED
-        )
-        assert action_event.data["payload"]["name"] == "decompose"
-
-    def test_empty_items_list_still_creates_parent(self, fresh_db):
-        """Empty journal scan: still create a parent (count=0) so
-        the user can see that the scan ran. No sub-threads."""
+    def test_empty_items_list_still_creates_umbrella(self, fresh_db):
+        """Empty journal scan: still create the umbrella (no
+        children) so the user can see the scan ran."""
         result = source_pipelines.spawn_threads_from_journal_scan(
             [], journal_date="2026-05-12",
         )
-        assert result["parent_id"] is not None
-        assert result["sub_thread_ids"] == []
-        assert result["count"] == 0
+        assert result["umbrella_id"] is not None
+        assert result["child_thread_ids"] == []
+        assert result["total_count"] == 0
+        assert result["child_count"] == 0
 
 
 # ---------------------------------------------------------------------------

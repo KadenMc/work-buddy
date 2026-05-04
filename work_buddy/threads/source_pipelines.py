@@ -412,70 +412,90 @@ def spawn_threads_from_journal_scan(
     *,
     journal_date: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Spawn the journal-scan thread tree: 1 parent + N sub-threads.
+    """Spawn the journal-scan thread tree (v2): one umbrella +
+    N group children, with the segmented lines as ContextItems on
+    each child.
 
-    User-feedback fix #3 (2026-05-03 morning): each TODO line is
-    now a sub-thread under a per-scan parent, not a standalone
-    top-level thread.
+    Each scan produces:
+    - A umbrella Thread (``parent_relationship='group'``).
+    - N child sub-threads, one per cluster from
+      ``journal_backlog.clustering.linearize_threads`` (Jaccard
+      tag-similarity seriation). Each child's
+      ``inciting_event_summary['cluster_label']`` is generated
+      from the cluster's shared tags via
+      ``journal_backlog.clustering.cluster_label``.
+    - ContextItems on each child = the merged journal segments
+      that fall in that cluster.
+
+    Items are pre-merged via the existing similarity fusion layer
+    (``_similarity_merge_journal_items``) so over-split LLM
+    partitions don't end up as sibling items in the same column.
 
     Args:
         items: list of TriageItem-shaped dicts from the journal
             adapter.
-        journal_date: ``YYYY-MM-DD``; required for the parent's
+        journal_date: ``YYYY-MM-DD``; required for the umbrella's
             inciting summary.
 
     Returns:
-        ``{
-            "parent_id": str,
-            "sub_thread_ids": [str],
-            "count": int,
-        }``
-        Sub-threads that fail to spawn are skipped (logged); count
-        reflects successful spawns.
+        v2 grouping shape::
 
-    Returns a count-zero dict if the parent itself fails to spawn
-    (the per-line spawn calls were never made).
+            {
+              "umbrella_id": str,
+              "child_thread_ids": [str, ...],
+              "total_count": int,    # total items distributed
+              "child_count": int,    # number of group children
+            }
 
-    The empty-items case still produces a parent (count=0) — the
-    user can see "we ran the scan and there was nothing actionable
-    today" rather than an unrendered void.
+        Returns a 0-everything dict if the umbrella itself fails
+        to spawn or no items survive the merge.
     """
     if journal_date is None:
-        # Best-effort fallback: derive from the first item's metadata.
         if items:
             md = (items[0] or {}).get("metadata") or {}
             journal_date = md.get("journal_date")
     if journal_date is None:
-        # Fall back to "unknown" — the cleanup adapter still works
-        # because each child carries its own note_path.
         journal_date = "unknown"
 
-    # 2026-05-04: similarity-based merge BEFORE spawning sub-threads.
-    # The line-range LLM partition occasionally over-splits a single
-    # topic into multiple segments (e.g. one TODO header in one group,
-    # its evidence bullets in another). Run an embedding + tag +
-    # proximity fusion pass to fold those back together so we don't
-    # spawn N sub-threads for what is conceptually one item.
-    #
-    # Failure mode is benign: if the embedding service is down, the
-    # fusion collapses to tag + proximity only and very few merges
-    # fire. If the merge plan itself fails, we log and proceed with
-    # the unmerged items — never block the spawn.
+    # Similarity-merge first — collapse over-split LLM segments
+    # before clustering. (Same behaviour as the pre-v2 path.)
     merged_items, merge_meta = _similarity_merge_journal_items(items)
 
-    parent_id = spawn_parent_thread_from_journal_scan(
+    if not merged_items:
+        # Empty scan: still spawn an umbrella so the user sees "we
+        # ran the scan and there was nothing actionable today".
+        # group_thread refuses empty source lists, so go through
+        # the umbrella-only path here.
+        umbrella_id = spawn_parent_thread_from_journal_scan(
+            journal_date=journal_date,
+            item_count=0,
+        )
+        return {
+            "umbrella_id": umbrella_id,
+            "child_thread_ids": [],
+            "total_count": 0,
+            "child_count": 0,
+        }
+
+    # Spawn the umbrella as a normal decompose-style parent (it'll
+    # be flipped to parent_relationship='group' by group_thread).
+    umbrella_id = spawn_parent_thread_from_journal_scan(
         journal_date=journal_date,
         item_count=len(merged_items),
     )
-    if parent_id is None:
-        return {"parent_id": None, "sub_thread_ids": [], "count": 0}
+    if umbrella_id is None:
+        return {
+            "umbrella_id": None,
+            "child_thread_ids": [],
+            "total_count": 0,
+            "child_count": 0,
+        }
 
-    # Record the merge plan on the parent's event log so the user can
-    # audit what the merger did. Best-effort.
+    # Record the merge plan for audit. Best-effort.
     if merge_meta.get("applied_merges"):
         try:
             store.append_event(ThreadEvent(
-                thread_id=parent_id,
+                thread_id=umbrella_id,
                 kind="similarity_merge_applied",
                 actor="inciting",
                 data={
@@ -487,64 +507,163 @@ def spawn_threads_from_journal_scan(
                     "skipped": merge_meta.get("skipped"),
                 },
             ))
+            store.update_thread_state(
+                umbrella_id,
+                parent_event_id=store.latest_event_id(umbrella_id),
+            )
         except Exception as e:
             logger.warning(
-                "similarity_merge_applied event for journal parent %s "
-                "failed: %s", parent_id, e,
+                "similarity_merge_applied event for journal umbrella "
+                "%s failed: %s", umbrella_id, e,
             )
 
+    # Cluster the merged items into groups using the existing
+    # journal_backlog.clustering pipeline. Each cluster becomes one
+    # group child; cluster_label generates a human-readable name from
+    # shared tags. If clustering fails (missing optional dep, etc.)
+    # we fall back to a single "Ungrouped" cluster so spawn still
+    # works.
+    clusters_input = _build_journal_clusters(merged_items)
+
     note_path = f"journal/{journal_date}.md"
-    sub_ids: list[str] = []
+
+    # Convert merged_items to ContextItems (mirrors what
+    # spawn_thread_from_journal_item used to do for individual
+    # threads, but at item-level for group_thread). The cleanup
+    # adapter still matches by ``inciting.line_text`` on each
+    # *thread* (not item), so we inject the cleanup signal into
+    # the per-cluster inciting_summary_extra below.
+    ctx_items: list[ContextItem] = []
+    items_by_id: dict[str, dict[str, Any]] = {}
     for item in merged_items:
-        tid = spawn_thread_from_journal_item(
-            item,
-            note_path=note_path,
-            parent_id=parent_id,
+        item_id = item.get("id") or "journal_item"
+        items_by_id[item_id] = item
+        raw_text = item.get("text") or ""
+        label = (item.get("label")
+                 or item.get("id")
+                 or "(journal item)")
+        md = item.get("metadata") or {}
+        ctx_items.append(ContextItem(
+            id=item_id,
+            source="journal_note",
+            type="todo_line",
+            label=label,
+            payload={
+                "raw_text": raw_text[:500],
+                "journal_date": md.get("journal_date"),
+                "line_count": md.get("line_count"),
+                "thread_id_hint": md.get("thread_id"),
+                "note_path": note_path,
+            },
+        ))
+
+    try:
+        from work_buddy.threads.group import group_thread, GroupRefused
+        child_ids = group_thread(
+            umbrella_id,
+            ctx_items,
+            clusters_input,
+            inciting_summary_extra={
+                "journal_date": journal_date,
+                "source_pipeline": "journal_v5_scan",
+                "note_path": note_path,
+            },
         )
-        if tid is not None:
-            sub_ids.append(tid)
-    # Record subthreads_spawned on the parent so the audit trail
-    # is consistent with the canonical decompose pattern.
-    if sub_ids:
-        try:
-            from work_buddy.threads.linearization import (
-                linearize_after_spawn,
-            )
-            store.append_event(ThreadEvent(
-                thread_id=parent_id,
-                kind=KIND_SUBTHREADS_SPAWNED,
-                actor="inciting",
-                data={
-                    "child_thread_ids": sub_ids,
-                    "source_count": len(sub_ids),
-                    "source_pipeline": "journal_v5_scan",
-                },
-            ))
-            # Update parent_event_id and run linearization so the
-            # children get sensible order_index values.
-            store.update_thread_state(
-                parent_id,
-                parent_event_id=store.latest_event_id(parent_id),
-            )
-            try:
-                linearize_after_spawn(parent_id)
-            except Exception as e:
-                logger.warning(
-                    "linearize_after_spawn for journal parent %s "
-                    "failed: %s; siblings keep order_index=0",
-                    parent_id, e,
-                )
-        except Exception as e:
-            logger.warning(
-                "subthreads_spawned event for journal parent %s "
-                "failed: %s",
-                parent_id, e,
-            )
+    except GroupRefused as e:
+        logger.warning(
+            "spawn_threads_from_journal_scan: group_thread refused: %s",
+            e,
+        )
+        return {
+            "umbrella_id": umbrella_id,
+            "child_thread_ids": [],
+            "total_count": 0,
+            "child_count": 0,
+            "error": str(e),
+        }
+
     return {
-        "parent_id": parent_id,
-        "sub_thread_ids": sub_ids,
-        "count": len(sub_ids),
+        "umbrella_id": umbrella_id,
+        "child_thread_ids": child_ids,
+        "total_count": len(merged_items),
+        "child_count": len(child_ids),
     }
+
+
+def _build_journal_clusters(
+    merged_items: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Cluster merged journal items via Jaccard tag similarity.
+
+    Reuses ``work_buddy.journal_backlog.clustering.linearize_threads``
+    (which produces ``[[entry, ...], ...]``) and ``cluster_label``
+    (which generates a human-readable name from shared tags).
+
+    Returns the ``[{"label", "item_ids"}, ...]`` shape that
+    :func:`work_buddy.threads.group.group_thread` expects.
+
+    Falls back to a single "Ungrouped" cluster on any failure
+    (missing optional dep, malformed entries, etc.) — clustering
+    is a polish concern, not a correctness one.
+    """
+    if not merged_items:
+        return []
+    try:
+        from work_buddy.journal_backlog.clustering import (
+            cluster_label, linearize_threads,
+        )
+        from work_buddy.journal_backlog.similarity import (
+            extract_inline_tags,
+        )
+    except Exception as e:
+        logger.warning(
+            "_build_journal_clusters: clustering deps unavailable: %s; "
+            "falling back to single cluster", e,
+        )
+        return [{
+            "label": "Ungrouped",
+            "item_ids": [it.get("id") for it in merged_items],
+        }]
+
+    # Build entries with id + tags for linearize_threads.
+    entries: list[dict[str, Any]] = []
+    for it in merged_items:
+        item_id = it.get("id") or "journal_item"
+        text = it.get("text") or ""
+        try:
+            tags = list(extract_inline_tags(text))
+        except Exception:
+            tags = []
+        entries.append({"id": item_id, "tags": tags})
+
+    try:
+        clusters = linearize_threads(entries, break_threshold=0.15)
+    except Exception as e:
+        logger.warning(
+            "_build_journal_clusters: linearize_threads failed: %s; "
+            "falling back to single cluster", e,
+        )
+        return [{
+            "label": "Ungrouped",
+            "item_ids": [e["id"] for e in entries],
+        }]
+
+    out: list[dict[str, Any]] = []
+    for cluster in clusters:
+        if not cluster:
+            continue
+        try:
+            label = cluster_label(cluster)
+        except Exception:
+            label = "Group"
+        out.append({
+            "label": label or "Group",
+            "item_ids": [e["id"] for e in cluster],
+        })
+    return out or [{
+        "label": "Ungrouped",
+        "item_ids": [e["id"] for e in entries],
+    }]
 
 
 # ---------------------------------------------------------------------------
