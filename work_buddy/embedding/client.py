@@ -7,6 +7,7 @@ service isn't running (returns empty results, no errors).
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 from urllib.error import URLError
 from urllib.request import Request, urlopen
@@ -24,7 +25,6 @@ _LOG_PATH = resolve("logs/search-debug")
 
 
 def _debug(msg: str) -> None:
-    import time
     try:
         _LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
         with open(_LOG_PATH, "a", encoding="utf-8") as f:
@@ -56,12 +56,48 @@ def _request(method: str, path: str, data: dict | None = None, timeout: int = 30
 
 def is_available() -> bool:
     """Check if the embedding service is running."""
-    import time
     t = time.time()
     result = _request("GET", "/health", timeout=3)
     available = result is not None and result.get("status") == "ok"
     _debug(f"Embedding health check: {available} ({time.time()-t:.2f}s)")
     return available
+
+
+def wait_until_available(
+    timeout_s: float = 30.0,
+    interval_s: float = 0.5,
+) -> bool:
+    """Block until the embedding service reports ``status: ok``, or
+    return False on timeout.
+
+    Use this from background warmup paths (e.g. the knowledge-dense
+    warmup thread) so they don't fire embed batches against a service
+    that's still cold-loading models. The service's ``/health``
+    endpoint returns ``{"status": "loading"}`` while at least one
+    model is in pending-load state — :func:`is_available` already
+    treats that as "not ready" — so the wait simply polls
+    ``is_available`` until True.
+
+    Bounded by ``timeout_s`` (default 30s — enough headroom for the
+    eager ``leaf-mt`` to finish its initial load on a typical
+    machine; the asymmetric ``leaf-ir`` is lazy-loaded on first doc
+    embed so it doesn't gate the health check).
+
+    Returns True if the service became ready within the budget; False
+    if the timeout elapsed first. Caller decides whether a False
+    return is logged as a soft skip (warmup) or a hard error
+    (synchronous user call).
+    """
+    deadline = time.monotonic() + timeout_s
+    # First check is free — many callsites will be lucky and not
+    # have to sleep at all.
+    if is_available():
+        return True
+    while time.monotonic() < deadline:
+        time.sleep(interval_s)
+        if is_available():
+            return True
+    return False
 
 
 def embed(
@@ -202,7 +238,6 @@ def similarity_search(
         List of {"name": str, "score": float} sorted by score descending.
         Returns empty list if service is unavailable.
     """
-    import time
     t = time.time()
     _debug(f"Calling embedding similarity ({len(candidates)} candidates)...")
     payload: dict[str, Any] = {"query": query, "candidates": candidates}
@@ -237,7 +272,6 @@ def hybrid_search(
         sorted by score descending. Returns empty list if service is unavailable.
     """
     _debug(f"Calling hybrid search ({len(candidates)} candidates)...")
-    import time
     t = time.time()
     payload: dict[str, Any] = {
         "query": query,

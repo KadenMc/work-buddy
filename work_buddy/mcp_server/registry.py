@@ -712,7 +712,33 @@ def _warm_knowledge_index() -> None:
     # Build dense vectors in background (embedding service may be slow).
     # Two parallel signals: content (asymmetric 768-d) and aliases (symmetric
     # 1024-d). Each is independent — if one fails, the other still lands.
+    #
+    # Cold-start race fix (2026-05-04): the warmup thread previously fired
+    # embed batches immediately after the registry build, which was often
+    # 30-40s before the embedding service finished its first model load.
+    # The batches timed out, the service returned None, and the user saw
+    # ``Embedding service unavailable during knowledge alias dense build``
+    # warnings on every cold sidecar start. Now we poll
+    # ``embedding.client.wait_until_available`` (~30s budget) before either
+    # build fires. If the wait times out we log an INFO line and return —
+    # search still works via BM25 fallback; the next periodic rebuild
+    # picks up the dense signals once the service warms up.
     def _build_dense() -> None:
+        try:
+            from work_buddy.embedding.client import wait_until_available
+        except Exception as e:  # defensive — embedding module shouldn't fail to import
+            logger.info(
+                "knowledge-dense-warmup: embedding client unavailable "
+                "(%s); skipping dense build for this cycle.", e,
+            )
+            return
+        if not wait_until_available(timeout_s=30.0, interval_s=0.5):
+            logger.info(
+                "knowledge-dense-warmup: embedding service didn't reach "
+                "'ok' within 30s; skipping dense build. Search will use "
+                "BM25-only ranking until the next periodic rebuild.",
+            )
+            return
         try:
             idx._build_content_vectors(expected_generation=gen)
         except Exception:
