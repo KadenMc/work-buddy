@@ -11,10 +11,11 @@ Stub the LLM to keep the unit tests offline. Cover:
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
+from work_buddy.llm.response import LLMResponse
 from work_buddy.pipelines.actions import (
     CARDINALITY_PER_GROUP,
     ActionDescriptor,
@@ -52,6 +53,30 @@ def _library() -> ActionLibrary:
     ])
 
 
+def _ok(parsed: dict) -> LLMResponse:
+    return LLMResponse(structured_output=parsed, model="claude-sonnet-4-5")
+
+
+def _err(msg: str = "timeout") -> LLMResponse:
+    return LLMResponse(error=msg)
+
+
+def _patch_runner(response: LLMResponse | None = None, *, side_effect=None):
+    """Patch LLMRunner so its .call(...) returns a stub response.
+
+    refine_clusters does ``from work_buddy.llm import LLMRunner`` inside
+    its helper, so the patch target is the package-level name.
+    """
+    runner_instance = MagicMock()
+    if side_effect is not None:
+        runner_instance.call.side_effect = side_effect
+    else:
+        runner_instance.call.return_value = response
+
+    runner_cls = MagicMock(return_value=runner_instance)
+    return patch("work_buddy.llm.LLMRunner", runner_cls)
+
+
 # ---------------------------------------------------------------------------
 # Empty / passthrough
 # ---------------------------------------------------------------------------
@@ -86,33 +111,25 @@ class TestHappyPath:
             ClusterSpec(label="Stub A", item_ids=("i0", "i1")),
             ClusterSpec(label="Stub B", item_ids=("i2", "i3")),
         ]
-        good = {
-            "content": "",
-            "model": "claude-sonnet-4-5",
-            "input_tokens": 10, "output_tokens": 50, "cached": False,
-            "error": None,
-            "parsed": {
-                "clusters": [
-                    {
-                        "label": "Auto-extraction tooling",
-                        "item_ids": ["i0", "i1"],
-                        "proposed_action": {
-                            "capability_name": "journal_route_to_tasks",
-                            "rationale": "These are concrete TODOs.",
-                            "confidence": 0.85,
-                        },
+        good = _ok({
+            "clusters": [
+                {
+                    "label": "Auto-extraction tooling",
+                    "item_ids": ["i0", "i1"],
+                    "proposed_action": {
+                        "capability_name": "journal_route_to_tasks",
+                        "rationale": "These are concrete TODOs.",
+                        "confidence": 0.85,
                     },
-                    {
-                        "label": "ECG paper edits",
-                        "item_ids": ["i2", "i3"],
-                        "proposed_action": None,
-                    },
-                ],
-            },
-        }
-        with patch(
-            "work_buddy.llm.call.llm_call", return_value=good,
-        ):
+                },
+                {
+                    "label": "ECG paper edits",
+                    "item_ids": ["i2", "i3"],
+                    "proposed_action": None,
+                },
+            ],
+        })
+        with _patch_runner(good):
             out = refine_clusters(
                 items=items, pre=pre,
                 source_name="journal_backlog",
@@ -131,23 +148,16 @@ class TestHappyPath:
             ClusterSpec(label="Stub A", item_ids=("i0", "i1")),
             ClusterSpec(label="Stub B", item_ids=("i2", "i3")),
         ]
-        merged = {
-            "content": "", "model": "x",
-            "input_tokens": 0, "output_tokens": 0, "cached": False,
-            "error": None,
-            "parsed": {
-                "clusters": [
-                    {
-                        "label": "All four",
-                        "item_ids": ["i0", "i1", "i2", "i3"],
-                        "proposed_action": None,
-                    },
-                ],
-            },
-        }
-        with patch(
-            "work_buddy.llm.call.llm_call", return_value=merged,
-        ):
+        merged = _ok({
+            "clusters": [
+                {
+                    "label": "All four",
+                    "item_ids": ["i0", "i1", "i2", "i3"],
+                    "proposed_action": None,
+                },
+            ],
+        })
+        with _patch_runner(merged):
             out = refine_clusters(
                 items=items, pre=pre,
                 source_name="journal_backlog",
@@ -166,14 +176,7 @@ class TestFallback:
     def test_llm_error_falls_back_to_pre(self):
         items = _items(2)
         pre = [ClusterSpec(label="Stub A", item_ids=("i0", "i1"))]
-        with patch(
-            "work_buddy.llm.call.llm_call",
-            return_value={
-                "content": "", "model": "", "input_tokens": 0,
-                "output_tokens": 0, "cached": False,
-                "error": "timeout", "parsed": None,
-            },
-        ):
+        with _patch_runner(_err("timeout")):
             out = refine_clusters(
                 items=items, pre=pre,
                 source_name="journal_backlog",
@@ -184,10 +187,7 @@ class TestFallback:
     def test_llm_call_raises_falls_back(self):
         items = _items(2)
         pre = [ClusterSpec(label="Stub A", item_ids=("i0", "i1"))]
-        with patch(
-            "work_buddy.llm.call.llm_call",
-            side_effect=RuntimeError("boom"),
-        ):
+        with _patch_runner(side_effect=RuntimeError("boom")):
             out = refine_clusters(
                 items=items, pre=pre,
                 source_name="journal_backlog",
@@ -198,14 +198,11 @@ class TestFallback:
     def test_unparseable_response_falls_back(self):
         items = _items(2)
         pre = [ClusterSpec(label="Stub A", item_ids=("i0", "i1"))]
-        with patch(
-            "work_buddy.llm.call.llm_call",
-            return_value={
-                "content": "garbled", "model": "",
-                "input_tokens": 0, "output_tokens": 0, "cached": False,
-                "error": None, "parsed": None,
-            },
-        ):
+        # No structured_output and no error: caller can't extract a
+        # parsed dict, so it should fall back. content is non-empty so
+        # the warning logs the length.
+        no_parsed = LLMResponse(content="garbled")
+        with _patch_runner(no_parsed):
             out = refine_clusters(
                 items=items, pre=pre,
                 source_name="journal_backlog",
@@ -228,15 +225,8 @@ class TestValidation:
     def pre(self):
         return [ClusterSpec(label="Stub A", item_ids=("i0", "i1", "i2"))]
 
-    def _make_response(self, parsed: dict) -> dict:
-        return {
-            "content": "", "model": "x", "input_tokens": 0,
-            "output_tokens": 0, "cached": False, "error": None,
-            "parsed": parsed,
-        }
-
     def test_missing_item_ids_falls_back(self, items, pre):
-        bad = self._make_response({
+        bad = _ok({
             "clusters": [
                 {
                     "label": "Partial",
@@ -245,7 +235,7 @@ class TestValidation:
                 },
             ],
         })
-        with patch("work_buddy.llm.call.llm_call", return_value=bad):
+        with _patch_runner(bad):
             out = refine_clusters(
                 items=items, pre=pre,
                 source_name="journal_backlog",
@@ -254,13 +244,13 @@ class TestValidation:
         assert out == pre
 
     def test_duplicate_item_id_falls_back(self, items, pre):
-        bad = self._make_response({
+        bad = _ok({
             "clusters": [
                 {"label": "A", "item_ids": ["i0", "i1"]},
                 {"label": "B", "item_ids": ["i1", "i2"]},
             ],
         })
-        with patch("work_buddy.llm.call.llm_call", return_value=bad):
+        with _patch_runner(bad):
             out = refine_clusters(
                 items=items, pre=pre,
                 source_name="journal_backlog",
@@ -269,7 +259,7 @@ class TestValidation:
         assert out == pre
 
     def test_unknown_capability_name_falls_back(self, items, pre):
-        bad = self._make_response({
+        bad = _ok({
             "clusters": [
                 {
                     "label": "All",
@@ -282,7 +272,7 @@ class TestValidation:
                 },
             ],
         })
-        with patch("work_buddy.llm.call.llm_call", return_value=bad):
+        with _patch_runner(bad):
             out = refine_clusters(
                 items=items, pre=pre,
                 source_name="journal_backlog",
@@ -291,7 +281,7 @@ class TestValidation:
         assert out == pre
 
     def test_confidence_out_of_range_falls_back(self, items, pre):
-        bad = self._make_response({
+        bad = _ok({
             "clusters": [
                 {
                     "label": "All",
@@ -304,7 +294,7 @@ class TestValidation:
                 },
             ],
         })
-        with patch("work_buddy.llm.call.llm_call", return_value=bad):
+        with _patch_runner(bad):
             out = refine_clusters(
                 items=items, pre=pre,
                 source_name="journal_backlog",
@@ -313,7 +303,7 @@ class TestValidation:
         assert out == pre
 
     def test_extra_item_id_falls_back(self, items, pre):
-        bad = self._make_response({
+        bad = _ok({
             "clusters": [
                 {
                     "label": "All plus extra",
@@ -322,7 +312,7 @@ class TestValidation:
                 },
             ],
         })
-        with patch("work_buddy.llm.call.llm_call", return_value=bad):
+        with _patch_runner(bad):
             out = refine_clusters(
                 items=items, pre=pre,
                 source_name="journal_backlog",
