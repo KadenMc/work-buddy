@@ -821,6 +821,31 @@ def _group_view_script() -> str:
             .catch(e => { failed++; failures.push(String(e)); });
         });
         Promise.all(promises).then(() => {
+            // Invalidate the per-thread detail cache for both source
+            // and destination threads — otherwise drilling into either
+            // sub-thread shows the pre-move ``context_items`` from the
+            // stale cache. The umbrella's ``groupsByUmbrella`` cache
+            // is updated by the optimistic step + SSE refresh, but
+            // ``_threadDetailCache`` is independent (script_threads_v5
+            // owns it) and needs explicit invalidation.
+            try {
+                if (typeof window.invalidateThreadCache === "function") {
+                    const touched = new Set();
+                    touched.add(destParentId);
+                    for (const iId of itemIds) {
+                        const src = srcByItem[iId];
+                        if (src) touched.add(src);
+                    }
+                    for (const tid of touched) {
+                        window.invalidateThreadCache(tid);
+                    }
+                }
+            } catch (e) {
+                console.warn(
+                    '[group-view] thread-detail cache invalidate failed:',
+                    e,
+                );
+            }
             // ONLY toast on partial failure. Successful moves are
             // visually obvious right under the cursor; the user
             // already saw the optimistic update land.

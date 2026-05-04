@@ -998,18 +998,51 @@ def _threads_v5_card_script() -> str:
             html += '<tr><th colspan="2" class="threads-v5-ci-payload-header">'
                   + 'Payload</th></tr>';
             for (const k of payloadKeys) {
-                let v = payload[k];
-                if (typeof v === "object") {
-                    v = JSON.stringify(v);
-                }
-                let s = String(v);
-                if (s.length > 200) s = s.slice(0, 200) + "…";
+                const raw = payload[k];
+                if (raw === undefined || raw === null || raw === "") continue;
                 html += '<tr><th>' + _esc(k) + '</th>'
-                      + '<td><code>' + _esc(s) + '</code></td></tr>';
+                      + '<td>'
+                      + _renderPayloadValue(k, raw)
+                      + '</td></tr>';
             }
         }
         html += '</table>';
         return html;
+    }
+
+    function _renderPayloadValue(key, raw) {
+        // Multi-line strings (raw_text, body, etc.) need preserved
+        // newlines + a scrollable box so the inspector doesn't blow
+        // up vertically. Anything ≤ 1 line of plain text stays as the
+        // pre-existing inline ``<code>`` shape.
+        if (typeof raw === "object") {
+            const json = JSON.stringify(raw, null, 2);
+            return _renderScrollableBlock(json, /*language*/ "json");
+        }
+        const s = String(raw);
+        // URLs render as a clickable link.
+        if (typeof raw === "string" && /^https?:\/\//.test(s)) {
+            const href = _esc(s);
+            const display = s.length > 80 ? s.slice(0, 77) + "…" : s;
+            return '<a href="' + href + '" target="_blank" rel="noopener" '
+                 + 'class="threads-v5-ci-payload-link">'
+                 + _esc(display) + '</a>';
+        }
+        const isMultiLine = s.includes("\n");
+        if (isMultiLine || s.length > 200) {
+            return _renderScrollableBlock(s, /*language*/ "text");
+        }
+        return '<code>' + _esc(s) + '</code>';
+    }
+
+    function _renderScrollableBlock(text, language) {
+        // ``<pre>`` preserves whitespace + newlines verbatim. We give
+        // it a fixed max-height so it scrolls vertically once content
+        // exceeds ~6 lines (CSS controls the exact threshold).
+        return '<pre class="threads-v5-ci-payload-block" '
+             + 'data-lang="' + _esc(language || "text") + '">'
+             + _esc(text)
+             + '</pre>';
     }
 
     function _renderFooter(thread, hasFlags) {
@@ -2223,6 +2256,44 @@ def _threads_v5_card_styles() -> str:
     background: var(--bg, #1a1a1a);
     padding: 1px 4px;
     border-radius: 3px;
+}
+
+/* Multi-line payload block — preserves newlines, scrolls vertically
+ * once content exceeds ~6 lines so the inspector stays readable
+ * even for journal segments (raw_text) or pasted JSON blobs. */
+.threads-v5-ci-payload-block {
+    margin: 2px 0;
+    padding: 8px 10px;
+    background: var(--bg, #1a1a1a);
+    border: 1px solid var(--border, #333);
+    border-radius: 4px;
+    font-family: ui-monospace, SFMono-Regular, monospace;
+    font-size: 12px;
+    line-height: 1.45;
+    color: var(--text, #ddd);
+    /* ~6 lines visible; scroll past that. ``ch`` for horizontal
+     * sanity, but mostly we expect long vertical content. */
+    max-height: calc(1.45em * 6 + 16px);
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    /* Soft border accent based on language to hint type — JSON gets
+     * a slightly different shade than plain text. */
+}
+.threads-v5-ci-payload-block[data-lang="json"] {
+    border-left: 3px solid var(--accent, #4a7fc1);
+}
+.threads-v5-ci-payload-block[data-lang="text"] {
+    border-left: 3px solid var(--text-muted, #555);
+}
+
+.threads-v5-ci-payload-link {
+    color: var(--accent, #4a7fc1);
+    text-decoration: none;
+    word-break: break-all;
+}
+.threads-v5-ci-payload-link:hover {
+    text-decoration: underline;
 }
 
 /* Clarification card */
