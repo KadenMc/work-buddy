@@ -9,7 +9,7 @@ work-buddy's functionality is reached through five MCP tools that appear in your
 | Tool | Purpose |
 |------|---------|
 | `wb_init(session_id)` | **REQUIRED first call.** Registers your session. Pass your `WORK_BUDDY_SESSION_ID`. |
-| `wb_search(query)` | **Discover OR inspect.** Natural language → find capabilities. Exact name → get that capability's full parameter schema. |
+| `wb_search(query)` | Find a **capability to call**. Natural language → ranked capabilities/workflows. Exact name → its parameter schema. *Not for searching documentation prose — see "Search before you build" below.* |
 | `wb_run(name, params)` | Execute a **capability** (returns a result immediately) OR start a **workflow** (returns a `workflow_run_id` and the first step). |
 | `wb_advance(workflow_run_id, result)` | Advance a workflow after completing one of its steps. |
 | `wb_step_result(workflow_run_id, step_id, key?)` | Retrieve full step result data elided by the visibility system. |
@@ -70,19 +70,20 @@ Use `knowledge` for unified search across both stores, `agent_docs` for system o
 
 `CLAUDE.local.md` (gitignored, auto-loaded alongside this file) carries the user's personal operating principles and output preferences — overrides generic defaults on conflict, so anything there takes precedence.
 
-## Before you build: consult what already exists
+## Search before you build — and pick the right search tool
 
-**Before writing any Python that touches work-buddy state, consult the existing capabilities and documentation first.** If you feel the urge to `import work_buddy.X` or build new functionality from scratch, that's a signal you're about to miss something that already exists. `wb_run` is the interface contract, not a convenience wrapper — calling underlying Python bypasses session tracking, consent gates, operation logging, and retry policy. The operation is not equivalent even if the outcome looks the same.
+Before writing Python that touches work-buddy state, search first. work-buddy has **two** search tools that look interchangeable but aren't, and reaching for the wrong one is the most common discovery mistake:
 
-### Three questions, three tools
+|                          | `wb_search`                                              | `agent_docs(query=...)`                                                              |
+|--------------------------|----------------------------------------------------------|--------------------------------------------------------------------------------------|
+| **Indexes**              | capabilities + workflows (callable things)               | every knowledge unit (directions, system, capability, workflow)                      |
+| **Use when you want to…** | **call** something                                      | **read** something                                                                   |
+| **Question shape**       | "What's the capability for X?" / "What params does Y take?" | "What's the rule for X?" / "How does subsystem Y work?" / "What does the X directions unit say?" |
+| **Returns**              | callable name + parameter schema                         | knowledge unit prose                                                                 |
 
-| If your question is… | Use | Returns |
-|---|---|---|
-| *"What can I do? What's the capability for X?"* | `mcp__work-buddy__wb_search("<natural-language question>")` | ranked capabilities matching your intent |
-| *"How does subsystem X work?"* | `mcp__work-buddy__wb_run("agent_docs", {"scope": "X/"})` to browse, then `{"path": "X/foo", "depth": "full"}` to read a specific unit | knowledge unit contents |
-| *"I know I want capability Y — what are its parameters?"* | `mcp__work-buddy__wb_search("<exact capability name>")` | Y's full parameter schema, no other search overhead |
+If your question is about *prose* — directions, behavior, how something works — `wb_search` will return plausible-looking capability hits but **not** the directions unit that actually answers you. Reach for `agent_docs(query=...)` instead.
 
-If none of these surface anything relevant, the capability may not exist. **Ask the user** before building.
+`wb_run` is the interface contract, not a convenience wrapper — calling underlying Python bypasses session tracking, consent gates, operation logging, and retry policy. The operation is not equivalent even if the outcome looks the same.
 
 ### Worked example
 
@@ -98,6 +99,8 @@ mcp__work-buddy__wb_search("task_toggle")
 mcp__work-buddy__wb_run("task_toggle", {"task_id": "...", "done": true})
     → executes
 ```
+
+If `wb_search` returns nothing relevant, the capability may not exist. If `agent_docs(query=...)` returns nothing, the rule or behavior may not be documented yet. In both cases, **ask the user** before building.
 
 ## Domain map
 
