@@ -417,7 +417,7 @@ def contextualize_intents(
        (e.g., task was recently completed → change from record_into_task to close)
 
     Args:
-        intent_data: Output of group_intents (or group_intents_from_raw).
+        intent_data: Output of :func:`group_intents`.
 
     Returns:
         Same structure with added ``context`` and possibly revised actions.
@@ -587,45 +587,7 @@ def _days_ago(n: int) -> str:
 def contextualize_intents_from_raw(
     intent_data: dict[str, Any],
 ) -> dict[str, Any]:
-    """Auto_run entry point for contextualization.
-
-    Expects the output of group_intents_from_raw.
-    """
+    """Auto_run wrapper around :func:`contextualize_intents`."""
     return contextualize_intents(intent_data)
 
 
-def group_intents_from_raw(
-    clusters_data: dict[str, Any],
-    lens: str = "intent",
-    data_type: str = "chrome",
-) -> dict[str, Any]:
-    """Auto_run entry point for Sonnet grouping.
-
-    Expects the output of enrich_items_with_summaries (with clusters,
-    singletons, and summaries).
-
-    Args:
-        clusters_data: Output from the summarize step.
-        lens: "intent" or "topic".
-        data_type: "chrome", "document", "journal", "conversation".
-    """
-    all_cluster_dicts = (
-        clusters_data.get("clusters", [])
-        + clusters_data.get("singletons", [])
-    )
-    clusters = [TriageCluster.from_dict(d) for d in all_cluster_dicts]
-    summaries = clusters_data.get("summaries", {})
-
-    result = group_intents(clusters, summaries=summaries, lens=lens, data_type=data_type)
-
-    return {
-        "success": not result.get("error"),
-        "intent_groups": result.get("intent_groups", []),
-        "uncategorized_tabs": result.get("uncategorized_tabs", []),
-        "overall_narrative": result.get("overall_narrative", ""),
-        "tokens": result.get("tokens", {}),
-        # Pass through for the main model
-        "clusters": clusters_data.get("clusters", []),
-        "singletons": clusters_data.get("singletons", []),
-        "item_count": clusters_data.get("item_count", 0),
-    }

@@ -1574,81 +1574,6 @@ def _context_capabilities() -> list[Capability]:
         session_wb_activity as _session_wb_activity,
     )
 
-    def _chrome_cluster_subprocess(
-        *,
-        use_content: bool = True,
-        max_extract: int = 30,
-        max_chars: int = 3000,
-    ) -> str:
-        """Cluster currently-open tabs via the conductor's subprocess runner."""
-        from work_buddy.mcp_server.conductor import _execute_auto_run
-
-        # Step 1: collect tabs
-        collect_result = _execute_auto_run(
-            "chrome_cluster:collect",
-            {
-                "callable": "work_buddy.clarify.adapters.chrome.chrome_tabs_to_items",
-                "kwargs": {"engagement_window": "24h", "include_summaries": True},
-                "timeout": 30,
-            },
-            {},
-        )
-        if not collect_result.get("success"):
-            return f"Tab collection failed: {collect_result.get('error', 'unknown')}"
-        items = collect_result.get("value", {}).get("items", [])
-        if not items:
-            return "No currently-open tabs found."
-
-        # Step 2: cluster (with or without content extraction)
-        if use_content:
-            cluster_result = _execute_auto_run(
-                "chrome_cluster:extract_and_cluster",
-                {
-                    "callable": "work_buddy.clarify.adapters.chrome.extract_and_cluster_tabs",
-                    "kwargs": {"items_data": items, "max_extract": max_extract, "max_chars": max_chars},
-                    "timeout": 120,
-                },
-                {},
-            )
-        else:
-            cluster_result = _execute_auto_run(
-                "chrome_cluster:cluster",
-                {
-                    "callable": "work_buddy.clarify.cluster.cluster_items_from_raw",
-                    "kwargs": {"items_data": items},
-                    "timeout": 90,
-                },
-                {},
-            )
-
-        if not cluster_result.get("success"):
-            return f"Clustering failed: {cluster_result.get('error', 'unknown')}"
-
-        data = cluster_result.get("value", {})
-
-        # Format as markdown
-        lines = [f"## Tab Clusters ({data.get('cluster_count', 0)} groups, "
-                 f"{data.get('singleton_count', 0)} singletons, "
-                 f"model: {data.get('embedding_model', 'unknown')})\n"]
-
-        for c in data.get("clusters", []):
-            lines.append(f"### Cluster {c['cluster_id']}: {c['label']}")
-            lines.append(f"Cohesion: {c['cohesion']:.2f} | Items: {len(c['items'])}")
-            for item in c["items"]:
-                lines.append(f"- {item['label']}")
-                if item.get("url"):
-                    lines.append(f"  {item['url']}")
-            lines.append("")
-
-        if data.get("singletons"):
-            lines.append("### Unclustered tabs")
-            for c in data["singletons"]:
-                for item in c["items"]:
-                    lines.append(f"- {item['label']}")
-            lines.append("")
-
-        return "\n".join(lines)
-
     def _format_result_header(r: dict) -> str:
         """Render the per-result header line, dispatching on source.
 
@@ -2110,25 +2035,6 @@ def _context_capabilities() -> list[Capability]:
             },
             callable=chrome_content,
             requires=["chrome_extension"],
-        ),
-        Capability(
-            name="chrome_cluster",
-            description="Cluster currently-open Chrome tabs by semantic similarity. Extracts page content, embeds with document-tower model, and clusters via Louvain. Completely free — no LLM calls. Returns tab groups with cohesion scores. Set use_content=false for title-only clustering (faster, works when extension can't extract).",
-            category="context",
-            search_aliases=[
-                "group tabs",
-                "cluster tabs",
-                "tab groups",
-                "organize tabs",
-                "tab similarity",
-                "related tabs",
-            ],
-            parameters={
-                "use_content": {"type": "bool", "description": "True: extract+embed page text (richer). False: embed titles only (faster). Default: true.", "required": False},
-                "max_extract": {"type": "int", "description": "Max tabs to extract content from (default 30)", "required": False},
-                "max_chars": {"type": "int", "description": "Max chars per tab for extraction (default 3000)", "required": False},
-            },
-            callable=_chrome_cluster_subprocess,
         ),
         Capability(
             name="triage_item_detail",

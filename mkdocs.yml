@@ -89,7 +89,6 @@ nav:
   - Agent Docs: handbook/context_agent_docs.md
   - Agent Docs Rebuild: handbook/context_agent_docs_rebuild.md
   - Chrome Activity: handbook/context_chrome_activity.md
-  - Chrome Cluster: handbook/context_chrome_cluster.md
   - Chrome Content: handbook/context_chrome_content.md
   - Chrome Infer: handbook/context_chrome_infer.md
   - Chrome Tab Close: handbook/context_chrome_tab_close.md

@@ -164,6 +164,22 @@ def _domain_of(url: str) -> str:
         return ""
 
 
+def _compose_summary_text(*, title: str, page_summary: Any) -> str:
+    """Compose a CapturedItem.summary text from a PageSummary.
+
+    Mirrors the legacy ``chrome_tabs_to_items`` text shape so embedding
+    similarity stays consistent across runs (some clusters earlier in
+    a window may have been built from cache-loaded summaries that used
+    this exact format).
+    """
+    content_summary = getattr(page_summary, "content_summary", "") or ""
+    intent_spec = getattr(page_summary, "user_intent_speculation", "") or ""
+    text = f"{title}. {content_summary}".strip()
+    if intent_spec:
+        text += f" Intent: {intent_spec}"
+    return text
+
+
 def _synthesised_tags(payload: dict[str, Any]) -> tuple[str, ...]:
     """Build a tag tuple from Chrome metadata. Used as the tag
     similarity signal in precluster; covers cases where the
@@ -229,25 +245,155 @@ class ChromeTriagePipeline:
         return [_captured_from_triage_dict(td) for td in triage_dicts]
 
     # ------------------------------------------------------------------
-    # Stage 2 — annotate (synthesise tags from chrome metadata)
+    # Stage 2 — annotate (synthesise tags + Haiku-summarise uncached tabs)
     # ------------------------------------------------------------------
+
+    #: Cap on how many tabs we'll summarise in one pipeline run. Matches the
+    #: default that the legacy chrome-triage path used.
+    _MAX_SUMMARISE: int = 30
+
+    #: Per-tab content cap fed into the Haiku call. Same as the legacy default.
+    _SUMMARISE_MAX_CHARS: int = 3000
 
     def annotate_items(
         self, items: list[CapturedItem],
     ) -> list[CapturedItem]:
-        """Synthesise tags from each tab's ``domain`` + ``group_title``.
+        """Attach Chrome-metadata tags + Haiku content summaries.
 
-        No new LLM call — the cached summary loaded by
-        :meth:`collect` is already in ``CapturedItem.summary``.
-        Future iterations could add a Haiku tag/summary refresh for
-        tabs without cached summaries.
+        Items already carrying a ``summary`` (loaded from the URL-keyed
+        cache during :meth:`collect`) skip the LLM call. The remainder
+        go through a single batch Haiku call via the Chrome
+        ``_summarize_tabs`` primitive — which routes through
+        :class:`LLMRunner` at :data:`ModelTier.FRONTIER_FAST`
+        (``claude-haiku-4-5``) with no escalation. Hosted Anthropic
+        only; not local.
+
+        Failure modes are best-effort: if the Chrome extension is
+        unreachable or content extraction returns empty for every tab,
+        we fall through with tags-only annotation and clustering runs
+        on title + domain signal. We never raise from this stage.
         """
         if not items:
             return items
-        return [
+
+        # Always synthesise tags from Chrome metadata, regardless of
+        # whether summarisation runs.
+        items = [
             ci.augment(tags=_synthesised_tags(ci.payload))
             for ci in items
         ]
+
+        needs_summary = [
+            ci for ci in items
+            if not ci.summary
+            and (ci.payload or {}).get("tab_id") is not None
+            and (ci.payload or {}).get("url")
+        ]
+        if not needs_summary:
+            return items
+
+        # Prioritise by engagement score so the cap drops the least-used tabs.
+        needs_summary.sort(
+            key=lambda ci: (ci.payload or {}).get("score", 0),
+            reverse=True,
+        )
+        to_summarise = needs_summary[: self._MAX_SUMMARISE]
+
+        try:
+            summaries_by_url = self._summarise_tabs(to_summarise)
+        except Exception as e:  # noqa: BLE001 — best-effort enrichment
+            logger.warning(
+                "chrome pipeline.annotate_items: summarisation raised "
+                "%s; continuing with tags-only annotation",
+                e,
+            )
+            return items
+
+        if not summaries_by_url:
+            return items
+
+        out: list[CapturedItem] = []
+        for ci in items:
+            payload = ci.payload or {}
+            url = payload.get("url") or ""
+            page_summary = summaries_by_url.get(url)
+            if page_summary is None:
+                out.append(ci)
+                continue
+            text = _compose_summary_text(
+                title=payload.get("title") or ci.label,
+                page_summary=page_summary,
+            )
+            out.append(ci.augment(summary=text))
+        return out
+
+    def _summarise_tabs(
+        self, items: list[CapturedItem],
+    ) -> dict[str, Any]:
+        """Extract page content + run the Haiku batch summariser.
+
+        Returns ``{url: PageSummary}`` for tabs that summarised
+        successfully. Tabs whose extraction failed or whose summariser
+        returned a placeholder are omitted so callers can distinguish
+        "no content" from "summary present."
+        """
+        from work_buddy.collectors.chrome_infer import (
+            _extract_uncached,
+            _summarize_tabs,
+        )
+
+        selected: list[dict[str, Any]] = []
+        url_to_tab_id: dict[str, int] = {}
+        for ci in items:
+            payload = ci.payload or {}
+            url = payload.get("url") or ""
+            tab_id = payload.get("tab_id")
+            if not url or tab_id is None:
+                continue
+            selected.append({
+                "url": url,
+                "title": payload.get("title") or ci.label,
+                "engaged_count": payload.get("engaged_count", 0),
+                "score": payload.get("score", 0),
+            })
+            url_to_tab_id[url] = tab_id
+
+        if not selected:
+            return {}
+
+        tab_contents, tabs_failed = _extract_uncached(
+            selected=selected,
+            url_to_tab_id=url_to_tab_id,
+            max_chars=self._SUMMARISE_MAX_CHARS,
+        )
+        if tabs_failed:
+            logger.info(
+                "chrome pipeline.annotate_items: content extraction "
+                "failed for %d/%d tabs",
+                tabs_failed, len(selected),
+            )
+
+        if not tab_contents:
+            # Extension unreachable or every tab errored. Skip the
+            # Haiku call — there's nothing to summarise.
+            return {}
+
+        summaries, cached_count = _summarize_tabs(selected, tab_contents)
+        logger.info(
+            "chrome pipeline.annotate_items: summarised %d tabs "
+            "(%d cached, %d fresh)",
+            len(summaries), cached_count, len(summaries) - cached_count,
+        )
+
+        result: dict[str, Any] = {}
+        for sel, summary in zip(selected, summaries):
+            if summary is None:
+                continue
+            content_summary = getattr(summary, "content_summary", "") or ""
+            if not content_summary or content_summary == "Content unavailable":
+                continue
+            result[sel["url"]] = summary
+        return result
 
     # ------------------------------------------------------------------
     # Stage 3 — precluster (embedding+tag+proximity Louvain)

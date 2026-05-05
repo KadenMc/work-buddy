@@ -52,7 +52,6 @@
       "context/agent_docs",
       "context/agent_docs_rebuild",
       "context/chrome_activity",
-      "context/chrome_cluster",
       "context/chrome_content",
       "context/chrome_infer",
       "context/chrome_tab_close",

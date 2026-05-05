@@ -47,7 +47,6 @@
     "workflow": "browser/chrome-triage",
     "capabilities": [
       "context/chrome_activity",
-      "context/chrome_cluster",
       "context/chrome_content",
       "context/chrome_infer",
       "context/triage_item_detail"

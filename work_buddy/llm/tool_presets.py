@@ -134,7 +134,6 @@ _READONLY_CONTEXT = _READONLY_SAFE | frozenset({
     "datacore_run_plan",
     # Chrome reads (no tab close/move/group)
     "chrome_activity",
-    "chrome_cluster",
     "chrome_content",
     "chrome_infer",
     "triage_item_detail",

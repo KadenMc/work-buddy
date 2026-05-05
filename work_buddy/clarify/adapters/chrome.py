@@ -224,315 +224,6 @@ def _compute_engagement(
     return result
 
 
-# ── Extract + Cluster (Tier 1 — free) ────────────────────────────
-
-
-def extract_and_cluster_tabs(
-    collect_result: dict[str, Any] | None = None,
-    items_data: list[dict[str, Any]] | None = None,
-    max_extract: int = 30,
-    max_chars: int = 3000,
-) -> dict[str, Any]:
-    """Extract page content, embed with document tower, cluster.  Auto_run.
-
-    This is the "free" path — no LLM calls.  Uses the Chrome extension
-    to extract page text, then embeds with the asymmetric document tower
-    (leaf-ir, 768d) and clusters via Louvain.
-
-    Args:
-        collect_result: Full output of chrome_tabs_to_items (from workflow
-            input_map).  The 'items' key is extracted automatically.
-        items_data: Direct list of TriageItem dicts (for standalone use).
-            One of collect_result or items_data must be provided.
-        max_extract: Max tabs to extract content from.
-        max_chars: Max characters per tab for extraction.
-
-    Returns:
-        Dict with clusters, singletons, and a content_map for downstream
-        use (avoids re-extracting for Haiku summarization).
-    """
-    from work_buddy.collectors.chrome_collector import request_content
-    from work_buddy.collectors.chrome_infer import _resolve_tab_ids
-    from work_buddy.clarify.cluster import cluster_items, embed_items
-
-    # Accept either the full collect result or a direct items list
-    if items_data is None:
-        if collect_result is not None:
-            items_data = collect_result.get("items", [])
-        else:
-            return {"success": False, "error": "No items provided"}
-
-    items = [TriageItem.from_dict(d) for d in items_data]
-
-    # Resolve tab IDs for content extraction
-    urls = [item.url for item in items if item.url]
-    url_to_tab_id = _resolve_tab_ids(urls)
-
-    # Extract page content
-    tab_ids = []
-    url_for_tid: dict[int, str] = {}
-    for item in items[:max_extract]:
-        if item.url:
-            tid = url_to_tab_id.get(item.url)
-            if tid is not None:
-                tab_ids.append(tid)
-                url_for_tid[tid] = item.url
-
-    content_map: dict[str, str] = {}  # {url: page_text}
-    has_content = False
-    if tab_ids:
-        extracted = request_content(tab_ids=tab_ids, max_chars=max_chars)
-        if extracted:
-            for ex in extracted:
-                tid = ex.get("tabId")
-                url = url_for_tid.get(tid, ex.get("url", ""))
-                if not ex.get("error") and ex.get("text"):
-                    content_map[url] = ex["text"]
-
-    has_content = len(content_map) > len(items) * 0.3  # >30% success
-
-    # Update item text with extracted content where available
-    if has_content:
-        for item in items:
-            if item.url and item.url in content_map:
-                # Prepend title for context, then page content
-                title = item.metadata.get("title", item.label)
-                item.text = f"{title}\n\n{content_map[item.url][:max_chars]}"
-
-    logger.info(
-        "Content extracted for %d/%d tabs (using %s model)",
-        len(content_map), len(items),
-        "leaf-ir document tower" if has_content else "leaf-mt on titles",
-    )
-
-    # Embed — use document tower if we have content, symmetric if titles only
-    embed_items(items, use_ir_model=has_content)
-
-    # Cluster
-    clusters = cluster_items(items)
-
-    multi = [c for c in clusters if c.size > 1]
-    singletons = [c for c in clusters if c.size == 1]
-
-    logger.info(
-        "Clustering: %d multi-item clusters, %d singletons",
-        len(multi), len(singletons),
-    )
-
-    # Strip embeddings from serialized output — they're only needed
-    # during clustering, not downstream.  Saves ~475KB for 28 tabs.
-    cluster_dicts = []
-    for c in multi:
-        cd = c.to_dict()
-        for item in cd["items"]:
-            item.pop("embedding", None)
-        cluster_dicts.append(cd)
-
-    singleton_dicts = []
-    for c in singletons:
-        cd = c.to_dict()
-        for item in cd["items"]:
-            item.pop("embedding", None)
-        singleton_dicts.append(cd)
-
-    # Write content_map to a temp file instead of inlining it.
-    # The summarize step reads from this path to avoid re-extracting.
-    import json as _json
-    import tempfile
-    content_map_path = None
-    if content_map:
-        fd, content_map_path = tempfile.mkstemp(
-            suffix=".json", prefix="wb_content_map_"
-        )
-        with open(fd, "w", encoding="utf-8") as f:
-            _json.dump(content_map, f)
-        logger.info("Content map written to %s (%d URLs)", content_map_path, len(content_map))
-
-    # Write content index for triage_item_detail lookups
-    if content_map:
-        from work_buddy.clarify.detail import write_content_index
-        url_to_id = {item.url: item.id for item in items if item.url}
-        write_content_index(content_map, url_to_id)
-
-    return {
-        "success": True,
-        "clusters": cluster_dicts,
-        "singletons": singleton_dicts,
-        "item_count": len(items),
-        "cluster_count": len(multi),
-        "singleton_count": len(singletons),
-        "content_map_path": content_map_path,  # file path, not inline data
-        "content_extracted": len(content_map),
-        "embedding_model": "leaf-ir" if has_content else "leaf-mt",
-    }
-
-
-# ── Enrichment (Tier 2 — Haiku) ─────────────────────────────────
-
-
-def enrich_items_with_summaries(
-    clusters_data: dict[str, Any],
-    max_tabs: int = 20,
-) -> dict[str, Any]:
-    """Summarize tabs with Haiku.  Auto_run entry point.
-
-    Uses pre-extracted content from the extract-and-cluster step when
-    available (avoids re-extracting).  Only tabs without cached summaries
-    are sent to Haiku.
-
-    Args:
-        clusters_data: Output of extract_and_cluster_tabs (has clusters,
-            singletons, and content_map).
-        max_tabs: Maximum tabs to summarize (default 20).
-
-    Returns:
-        Updated clusters/singletons with enriched item text + summaries dict.
-    """
-    # Reconstruct items from clusters + singletons
-    all_cluster_dicts = (
-        clusters_data.get("clusters", [])
-        + clusters_data.get("singletons", [])
-    )
-    all_items: list[TriageItem] = []
-    for cd in all_cluster_dicts:
-        for item_dict in cd.get("items", []):
-            all_items.append(TriageItem.from_dict(item_dict))
-
-    # Load content_map from file if a path was provided (avoids piping
-    # 67KB+ of page text through subprocess stdin)
-    content_map: dict[str, str] = {}
-    content_map_path = clusters_data.get("content_map_path")
-    if content_map_path:
-        try:
-            import json as _json
-            with open(content_map_path, "r", encoding="utf-8") as f:
-                content_map = _json.load(f)
-            logger.info("Loaded content map from %s (%d URLs)", content_map_path, len(content_map))
-        except Exception as e:
-            logger.warning("Could not load content map from %s: %s", content_map_path, e)
-
-    # Find tabs needing summaries
-    needs_summary = [
-        item for item in all_items
-        if not item.metadata.get("has_summary") and item.url
-    ]
-
-    if not needs_summary:
-        logger.info("All tabs already have cached summaries")
-        return {
-            "success": True,
-            **_passthrough_clusters(clusters_data),
-            "summaries": {},
-            "summarized_count": 0,
-            "already_cached": len(all_items),
-        }
-
-    # Prioritize by engagement
-    needs_summary.sort(key=lambda i: i.metadata.get("score", 0), reverse=True)
-    to_summarize = needs_summary[:max_tabs]
-
-    logger.info(
-        "Enriching %d/%d uncached tabs with Haiku summaries",
-        len(to_summarize), len(needs_summary),
-    )
-
-    from work_buddy.collectors.chrome_infer import (
-        _extract_content,
-        _resolve_tab_ids,
-        _summarize_tabs,
-        _summary_to_dict,
-    )
-
-    # Build tab dicts for _summarize_tabs
-    tab_dicts = []
-    for item in to_summarize:
-        if not item.url:
-            continue
-        tab_dicts.append({
-            "url": item.url,
-            "title": item.metadata.get("title", item.label),
-            "engaged_count": item.metadata.get("engaged_count", 0),
-            "visit_count": item.metadata.get("visit_count", 0),
-            "active_count": item.metadata.get("active_count", 0),
-        })
-
-    # Build tab_contents — prefer content_map (already extracted), else re-extract
-    tab_contents: dict[str, dict] = {}
-    urls_needing_extraction = []
-    for td in tab_dicts:
-        url = td["url"]
-        if url in content_map:
-            tab_contents[url] = {"text": content_map[url], "meta": {}}
-        else:
-            urls_needing_extraction.append(url)
-
-    # Extract content for any tabs not in content_map
-    if urls_needing_extraction:
-        url_to_tab_id = _resolve_tab_ids(urls_needing_extraction)
-        tab_ids_to_fetch = []
-        url_for_tid: dict[int, str] = {}
-        for url in urls_needing_extraction:
-            tid = url_to_tab_id.get(url)
-            if tid is not None:
-                tab_ids_to_fetch.append(tid)
-                url_for_tid[tid] = url
-
-        if tab_ids_to_fetch:
-            extracted = _extract_content(tab_ids_to_fetch, 3000)
-            for ex in extracted:
-                tid = ex.get("tabId")
-                url = url_for_tid.get(tid, ex.get("url", ""))
-                if not ex.get("error"):
-                    tab_contents[url] = ex
-
-    # Summarize via Haiku
-    summaries_list, cached_count = _summarize_tabs(tab_dicts, tab_contents)
-
-    # Build summaries dict keyed by URL
-    summaries: dict[str, dict] = {}
-    for td, summary in zip(tab_dicts, summaries_list):
-        summaries[td["url"]] = _summary_to_dict(summary)
-
-    # Update items in clusters with summary data
-    summarized_count = 0
-    for cd in all_cluster_dicts:
-        for item_dict in cd.get("items", []):
-            url = item_dict.get("url")
-            if url and url in summaries:
-                sd = summaries[url]
-                item_dict["metadata"]["has_summary"] = True
-                item_dict["metadata"]["user_posture"] = sd.get("user_posture", "")
-                item_dict["metadata"]["summary_data"] = sd
-                summarized_count += 1
-
-    # Write summary index for triage_item_detail lookups
-    all_item_dicts = []
-    for cd in all_cluster_dicts:
-        all_item_dicts.extend(cd.get("items", []))
-    from work_buddy.clarify.detail import write_summary_index
-    write_summary_index(all_item_dicts, summaries)
-
-    return {
-        "success": True,
-        **_passthrough_clusters(clusters_data),
-        "summaries": summaries,
-        "summarized_count": summarized_count,
-        "already_cached": len(all_items) - len(needs_summary),
-        "content_extracted": len(tab_contents),
-    }
-
-
-def _passthrough_clusters(data: dict[str, Any]) -> dict[str, Any]:
-    """Pass through cluster structure from previous step."""
-    return {
-        "clusters": data.get("clusters", []),
-        "singletons": data.get("singletons", []),
-        "item_count": data.get("item_count", 0),
-        "cluster_count": data.get("cluster_count", 0),
-        "singleton_count": data.get("singleton_count", 0),
-    }
-
-
 # ── Helpers ──────────────────────────────────────────────────────
 
 
@@ -556,19 +247,43 @@ def _resolve_relative(since: str) -> datetime:
 
 
 def _load_cached_summaries(tabs: list[dict]) -> dict[str, dict]:
-    """Load cached Haiku summaries for tabs (no new LLM calls)."""
+    """Load cached Haiku summaries for tabs by URL (no new LLM calls).
+
+    Best-effort lookup: we don't have the original page content here,
+    so we can't compute the cache module's ``input_hash`` for a strict
+    match. Read the underlying store directly and trust the URL-keyed
+    cache slot. Stale entries age out via the cache's expiry field,
+    which we still honour.
+    """
     try:
-        from work_buddy.llm.cache import get as cache_get
+        from datetime import datetime as _datetime
+
+        from work_buddy.llm.cache import _read_cache
     except ImportError:
         return {}
 
+    cache = _read_cache()
+    if not cache:
+        return {}
+
     result: dict[str, dict] = {}
+    now = _datetime.now()
     for tab in tabs:
         url = tab.get("url", "")
+        if not url:
+            continue
         cache_key = f"summarize_tab:{_normalize_for_cache(url)}"
-        cached = cache_get(cache_key)
-        if cached and cached.get("result"):
-            result[url] = cached["result"]
+        entry = cache.get(cache_key)
+        if not entry or "result" not in entry:
+            continue
+        expires_at = entry.get("expires_at") or ""
+        if expires_at:
+            try:
+                if _datetime.fromisoformat(expires_at) < now:
+                    continue
+            except ValueError:
+                pass
+        result[url] = entry["result"]
     return result
 
 
@@ -577,13 +292,6 @@ def _domain(url: str) -> str:
         return urlparse(url).netloc
     except Exception:
         return ""
-
-
-def _normalize_url(url: str) -> str:
-    """Lightweight URL normalization for deduplication."""
-    parsed = urlparse(url)
-    path = parsed.path.rstrip("/")
-    return f"{parsed.netloc}{path}"
 
 
 def _normalize_for_cache(url: str) -> str:
