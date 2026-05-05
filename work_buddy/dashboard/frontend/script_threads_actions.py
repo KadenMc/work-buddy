@@ -43,28 +43,155 @@ def _threads_actions_script() -> str:
         window._actionRenderers[actionName] = fn;
     };
 
-    window.renderActionGeneric = function (action, opts) {
-        opts = opts || {};
+    // Capabilities whose ``parameters`` are bound at dispatch time
+    // (not authored ahead of time on the proposal). For these, an
+    // empty parameters dict on the proposal is the normal state, not
+    // a signal that there's nothing to show. The right-pane editor
+    // surfaces a runtime-binding hint instead of "(no parameters)".
+    const _RUNTIME_BOUND_BINDINGS = {
+        chrome_tab_close: {
+            from: "context_items",
+            note: "Will close every Chrome tab in this group.",
+        },
+        chrome_tab_group: {
+            from: "context_items",
+            note: "Will create a Chrome tab group containing every tab in this group.",
+        },
+        chrome_tab_move: {
+            from: "context_items",
+            note: "Will move every tab in this group into a focus window.",
+        },
+        chrome_route_to_tasks: {
+            from: "thread_id",
+            note: "Will create one task per tab.",
+        },
+        chrome_route_to_umbrella_task: {
+            from: "thread_id",
+            note: "Will create a single umbrella task representing this group.",
+        },
+    };
+
+    function _renderActionMeta(thread, action) {
+        let html = '';
+        // Header: capability name + kind badge
+        html += '<div class="threads-action-meta-row">'
+              + '<span class="threads-action-meta-name">'
+              + _esc(action.name || "(unnamed action)")
+              + '</span>';
+        if (action.kind) {
+            html += ' <span class="threads-action-meta-kind">'
+                  + _esc(action.kind) + '</span>';
+        }
+        html += '</div>';
+        // Plan summary (the LLM/agent's natural-language description
+        // of what'll happen).
+        if (action.plan_summary) {
+            html += '<p class="threads-action-plan">'
+                  + _esc(action.plan_summary) + '</p>';
+        }
+        // Rationale (why this action was chosen).
+        if (action.rationale) {
+            html += '<div class="threads-action-rationale">'
+                  + '<div class="threads-section-label">Rationale</div>'
+                  + '<p>' + _esc(action.rationale) + '</p>'
+                  + '</div>';
+        }
+        // Confidence + model attribution.
+        const meta = [];
+        if (typeof action.confidence === "number") {
+            meta.push('confidence ' + Math.round(action.confidence * 100) + '%');
+        }
+        if (action.model_used) {
+            meta.push('via ' + _esc(action.model_used));
+        }
+        if (meta.length) {
+            html += '<p class="threads-action-attribution">'
+                  + meta.join(' · ') + '</p>';
+        }
+        return html;
+    }
+
+    function _renderActionParamsBlock(thread, action) {
         const params = action.parameters || {};
         const keys = Object.keys(params);
-        let html = '<div class="threads-action-generic">';
+        let html = '<div class="threads-section-label">Parameters</div>';
         if (keys.length === 0) {
-            html += '<p class="threads-empty">'
-                  + '(no parameters)</p>';
-        } else {
-            html += '<dl class="threads-param-list">';
-            for (const k of keys) {
-                const v = params[k];
-                const text = (typeof v === "string" || typeof v === "number")
-                    ? String(v)
-                    : JSON.stringify(v, null, 2);
-                html += '<dt>' + _esc(k) + '</dt>';
-                html += '<dd>' + (text.length > 100
-                    ? '<pre>' + _esc(text) + '</pre>'
-                    : _esc(text)) + '</dd>';
+            const binding = _RUNTIME_BOUND_BINDINGS[action.name];
+            if (binding) {
+                const ctxItems = thread.context_items || [];
+                const count = ctxItems.length;
+                html += '<p class="threads-action-runtime-bound">'
+                      + _esc(binding.note);
+                if (binding.from === "context_items" && count > 0) {
+                    html += ' <em>('
+                          + count
+                          + (count === 1 ? ' item' : ' items')
+                          + ' in this thread.)</em>';
+                }
+                html += '</p>';
+            } else {
+                html += '<p class="threads-empty">(none)</p>';
             }
-            html += '</dl>';
+            return html;
         }
+        html += '<dl class="threads-param-list">';
+        for (const k of keys) {
+            const v = params[k];
+            const text = (typeof v === "string" || typeof v === "number")
+                ? String(v)
+                : JSON.stringify(v, null, 2);
+            html += '<dt>' + _esc(k) + '</dt>';
+            html += '<dd>' + (text.length > 100
+                ? '<pre>' + _esc(text) + '</pre>'
+                : _esc(text)) + '</dd>';
+        }
+        html += '</dl>';
+        return html;
+    }
+
+    function _renderActionSwitcher(thread, action) {
+        // The action-switcher dropdown reuses the umbrella's
+        // ``action_options`` (cached in ``window._groupState``).
+        // Available only when the thread is a group child whose
+        // umbrella has been visited in this session — otherwise we
+        // skip the switcher rather than make a synchronous fetch
+        // from inside an HTML-string renderer.
+        const parentId = thread.parent_id;
+        if (!parentId
+            || !window._groupState
+            || !window._groupState.groupsByUmbrella) return '';
+        const cached = window._groupState.groupsByUmbrella[parentId];
+        if (!cached || !Array.isArray(cached.action_options)) return '';
+        const perGroup = cached.action_options.filter(
+            d => d.cardinality === "per_group",
+        );
+        if (perGroup.length === 0) return '';
+        const tid = JSON.stringify(thread.thread_id);
+        let html = '<div class="threads-action-switcher">';
+        html += '<div class="threads-section-label">Switch action</div>';
+        html += '<div class="threads-action-switcher-options">';
+        for (const d of perGroup) {
+            const isCurrent = d.capability_name === action.name;
+            html += '<button class="threads-action-switcher-option'
+                +     (isCurrent ? ' current' : '') + '" '
+                +     'title="' + _esc(d.description || '') + '" '
+                +     'onclick="threadsGroupSetActionProposal('
+                +       tid + ', '
+                +       JSON.stringify(d.capability_name) + ')">'
+                +     '<span class="label">' + _esc(d.label) + '</span>'
+                + '</button>';
+        }
+        html += '</div></div>';
+        return html;
+    }
+
+    window.renderActionGeneric = function (action, opts) {
+        opts = opts || {};
+        const thread = (opts && opts.thread) || { thread_id: opts && opts.threadId };
+        let html = '<div class="threads-action-generic">';
+        html += _renderActionMeta(thread, action);
+        html += _renderActionParamsBlock(thread, action);
+        html += _renderActionSwitcher(thread, action);
         if (action.required_contexts && action.required_contexts.length > 0) {
             html += '<p class="threads-action-required-contexts">'
                   + 'Required: ' + action.required_contexts.map(_esc).join(', ')
@@ -77,6 +204,7 @@ def _threads_actions_script() -> str:
     window.renderActionInRightPane = function (thread, action) {
         const fn = window._actionRenderers[action.name];
         const opts = {
+            thread: thread,
             threadId: thread.thread_id,
             actionId: action.id,
             // Helper for renderers — produces the input event
@@ -345,5 +473,111 @@ def _threads_actions_styles() -> str:
 
 .threads-decompose-items {
     margin-top: 12px;
+}
+
+/* Generic action-meta block (shown in the right pane when the user
+ * clicks Edit action on a sub-thread). Surfaces the capability name,
+ * plan summary, rationale, attribution, parameters (or runtime-binding
+ * hint), and an inline action switcher. */
+
+.threads-action-meta-row {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.threads-action-meta-name {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text, #ddd);
+    font-family: var(--font-mono, monospace);
+}
+
+.threads-action-meta-kind {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-muted, #888);
+    border: 1px solid var(--border, #333);
+    border-radius: 3px;
+    padding: 1px 5px;
+}
+
+.threads-action-plan {
+    margin: 0 0 12px 0;
+    color: var(--text, #ddd);
+    font-size: 13px;
+    line-height: 1.4;
+}
+
+.threads-action-rationale {
+    margin: 12px 0;
+    padding-left: 10px;
+    border-left: 2px solid var(--border, #333);
+}
+
+.threads-action-rationale p {
+    margin: 4px 0 0 0;
+    color: var(--text-muted-2, #aaa);
+    font-size: 13px;
+    line-height: 1.4;
+    font-style: italic;
+}
+
+.threads-action-attribution {
+    margin: 4px 0 12px 0;
+    color: var(--text-muted, #888);
+    font-size: 11px;
+}
+
+.threads-action-runtime-bound {
+    margin: 4px 0 12px 0;
+    color: var(--text-muted-2, #aaa);
+    font-size: 12px;
+    line-height: 1.4;
+}
+
+.threads-action-runtime-bound em {
+    color: var(--text-muted, #888);
+    font-style: normal;
+}
+
+.threads-action-switcher {
+    margin-top: 16px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border, #333);
+}
+
+.threads-action-switcher-options {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 6px;
+}
+
+.threads-action-switcher-option {
+    background: var(--bg, #0a0a0a);
+    border: 1px solid var(--border, #333);
+    border-radius: 4px;
+    padding: 4px 10px;
+    font-size: 12px;
+    color: var(--text, #ddd);
+    cursor: pointer;
+}
+
+.threads-action-switcher-option:hover {
+    border-color: var(--accent, #4a7fc1);
+    color: var(--accent, #4a7fc1);
+}
+
+.threads-action-switcher-option.current {
+    background: var(--accent-dim, #1f3a55);
+    border-color: var(--accent, #4a7fc1);
+    color: var(--text, #ddd);
+}
+
+.threads-action-switcher-option.current::after {
+    content: " ✓";
 }
 """

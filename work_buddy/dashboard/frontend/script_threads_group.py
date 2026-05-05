@@ -501,6 +501,17 @@ def _group_view_script() -> str:
                 );
                 return;
             }
+            // Invalidate the per-thread render cache for the target
+            // child — without this, drilling into the sub-thread
+            // after switching the chip shows the OLD action because
+            // the detail view reads from _threadDetailCache, which
+            // is independent of the umbrella's groupsByUmbrella
+            // cache that _refreshGroups updates.
+            try {
+                if (typeof window.invalidateThreadCache === 'function') {
+                    window.invalidateThreadCache(threadId);
+                }
+            } catch (e) { /* best-effort */ }
             // Refresh the active umbrella's cache so the chip re-paints
             // with the new proposal.
             const state = window._threadsState;
@@ -1469,6 +1480,13 @@ def _group_view_styles() -> str:
     z-index: 10;
     min-width: 240px;
     max-width: 360px;
+    /* Cap at ~5 options before scrolling so very long action
+     * libraries don't push the menu off the bottom of the screen.
+     * Each option is ~52px tall (label + 1-line desc); 5 ≈ 260px,
+     * + 4px top padding + 4px bottom padding = 268px. Add a touch
+     * of headroom for the optional Clear-proposal row. */
+    max-height: 300px;
+    overflow-y: auto;
     background: var(--bg-secondary, #1a1a1a);
     border: 1px solid var(--border, #333);
     border-radius: 6px;
