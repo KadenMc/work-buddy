@@ -102,12 +102,20 @@ class ActionProposal:
     approval time — the runtime fills in ``item_ids`` (or whatever the
     capability's parameter schema requires) from the cluster's
     members.
+
+    ``tier_used`` / ``model_used`` are populated when the proposal came
+    from an LLM (the cluster-refinement Sonnet call); both are None for
+    user-driven overrides via the action-chip dropdown. They surface in
+    the synthetic ``action_inferred`` event so audit traces can attribute
+    the proposal correctly.
     """
 
     capability_name: str
     parameters: dict[str, Any] = field(default_factory=dict)
     rationale: str | None = None
     confidence: float = 0.0
+    tier_used: str | None = None
+    model_used: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -115,6 +123,8 @@ class ActionProposal:
             "parameters": dict(self.parameters),
             "rationale": self.rationale,
             "confidence": self.confidence,
+            "tier_used": self.tier_used,
+            "model_used": self.model_used,
         }
 
     @classmethod
@@ -124,6 +134,8 @@ class ActionProposal:
             parameters=dict(d.get("parameters") or {}),
             rationale=d.get("rationale"),
             confidence=float(d.get("confidence") or 0.0),
+            tier_used=d.get("tier_used"),
+            model_used=d.get("model_used"),
         )
 
 

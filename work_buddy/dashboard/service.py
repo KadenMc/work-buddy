@@ -2575,6 +2575,38 @@ def api_v5_thread_set_action_proposal(thread_id: str):
             data=data,
             parent_event_id=thread.parent_event_id,
         ))
+        # If the thread was stuck in AWAITING_INFERENCE (e.g. a
+        # pipeline-spawned child whose worker hasn't picked it up
+        # yet), the user picking an action via the chip is itself a
+        # decision — promote to the action gate so Accept becomes
+        # valid. Threads already at AWAITING_CONFIRMATION (or any
+        # other state) are left as-is; the new event flows through
+        # the standard FSM dispatch path.
+        from work_buddy.threads.enums import FSMState as _FSMState
+        from work_buddy.threads.events import (
+            ACTOR_FSM_ENGINE, KIND_STATE_TRANSITION,
+        )
+        promote = (
+            capability_name is not None
+            and thread.fsm_state == _FSMState.AWAITING_INFERENCE
+        )
+        if promote:
+            store.update_thread_state(
+                thread_id,
+                fsm_state=_FSMState.AWAITING_CONFIRMATION.value,
+                parent_event_id=store.latest_event_id(thread_id),
+            )
+            store.append_event(ThreadEvent(
+                thread_id=thread_id,
+                kind=KIND_STATE_TRANSITION,
+                actor=ACTOR_FSM_ENGINE,
+                data={
+                    "from": _FSMState.AWAITING_INFERENCE.value,
+                    "to": _FSMState.AWAITING_CONFIRMATION.value,
+                    "reason": "user_picked_action_via_chip",
+                },
+                parent_event_id=store.latest_event_id(thread_id),
+            ))
         store.update_thread_state(
             thread_id,
             parent_event_id=store.latest_event_id(thread_id),

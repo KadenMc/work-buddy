@@ -286,11 +286,19 @@ def _spawn_children(
     }
 
     try:
+        # ``kickoff=False`` — pipeline-spawned children skip the
+        # standard PROPOSED → AWAITING_INFERENCE kickoff. We already
+        # have the intent (cluster label) and the action (the LLM-
+        # refined proposal); the inference round-trip would be both
+        # redundant and would leave children stuck in
+        # AWAITING_INFERENCE if the worker is paused / restarting.
+        # Per-child state-setup happens immediately below.
         child_ids = group_thread(
             umbrella_id,
             ctx_items,
             cluster_specs,
             inciting_summary_extra=inciting_extra,
+            kickoff=False,
         )
     except GroupRefused as e:
         logger.warning(
@@ -299,63 +307,126 @@ def _spawn_children(
         )
         return ([], {})
 
-    # Apply each cluster's proposed action to its corresponding child.
-    # Order matches: clusters[i] → child_ids[i].
+    # Apply each cluster's proposed action to its corresponding child
+    # and drive the per-child FSM state directly. Order matches:
+    # clusters[i] → child_ids[i].
     proposals: dict[str, ActionProposal] = {}
     for cluster, child_id in zip(clusters, child_ids):
+        try:
+            _initialize_group_child_state(child_id, cluster)
+        except Exception as e:
+            logger.warning(
+                "pipeline.run [%s]: failed to initialise child %s: %s",
+                pipeline_name, child_id, e,
+            )
+            continue
         if cluster.proposed_action is not None:
-            try:
-                _record_action_proposal(child_id, cluster.proposed_action)
-                proposals[child_id] = cluster.proposed_action
-            except Exception as e:
-                logger.warning(
-                    "pipeline.run [%s]: failed to record action proposal "
-                    "on child %s: %s",
-                    pipeline_name, child_id, e,
-                )
+            proposals[child_id] = cluster.proposed_action
 
     return (list(child_ids), proposals)
 
 
-def _record_action_proposal(
-    child_id: str, proposal: ActionProposal,
+def _initialize_group_child_state(
+    child_id: str, cluster: ClusterSpec,
 ) -> None:
-    """Append a synthetic ``action_inferred`` event on a group child
-    so the standard card UI shows the proposal in the actions section.
+    """Drive a freshly-spawned group child into the right FSM state.
 
-    Mirrors what the journal/Chrome legacy paths used to do for
-    ``decompose`` / ``group``-the-action — but parametrised by the
-    cluster's chosen action capability.
+    The pipeline already produced an intent (the cluster label) and —
+    when refine_clusters supplied one — an action (the proposal).
+    Rather than re-running the whole inference loop:
+
+    - Always write a synthetic ``intent_inferred`` event so the card UI
+      surfaces the cluster label as the thread's intent.
+    - When the cluster has a proposed action, also write a synthetic
+      ``action_inferred`` event (with the LLM's tier + model recorded
+      for audit) and transition to :data:`FSMState.AWAITING_CONFIRMATION`
+      — the action gate where the user's Accept becomes valid.
+    - When the cluster has no proposed action, transition to
+      :data:`FSMState.AWAITING_ACTION_CLARIFICATION` so the user picks
+      one via the action chip.
+
+    Bypasses the normal FSM transition table the same way
+    :func:`work_buddy.threads.group.group_thread` already does for the
+    umbrella's MONITORING transition — these are spawn-time setup, not
+    runtime triggers.
     """
-    from work_buddy.threads.events import KIND_ACTION_INFERRED
+    from work_buddy.threads.events import (
+        ACTOR_FSM_ENGINE,
+        KIND_ACTION_INFERRED,
+        KIND_INTENT_INFERRED,
+    )
 
     child = store.get_thread(child_id)
     if child is None:
         raise ValueError(f"Child thread {child_id!r} not found")
 
-    payload = {
-        "kind": "standard",
-        "name": proposal.capability_name,
-        "parameters": dict(proposal.parameters),
-        "rationale": proposal.rationale,
-        "irreversibility": "low",  # Override later via per-action metadata
-        "regret_potential": "low",
-        "risk_amplifier": False,
-    }
+    # Synthetic intent_inferred — the cluster label IS the intent.
     store.append_event(ThreadEvent(
         thread_id=child_id,
-        kind=KIND_ACTION_INFERRED,
+        kind=KIND_INTENT_INFERRED,
         actor=ACTOR_INCITING,
         data={
-            "target": "action",
-            "payload": payload,
-            "confidence": proposal.confidence,
+            "target": "intent",
+            "payload": {"text": cluster.label},
+            "confidence": 1.0,
             "tier_used": None,
             "model_used": None,
             "synthetic": True,
             "from_pipeline_proposal": True,
         },
         parent_event_id=child.parent_event_id,
+    ))
+
+    proposal = cluster.proposed_action
+    if proposal is not None:
+        action_payload = {
+            "kind": "standard",
+            "name": proposal.capability_name,
+            "parameters": dict(proposal.parameters),
+            "rationale": proposal.rationale,
+            "irreversibility": "low",
+            "regret_potential": "low",
+            "risk_amplifier": False,
+        }
+        store.append_event(ThreadEvent(
+            thread_id=child_id,
+            kind=KIND_ACTION_INFERRED,
+            actor=ACTOR_INCITING,
+            data={
+                "target": "action",
+                "payload": action_payload,
+                "confidence": proposal.confidence,
+                "tier_used": proposal.tier_used,
+                "model_used": proposal.model_used,
+                "synthetic": True,
+                "from_pipeline_proposal": True,
+            },
+            parent_event_id=store.latest_event_id(child_id),
+        ))
+        next_state = FSMState.AWAITING_CONFIRMATION
+    else:
+        next_state = FSMState.AWAITING_ACTION_CLARIFICATION
+
+    # Direct state update — same shape group_thread uses to drive the
+    # umbrella into MONITORING. Optimistic-lock against the latest
+    # event we just appended.
+    store.update_thread_state(
+        child_id,
+        fsm_state=next_state.value,
+        parent_event_id=store.latest_event_id(child_id),
+    )
+    # Audit the spawn-time transition.
+    from work_buddy.threads.events import KIND_STATE_TRANSITION
+    store.append_event(ThreadEvent(
+        thread_id=child_id,
+        kind=KIND_STATE_TRANSITION,
+        actor=ACTOR_FSM_ENGINE,
+        data={
+            "from": FSMState.PROPOSED.value,
+            "to": next_state.value,
+            "reason": "pipeline_spawn",
+        },
+        parent_event_id=store.latest_event_id(child_id),
     ))
     store.update_thread_state(
         child_id,
