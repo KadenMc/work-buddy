@@ -1,12 +1,10 @@
-"""Enums for the v5 Thread system.
+"""Enums for the Thread system.
 
 These are the canonical names. Every other module references them by
 import; literal strings should NOT be sprinkled around the codebase.
-The values match DESIGN.md (data/designs/gtd/reimagined/DESIGN.md)
-exactly.
 
-types only, no behavior. Frozen signatures so downstream
-stages can program against them.
+Types only, no behavior. Frozen signatures so downstream stages can
+program against them.
 """
 
 from __future__ import annotations
@@ -132,14 +130,13 @@ class ReasoningTier(str, Enum):
     """The reasoning-tier ladder.
 
     The first 5 are existing tiers from work_buddy/llm/tiers.py and are
-    reused. The last 2 (AGENT_HEADLESS, USER) are new in v5.
+    reused. The last 2 (AGENT_HEADLESS, USER) are introduced for the
+    Threads system.
 
     Values are lowercase to match the strings used by
     ``work_buddy.llm.tiers.ModelTier`` (so cost-log entries, queue
     rows, and event ``inference_tier`` annotations interop without
     case-conversion).
-
-    See DESIGN.md §9.2.
     """
 
     LOCAL_TOOL_CALLING = "local_tool_calling"
@@ -147,8 +144,8 @@ class ReasoningTier(str, Enum):
     FRONTIER_FAST = "frontier_fast"
     FRONTIER_BALANCED = "frontier_balanced"
     FRONTIER_BEST = "frontier_best"
-    AGENT_HEADLESS = "agent_headless"  # multi-turn agent w/ tools (v5)
-    USER = "user"                       # human-in-the-loop (v5)
+    AGENT_HEADLESS = "agent_headless"  # multi-turn agent w/ tools
+    USER = "user"                       # human-in-the-loop
 
 
 class InvocationContext(str, Enum):

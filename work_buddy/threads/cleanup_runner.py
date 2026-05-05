@@ -7,7 +7,7 @@ transitions the Thread to a terminal-or-retry state.
 
 UX.md §6.4 + §6.5 are the spec.
 
-The handler is registered by bootstrap_v5() at sidecar startup.
+The handler is registered by bootstrap_threads() at sidecar startup.
 """
 
 from __future__ import annotations

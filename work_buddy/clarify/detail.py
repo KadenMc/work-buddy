@@ -35,7 +35,8 @@ def write_summary_index(
 ) -> None:
     """Write the item→summary index after the summarize step.
 
-    Called by ``enrich_items_with_summaries`` to persist the mapping.
+    Persists the URL→summary mapping so later ``triage_item_detail``
+    lookups can return summaries for items by id.
 
     Args:
         items_with_summaries: List of TriageItem dicts (with url, id, metadata).

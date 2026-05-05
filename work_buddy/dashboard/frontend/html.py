@@ -53,7 +53,7 @@ def _html() -> str:
         <button class="tab-btn" data-tab="threads"
                 title="Threads — unified resolution surface">Threads</button>
         <button class="tab-btn" data-tab="today"
-                title="What should I do right now? Slice 5b /wb-task-me view.">Today</button>
+                title="What should I do right now? /wb-task-me view.">Today</button>
         <button class="tab-btn" data-tab="tasks">Tasks</button>
         <button class="tab-btn" data-tab="review">Review</button>
         <button class="tab-btn" data-tab="status">Status</button>
@@ -90,17 +90,17 @@ def _html() -> str:
     <div class="loading">Loading Threads...</div>
 </div>
 
-<!-- TODAY (Slice 5b) — re-runnable "what should I do right now?" view.
-     Reads /api/automation/today.  Composes the Slice-5a engage view
-     with the clamp-to-now plan + a top-1-2 recommendation card.
-     Re-run by clicking refresh; persistent context preset shared
-     with the Engage tab via localStorage. -->
+<!-- TODAY — re-runnable "what should I do right now?" view.
+     Reads /api/automation/today. Composes the engage view with the
+     clamp-to-now plan + a top-1-2 recommendation card. Re-run by
+     clicking refresh; persistent context preset shared with the
+     Engage tab via localStorage. -->
 <div class="tab-panel" id="panel-today">
     <div class="review-toolbar">
         <div class="section-title">Today
             <span class="section-subtitle"
-                  title="Re-runnable engage. Slice 5b /wb-task-me view.">
-                engage · Slice 5b
+                  title="Re-runnable engage view backed by /wb-task-me.">
+                engage
             </span>
         </div>
         <select id="today-context-preset" class="chats-select"

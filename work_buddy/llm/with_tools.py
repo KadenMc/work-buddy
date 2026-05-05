@@ -251,7 +251,7 @@ def llm_with_tools(
         # before the ACL was consulted.
         clear_session_acl(session_id)
 
-    # Log cost (local mode → $0.00, per existing v1 convention)
+    # Log cost (local mode → $0.00 by convention)
     from work_buddy.llm.cost import log_call
     log_call(
         model=result.get("model", profile_info["model"]),

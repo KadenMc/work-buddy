@@ -150,11 +150,14 @@ def refine_clusters(
     if response is None:
         return list(pre)
 
+    parsed, tier_used, model_used = response
     try:
         validated = _validate_and_assemble(
-            response,
+            parsed,
             items=items,
             action_library=action_library,
+            tier_used=tier_used,
+            model_used=model_used,
         )
     except _ValidationError as e:
         logger.warning(
@@ -189,9 +192,17 @@ def _call_llm(
     pre: list[ClusterSpec],
     source_name: str,
     per_group_actions: list[dict[str, Any]],
-) -> dict[str, Any] | None:
-    """Render the prompt + run the LLM. Returns the parsed JSON dict
-    on success, or None on any failure."""
+) -> tuple[dict[str, Any], str | None, str | None] | None:
+    """Render the prompt + run the LLM.
+
+    Returns ``(parsed, tier_used, model_used)`` on success, or ``None`` on
+    any failure. ``tier_used`` is the resolved :class:`ModelTier` value
+    string (e.g. ``"frontier_balanced"``); ``model_used`` is the concrete
+    model identifier the backend reported (e.g.
+    ``"claude-sonnet-4-5"``). Both flow into per-cluster
+    :class:`ActionProposal` instances so the synthetic ``action_inferred``
+    event records its true provenance.
+    """
     from work_buddy.llm import LLMRunner, ModelTier
 
     system = _render_system_prompt(source_name, per_group_actions)
@@ -221,7 +232,7 @@ def _call_llm(
             source_name, len(resp.content or ""),
         )
         return None
-    return parsed
+    return parsed, (resp.tier_used or None), (resp.model or None)
 
 
 def _render_system_prompt(
@@ -302,8 +313,14 @@ def _validate_and_assemble(
     *,
     items: list[CapturedItem],
     action_library: "ActionLibrary",
+    tier_used: str | None = None,
+    model_used: str | None = None,
 ) -> list[ClusterSpec]:
     """Validate the LLM JSON + build the final ClusterSpec list.
+
+    ``tier_used`` and ``model_used`` flow into every emitted
+    :class:`ActionProposal`'s provenance fields so the synthetic
+    ``action_inferred`` event records who actually produced the proposal.
 
     Raises :class:`_ValidationError` on any invariant failure.
     """
@@ -350,6 +367,7 @@ def _validate_and_assemble(
 
         proposal = _validate_proposal(
             c.get("proposed_action"), action_library, label,
+            tier_used=tier_used, model_used=model_used,
         )
         out.append(ClusterSpec(
             label=label.strip(),
@@ -368,6 +386,9 @@ def _validate_and_assemble(
 
 def _validate_proposal(
     raw: Any, action_library: "ActionLibrary", cluster_label: str,
+    *,
+    tier_used: str | None = None,
+    model_used: str | None = None,
 ) -> ActionProposal | None:
     """Validate the optional ``proposed_action`` block. Returns None
     when raw is null/absent; raises on schema mismatch."""
@@ -408,4 +429,6 @@ def _validate_proposal(
         parameters=dict(raw.get("parameters") or {}),
         rationale=rationale,
         confidence=confidence,
+        tier_used=tier_used,
+        model_used=model_used,
     )

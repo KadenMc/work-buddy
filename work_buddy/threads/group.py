@@ -95,6 +95,7 @@ def group_thread(
     autonomy_override: Optional[AutonomyPolicy] = None,
     inciting_summary_extra: Optional[dict[str, Any]] = None,
     actor: str = ACTOR_FSM_ENGINE,
+    kickoff: bool = True,
     conn=None,
 ) -> list[str]:
     """Spawn N child sub-threads under ``parent_id``, one per cluster.
@@ -248,16 +249,21 @@ def group_thread(
             )
 
         # Kick each child off PROPOSED so it walks through inference
-        # like a decompose-spawned child.
-        try:
-            from work_buddy.threads.kickoff import kickoff_inference
-            for cid in child_ids:
-                kickoff_inference(cid)
-        except Exception as e:
-            logger.warning(
-                "Group-child kickoff after group_thread failed: %s; "
-                "children sit in PROPOSED until manually advanced", e,
-            )
+        # like a decompose-spawned child. Callers that already have
+        # intent + action decided (e.g. the source-pipeline runner with
+        # an LLM-refined ActionProposal in hand) can pass
+        # ``kickoff=False`` and drive state themselves — saves the
+        # redundant inference round-trip.
+        if kickoff:
+            try:
+                from work_buddy.threads.kickoff import kickoff_inference
+                for cid in child_ids:
+                    kickoff_inference(cid)
+            except Exception as e:
+                logger.warning(
+                    "Group-child kickoff after group_thread failed: %s; "
+                    "children sit in PROPOSED until manually advanced", e,
+                )
 
         return child_ids
     finally:

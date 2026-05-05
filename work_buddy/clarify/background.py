@@ -817,8 +817,7 @@ class ClarifyPool:
 
         Decisions are merged into the corresponding pool entries
         under ``verdict["reviewer"]``. This does NOT stamp
-        ``reviewed_at`` — that's reserved for the human. This is the
-        v2 seam mentioned in the plan; v1 callers can ignore it.
+        ``reviewed_at`` — that's reserved for the human.
         """
         pending = self.pending()
         if not pending:

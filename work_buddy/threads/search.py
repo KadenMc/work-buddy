@@ -1,8 +1,8 @@
-"""Search-blob maintenance + filtered query — Stage 4.8.
+"""Search-blob maintenance + filtered query for Threads.
 
-UX.md §10. The search blob is a denormalized substring-searchable
-text field on each Thread, rebuilt on state changes. Stage 4 ships
-substring matching; richer (semantic / full-text) is post-v5.
+The search blob is a denormalized substring-searchable text field
+on each Thread, rebuilt on state changes. Substring matching only;
+richer (semantic / full-text) is open work.
 """
 
 from __future__ import annotations

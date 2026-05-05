@@ -1,8 +1,9 @@
 """Conversation chat component JS.
 
-Renamed from ``script_threads.py`` in v5 Stage 1 (the ``Thread`` name
-is reserved for the v5 universal-entity primitive). The chat UI here
-is for agent-user dialogue and is rendered as a Conversation.
+Renamed from ``script_threads.py`` — the ``Thread`` name is reserved
+for the universal-entity primitive (rendered by ``script_threads.py``
+in its current form). The chat UI here is for agent-user dialogue
+and is rendered as a Conversation.
 """
 
 from __future__ import annotations

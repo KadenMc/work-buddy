@@ -1,7 +1,7 @@
-"""bootstrap — wire all v5 state-entry handlers and
+"""bootstrap — wire all FSM state-entry handlers and
 register the budget admission hook.
 
-Sidecar startup calls :func:`bootstrap_v5` once at the start of
+Sidecar startup calls :func:`bootstrap_threads` once at the start of
 the process. Tests call it (or its constituent pieces) explicitly
 in fixtures. Idempotent — safe to call multiple times in a
 process; the FSM-engine handler list is additive but the
@@ -55,8 +55,8 @@ def is_bootstrapped() -> bool:
     return _BOOTSTRAPPED
 
 
-def bootstrap_v5(*, clear_first: bool = False) -> None:
-    """Wire all v5 state-entry handlers + budget admission.
+def bootstrap_threads(*, clear_first: bool = False) -> None:
+    """Wire all Threads-FSM state-entry handlers + budget admission.
 
     Parameters
     ----------
@@ -94,6 +94,12 @@ def bootstrap_v5(*, clear_first: bool = False) -> None:
     # 5. CLEANING_UP state-entry handler (Stage 4.4)
     cleanup_runner.register_cleanup_runner()
 
+    # 5b. EXECUTING state-entry handler — dispatches the chosen action
+    # capability, records execution_started/finished, fires the result
+    # trigger to advance the FSM.
+    from work_buddy.threads import execution_runner
+    execution_runner.register_execution_runner()
+
     # 6. Default cleanup adapters (journal-note for Stage 4.4;
     #    chrome adapter lands in 4.13 alongside the pipeline).
     cleanup_adapters.register_default_adapters()
@@ -112,7 +118,7 @@ def bootstrap_v5(*, clear_first: bool = False) -> None:
     _register_dashboard_event_emitter()
 
     _BOOTSTRAPPED = True
-    logger.info("v5 bootstrap complete")
+    logger.info("threads bootstrap complete")
 
 
 def _register_dashboard_event_emitter() -> None:
@@ -272,7 +278,7 @@ def _maybe_format_action_catalog(schema: dict) -> str:
 
 
 def _register_real_llm_runner() -> None:
-    """Bind the v5 Inference layer to the existing LLMRunner.
+    """Bind the threads inference layer to the existing LLMRunner.
 
     Adapter shape (per inference.LLMRunnerFn):
         fn(prompt, schema, tier, thread) -> {payload, confidence,
@@ -287,8 +293,8 @@ def _register_real_llm_runner() -> None:
         # Cache one LLMRunner instance — it's threadsafe.
         runner = LLMRunner()
 
-        # Map v5 ReasoningTier -> v4 ModelTier. The lower 5 are
-        # 1:1; AGENT_HEADLESS / USER are v5-only and shouldn't
+        # Map ReasoningTier -> ModelTier. The lower 5 are 1:1;
+        # AGENT_HEADLESS / USER are threads-only and shouldn't
         # reach this path (they're handled by the worker before
         # the LLM call).
         _TIER_MAP = {
@@ -330,11 +336,12 @@ def _register_real_llm_runner() -> None:
                            "system. Reply with concise structured JSON only.",
                     user=user_msg,
                     output_schema=schema,
-                    trace_id=f"v5-inference:{thread.thread_id}",
+                    trace_id=f"thread-inference:{thread.thread_id}",
                 )
                 if resp.is_error():
                     logger.warning(
-                        "v5 LLM runner: error response: %s", resp.content[:200],
+                        "thread inference runner: error response: %s",
+                        resp.content[:200],
                     )
                     return {
                         "payload": {}, "confidence": 0.0,
@@ -360,7 +367,7 @@ def _register_real_llm_runner() -> None:
                     "trace_pointer": None,
                 }
             except Exception as e:
-                logger.warning("v5 LLM runner: exception: %s", e)
+                logger.warning("thread inference runner: exception: %s", e)
                 return {
                     "payload": {}, "confidence": 0.0,
                     "model": None, "cost_usd": 0.0,
@@ -368,7 +375,7 @@ def _register_real_llm_runner() -> None:
                 }
 
         inference.set_llm_runner(_real_runner)
-        logger.info("v5 LLM runner registered (LLMRunner-backed)")
+        logger.info("thread inference runner registered (LLMRunner-backed)")
     except Exception as e:
         logger.warning(
             "Could not register real LLM runner — inference will use "
@@ -383,7 +390,7 @@ def bootstrap_for_subprocess(*, subprocess_name: str) -> bool:
     Each Python subprocess (sidecar daemon, dashboard, MCP gateway,
     one-off CLI invocations, …) has its own module-level state, so
     every process that fires FSM transitions needs its own
-    ``bootstrap_v5()`` call to register state-entry handlers + the
+    ``bootstrap_threads()`` call to register state-entry handlers + the
     real LLM runner. Without this, transitions land in-memory but
     the queue handlers never fire and threads dead-end.
 
@@ -392,27 +399,27 @@ def bootstrap_for_subprocess(*, subprocess_name: str) -> bool:
 
     Args:
         subprocess_name: Logged for diagnostic visibility — appears
-            in startup logs as e.g. "v5 bootstrap (sidecar)".
+            in startup logs as e.g. "threads bootstrap (sidecar)".
 
     Returns:
         True if bootstrap succeeded, False on failure (logged).
-        Callers may continue regardless; v5 just won't process
-        Threads in the failed subprocess.
+        Callers may continue regardless; the threads FSM just won't
+        process Threads in the failed subprocess.
     """
     try:
-        bootstrap_v5()
-        logger.info("v5 bootstrap (%s) complete", subprocess_name)
+        bootstrap_threads()
+        logger.info("threads bootstrap (%s) complete", subprocess_name)
         return True
     except Exception as e:
         logger.warning(
-            "v5 bootstrap failed in %s subprocess; that process will "
-            "continue without v5 FSM wiring: %s",
+            "threads bootstrap failed in %s subprocess; that process "
+            "will continue without thread FSM wiring: %s",
             subprocess_name, e,
         )
         return False
 
 
-def teardown_v5() -> None:
+def teardown_threads() -> None:
     """Test-only: clear all state-entry handlers + admission hooks
     + cleanup adapters so the next test starts from a clean slate."""
     global _BOOTSTRAPPED

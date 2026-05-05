@@ -1,4 +1,4 @@
-"""Render-data builder for the v5 Threads dashboard.
+"""Render-data builder for the Threads dashboard.
 
 Converts a Thread + its event log into the JSON shape the
 confirmation card consumes. UX.md §4 + per-section data shapes.
@@ -73,11 +73,11 @@ def build_render_data(thread_id: str) -> Optional[dict[str, Any]]:
     # use thread.context_items as source of truth — Stage 4.5+
     # consolidates the two.
     #
-    # Stage 5 v2: we MUST preserve ``ContextItem.id`` (the canonical
-    # source-pipeline-assigned id like ``journal_t_926fa6`` or a
-    # Chrome tab id) because the ``threads.group.move_item``
-    # operation targets items by their stable id. Synthetic
-    # display-only ``ci-{i}`` indexes break the move endpoint.
+    # We MUST preserve ``ContextItem.id`` (the canonical source-
+    # pipeline-assigned id like ``journal_t_926fa6`` or a Chrome
+    # tab id) because the ``threads.group.move_item`` operation
+    # targets items by their stable id. Synthetic display-only
+    # ``ci-{i}`` indexes break the move endpoint.
     context_items = []
     for i, ci in enumerate(thread.context_items, start=1):
         context_items.append({
@@ -110,8 +110,8 @@ def build_render_data(thread_id: str) -> Optional[dict[str, Any]]:
         }
         intrinsic = payload.get("intrinsic_amplifiers") or {}
 
-        # Action proposals can carry one or many actions. The v5
-        # convention from DESIGN.md §10 is one ActionProposal at a
+        # Action proposals can carry one or many actions. The
+        # convention is one ActionProposal at a
         # time; we render whatever's there.
         kind = payload.get("kind", "standard")
         # Action display name: agent-supplied name takes precedence
@@ -227,6 +227,12 @@ def build_render_data(thread_id: str) -> Optional[dict[str, Any]]:
     if latest_activity is None:
         latest_activity = getattr(thread, "updated_at", None)
 
+    # Creation timestamp — the timestamp of the earliest event on the
+    # log (typically the inciting_event). Used by the frontend to
+    # disambiguate cards that share the same title (e.g. multiple
+    # "Chrome triage" umbrellas spawned across a day).
+    created_at = events[0].timestamp if events else None
+
     # Risk highlight — true if the action's risk metadata exceeds
     # a "review-worthy" bar. Used by the consent card to apply a
     # color-coded urgency pill.
@@ -254,6 +260,7 @@ def build_render_data(thread_id: str) -> Optional[dict[str, Any]]:
         "risk_highlight": risk_highlight,
         "auto_advance_trail": auto_advance_trail,
         "latest_activity": latest_activity,
+        "created_at": created_at,
         "namespace_tags": list(inciting.get("namespace_tags") or []),
         "can_clean_up": cleanup.can_clean_up(thread),
         "sub_thread_count": sub_count,

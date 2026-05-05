@@ -42,9 +42,9 @@ def fresh_db(tmp_path, monkeypatch):
     # Set up bootstrap so the AWAITING_INFERENCE state-entry handler
     # is registered (the worker's enqueue path is exercised by the
     # journal-spawn flow; here we set up state directly).
-    bootstrap.bootstrap_v5(clear_first=True)
+    bootstrap.bootstrap_threads(clear_first=True)
     yield db
-    bootstrap.teardown_v5()
+    bootstrap.teardown_threads()
 
 
 def _stub_combined_runner(payload):

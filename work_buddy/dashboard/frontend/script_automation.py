@@ -1,8 +1,8 @@
 """Shared dashboard frontend utilities.
 
-Originally home of the v4 Slice 4 surfaces (Review Queue / Daily
-Log / Engage). Those views were removed once v5 Threads became the
-canonical resolution surface. What remains here are two small
+Originally home of the Slice-4 surfaces (Review Queue / Daily
+Log / Engage). Those views were removed once the Threads tab became
+the canonical resolution surface. What remains here are two small
 utilities still used by other modules:
 
 - ``_autEsc`` — the HTML-escape helper used by ``script_today.py``.
@@ -21,7 +21,7 @@ from __future__ import annotations
 
 def _automation_script() -> str:
     return r"""
-// ---- Shared frontend helpers (post-v4 cleanup) -------------------------
+// ---- Shared frontend helpers ------------------------------------------
 
 function _autEsc(s) {
     const d = document.createElement('div');

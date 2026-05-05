@@ -1,4 +1,4 @@
-"""Threads tab — v5 dashboard surface.
+"""Threads tab — dashboard surface.
 
 Stage 4.0 shipped a placeholder. Stage 4.1 wires:
 - URL routing for nested thread paths and inspect modals.
@@ -14,7 +14,7 @@ from __future__ import annotations
 def _threads_script() -> str:
     return r"""
 // ===========================================================================
-// Threads tab v5 — Stage 4.1 URL routing + recursive UI scaffold
+// Threads tab — URL routing + recursive UI scaffold
 // ===========================================================================
 
 (function () {
@@ -56,10 +56,10 @@ def _threads_script() -> str:
         renderThreads();
     };
 
-    // 2026-05-04: open a sub-thread AND focus the right-pane editor on
-    // a specific action in one click. Mirrors the v4 affordance where
-    // the user could see proposed actions on each card and jump
-    // straight to editing one without first entering the thread. The
+    // Open a sub-thread AND focus the right-pane editor on a specific
+    // action in one click — the user sees proposed actions on each
+    // card and jumps straight to editing one without first entering
+    // the thread. The
     // navigation still pushes the path (so the breadcrumb / URL hash /
     // back-button all work normally), and we set ``focusedId`` on the
     // sub-thread's per-card state so its right-pane renders the action
@@ -503,11 +503,51 @@ def _threads_script() -> str:
         }[state]) || (state || "").replace(/_/g, " ");
     }
 
+    // Compact created-at label for the top-level card meta row.
+    // Today: "14:32"; this week: "Mon 14:32"; older: "May 5".
+    // The full ISO timestamp lives on the parent element's title=
+    // attribute so hovering reveals exact creation time.
+    function _formatCreatedAt(iso) {
+        if (!iso) return "";
+        const d = new Date(iso);
+        if (isNaN(d.getTime())) return "";
+        const now = new Date();
+        const sameDay = (
+            d.getFullYear() === now.getFullYear()
+            && d.getMonth() === now.getMonth()
+            && d.getDate() === now.getDate()
+        );
+        const hh = String(d.getHours()).padStart(2, '0');
+        const mm = String(d.getMinutes()).padStart(2, '0');
+        if (sameDay) {
+            return hh + ':' + mm;
+        }
+        const diffMs = now - d;
+        const dayMs = 24 * 60 * 60 * 1000;
+        if (diffMs >= 0 && diffMs < 7 * dayMs) {
+            const wd = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][d.getDay()];
+            return wd + " " + hh + ':' + mm;
+        }
+        const months = ["Jan","Feb","Mar","Apr","May","Jun",
+                        "Jul","Aug","Sep","Oct","Nov","Dec"];
+        return months[d.getMonth()] + " " + d.getDate();
+    }
+
     function _renderTopLevelCard(t) {
         const urgent = t.urgency === "surface_now";
         const hasLater = !!t.has_been_later;
         const stateLabel = _friendlyStateTop(t.fsm_state);
-        const intent = (t.intent && t.intent.text) || t.title || t.thread_id;
+        const titleText = t.title || t.thread_id;
+        const intentText = (t.intent && t.intent.text) || "";
+        // Show the inferred intent below the title only when it adds
+        // information — i.e. when it differs from the title. Group
+        // umbrellas (parent_relationship === 'group') skip inference,
+        // so their intent.text falls back to the title and the
+        // duplicate is just visual noise.
+        const subtitleText =
+            (intentText && intentText !== titleText)
+                ? intentText
+                : "";
         // Phase 4: mid_process display_mode → muted styling, no
         // action affordances. The user can still click through to
         // the detail view to inspect the event log.
@@ -536,6 +576,12 @@ def _threads_script() -> str:
                     : '')
             +   '<span class="threads-toplist-state">'
             +     _esc(stateLabel) + '</span>'
+            +   (t.created_at
+                    ? '<span class="threads-toplist-created" '
+                    +   'title="Created ' + _esc(t.created_at) + '">'
+                    +   _esc(_formatCreatedAt(t.created_at))
+                    +   '</span>'
+                    : '')
             +   (t.risk_highlight
                     ? '<span class="threads-toplist-risk-dot '
                     +   _esc(t.risk_highlight) + '" '
@@ -544,11 +590,14 @@ def _threads_script() -> str:
                     : '')
             + '</div>'
             + '<div class="threads-toplist-title">'
-            +   _esc(t.title || t.thread_id) + '</div>'
-            + '<div class="threads-toplist-intent">'
-            +   _esc(intent.length > 200
-                        ? intent.slice(0, 197) + '...' : intent)
-            + '</div>'
+            +   _esc(titleText) + '</div>'
+            + (subtitleText
+                ? '<div class="threads-toplist-intent">'
+                  +   _esc(subtitleText.length > 200
+                              ? subtitleText.slice(0, 197) + '...'
+                              : subtitleText)
+                  + '</div>'
+                : '')
             + '<div class="threads-toplist-row-actions" '
             +   'onclick="event.stopPropagation()">'
             +   '<button class="threads-btn-icon" '
@@ -679,15 +728,10 @@ def _threads_script() -> str:
             };
             popup.appendChild(btn);
         }
-        // Position above the anchor, right-aligned with the parent
-        // card. User-feedback iterations:
-        //   v1 (column, below anchor) — right options slid off-screen.
-        //   v2 (row, centered on anchor) — popped far to the left of
-        //       the Later button, awkward to reach.
-        //   v3 (this) — render above, right-edge aligned to the
-        //       enclosing card with a small padding so the rightmost
-        //       durations sit close to where the user's mouse is. Falls
-        //       back to viewport-right if no card ancestor is found.
+        // Position above the anchor, right-edge aligned to the
+        // enclosing card with a small padding so the rightmost
+        // durations sit close to where the user's mouse is. Falls
+        // back to viewport-right if no card ancestor is found.
         document.body.appendChild(popup);
         const rect = anchorEl.getBoundingClientRect();
         const popRect = popup.getBoundingClientRect();
@@ -749,7 +793,7 @@ def _threads_script() -> str:
         // Wave G — bundle any edits the user made in the right pane
         // (intent rewrite, action parameter overrides) into the
         // request body for the accept/redirect path. The accept
-        // route's _v5_post_action merges body data into the
+        // route's _post_thread_action merges body data into the
         // transition data that lands in the state_transition event,
         // so edits become part of the durable audit log even when
         // the action dispatcher doesn't yet act on them.
@@ -1248,7 +1292,7 @@ def _threads_script() -> str:
                 window._subThreadCache = {};
                 renderThreads();
             } catch (e) {
-                console.warn("[threads-v5] state_changed handler:", e);
+                console.warn("[threads] state_changed handler:", e);
             }
         });
     }
@@ -1488,6 +1532,18 @@ def _threads_styles() -> str:
 
 .threads-toplist-state {
     text-transform: capitalize;
+}
+
+.threads-toplist-created {
+    color: var(--text-muted-2, #aaa);
+    font-variant-numeric: tabular-nums;
+    text-transform: none;
+}
+
+.threads-toplist-created::before {
+    content: "·";
+    margin-right: 6px;
+    color: var(--text-muted, #666);
 }
 
 .threads-later-icon {

@@ -1,7 +1,6 @@
-"""Threads tab v5 — Stage 4.2 confirmation card layout (visual).
+"""Threads tab — confirmation card layout (visual).
 
 Implements the two-pane confirmation card layout (UX.md §4 + §5).
-Visual + local-state only — backend wiring lands in Stage 4.3.
 
 Exposed:
 - ``window.renderConfirmationCard(threadData)`` — returns HTML for
@@ -753,7 +752,7 @@ def _threads_card_script() -> str:
                 }
             })
             .catch(err => {
-                console.warn('[threads-v5] sub-thread fetch failed:', err);
+                console.warn('[threads] sub-thread fetch failed:', err);
                 window._subThreadCache[parentId] = [];
                 if (typeof window._renderActiveThread === 'function') {
                     window._renderActiveThread();
@@ -803,9 +802,9 @@ def _threads_card_script() -> str:
     }
 
     // Inline preview of a sub-thread's proposed actions on the mini-card.
-    // Closes the gap from v4: the user could see what was about to happen
-    // without entering each thread, and could go straight to editing the
-    // proposed action with a single click. The action-edit pencil opens
+    // The user sees what is about to happen without entering each thread,
+    // and can go straight to editing the proposed action with a single
+    // click. The action-edit pencil opens
     // the sub-thread WITH its right-pane editor already focused on the
     // action, so the "edit before entering" affordance is one click away
     // even if we don't render a full action editor inline.

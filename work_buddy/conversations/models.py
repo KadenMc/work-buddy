@@ -4,9 +4,8 @@ A Conversation groups ConversationMessages into a chronological dialogue
 between an agent and a user. Any subsystem can create and use
 conversations.
 
-Renamed from ``work_buddy.threads`` in v5 Stage 1 — the ``Thread`` name
-is reserved for the v5 universal-entity primitive (see
-``data/designs/gtd/reimagined/DESIGN.md``).
+Renamed from ``work_buddy.threads`` — the ``Thread`` name is reserved
+for the universal-entity primitive in :mod:`work_buddy.threads`.
 """
 
 from __future__ import annotations

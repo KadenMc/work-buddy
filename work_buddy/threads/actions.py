@@ -22,7 +22,7 @@ Action; this module ships:
 - ``find_action(name, *, context, registry=None)`` — single lookup
   with availability check.
 - ``ActionTemplate`` — frozen view object combining
-  capability/workflow data with v5 action fields.
+  capability/workflow data with the Action Catalog fields.
 
 The catalog is recomputed on every call (cheap — a filter walk over
 ~150 entries). Stage 2.x can add caching if profiling shows it's
@@ -46,7 +46,7 @@ from work_buddy.threads.enums import InvocationContext
 class ActionTemplate:
     """Filtered view of a registry entry exposed to action inference.
 
-    Combines core registry fields with the v5 Stage 1.5 fields
+    Combines core registry fields with the Action Catalog fields
     (is_action, available_in, intrinsic_amplifiers,
     parameter_schema_for_action, requires_post_review).
     """

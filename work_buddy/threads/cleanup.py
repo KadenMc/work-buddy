@@ -7,9 +7,9 @@ The user's intent for Clean Up: "the work this Thread represents
 is already done outside the system — clean up the source so the
 agent doesn't keep proposing it."
 
-This module ships the framework + registry. Stage 4.4 wires the
-journal-note adapter (the canonical first case). Stage 4.13 adds
-the Chrome adapter when the Chrome pipeline migrates to v5.
+This module ships the framework + registry. The journal-note adapter
+is the canonical first case; the Chrome adapter is wired alongside
+the Chrome source pipeline.
 
 UX.md §6 is the spec.
 """

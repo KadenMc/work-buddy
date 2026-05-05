@@ -94,7 +94,7 @@ _INLINE_TAG_PREFIXES = ("#wb/", "#paper/", "#projects/", "#admin/", "#")
 def extract_inline_tags(raw_text: str) -> list[str]:
     """Pull ``#tag`` tokens from a journal segment's raw text.
 
-    The v5 spawn pipeline runs BEFORE the manifest step that would otherwise
+    The spawn pipeline runs BEFORE the manifest step that would otherwise
     produce LLM-generated tags, so we don't have a tag list pre-merge. Inline
     Obsidian-style tags (``#wb/TODO``, ``#paper/foo``, ``#projects/bar``,
     plus the bare ``#tag`` form) are a cheap categorical signal that makes

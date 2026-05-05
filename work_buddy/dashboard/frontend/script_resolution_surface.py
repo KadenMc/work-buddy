@@ -1,7 +1,7 @@
-"""Resolution Surface v5 card primitive (Stage 1.9 scaffold).
+"""Resolution Surface card primitive.
 
-The v5 FSM publishes ``ResolutionRequest`` messages via the existing
-consent system (DESIGN.md §7.3). Each request renders as a
+The Threads FSM publishes ``ResolutionRequest`` messages via the
+existing consent system (DESIGN.md §7.3). Each request renders as a
 Resolution Surface card; the card kind is derived from the FSM wait
 state (DESIGN.md §15.1):
 
@@ -18,10 +18,10 @@ rendered when called. **Nothing emits resolution_request views yet
 in Stage 1.** Stage 2 wires the FSM to publish them through the
 consent system.
 
-Note: the Slice-1.5 ``script_resolution.py`` is a *Triage* surface
-decorator. It pre-dates v5 and does not interpret v5
-``ResolutionRequest`` payloads. The v5 surface is implemented here
-to keep the v4 path intact while v5 stages roll out.
+Note: the older ``script_resolution.py`` is a *Triage* surface
+decorator that does not interpret ``ResolutionRequest`` payloads —
+the Threads-FSM surface is implemented here so the legacy triage
+path stays intact alongside it.
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ from __future__ import annotations
 def _resolution_surface_script() -> str:
     return r"""
 // ---------------------------------------------------------------------------
-// Resolution Surface v5 — DESIGN.md §15
+// Resolution Surface
 // ---------------------------------------------------------------------------
 //
 // View type: 'resolution_request'
@@ -173,8 +173,8 @@ def _resolution_surface_script() -> str:
         });
     });
 
-    // Public surface for tests / Stage 2 consumers
-    window.__resolutionSurfaceV5 = { AFFORDANCES };
+    // Public surface for tests + downstream consumers
+    window.__resolutionSurface = { AFFORDANCES };
 })();
 """
 

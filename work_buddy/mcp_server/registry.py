@@ -19,7 +19,7 @@ from typing import Any, Callable
 
 from work_buddy.frontmatter import parse_frontmatter
 
-# v5 Stage 1.5: capability/workflow definitions get four new fields
+# Capability/workflow definitions get four Threads-FSM-related fields
 # (is_action, available_in, intrinsic_amplifiers,
 # parameter_schema_for_action, requires_post_review). The
 # InvocationContext enum lives in work_buddy.threads.enums (a
@@ -77,21 +77,19 @@ class Capability:
     # the partial-state recovery path retries the full capability.
     effects: list[Any] = field(default_factory=list)  # list[EffectSpec]
 
-    # ---------------- v5 Stage 1.5 fields (defaults preserve v4) ----
-    # See data/designs/gtd/reimagined/DESIGN.md §10.
+    # ---------------- Action Catalog fields (defaults are the legacy non-action shape) ----
 
-    # Whether this capability appears in the v5 Action Catalog (i.e.
+    # Whether this capability appears in the Action Catalog (i.e.
     # whether action inference may propose it as the action to take
     # for a Thread). False by default; capabilities the FSM should
     # be able to dispatch as Standard Actions opt in by setting True.
     is_action: bool = False
 
-    # Per DESIGN.md §10.3 — set of contexts where this capability is
-    # discoverable / callable. The default mirrors what existing v4
-    # capabilities expect: every context EXCEPT FSM_INTERNAL (which
-    # is reserved for FSM-engine-only operations the agent should
-    # never see directly). Sensitive capabilities and FSM internals
-    # override this set.
+    # Set of contexts where this capability is discoverable / callable.
+    # The default mirrors what existing capabilities expect: every
+    # context EXCEPT FSM_INTERNAL (which is reserved for FSM-engine-only
+    # operations the agent should never see directly). Sensitive
+    # capabilities and FSM internals override this set.
     available_in: set[InvocationContext] = field(
         default_factory=lambda: {
             InvocationContext.AGENT_CONVERSATION,
@@ -205,8 +203,8 @@ class WorkflowDefinition:
     # hand-author; see `_compute_workflow_requires()`.
     requires: list[str] = field(default_factory=list)
 
-    # ---------------- v5 Stage 1.5 fields (defaults preserve v4) ----
-    # See DESIGN.md §10. Workflows can also be Action Catalog
+    # ---------------- Action Catalog fields (defaults are the legacy non-action shape) ----
+    # Workflows can also be Action Catalog
     # entries (i.e. a Standard Action whose execution dispatches
     # into the workflow conductor). The fields mirror Capability's.
 
@@ -278,16 +276,14 @@ def invalidate_registry() -> None:
     imports in capability builders re-read the current source code.
     Clears tool probe cache so tools are re-probed on rebuild.
 
-    **Re-bootstraps v5 Threads after the purge.** Purging
+    **Re-bootstraps the Threads FSM after the purge.** Purging
     ``work_buddy.threads.engine`` from sys.modules nukes the
     process-global ``_REGISTERED_SIDE_EFFECTS`` dict, which is where
-    the v5 FSM state-entry handlers (enqueue inference, publish
+    the FSM state-entry handlers (enqueue inference, publish
     Resolution Surface card, etc.) live. Without re-bootstrap, the
     next FSM transition after a registry reload would land in a
-    wait state with no handlers registered, so capabilities like
-    ``journal_v5_scan`` would silently dead-end at AWAITING_INFERENCE.
-    Discovered live 2026-05-03 when ``mcp_registry_reload`` followed
-    by ``journal_v5_scan`` produced a thread that never got enqueued.
+    wait state with no handlers registered, so spawn capabilities
+    would silently dead-end at AWAITING_INFERENCE.
     """
     import sys
     from work_buddy.tools import invalidate_tool_status
@@ -307,7 +303,7 @@ def invalidate_registry() -> None:
     for k in to_remove:
         del sys.modules[k]
 
-    # Re-bootstrap v5 Threads in this subprocess. Best-effort: if
+    # Re-bootstrap the Threads FSM in this subprocess. Best-effort: if
     # bootstrap fails (e.g. budget hook init issue), the registry is
     # still valid — capabilities will work, but FSM transitions on
     # Threads won't fire side effects. Fail loud so the user notices.
@@ -317,7 +313,7 @@ def invalidate_registry() -> None:
     except Exception as exc:
         import logging
         logging.getLogger(__name__).warning(
-            "v5 Threads re-bootstrap after registry reload failed: %s. "
+            "Threads re-bootstrap after registry reload failed: %s. "
             "FSM state-entry handlers may be missing; spawn capabilities "
             "could dead-end. Restart the gateway to recover.",
             exc,
@@ -1574,81 +1570,6 @@ def _context_capabilities() -> list[Capability]:
         session_wb_activity as _session_wb_activity,
     )
 
-    def _chrome_cluster_subprocess(
-        *,
-        use_content: bool = True,
-        max_extract: int = 30,
-        max_chars: int = 3000,
-    ) -> str:
-        """Cluster currently-open tabs via the conductor's subprocess runner."""
-        from work_buddy.mcp_server.conductor import _execute_auto_run
-
-        # Step 1: collect tabs
-        collect_result = _execute_auto_run(
-            "chrome_cluster:collect",
-            {
-                "callable": "work_buddy.clarify.adapters.chrome.chrome_tabs_to_items",
-                "kwargs": {"engagement_window": "24h", "include_summaries": True},
-                "timeout": 30,
-            },
-            {},
-        )
-        if not collect_result.get("success"):
-            return f"Tab collection failed: {collect_result.get('error', 'unknown')}"
-        items = collect_result.get("value", {}).get("items", [])
-        if not items:
-            return "No currently-open tabs found."
-
-        # Step 2: cluster (with or without content extraction)
-        if use_content:
-            cluster_result = _execute_auto_run(
-                "chrome_cluster:extract_and_cluster",
-                {
-                    "callable": "work_buddy.clarify.adapters.chrome.extract_and_cluster_tabs",
-                    "kwargs": {"items_data": items, "max_extract": max_extract, "max_chars": max_chars},
-                    "timeout": 120,
-                },
-                {},
-            )
-        else:
-            cluster_result = _execute_auto_run(
-                "chrome_cluster:cluster",
-                {
-                    "callable": "work_buddy.clarify.cluster.cluster_items_from_raw",
-                    "kwargs": {"items_data": items},
-                    "timeout": 90,
-                },
-                {},
-            )
-
-        if not cluster_result.get("success"):
-            return f"Clustering failed: {cluster_result.get('error', 'unknown')}"
-
-        data = cluster_result.get("value", {})
-
-        # Format as markdown
-        lines = [f"## Tab Clusters ({data.get('cluster_count', 0)} groups, "
-                 f"{data.get('singleton_count', 0)} singletons, "
-                 f"model: {data.get('embedding_model', 'unknown')})\n"]
-
-        for c in data.get("clusters", []):
-            lines.append(f"### Cluster {c['cluster_id']}: {c['label']}")
-            lines.append(f"Cohesion: {c['cohesion']:.2f} | Items: {len(c['items'])}")
-            for item in c["items"]:
-                lines.append(f"- {item['label']}")
-                if item.get("url"):
-                    lines.append(f"  {item['url']}")
-            lines.append("")
-
-        if data.get("singletons"):
-            lines.append("### Unclustered tabs")
-            for c in data["singletons"]:
-                for item in c["items"]:
-                    lines.append(f"- {item['label']}")
-            lines.append("")
-
-        return "\n".join(lines)
-
     def _format_result_header(r: dict) -> str:
         """Render the per-result header line, dispatching on source.
 
@@ -2110,25 +2031,6 @@ def _context_capabilities() -> list[Capability]:
             },
             callable=chrome_content,
             requires=["chrome_extension"],
-        ),
-        Capability(
-            name="chrome_cluster",
-            description="Cluster currently-open Chrome tabs by semantic similarity. Extracts page content, embeds with document-tower model, and clusters via Louvain. Completely free — no LLM calls. Returns tab groups with cohesion scores. Set use_content=false for title-only clustering (faster, works when extension can't extract).",
-            category="context",
-            search_aliases=[
-                "group tabs",
-                "cluster tabs",
-                "tab groups",
-                "organize tabs",
-                "tab similarity",
-                "related tabs",
-            ],
-            parameters={
-                "use_content": {"type": "bool", "description": "True: extract+embed page text (richer). False: embed titles only (faster). Default: true.", "required": False},
-                "max_extract": {"type": "int", "description": "Max tabs to extract content from (default 30)", "required": False},
-                "max_chars": {"type": "int", "description": "Max chars per tab for extraction (default 3000)", "required": False},
-            },
-            callable=_chrome_cluster_subprocess,
         ),
         Capability(
             name="triage_item_detail",
@@ -3392,17 +3294,16 @@ def _journal_capabilities() -> list[Capability]:
             # retry-on-timeout needed (would just stack queued passes).
             auto_retry=False,
         ),
-        # NOTE: ``threads_v5_seed_test_data`` was a temporary
-        # scaffolding capability used during Stage 4 to populate the
-        # Threads tab with fake data. It was removed as part of the
-        # autonomy implementation cleanup — real journal/Chrome
-        # source pipelines now produce live threads. The
-        # ``seed_test_data`` Python module remains in
+        # NOTE: an older ``seed_test_data`` capability used to
+        # populate the Threads tab with fake data. It was removed
+        # once real journal/Chrome source pipelines produced live
+        # threads. The ``seed_test_data`` Python module remains in
         # work_buddy/threads/ for any future debugging needs but is
         # no longer registered as a callable capability.
 
-        # The legacy ``journal_v5_scan`` capability is gone — the
-        # canonical entry point is now ``run_source_pipeline`` (see
+        # The legacy per-source ``journal`` scan capability is gone
+        # — the canonical entry point is now ``run_source_pipeline``
+        # (see
         # ``_pipeline_capabilities()``), which dispatches to
         # ``JournalBacklogPipeline`` end-to-end. The unified pipeline
         # subsumes segmentation + manifest tagging + clustering + LLM
@@ -3827,8 +3728,8 @@ def _task_capabilities() -> list[Capability]:
                 "user_involvement."
             ),
             category="tasks",
-            # v5: this is the canonical Standard Action for "create a
-            # new task". Without this flag the action-inference catalog
+            # The canonical Standard Action for "create a new task".
+            # Without this flag the action-inference catalog
             # is empty and the agent falls back to improvised/suggestion
             # plans for what should be a one-call task creation.
             is_action=True,
@@ -4196,8 +4097,7 @@ def _task_capabilities() -> list[Capability]:
 def _pipeline_capabilities() -> list[Capability]:
     """The unified ``run_source_pipeline`` entry point.
 
-    Replaces the per-source ``journal_v5_scan`` capability and serves
-    as the single MCP/wb_run entry for triggering any source-pipeline
+    The single MCP/wb_run entry for triggering any source-pipeline
     run (Chrome, journal, future). Slash commands +
     ``daily-journal/process-backlog`` workflow dispatch through this.
     """
@@ -5362,9 +5262,9 @@ def _conversation_capabilities() -> list[Capability]:
     Conversations are a standalone subsystem backed by SQLite. The
     dashboard renders them in a sidebar chat panel.
 
-    Renamed from ``_thread_capabilities`` in v5 Stage 1; the
-    ``thread`` namespace is reserved for the v5 universal-entity
-    primitive.
+    Renamed from ``_thread_capabilities``; the ``thread`` namespace
+    is reserved for the universal-entity primitive in
+    :mod:`work_buddy.threads`.
     """
     import os
     import time

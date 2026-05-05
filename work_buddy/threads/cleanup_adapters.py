@@ -12,7 +12,7 @@ Per UX.md §6:
   records the appropriate event + transitions the Thread.
 
 Bootstrap: ``register_default_adapters()`` is called from the
-sidecar's ``bootstrap_v5()`` after the cleanup framework is in
+sidecar's ``bootstrap_threads()`` after the cleanup framework is in
 place. Tests can call it explicitly.
 """
 
@@ -144,7 +144,7 @@ JOURNAL_NOTE_ADAPTER = CleanupAdapter(
 
 def register_default_adapters() -> None:
     """Register the Stage 4 default adapters. Called from
-    bootstrap_v5() at sidecar startup.
+    bootstrap_threads() at sidecar startup.
 
     Idempotent: register_cleanup_adapter overwrites by source.
     """

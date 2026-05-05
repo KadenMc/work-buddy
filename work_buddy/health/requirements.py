@@ -705,7 +705,7 @@ _register(RequirementDef(
     fix_agent_brief=(
         "You are helping the user finish setting up the thunderbird-work-buddy "
         "companion add-on so work-buddy can read email for triage. The "
-        "integration ships read-only in v1 (no compose/move/delete) and is "
+        "integration is read-only (no compose/move/delete) and is "
         "gated default-off; this fix walks the user from 'add-on installed' to "
         "'wb_run(email_health) returns ok: true'.\n\n"
         "## Steps\n\n"

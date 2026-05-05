@@ -106,9 +106,9 @@ DOMAINS: list[_DomainDef] = [
         "label": "Email",
         "description": (
             "Email triage via the thunderbird-work-buddy companion add-on. "
-            "Read-only in v1: collects recent unread messages, drops them "
-            "into the triage Review pool, and lets work-buddy display "
-            "individual messages in Thunderbird. No compose / move / delete."
+            "Read-only: collects recent unread messages, drops them into "
+            "the triage Review pool, and lets work-buddy display individual "
+            "messages in Thunderbird. No compose / move / delete."
         ),
         "grouping_parents": [],
         "children_components": ["thunderbird"],

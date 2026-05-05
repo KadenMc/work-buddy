@@ -6,7 +6,7 @@ should resurface it.  Both functions are pure (no I/O) so they can
 be unit-tested with frozen dicts and so the dashboard / engage view
 can call them on every read without paying a roundtrip.
 
-Conceptual model (per ROADMAP §3.4 + v4 CONSENT.md):
+Conceptual model:
 
 * A task carries a ``risk_profile_json`` blob with **four dimensions**
   (``financial``, ``privacy``, ``accuracy``, ``compute``) and **three

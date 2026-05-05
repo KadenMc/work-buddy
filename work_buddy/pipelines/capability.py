@@ -1,11 +1,10 @@
 """The ``run_source_pipeline`` capability — single MCP/wb_run entry
 point that dispatches to a registered :class:`SourcePipeline` by name.
 
-Replaces the per-source ``journal_v5_scan`` capability + the
-chrome-triage workflow's underlying call chain. Slash commands and
-workflows that used to wire a source-specific function now just
-call ``run_source_pipeline(source="journal_backlog", ...)`` or
-``run_source_pipeline(source="chrome_triage", ...)``.
+The single MCP/wb_run entry for triggering any source-pipeline run.
+Slash commands and workflows that used to wire a source-specific
+function call ``run_source_pipeline(source="journal_backlog", ...)``
+or ``run_source_pipeline(source="chrome_triage", ...)``.
 
 Adding a new data source (Twitter scrape, email triage backlog,
 voice-memo transcripts, …) means: implement the SourcePipeline,

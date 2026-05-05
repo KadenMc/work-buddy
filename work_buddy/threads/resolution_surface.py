@@ -23,8 +23,8 @@ DESIGN.md §7.3 says the Resolution Request "flows through the
 existing consent subsystem." The existing consent subsystem
 (``work_buddy/consent.py``) is shaped around capability-call
 gating decorators, not generic typed messages. Retrofitting it
-to carry v5 ResolutionRequest payloads is Stage 4 surface-redesign
-work; in the meantime, the notifications subsystem already has a
+to carry ResolutionRequest payloads is open work; in the meantime,
+the notifications subsystem already has a
 generic custom_template + workflow-view renderer mechanism that
 fits cleanly. The user never sees the difference; the routing is
 internal.
@@ -91,8 +91,7 @@ def build_resolution_request(
 # Mirrors the conversation_chat / capability_consent pattern:
 # create a Notification with a custom_template, dispatch via
 # SurfaceDispatcher, the dashboard's poll loop spawns a workflow-
-# view, and our v5 frontend renderer (registered in Stage 1.9)
-# picks it up.
+# view, and the frontend Resolution Surface renderer picks it up.
 # ---------------------------------------------------------------------------
 
 
@@ -103,8 +102,8 @@ def _surfaces_for(rr: ResolutionRequest) -> Optional[list[str]]:
     """Decide which notification surfaces should fan out for this
     Resolution Request.
 
-    User-feedback (2026-05-03): the v5 Threads dashboard tab is the
-    canonical surface for thread state. Publishing a workflow-view
+    The Threads dashboard tab is the canonical surface for thread
+    state. Publishing a workflow-view
     notification for every wait-state thread floods the top-bar with
     one tab per thread, which is the very noise the Threads tab was
     supposed to replace. So this function now NEVER targets the
