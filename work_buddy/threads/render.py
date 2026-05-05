@@ -227,6 +227,12 @@ def build_render_data(thread_id: str) -> Optional[dict[str, Any]]:
     if latest_activity is None:
         latest_activity = getattr(thread, "updated_at", None)
 
+    # Creation timestamp — the timestamp of the earliest event on the
+    # log (typically the inciting_event). Used by the frontend to
+    # disambiguate cards that share the same title (e.g. multiple
+    # "Chrome triage" umbrellas spawned across a day).
+    created_at = events[0].timestamp if events else None
+
     # Risk highlight — true if the action's risk metadata exceeds
     # a "review-worthy" bar. Used by the consent card to apply a
     # color-coded urgency pill.
@@ -254,6 +260,7 @@ def build_render_data(thread_id: str) -> Optional[dict[str, Any]]:
         "risk_highlight": risk_highlight,
         "auto_advance_trail": auto_advance_trail,
         "latest_activity": latest_activity,
+        "created_at": created_at,
         "namespace_tags": list(inciting.get("namespace_tags") or []),
         "can_clean_up": cleanup.can_clean_up(thread),
         "sub_thread_count": sub_count,

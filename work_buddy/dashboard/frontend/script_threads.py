@@ -503,11 +503,51 @@ def _threads_script() -> str:
         }[state]) || (state || "").replace(/_/g, " ");
     }
 
+    // Compact created-at label for the top-level card meta row.
+    // Today: "14:32"; this week: "Mon 14:32"; older: "May 5".
+    // The full ISO timestamp lives on the parent element's title=
+    // attribute so hovering reveals exact creation time.
+    function _formatCreatedAt(iso) {
+        if (!iso) return "";
+        const d = new Date(iso);
+        if (isNaN(d.getTime())) return "";
+        const now = new Date();
+        const sameDay = (
+            d.getFullYear() === now.getFullYear()
+            && d.getMonth() === now.getMonth()
+            && d.getDate() === now.getDate()
+        );
+        const hh = String(d.getHours()).padStart(2, '0');
+        const mm = String(d.getMinutes()).padStart(2, '0');
+        if (sameDay) {
+            return hh + ':' + mm;
+        }
+        const diffMs = now - d;
+        const dayMs = 24 * 60 * 60 * 1000;
+        if (diffMs >= 0 && diffMs < 7 * dayMs) {
+            const wd = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][d.getDay()];
+            return wd + " " + hh + ':' + mm;
+        }
+        const months = ["Jan","Feb","Mar","Apr","May","Jun",
+                        "Jul","Aug","Sep","Oct","Nov","Dec"];
+        return months[d.getMonth()] + " " + d.getDate();
+    }
+
     function _renderTopLevelCard(t) {
         const urgent = t.urgency === "surface_now";
         const hasLater = !!t.has_been_later;
         const stateLabel = _friendlyStateTop(t.fsm_state);
-        const intent = (t.intent && t.intent.text) || t.title || t.thread_id;
+        const titleText = t.title || t.thread_id;
+        const intentText = (t.intent && t.intent.text) || "";
+        // Show the inferred intent below the title only when it adds
+        // information — i.e. when it differs from the title. Group
+        // umbrellas (parent_relationship === 'group') skip inference,
+        // so their intent.text falls back to the title and the
+        // duplicate is just visual noise.
+        const subtitleText =
+            (intentText && intentText !== titleText)
+                ? intentText
+                : "";
         // Phase 4: mid_process display_mode → muted styling, no
         // action affordances. The user can still click through to
         // the detail view to inspect the event log.
@@ -536,6 +576,12 @@ def _threads_script() -> str:
                     : '')
             +   '<span class="threads-toplist-state">'
             +     _esc(stateLabel) + '</span>'
+            +   (t.created_at
+                    ? '<span class="threads-toplist-created" '
+                    +   'title="Created ' + _esc(t.created_at) + '">'
+                    +   _esc(_formatCreatedAt(t.created_at))
+                    +   '</span>'
+                    : '')
             +   (t.risk_highlight
                     ? '<span class="threads-toplist-risk-dot '
                     +   _esc(t.risk_highlight) + '" '
@@ -544,11 +590,14 @@ def _threads_script() -> str:
                     : '')
             + '</div>'
             + '<div class="threads-toplist-title">'
-            +   _esc(t.title || t.thread_id) + '</div>'
-            + '<div class="threads-toplist-intent">'
-            +   _esc(intent.length > 200
-                        ? intent.slice(0, 197) + '...' : intent)
-            + '</div>'
+            +   _esc(titleText) + '</div>'
+            + (subtitleText
+                ? '<div class="threads-toplist-intent">'
+                  +   _esc(subtitleText.length > 200
+                              ? subtitleText.slice(0, 197) + '...'
+                              : subtitleText)
+                  + '</div>'
+                : '')
             + '<div class="threads-toplist-row-actions" '
             +   'onclick="event.stopPropagation()">'
             +   '<button class="threads-btn-icon" '
@@ -1483,6 +1532,18 @@ def _threads_styles() -> str:
 
 .threads-toplist-state {
     text-transform: capitalize;
+}
+
+.threads-toplist-created {
+    color: var(--text-muted-2, #aaa);
+    font-variant-numeric: tabular-nums;
+    text-transform: none;
+}
+
+.threads-toplist-created::before {
+    content: "·";
+    margin-right: 6px;
+    color: var(--text-muted, #666);
 }
 
 .threads-later-icon {
