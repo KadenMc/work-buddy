@@ -392,9 +392,9 @@ def get_llm_runner() -> LLMRunnerFn:
 
 
 def reset_llm_runner() -> None:
-    """Test-only: restore the stub runner. Used by teardown_v5 so a
-    bootstrap_v5 in one test doesn't leak its real runner into
-    sibling tests in the same process."""
+    """Test-only: restore the stub runner. Used by ``teardown_threads``
+    so a ``bootstrap_threads`` in one test doesn't leak its real
+    runner into sibling tests in the same process."""
     global _RUNNER
     _RUNNER = _stub_runner
 

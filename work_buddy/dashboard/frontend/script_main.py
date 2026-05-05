@@ -801,7 +801,7 @@ function renderTaskTable(tasks) {
     const html = `
         <div class="task-list-scroll">
         <table class="data-table">
-            <thead><tr><th>State</th><th>Task</th><th>Urgency</th><th>Markers</th><th title="Slice 4: tier \u00b7 blocker \u00b7 actor">Auto</th><th>Note</th><th>ID</th></tr></thead>
+            <thead><tr><th>State</th><th>Task</th><th>Urgency</th><th>Markers</th><th title="tier \u00b7 blocker \u00b7 actor">Auto</th><th>Note</th><th>ID</th></tr></thead>
             <tbody>${rows}</tbody>
         </table>
         </div>

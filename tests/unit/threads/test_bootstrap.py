@@ -1,4 +1,4 @@
-"""v5 Stage 2.9 — bootstrap wiring + per-Thread budget read-through.
+"""Threads-FSM bootstrap wiring + per-Thread budget read-through.
 
 End-to-end tests that confirm the bootstrap wires the full
 pipeline: a Thread enters AWAITING_INFERENCE → queue pulls in
@@ -9,7 +9,7 @@ Also pins:
 - budget.get_caller_budget falls back to the Thread's
   autonomy_policy.budget_usd when no explicit cap is set (zero-
   config per-Thread budgets).
-- bootstrap_v5(clear_first=True) is fully idempotent.
+- bootstrap_threads(clear_first=True) is fully idempotent.
 """
 
 from __future__ import annotations
@@ -46,56 +46,56 @@ def fresh_dbs(tmp_path, monkeypatch):
     queue_db = tmp_path / "queue.db"
     monkeypatch.setattr(store, "_db_path", lambda: threads_db)
     monkeypatch.setattr(queue, "_db_path", lambda: queue_db)
-    bootstrap.teardown_v5()
+    bootstrap.teardown_threads()
     inference.set_llm_runner(inference._stub_runner)
     yield (threads_db, queue_db)
-    bootstrap.teardown_v5()
+    bootstrap.teardown_threads()
     inference.set_llm_runner(inference._stub_runner)
 
 
 # ---------------------------------------------------------------------------
-# bootstrap_v5
+# bootstrap_threads
 # ---------------------------------------------------------------------------
 
 
 class TestBootstrap:
     def test_bootstrap_marks_state(self, fresh_dbs):
         assert bootstrap.is_bootstrapped() is False
-        bootstrap.bootstrap_v5()
+        bootstrap.bootstrap_threads()
         assert bootstrap.is_bootstrapped() is True
 
     def test_bootstrap_registers_admission_hook(self, fresh_dbs):
         assert len(queue._ADMISSION_HOOKS) == 0
-        bootstrap.bootstrap_v5()
+        bootstrap.bootstrap_threads()
         assert budget.budget_admission_hook in queue._ADMISSION_HOOKS
 
     def test_bootstrap_registers_inference_dispatch(self, fresh_dbs):
-        bootstrap.bootstrap_v5()
+        bootstrap.bootstrap_threads()
         handlers = engine._REGISTERED_SIDE_EFFECTS.get(
             FSMState.AWAITING_INFERENCE, []
         )
         assert inference_worker.awaiting_inference_handler in handlers
 
     def test_bootstrap_registers_resolution_surface_for_every_wait_state(self, fresh_dbs):
-        bootstrap.bootstrap_v5()
+        bootstrap.bootstrap_threads()
         for state in FSMState:
             if state.is_wait_state:
                 handlers = engine._REGISTERED_SIDE_EFFECTS.get(state, [])
                 assert resolution_surface._state_entry_handler in handlers
 
     def test_bootstrap_registers_cascade_for_terminals(self, fresh_dbs):
-        bootstrap.bootstrap_v5()
+        bootstrap.bootstrap_threads()
         for state in (FSMState.DONE, FSMState.DISMISSED, FSMState.HANDED_OFF):
             handlers = engine._REGISTERED_SIDE_EFFECTS.get(state, [])
             assert decompose.cascade_handler in handlers
 
     def test_clear_first_resets_handlers(self, fresh_dbs):
-        bootstrap.bootstrap_v5()
+        bootstrap.bootstrap_threads()
         # Add an extra handler manually so we can prove
         # ``clear_first=True`` removes it.
         manual = lambda r: None
         engine.register_state_entry_handler(FSMState.PROPOSED, manual)
-        bootstrap.bootstrap_v5(clear_first=True)
+        bootstrap.bootstrap_threads(clear_first=True)
         # After clear_first + re-bootstrap: the manual handler is
         # gone. Wave D (2026-05-03): bootstrap now also registers
         # a dashboard event emitter on EVERY state — including
@@ -110,8 +110,8 @@ class TestBootstrap:
         assert len(proposed_handlers) == 1
 
     def test_teardown_clears_state(self, fresh_dbs):
-        bootstrap.bootstrap_v5()
-        bootstrap.teardown_v5()
+        bootstrap.bootstrap_threads()
+        bootstrap.teardown_threads()
         assert bootstrap.is_bootstrapped() is False
         assert engine._REGISTERED_SIDE_EFFECTS == {}
         assert queue._ADMISSION_HOOKS == []
@@ -302,7 +302,7 @@ class TestEndToEndPipeline:
         verify the queue gets an entry; process it; verify the FSM
         advances and a Resolution Surface card publishes."""
 
-        bootstrap.bootstrap_v5()
+        bootstrap.bootstrap_threads()
 
         # Custom inference runner so process_one_pending succeeds
         def runner(prompt, schema, tier, thread):
@@ -354,7 +354,7 @@ class TestEndToEndPipeline:
         """A thread whose autonomy_policy.budget_usd is exhausted
         should auto-escalate to a clarification state on the next
         inference enqueue."""
-        bootstrap.bootstrap_v5()
+        bootstrap.bootstrap_threads()
 
         # Pre-load the Thread's cumulative cost to exceed budget
         budget.register_cost_source("thread", lambda cid: 99.0)

@@ -68,7 +68,7 @@ def _migrate_cmd(args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m work_buddy.threads",
-        description="v5 Thread tooling.",
+        description="Threads CLI tooling.",
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 

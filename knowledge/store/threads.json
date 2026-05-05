@@ -44,7 +44,7 @@
   "threads/resolution-phase": {
     "kind": "system",
     "name": "Resolution phase (vs. execution)",
-    "description": "Resolution = the cyclic, human-in-loop FSM where the system decides what to do. Execution = whichever runtime owns the dispatched action; v5 introduces no execution engine.",
+    "description": "Resolution = the cyclic, human-in-loop FSM where the system decides what to do. Execution = whichever runtime owns the dispatched action; the threads FSM dispatches but does not itself host the action runtime.",
     "tags": [
       "threads",
       "resolution",

@@ -1,4 +1,4 @@
-"""Threads tab — v5 dashboard surface.
+"""Threads tab — dashboard surface.
 
 Stage 4.0 shipped a placeholder. Stage 4.1 wires:
 - URL routing for nested thread paths and inspect modals.
@@ -749,7 +749,7 @@ def _threads_script() -> str:
         // Wave G — bundle any edits the user made in the right pane
         // (intent rewrite, action parameter overrides) into the
         // request body for the accept/redirect path. The accept
-        // route's _v5_post_action merges body data into the
+        // route's _post_thread_action merges body data into the
         // transition data that lands in the state_transition event,
         // so edits become part of the durable audit log even when
         // the action dispatcher doesn't yet act on them.
@@ -1248,7 +1248,7 @@ def _threads_script() -> str:
                 window._subThreadCache = {};
                 renderThreads();
             } catch (e) {
-                console.warn("[threads-v5] state_changed handler:", e);
+                console.warn("[threads] state_changed handler:", e);
             }
         });
     }

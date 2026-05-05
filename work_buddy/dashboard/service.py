@@ -2025,7 +2025,7 @@ def api_notification_acknowledge(notification_id: str):
 
 
 @app.get("/api/threads")
-def api_v5_threads_list():
+def api_threads_list():
     """List top-level v5 Threads (those with no parent_id).
 
     Query params:
@@ -2084,7 +2084,7 @@ def api_v5_threads_list():
             threads.append(data)
         return jsonify({"threads": threads})
     except Exception as exc:
-        logger.exception("v5 threads list failed: %s", exc)
+        logger.exception("threads list failed: %s", exc)
         return jsonify({"threads": [], "error": str(exc)}), 500
 
 
@@ -2107,9 +2107,9 @@ _DASHBOARD_RUNNABLE_CAPABILITIES: dict[str, dict] = {
 
 
 @app.post("/api/run/<capability_name>")
-def api_v5_run_capability(capability_name: str):
+def api_run_capability(capability_name: str):
     """Bridge endpoint that lets the dashboard trigger a small
-    allowlist of v5 capabilities directly.
+    allowlist of capabilities directly.
 
     The MCP gateway is the canonical way to invoke capabilities
     from agents; this endpoint lets the *user* trigger a known
@@ -2153,7 +2153,7 @@ def api_v5_run_capability(capability_name: str):
 
 
 @app.get("/api/threads/<thread_id>")
-def api_v5_thread_get(thread_id: str):
+def api_thread_get(thread_id: str):
     """Fetch one v5 Thread + its render data."""
     try:
         from work_buddy.threads.render import build_render_data
@@ -2162,12 +2162,12 @@ def api_v5_thread_get(thread_id: str):
             return jsonify({"error": "Thread not found"}), 404
         return jsonify(data)
     except Exception as exc:
-        logger.exception("v5 thread get failed for %s: %s", thread_id, exc)
+        logger.exception("thread get failed for %s: %s", thread_id, exc)
         return jsonify({"error": str(exc)}), 500
 
 
 @app.get("/api/threads/<thread_id>/sub")
-def api_v5_thread_sub_list(thread_id: str):
+def api_thread_sub_list(thread_id: str):
     """List sub-threads under a parent."""
     try:
         from work_buddy.threads.render import list_render_data
@@ -2175,13 +2175,13 @@ def api_v5_thread_sub_list(thread_id: str):
         return jsonify({"threads": threads, "parent_id": thread_id})
     except Exception as exc:
         logger.exception(
-            "v5 sub-thread list failed for %s: %s", thread_id, exc,
+            "sub-thread list failed for %s: %s", thread_id, exc,
         )
         return jsonify({"threads": [], "error": str(exc)}), 500
 
 
 @app.get("/api/threads/<thread_id>/events")
-def api_v5_thread_events(thread_id: str):
+def api_thread_events(thread_id: str):
     """Return the full event log for a thread.
 
     Wave C (2026-05-03): backs the dashboard's event-log inspector
@@ -2206,12 +2206,12 @@ def api_v5_thread_events(thread_id: str):
         return jsonify({"thread_id": thread_id, "events": out})
     except Exception as exc:
         logger.exception(
-            "v5 thread events fetch failed for %s: %s", thread_id, exc,
+            "thread events fetch failed for %s: %s", thread_id, exc,
         )
         return jsonify({"events": [], "error": str(exc)}), 500
 
 
-def _v5_post_action(
+def _post_thread_action(
     thread_id: str, *, trigger: str, data_extras=None,
 ):
     """Common POST handler — fires an FSM transition through engine."""
@@ -2238,7 +2238,7 @@ def _v5_post_action(
     except engine.InvalidTransition as e:
         return jsonify({"error": str(e)}), 400
     except Exception as exc:
-        logger.exception("v5 thread action failed for %s: %s", thread_id, exc)
+        logger.exception("thread action failed for %s: %s", thread_id, exc)
         return jsonify({"error": str(exc)}), 500
 
 
@@ -2260,7 +2260,7 @@ _ACCEPT_TRIGGER_BY_STATE = {
 
 
 @app.post("/api/threads/<thread_id>/accept")
-def api_v5_thread_accept(thread_id: str):
+def api_thread_accept(thread_id: str):
     """Smart accept: dispatches the right trigger based on FSM state.
 
     Confirmation → confirmed. Consent → execute. Clarification →
@@ -2280,20 +2280,20 @@ def api_v5_thread_accept(thread_id: str):
             return jsonify({
                 "error": f"Accept not valid in state {thread.fsm_state.value!r}",
             }), 400
-        return _v5_post_action(thread_id, trigger=trigger)
+        return _post_thread_action(thread_id, trigger=trigger)
     except Exception as exc:
-        logger.exception("v5 accept failed for %s: %s", thread_id, exc)
+        logger.exception("thread accept failed for %s: %s", thread_id, exc)
         return jsonify({"error": str(exc)}), 500
 
 
 @app.post("/api/threads/<thread_id>/retry-cleanup")
-def api_v5_thread_retry_cleanup(thread_id: str):
+def api_thread_retry_cleanup(thread_id: str):
     """Retry a failed cleanup. UX.md §6.5."""
-    return _v5_post_action(thread_id, trigger="retry_cleanup")
+    return _post_thread_action(thread_id, trigger="retry_cleanup")
 
 
 @app.post("/api/threads/<thread_id>/context/<item_id>/migrate")
-def api_v5_context_migrate(thread_id: str, item_id: str):
+def api_thread_context_migrate(thread_id: str, item_id: str):
     """Move a context item from one Thread to another. UX.md §9.
 
     Body: {"to_thread_id": "th-abc"}.
@@ -2326,32 +2326,32 @@ def api_v5_context_migrate(thread_id: str, item_id: str):
         return jsonify({"error": str(e)}), 400
     except Exception as exc:
         logger.exception(
-            "v5 context migrate failed for %s → %s: %s",
+            "thread context migrate failed for %s → %s: %s",
             thread_id, to_thread_id, exc,
         )
         return jsonify({"error": str(exc)}), 500
 
 
 @app.post("/api/threads/<thread_id>/accept-cleanup-failure")
-def api_v5_thread_accept_cleanup_failure(thread_id: str):
+def api_thread_accept_cleanup_failure(thread_id: str):
     """Accept a failed cleanup; thread → done. UX.md §6.5."""
-    return _v5_post_action(thread_id, trigger="accept_cleanup_failure")
+    return _post_thread_action(thread_id, trigger="accept_cleanup_failure")
 
 
 @app.post("/api/threads/<thread_id>/dismiss")
-def api_v5_thread_dismiss(thread_id: str):
+def api_thread_dismiss(thread_id: str):
     """Trash the Thread. Transition to DISMISSED."""
-    return _v5_post_action(thread_id, trigger="dismissed_by_user")
+    return _post_thread_action(thread_id, trigger="dismissed_by_user")
 
 
 @app.post("/api/threads/<thread_id>/redirect")
-def api_v5_thread_redirect(thread_id: str):
+def api_thread_redirect(thread_id: str):
     """Re-direct: push back to inference with feedback. UX.md §5.3."""
-    return _v5_post_action(thread_id, trigger="redirected")
+    return _post_thread_action(thread_id, trigger="redirected")
 
 
 @app.post("/api/threads/<thread_id>/cleanup")
-def api_v5_thread_cleanup(thread_id: str):
+def api_thread_cleanup(thread_id: str):
     """Clean Up: invoke registered cleanup adapter, mutate the source.
 
     Stage 4.3: transitions FSM to CLEANING_UP. Stage 4.4 wires the
@@ -2377,12 +2377,12 @@ def api_v5_thread_cleanup(thread_id: str):
         )
         return jsonify({"ok": True, "thread_id": thread_id, "state": "cleaning_up"})
     except Exception as exc:
-        logger.exception("v5 cleanup failed for %s: %s", thread_id, exc)
+        logger.exception("thread cleanup failed for %s: %s", thread_id, exc)
         return jsonify({"error": str(exc)}), 500
 
 
 @app.post("/api/threads/<thread_id>/later")
-def api_v5_thread_later(thread_id: str):
+def api_thread_later(thread_id: str):
     """Defer: set resurface_at to now + duration. UX.md §13.
 
     Body (optional): {"hours": 6}  default 6h.
@@ -2422,13 +2422,13 @@ def api_v5_thread_later(thread_id: str):
             "hours": hours,
         })
     except Exception as exc:
-        logger.exception("v5 later failed for %s: %s", thread_id, exc)
+        logger.exception("thread later failed for %s: %s", thread_id, exc)
         return jsonify({"error": str(exc)}), 500
 
 
 @app.post("/api/threads/<src_id>/move_item")
-def api_v5_thread_move_item(src_id: str):
-    """Stage 5 v2: move a single ContextItem from one group child to
+def api_thread_move_item(src_id: str):
+    """Move a single ContextItem from one group child to
     another sibling group child.
 
     Body: ``{"item_id": "<context_item_id>", "dest_thread_id":
@@ -2461,15 +2461,15 @@ def api_v5_thread_move_item(src_id: str):
         return jsonify({"error": str(e), "reason": "validation"}), 422
     except Exception as exc:
         logger.exception(
-            "v5 move_item failed for %s/%s -> %s: %s",
+            "thread move_item failed for %s/%s -> %s: %s",
             src_id, item_id, dest_thread_id, exc,
         )
         return jsonify({"error": str(exc)}), 500
 
 
 @app.post("/api/threads/<umbrella_id>/spawn_empty_group")
-def api_v5_thread_spawn_empty_group(umbrella_id: str):
-    """Stage 5 v2: add an empty group child under ``umbrella_id``.
+def api_thread_spawn_empty_group(umbrella_id: str):
+    """Add an empty group child under ``umbrella_id``.
 
     Drives the "+ New group" drop zone in the column UI — drop
     selected items onto the zone → the frontend posts here to spawn
@@ -2498,13 +2498,13 @@ def api_v5_thread_spawn_empty_group(umbrella_id: str):
         return jsonify({"error": str(e), "reason": "validation"}), 422
     except Exception as exc:
         logger.exception(
-            "v5 spawn_empty_group failed for %s: %s", umbrella_id, exc,
+            "thread spawn_empty_group failed for %s: %s", umbrella_id, exc,
         )
         return jsonify({"error": str(exc)}), 500
 
 
 @app.post("/api/threads/<thread_id>/set_action_proposal")
-def api_v5_thread_set_action_proposal(thread_id: str):
+def api_thread_set_action_proposal(thread_id: str):
     """Override or clear the per-thread proposed action.
 
     Driven by the dashboard's column-header action chip dropdown:
@@ -2617,14 +2617,14 @@ def api_v5_thread_set_action_proposal(thread_id: str):
         })
     except Exception as exc:
         logger.exception(
-            "v5 set_action_proposal failed for %s: %s", thread_id, exc,
+            "thread set_action_proposal failed for %s: %s", thread_id, exc,
         )
         return jsonify({"error": str(exc)}), 500
 
 
 @app.post("/api/threads/<thread_id>/delete_group_subthread")
-def api_v5_thread_delete_group_subthread(thread_id: str):
-    """Stage 5 v2: dismiss a group child via the column-header X
+def api_thread_delete_group_subthread(thread_id: str):
+    """Dismiss a group child via the column-header X
     button. Empty children stay visible by default — user explicitly
     deletes them once they're sure.
 
@@ -2643,14 +2643,14 @@ def api_v5_thread_delete_group_subthread(thread_id: str):
         return jsonify({"error": str(e), "reason": "validation"}), 422
     except Exception as exc:
         logger.exception(
-            "v5 delete_group_subthread failed for %s: %s", thread_id, exc,
+            "thread delete_group_subthread failed for %s: %s", thread_id, exc,
         )
         return jsonify({"error": str(exc)}), 500
 
 
 @app.post("/api/threads/<umbrella_id>/approve_all")
-def api_v5_thread_approve_all(umbrella_id: str):
-    """Stage 5 v2: cascade Accept to every non-terminal child of the
+def api_thread_approve_all(umbrella_id: str):
+    """Cascade Accept to every non-terminal child of the
     umbrella. Children execute their proposed actions.
 
     Continues on per-child failure — returns ``{approved: [...],
@@ -2672,7 +2672,7 @@ def api_v5_thread_approve_all(umbrella_id: str):
         return jsonify({"error": str(e), "reason": "validation"}), 422
     except Exception as exc:
         logger.exception(
-            "v5 approve_all failed for %s: %s", umbrella_id, exc,
+            "thread approve_all failed for %s: %s", umbrella_id, exc,
         )
         return jsonify({"error": str(exc)}), 500
 
@@ -2682,8 +2682,8 @@ def api_v5_thread_approve_all(umbrella_id: str):
 # new umbrella+items model. Returning an empty list keeps the panel
 # rendering cleanly until v2 suggestions are designed.
 @app.get("/api/threads/<thread_id>/group_suggestions")
-def api_v5_thread_group_suggestions(thread_id: str):
-    """Stage 5 v2: stub — cross-group item-level suggestions are not
+def api_thread_group_suggestions(thread_id: str):
+    """Stub — cross-group item-level suggestions are not
     yet implemented in the new model."""
     return jsonify({"suggestions": []})
 
@@ -2757,7 +2757,7 @@ def _linearize_children_for_display(children: list) -> list:
 
 
 @app.get("/api/threads/<umbrella_id>/groups")
-def api_v5_thread_groups(umbrella_id: str):
+def api_thread_groups(umbrella_id: str):
     """List the children of a group umbrella, with each child's
     ``context_items`` rendered inline AND the umbrella's per-source
     ``action_options`` so the dashboard can paint the multi-column
@@ -2817,7 +2817,7 @@ def api_v5_thread_groups(umbrella_id: str):
         })
     except Exception as exc:
         logger.exception(
-            "v5 groups failed for %s: %s", umbrella_id, exc,
+            "thread groups failed for %s: %s", umbrella_id, exc,
         )
         return jsonify({"groups": [], "error": str(exc)}), 500
 

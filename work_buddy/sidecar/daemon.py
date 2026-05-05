@@ -562,7 +562,7 @@ def run(foreground: bool = True) -> None:
     try:
         from work_buddy.threads import inference_worker
 
-        def _v5_inference_poller_loop():
+        def _inference_poller_loop():
             try:
                 inference_worker.run_poller(
                     worker_id=f"sidecar-{os.getpid()}",
@@ -570,17 +570,17 @@ def run(foreground: bool = True) -> None:
                     poll_interval_s=5.0,
                 )
             except Exception as e:
-                logger.warning("v5 inference poller crashed: %s", e)
+                logger.warning("inference poller crashed: %s", e)
 
         threading.Thread(
-            target=_v5_inference_poller_loop,
-            name="v5-inference-poller",
+            target=_inference_poller_loop,
+            name="inference-poller",
             daemon=True,
         ).start()
-        logger.info("v5 inference poller started (5s interval)")
+        logger.info("inference poller started (5s interval)")
     except Exception as e:
         logger.warning(
-            "v5 inference poller could not start; queued inference "
+            "inference poller could not start; queued inference "
             "requests will pile up untouched: %s", e,
         )
 

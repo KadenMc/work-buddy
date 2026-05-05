@@ -13,7 +13,7 @@ Mirrors the shape of :mod:`work_buddy.threads.cleanup_runner` —
 both are state-entry handlers that perform a side-effect and fire
 a follow-up trigger.
 
-Bootstrap registers this handler in :func:`bootstrap_v5`.
+Bootstrap registers this handler in :func:`bootstrap_threads`.
 """
 
 from __future__ import annotations

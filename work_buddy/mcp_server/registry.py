@@ -317,7 +317,7 @@ def invalidate_registry() -> None:
     except Exception as exc:
         import logging
         logging.getLogger(__name__).warning(
-            "v5 Threads re-bootstrap after registry reload failed: %s. "
+            "Threads re-bootstrap after registry reload failed: %s. "
             "FSM state-entry handlers may be missing; spawn capabilities "
             "could dead-end. Restart the gateway to recover.",
             exc,

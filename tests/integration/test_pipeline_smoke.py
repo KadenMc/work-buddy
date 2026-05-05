@@ -51,10 +51,10 @@ from work_buddy.threads.models import Thread
 def fresh(tmp_path, monkeypatch):
     monkeypatch.setattr(store, "_db_path", lambda: tmp_path / "threads.db")
     monkeypatch.setattr(queue, "_db_path", lambda: tmp_path / "queue.db")
-    bootstrap.teardown_v5()
+    bootstrap.teardown_threads()
     inference.set_llm_runner(inference._stub_runner)
     yield
-    bootstrap.teardown_v5()
+    bootstrap.teardown_threads()
     inference.set_llm_runner(inference._stub_runner)
 
 
@@ -84,7 +84,7 @@ def test_full_pipeline_walk(fresh):
     """
 
     # ---- Setup ----
-    bootstrap.bootstrap_v5()
+    bootstrap.bootstrap_threads()
 
     from dataclasses import replace
     strict_policy = replace(

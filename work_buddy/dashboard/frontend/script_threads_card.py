@@ -1,7 +1,6 @@
-"""Threads tab v5 — Stage 4.2 confirmation card layout (visual).
+"""Threads tab — confirmation card layout (visual).
 
 Implements the two-pane confirmation card layout (UX.md §4 + §5).
-Visual + local-state only — backend wiring lands in Stage 4.3.
 
 Exposed:
 - ``window.renderConfirmationCard(threadData)`` — returns HTML for
@@ -753,7 +752,7 @@ def _threads_card_script() -> str:
                 }
             })
             .catch(err => {
-                console.warn('[threads-v5] sub-thread fetch failed:', err);
+                console.warn('[threads] sub-thread fetch failed:', err);
                 window._subThreadCache[parentId] = [];
                 if (typeof window._renderActiveThread === 'function') {
                     window._renderActiveThread();

@@ -8,7 +8,7 @@ Pins:
 - can_clean_up returns False without note_path or line_text.
 - State-entry handler fires after CLEANING_UP entry, transitions
   Thread to DONE_CLEANUP_SUCCESSFUL or DONE_CLEANUP_UNSUCCESSFUL.
-- bootstrap_v5 registers the journal adapter.
+- bootstrap_threads registers the journal adapter.
 """
 
 from __future__ import annotations
@@ -39,9 +39,9 @@ from work_buddy.threads.models import Thread
 def _clean(tmp_path, monkeypatch):
     db = tmp_path / "threads.db"
     monkeypatch.setattr(store, "_db_path", lambda: db)
-    bootstrap.teardown_v5()
+    bootstrap.teardown_threads()
     yield
-    bootstrap.teardown_v5()
+    bootstrap.teardown_threads()
 
 
 # ---------------------------------------------------------------------------
@@ -178,7 +178,7 @@ class TestDefaultAdapterRegistration:
 
     def test_bootstrap_registers_journal_adapter(self):
         cleanup.clear_cleanup_adapters()
-        bootstrap.bootstrap_v5(clear_first=True)
+        bootstrap.bootstrap_threads(clear_first=True)
         assert cleanup.get_cleanup_adapter("journal_note") is not None
 
 
@@ -268,7 +268,7 @@ class TestCleanupRunnerHandler:
 
 class TestEndToEnd:
     def test_bootstrap_then_cleanup_walks_full_flow(self):
-        bootstrap.bootstrap_v5(clear_first=True)
+        bootstrap.bootstrap_threads(clear_first=True)
         # Thread with valid inciting source
         t = Thread(
             fsm_state=FSMState.AWAITING_CONFIRMATION,
