@@ -73,11 +73,11 @@ def build_render_data(thread_id: str) -> Optional[dict[str, Any]]:
     # use thread.context_items as source of truth — Stage 4.5+
     # consolidates the two.
     #
-    # Stage 5 v2: we MUST preserve ``ContextItem.id`` (the canonical
-    # source-pipeline-assigned id like ``journal_t_926fa6`` or a
-    # Chrome tab id) because the ``threads.group.move_item``
-    # operation targets items by their stable id. Synthetic
-    # display-only ``ci-{i}`` indexes break the move endpoint.
+    # We MUST preserve ``ContextItem.id`` (the canonical source-
+    # pipeline-assigned id like ``journal_t_926fa6`` or a Chrome
+    # tab id) because the ``threads.group.move_item`` operation
+    # targets items by their stable id. Synthetic display-only
+    # ``ci-{i}`` indexes break the move endpoint.
     context_items = []
     for i, ci in enumerate(thread.context_items, start=1):
         context_items.append({

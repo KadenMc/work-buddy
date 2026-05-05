@@ -236,12 +236,12 @@ def cascade_terminal_to_parent(
     for group-relationship umbrella parents the cascade
     still fires "all terminal → DONE" (an umbrella whose every group
     child has been accepted/dismissed/handed-off has also achieved
-    its purpose). v2 doesn't have an empty-group auto-DISMISS — empty
-    group sub-threads stay visible with a manual X-button delete (see
+    its purpose). Empty group sub-threads do not auto-DISMISS — they
+    stay visible with a manual X-button delete (see
     ``threads.group.delete_group_subthread``).
 
     Wired via engine.register_state_entry_handler on each terminal
-    state in Stage 2.9 bootstrap.
+    state at bootstrap.
     """
     own_conn = conn is None
     if own_conn:
@@ -298,9 +298,10 @@ def cascade_terminal_to_parent(
 
 
 # NOTE: ``cascade_after_item_moved`` (auto-DISMISS empty group on
-# thread-level move) was removed in the v2 group rework. Items now
-# move at ContextItem granularity (``threads.group.move_item``); empty
-# group sub-threads stay visible by design with a manual X-button
+# thread-level move) was removed when item-level moves replaced
+# thread-level moves. Items now move at ContextItem granularity
+# (``threads.group.move_item``); empty group sub-threads stay
+# visible by design with a manual X-button
 # delete (see ``threads.group.delete_group_subthread``). Threads still
 # auto-advance via :func:`cascade_terminal_to_parent` when all
 # children reach a terminal state.

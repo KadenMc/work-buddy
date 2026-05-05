@@ -404,9 +404,9 @@ class ChromeTriagePipeline:
     ) -> list[ClusterSpec]:
         """Cluster Chrome tabs using the existing
         ``clarify/cluster.cluster_items`` — same algorithm + weights
-        the v4 triage modal uses today, just with the input adapted
-        from CapturedItems back to the TriageItem shape that helper
-        expects."""
+        the standalone Chrome clusterer uses, just with the input
+        adapted from CapturedItems back to the TriageItem shape that
+        helper expects."""
         if not items:
             return []
         try:

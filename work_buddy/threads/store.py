@@ -236,12 +236,13 @@ def _migrate_stage_5(conn: sqlite3.Connection) -> None:
     Stage 5 introduces the ``group`` parent-relationship pattern. New
     columns:
 
-    - ``parent_relationship`` — discriminator between 'decompose' (v4
-      and earlier behaviour, the default) and 'group' (Stage 5).
-      Existing rows default to 'decompose' so behaviour is preserved.
+    - ``parent_relationship`` — discriminator between 'decompose'
+      (the original fanout behaviour, the default) and 'group' (the
+      umbrella-with-siblings pattern). Existing rows default to
+      'decompose' so behaviour is preserved.
     - ``originating_scrape_id`` — sibling-group scope id (NULL for
-      decompose parents and pre-Stage-5 data). Two group-parents with
-      the same id are siblings; items can move freely between them.
+      decompose parents and legacy data). Two group-parents with the
+      same id are siblings; items can move freely between them.
 
     Same pattern as ``_migrate_stage_4`` — runs before ``executescript``
     so the index-creation pass at the end of ``_SCHEMA`` doesn't fail
@@ -467,7 +468,7 @@ def update_thread_state(
     ``parent_id`` writes are how the move-between-groups op
     rewrites a child's parent pointer.
 
-    Stage 5 v2: ``context_items`` writes are how
+    ``context_items`` writes are how
     ``threads.group.move_item`` rewrites the cached items tuple on
     src + dest sibling group children. Pass any iterable of
     ``ContextItem`` (or ``None`` to clear); the value is serialised

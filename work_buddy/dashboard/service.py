@@ -1508,7 +1508,7 @@ def api_triage_redirect():
 # Engage view payload
 # ---------------------------------------------------------------------------
 #
-# Originally drove the v4 Engage tab; that surface was removed once
+# Originally drove the legacy Engage tab; that surface was removed once
 # the Threads tab became the canonical "what should I act on" UI. The
 # helper survives because ``work_buddy.task_me.load_context_for_task_me``
 # still composes it into the Today tab's payload (focus list filtered
@@ -2677,10 +2677,10 @@ def api_thread_approve_all(umbrella_id: str):
         return jsonify({"error": str(exc)}), 500
 
 
-# Suggestions endpoint — stubbed for now. The pre-v2 implementation
-# operated at thread granularity and isn't directly portable to the
-# new umbrella+items model. Returning an empty list keeps the panel
-# rendering cleanly until v2 suggestions are designed.
+# Suggestions endpoint — stubbed for now. The earlier
+# thread-granularity implementation isn't directly portable to the
+# umbrella+items model. Returning an empty list keeps the panel
+# rendering cleanly until cross-group suggestions are designed.
 @app.get("/api/threads/<thread_id>/group_suggestions")
 def api_thread_group_suggestions(thread_id: str):
     """Stub — cross-group item-level suggestions are not

@@ -1,4 +1,4 @@
-"""Group-view frontend (v2) — multi-column drag/drop layout slotted
+"""Group-view frontend — multi-column drag/drop layout slotted
 into the standard thread detail UI's "Sub-threads" section, for
 group-relationship **umbrella** threads only.
 
@@ -25,22 +25,6 @@ Drag an item card from column A to column B → ``move_item`` (POST
 tuples on both children. Optimistic update applies first; SSE
 ``thread.state_changed`` triggers a debounced ``GET /groups``
 reconciliation.
-
-What used to be here (pre-v2)
------------------------------
-
-- ``move_thread_to_parent`` operated at thread granularity (each tab
-  was a sub-thread). Replaced by item-level :func:`move_item`.
-- A "Submit all" button per column. Replaced by an umbrella-level
-  ``Approve all`` button (see ``script_threads_card`` —
-  ``cascade_approve_umbrella`` runs Accept on every non-terminal
-  child).
-- "Items moved" success toast on every drag. Removed — the move is
-  visible right under the cursor; the toast was noise. Toasts now
-  fire ONLY on partial failures.
-- A cross-sibling cache keyed by every sibling's thread_id. The new
-  cache is keyed by **umbrella_id** (one umbrella per scrape; no
-  cross-sibling sharing required).
 
 Module-scoped state (survives morphdom re-renders)
 --------------------------------------------------
@@ -1144,7 +1128,7 @@ def _group_view_script() -> str:
 
 def _group_view_styles() -> str:
     return r"""
-/* Stage 5 v2: group-view multi-column layout. Renders inside the
+/* Group-view multi-column layout. Renders inside the
  * standard thread-detail card's "Sub-threads" section when the
  * active thread is a group umbrella (parent_relationship === 'group').
  * Columns are flex children that wrap on narrow viewports.

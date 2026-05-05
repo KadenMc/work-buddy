@@ -252,7 +252,7 @@ class Thread:
     # FSM-executes; cascade-on-terminal advances parent to DONE). 'group'
     # is the new pattern: parent is a re-organisable container; items
     # can move between sibling group-parents via move_thread_to_parent.
-    # Default 'decompose' preserves all v4/Stage-4 behaviour.
+    # Default 'decompose' preserves the original fanout behaviour.
     parent_relationship: str = "decompose"
 
     # sibling-scope id. Group-parents from one inference run

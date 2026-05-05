@@ -56,10 +56,10 @@ def _threads_script() -> str:
         renderThreads();
     };
 
-    // 2026-05-04: open a sub-thread AND focus the right-pane editor on
-    // a specific action in one click. Mirrors the v4 affordance where
-    // the user could see proposed actions on each card and jump
-    // straight to editing one without first entering the thread. The
+    // Open a sub-thread AND focus the right-pane editor on a specific
+    // action in one click — the user sees proposed actions on each
+    // card and jumps straight to editing one without first entering
+    // the thread. The
     // navigation still pushes the path (so the breadcrumb / URL hash /
     // back-button all work normally), and we set ``focusedId`` on the
     // sub-thread's per-card state so its right-pane renders the action
@@ -679,15 +679,10 @@ def _threads_script() -> str:
             };
             popup.appendChild(btn);
         }
-        // Position above the anchor, right-aligned with the parent
-        // card. User-feedback iterations:
-        //   v1 (column, below anchor) — right options slid off-screen.
-        //   v2 (row, centered on anchor) — popped far to the left of
-        //       the Later button, awkward to reach.
-        //   v3 (this) — render above, right-edge aligned to the
-        //       enclosing card with a small padding so the rightmost
-        //       durations sit close to where the user's mouse is. Falls
-        //       back to viewport-right if no card ancestor is found.
+        // Position above the anchor, right-edge aligned to the
+        // enclosing card with a small padding so the rightmost
+        // durations sit close to where the user's mouse is. Falls
+        // back to viewport-right if no card ancestor is found.
         document.body.appendChild(popup);
         const rect = anchorEl.getBoundingClientRect();
         const popRect = popup.getBoundingClientRect();

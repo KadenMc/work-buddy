@@ -21,7 +21,7 @@ from __future__ import annotations
 
 def _automation_script() -> str:
     return r"""
-// ---- Shared frontend helpers (post-v4 cleanup) -------------------------
+// ---- Shared frontend helpers ------------------------------------------
 
 function _autEsc(s) {
     const d = document.createElement('div');

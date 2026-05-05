@@ -29,8 +29,8 @@ for local inference:
   timestamps + service-time / queue-wait latency splits, kept in a
   bounded ring buffer. The sidecar dashboard can snapshot these.
 
-Scope (v1)
-----------
+Scope
+-----
 Wired only into ``work_buddy.embedding.providers.lmstudio`` for now —
 that's the call site that caused the recent dashboard-search outages
 (bulk encode holding the embedding service's thread + Python locks
@@ -38,10 +38,10 @@ while an interactive search tried to run). Wiring into
 ``work_buddy.llm.backends.{lmstudio_native,openai_compat}`` is a
 follow-on.
 
-v1 does NOT enforce ``inference_s`` directly — we pass it along so
-the caller's ``httpx.Client(timeout=...)`` does the HTTP-layer
-enforcement. The broker records the budget for observability. A
-future v2 can add a watchdog that force-cancels stuck calls.
+The broker does NOT enforce ``inference_s`` directly — it passes
+the value along so the caller's ``httpx.Client(timeout=...)`` does
+the HTTP-layer enforcement. The budget is recorded for observability;
+a watchdog that force-cancels stuck calls is open work.
 
 Usage
 -----
@@ -131,9 +131,9 @@ class QueueWaitTimeout(BrokerError):
 
 class InferenceTimeout(BrokerError):
     """The request got a slot but the downstream call exceeded
-    ``inference_s``. v1 does not enforce this directly — callers
-    use their own HTTP client timeout. This exception exists as a
-    vocabulary for the caller to raise + metrics to record.
+    ``inference_s``. The broker does not enforce this directly —
+    callers use their own HTTP client timeout. This exception exists
+    as a vocabulary for the caller to raise + metrics to record.
     """
 
 
@@ -171,7 +171,7 @@ class ProfileConfig:
 
     default_inference_s: float = 120.0
     """Default ``inference_s`` for metrics / caller hint. Not enforced
-    by the broker directly in v1."""
+    by the broker directly — callers apply their own HTTP timeout."""
 
 
 @dataclass

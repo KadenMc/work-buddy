@@ -802,9 +802,9 @@ def _threads_card_script() -> str:
     }
 
     // Inline preview of a sub-thread's proposed actions on the mini-card.
-    // Closes the gap from v4: the user could see what was about to happen
-    // without entering each thread, and could go straight to editing the
-    // proposed action with a single click. The action-edit pencil opens
+    // The user sees what is about to happen without entering each thread,
+    // and can go straight to editing the proposed action with a single
+    // click. The action-edit pencil opens
     // the sub-thread WITH its right-pane editor already focused on the
     // action, so the "edit before entering" affordance is one click away
     // even if we don't render a full action editor inline.

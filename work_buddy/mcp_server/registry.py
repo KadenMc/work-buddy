@@ -77,7 +77,7 @@ class Capability:
     # the partial-state recovery path retries the full capability.
     effects: list[Any] = field(default_factory=list)  # list[EffectSpec]
 
-    # ---------------- Action Catalog fields (defaults preserve v4) ----
+    # ---------------- Action Catalog fields (defaults are the legacy non-action shape) ----
 
     # Whether this capability appears in the Action Catalog (i.e.
     # whether action inference may propose it as the action to take
@@ -85,12 +85,11 @@ class Capability:
     # be able to dispatch as Standard Actions opt in by setting True.
     is_action: bool = False
 
-    # Per DESIGN.md §10.3 — set of contexts where this capability is
-    # discoverable / callable. The default mirrors what existing v4
-    # capabilities expect: every context EXCEPT FSM_INTERNAL (which
-    # is reserved for FSM-engine-only operations the agent should
-    # never see directly). Sensitive capabilities and FSM internals
-    # override this set.
+    # Set of contexts where this capability is discoverable / callable.
+    # The default mirrors what existing capabilities expect: every
+    # context EXCEPT FSM_INTERNAL (which is reserved for FSM-engine-only
+    # operations the agent should never see directly). Sensitive
+    # capabilities and FSM internals override this set.
     available_in: set[InvocationContext] = field(
         default_factory=lambda: {
             InvocationContext.AGENT_CONVERSATION,
@@ -204,7 +203,7 @@ class WorkflowDefinition:
     # hand-author; see `_compute_workflow_requires()`.
     requires: list[str] = field(default_factory=list)
 
-    # ---------------- Action Catalog fields (defaults preserve v4) ----
+    # ---------------- Action Catalog fields (defaults are the legacy non-action shape) ----
     # Workflows can also be Action Catalog
     # entries (i.e. a Standard Action whose execution dispatches
     # into the workflow conductor). The fields mirror Capability's.

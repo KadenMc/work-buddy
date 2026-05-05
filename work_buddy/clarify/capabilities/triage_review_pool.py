@@ -108,7 +108,7 @@ def triage_review_pool(
         logger.warning("execute_triage_decisions failed: %s", exc)
         executed = {"error": f"{type(exc).__name__}: {exc}"}
 
-    # Stamp entries reviewed. Use a coarse outcome for v1; a future
+    # Stamp entries reviewed with a coarse outcome; a future
     # refactor can reflect per-action outcomes from `executed`.
     keys = [(pe.run_id, pe.item_id) for pe in pending]
     pool_updates = pool.mark_reviewed(keys, outcome="reviewed")
@@ -131,7 +131,7 @@ def _build_presentation_from_pool(
     the existing frontend renderer needs no changes. Grouping is done
     by ``verdict.recommended_action``; items within a group are
     further sub-grouped by ``related_item_ids`` linkage when present
-    (v1 keeps this simple — one entry per group).
+    (one entry per group; the linkage is informational only).
 
     Slice 1.5 stamps two new fields on each ``presentation_group``:
     ``resolution_type`` (selects the per-card renderer in the new
