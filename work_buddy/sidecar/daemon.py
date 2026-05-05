@@ -545,16 +545,16 @@ def run(foreground: bool = True) -> None:
     cfg = load_config()
     sidecar_cfg = cfg.get("sidecar", {})
 
-    # --- v5 Stage 2.9 bootstrap ---
+    # --- Threads-FSM bootstrap ---
     # Wires the FSM engine state-entry handlers + LLM-call queue
     # admission hook. Idempotent and self-contained. Failure here
-    # is non-fatal — v5 simply won't process Threads but the rest
-    # of the sidecar (retry queue, scheduled jobs, conductor) is
-    # unaffected.
+    # is non-fatal — the threads system simply won't process Threads
+    # but the rest of the sidecar (retry queue, scheduled jobs,
+    # conductor) is unaffected.
     from work_buddy.threads.bootstrap import bootstrap_for_subprocess
     bootstrap_for_subprocess(subprocess_name="sidecar")
 
-    # --- v5 inference-worker poller ---
+    # --- Inference-worker poller ---
     # Without this, queue.enqueue() during AWAITING_INFERENCE entry
     # would just pile up entries with nothing draining them. The
     # poller pulls one entry per cycle and runs inference inline

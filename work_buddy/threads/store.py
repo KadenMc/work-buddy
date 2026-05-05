@@ -1,4 +1,4 @@
-"""SQLite-backed store for v5 Threads and their event log.
+"""SQLite-backed store for Threads and their event log.
 
 Stage 1.3 deliverable: schema, idempotent migration, and *minimum*
 CRUD scaffolding for ``threads`` and ``thread_events`` tables. The
@@ -74,12 +74,11 @@ CREATE TABLE IF NOT EXISTS threads (
     subtype                    TEXT,           -- 'task' | NULL
 
     -- parent-child relationship discriminator. 'decompose' is
-    -- the canonical v5 fanout pattern (parent has a decompose action;
+    -- the canonical fanout pattern (parent has a decompose action;
     -- children FSM-execute independently; cascade-on-terminal advances
     -- parent to DONE when all children terminal). 'group' is the new
     -- pattern: parent is a re-organisable container; items can move
     -- between sibling group-parents via the move_thread_to_parent op.
-    -- See data/designs/gtd/reimagined/DECISIONS.md (Stage 5).
     parent_relationship        TEXT NOT NULL DEFAULT 'decompose',
 
     -- scope id for sibling-group validation. Parents from one

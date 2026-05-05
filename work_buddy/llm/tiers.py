@@ -43,8 +43,7 @@ class ModelTier(str, Enum):
     FRONTIER_BEST = "frontier_best"
     """Premium frontier model — Opus-class. Reserve for hardest escalations."""
 
-    # ---- v5 Stage 1.7 — new tiers introduced for the Thread system ----
-    # See data/designs/gtd/reimagined/DESIGN.md §9.2.
+    # ---- Tiers introduced for the Thread system ----
 
     AGENT_HEADLESS = "agent_headless"
     """Multi-turn agent (Claude Code subprocess) with tools.
@@ -117,7 +116,7 @@ _DEFAULTS: dict[ModelTier, dict[str, Any]] = {
         "temperature": 0.0,
         "tool_support": True,
     },
-    # v5 Stage 1.7 — stub bindings. Routing wired in Stage 2.
+    # Stub bindings — routing for these tiers is wired separately.
     ModelTier.AGENT_HEADLESS: {
         "backend": "agent_subprocess",   # special pseudo-backend; runner_v2 dispatches to a subprocess spawner in Stage 2
         "profile": None,

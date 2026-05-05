@@ -1,4 +1,4 @@
-"""Render-data builder for the v5 Threads dashboard.
+"""Render-data builder for the Threads dashboard.
 
 Converts a Thread + its event log into the JSON shape the
 confirmation card consumes. UX.md §4 + per-section data shapes.
@@ -110,8 +110,8 @@ def build_render_data(thread_id: str) -> Optional[dict[str, Any]]:
         }
         intrinsic = payload.get("intrinsic_amplifiers") or {}
 
-        # Action proposals can carry one or many actions. The v5
-        # convention from DESIGN.md §10 is one ActionProposal at a
+        # Action proposals can carry one or many actions. The
+        # convention is one ActionProposal at a
         # time; we render whatever's there.
         kind = payload.get("kind", "standard")
         # Action display name: agent-supplied name takes precedence

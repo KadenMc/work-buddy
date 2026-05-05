@@ -130,7 +130,7 @@ def _journal_payload(triage_item: Any) -> dict[str, Any]:
     metadata + the segment's raw text (truncated to 500 chars; the
     full text lives on the segmenter side). Drops segmenter-internal
     fields that would surface as confusing payload entries (e.g.,
-    ``thread_id`` — the segmenter's internal partition id, NOT a v5
+    ``thread_id`` — the segmenter's internal partition id, NOT a
     Thread id).
     """
     md = triage_item.metadata or {}

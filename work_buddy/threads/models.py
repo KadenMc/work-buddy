@@ -1,11 +1,8 @@
-"""Dataclasses for the v5 Thread system.
+"""Dataclasses for the Thread system.
 
 Stage 1 deliverable: frozen type signatures so downstream stages can
 program against them. No behavior wired here — those land in Stage 2
 (FSM engine, inference layer, sidecar workers).
-
-See ``data/designs/gtd/reimagined/DESIGN.md`` §5 (Thread), §11
-(Autonomy), §12 (ContextItem), §15 (ResolutionRequest).
 """
 
 from __future__ import annotations
@@ -207,8 +204,8 @@ class AutonomyPolicy:
 class Thread:
     """The universal entity for "context that may need an action."
 
-    See DESIGN.md §5.1. Subtype is set at creation, never mutated; the
-    only named subtype in v5 is ``Task``.
+    Subtype is set at creation, never mutated; the only named
+    subtype is ``Task``.
     """
 
     thread_id: str = field(default_factory=_new_thread_id)

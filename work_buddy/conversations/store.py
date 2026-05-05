@@ -8,8 +8,8 @@ All public functions accept an optional ``conn`` parameter for callers
 that want to manage their own connections (e.g., transactions). When
 omitted, a fresh connection is created and auto-closed.
 
-Renamed from ``work_buddy.threads`` in v5 Stage 1; the ``threads`` name
-is reserved for the v5 universal-entity primitive. On first import,
+Renamed from ``work_buddy.threads``; that namespace is reserved for
+the universal-entity primitive (:mod:`work_buddy.threads`). On first import,
 this module will auto-migrate any existing ``threads.db`` (with tables
 ``threads``/``messages``) to ``conversations.db`` (tables
 ``conversations``/``messages`` with column ``conversation_id``).

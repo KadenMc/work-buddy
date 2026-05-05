@@ -1,16 +1,17 @@
-"""CLI entry points for v5 Thread tooling.
+"""CLI entry points for the Threads system.
 
-Stage 3.3 deliverable: a dry-run harness for the migration. Usage::
+Currently exposes the v4 → Threads migration dry-run + cutover.
+Usage::
 
-    # Dry-run (writes to a sandboxed v5 DB; doesn't touch real data)
-    python -m work_buddy.threads migrate --dry-run --out /tmp/v5_dry.db
+    # Dry-run (writes to a sandboxed threads DB; doesn't touch real data)
+    python -m work_buddy.threads migrate --dry-run --out /tmp/threads_dry.db
 
     # Live cutover (only after the dry-run output is clean AND the
     # pre-flight DB dump has been taken)
     python -m work_buddy.threads migrate --execute
 
 The default is ``--dry-run``; ``--execute`` is required to write
-to the live v5 DB. Refusing to run with no flags is intentional.
+to the live threads DB. Refusing to run with no flags is intentional.
 """
 
 from __future__ import annotations
@@ -37,7 +38,7 @@ def _migrate_cmd(args: argparse.Namespace) -> int:
         return 2
 
     if args.dry_run:
-        out = Path(args.out) if args.out else Path("data/v5_dryrun.db")
+        out = Path(args.out) if args.out else Path("data/threads_dryrun.db")
         out.parent.mkdir(parents=True, exist_ok=True)
         # Wipe any prior dry-run DB so the run is fresh
         if out.exists():
@@ -74,20 +75,20 @@ def main(argv: list[str] | None = None) -> int:
 
     p_mig = sub.add_parser(
         "migrate",
-        help="Migrate v4 entities (tasks, action items, pool entries) to v5 Threads.",
+        help="Migrate v4 entities (tasks, action items, pool entries) into the Threads system.",
     )
     mode_group = p_mig.add_mutually_exclusive_group()
     mode_group.add_argument(
         "--dry-run", action="store_true",
-        help="Run against a sandboxed v5 DB. Writes nothing to the live DB. (RECOMMENDED for first run.)",
+        help="Run against a sandboxed threads DB. Writes nothing to the live DB. (RECOMMENDED for first run.)",
     )
     mode_group.add_argument(
         "--execute", action="store_true",
-        help="LIVE cutover. Writes to the live v5 DB. Only run after a pre-flight DB dump AND a clean dry-run.",
+        help="LIVE cutover. Writes to the live threads DB. Only run after a pre-flight DB dump AND a clean dry-run.",
     )
     p_mig.add_argument(
         "--out", type=str, default=None,
-        help="Output path for the dry-run sandbox DB. Default: data/v5_dryrun.db. Ignored for --execute.",
+        help="Output path for the dry-run sandbox DB. Default: data/threads_dryrun.db. Ignored for --execute.",
     )
     p_mig.add_argument(
         "--skip-pool", action="store_true",

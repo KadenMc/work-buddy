@@ -1509,7 +1509,7 @@ def api_triage_redirect():
 # ---------------------------------------------------------------------------
 #
 # Originally drove the v4 Engage tab; that surface was removed once
-# v5 Threads became the canonical "what should I act on" UI. The
+# the Threads tab became the canonical "what should I act on" UI. The
 # helper survives because ``work_buddy.task_me.load_context_for_task_me``
 # still composes it into the Today tab's payload (focus list filtered
 # by who-can-act + user-current contexts). No HTTP route is mounted —
@@ -2017,16 +2017,16 @@ def api_notification_acknowledge(notification_id: str):
 
 
 # ---------------------------------------------------------------------------
-# v5 Threads API (Stage 4.3)
+# Threads API
 #
 # Read endpoints + commit endpoints for the unified Threads tab. All
-# routed under /api/threads/. UX.md §15 Stage 4.3 spec.
+# routed under /api/threads/.
 # ---------------------------------------------------------------------------
 
 
 @app.get("/api/threads")
 def api_threads_list():
-    """List top-level v5 Threads (those with no parent_id).
+    """List top-level Threads (those with no parent_id).
 
     Query params:
         ?show_later=1         — include Threads with future resurface_at.
@@ -2154,7 +2154,7 @@ def api_run_capability(capability_name: str):
 
 @app.get("/api/threads/<thread_id>")
 def api_thread_get(thread_id: str):
-    """Fetch one v5 Thread + its render data."""
+    """Fetch one Thread + its render data."""
     try:
         from work_buddy.threads.render import build_render_data
         data = build_render_data(thread_id)
@@ -2867,7 +2867,7 @@ def _resolve_action_library_for_umbrella(umbrella) -> tuple[list[dict], str | No
 
 
 # ---------------------------------------------------------------------------
-# Conversation API (renamed from Thread chat in v5 Stage 1)
+# Conversation API (renamed from Thread chat to free the Thread name)
 # ---------------------------------------------------------------------------
 
 
@@ -3663,8 +3663,8 @@ def main():
 
     _start_acknowledge_poller()
 
-    # v5 Stage 4: bootstrap the v5 Thread system in the dashboard's
-    # process. Each subprocess has its own module-level state, so
+    # Bootstrap the Thread system in the dashboard's process. Each
+    # subprocess has its own module-level state, so
     # each needs its own bootstrap call to get the FSM handlers +
     # cleanup adapters registered. The shared helper centralizes
     # the try/except + logging so each call site is one line.

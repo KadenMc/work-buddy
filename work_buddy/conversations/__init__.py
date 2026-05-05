@@ -4,8 +4,8 @@ Conversations are a standalone subsystem. Any part of work-buddy can open
 a conversation to have a back-and-forth with the user (notifications are
 the first consumer).
 
-Renamed from ``work_buddy.threads`` in v5 Stage 1; the ``threads``
-namespace is reserved for the v5 universal-entity primitive.
+Renamed from ``work_buddy.threads``; that namespace is reserved for
+the universal-entity primitive (see :mod:`work_buddy.threads`).
 
 Usage via MCP gateway::
 

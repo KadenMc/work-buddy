@@ -21,7 +21,7 @@ const staticLoaders = {
 };
 // Expose globally so script_threads.py can register its loader at
 // IIFE-execution time (loadThreads is defined later in the script
-// concatenation order; this lets the v5 module wire itself in
+// concatenation order; this lets the threads module wire itself in
 // without depending on script_main.py's exact placement).
 window.staticLoaders = staticLoaders;
 
@@ -104,7 +104,7 @@ function _persistHash() {
             params.set('tn', window._selectedNamespace);
         } else if (tab === 'threads' && typeof window._threadsState === 'object'
                    && window._threadsState) {
-            // v5 Threads tab state encoding (UX.md §11.2):
+            // Threads tab state encoding:
             //   tpath=th-abc/th-def  — slash-separated thread path
             //   inspect=ci-7         — modal inspector (independent of tpath)
             const tpath = window._threadsState.path;
@@ -148,9 +148,8 @@ async function _initFromHash() {
             const rsEl = document.getElementById('review-source-filter');
             if (rsEl) rsEl.value = params.get('rs');
         }
-        // v5 Threads tab state (UX.md §11.2):
-        // Stash before switchTab fires loadThreads so the loader picks
-        // up the right path/inspect on first render.
+        // Threads tab state: stash before switchTab fires loadThreads
+        // so the loader picks up the right path/inspect on first render.
         if (params.has('tpath') || params.has('inspect') || params.get('tab') === 'threads') {
             const tpath = params.get('tpath') || '';
             window._threadsState = {

@@ -328,8 +328,8 @@ tools:
 # Slice 4 — risk tolerance + amplifier policy.  Per-dimension ceilings
 # for autonomous action; anything above forces consent (caps the
 # operating tier at 2 = plan-and-execute).  Defaults are conservative;
-# bump up over time as trust builds.  See data/designs/gtd/ROADMAP.md
-# §3.4 + work_buddy/automation/risk.py for the full schema.
+# bump up over time as trust builds.  See work_buddy/automation/risk.py
+# for the full schema.
 risk_tolerance:
   financial:
     autonomous_max_cents: 50      # spend up to 50¢ without asking

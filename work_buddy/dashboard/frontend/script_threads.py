@@ -14,7 +14,7 @@ from __future__ import annotations
 def _threads_script() -> str:
     return r"""
 // ===========================================================================
-// Threads tab v5 — Stage 4.1 URL routing + recursive UI scaffold
+// Threads tab — URL routing + recursive UI scaffold
 // ===========================================================================
 
 (function () {

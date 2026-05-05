@@ -96,7 +96,7 @@ _READONLY_SAFE = frozenset({
     "query_messages",
     "read_message",
     "get_thread",          # inter-agent messaging thread (separate subsystem)
-    # Conversation reads (renamed from thread_list in v5 Stage 1)
+    # Conversation reads (renamed from thread_list)
     "conversation_list",
 })
 
@@ -215,7 +215,7 @@ _MUTATING_CAPABILITIES: frozenset[str] = frozenset({
     "send_message", "reply_to_message", "update_message_status",
     "notification_send", "request_send", "consent_request",
     "consent_request_resolve", "consent_grant", "consent_revoke",
-    # Conversations (writes; renamed from thread_* in v5 Stage 1)
+    # Conversations (writes; renamed from thread_*)
     "conversation_create", "conversation_send",
     "conversation_ask", "conversation_close",
     # Chrome mutations

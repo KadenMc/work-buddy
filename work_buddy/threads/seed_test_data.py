@@ -1,10 +1,10 @@
-"""seed_test_data — fabricate v5 Threads in various FSM states for
-Stage 4 UI testing.
+"""seed_test_data — fabricate Threads in various FSM states for
+UI testing.
 
-Distinct from journal_v5_scan: this synthesizes Threads + events
-WITHOUT going through real inference / LLM. Useful when you want
-to exercise card kinds (clarification, consent, review, redirect,
-cleanup-failure) the natural pipeline doesn't easily produce.
+Synthesizes Threads + events WITHOUT going through real inference
+/ LLM. Useful when you want to exercise card kinds (clarification,
+consent, review, redirect, cleanup-failure) the natural pipeline
+doesn't easily produce.
 
 Each seed function returns a list of new thread_ids. Idempotent
 in the sense that re-running creates new threads (with fresh

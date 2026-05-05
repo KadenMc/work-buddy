@@ -19,7 +19,7 @@ from typing import Any, Callable
 
 from work_buddy.frontmatter import parse_frontmatter
 
-# v5 Stage 1.5: capability/workflow definitions get four new fields
+# Capability/workflow definitions get four Threads-FSM-related fields
 # (is_action, available_in, intrinsic_amplifiers,
 # parameter_schema_for_action, requires_post_review). The
 # InvocationContext enum lives in work_buddy.threads.enums (a
@@ -77,10 +77,9 @@ class Capability:
     # the partial-state recovery path retries the full capability.
     effects: list[Any] = field(default_factory=list)  # list[EffectSpec]
 
-    # ---------------- v5 Stage 1.5 fields (defaults preserve v4) ----
-    # See data/designs/gtd/reimagined/DESIGN.md §10.
+    # ---------------- Action Catalog fields (defaults preserve v4) ----
 
-    # Whether this capability appears in the v5 Action Catalog (i.e.
+    # Whether this capability appears in the Action Catalog (i.e.
     # whether action inference may propose it as the action to take
     # for a Thread). False by default; capabilities the FSM should
     # be able to dispatch as Standard Actions opt in by setting True.
@@ -205,8 +204,8 @@ class WorkflowDefinition:
     # hand-author; see `_compute_workflow_requires()`.
     requires: list[str] = field(default_factory=list)
 
-    # ---------------- v5 Stage 1.5 fields (defaults preserve v4) ----
-    # See DESIGN.md §10. Workflows can also be Action Catalog
+    # ---------------- Action Catalog fields (defaults preserve v4) ----
+    # Workflows can also be Action Catalog
     # entries (i.e. a Standard Action whose execution dispatches
     # into the workflow conductor). The fields mirror Capability's.
 
@@ -278,16 +277,14 @@ def invalidate_registry() -> None:
     imports in capability builders re-read the current source code.
     Clears tool probe cache so tools are re-probed on rebuild.
 
-    **Re-bootstraps v5 Threads after the purge.** Purging
+    **Re-bootstraps the Threads FSM after the purge.** Purging
     ``work_buddy.threads.engine`` from sys.modules nukes the
     process-global ``_REGISTERED_SIDE_EFFECTS`` dict, which is where
-    the v5 FSM state-entry handlers (enqueue inference, publish
+    the FSM state-entry handlers (enqueue inference, publish
     Resolution Surface card, etc.) live. Without re-bootstrap, the
     next FSM transition after a registry reload would land in a
-    wait state with no handlers registered, so capabilities like
-    ``journal_v5_scan`` would silently dead-end at AWAITING_INFERENCE.
-    Discovered live 2026-05-03 when ``mcp_registry_reload`` followed
-    by ``journal_v5_scan`` produced a thread that never got enqueued.
+    wait state with no handlers registered, so spawn capabilities
+    would silently dead-end at AWAITING_INFERENCE.
     """
     import sys
     from work_buddy.tools import invalidate_tool_status
@@ -307,7 +304,7 @@ def invalidate_registry() -> None:
     for k in to_remove:
         del sys.modules[k]
 
-    # Re-bootstrap v5 Threads in this subprocess. Best-effort: if
+    # Re-bootstrap the Threads FSM in this subprocess. Best-effort: if
     # bootstrap fails (e.g. budget hook init issue), the registry is
     # still valid — capabilities will work, but FSM transitions on
     # Threads won't fire side effects. Fail loud so the user notices.
@@ -3298,17 +3295,16 @@ def _journal_capabilities() -> list[Capability]:
             # retry-on-timeout needed (would just stack queued passes).
             auto_retry=False,
         ),
-        # NOTE: ``threads_v5_seed_test_data`` was a temporary
-        # scaffolding capability used during Stage 4 to populate the
-        # Threads tab with fake data. It was removed as part of the
-        # autonomy implementation cleanup — real journal/Chrome
-        # source pipelines now produce live threads. The
-        # ``seed_test_data`` Python module remains in
+        # NOTE: an older ``seed_test_data`` capability used to
+        # populate the Threads tab with fake data. It was removed
+        # once real journal/Chrome source pipelines produced live
+        # threads. The ``seed_test_data`` Python module remains in
         # work_buddy/threads/ for any future debugging needs but is
         # no longer registered as a callable capability.
 
-        # The legacy ``journal_v5_scan`` capability is gone — the
-        # canonical entry point is now ``run_source_pipeline`` (see
+        # The legacy per-source ``journal`` scan capability is gone
+        # — the canonical entry point is now ``run_source_pipeline``
+        # (see
         # ``_pipeline_capabilities()``), which dispatches to
         # ``JournalBacklogPipeline`` end-to-end. The unified pipeline
         # subsumes segmentation + manifest tagging + clustering + LLM
@@ -3733,8 +3729,8 @@ def _task_capabilities() -> list[Capability]:
                 "user_involvement."
             ),
             category="tasks",
-            # v5: this is the canonical Standard Action for "create a
-            # new task". Without this flag the action-inference catalog
+            # The canonical Standard Action for "create a new task".
+            # Without this flag the action-inference catalog
             # is empty and the agent falls back to improvised/suggestion
             # plans for what should be a one-call task creation.
             is_action=True,
@@ -4102,8 +4098,7 @@ def _task_capabilities() -> list[Capability]:
 def _pipeline_capabilities() -> list[Capability]:
     """The unified ``run_source_pipeline`` entry point.
 
-    Replaces the per-source ``journal_v5_scan`` capability and serves
-    as the single MCP/wb_run entry for triggering any source-pipeline
+    The single MCP/wb_run entry for triggering any source-pipeline
     run (Chrome, journal, future). Slash commands +
     ``daily-journal/process-backlog`` workflow dispatch through this.
     """
@@ -5268,9 +5263,9 @@ def _conversation_capabilities() -> list[Capability]:
     Conversations are a standalone subsystem backed by SQLite. The
     dashboard renders them in a sidebar chat panel.
 
-    Renamed from ``_thread_capabilities`` in v5 Stage 1; the
-    ``thread`` namespace is reserved for the v5 universal-entity
-    primitive.
+    Renamed from ``_thread_capabilities``; the ``thread`` namespace
+    is reserved for the universal-entity primitive in
+    :mod:`work_buddy.threads`.
     """
     import os
     import time

@@ -1,4 +1,4 @@
-"""bootstrap — wire all v5 state-entry handlers and
+"""bootstrap — wire all FSM state-entry handlers and
 register the budget admission hook.
 
 Sidecar startup calls :func:`bootstrap_threads` once at the start of
@@ -278,7 +278,7 @@ def _maybe_format_action_catalog(schema: dict) -> str:
 
 
 def _register_real_llm_runner() -> None:
-    """Bind the v5 Inference layer to the existing LLMRunner.
+    """Bind the threads inference layer to the existing LLMRunner.
 
     Adapter shape (per inference.LLMRunnerFn):
         fn(prompt, schema, tier, thread) -> {payload, confidence,
@@ -293,8 +293,8 @@ def _register_real_llm_runner() -> None:
         # Cache one LLMRunner instance — it's threadsafe.
         runner = LLMRunner()
 
-        # Map v5 ReasoningTier -> v4 ModelTier. The lower 5 are
-        # 1:1; AGENT_HEADLESS / USER are v5-only and shouldn't
+        # Map ReasoningTier -> ModelTier. The lower 5 are 1:1;
+        # AGENT_HEADLESS / USER are threads-only and shouldn't
         # reach this path (they're handled by the worker before
         # the LLM call).
         _TIER_MAP = {
