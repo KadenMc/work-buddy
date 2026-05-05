@@ -502,21 +502,43 @@ def _group_view_script() -> str:
                 return;
             }
             // Invalidate the per-thread render cache for the target
-            // child — without this, drilling into the sub-thread
-            // after switching the chip shows the OLD action because
-            // the detail view reads from _threadDetailCache, which
-            // is independent of the umbrella's groupsByUmbrella
-            // cache that _refreshGroups updates.
+            // child — without this, the right-pane editor + the
+            // detail view stay painted with the OLD action_inferred
+            // because they read from _threadDetailCache, which is
+            // independent of the umbrella's groupsByUmbrella cache
+            // that _refreshGroups updates.
             try {
                 if (typeof window.invalidateThreadCache === 'function') {
                     window.invalidateThreadCache(threadId);
                 }
             } catch (e) { /* best-effort */ }
-            // Refresh the active umbrella's cache so the chip re-paints
-            // with the new proposal.
+            // Refresh the active umbrella's groups cache so the
+            // column-header chip re-paints with the new proposal.
+            // When the user is at the umbrella view, the active path's
+            // last entry IS the umbrella. When the user has drilled
+            // into a sub-thread, the umbrella is the prior entry —
+            // ``state.path = [umbrella_id, sub_thread_id]`` — and the
+            // last entry is the threadId we just updated, NOT the
+            // umbrella. Refreshing groups on a non-umbrella 404s and
+            // leaves the chip stale.
             const state = window._threadsState;
-            if (state && state.path && state.path.length > 0) {
-                _refreshGroups(state.path[state.path.length - 1]);
+            const path = (state && state.path) || [];
+            let umbrellaId = null;
+            if (path.length >= 2 && path[path.length - 1] === threadId) {
+                umbrellaId = path[path.length - 2];
+            } else if (path.length >= 1) {
+                umbrellaId = path[path.length - 1];
+            }
+            if (umbrellaId) {
+                _refreshGroups(umbrellaId);
+            }
+            // Trigger a re-render of the active thread view so the
+            // right-pane editor picks up the new action_inferred.
+            // _renderActiveThread() walks the same code path as the
+            // initial render — it'll see the invalidated cache and
+            // re-fetch /api/threads/<id>.
+            if (typeof window._renderActiveThread === 'function') {
+                window._renderActiveThread();
             }
         })
         .catch(e => _groupToast('Action update failed', String(e)));
