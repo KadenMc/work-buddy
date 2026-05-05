@@ -185,8 +185,16 @@ def _bind_runtime_parameters(
         if "tab_ids" not in out:
             out["tab_ids"] = _collect_tab_ids(thread)
 
+    # Capabilities whose first argument is the thread the action is
+    # being run against. Includes the chrome route_* helpers and the
+    # universal thread_* actions surfaced via the column-header chip
+    # (thread_dismiss / thread_defer / thread_rename). Without this,
+    # picking a universal action via the chip and approving lands in
+    # AWAITING_REDIRECT with "missing thread_id" — exactly the error
+    # surfaced via the Telegram "Redirect needed" notification.
     if capability_name in (
         "chrome_route_to_tasks", "chrome_route_to_umbrella_task",
+        "thread_dismiss", "thread_defer", "thread_rename",
     ):
         if "thread_id" not in out:
             out["thread_id"] = thread.thread_id
