@@ -28,19 +28,20 @@ from work_buddy.pipelines.actions import (
 UNIVERSAL_ACTIONS: list[ActionDescriptor] = [
     ActionDescriptor(
         capability_name="thread_dismiss",
-        label="Dismiss",
+        label="Dismiss thread",
         description=(
-            "Mark this group sub-thread as dismissed. The group's items "
-            "stay visible in the umbrella's audit log; nothing is acted "
-            "on. Useful when the cluster is wrong or you've decided not "
-            "to act on its items."
+            "Mark this group sub-thread as dismissed (terminal). The "
+            "group's items stay visible in the umbrella's audit log; "
+            "nothing is acted on. Useful when the cluster is wrong or "
+            "you've decided not to act on its items. NOT 'close this "
+            "menu'."
         ),
         cardinality=CARDINALITY_PER_GROUP,
         icon="x-circle",
     ),
     ActionDescriptor(
         capability_name="thread_defer",
-        label="Defer",
+        label="Defer thread",
         description=(
             "Resurface this group sub-thread later (default: 24 hours). "
             "Useful when you can't decide right now but don't want to "
@@ -52,7 +53,7 @@ UNIVERSAL_ACTIONS: list[ActionDescriptor] = [
     ),
     ActionDescriptor(
         capability_name="thread_rename",
-        label="Rename",
+        label="Rename thread",
         description=(
             "Override the cluster label. The new title surfaces on the "
             "column header + everywhere this thread appears in the "
