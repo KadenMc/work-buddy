@@ -304,6 +304,82 @@ def _find_pids_on_port_unix(port: int) -> set[int]:
     return pids
 
 
+def find_child_pids(pid: int) -> set[int]:
+    """Return PIDs of direct children of ``pid``.
+
+    Used by the sidecar's takeover path: before terminating an existing
+    daemon, kill its children so they don't outlive their parent. On
+    Windows a hard-killed daemon (TerminateProcess) cannot run its own
+    cleanup, so anything it spawned would otherwise survive — exactly
+    the failure mode that left a single dashboard child running for 16
+    days across many sidecar restarts in May 2026.
+
+    Best-effort: returns ``set()`` if enumeration fails. Callers must
+    not rely on completeness — the supervisor's port-clean-up step
+    remains the second line of defense.
+    """
+    if IS_WINDOWS:
+        return _find_child_pids_windows(pid)
+    return _find_child_pids_unix(pid)
+
+
+def _find_child_pids_windows(pid: int) -> set[int]:
+    """Walk Win32_Process via WMIC for direct children of ``pid``.
+
+    WMIC is deprecated but still ships on Win10/11 and avoids the cold
+    PowerShell startup cost. If WMIC is missing or its output is
+    unparseable, fall back to PowerShell's ``Get-CimInstance``.
+    """
+    children: set[int] = set()
+    try:
+        result = subprocess.run(
+            ["wmic", "process", "where", f"(parentprocessid={pid})", "get", "processid"],
+            capture_output=True, text=True, timeout=10,
+        )
+        for line in result.stdout.splitlines():
+            line = line.strip()
+            if line.isdigit() and int(line) > 0:
+                children.add(int(line))
+        if children:
+            return children
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+
+    try:
+        result = subprocess.run(
+            [
+                "powershell.exe", "-NoProfile", "-Command",
+                f"Get-CimInstance Win32_Process -Filter 'ParentProcessId={pid}' "
+                "| Select-Object -ExpandProperty ProcessId",
+            ],
+            capture_output=True, text=True, timeout=15,
+        )
+        for line in result.stdout.strip().split("\n"):
+            line = line.strip()
+            if line.isdigit() and int(line) > 0:
+                children.add(int(line))
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+    return children
+
+
+def _find_child_pids_unix(pid: int) -> set[int]:
+    """Walk ``/proc/<pid>/stat`` files (Linux) or use ``pgrep -P`` (mac/Linux)."""
+    children: set[int] = set()
+    try:
+        result = subprocess.run(
+            ["pgrep", "-P", str(pid)],
+            capture_output=True, text=True, timeout=5,
+        )
+        for line in result.stdout.strip().split("\n"):
+            line = line.strip()
+            if line.isdigit() and int(line) > 0:
+                children.add(int(line))
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+    return children
+
+
 def obsidian_log_path() -> Path:
     """Resolve the Obsidian main process log file path for the current OS."""
     if IS_WINDOWS:

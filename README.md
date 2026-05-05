@@ -518,13 +518,18 @@ Register-ScheduledTask -TaskName "Hindsight-API" -Action $hsAction -Trigger $hsT
 <details>
 <summary>WB-Sidecar (15s delay — supervises messaging + embedding)</summary>
 
+Invoke the env's `python.exe` directly rather than going through `conda activate`. Activation can silently no-op in headless contexts (where conda's PowerShell hook hasn't loaded), which leaves `python` resolving to the base interpreter — the daemon then spawns every child on the wrong env, and orphaned children can survive across restarts. A direct path makes that class of bug impossible.
+
 ```powershell
-$scAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-WindowStyle Hidden -ExecutionPolicy Bypass -Command `"conda activate work-buddy; python -m work_buddy.sidecar`""
+$envPython = "$HOME\miniforge3\envs\work-buddy\python.exe"  # adjust if your env lives elsewhere
+$scAction = New-ScheduledTaskAction -Execute $envPython -Argument "-m work_buddy.sidecar"
 $scTrigger = New-ScheduledTaskTrigger -AtLogon
 $scTrigger.Delay = "PT15S"
 $scSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit 0
 Register-ScheduledTask -TaskName "WB-Sidecar" -Action $scAction -Trigger $scTrigger -Settings $scSettings -Description "work-buddy sidecar daemon (supervises messaging + embedding, runs scheduler)" -RunLevel Limited
 ```
+
+If you've previously registered WB-Sidecar with the `conda activate` form, replace it with the above — or set `sidecar.python_executable` in `config.yaml` to your env's `python.exe`, which pins the interpreter children spawn with regardless of how the daemon was launched.
 </details>
 
 #### [Linux] systemd user services

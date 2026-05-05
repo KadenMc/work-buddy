@@ -79,16 +79,39 @@ def check_existing_daemon() -> int | None:
 def takeover_existing_daemon(pid: int, *, wait_seconds: float = 10.0) -> bool:
     """Terminate an existing sidecar process so a new one can take over.
 
-    Sends SIGTERM first (so the old daemon's signal handler runs and
-    its atexit cleanup fires), then escalates to ``taskkill /F /T`` on
-    Windows / SIGKILL on Unix if it's still alive after half the
-    window. Returns True once the PID is confirmed dead.
+    On Windows, ``os.kill(pid, SIGTERM)`` is ``TerminateProcess`` — a
+    hard kill that does **not** trigger the daemon's signal handler
+    or its ``_shutdown`` cleanup. Without further action, the old
+    daemon's child services (messaging, dashboard, …) orphan and
+    survive on their bound ports, where they continue serving stale
+    in-memory bytecode while the new daemon is unable to displace
+    them. (May 2026: a dashboard child orphaned this way ran for 16
+    days across multiple sidecar restarts.)
+
+    To prevent that, we kill the daemon's direct children first, then
+    the daemon itself. The order matters: terminating children before
+    the supervisor avoids it triggering its own restart logic, and
+    means even a hard-killed daemon never leaks orphans.
+
+    Returns True once the daemon PID is confirmed dead.
     """
     import time as _time
 
-    from work_buddy.compat import _force_kill_pid  # type: ignore[attr-defined]
+    from work_buddy.compat import _force_kill_pid, find_child_pids  # type: ignore[attr-defined]
 
     logger.info("Taking over existing sidecar (pid=%d)...", pid)
+
+    # Kill children first. The old daemon will not get a chance to run
+    # its own ``_stop_child`` calls because we terminate it via
+    # TerminateProcess on Windows / SIGTERM-as-hard-signal on Unix.
+    children = find_child_pids(pid)
+    if children:
+        logger.info(
+            "Reaping %d child process(es) of old daemon: %s",
+            len(children), sorted(children),
+        )
+        for child_pid in children:
+            _force_kill_pid(child_pid)
 
     try:
         os.kill(pid, signal.SIGTERM)
