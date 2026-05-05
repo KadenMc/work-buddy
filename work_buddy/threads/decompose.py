@@ -269,7 +269,19 @@ def cascade_terminal_to_parent(
             ),
             conn=conn,
         )
-        # Re-read parent — append_event bumped parent_event_id
+        # ``append_event`` writes the event row but does NOT touch the
+        # ``threads.parent_event_id`` cache. We have to bump it
+        # explicitly — otherwise the next caller (e.g. the dashboard
+        # trying to dismiss the umbrella) reads the stale parent_event_id,
+        # passes it as the optimistic-lock target, and gets conflict-
+        # rejected even though no other writer is racing.
+        store.update_thread_state(
+            parent.thread_id,
+            parent_event_id=store.latest_event_id(
+                parent.thread_id, conn=conn,
+            ),
+            conn=conn,
+        )
         parent = store.get_thread(parent.thread_id, conn=conn)
 
         # Are all children terminal?
