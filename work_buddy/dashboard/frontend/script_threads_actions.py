@@ -159,10 +159,10 @@ def _threads_actions_script() -> str:
         const parentId = thread.parent_id;
         if (!parentId
             || !window._groupState
-            || !window._groupState.groupsByUmbrella) return '';
-        const cached = window._groupState.groupsByUmbrella[parentId];
-        if (!cached || !Array.isArray(cached.action_options)) return '';
-        const perGroup = cached.action_options.filter(
+            || !window._groupState.actionOptionsByUmbrella) return '';
+        const options = window._groupState.actionOptionsByUmbrella[parentId];
+        if (!Array.isArray(options) || options.length === 0) return '';
+        const perGroup = options.filter(
             d => d.cardinality === "per_group",
         );
         if (perGroup.length === 0) return '';
