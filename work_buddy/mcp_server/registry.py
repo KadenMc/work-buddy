@@ -403,7 +403,7 @@ def _disabled_reason(capability_name: str) -> str:
 def _format_probe_age() -> str:
     """Approximate "Ns ago" label for the most recent probe sweep.
 
-    Reads the mtime of ``data/runtime/tool_status.json`` (written
+    Reads the mtime of ``<data_root>/runtime/tool_status.json`` (written
     atomically by every ``probe_all`` and ``reprobe_one`` call). Returns
     a short human-readable interval like ``"3s ago"``, ``"2m ago"``,
     or ``"unknown"`` if the file is missing or unreadable.

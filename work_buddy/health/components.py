@@ -324,7 +324,7 @@ _register(ComponentDef(
 # --- Sidecar-managed services ---
 
 _SIDECAR_LOG_HINT = (
-    "Check sidecar logs: data/logs/sidecar.log\n"
+    "Check sidecar logs: <data_root>/logs/sidecar.log\n"
     "Restart sidecar: "
     + ("Start-ScheduledTask 'WB-Sidecar'" if _IS_WINDOWS
        else "python -m work_buddy.sidecar &")

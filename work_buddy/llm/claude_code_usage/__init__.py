@@ -5,7 +5,7 @@ This package vendors the JSONL-scanner mechanics from
 Copyright (c) 2026 Pawel Huryn) and adapts the few touch points where
 work-buddy's conventions differ from a stand-alone tool:
 
-* The SQLite DB lives under ``data/cache/claude_code_usage.db`` and is
+* The SQLite DB lives under ``<data_root>/cache/claude_code_usage.db`` and is
   registered in :data:`work_buddy.paths.RESOURCES` as
   ``cache/claude-code-usage``. This keeps every generated artifact under
   work-buddy's data root rather than scattering state into

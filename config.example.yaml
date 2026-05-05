@@ -9,9 +9,11 @@ bundles_dir: "bundles"
 timezone: "America/New_York"   # IANA timezone for your location
 
 # Centralized data directory for artifacts, runtime state, caches, and databases.
-# Relative to repo root, or absolute path. Default: "data"
+# Relative to repo root, or absolute path. Default: ".data" (dot-prefixed —
+# Obsidian treats dot-prefixed directories as system folders and skips them,
+# which matters when work-buddy is installed inside an Obsidian vault).
 paths:
-  data_root: "data"
+  data_root: ".data"
 
 git:
   active_days: 30

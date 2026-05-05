@@ -197,7 +197,7 @@ def _complete_operation(
     ObsidianError instances (set by the gateway when an ObsidianError
     is caught). Stored on the op record so post-incident analysis can
     grep ``error_kind: "obsidian_post_write_uncertain"`` across
-    ``data/agents/operations/op_*.json`` to count occurrences.
+    ``<data_root>/agents/operations/op_*.json`` to count occurrences.
     """
     path = _get_operations_dir() / f"{op_id}.json"
     if not path.exists():

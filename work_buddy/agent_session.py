@@ -85,7 +85,7 @@ def _get_session_id() -> str:
 
 
 def get_agents_dir() -> Path:
-    """Return the agents/ directory under data/, creating it if needed."""
+    """Return the agents/ directory under the data root, creating it if needed."""
     return data_dir("agents")
 
 
@@ -203,13 +203,13 @@ def get_consent_requests_dir() -> Path:
 def get_session_context_dir(session_dir: Path | None = None) -> Path:
     """Return a new timestamped context bundle directory for this session.
 
-    Artifacts are stored globally under ``data/context/`` (managed by the
-    artifact store) rather than buried inside the session directory.  The
-    session's ``artifacts.jsonl`` ledger records a reference.
+    Artifacts are stored globally under ``<data_root>/context/`` (managed
+    by the artifact store) rather than buried inside the session directory.
+    The session's ``artifacts.jsonl`` ledger records a reference.
 
     The directory name includes the session short-ID for provenance::
 
-        data/context/<short-id>_<YYYYMMDD-HHMMSS>/
+        <data_root>/context/<short-id>_<YYYYMMDD-HHMMSS>/
     """
     if session_dir is None:
         session_dir = get_session_dir()

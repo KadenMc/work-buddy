@@ -851,6 +851,8 @@ def main():
         daemon=True,
     ).start()
 
+    from work_buddy.web.access_log_filter import install_probe_log_filter
+    install_probe_log_filter(["/health"])
     print(f"Embedding service running on http://127.0.0.1:{port}", file=sys.stderr)
     app.run(host="127.0.0.1", port=port, debug=False)
 

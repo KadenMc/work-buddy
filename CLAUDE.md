@@ -154,7 +154,7 @@ work_buddy/                            # Python package
   …                                    # (full tree at agent_docs path=architecture/repo-structure)
 
 .claude/commands/                      # Slash command launchers (wb-*.md)
-data/                                  # Generated data (gitignored)
+.data/                                 # Generated data (default; gitignored — `paths.data_root`)
 sidecar_jobs/                          # Scheduled job definitions
 ```
 

@@ -8,7 +8,7 @@ all-tokens cap on some tiers). We extract them on every call work-buddy
 makes and persist the most-recent observation per model to a single
 JSON file. The Costs tab's "rate-limit headroom" chip reads from there.
 
-Shape of the persisted file (``data/runtime/rate_limits.json``)::
+Shape of the persisted file (``<data_root>/runtime/rate_limits.json``)::
 
     {
       "claude-sonnet-4-6": {

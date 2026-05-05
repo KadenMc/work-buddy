@@ -13,6 +13,7 @@ Usage:
 import logging
 import sys
 from datetime import datetime
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from work_buddy.agent_session import get_session_dir
@@ -53,7 +54,15 @@ def setup_logging(level: int = logging.INFO) -> None:
         "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
         datefmt="%Y-%m-%dT%H:%M:%S",
     )
-    file_handler = logging.FileHandler(log_file, encoding="utf-8")
+    # RotatingFileHandler so long-lived sessions (e.g. the sidecar's
+    # synthetic self-session) can't grow this file unboundedly. Cap at
+    # 16 MiB × 4 rotations → 80 MB ceiling per session.
+    file_handler = RotatingFileHandler(
+        log_file,
+        maxBytes=16 * 1024 * 1024,
+        backupCount=4,
+        encoding="utf-8",
+    )
     file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(file_formatter)
     root_logger.addHandler(file_handler)

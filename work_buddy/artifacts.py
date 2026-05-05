@@ -2,8 +2,8 @@
 
 Every agent-produced file — context bundles, exports, reports, snapshots,
 scratch work — goes through this module.  Artifacts are stored globally
-under ``data/<type>/`` with per-file metadata, session provenance, and
-TTL-based automatic cleanup.
+under ``<data_root>/<type>/`` with per-file metadata, session provenance,
+and TTL-based automatic cleanup.
 
 Usage (module-level convenience)::
 
@@ -125,7 +125,7 @@ class ArtifactStore:
     ----------
     data_root:
         Override the data directory root.  ``None`` reads from config
-        (``paths.data_root``, default ``<repo>/data``).
+        (``paths.data_root``, shipped default ``.data``).
     """
 
     def __init__(self, data_root: Path | None = None) -> None:
@@ -133,7 +133,7 @@ class ArtifactStore:
             data_root.mkdir(parents=True, exist_ok=True)
             self._root = data_root
         else:
-            self._root = data_dir()  # creates data/ if needed
+            self._root = data_dir()  # creates the data root if needed
 
     # ------------------------------------------------------------------ CRUD
 
@@ -560,7 +560,7 @@ def prune_escalation_log(
 ) -> dict[str, Any]:
     """Prune LLM escalation records older than the rolling window.
 
-    The escalation log (``data/logs/escalations.log``) is JSONL —
+    The escalation log (``<data_root>/logs/escalations.log``) is JSONL —
     one record per resolved LLM job, keyed by ``timestamp``. Same shape
     as :func:`prune_chrome_ledger` for the Chrome ledger; the
     difference is the per-line file format and the field name.
@@ -753,7 +753,7 @@ def prune_stale_sessions(
     Parameters
     ----------
     path:
-        The ``data/agents/`` directory.
+        The ``<data_root>/agents/`` directory.
     config:
         Must contain ``max_age_days`` (default 14).
     """
@@ -834,7 +834,7 @@ def prune_old_logs(
 ) -> dict[str, Any]:
     """Delete log files older than ``max_age_days``.
 
-    Scans ``data/logs/`` for any file and checks its modification time.
+    Scans ``<data_root>/logs/`` for any file and checks its modification time.
     """
     max_age_days = config.get("max_age_days", 7)
     cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
@@ -873,4 +873,118 @@ def prune_old_logs(
         "remaining": remaining,
         "bytes_freed": bytes_freed,
         "pruned_files": pruned_files,
+    }
+
+
+def prune_messages_db(
+    path: Path, config: dict[str, Any], *, dry_run: bool = True
+) -> dict[str, Any]:
+    """Delete terminal-status messages older than ``ttl_days`` from messages.db.
+
+    The ``messaging.ttl_days`` config field has historically been read only
+    by ``summarize_pending`` as a display-side filter
+    (``messaging/models.py``); nothing actually deleted aged rows. This
+    pruner finally honors it as a real TTL.
+
+    **Status guard (denylist).** Live DB inspection found three status
+    values: ``resolved`` (~95 % of rows), ``pending``, and ``read``. The
+    plan sketch's allowlist (``read``/``archived``/``expired``) was based
+    on documentation rather than observed values and would have been a
+    no-op. We use a denylist (``status != 'pending'``) instead, which:
+
+      - preserves the stated invariant — unread or pending messages are
+        never deleted regardless of age;
+      - reaches the dominant ``resolved`` population;
+      - tolerates future terminal-status names without code change.
+
+    Orphaned rows in ``message_reads`` (whose ``message_id`` no longer
+    exists after the DELETE) are cleaned in the same transaction. A
+    ``VACUUM`` is run after a live delete to actually reclaim the bytes.
+    """
+    import sqlite3
+
+    ttl_days = config.get("ttl_days", 30)
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=ttl_days)).isoformat()
+    bytes_before = path.stat().st_size if path.exists() else 0
+
+    conn = sqlite3.connect(str(path))
+    try:
+        candidate_sql = (
+            "SELECT COUNT(*) FROM messages "
+            "WHERE created_at < ? "
+            "AND status IS NOT NULL AND status != 'pending'"
+        )
+        candidate_count = conn.execute(candidate_sql, (cutoff,)).fetchone()[0]
+
+        if dry_run or candidate_count == 0:
+            return {
+                "pruned": candidate_count,
+                "remaining": -1,
+                "bytes_before": bytes_before,
+                "bytes_after": bytes_before,
+            }
+
+        cur = conn.execute(
+            "DELETE FROM messages "
+            "WHERE created_at < ? "
+            "AND status IS NOT NULL AND status != 'pending'",
+            (cutoff,),
+        )
+        n = cur.rowcount
+        # Clean orphaned message_reads pointing at now-deleted messages.
+        conn.execute(
+            "DELETE FROM message_reads "
+            "WHERE message_id NOT IN (SELECT id FROM messages)"
+        )
+        conn.commit()
+        # VACUUM cannot run inside a transaction; sqlite3's default
+        # autocommit-on-commit handles that.
+        conn.execute("VACUUM")
+    finally:
+        conn.close()
+
+    bytes_after = path.stat().st_size if path.exists() else 0
+    return {
+        "pruned": n,
+        "remaining": -1,
+        "bytes_before": bytes_before,
+        "bytes_after": bytes_after,
+    }
+
+
+def prune_claude_code_usage_db(
+    path: Path, config: dict[str, Any], *, dry_run: bool = True
+) -> dict[str, Any]:
+    """Roll up old `turns` rows in the Claude Code usage DB.
+
+    The DB grows ~110 MB/year at observed rates because every Claude Code
+    call writes a `turns` row. The dashboard only consumes daily aggregates
+    (per-(day, model, session)), so older per-turn rows can be collapsed
+    into a `turns_daily` aggregate table without losing any rendered value.
+
+    Delegates to :func:`work_buddy.llm.claude_code_usage.rollup.rollup_old_turns`.
+    """
+    import sqlite3
+
+    from work_buddy.llm.claude_code_usage.rollup import rollup_old_turns
+
+    days = config.get("days_to_keep_full", 90)
+    bytes_before = path.stat().st_size if path.exists() else 0
+    if not path.exists():
+        return {
+            "rollup_groups": 0,
+            "rolled_turns": 0,
+            "bytes_before": 0,
+            "bytes_after": 0,
+        }
+    conn = sqlite3.connect(str(path))
+    try:
+        result = rollup_old_turns(conn, days_to_keep_full=days, dry_run=dry_run)
+    finally:
+        conn.close()
+    bytes_after = path.stat().st_size if path.exists() else 0
+    return {
+        **result,
+        "bytes_before": bytes_before,
+        "bytes_after": bytes_after,
     }

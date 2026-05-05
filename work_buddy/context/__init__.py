@@ -5,7 +5,7 @@ Two-stage pipeline:
 1. :class:`ContextCollector` — fetch raw signals from registered
    :class:`ContextSource` implementations. Each source produces
    :class:`ContextSection`\\ s of raw JSON-serializable data; results
-   are cached under ``data/context/<source>/<bucket>.json`` keyed by
+   are cached under ``<data_root>/context/<source>/<bucket>.json`` keyed by
    the request parameters that affect fetch (not by depth — depth is
    a curation concern).
 2. :class:`ContextCurator` — render a cached :class:`Context` into a

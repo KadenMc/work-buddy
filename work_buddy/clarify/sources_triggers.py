@@ -131,7 +131,7 @@ def trigger_source_removed(
     - ``journal_thread`` — the journal file for ``item.metadata.source_dates``
       (or today's date as fallback) no longer exists.
     - ``chrome_tab`` — the tab id is absent from the live tab ledger
-      at ``data/chrome/tab_ledger.json``.
+      at ``<data_root>/chrome/tab_ledger.json``.
 
     Defensive: when the check itself fails (vault root unconfigured,
     ledger unreadable), returns ``None`` (treat as still live) and

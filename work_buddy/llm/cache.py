@@ -1,6 +1,6 @@
 """Persistent LLM result cache with content-aware invalidation.
 
-Stores results in a JSON file at ``data/cache/llm_cache.json``. Cache
+Stores results in a JSON file at ``<data_root>/cache/llm_cache.json``. Cache
 entries are keyed by ``scoped_task_id`` and validated against an
 ``input_hash`` fingerprint of the prompt that produced them. When
 ``input_hash`` differs, the lookup falls back to a SimHash fuzzy-match

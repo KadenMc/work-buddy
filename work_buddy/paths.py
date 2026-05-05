@@ -1,8 +1,9 @@
 """Centralized path resolution for work-buddy.
 
-Single source of truth for the repo root and the ``data/`` directory tree.
-All persistent files — runtime state, caches, databases, agent artifacts —
-are registered here by hierarchical ID and resolved through :func:`resolve`.
+Single source of truth for the repo root and the ``<data_root>/`` directory
+tree. All persistent files — runtime state, caches, databases, agent
+artifacts — are registered here by hierarchical ID and resolved through
+:func:`resolve`.
 
 Modules should never compute paths locally via ``_REPO_ROOT / "some_file"``.
 Instead::
@@ -10,12 +11,15 @@ Instead::
     from work_buddy.paths import resolve
     PID_FILE = resolve("runtime/sidecar-pid")
 
-The data root defaults to ``<repo_root>/data`` but can be overridden via
-``paths.data_root`` in ``config.yaml`` (absolute path or relative to repo root).
+The data root is set by ``paths.data_root`` in ``config.yaml`` (with optional
+``config.local.yaml`` overlay), interpreted as either an absolute path or as
+relative to the repo root. The shipped default is ``.data`` so the runtime
+tree is dot-prefixed (Obsidian treats dot-prefixed dirs as system folders
+and skips them, which matters when work-buddy is installed inside a vault).
 
 The hierarchical ID doubles as the directory structure: ``runtime/sidecar-pid``
-resolves to ``data/runtime/sidecar.pid``, keeping files organized in folders
-matching the ID prefix.
+resolves to ``<data_root>/runtime/sidecar.pid``, keeping files organized in
+folders matching the ID prefix.
 """
 
 from __future__ import annotations
@@ -104,6 +108,14 @@ PRUNERS: dict[str, tuple[str, dict[str, Any]]] = {
         "work_buddy.artifacts.prune_escalation_log",
         {"window_days": 30},
     ),
+    "db/messages": (
+        "work_buddy.artifacts.prune_messages_db",
+        {"ttl_days": 30},
+    ),
+    "cache/claude-code-usage": (
+        "work_buddy.artifacts.prune_claude_code_usage_db",
+        {"days_to_keep_full": 90},
+    ),
 }
 
 
@@ -120,20 +132,33 @@ def repo_root() -> Path:
 def _load_data_root_from_config() -> str:
     """Read ``paths.data_root`` from config without importing config.py eagerly.
 
-    This avoids a circular import if config.py ever imports paths.py.
-    Falls back to ``"data"`` when the key is absent or config is unreadable.
+    Reads ``config.yaml`` first, then overlays ``config.local.yaml`` so
+    user-local overrides win — mirrors how ``config.load_config()``
+    merges, but avoids the import (``config.py`` does not import
+    ``paths``, so a future change there could otherwise create a cycle).
+
+    Falls back to ``"data"`` when nothing is set or PyYAML is missing.
     """
-    config_path = repo_root() / "config.yaml"
-    if not config_path.exists():
-        return "data"
     try:
         import yaml
-
-        with open(config_path) as f:
-            cfg: dict[str, Any] = yaml.safe_load(f) or {}
-        return cfg.get("paths", {}).get("data_root", "data")
-    except Exception:
+    except ImportError:
         return "data"
+
+    root = repo_root()
+    paths_section: dict[str, Any] = {}
+    for name in ("config.yaml", "config.local.yaml"):
+        path = root / name
+        if not path.exists():
+            continue
+        try:
+            with open(path) as f:
+                cfg = yaml.safe_load(f) or {}
+        except Exception:
+            continue
+        local_paths = cfg.get("paths") or {}
+        if isinstance(local_paths, dict):
+            paths_section.update(local_paths)
+    return paths_section.get("data_root", "data")
 
 
 def data_dir(category: str = "") -> Path:
@@ -160,9 +185,9 @@ def resolve(resource_id: str) -> Path:
 
     Examples::
 
-        resolve("runtime/sidecar-pid")   # → data/runtime/sidecar.pid
-        resolve("chrome/ledger")          # → data/chrome/tab_ledger.json
-        resolve("db/messages")            # → data/db/messages.db
+        resolve("runtime/sidecar-pid")   # → <data_root>/runtime/sidecar.pid
+        resolve("chrome/ledger")         # → <data_root>/chrome/tab_ledger.json
+        resolve("db/messages")           # → <data_root>/db/messages.db
 
     Raises ``KeyError`` for unregistered IDs.
     """
