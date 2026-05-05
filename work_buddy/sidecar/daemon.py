@@ -291,6 +291,44 @@ def _print_startup_banner(
     sys.stdout.flush()
 
 
+# ---------------------------------------------------------------------------
+# Service-log size cap
+# ---------------------------------------------------------------------------
+# Subprocess stdout/stderr lands in raw OS file handles (see _start_child),
+# not Python's logging framework, so RotatingFileHandler can't bound their
+# size. We emulate its policy explicitly: at child start, if the existing
+# log is over the cap, age out older rotations (.4 → drop, .3 → .4, …,
+# .1 → .2) and rename the current file to .1, then start fresh.
+#
+# 16 MiB × 4 rotations = 80 MB ceiling per service. Naming mirrors what
+# RotatingFileHandler produces for the per-session and telegram logs we
+# already rotate, keeping the layout consistent across the whole repo.
+
+_SERVICE_LOG_CAP_BYTES = 16 * 1024 * 1024
+_SERVICE_LOG_BACKUP_COUNT = 4
+
+
+def _rotate_if_oversize(log_path: Path) -> None:
+    """Rotate ``log_path`` if it exists and exceeds the size cap.
+
+    No-op if the file is missing or below the cap. Idempotent.
+    """
+    if not log_path.exists() or log_path.stat().st_size <= _SERVICE_LOG_CAP_BYTES:
+        return
+    # Drop the oldest rotation if we already have N
+    oldest = log_path.with_suffix(f".{_SERVICE_LOG_BACKUP_COUNT}.log")
+    if oldest.exists():
+        oldest.unlink(missing_ok=True)
+    # Shift .N-1 → .N, ..., .1 → .2
+    for i in range(_SERVICE_LOG_BACKUP_COUNT - 1, 0, -1):
+        src = log_path.with_suffix(f".{i}.log")
+        dst = log_path.with_suffix(f".{i+1}.log")
+        if src.exists():
+            src.replace(dst)
+    # Move current to .1
+    log_path.replace(log_path.with_suffix(".1.log"))
+
+
 def _start_child(svc: ChildService) -> None:
     """Start a child service as a direct subprocess.
 
@@ -319,9 +357,10 @@ def _start_child(svc: ChildService) -> None:
     # we relied on Popen's default (inherit from parent), but with
     # CREATE_NO_WINDOW on Windows that inheritance can silently drop
     # output — leaving us blind when a service fails to start.
-    log_dir = _REPO_ROOT / "data" / "runtime" / "service_logs"
-    log_dir.mkdir(parents=True, exist_ok=True)
+    from work_buddy.paths import data_dir
+    log_dir = data_dir("runtime/service_logs")
     log_path = log_dir / f"{svc.name}.log"
+    _rotate_if_oversize(log_path)
     try:
         log_fh = open(log_path, "a", encoding="utf-8", buffering=1)
         log_fh.write(f"\n--- {svc.name} starting at {time.strftime('%Y-%m-%d %H:%M:%S')} ---\n")

@@ -39,11 +39,20 @@ def _setup_file_logging() -> None:
     root = logging.getLogger()
     root.setLevel(logging.INFO)
 
-    # File handler (persistent log)
+    # File handler (persistent log) — RotatingFileHandler so a long-lived
+    # service can't grow this file unboundedly. Cap at 16 MiB × 4 rotations
+    # → 80 MB ceiling.
+    from logging.handlers import RotatingFileHandler
+
     from work_buddy.paths import data_dir
     log_dir = data_dir("agents") / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
-    fh = logging.FileHandler(log_dir / "telegram.log", encoding="utf-8")
+    fh = RotatingFileHandler(
+        log_dir / "telegram.log",
+        maxBytes=16 * 1024 * 1024,
+        backupCount=4,
+        encoding="utf-8",
+    )
     fh.setFormatter(fmt)
     root.addHandler(fh)
 
@@ -280,6 +289,11 @@ def main() -> None:
 
     # Set up file logging (sidecar pipes stdout/stderr to DEVNULL)
     _setup_file_logging()
+
+    # Silence /health probe access-log lines — HealthMonitor hits this
+    # every 5 s and the noise dominates the rotated log otherwise.
+    from work_buddy.web.access_log_filter import install_probe_log_filter
+    install_probe_log_filter(["/health"])
 
     cfg = load_config()
     telegram_cfg = cfg.get("telegram", {})

@@ -1,6 +1,6 @@
 """Cost aggregation for the dashboard Costs tab.
 
-Reads first-party LLM cost log files at ``data/agents/<session>/llm_costs.jsonl``
+Reads first-party LLM cost log files at ``<data_root>/agents/<session>/llm_costs.jsonl``
 (written by :mod:`work_buddy.llm.cost`) and produces summary read models for
 the Costs UI: totals, daily series, per-model, per-backend, per-task, and
 per-session breakdowns.
@@ -47,7 +47,7 @@ _AGENTS_DIR = data_dir("agents")
 
 
 def _iter_session_dirs(agents_dir: Path | None = None) -> Iterable[Path]:
-    """Yield each session directory under ``data/agents/``."""
+    """Yield each session directory under ``<data_root>/agents/``."""
     root = agents_dir or _AGENTS_DIR
     if not root.exists():
         return
@@ -259,7 +259,7 @@ def get_costs_summary(
         }
 
     Args:
-        agents_dir: Override the default ``data/agents/`` location.
+        agents_dir: Override the default ``<data_root>/agents/`` location.
         project: Optional substring filter. Matched against each session's
             canonical project name (resolved via the same logic the Chats
             tab uses) and falls back to substring against the raw path.

@@ -1,7 +1,7 @@
 """Disk-backed cache for :class:`ContextSection` payloads.
 
 Each source writes one JSON file per ``(source, bucket)`` pair at
-``data/context/<source>/<bucket>.json`` with a sibling ``.meta.json``
+``<data_root>/context/<source>/<bucket>.json`` with a sibling ``.meta.json``
 recording the fetch timestamp and the request fingerprint. The
 collector checks ``mtime + max_age_seconds`` and ``source.is_stale()``
 before deciding to re-fetch.
@@ -39,14 +39,14 @@ logger = get_logger(__name__)
 
 
 def _cache_root() -> Path:
-    """``data/context/`` under the configured data dir."""
+    """``<data_root>/context/`` under the configured data dir."""
     root = data_dir("context")
     root.mkdir(parents=True, exist_ok=True)
     return root
 
 
 def _source_dir(source: str) -> Path:
-    """``data/context/<source>/`` — ensured to exist."""
+    """``<data_root>/context/<source>/`` — ensured to exist."""
     p = _cache_root() / source
     p.mkdir(parents=True, exist_ok=True)
     return p
@@ -132,7 +132,7 @@ def _write_meta(path: Path, fingerprint: str) -> None:
 
 
 def section_path(source: str, bucket: str) -> Path:
-    """``data/context/<source>/<bucket>.json`` — ensured parent exists."""
+    """``<data_root>/context/<source>/<bucket>.json`` — ensured parent exists."""
     return _source_dir(source) / f"{bucket}.json"
 
 

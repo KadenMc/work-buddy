@@ -3,7 +3,7 @@
 Vendored from `phuryn/claude-usage <https://github.com/phuryn/claude-usage>`_
 (MIT, Pawel Huryn, April 2026). Adapted for work-buddy:
 
-* The DB lives at ``data/cache/claude_code_usage.db``
+* The DB lives at ``<data_root>/cache/claude_code_usage.db``
   (registered as ``cache/claude-code-usage``).
 * The transcript-source roots default to ``~/.claude/projects/`` and
   the Xcode location, but ``llm.claude_code_usage.projects_dirs`` in
@@ -122,9 +122,27 @@ def init_db(conn: sqlite3.Connection) -> None:
             lines   INTEGER
         );
 
+        -- Daily rollup of older `turns` rows. Populated by the
+        -- claude-code-usage pruner (see work_buddy.llm.claude_code_usage.rollup).
+        -- Keeps the per-(session, day, model) aggregates the dashboard
+        -- actually consumes after individual turn rows are dropped past
+        -- the days_to_keep_full window.
+        CREATE TABLE IF NOT EXISTS turns_daily (
+            session_id              TEXT NOT NULL,
+            day                     TEXT NOT NULL,   -- YYYY-MM-DD UTC
+            model                   TEXT NOT NULL,
+            input_tokens            INTEGER NOT NULL DEFAULT 0,
+            output_tokens           INTEGER NOT NULL DEFAULT 0,
+            cache_read_tokens       INTEGER NOT NULL DEFAULT 0,
+            cache_creation_tokens   INTEGER NOT NULL DEFAULT 0,
+            turn_count              INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (session_id, day, model)
+        );
+
         CREATE INDEX IF NOT EXISTS idx_turns_session ON turns(session_id);
         CREATE INDEX IF NOT EXISTS idx_turns_timestamp ON turns(timestamp);
         CREATE INDEX IF NOT EXISTS idx_sessions_first ON sessions(first_timestamp);
+        CREATE INDEX IF NOT EXISTS idx_turns_daily_day ON turns_daily(day);
     """)
     try:
         conn.execute("SELECT message_id FROM turns LIMIT 1")

@@ -221,7 +221,7 @@ def resolve_who_can_act(
         tool_status: optional dict overriding the live tool cache.
             Each entry is read with ``.get(tool_id, {}).get('available',
             False)`` so the shape matches the persisted
-            ``data/runtime/tool_status.json``.
+            ``<data_root>/runtime/tool_status.json``.
 
     Returns:
         :class:`WhoCanActDecision` with booleans + per-side unmet

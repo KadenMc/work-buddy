@@ -202,6 +202,8 @@ def reply_to_message(msg_id: str):
 # ---------------------------------------------------------------------------
 
 def main():
+    from work_buddy.web.access_log_filter import install_probe_log_filter
+    install_probe_log_filter(["/health", "/messages"])
     port = _cfg.get("messaging", {}).get("service_port", 5123)
     print(f"work-buddy messaging service starting on http://localhost:{port}")
     app.run(host="127.0.0.1", port=port, debug=False)

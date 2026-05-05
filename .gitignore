@@ -8,6 +8,7 @@ contracts/
 
 # All generated data: artifacts, runtime state, caches, databases, agent sessions
 data/
+.data/
 
 # Legacy agents/ location (now under data/agents/)
 agents/

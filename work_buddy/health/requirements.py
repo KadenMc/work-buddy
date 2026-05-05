@@ -546,7 +546,7 @@ _register(RequirementDef(
         + "4. Confirm the work-buddy Chrome extension is installed and "
         "enabled in chrome://extensions/.\n"
         "5. Reload the extension and verify a tab snapshot lands in "
-        "`data/chrome/ledger.json` (the dashboard's Chrome status will "
+        "`<data_root>/chrome/ledger.json` (the dashboard's Chrome status will "
         "go green within ~120 s).\n"
         "6. Ask the user to refresh the dashboard Settings tab."
     ),

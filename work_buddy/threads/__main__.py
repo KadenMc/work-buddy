@@ -38,7 +38,11 @@ def _migrate_cmd(args: argparse.Namespace) -> int:
         return 2
 
     if args.dry_run:
-        out = Path(args.out) if args.out else Path("data/threads_dryrun.db")
+        if args.out:
+            out = Path(args.out)
+        else:
+            from work_buddy.paths import data_dir
+            out = data_dir("threads") / "threads_dryrun.db"
         out.parent.mkdir(parents=True, exist_ok=True)
         # Wipe any prior dry-run DB so the run is fresh
         if out.exists():
@@ -88,7 +92,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_mig.add_argument(
         "--out", type=str, default=None,
-        help="Output path for the dry-run sandbox DB. Default: data/threads_dryrun.db. Ignored for --execute.",
+        help="Output path for the dry-run sandbox DB. Default: <data_root>/threads/threads_dryrun.db. Ignored for --execute.",
     )
     p_mig.add_argument(
         "--skip-pool", action="store_true",

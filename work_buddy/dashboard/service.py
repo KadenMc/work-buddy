@@ -884,7 +884,7 @@ def api_contracts():
 # ---------------------------------------------------------------------------
 #
 # Aggregates first-party LLM cost log files written by ``work_buddy.llm.cost``
-# at ``data/agents/<session>/llm_costs.jsonl``. Phase 2 adds Claude Code
+# at ``<data_root>/agents/<session>/llm_costs.jsonl``. Phase 2 adds Claude Code
 # transcript-derived usage as a second source through the same endpoint.
 
 
@@ -1077,7 +1077,7 @@ def api_costs_projects():
 def api_costs_rate_limits():
     """Return the most-recent Anthropic rate-limit observations per model.
 
-    Read-only view of ``data/runtime/rate_limits.json``, populated by
+    Read-only view of ``<data_root>/runtime/rate_limits.json``, populated by
     the runner whenever it makes a successful Anthropic API call.
     Empty ``observations`` when no calls have been recorded yet.
     """
@@ -3690,6 +3690,8 @@ def main():
     from work_buddy.dashboard.messaging_bridge import start_messaging_bridge
     start_messaging_bridge()
 
+    from work_buddy.web.access_log_filter import install_probe_log_filter
+    install_probe_log_filter(["/health"])
     logger.info("Dashboard starting on http://%s:%d%s", host, port, " (dev mode)" if dev else "")
     app.run(host=host, port=port, debug=dev)
 
