@@ -94,6 +94,12 @@ def bootstrap_v5(*, clear_first: bool = False) -> None:
     # 5. CLEANING_UP state-entry handler (Stage 4.4)
     cleanup_runner.register_cleanup_runner()
 
+    # 5b. EXECUTING state-entry handler — dispatches the chosen action
+    # capability, records execution_started/finished, fires the result
+    # trigger to advance the FSM.
+    from work_buddy.threads import execution_runner
+    execution_runner.register_execution_runner()
+
     # 6. Default cleanup adapters (journal-note for Stage 4.4;
     #    chrome adapter lands in 4.13 alongside the pipeline).
     cleanup_adapters.register_default_adapters()
