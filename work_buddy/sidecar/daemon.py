@@ -200,13 +200,47 @@ def _kill_process_on_port(port: int, *, service_name: str = "") -> bool:
     return freed
 
 
-def _get_conda_python() -> str:
-    """Resolve the conda env's Python interpreter path.
+def _resolve_child_python(cfg: dict[str, Any] | None = None) -> str:
+    """Resolve the Python interpreter children should be spawned with.
 
-    The sidecar itself runs inside ``conda activate work-buddy``,
-    so ``sys.executable`` is already the correct interpreter.
+    Resolution order:
+    1. ``sidecar.python_executable`` from config, when set and pointing
+       at an existing file. This pins the env independently of how the
+       daemon itself was launched — so a daemon accidentally booted on
+       the wrong interpreter (e.g. a Windows scheduled task whose
+       ``conda activate`` no-op'd) still spawns children on the right one.
+    2. ``sys.executable`` — the daemon's own interpreter.
+
+    When (1) is set but the file is missing, we fall back to ``sys.executable``
+    and log an error so the misconfiguration is visible. When (1) and
+    ``sys.executable`` disagree (daemon and children would run different
+    Pythons), we log a warning — that's a useful diagnostic but not a
+    hard failure, since the explicit pin is the user's intent.
     """
-    return sys.executable
+    if cfg is None:
+        try:
+            cfg = load_config()
+        except Exception:
+            cfg = {}
+    pinned = (cfg.get("sidecar", {}) or {}).get("python_executable")
+    if not pinned:
+        return sys.executable
+    if not Path(pinned).is_file():
+        logger.error(
+            "sidecar.python_executable=%r does not exist; falling back to "
+            "sys.executable=%r. Children may spawn on the wrong interpreter.",
+            pinned, sys.executable,
+        )
+        return sys.executable
+    if Path(pinned).resolve() != Path(sys.executable).resolve():
+        logger.warning(
+            "sidecar.python_executable=%r differs from sys.executable=%r; "
+            "the daemon and its children will run on different interpreters. "
+            "This is intentional only if you explicitly pinned an env "
+            "different from the daemon's own.",
+            pinned, sys.executable,
+        )
+    return pinned
 
 
 # ---------------------------------------------------------------------------
@@ -348,7 +382,7 @@ def _start_child(svc: ChildService) -> None:
         )
         return
 
-    python = _get_conda_python()
+    python = _resolve_child_python()
     # ``-u`` forces unbuffered stdio so child output lands in the log
     # file immediately — critical for debugging slow/silent startups.
     cmd = [python, "-u", "-m", svc.module] + svc.args
@@ -676,6 +710,18 @@ def run(foreground: bool = True) -> None:
     # holding ports, which would block the next sidecar run on Windows).
     _force_kill_children.clear()
     _force_kill_children.extend(children)
+
+    # Surface the resolved interpreter at boot so a wrong-env startup is
+    # visible immediately — children will spawn under this Python, not
+    # necessarily the daemon's own. The most common failure mode this
+    # log catches is a Windows scheduled task whose ``conda activate``
+    # silently no-op'd, leaving the daemon and all its children on the
+    # base interpreter (and serving stale code) for days.
+    resolved_python = _resolve_child_python(cfg)
+    logger.info(
+        "Children will spawn with: %s (daemon sys.executable=%s)",
+        resolved_python, sys.executable,
+    )
 
     # --- Start all children in parallel ---
     for child in children:
