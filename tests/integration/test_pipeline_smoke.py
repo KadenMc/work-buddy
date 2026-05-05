@@ -27,6 +27,7 @@ from work_buddy.threads import (
     autonomy,
     bootstrap,
     engine,
+    execution_runner,
     inference,
     inference_worker,
     resolution_surface,
@@ -84,7 +85,25 @@ def test_full_pipeline_walk(fresh):
     """
 
     # ---- Setup ----
-    bootstrap.bootstrap_threads()
+    # Stub the EXECUTING state-entry handler to a no-op BEFORE bootstrap
+    # registers it with the engine, so the test retains step-by-step
+    # control of the FSM walk. In production the handler dispatches the
+    # chosen capability via the MCP registry and auto-fires
+    # TRIG_EXECUTION_DONE / TRIG_EXECUTION_FAILED; this test asserts the
+    # EXECUTING state itself and then fires TRIG_EXECUTION_DONE manually
+    # with explicit data, so the auto-advance would race past the
+    # assertion. The pipeline contract under test is state-transition
+    # correctness, not capability dispatch — capability dispatch is
+    # covered separately in tests/unit/threads/test_execution_runner.py.
+    _exec_handler_patcher = patch.object(
+        execution_runner, "execution_state_entry_handler",
+        side_effect=lambda transition_result: None,
+    )
+    _exec_handler_patcher.start()
+    try:
+        bootstrap.bootstrap_threads()
+    finally:
+        _exec_handler_patcher.stop()
 
     from dataclasses import replace
     strict_policy = replace(
