@@ -108,6 +108,7 @@ def _read_snapshots() -> list[dict]:
 
 def _write_snapshots(snapshots: list[dict]) -> None:
     p = _snapshots_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_suffix(".tmp")
     tmp.write_text(json.dumps(snapshots, ensure_ascii=False), encoding="utf-8")
     tmp.replace(p)
@@ -115,6 +116,7 @@ def _write_snapshots(snapshots: list[dict]) -> None:
 
 def _write_latest(snapshot: dict) -> None:
     p = _latest_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_suffix(".tmp")
     tmp.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
     tmp.replace(p)
@@ -161,6 +163,7 @@ def _read_escalation_history() -> list[dict]:
 
 def _append_escalation_history(entry: dict) -> None:
     p = _escalation_history_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
     with p.open("a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
@@ -426,7 +429,9 @@ def _spawn_investigation_job(rule: dict, latest_path: str) -> str:
         c if c.isalnum() or c in "-_" else "-" for c in rule["focus"]
     )[:40].strip("-")
     job_name = f"vault-investigation-{safe_focus}-{ts}"
-    job_path = _user_jobs_dir() / f"{job_name}.md"
+    user_jobs = _user_jobs_dir()
+    user_jobs.mkdir(parents=True, exist_ok=True)
+    job_path = user_jobs / f"{job_name}.md"
 
     body_lines = [
         "You are a spawned investigation agent. The vault-recon collector "
