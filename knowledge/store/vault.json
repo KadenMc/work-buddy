@@ -1,0 +1,83 @@
+{
+  "vault": {
+    "kind": "system",
+    "name": "Vault Health Namespace",
+    "description": "Cross-cutting concerns about the vault as a whole — reconnaissance, drift detection, hygiene checks, schema validation. First member: vault_recon (diagnostic) and the vault-recon collector (periodic discovery loop).",
+    "content": {
+      "full": "Top-level scope for vault-wide concerns that aren't about any single Obsidian plugin.\n\nMembers in this round:\n- `vault/recon-directions` — how to read `vault_recon` output and identify recurring conventions (state machines, tag families, path conventions).\n- `vault/investigation-directions` — how the spawned investigation agent reasons over a delta and surfaces a proposal.\n\nFuture siblings (not built yet):\n- vault/drift-directions — catching conventions that used to recur but stopped.\n- vault/hygiene-directions — orphan pages, broken links, frontmatter schema violations.\n- vault/schema-directions — tag case drift, status enum compliance.\n\nThe collector layer (`vault_recon_collector`) runs on cron, persists snapshots to `.data/vault_recon/`, computes deltas, and escalates significant changes to an investigation agent via a one-shot `type: prompt` job. The user is in the loop only at the proposal-acceptance step (via `request_send`); auto-cementing is not in scope for this round."
+    },
+    "tags": [
+      "vault",
+      "vault-health",
+      "recon",
+      "discovery",
+      "namespace"
+    ],
+    "aliases": [
+      "vault",
+      "vault health",
+      "vault scope"
+    ],
+    "children": [
+      "vault/recon-directions",
+      "vault/investigation-directions"
+    ]
+  },
+  "vault/recon-directions": {
+    "kind": "directions",
+    "name": "Vault Recon Directions",
+    "description": "How to read vault_recon output and identify recurring conventions worth surfacing.",
+    "content": {
+      "full": "Read `vault_recon` output to identify recurring conventions in the user's vault. Returns cross-tabs an agent can pivot to spot state machines, tag families, hot regions of work.\n\n## When to use\n\n- The user runs `/wb-vault-recon` and wants a diagnostic peek at vault structure.\n- An investigation agent is reasoning over a fresh recon snapshot to draft a proposal.\n- A future vault-health check needs structural ground truth.\n\nDo NOT use as a substitute for `datacore_schema` for cheap \"is anything queryable\" probes. `vault_recon` is heavier (full page walk, ~1–2s on a 6k-page vault, capped at 90s by bridge timeout).\n\n## Invocation\n\n```\nwb_run(\"vault_recon\")                                       # full vault\nwb_run(\"vault_recon\", {\"path_prefix\": \"repos/electricrag/\"}) # region focus\nwb_run(\"vault_recon\", {\"activity_days\": 14})                 # tighter activity window\n```\n\n## Output structure\n\nKey fields and what they answer:\n\n| Field | Question it answers |\n|---|---|\n| `object_types` | How many pages/sections/tasks/etc. exist (vault-wide; ignores path_prefix). |\n| `pages_total`, `pages_walked` | Total in vault vs. walked given filter. Diff tells you scope. |\n| `top_tags` | Top-30 normalized top-level tags (e.g. #mide/workflow at depth 2). For deeper tag structure see `tag_tree`. |\n| `frontmatter_keys` | Top-30 keys with usage counts. The keys are the alphabet of structure. |\n| `frontmatter_values[key]` | For each key, top 50 values + `distinct_count` + `truncated` flag. **THIS IS WHERE STATE MACHINES SHOW UP.** Look for keys like `status`, `state`, `phase` with discrete value sets that look like an enum. |\n| `high_cardinality_keys` | Keys skipped because their value cardinality > 100 (UUIDs, timestamps). The agent knows these exist; doesn't get a wall of noise. |\n| `tag_tree` | Hierarchical tag tree to depth 3 with counts at each node. Find tag families (e.g. `#mide -> workflow -> graph -> ...`). |\n| `type_by_status` | Cross-tab `{type: {status: count}}`. The Kanban-board view of any state machine in the vault. |\n| `path_by_type` | `{path: {type: count}}` filtered to paths with ≥2 typed pages. Tells you where each artifact-type lives. |\n| `recent_activity_by_path` | Depth-2 prefix → count of pages with mtime within `activity_days`. Where work is happening lately. |\n| `task_statuses`, `tasks_total` | Task statuses from Datacore's @task index (note: redundant with `task_metadata.db`; included for completeness). |\n\n## Pattern-recognition heuristics\n\n### Spot a frontmatter state machine\n\nExamine `frontmatter_values`. A state machine looks like:\n- A key (commonly `status`, `state`, `phase`) with `truncated: false` and 3–8 distinct values.\n- Values that look like a workflow: `PROPOSED`, `DESIGNED`, `COMPLETED` or `draft`, `published`, `archived`.\n- Often paired with a `type` key and `type_by_status` cross-tab showing per-type counts in each status.\n\nIf you see one: name it. \"You have a `hypothesis | experiment | thread` state machine with `PROPOSED → DESIGNED → COMPLETED` transitions, mostly under `repos/electricrag/`.\"\n\n### Spot a tag family\n\nWalk `tag_tree`. A family looks like a node with multiple children, where the children are themselves substructured. E.g. `#mide` with children `workflow`, `system`, `context`, `meta` — each carrying further substructure.\n\nIf you see one: name it. \"You use `#mide/*` as a concept-tag namespace with sub-families for workflow/system/context/meta.\"\n\n### Spot a path convention\n\nLook at `path_by_type`. If a single path holds multiple pages of one type (e.g. `repos/electricrag/kb/research/threads` holds 8 pages of type=thread), that's a directory naming convention.\n\n### Spot a hot region\n\n`recent_activity_by_path` ranks regions by recent mtime activity. Top 1–2 entries are where the user is working now.\n\n## What to do with findings\n\nThis directions unit is for the *reader* of recon output, not for the user-facing slash command response.\n\n- If invoked from `/wb-vault-recon`: present the most striking 3–5 findings in plain English, no auto-action.\n- If invoked from the investigation agent (after a delta has triggered escalation): cross-reference with `vault/investigation-directions` for the proposal protocol.\n\nDo NOT cement anything from a single recon run. Cementing is the user's call (or a follow-up workflow's). This unit only teaches an agent how to *see*."
+    },
+    "tags": [
+      "vault",
+      "recon",
+      "directions",
+      "discovery",
+      "frontmatter",
+      "tag-tree",
+      "state-machine"
+    ],
+    "aliases": [
+      "vault recon",
+      "vault reconnaissance",
+      "recon directions",
+      "identify vault patterns",
+      "discover vault conventions"
+    ],
+    "parents": [
+      "vault"
+    ],
+    "trigger": "user runs /wb-vault-recon, or an agent needs to reason over vault_recon cross-tabs to identify patterns",
+    "command": "wb-vault-recon"
+  },
+  "vault/investigation-directions": {
+    "kind": "directions",
+    "name": "Vault Investigation Agent Directions",
+    "description": "How a spawned investigation agent reasons over a delta detected by the vault-recon collector and surfaces a proposal to the user.",
+    "content": {
+      "full": "You are a spawned investigation agent. The vault-recon collector ran on cron, computed a delta against the previous snapshot, and one of its significance rules fired — escalating to you. Your job is to investigate, characterize the change, draft a concrete proposal, and surface it to the user via `request_send` for consent-gated action.\n\nYou are short-lived (`headless_ephemeral`). Do not run unrelated work.\n\n## Inputs you receive\n\nThe spawning job's prompt body contains:\n- `delta`: the structured delta object (what changed since previous snapshot)\n- `rule_name`: which significance rule fired (one of: new_type, new_tag_family, stuck_state, path_activity_spike, status_backlog_growing)\n- `evidence`: the specific data that triggered the rule\n- `suggested_focus`: e.g. the type+status pair, the tag prefix, or the path that's the focus\n- Path to the latest snapshot in `.data/vault_recon/latest.json`\n\nLoad the latest snapshot for additional context if needed. Cross-reference `vault/recon-directions` for how to read the cross-tabs.\n\n## Investigation protocol\n\n1. **Verify the delta is real, not a measurement artifact.**\n   - A single rename can cause apparent \"new type\" if the user changed `type:` on existing pages.\n   - A bulk import can spike `recent_activity_by_path` without representing genuine new work.\n   - Read 2–3 of the affected pages (use `datacore_get_page` or read source files) to confirm the pattern is real.\n   - If the delta is an artifact, note it in escalation_history and do NOT call `request_send` — just exit.\n\n2. **Characterize the pattern.**\n   - In one sentence: what is the user doing in this region of the vault?\n   - What's the operational meaning of the change? (E.g., \"new research thread spun up\", \"hypothesis stuck at PROPOSED for 30 days\", \"draft pile growing without promotion to canon\".)\n   - Cross-reference with the user's CLAUDE.local.md operating model: paper lane vs. exploration vs. admin.\n\n3. **Draft a concrete proposal.**\n   - Phrase as: \"I noticed X. Want me to Y?\"\n   - Y should be a specific action work-buddy could take: surface in morning bundle, add as a recurring check, send a daily reminder, etc.\n   - Be concrete; vague proposals get ignored.\n\n4. **Surface via `request_send`.**\n   ```\n   wb_run(\"request_send\", {\n     \"title\": \"<one-line headline>\",\n     \"body\": \"<2–4 sentences: what changed, what it means, what's proposed>\",\n     \"response_type\": \"choice\",\n     \"choices\": [\n       {\"key\": \"act\", \"label\": \"Yes, do that\"},\n       {\"key\": \"more\", \"label\": \"Tell me more\"},\n       {\"key\": \"dismiss\", \"label\": \"Not interesting\"}\n     ]\n   })\n   ```\n   - Use `surfaces` defaulting to user preference (typically Telegram + Dashboard for non-urgent observations).\n   - Do NOT ship a callback that auto-cements. Cementing is out of scope for this round. The proposal is informational.\n\n5. **Record the firing.**\n   - Append the (rule_name, suggested_focus, ts, dismiss_until) to `.data/vault_recon/escalation_history.jsonl` so the collector deduplicates future identical firings within the suppression window (default 7 days).\n\n## What you should NOT do\n\n- Do not modify the vault.\n- Do not add entries to `CONTEXT_QUERIES` or any cementing surface (that's the next task's job, gated on user approval).\n- Do not spawn other agents.\n- Do not call `notification_send` (no-response mode) — always use `request_send` so the user can opt out and the system tracks dismissals.\n- Do not run for more than ~60 seconds; you're ephemeral. If investigation takes longer, write a partial finding to escalation_history and exit.\n\n## Failure modes\n\n- **Bridge unavailable**: Datacore queries will fail. Skip enrichment that requires the bridge; surface a proposal based only on the delta object you were given.\n- **Recon snapshot stale**: The collector writes `latest.json` synchronously after walking the vault. If `snapshot_ts` is older than 24h, something's wrong with the cron — log a warning to escalation_history and skip.\n- **Duplicate fire**: The collector should have deduplicated, but if you find the same (rule, focus) was already escalated within the suppression window, exit silently."
+    },
+    "tags": [
+      "vault",
+      "investigation",
+      "agent",
+      "delta",
+      "proposal",
+      "escalation",
+      "directions"
+    ],
+    "aliases": [
+      "vault investigation",
+      "investigation agent",
+      "delta investigation",
+      "vault delta",
+      "escalation agent"
+    ],
+    "parents": [
+      "vault"
+    ],
+    "trigger": "spawned via a one-shot type:prompt job by vault_recon_collector when a significance rule fires"
+  }
+}

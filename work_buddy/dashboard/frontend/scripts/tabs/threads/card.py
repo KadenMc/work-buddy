@@ -32,7 +32,7 @@ The card data shape (mocked in 4.2; real backend in 4.3):
 from __future__ import annotations
 
 
-def _threads_card_script() -> str:
+def script() -> str:
     return r"""
 // ===========================================================================
 // Stage 4.2 — Confirmation card layout (visual only)
@@ -1487,7 +1487,7 @@ def _threads_card_script() -> str:
 """
 
 
-def _threads_card_styles() -> str:
+def styles() -> str:
     return r"""
 /* Stage 4.2 — Confirmation card layout */
 

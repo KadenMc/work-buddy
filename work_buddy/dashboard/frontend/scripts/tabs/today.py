@@ -15,7 +15,7 @@ context choice persists across both surfaces.
 from __future__ import annotations
 
 
-def _today_script() -> str:
+def script() -> str:
     return r"""
 const TODAY_PRESETS = {
     at_desk: ['@filesystem', '@vault', '@web_public', '@user_workstation',
@@ -208,7 +208,7 @@ function _todayBuildRecCard(item, rank) {
 """
 
 
-def _today_styles() -> str:
+def styles() -> str:
     return r"""
 /* Today tab styles */
 

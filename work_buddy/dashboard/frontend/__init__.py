@@ -1,63 +1,36 @@
 """Dashboard frontend — generates the single-page HTML app.
 
 The page is built from inline modules (HTML, CSS, JS) so there's
-no build step or static file serving.  Each concern lives in its
+no build step or static file serving. Each concern lives in its
 own submodule:
 
     frontend/
-        styles.py               — CSS
-        html.py                 — page structure
-        script_main.py          — core tab JS (overview, tasks, etc.)
-        script_workflows.py     — workflow view polling + tab management
-        script_notifications.py — toasts + browser notifications
-        script_triage.py        — triage clarify + review renderers
-        script_conversations.py — conversation chat component
-        script_palette.py       — command palette
+        styles.py            — global CSS
+        html.py              — page structure
+        scripts/             — JS modules organized by role
+            core/            — page shell, event bus, helpers,
+                               workflow polling, notifications,
+                               command palette
+            tabs/            — one module per panel in staticLoaders
+                               (plus tabs/threads/* for the cluster)
+            surfaces/        — workflow-view renderers + decorator
+                               overlays (triage, resolution)
 
 Adding a new tab:
 
 1. Add a ``<button>`` to the tab bar in ``html.py`` ``_html()``
 2. Add a ``<div class="tab-panel" id="...">`` in the panels section
-3. Add a fetch+render function in ``script_main.py`` and call it
-   from ``switchTab``
+3. Create ``scripts/tabs/<name>.py`` exposing ``script() -> str``
+   (and optionally ``styles() -> str``)
+4. Add the loader to ``staticLoaders`` in ``scripts/core/page.py``
+5. Add the new module's ``script`` (and ``styles`` if applicable)
+   to the ordered registry in ``scripts/__init__.py``
 """
 
 from __future__ import annotations
 
 from .html import _html
-from .scripts.core.event_bus import _event_bus_script
-from .scripts.core.notifications import _notification_script
-from .scripts.core.page import _script
-from .scripts.core.palette import _command_palette_script
-from .scripts.core.workflows import _workflow_views_script
-from .scripts.surfaces.resolution import (
-    _resolution_surface_script,
-    _resolution_surface_styles,
-)
-from .scripts.surfaces.resolution_decorator import (  # noqa: F401  -- intentionally NOT wired into render_page; preserves pre-existing dead-code behavior. See task t-105354de.
-    _resolution_surface_script as _resolution_decorator_script,
-    _resolution_surface_styles as _resolution_decorator_styles,
-)
-from .scripts.surfaces.triage import _triage_clarify_script, _triage_review_script
-from .scripts.tabs.automation import _automation_script, _automation_styles
-from .scripts.tabs.conversations import _conversation_chat_script
-from .scripts.tabs.costs import _costs_script
-from .scripts.tabs.review import _review_script
-from .scripts.tabs.settings import _settings_script
-from .scripts.tabs.threads.actions import (
-    _threads_actions_script,
-    _threads_actions_styles,
-)
-from .scripts.tabs.threads.card import (
-    _threads_card_script,
-    _threads_card_styles,
-)
-from .scripts.tabs.threads.group import (
-    _group_view_script,
-    _group_view_styles,
-)
-from .scripts.tabs.threads.main import _threads_script, _threads_styles
-from .scripts.tabs.today import _today_script, _today_styles
+from .scripts import SCRIPTS, STYLES
 from .styles import _styles
 
 
@@ -75,35 +48,11 @@ def _vault_name() -> str:
 def render_page() -> str:
     """Return the complete HTML page as a string."""
     vault = _vault_name()
-    all_scripts = "\n".join([
-        f"const WB_VAULT_NAME = {vault!r};",
-        # Event bus client first: other modules' top-level code may
-        # call window.eventBus.on(...) at script-load time, so the bus
-        # API must already be defined when they execute.
-        _event_bus_script(),
-        _script(),
-        _workflow_views_script(),
-        _notification_script(),
-        _triage_clarify_script(),
-        _triage_review_script(),
-        # script_resolution must come AFTER script_triage so the
-        # decorator can call renderTriageReview (declared in
-        # _triage_review_script). The Resolution Surface mounts onto
-        # the existing renderer rather than replacing it.
-        _resolution_surface_script(),
-        _resolution_surface_script(),
-        _review_script(),
-        _automation_script(),
-        _today_script(),
-        _settings_script(),
-        _conversation_chat_script(),
-        _threads_script(),
-        _threads_card_script(),
-        _threads_actions_script(),
-        _group_view_script(),
-        _command_palette_script(),
-        _costs_script(),
-    ])
+    all_scripts = "\n".join(
+        [f"const WB_VAULT_NAME = {vault!r};"]
+        + [fn() for fn in SCRIPTS]
+    )
+    all_styles = "\n".join([_styles()] + [fn() for fn in STYLES])
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -111,15 +60,7 @@ def render_page() -> str:
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>work-buddy dashboard</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-    <style>{_styles()}
-{_resolution_surface_styles()}
-{_resolution_surface_styles()}
-{_threads_styles()}
-{_threads_card_styles()}
-{_threads_actions_styles()}
-{_group_view_styles()}
-{_automation_styles()}
-{_today_styles()}</style>
+    <style>{all_styles}</style>
     <script src="/vendor/chart.umd.min.js"></script>
     <script src="/vendor/morphdom-umd.min.js"></script>
 </head>

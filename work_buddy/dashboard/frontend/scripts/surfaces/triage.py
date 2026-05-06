@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 
-def _triage_clarify_script() -> str:
+def clarify_script() -> str:
     return r"""
 registerViewRenderer('triage_clarify', function(container, viewId, payload) {
     const pres = payload.presentation || {};
@@ -206,7 +206,7 @@ registerViewRenderer('triage_clarify', function(container, viewId, payload) {
 # ---------------------------------------------------------------------------
 
 
-def _triage_review_script() -> str:
+def review_script() -> str:
     return r"""
 // Mount-anywhere renderer for the triage-review UI. Originally only
 // used inside the workflow-view modal (via `registerViewRenderer` on

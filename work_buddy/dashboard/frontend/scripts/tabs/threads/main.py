@@ -11,7 +11,7 @@ UX.md §2 (navigation) and §11 (URLs) are the spec.
 from __future__ import annotations
 
 
-def _threads_script() -> str:
+def script() -> str:
     return r"""
 // ===========================================================================
 // Threads tab — URL routing + recursive UI scaffold
@@ -1319,7 +1319,7 @@ def _threads_script() -> str:
 """
 
 
-def _threads_styles() -> str:
+def styles() -> str:
     return r"""
 /* Stage 4.1 — placeholder + breadcrumbs + inspector modal scaffold */
 

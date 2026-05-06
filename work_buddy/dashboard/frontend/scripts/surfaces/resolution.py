@@ -27,7 +27,7 @@ path stays intact alongside it.
 from __future__ import annotations
 
 
-def _resolution_surface_script() -> str:
+def script() -> str:
     return r"""
 // ---------------------------------------------------------------------------
 // Resolution Surface
@@ -179,7 +179,7 @@ def _resolution_surface_script() -> str:
 """
 
 
-def _resolution_surface_styles() -> str:
+def styles() -> str:
     return r"""
 .rs-card {
     max-width: 720px;

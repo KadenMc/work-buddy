@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 
-def _workflow_views_script() -> str:
+def script() -> str:
     return r"""
 // ---- Workflow view polling ----
 const _knownViews = new Set();

@@ -19,7 +19,7 @@ future cleanup pass moves these utilities into ``styles.py`` and
 from __future__ import annotations
 
 
-def _automation_script() -> str:
+def script() -> str:
     return r"""
 // ---- Shared frontend helpers ------------------------------------------
 
@@ -31,7 +31,7 @@ function _autEsc(s) {
 """
 
 
-def _automation_styles() -> str:
+def styles() -> str:
     return r"""
 /* Section-title caption — small grey suffix used by Today and other
  * tabs that want a "<title> · subtitle" header. Was originally

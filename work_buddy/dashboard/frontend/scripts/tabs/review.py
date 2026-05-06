@@ -28,7 +28,7 @@ the shared renderer eliminates both problems.
 from __future__ import annotations
 
 
-def _review_script() -> str:
+def script() -> str:
     return r"""
 // ---- Review tab: background-triage pending-review pool ----
 

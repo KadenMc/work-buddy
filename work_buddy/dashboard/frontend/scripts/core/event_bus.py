@@ -21,7 +21,7 @@ bus) and the SSE generator in ``service.py`` (``_sse_stream``).
 from __future__ import annotations
 
 
-def _event_bus_script() -> str:
+def script() -> str:
     return r"""
 // ---- Real-time event bus (server-sent events) ----
 //

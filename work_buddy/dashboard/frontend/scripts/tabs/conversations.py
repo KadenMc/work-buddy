@@ -9,7 +9,7 @@ and is rendered as a Conversation.
 from __future__ import annotations
 
 
-def _conversation_chat_script() -> str:
+def script() -> str:
     return """
 // ---- ConversationChat: reusable chat component ----
 // Mount into any container. Used by the conversation_chat view renderer

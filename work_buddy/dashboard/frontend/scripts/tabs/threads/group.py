@@ -45,7 +45,7 @@ roundtrip) so dismiss never 404s.
 from __future__ import annotations
 
 
-def _group_view_script() -> str:
+def script() -> str:
     return r"""
 (function () {
     if (!window._groupState) {
@@ -1159,7 +1159,7 @@ def _group_view_script() -> str:
 """
 
 
-def _group_view_styles() -> str:
+def styles() -> str:
     return r"""
 /* Group-view multi-column layout. Renders inside the
  * standard thread-detail card's "Sub-threads" section when the

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 
-def _command_palette_script() -> str:
+def script() -> str:
     return """
 // ---- Command Palette ----
 (function() {

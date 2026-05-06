@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 
-def _script() -> str:
+def script() -> str:
     return r"""
 // ---- Tab switching ----
 const staticLoaders = {

@@ -15,7 +15,7 @@ by (project, activity).
 from __future__ import annotations
 
 
-def _costs_script() -> str:
+def script() -> str:
     return r"""
 // ---- Costs tab state ----
 const COSTS_PAGE_SIZE = 60;

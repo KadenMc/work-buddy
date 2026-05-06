@@ -12,7 +12,7 @@ extends the mapping for ``unconfigured`` and preference labels.
 from __future__ import annotations
 
 
-def _settings_script() -> str:
+def script() -> str:
     return r"""
 // ---- Settings tab: unified control graph ----
 

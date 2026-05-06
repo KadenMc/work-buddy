@@ -33,7 +33,7 @@ this module only adds adjacent affordances.
 from __future__ import annotations
 
 
-def _resolution_surface_script() -> str:
+def script() -> str:
     return r"""
 // ---------------------------------------------------------------------------
 // Resolution Surface — Slice 1.5
@@ -736,7 +736,7 @@ function _resEsc(s) {
 """
 
 
-def _resolution_surface_styles() -> str:
+def styles() -> str:
     return r"""
 /* Resolution Surface (Slice 1.5) -- visual layer for the new affordances. */
 
