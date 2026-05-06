@@ -10,6 +10,8 @@ The dispatcher is JS embedded in a Python string. We test:
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from work_buddy.dashboard.frontend import render_page
 from work_buddy.dashboard.frontend.scripts.core.event_bus import script as _event_bus_script
 
@@ -184,6 +186,58 @@ def test_visibilitychange_listener_refreshes_active_tab():
     src = script()
     assert "addEventListener('visibilitychange'" in src
     assert "document.visibilityState" in src
+
+
+def test_assembled_javascript_init_runs():
+    """Eval the rendered <script> in a stubbed Node context and confirm it
+    completes without throwing.
+
+    Runtime smoke test that catches what ``--check`` (syntax-only)
+    misses. Particularly: TDZ ReferenceErrors when a module's top-level
+    code touches a ``let``/``const`` from a module that hasn't evaluated
+    yet (the bug class that produced
+    'Cannot access "_jobRegistryPromise" before initialization' and
+    'Cannot access "costsState" before initialization' after the
+    scripts/{core,tabs,surfaces}/ restructure).
+
+    Skips when Node isn't on PATH; the test harness ``eval_dashboard_init.cjs``
+    sets up a minimal browser stub (document, window, EventSource, fetch,
+    setInterval) so the script's init phase can run end-to-end.
+    """
+    import shutil
+    import subprocess
+    import tempfile
+
+    import pytest
+
+    if shutil.which("node") is None:
+        pytest.skip("node not on PATH")
+
+    # Render the page to a temp file the harness can read.
+    html = render_page()
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".html", encoding="utf-8", delete=False
+    ) as fh:
+        fh.write(html)
+        html_path = fh.name
+
+    harness = (
+        Path(__file__).parent / "eval_dashboard_init.cjs"
+    ).resolve()
+    try:
+        result = subprocess.run(
+            ["node", str(harness), html_path],
+            capture_output=True,
+            text=True,
+        )
+    finally:
+        import os
+        os.unlink(html_path)
+
+    assert result.returncode == 0, (
+        f"Dashboard JS threw during init:\nstdout:\n{result.stdout}\n"
+        f"stderr:\n{result.stderr}"
+    )
 
 
 def test_assembled_javascript_parses():

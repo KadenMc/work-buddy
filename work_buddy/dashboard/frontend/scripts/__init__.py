@@ -60,24 +60,32 @@ from .tabs.threads import main as threads
 
 # Concatenation order is load-bearing.
 #
-# * ``event_bus`` first — it defines ``window.eventBus``; other modules'
-#   top-level code may call ``window.eventBus.on(...)`` at script-load
-#   time, so the bus API must already exist when they execute.
-# * ``page`` next — defines ``staticLoaders``, ``switchTab``, URL-hash
-#   routing, init. Tab modules that register loaders need this in scope.
-# * ``workflows`` before view-renderer surfaces (``triage``,
-#   ``resolution``) — it owns the renderer dispatch system those
-#   surfaces register into.
-# * ``triage.review_script`` before ``resolution.script`` — the
-#   resolution renderer composes onto ``renderTriageReview`` from the
-#   triage script.
+# * ``event_bus`` first — defines ``window.eventBus``; other modules' top-
+#   level code may call ``window.eventBus.on(...)`` at script-load time,
+#   so the bus API must already exist when they execute.
+# * ``helpers`` second — defines ``fetchJSON``, ``statusBadge``, the
+#   health-tree primitives. Every tab loader and surface depends on these.
+# * ``workflows`` before view-renderer surfaces (``triage``, ``resolution``)
+#   — it owns ``registerViewRenderer`` which those surfaces call at
+#   script-load to register themselves.
+# * ``triage.review_script`` before ``resolution.script`` — the resolution
+#   renderer composes onto ``renderTriageReview`` from the triage script.
 # * ``threads_card``, ``threads_actions``, ``threads_group`` after
 #   ``threads.script`` — the latter publishes ``window.threadsSurface``
 #   onto which the cluster modules attach.
+# * ``page`` LAST. core/page.py's init block calls ``_loadJobRegistry()``
+#   synchronously and queues ``_initFromHash`` for ``DOMContentLoaded``.
+#   Both touch ``let``/``const`` declarations in tab modules
+#   (``_jobRegistryPromise`` in tabs/jobs.py, ``costsState`` in
+#   tabs/costs.py, ``chatsState`` in tabs/chats.py). Those vars stay in
+#   the Temporal Dead Zone until their declaring module evaluates, so
+#   page.py MUST run after every tab module to avoid TDZ ReferenceError.
+#   This is the single load-bearing reversal vs the original
+#   script_main.py order, where these lived in one big file and were
+#   declared above the init call by line number.
 SCRIPTS = [
     event_bus.script,
     helpers.script,
-    page.script,
     workflows.script,
     notifications.script,
     triage.clarify_script,
@@ -101,6 +109,8 @@ SCRIPTS = [
     threads_group.script,
     palette.script,
     costs.script,
+    # page LAST — see ordering note above.
+    page.script,
 ]
 
 STYLES = [
