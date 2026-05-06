@@ -83,16 +83,18 @@ _LEGACY_ONLY_ALIAS: dict[str, list[str]] = {
 }
 
 # Subset of _BUNDLE_MAP that the default "run all" pass includes. The
-# datacore wrapper is included but its collector is a no-op when
-# CONTEXT_QUERIES is empty.
+# datacore wrapper is included but its collector emits an empty string
+# when CONTEXT_QUERIES is empty (see work_buddy/collectors/datacore_collector.py),
+# so it costs nothing until queries are populated.
 COLLECTORS = {
     "git", "obsidian", "chat", "chrome", "message",
     "smart", "calendar", "day_planner", "projects",
     "session_activity", "obsidian_tasks", "obsidian_wellness",
+    "datacore",
 }
 
 # Optional collectors — included in bundles but not in default set.
-OPTIONAL_COLLECTORS = {"datacore"}
+OPTIONAL_COLLECTORS: set[str] = set()
 
 
 # Global overrides that expand into per-collector time windows.
