@@ -1569,6 +1569,9 @@ def _context_capabilities() -> list[Capability]:
         datacore_run_plan,
         vault_recon,
     )
+    from work_buddy.collectors.vault_recon_collector import (
+        vault_recon_collect,
+    )
     from work_buddy.embedding.client import ir_index as _ir_index_client
     from work_buddy.sessions.inspector import (
         session_get as _session_get,
@@ -2655,6 +2658,25 @@ def _context_capabilities() -> list[Capability]:
                 "limit": {"type": "int", "description": "Max results (default 50)", "required": False},
             },
             callable=datacore_run_plan,
+            requires=["obsidian", "datacore"],
+        ),
+        Capability(
+            name="vault_recon_collect",
+            description="Periodic vault reconnaissance entry point: snapshot the vault via vault_recon, append to a 60-day rolling ledger at .data/vault_recon/snapshots.json, compute deltas against prior snapshots, apply 5 curated significance rules, and write a one-shot type:prompt investigation job to .data/user_jobs/ on each rule firing (deduplicated per (rule, focus) over a 7-day window). Designed to be fired daily by sidecar_jobs/vault-recon.md.",
+            category="context",
+            search_aliases=[
+                "vault recon collect",
+                "vault recon collector",
+                "vault snapshot",
+                "vault delta detection",
+                "vault discovery loop",
+                "periodic vault recon",
+            ],
+            parameters={
+                "window_days": {"type": "int", "description": "Snapshot retention window (default 60).", "required": False},
+                "skip_escalation": {"type": "bool", "description": "If true, evaluate rules but do not spawn investigation jobs. Useful for dry runs.", "required": False},
+            },
+            callable=vault_recon_collect,
             requires=["obsidian", "datacore"],
         ),
         # ── Projects ──────────────────────────────────────────────
