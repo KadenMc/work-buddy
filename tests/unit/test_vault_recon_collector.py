@@ -254,6 +254,7 @@ def test_is_recent_escalation_true_within_window():
 
 
 def test_is_recent_escalation_false_outside_window():
+    # Default 7-day window applies when no notification_id is set
     history = [
         {"rule": "stuck_state", "focus": "h:P", "ts": _ts(days_ago=10)},
     ]
@@ -265,6 +266,187 @@ def test_is_recent_escalation_false_for_different_focus():
         {"rule": "stuck_state", "focus": "other:P", "ts": _ts(days_ago=1)},
     ]
     assert vrc._is_recent_escalation("stuck_state", "h:P", history) is False
+
+
+# ── Kind-from-choice resolution ─────────────────────────────────
+
+
+def test_kind_from_choice_explicit_wins():
+    assert vrc._kind_from_choice({"key": "anything", "kind": "act"}) == "act"
+    assert vrc._kind_from_choice({"key": "anything", "kind": "decline"}) == "decline"
+    assert vrc._kind_from_choice({"key": "anything", "kind": "defer"}) == "defer"
+
+
+def test_kind_from_choice_heuristic_decline():
+    for k in ("dismiss", "decline", "no", "skip", "ignore"):
+        assert vrc._kind_from_choice({"key": k}) == "decline", f"key={k}"
+
+
+def test_kind_from_choice_heuristic_defer():
+    for k in ("more", "tell_me_more", "later", "snooze"):
+        assert vrc._kind_from_choice({"key": k}) == "defer", f"key={k}"
+
+
+def test_kind_from_choice_default_act():
+    # Unknown keys default to act (the proposal-specific positive choices)
+    assert vrc._kind_from_choice({"key": "morning_bundle"}) == "act"
+    assert vrc._kind_from_choice({"key": "contract_now"}) == "act"
+    assert vrc._kind_from_choice({}) == "act"
+
+
+def test_kind_from_choice_invalid_explicit_kind_falls_back():
+    # Garbage `kind` falls back to heuristic
+    assert vrc._kind_from_choice({"key": "dismiss", "kind": "nonsense"}) == "decline"
+    assert vrc._kind_from_choice({"key": "morning_bundle", "kind": "nonsense"}) == "act"
+
+
+# ── Kind-aware suppression windows ──────────────────────────────
+
+
+class _FakeNotif:
+    def __init__(self, value, choices, responded_at):
+        self.response = {"value": value} if value else None
+        self.choices = choices
+        self.responded_at = responded_at
+
+
+def _patch_get_notification(monkeypatch, mapping):
+    def fake_get(notification_id):
+        return mapping.get(notification_id)
+    monkeypatch.setattr(
+        "work_buddy.notifications.store.get_notification", fake_get
+    )
+
+
+def test_decline_response_extends_suppression_to_90_days(monkeypatch):
+    """Dismiss → user doesn't want this; suppress for 90 days from response."""
+    notif = _FakeNotif(
+        value="dismiss",
+        choices=[
+            {"key": "act_thing", "label": "Do it", "kind": "act"},
+            {"key": "dismiss", "label": "No thanks", "kind": "decline"},
+        ],
+        responded_at=_ts(days_ago=20),
+    )
+    _patch_get_notification(monkeypatch, {"req_X": notif})
+
+    history = [{
+        "rule": "new_type", "focus": "type:hypothesis",
+        "ts": _ts(days_ago=20), "notification_id": "req_X",
+    }]
+    # 20 days ago + 90-day window → still suppressing (until day 70 from now)
+    assert vrc._is_recent_escalation("new_type", "type:hypothesis", history) is True
+
+
+def test_decline_response_stops_suppressing_after_90_days(monkeypatch):
+    notif = _FakeNotif(
+        value="dismiss",
+        choices=[{"key": "dismiss", "label": "No thanks", "kind": "decline"}],
+        responded_at=_ts(days_ago=95),
+    )
+    _patch_get_notification(monkeypatch, {"req_X": notif})
+
+    history = [{
+        "rule": "new_type", "focus": "type:hypothesis",
+        "ts": _ts(days_ago=95), "notification_id": "req_X",
+    }]
+    # 95 days ago + 90-day window → window expired, no longer suppressing
+    assert vrc._is_recent_escalation("new_type", "type:hypothesis", history) is False
+
+
+def test_act_response_suppresses_30_days(monkeypatch):
+    notif = _FakeNotif(
+        value="morning_bundle",
+        choices=[{"key": "morning_bundle", "label": "Surface daily", "kind": "act"}],
+        responded_at=_ts(days_ago=10),
+    )
+    _patch_get_notification(monkeypatch, {"req_X": notif})
+
+    history = [{
+        "rule": "new_type", "focus": "type:hypothesis",
+        "ts": _ts(days_ago=10), "notification_id": "req_X",
+    }]
+    # 10 days ago + 30 → still suppressing
+    assert vrc._is_recent_escalation("new_type", "type:hypothesis", history) is True
+
+
+def test_act_response_stops_after_30_days(monkeypatch):
+    notif = _FakeNotif(
+        value="morning_bundle",
+        choices=[{"key": "morning_bundle", "label": "Surface daily", "kind": "act"}],
+        responded_at=_ts(days_ago=35),
+    )
+    _patch_get_notification(monkeypatch, {"req_X": notif})
+
+    history = [{
+        "rule": "new_type", "focus": "type:hypothesis",
+        "ts": _ts(days_ago=35), "notification_id": "req_X",
+    }]
+    assert vrc._is_recent_escalation("new_type", "type:hypothesis", history) is False
+
+
+def test_defer_response_keeps_7_day_window(monkeypatch):
+    notif = _FakeNotif(
+        value="more",
+        choices=[{"key": "more", "label": "Tell me more", "kind": "defer"}],
+        responded_at=_ts(days_ago=5),
+    )
+    _patch_get_notification(monkeypatch, {"req_X": notif})
+
+    history = [{
+        "rule": "new_type", "focus": "type:hypothesis",
+        "ts": _ts(days_ago=5), "notification_id": "req_X",
+    }]
+    assert vrc._is_recent_escalation("new_type", "type:hypothesis", history) is True
+
+    # Same shape but 8 days ago → out of window
+    notif.responded_at = _ts(days_ago=8)
+    history[0]["ts"] = _ts(days_ago=8)
+    assert vrc._is_recent_escalation("new_type", "type:hypothesis", history) is False
+
+
+def test_pending_response_uses_default_7_day_window(monkeypatch):
+    """No response yet → fall back to 7-day window from firing time."""
+    notif = _FakeNotif(value=None, choices=[], responded_at=None)
+    _patch_get_notification(monkeypatch, {"req_X": notif})
+
+    history = [{
+        "rule": "new_type", "focus": "type:hypothesis",
+        "ts": _ts(days_ago=3), "notification_id": "req_X",
+    }]
+    assert vrc._is_recent_escalation("new_type", "type:hypothesis", history) is True
+
+    history[0]["ts"] = _ts(days_ago=10)
+    assert vrc._is_recent_escalation("new_type", "type:hypothesis", history) is False
+
+
+def test_legacy_entry_without_notification_id_uses_7_days():
+    """Entries from before notification_id was tracked still suppress 7 days."""
+    history = [{
+        "rule": "new_type", "focus": "type:hypothesis",
+        "ts": _ts(days_ago=3),  # no notification_id
+    }]
+    assert vrc._is_recent_escalation("new_type", "type:hypothesis", history) is True
+
+    history[0]["ts"] = _ts(days_ago=10)
+    assert vrc._is_recent_escalation("new_type", "type:hypothesis", history) is False
+
+
+def test_decline_via_heuristic_when_kind_field_missing(monkeypatch):
+    """Backwards compat: agent didn't supply `kind`, key=dismiss → decline → 90d."""
+    notif = _FakeNotif(
+        value="dismiss",
+        choices=[{"key": "dismiss", "label": "Not interesting"}],  # no `kind`
+        responded_at=_ts(days_ago=15),
+    )
+    _patch_get_notification(monkeypatch, {"req_X": notif})
+
+    history = [{
+        "rule": "new_type", "focus": "type:hypothesis",
+        "ts": _ts(days_ago=15), "notification_id": "req_X",
+    }]
+    # 15 days ago + 90-day window via heuristic → still suppressing
+    assert vrc._is_recent_escalation("new_type", "type:hypothesis", history) is True
 
 
 # ── prune_old ────────────────────────────────────────────────────

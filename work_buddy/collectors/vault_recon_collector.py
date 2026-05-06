@@ -61,7 +61,28 @@ _PATH_SPIKE_NEW_REGION_MIN = 5
 _BACKLOG_MIN_RUN = 7
 _BACKLOG_MIN_FINAL_COUNT = 3
 
-_ESCALATION_SUPPRESS_DAYS = 7
+# Suppression windows by response kind. The collector reads the user's
+# response (if any) on the most-recent escalation for a (rule, focus)
+# tuple and applies the appropriate window. Investigation agents are
+# directed to emit a `kind` field on each choice (act / defer / decline);
+# legacy choices without `kind` are mapped heuristically by key name.
+_ESCALATION_SUPPRESS_DAYS = 7  # default + `defer` kind + no-response fallback
+_SUPPRESS_DAYS_BY_KIND = {
+    "act": 30,      # user committed to the action; suppress while commitment is fresh
+    "defer": 7,     # user wants this later — re-surface naturally
+    "decline": 90,  # user doesn't want this kind of surfacing — long quiet
+}
+
+# Heuristic mapping when a choice doesn't carry an explicit `kind` field.
+# Investigation agents should specify `kind` explicitly going forward;
+# this exists for backwards compat with already-recorded responses and
+# legacy choice generators.
+_KIND_KEY_HEURISTICS = {
+    "decline": ("dismiss", "decline", "deny", "no", "not_interesting", "skip", "ignore"),
+    "defer":   ("more", "tell_me_more", "later", "snooze", "not_now", "remind_later"),
+    # everything else is treated as `act` (positive engagement with the
+    # specific proposal — the keys describe the chosen action)
+}
 
 
 # ── Path helpers ────────────────────────────────────────────────
@@ -168,21 +189,106 @@ def _append_escalation_history(entry: dict) -> None:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
+def _kind_from_choice(choice: dict) -> str:
+    """Resolve the response `kind` for a choice dict.
+
+    Explicit `kind` field wins. Otherwise falls back to a key-name
+    heuristic. Defaults to `act` on no match (positive engagement is
+    the safer default — it suppresses for 30d, less than `decline`'s 90d
+    but more than `defer`'s 7d).
+    """
+    explicit = choice.get("kind")
+    if explicit in _SUPPRESS_DAYS_BY_KIND:
+        return explicit
+    key = (choice.get("key") or "").lower()
+    for kind, candidates in _KIND_KEY_HEURISTICS.items():
+        if key in candidates:
+            return kind
+    return "act"
+
+
+def _resolve_response_kind(notification_id: str) -> tuple[str, str | None]:
+    """Look up a notification's response and return (kind, responded_at).
+
+    Returns ``("pending", None)`` if no notification exists, or no
+    response has been recorded. Otherwise reads the chosen choice's
+    `kind` field (or the key-heuristic fallback) and the `responded_at`
+    timestamp.
+    """
+    try:
+        from work_buddy.notifications.store import get_notification
+        notif = get_notification(notification_id)
+    except Exception:
+        return ("pending", None)
+    if notif is None or not getattr(notif, "response", None):
+        return ("pending", None)
+    response = notif.response
+    chosen_key = response.get("value") if isinstance(response, dict) else None
+    if not chosen_key:
+        return ("pending", None)
+    choices = getattr(notif, "choices", None) or []
+    chosen = next((c for c in choices if c.get("key") == chosen_key), None)
+    if chosen is None:
+        return ("pending", None)
+    kind = _kind_from_choice(chosen)
+    responded_at = getattr(notif, "responded_at", None)
+    return (kind, responded_at)
+
+
+def _suppress_until_ts(entry: dict) -> float | None:
+    """Compute the unix-ts after which this escalation is no longer suppressing.
+
+    Reads the entry's `ts` (firing time) plus, if available, the response
+    on the linked notification to determine the suppression window:
+    - act     → 30 days from responded_at (or ts if no response)
+    - defer   → 7 days from responded_at (or ts if no response)
+    - decline → 90 days from responded_at (or ts if no response)
+    - no notification or pending response → 7 days from ts (legacy default)
+
+    Returns None on parse failure (entry effectively contributes nothing).
+    """
+    ts = entry.get("ts")
+    if not ts:
+        return None
+    try:
+        fire_t = datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+    notification_id = entry.get("notification_id")
+    if not notification_id:
+        return fire_t + _ESCALATION_SUPPRESS_DAYS * 86400
+
+    kind, responded_at = _resolve_response_kind(notification_id)
+    days = _SUPPRESS_DAYS_BY_KIND.get(kind, _ESCALATION_SUPPRESS_DAYS)
+
+    anchor = fire_t
+    if responded_at:
+        try:
+            anchor = datetime.fromisoformat(responded_at.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            pass
+
+    return anchor + days * 86400
+
+
 def _is_recent_escalation(rule_name: str, focus_key: str, history: list[dict]) -> bool:
-    """Has this (rule, focus) tuple been escalated within the suppression window?"""
-    cutoff = datetime.now(timezone.utc).timestamp() - _ESCALATION_SUPPRESS_DAYS * 86400
+    """Has this (rule, focus) tuple been escalated and is still within
+    its kind-aware suppression window? Reads response (if any) on the
+    linked notification to determine window length:
+
+    - act     → 30 days from responded_at  (commitment fresh)
+    - defer   → 7 days from responded_at   (re-surface naturally)
+    - decline → 90 days from responded_at  (long quiet)
+    - pending / no notification → 7 days from firing time (legacy)
+    """
+    now = datetime.now(timezone.utc).timestamp()
     for entry in history:
         if entry.get("rule") != rule_name or entry.get("focus") != focus_key:
             continue
-        ts = entry.get("ts")
-        if not ts:
-            continue
-        try:
-            t = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-            if t.timestamp() >= cutoff:
-                return True
-        except ValueError:
-            continue
+        suppress_until = _suppress_until_ts(entry)
+        if suppress_until is not None and suppress_until > now:
+            return True
     return False
 
 
@@ -459,9 +565,12 @@ def _spawn_investigation_job(rule: dict, latest_path: str) -> str:
         "Load `vault/investigation-directions` for the protocol. Verify the "
         "delta is real (not a measurement artifact), characterize the pattern, "
         "draft a concrete proposal, and surface via `request_send` with "
-        "consent-gated choices. Append to "
-        "`.data/vault_recon/escalation_history.jsonl` if you take any action so "
-        "duplicates suppress for 7 days.",
+        "consent-gated choices. EACH choice MUST include a `kind` field "
+        "with one of: `act` (user wants the action), `defer` (more info / "
+        "later), `decline` (don't surface this). The collector reads `kind` "
+        "to determine suppression window: act=30d, defer=7d, decline=90d. "
+        "Append to `.data/vault_recon/escalation_history.jsonl` with your "
+        "notification_id and a brief summary so future runs can audit.",
         "",
         "You are headless_ephemeral — short-lived. Exit after surfacing or "
         "verifying the delta is an artifact.",
