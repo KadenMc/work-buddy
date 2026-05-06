@@ -1138,6 +1138,7 @@ window.settingsSurface = {
 };
 
 // ---- Setup-wizard launcher ----
+async function launchSetupAgent(componentId, mode, btn) {
     if (_readOnly) return;
     const origText = btn.textContent;
     btn.textContent = 'Launching...';

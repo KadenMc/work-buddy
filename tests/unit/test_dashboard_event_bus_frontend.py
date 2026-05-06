@@ -184,3 +184,49 @@ def test_visibilitychange_listener_refreshes_active_tab():
     src = script()
     assert "addEventListener('visibilitychange'" in src
     assert "document.visibilityState" in src
+
+
+def test_assembled_javascript_parses():
+    """The full ``render_page()`` JS must be syntactically valid.
+
+    Each script module's content lives in a Python r-string, but the
+    page concatenates them all into one ``<script>`` block. Per-module
+    string-content tests do NOT detect cross-module breakage like an
+    orphan function body whose ``function`` declaration was lost
+    during an extraction (the failure mode that produced
+    'Uncaught SyntaxError: Illegal return statement' after the
+    scripts/{core,tabs,surfaces}/ restructure).
+
+    Skips when Node.js isn't available — in CI the runner provides it.
+    """
+    import re
+    import shutil
+    import subprocess
+    import tempfile
+
+    import pytest
+
+    if shutil.which("node") is None:
+        pytest.skip("node not on PATH")
+
+    html = render_page()
+    m = re.search(r"<script>(.*?)</script>\s*</body>", html, re.S)
+    assert m, "render_page output is missing the body <script> block"
+    js = m.group(1)
+
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".js", encoding="utf-8", delete=False
+    ) as fh:
+        fh.write(js)
+        path = fh.name
+    try:
+        result = subprocess.run(
+            ["node", "--check", path], capture_output=True, text=True
+        )
+    finally:
+        import os
+        os.unlink(path)
+
+    assert result.returncode == 0, (
+        f"Assembled JS failed Node syntax check:\n{result.stderr}"
+    )
