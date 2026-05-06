@@ -396,11 +396,18 @@ def test_vault_recon_collect_spawns_investigation_job(tmp_path, monkeypatch):
     assert "type: prompt" in job_text
     assert "spawn_mode: headless_ephemeral" in job_text
     assert "recurring: false" in job_text
-    assert "type:hypothesis" in job_text  # focus is in the prompt body
     # YAML frontmatter must have an opening AND closing --- delimiter,
     # else the scheduler silently drops the file on hot-reload.
     assert job_text.startswith("---\n")
-    assert job_text.rstrip().endswith("---")
+    # The prompt MUST be in the markdown body (after closing ---), not
+    # in the frontmatter. The scheduler reads prompt=body.strip() at
+    # work_buddy/sidecar/scheduler/jobs.py:183. A body-empty file means
+    # empty prompt → executor returns "Empty prompt." error.
+    fm_end = job_text.index("\n---\n", 4) + 5  # past the closing ---\n
+    body_after_fm = job_text[fm_end:].strip()
+    assert "type:hypothesis" in body_after_fm  # focus is in the prompt body
+    assert "investigation agent" in body_after_fm
+    assert len(body_after_fm) > 200, "prompt body should be substantial"
 
 
 def test_vault_recon_collect_surfaces_consent_when_missing(tmp_path, monkeypatch):
