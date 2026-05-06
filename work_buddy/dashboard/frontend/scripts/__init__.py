@@ -37,7 +37,18 @@ from .surfaces import resolution, triage
 # resolves the namespace collision but the decorator's content has
 # been dead in production since the shadow began. Reviving it is
 # tracked by task t-105354de.
-from .tabs import automation, conversations, costs, jobs, review, settings, status, tasks, today
+from .tabs import (
+    automation,
+    chats,
+    conversations,
+    costs,
+    jobs,
+    review,
+    settings,
+    status,
+    tasks,
+    today,
+)
 from .tabs.threads import actions as threads_actions
 from .tabs.threads import card as threads_card
 from .tabs.threads import group as threads_group
@@ -77,6 +88,7 @@ SCRIPTS = [
     jobs.script,
     tasks.script,
     status.script,
+    chats.script,
     threads.script,
     threads_card.script,
     threads_actions.script,
