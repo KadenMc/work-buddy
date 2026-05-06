@@ -49,7 +49,6 @@ class Job:
 
     # Agent spawn control (for type=prompt and workflow reasoning steps)
     spawn_mode: str = ""  # headless_ephemeral | headless_persistent | interactive_persistent
-    allow_demotion: bool = True  # Allow interactive→headless demotion if interactive unavailable
 
     # Runtime state (not persisted in .md frontmatter — populated by scheduler)
     last_run_at: float = 0.0
@@ -132,8 +131,6 @@ def _parse_job_file(file_path: Path) -> Job | None:
         )
         spawn_mode = ""
 
-    allow_demotion = _parse_bool(fm.get("allow_demotion", True))
-
     return Job(
         name=name,
         file_path=file_path,
@@ -147,7 +144,6 @@ def _parse_job_file(file_path: Path) -> Job | None:
         description=body.strip(),
         enabled=enabled,
         spawn_mode=spawn_mode,
-        allow_demotion=allow_demotion,
     )
 
 
