@@ -114,6 +114,7 @@ Every scope below is browsable with `mcp__work-buddy__wb_run("agent_docs", {"sco
 | `journal/` | Daily note, sign-in, running notes, day planner |
 | `context/` | Collectors (git, chrome, calendar, obsidian, smart, datacore…), bundles, conversation search, session inspection, knowledge-store editing |
 | `obsidian/` | Bridge, vault writer, tasks plugin, datacore, smart ecosystem |
+| `vault/` | Vault-recon collector, investigation-agent directions, accept-loop |
 | `email/` | Thunderbird bridge, provider abstraction, email triage adapter |
 | `browser/` | Chrome tab triage |
 | `threads/` | Multi-turn agent-user threads |
