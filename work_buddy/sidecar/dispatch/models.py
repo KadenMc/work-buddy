@@ -16,9 +16,14 @@ Spawn modes
   ``--no-session-persistence``, so persistence is one-write — the initial
   run's context is preserved, but resume runs do not accumulate further
   state.
-- **interactive_persistent**: Reserved for launching a user-visible
-  interactive Claude Code session. Implementation deferred until the
-  interactive runner is configured. Placeholder raises ``NotImplementedError``.
+- **interactive_persistent**: Launches a user-visible interactive Claude
+  Code session via a hidden PTY. The session is registered and appears
+  in the user's Claude Code session picker so they can resume it on
+  their own schedule. Implemented in
+  ``executor._spawn_interactive_agent``; PTY backend in
+  ``dispatch/pty_adapter.py`` (``pywinpty`` on Windows, ``ptyprocess``
+  elsewhere — both declared as platform-conditional deps in
+  ``pyproject.toml``).
 
 Agent targets
 -------------
