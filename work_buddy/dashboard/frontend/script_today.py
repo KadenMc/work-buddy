@@ -1,7 +1,6 @@
-"""Slice 5b dashboard JS: Today tab.
+"""Dashboard JS for the Today tab — re-runnable engage surface.
 
-The Today tab is the re-runnable engage surface — fetches
-``/api/automation/today``, renders:
+Fetches ``/api/automation/today``, renders:
 
 * A current-time banner with the work-hour bounds.
 * An active-contract / WIP banner (if any constraints).
@@ -211,7 +210,7 @@ function _todayBuildRecCard(item, rank) {
 
 def _today_styles() -> str:
     return r"""
-/* Slice 5b — Today tab */
+/* Today tab styles */
 
 .today-now-banner {
     padding: 8px 12px;

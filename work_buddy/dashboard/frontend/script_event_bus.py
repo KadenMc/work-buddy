@@ -279,6 +279,12 @@ def _event_bus_script() -> str:
 
     window.eventBus.on('llm.call_logged', () => _refreshSoon('costsSurface'));
 
+    // Jobs tab: refresh on dashboard-side create (immediate, repaints the
+    // pending banner) and on sidecar hot-reload (jobs appear in /api/state
+    // for the first time, banner auto-clears).
+    window.eventBus.on('user_job.created',  () => _refreshSoon('jobsSurface'));
+    window.eventBus.on('cron.hot_reload',   () => _refreshSoon('jobsSurface'));
+
     // Diagnostics handles for tests.
     window.eventBus._panelHandlers = () => ({
         'pool.entry_added':              'reviewSurface.appendCard',

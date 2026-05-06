@@ -158,6 +158,7 @@ work_buddy/                            # Python package
 
 .claude/commands/                      # Slash command launchers (wb-*.md)
 .data/                                 # Generated data (default; gitignored — `paths.data_root`)
-sidecar_jobs/                          # Scheduled job definitions
+  user_jobs/                           # User-authored scheduled jobs (gitignored)
+sidecar_jobs/                          # System scheduled jobs (git-tracked, ship with work-buddy)
 ```
 

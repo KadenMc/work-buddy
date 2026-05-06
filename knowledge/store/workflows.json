@@ -1634,7 +1634,7 @@
   "tasks/task-me": {
     "kind": "workflow",
     "name": "Task Me — what should I do right now?",
-    "description": "Slice 5b: re-runnable engage flow. Loads context (tasks + calendar + contracts + Slice-5a engage view), builds a clamp-to-now plan, presents top 1-2 recommendations, optionally writes back to the journal Day Planner.",
+    "description": "What should I do right now? Loads tasks, calendar, and active contracts; clamps the day plan to the current moment; surfaces 1–2 next-action recommendations; and optionally writes the resulting plan back to the journal Day Planner.",
     "workflow_name": "task-me",
     "execution": "main",
     "steps": [

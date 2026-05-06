@@ -220,6 +220,107 @@ def api_state():
     return jsonify(get_system_state())
 
 
+@app.get("/api/registry/list")
+def api_registry_list():
+    """Return registered capabilities and workflows for the Add-job picker.
+
+    Powers a ``<datalist>`` autocomplete so the user picks a real name
+    instead of typing one from memory. Each entry carries a short
+    description used as the dropdown's secondary text.
+    """
+    from work_buddy.mcp_server.registry import (
+        Capability, WorkflowDefinition, get_registry,
+    )
+
+    reg = get_registry()
+
+    def _project_schema(raw: dict[str, dict[str, Any]] | None) -> list[dict[str, Any]]:
+        """Flatten a {name: {type, description, required}} schema for the UI."""
+        out: list[dict[str, Any]] = []
+        for pname, pinfo in (raw or {}).items():
+            if not isinstance(pinfo, dict):
+                continue
+            out.append({
+                "name": pname,
+                "type": pinfo.get("type", ""),
+                "description": pinfo.get("description", ""),
+                "required": bool(pinfo.get("required", False)),
+            })
+        return out
+
+    capabilities = []
+    workflows = []
+    for name, entry in sorted(reg.items()):
+        desc = (getattr(entry, "description", "") or "").split("\n", 1)[0]
+        if isinstance(entry, WorkflowDefinition):
+            workflows.append({
+                "name": name,
+                "description": desc,
+                "parameters": _project_schema(entry.params_schema),
+            })
+        elif isinstance(entry, Capability):
+            capabilities.append({
+                "name": name,
+                "description": desc,
+                "parameters": _project_schema(entry.parameters),
+            })
+    return jsonify({"capabilities": capabilities, "workflows": workflows})
+
+
+@app.get("/api/cron/describe")
+def api_cron_describe():
+    """Return a human-readable description of a cron expression.
+
+    Used by the dashboard's Add-job form to give live feedback under the
+    schedule input. Returns ``{"valid": false}`` when the expression can't
+    be parsed so the form can stay quiet rather than showing junk.
+    """
+    expr = (request.args.get("expr") or "").strip()
+    if not expr:
+        return jsonify({"valid": False, "description": ""})
+    from work_buddy.dashboard.api import _describe_cron
+
+    desc = _describe_cron(expr)
+    # _describe_cron returns the raw expression on parse failure; treat
+    # that as "couldn't humanize" so the UI suppresses the preview line.
+    return jsonify({"valid": desc != expr, "description": desc})
+
+
+@app.post("/api/user_jobs")
+def api_user_job_create():
+    """Create a user-authored scheduled job from the dashboard form.
+
+    Thin wrapper around the user_job_create capability so the form does
+    not need to know capability internals. Read-only mode blocks writes.
+    """
+    blocked = _reject_read_only()
+    if blocked is not None:
+        return blocked
+
+    payload = request.get_json(silent=True) or {}
+    from work_buddy.mcp_server.registry import get_registry
+
+    reg = get_registry()
+    cap = reg.get("user_job_create")
+    if cap is None:
+        return jsonify({"success": False, "error": "user_job_create capability not registered."}), 500
+    try:
+        result = cap.callable(**payload)
+    except TypeError as exc:
+        return jsonify({"success": False, "error": f"Invalid arguments: {exc}"}), 400
+    status = 200 if result.get("success") else 400
+    if result.get("success"):
+        # Tell the dashboard event bus immediately so the Jobs tab can show
+        # the pending banner without waiting for the sidecar's hot-reload
+        # to publish cron.hot_reload (~30s later).
+        from work_buddy.dashboard.events import publish_auto
+        publish_auto("user_job.created", {
+            "name": result.get("name"),
+            "file_path": result.get("file_path"),
+        })
+    return jsonify(result), status
+
+
 @app.get("/api/diagnose/<component_id>")
 def api_diagnose(component_id: str):
     """Run diagnostic checks on a component and return root cause + fix."""
@@ -1615,17 +1716,16 @@ def _build_engage_view_payload(*, current_contexts: list[str] | None = None) -> 
 
 
 def _build_today_payload(*, current_contexts: list[str] | None = None) -> dict:
-    """Slice 5b Today tab payload.
+    """Build the Today tab payload — read-only, no mutations.
 
     Composes:
-    - The Slice-5a engage view (filtered by ``current_contexts``).
+    - The engage view (filtered by ``current_contexts``).
     - The clamp-to-now plan from ``work_buddy.task_me.build_now_plan``.
     - The top 1-2 recommendations heuristic from ``task_me.top_recommendations``.
     - A current-time indicator + work-hour bounds from config.
 
-    No mutations.  This is the read-only side of the Today surface;
-    write-back happens via the ``/wb-task-me`` slash command's optional
-    consent-gated reasoning step.
+    Write-back happens via the ``/wb-task-me`` slash command's optional
+    consent-gated reasoning step, never from this read path.
     """
     from work_buddy.task_me import (
         build_now_plan,
@@ -1673,7 +1773,7 @@ def _build_today_payload(*, current_contexts: list[str] | None = None) -> dict:
 
 @app.get("/api/automation/today")
 def api_automation_today():
-    """Slice 5b Today tab payload.
+    """Today tab payload — re-runnable view backed by the task-me orchestration.
 
     Query params:
         contexts: comma-separated tokens (forwarded to engage filter).

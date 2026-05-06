@@ -421,6 +421,10 @@ class WorkflowUnit(PromptUnit):
     steps: list[dict[str, Any]] = field(default_factory=list)  # DAG nodes
     step_instructions: dict[str, str] = field(default_factory=dict)  # {step_id: text}
     command: str | None = None         # slash command: "wb-task-triage"
+    # Optional caller-provided initial params schema; mirrors
+    # ``Capability.parameters`` shape ``{name: {type, description, required}}``.
+    # Workflows that omit this field reject any non-empty params at start.
+    params_schema: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def _kind_fields(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -435,6 +439,8 @@ class WorkflowUnit(PromptUnit):
             d["step_instructions"] = self.step_instructions
         if self.command:
             d["command"] = self.command
+        if self.params_schema:
+            d["params_schema"] = self.params_schema
         return d
 
     _kind_dict = _kind_fields
@@ -543,6 +549,7 @@ def unit_from_dict(path: str, data: dict[str, Any]) -> KnowledgeUnit:
         base_kwargs["steps"] = data.get("steps", [])
         base_kwargs["step_instructions"] = data.get("step_instructions", {})
         base_kwargs["command"] = data.get("command")
+        base_kwargs["params_schema"] = data.get("params_schema", {})
     elif cls is VaultUnit:
         base_kwargs["category"] = data.get("category", "")
         base_kwargs["severity"] = data.get("severity", "")

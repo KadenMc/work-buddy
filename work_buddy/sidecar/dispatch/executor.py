@@ -63,7 +63,7 @@ def execute_job(job: Job) -> dict[str, Any]:
     if job.job_type == "capability":
         return _execute_capability(job.capability, job.params)
     elif job.job_type == "workflow":
-        return _execute_workflow(job.workflow)
+        return _execute_workflow(job.workflow, job.params)
     elif job.job_type == "prompt":
         return _execute_prompt(job.name, job.prompt, spawn_mode_str=job.spawn_mode)
     else:
@@ -109,7 +109,7 @@ def _execute_capability(name: str, params: dict[str, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def _execute_workflow(name: str) -> dict[str, Any]:
+def _execute_workflow(name: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
     """Execute a registered workflow by name.
 
     Auto-advances ``step_type="code"`` steps by calling the matching
@@ -117,6 +117,10 @@ def _execute_workflow(name: str) -> dict[str, Any]:
     are executed via ``_spawn_agent()`` (consent-gated).
 
     Steps that are neither code nor reasoning are skipped with a note.
+
+    ``params`` are forwarded to ``start_workflow``; the conductor
+    validates them against the workflow's declared ``params_schema`` and
+    exposes them to ``auto_run`` steps via the ``__params__`` source key.
     """
     if not name:
         return {"status": "error", "error": "No workflow name specified."}
@@ -138,7 +142,7 @@ def _execute_workflow(name: str) -> dict[str, Any]:
             return {"status": "error", "error": f"Workflow '{name}' has no steps defined."}
 
         # Start the workflow DAG
-        response = start_workflow(name)
+        response = start_workflow(name, params=params or None)
         if "error" in response:
             return {"status": "error", "error": response["error"]}
 

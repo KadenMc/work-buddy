@@ -57,6 +57,8 @@ def _html() -> str:
         <button class="tab-btn" data-tab="tasks">Tasks</button>
         <button class="tab-btn" data-tab="review">Review</button>
         <button class="tab-btn" data-tab="status">Status</button>
+        <button class="tab-btn" data-tab="jobs"
+                title="Scheduled jobs — user jobs above, system jobs collapsed.">Jobs</button>
         <button class="tab-btn" data-tab="chats">Chats</button>
         <button class="tab-btn" data-tab="contracts">Contracts</button>
         <button class="tab-btn" data-tab="projects">Projects</button>
@@ -79,9 +81,6 @@ def _html() -> str:
     <div class="card-grid" id="overview-cards">
         <div class="loading">Loading system state...</div>
     </div>
-    <div class="section-title">Scheduled Jobs</div>
-    <div id="overview-jobs"><div class="loading">Loading...</div></div>
-
 </div>
 
 <!-- THREADS — Unified resolution surface. The panel is rendered
@@ -186,6 +185,95 @@ def _html() -> str:
     <div id="status-log"><div class="loading">Loading events...</div></div>
     <div class="section-title" style="margin-top: 24px;">Recent Notifications</div>
     <div id="status-notif-log"><div class="empty-state">No notifications yet</div></div>
+</div>
+
+<!-- JOBS — scheduled cron jobs split by source. User-authored jobs are
+     primary; system jobs (shipping with work-buddy) are tucked under a
+     <details> disclosure. The Add-job form posts to /api/user_jobs and
+     drops a .md file under <data_root>/user_jobs/; the scheduler hot-
+     reloads (~30s) and the table refreshes on submit. -->
+<div class="tab-panel" id="panel-jobs">
+    <div class="jobs-toolbar">
+        <div class="section-title" style="margin: 0;">Your Jobs</div>
+        <button id="jobs-add-btn" class="jobs-add-btn" type="button"
+                onclick="showAddJobForm()">+ Add job</button>
+    </div>
+
+    <div id="jobs-add-form" class="jobs-add-form" hidden>
+        <div class="jobs-form-grid">
+            <label>Name
+                <input id="job-form-name" type="text"
+                       placeholder="my-hourly-recap" maxlength="64"
+                       autocomplete="off" />
+                <small>Letters, digits, hyphens, underscores. Becomes the filename.</small>
+            </label>
+            <label>Schedule
+                <input id="job-form-schedule" type="text"
+                       placeholder="0 * * * *" autocomplete="off"
+                       oninput="onCronInput()" />
+                <small id="job-form-cron-preview" class="cron-preview-hint">
+                    5-field cron (MIN HOUR DOM MON DOW).
+                    Example: <code>*/15 * * * *</code> = every 15 min.
+                </small>
+            </label>
+            <label class="job-form-type-row">What does this job do?
+                <select id="job-form-type" onchange="onJobTypeChange()">
+                    <option value="prompt">Run a prompt — agent does a freeform task</option>
+                    <option value="invoke">Invoke a capability or workflow</option>
+                </select>
+            </label>
+        </div>
+
+        <div id="job-form-prompt-row" class="job-form-row">
+            <label>Prompt
+                <textarea id="job-form-prompt" rows="4"
+                          placeholder="What should the agent do when this fires?"></textarea>
+            </label>
+        </div>
+
+        <div id="job-form-invoke-row" class="job-form-row" hidden>
+            <label>Kind
+                <select id="job-form-invoke-kind" onchange="onInvokeKindChange()">
+                    <option value="capability">capability</option>
+                    <option value="workflow">workflow</option>
+                </select>
+            </label>
+            <label>
+                <span id="job-form-invoke-name-label">Capability name</span>
+                <input id="job-form-invoke-name" type="text" list="job-form-invoke-options"
+                       placeholder="task_briefing" autocomplete="off"
+                       oninput="onInvokeNameInput()" />
+                <datalist id="job-form-invoke-options"></datalist>
+                <small id="job-form-invoke-hint" class="cron-preview-hint"
+                       style="min-height: 14px;"></small>
+            </label>
+            <label id="job-form-params-wrap" class="job-form-params-wrap">
+                Params (JSON, optional)
+                <textarea id="job-form-params" rows="3"
+                          placeholder='{"same_day": true}'
+                          oninput="onParamsInput()"></textarea>
+                <small id="job-form-params-validity" class="cron-preview-hint">
+                    Empty, or a JSON object.
+                </small>
+                <div id="job-form-params-schema" class="job-form-params-schema" hidden></div>
+            </label>
+        </div>
+
+        <div id="job-form-error" class="job-form-error" hidden></div>
+        <div class="job-form-actions">
+            <button type="button" class="jobs-form-cancel"
+                    onclick="hideAddJobForm()">Cancel</button>
+            <button type="button" class="jobs-form-submit"
+                    onclick="submitAddJobForm()">Create job</button>
+        </div>
+    </div>
+
+    <div id="jobs-user"><div class="loading">Loading...</div></div>
+
+    <details class="jobs-system-details" data-wb-detail-key="jobs-system" style="margin-top: 24px;">
+        <summary>System Jobs</summary>
+        <div id="jobs-system"><div class="loading">Loading...</div></div>
+    </details>
 </div>
 
 <!-- CHATS -->
