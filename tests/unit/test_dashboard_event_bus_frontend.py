@@ -11,7 +11,7 @@ The dispatcher is JS embedded in a Python string. We test:
 from __future__ import annotations
 
 from work_buddy.dashboard.frontend import render_page
-from work_buddy.dashboard.frontend.script_event_bus import _event_bus_script
+from work_buddy.dashboard.frontend.scripts.core.event_bus import _event_bus_script
 
 
 def test_dispatcher_exposes_public_api():
@@ -115,7 +115,7 @@ def test_review_surface_handle_uses_morphdom():
     diffing — not container.innerHTML rewrites or hand-rolled
     attribute mutators that miss edge cases. Phoenix LiveView /
     Hotwire convention."""
-    from work_buddy.dashboard.frontend.script_triage import (
+    from work_buddy.dashboard.frontend.scripts.surfaces.triage import (
         _triage_review_script,
     )
     src = _triage_review_script()
@@ -127,7 +127,7 @@ def test_review_surface_handle_uses_morphdom():
 def test_review_surface_announces_via_aria_live():
     """removeCard / appendCard must write to a polite aria-live region
     so screen-reader users hear card transitions. WCAG 4.1.3 AA."""
-    from work_buddy.dashboard.frontend.script_triage import (
+    from work_buddy.dashboard.frontend.scripts.surfaces.triage import (
         _triage_review_script,
     )
     src = _triage_review_script()
@@ -141,7 +141,7 @@ def test_review_surface_has_pending_removals_set():
     before cross-process add events for the same card. removeCard
     must record the key in _pendingRemovals when no card is found,
     and appendCard must consult that set before mounting."""
-    from work_buddy.dashboard.frontend.script_triage import (
+    from work_buddy.dashboard.frontend.scripts.surfaces.triage import (
         _triage_review_script,
     )
     src = _triage_review_script()
@@ -156,7 +156,7 @@ def test_legacy_30s_timer_is_gone():
 
     See knowledge: 'Refresh-bug guardrail' in services/dashboard.
     """
-    from work_buddy.dashboard.frontend.script_main import _script
+    from work_buddy.dashboard.frontend.scripts.core.page import _script
     src = _script()
     # Only updateClock may use setInterval — no panel-refresh interval.
     interval_lines = [l for l in src.splitlines() if "setInterval(" in l]
@@ -180,7 +180,7 @@ def test_legacy_30s_timer_is_gone():
 
 
 def test_visibilitychange_listener_refreshes_active_tab():
-    from work_buddy.dashboard.frontend.script_main import _script
+    from work_buddy.dashboard.frontend.scripts.core.page import _script
     src = _script()
     assert "addEventListener('visibilitychange'" in src
     assert "document.visibilityState" in src

@@ -25,39 +25,39 @@ Adding a new tab:
 from __future__ import annotations
 
 from .html import _html
-from .script_automation import _automation_script, _automation_styles
-from .script_costs import _costs_script
-from .script_event_bus import _event_bus_script
-from .script_main import _script
-from .script_notifications import _notification_script
-from .script_palette import _command_palette_script
-from .script_resolution import (
+from .scripts.core.event_bus import _event_bus_script
+from .scripts.core.notifications import _notification_script
+from .scripts.core.page import _script
+from .scripts.core.palette import _command_palette_script
+from .scripts.core.workflows import _workflow_views_script
+from .scripts.surfaces.resolution import (
     _resolution_surface_script,
     _resolution_surface_styles,
 )
-from .script_resolution_surface import (
-    _resolution_surface_script,
-    _resolution_surface_styles,
+from .scripts.surfaces.resolution_decorator import (  # noqa: F401  -- intentionally NOT wired into render_page; preserves pre-existing dead-code behavior. See task t-105354de.
+    _resolution_surface_script as _resolution_decorator_script,
+    _resolution_surface_styles as _resolution_decorator_styles,
 )
-from .script_review import _review_script
-from .script_settings import _settings_script
-from .script_conversations import _conversation_chat_script
-from .script_threads import _threads_script, _threads_styles
-from .script_threads_card import (
-    _threads_card_script,
-    _threads_card_styles,
-)
-from .script_threads_actions import (
+from .scripts.surfaces.triage import _triage_clarify_script, _triage_review_script
+from .scripts.tabs.automation import _automation_script, _automation_styles
+from .scripts.tabs.conversations import _conversation_chat_script
+from .scripts.tabs.costs import _costs_script
+from .scripts.tabs.review import _review_script
+from .scripts.tabs.settings import _settings_script
+from .scripts.tabs.threads.actions import (
     _threads_actions_script,
     _threads_actions_styles,
 )
-from .script_threads_group import (
+from .scripts.tabs.threads.card import (
+    _threads_card_script,
+    _threads_card_styles,
+)
+from .scripts.tabs.threads.group import (
     _group_view_script,
     _group_view_styles,
 )
-from .script_today import _today_script, _today_styles
-from .script_triage import _triage_clarify_script, _triage_review_script
-from .script_workflows import _workflow_views_script
+from .scripts.tabs.threads.main import _threads_script, _threads_styles
+from .scripts.tabs.today import _today_script, _today_styles
 from .styles import _styles
 
 
