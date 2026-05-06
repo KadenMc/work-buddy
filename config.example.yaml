@@ -331,6 +331,11 @@ tools:
     enabled: true
   messaging:
     enabled: true
+  # Datacore plugin (vault structural query). Gates the MCP datacore_*
+  # capabilities (datacore_query, datacore_run_plan, vault_recon, etc.) —
+  # NOT the bundle-collection pipeline. The datacore_collector under
+  # work_buddy/collectors/ is a no-op until CONTEXT_QUERIES is populated;
+  # there is no separate "collection enabled" knob.
   datacore:
     enabled: true
   google_calendar:

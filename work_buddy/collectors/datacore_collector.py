@@ -48,12 +48,38 @@ CONTEXT_QUERIES: list[dict[str, Any]] = [
 ]
 
 
+def _load_accepted_queries() -> list[dict[str, Any]]:
+    """Read user-accepted Datacore queries persisted by the vault-recon
+    collector when the user clicked an `act` choice on an investigation
+    proposal. Merged with the built-in CONTEXT_QUERIES at collection time.
+
+    Returns ``[]`` on missing file or read error — accepted-queries are
+    additive; failure to load them just degrades to built-in queries.
+    """
+    try:
+        from work_buddy.collectors.vault_recon_collector import _accepted_queries_path
+        import json as _json
+        p = _accepted_queries_path()
+        if not p.exists():
+            return []
+        data = _json.loads(p.read_text(encoding="utf-8"))
+        return data if isinstance(data, list) else []
+    except Exception as e:
+        logger.warning("Failed to load accepted_queries: %s", e)
+        return []
+
+
 def collect(cfg: dict[str, Any]) -> str:
     """Collect structural vault context by running configured queries.
 
-    Returns empty string if CONTEXT_QUERIES is empty (no-op).
+    Merges built-in CONTEXT_QUERIES with user-accepted queries from
+    vault-recon (.data/vault_recon/accepted_queries.json — populated when
+    the user clicks an act choice on an investigation proposal). Returns
+    empty string if neither source has any queries (no-op).
     """
-    if not CONTEXT_QUERIES:
+    accepted = _load_accepted_queries()
+    queries = list(CONTEXT_QUERIES) + accepted
+    if not queries:
         return ""
 
     from work_buddy.obsidian import bridge
@@ -81,7 +107,7 @@ def collect(cfg: dict[str, Any]) -> str:
 
     from work_buddy.obsidian.datacore.env import query as dc_query
 
-    for q in CONTEXT_QUERIES:
+    for q in queries:
         name = q.get("name", "Unnamed Query")
         description = q.get("description", "")
         query_str = q.get("query", "")

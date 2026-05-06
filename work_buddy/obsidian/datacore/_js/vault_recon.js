@@ -19,7 +19,7 @@ return (async () => {
     const activityDays = parseInt('__ACTIVITY_DAYS__') || 30;
     const activityCutoffMs = Date.now() - activityDays * 86400000;
 
-    const FM_VALUE_TOP_N = 50;
+    const FM_VALUE_TOP_N = 20;
     const FM_VALUE_CARDINALITY_LIMIT = 100;
     const TAG_TREE_DEPTH = 3;
     const PATH_BY_TYPE_MIN_COUNT = 2;
@@ -48,6 +48,15 @@ return (async () => {
     }
 
     function serializeValue(v) {
+        if (v === null || v === undefined) return null;
+        // Datacore wraps inline-field / frontmatter values in {key, value, raw}.
+        // Unwrap to the scalar before serializing.
+        if (typeof v === 'object' && !Array.isArray(v)
+            && v !== null
+            && Object.prototype.hasOwnProperty.call(v, 'value')
+            && Object.prototype.hasOwnProperty.call(v, 'key')) {
+            v = v.value;
+        }
         if (v === null || v === undefined) return null;
         if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
             return String(v);
@@ -167,14 +176,19 @@ return (async () => {
                 result.high_cardinality_keys.push({key: k, distinct_count: distinctCount});
                 continue;
             }
+            // For keys under the cardinality cap, include ALL values.
+            // FM_VALUE_TOP_N would clip low-count-but-meaningful values
+            // (e.g. paper-lane types like 'hypothesis' with count 5) out
+            // of cross-tabs dominated by high-count categories. Since
+            // distinct_count is already capped at FM_VALUE_CARDINALITY_LIMIT,
+            // payload size is bounded.
             const values = Object.entries(valueMap)
                 .sort((a, b) => b[1] - a[1])
-                .slice(0, FM_VALUE_TOP_N)
                 .map(([value, count]) => ({value, count}));
             result.frontmatter_values[k] = {
                 values,
                 distinct_count: distinctCount,
-                truncated: distinctCount > FM_VALUE_TOP_N
+                truncated: false
             };
         }
         result.high_cardinality_keys.sort((a, b) => b.distinct_count - a.distinct_count);
@@ -209,6 +223,51 @@ return (async () => {
         result.task_statuses = statuses;
         result.tasks_total = tasks.length;
     } catch (_) {}
+
+    // List-item tag stream — the substrate for concept-stream pivots.
+    // List-items get inline tags as the user types journal entries
+    // ("…created the #mide/workflow/x component"). This is distinct from
+    // page-level tags and the task DB; it's the user's running thinking
+    // log made queryable. We aggregate at depth-2 / depth-3 (matching
+    // the page tag_tree caps) and skip #todo/* (those are tasks, in
+    // task_metadata.db's authoritative store).
+    try {
+        const listItems = api.query('@list-item');
+        const liTagCounts = {};
+        const liTagTree = { _count: 0, children: {} };
+        let taggedItems = 0;
+
+        for (const li of listItems) {
+            const tags = li.$tags || [];
+            if (tags.length === 0) continue;
+            if (pathPrefix && (!li.$file || !String(li.$file).startsWith(pathPrefix))) continue;
+            // Skip list-items that are tasks (#todo or #todo/*) — those
+            // belong to the task store, not the concept stream.
+            if (tags.some(t => t === '#todo' || (typeof t === 'string' && t.startsWith('#todo/')))) continue;
+            taggedItems++;
+            for (const t of tags) {
+                if (typeof t !== 'string') continue;
+                const top = t.split('/').slice(0, 2).join('/');
+                liTagCounts[top] = (liTagCounts[top] || 0) + 1;
+                const segments = t.replace(/^#/, '').split('/').slice(0, TAG_TREE_DEPTH);
+                let node = liTagTree;
+                for (const seg of segments) {
+                    node.children[seg] = node.children[seg] || { _count: 0, children: {} };
+                    node = node.children[seg];
+                    node._count += 1;
+                }
+            }
+        }
+
+        result.list_item_top_tags = Object.entries(liTagCounts)
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, TOP_TAGS_LIMIT)
+            .map(([tag, count]) => ({tag, count}));
+        result.list_item_tag_tree = liTagTree.children;
+        result.list_item_tagged_total = taggedItems;
+    } catch (e) {
+        result.list_item_walk_error = e.message;
+    }
 
     return result;
 })()
