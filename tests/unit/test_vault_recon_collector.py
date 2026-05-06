@@ -359,7 +359,8 @@ def test_vault_recon_collect_dedupes_recent_escalations(tmp_path, monkeypatch):
 
     snapshot = _mk_snapshot(type_values={"hypothesis": 5})
 
-    with patch("work_buddy.obsidian.datacore.env.vault_recon", return_value=snapshot):
+    with patch("work_buddy.obsidian.datacore.env.vault_recon", return_value=snapshot), \
+         patch.object(vrc, "_agent_spawn_consent_granted", return_value=True):
         result = vrc.vault_recon_collect()
 
     assert result["rules_fired"] == 1
@@ -368,7 +369,11 @@ def test_vault_recon_collect_dedupes_recent_escalations(tmp_path, monkeypatch):
 
 
 def test_vault_recon_collect_spawns_investigation_job(tmp_path, monkeypatch):
-    """A novel rule firing produces a one-shot type:prompt job in user_jobs."""
+    """A novel rule firing produces a one-shot type:prompt job in user_jobs.
+
+    Consent for sidecar:agent_spawn is mocked as granted; the consent-missing
+    path is exercised in test_vault_recon_collect_surfaces_consent_when_missing.
+    """
     ledger_dir = tmp_path / "vault_recon"
     user_jobs_dir = tmp_path / "user_jobs"
     monkeypatch.setattr(vrc, "_ledger_dir", lambda: ledger_dir)
@@ -378,7 +383,8 @@ def test_vault_recon_collect_spawns_investigation_job(tmp_path, monkeypatch):
 
     snapshot = _mk_snapshot(type_values={"hypothesis": 5})
 
-    with patch("work_buddy.obsidian.datacore.env.vault_recon", return_value=snapshot):
+    with patch("work_buddy.obsidian.datacore.env.vault_recon", return_value=snapshot), \
+         patch.object(vrc, "_agent_spawn_consent_granted", return_value=True):
         result = vrc.vault_recon_collect()
 
     assert result["rules_fired"] == 1
@@ -391,3 +397,71 @@ def test_vault_recon_collect_spawns_investigation_job(tmp_path, monkeypatch):
     assert "spawn_mode: headless_ephemeral" in job_text
     assert "recurring: false" in job_text
     assert "type:hypothesis" in job_text  # focus is in the prompt body
+    # YAML frontmatter must have an opening AND closing --- delimiter,
+    # else the scheduler silently drops the file on hot-reload.
+    assert job_text.startswith("---\n")
+    assert job_text.rstrip().endswith("---")
+
+
+def test_vault_recon_collect_surfaces_consent_when_missing(tmp_path, monkeypatch):
+    """When sidecar:agent_spawn isn't granted, the collector surfaces a
+    consent_request with delta context rather than silently writing a job
+    that the executor would refuse."""
+    ledger_dir = tmp_path / "vault_recon"
+    user_jobs_dir = tmp_path / "user_jobs"
+    monkeypatch.setattr(vrc, "_ledger_dir", lambda: ledger_dir)
+    monkeypatch.setattr(vrc, "_user_jobs_dir", lambda: user_jobs_dir)
+
+    _seed_ledger_with_history(ledger_dir, type_values={"hypothesis": 5})
+
+    snapshot = _mk_snapshot(type_values={"hypothesis": 5})
+    fake_request = {"request_id": "req_test_abc"}
+
+    with patch("work_buddy.obsidian.datacore.env.vault_recon", return_value=snapshot), \
+         patch.object(vrc, "_agent_spawn_consent_granted", return_value=False), \
+         patch("work_buddy.consent.create_consent_request", return_value=fake_request) as mock_cr:
+        result = vrc.vault_recon_collect()
+
+    assert result["rules_fired"] == 1
+    assert result["escalations_spawned"] == 0
+    assert result["consent_requested"] == 1
+    assert not list(user_jobs_dir.glob("*.md"))  # NO job written when consent missing
+
+    # Verify consent_request was called with rich delta context
+    mock_cr.assert_called_once()
+    call_kwargs = mock_cr.call_args.kwargs
+    assert call_kwargs["operation"] == "sidecar:agent_spawn"
+    assert "type:hypothesis" in call_kwargs["reason"]
+    assert call_kwargs["context"]["rule"] == "new_type"
+    assert call_kwargs["context"]["focus"] == "type:hypothesis"
+
+    # consent_request_history.jsonl records the firing for dedup
+    history_path = ledger_dir / "consent_request_history.jsonl"
+    assert history_path.exists()
+    history_entry = json.loads(history_path.read_text().strip())
+    assert history_entry["rule"] == "new_type"
+    assert history_entry["request_id"] == "req_test_abc"
+
+
+def test_vault_recon_collect_dedupes_consent_requests(tmp_path, monkeypatch):
+    """Two collector runs on the same delta with consent missing should only
+    surface one consent_request — the user shouldn't be spammed."""
+    ledger_dir = tmp_path / "vault_recon"
+    user_jobs_dir = tmp_path / "user_jobs"
+    monkeypatch.setattr(vrc, "_ledger_dir", lambda: ledger_dir)
+    monkeypatch.setattr(vrc, "_user_jobs_dir", lambda: user_jobs_dir)
+
+    _seed_ledger_with_history(ledger_dir, type_values={"hypothesis": 5})
+
+    snapshot = _mk_snapshot(type_values={"hypothesis": 5})
+    fake_request = {"request_id": "req_test_abc"}
+
+    with patch("work_buddy.obsidian.datacore.env.vault_recon", return_value=snapshot), \
+         patch.object(vrc, "_agent_spawn_consent_granted", return_value=False), \
+         patch("work_buddy.consent.create_consent_request", return_value=fake_request) as mock_cr:
+        vrc.vault_recon_collect()
+        result_2 = vrc.vault_recon_collect()
+
+    # First run surfaced a consent request; second run should be silent.
+    assert mock_cr.call_count == 1
+    assert result_2["consent_requested"] == 0

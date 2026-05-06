@@ -176,14 +176,19 @@ return (async () => {
                 result.high_cardinality_keys.push({key: k, distinct_count: distinctCount});
                 continue;
             }
+            // For keys under the cardinality cap, include ALL values.
+            // FM_VALUE_TOP_N would clip low-count-but-meaningful values
+            // (e.g. paper-lane types like 'hypothesis' with count 5) out
+            // of cross-tabs dominated by high-count categories. Since
+            // distinct_count is already capped at FM_VALUE_CARDINALITY_LIMIT,
+            // payload size is bounded.
             const values = Object.entries(valueMap)
                 .sort((a, b) => b[1] - a[1])
-                .slice(0, FM_VALUE_TOP_N)
                 .map(([value, count]) => ({value, count}));
             result.frontmatter_values[k] = {
                 values,
                 distinct_count: distinctCount,
-                truncated: distinctCount > FM_VALUE_TOP_N
+                truncated: false
             };
         }
         result.high_cardinality_keys.sort((a, b) => b.distinct_count - a.distinct_count);

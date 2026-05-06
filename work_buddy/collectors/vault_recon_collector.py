@@ -480,8 +480,160 @@ def _spawn_investigation_job(rule: dict, latest_path: str) -> str:
         "enabled: true\n"
         "prompt: |\n"
     )
-    job_path.write_text(frontmatter + indented + "\n", encoding="utf-8")
+    # Closing --- terminates the YAML frontmatter; without it the parser
+    # rejects the file and the scheduler silently drops it on hot-reload.
+    job_path.write_text(frontmatter + indented + "\n---\n", encoding="utf-8")
     return str(job_path)
+
+
+# ── Consent surfacing (TEMPORARY — see task t-3f15e2b3) ─────────
+#
+# Without this, a delta firing → job written to .data/user_jobs/ →
+# scheduler hot-reloads → executor sees no `sidecar:agent_spawn` consent →
+# returns consent_required → job rots silently. The user sees nothing.
+#
+# Stop-gap: before writing the job, check consent. If missing, surface a
+# rich consent_request that includes the delta context. The user gets a
+# real modal asking "spawn investigation for this delta?" with the usual
+# allow-once / always / N-min / deny options.
+#
+# Proper fix is the autonomy budget/rate/anomaly system in t-3f15e2b3.
+
+
+def _agent_spawn_consent_granted() -> bool:
+    """Check whether sidecar:agent_spawn is currently granted."""
+    try:
+        from work_buddy.consent import ConsentCache
+        return ConsentCache().is_granted("sidecar:agent_spawn")
+    except Exception as e:
+        logger.warning("agent_spawn consent check failed: %s — denying", e)
+        return False
+
+
+def _consent_request_history_path() -> Path:
+    return _ledger_dir() / "consent_request_history.jsonl"
+
+
+def _is_recent_consent_request(rule_name: str, focus_key: str) -> bool:
+    """Has a consent request been surfaced for this (rule, focus) within the
+    suppression window? Prevents asking the user the same question every
+    collector run while a previous request is still pending."""
+    p = _consent_request_history_path()
+    if not p.exists():
+        return False
+    cutoff = datetime.now(timezone.utc).timestamp() - _ESCALATION_SUPPRESS_DAYS * 86400
+    try:
+        with p.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if entry.get("rule") != rule_name or entry.get("focus") != focus_key:
+                    continue
+                ts = entry.get("ts")
+                if not ts:
+                    continue
+                try:
+                    t = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                    if t.timestamp() >= cutoff:
+                        return True
+                except ValueError:
+                    continue
+    except OSError as e:
+        logger.warning("Failed to read consent_request_history: %s", e)
+    return False
+
+
+def _record_consent_request(rule_name: str, focus_key: str, request_id: str) -> None:
+    p = _consent_request_history_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    entry = {
+        "rule": rule_name,
+        "focus": focus_key,
+        "request_id": request_id,
+        "ts": datetime.now(timezone.utc).isoformat(),
+    }
+    with p.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+def _surface_consent_request_for_investigation(rule: dict) -> str:
+    """Surface a consent_request to the user with the delta context.
+
+    Two-step:
+      1. ``create_consent_request`` persists the request in the notification store.
+      2. ``SurfaceDispatcher.deliver`` pushes it to all available surfaces
+         (dashboard / telegram / obsidian).
+
+    Without step 2 the request sits invisible in the store; the user never
+    sees a modal. ``create_consent_request`` alone is not enough.
+
+    Returns the request_id, or empty string on failure.
+    """
+    try:
+        from work_buddy.consent import create_consent_request
+        result = create_consent_request(
+            operation="sidecar:agent_spawn",
+            reason=(
+                f"vault-recon detected: {rule['rule']} on {rule['focus']}. "
+                f"Spawn an investigation agent to characterize the change "
+                f"and propose action via request_send? Granting 'always' "
+                f"will let future investigations spawn silently."
+            ),
+            risk="low",
+            default_ttl=60,
+            requester="sidecar:vault_recon_collector",
+            context={
+                "rule": rule["rule"],
+                "focus": rule["focus"],
+                "evidence": rule.get("evidence", {}),
+            },
+        )
+        request_id = result.get("request_id", "")
+        if not request_id:
+            return ""
+
+        # Step 2: deliver to surfaces (dashboard / telegram / obsidian).
+        try:
+            from work_buddy.notifications.dispatcher import SurfaceDispatcher
+            from work_buddy.notifications.store import (
+                get_notification, mark_delivered,
+            )
+            notif = get_notification(request_id)
+            if notif is None:
+                logger.warning(
+                    "Consent request created but notification %s not found for delivery",
+                    request_id,
+                )
+            else:
+                dispatcher = SurfaceDispatcher.from_config()
+                results = dispatcher.deliver(notif, mark_delivered_fn=mark_delivered)
+                delivered = [s for s, ok in results.items() if ok]
+                logger.info(
+                    "Consent request %s delivered to surfaces: %s",
+                    request_id, delivered or "<none>",
+                )
+        except Exception as e:
+            logger.error(
+                "Consent request %s persisted but surface delivery failed: %s",
+                request_id, e,
+            )
+
+        logger.info(
+            "Surfaced consent request for vault-recon spawn: "
+            "rule=%s focus=%s request_id=%s",
+            rule["rule"], rule["focus"], request_id,
+        )
+        return request_id
+    except Exception as e:
+        logger.error(
+            "Failed to surface consent request for vault-recon spawn: %s", e
+        )
+        return ""
 
 
 # ── Main entry point ────────────────────────────────────────────
@@ -493,14 +645,22 @@ def vault_recon_collect(
 ) -> dict:
     """Take a snapshot, append to ledger, compute deltas, escalate significant changes.
 
+    On rule firing, the collector either:
+    - Writes a one-shot type:prompt investigation job (if sidecar:agent_spawn
+      consent is granted) — scheduler hot-reloads and fires it.
+    - Surfaces a consent_request with delta context (if consent is missing) —
+      user can grant via modal, then the next run proceeds. This is a
+      temporary path until the autonomy budget system (t-3f15e2b3) lands.
+
     Args:
         window_days: Retention window in days (default 60).
         skip_escalation: If True, evaluate rules but don't spawn investigation
-            jobs. Useful for dry runs / testing.
+            jobs OR surface consent requests. Useful for dry runs / testing.
 
     Returns:
         Summary dict with snapshot_ts, ledger_size, pages_walked, rules_fired,
-        escalations_spawned, fires_detail, spawns_detail.
+        escalations_spawned, consent_requested, fires_detail, spawns_detail,
+        consent_requests_detail.
     """
     from work_buddy.obsidian.datacore.env import vault_recon
 
@@ -530,12 +690,30 @@ def vault_recon_collect(
             logger.error("rule %s raised: %s", rule_fn.__name__, e)
 
     escalation_history = _read_escalation_history()
+    consent_granted = _agent_spawn_consent_granted()
     spawns = []
+    consent_requests = []
     for rule in fires:
         if _is_recent_escalation(rule["rule"], rule["focus"], escalation_history):
             continue
         if skip_escalation:
             continue
+
+        if not consent_granted:
+            # TEMPORARY consent-surfacing path — see t-3f15e2b3 for the proper
+            # autonomy budget / rate / anomaly system.
+            if _is_recent_consent_request(rule["rule"], rule["focus"]):
+                continue
+            request_id = _surface_consent_request_for_investigation(rule)
+            if request_id:
+                _record_consent_request(rule["rule"], rule["focus"], request_id)
+                consent_requests.append({
+                    "rule": rule["rule"],
+                    "focus": rule["focus"],
+                    "request_id": request_id,
+                })
+            continue
+
         try:
             job_path = _spawn_investigation_job(rule, str(_latest_path()))
             entry = {
@@ -555,6 +733,8 @@ def vault_recon_collect(
         "pages_walked": snapshot.get("pages_walked"),
         "rules_fired": len(fires),
         "escalations_spawned": len(spawns),
+        "consent_requested": len(consent_requests),
         "fires_detail": [{"rule": f["rule"], "focus": f["focus"]} for f in fires],
         "spawns_detail": spawns,
+        "consent_requests_detail": consent_requests,
     }
