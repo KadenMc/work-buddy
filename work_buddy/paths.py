@@ -58,6 +58,10 @@ RESOURCES: dict[str, str] = {
     # Chrome integration — rolling data
     "chrome/ledger":             "chrome/tab_ledger.json",
 
+    # Vault recon — periodic reconnaissance ledger
+    "vault_recon":               "vault_recon",
+    "user_jobs":                 "user_jobs",
+
     # Databases — persistent stores
     "db/messages":               "db/messages.db",
     "db/tasks":                  "db/task_metadata.db",

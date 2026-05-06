@@ -190,7 +190,13 @@ def _is_recent_escalation(rule_name: str, focus_key: str, history: list[dict]) -
 
 
 def _find_snapshot_n_days_ago(history: list[dict], days: int) -> dict | None:
-    """Find the snapshot at-or-before N days before now. Falls back to oldest available."""
+    """Find the snapshot at-or-before N days before now.
+
+    Returns None if no snapshot is old enough — rules that need temporal
+    distance (stuck_state, new_tag_family) must skip rather than fall back
+    to a recent snapshot, which would produce spurious fires when the ledger
+    is young.
+    """
     if not history:
         return None
     cutoff = datetime.now(timezone.utc).timestamp() - days * 86400
@@ -204,7 +210,7 @@ def _find_snapshot_n_days_ago(history: list[dict], days: int) -> dict | None:
             continue
         if t.timestamp() <= cutoff:
             return snap
-    return history[0] if history else None
+    return None
 
 
 def _flatten_tag_tree_d2(tree: dict) -> dict[str, int]:
@@ -224,8 +230,15 @@ def _flatten_tag_tree_d2(tree: dict) -> dict[str, int]:
 
 
 def rule_new_type(current: dict, history: list[dict]) -> list[dict]:
-    """A frontmatter ``type`` value seen <2 times in last 14 snapshots, now >=5 instances."""
+    """A frontmatter ``type`` value seen <2 times in last 14 snapshots, now >=5 instances.
+
+    Requires at least 3 prior snapshots before firing — otherwise the bootstrap
+    snapshot would mark every existing type as "new" and escalate dozens of
+    spurious investigations.
+    """
     fires = []
+    if len(history) < 3:
+        return fires
     fm_values = (current.get("frontmatter_values") or {}).get("type")
     if not fm_values:
         return fires

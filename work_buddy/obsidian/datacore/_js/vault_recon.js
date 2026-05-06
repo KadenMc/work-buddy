@@ -49,6 +49,15 @@ return (async () => {
 
     function serializeValue(v) {
         if (v === null || v === undefined) return null;
+        // Datacore wraps inline-field / frontmatter values in {key, value, raw}.
+        // Unwrap to the scalar before serializing.
+        if (typeof v === 'object' && !Array.isArray(v)
+            && v !== null
+            && Object.prototype.hasOwnProperty.call(v, 'value')
+            && Object.prototype.hasOwnProperty.call(v, 'key')) {
+            v = v.value;
+        }
+        if (v === null || v === undefined) return null;
         if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
             return String(v);
         }

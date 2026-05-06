@@ -82,9 +82,18 @@ def test_flatten_tag_tree_d2_empty():
 # ── rule_new_type ────────────────────────────────────────────────
 
 
+def _empty_prior_snapshots(n: int) -> list[dict]:
+    """N prior snapshots with no `type` frontmatter — used to clear the
+    bootstrap gate without supplying spurious 'precedent' for type values."""
+    return [
+        _mk_snapshot(days_ago=n - i, type_values={})
+        for i in range(n)
+    ]
+
+
 def test_new_type_fires_on_unprecedented_type():
     current = _mk_snapshot(type_values={"hypothesis": 5})
-    fires = vrc.rule_new_type(current, [])
+    fires = vrc.rule_new_type(current, _empty_prior_snapshots(3))
     assert len(fires) == 1
     assert fires[0]["rule"] == "new_type"
     assert fires[0]["focus"] == "type:hypothesis"
@@ -94,15 +103,25 @@ def test_new_type_fires_on_unprecedented_type():
 
 def test_new_type_does_not_fire_when_precedent_exists():
     current = _mk_snapshot(type_values={"hypothesis": 5})
-    prior = [_mk_snapshot(days_ago=1, type_values={"hypothesis": 4})]
+    prior = _empty_prior_snapshots(2) + [
+        _mk_snapshot(days_ago=1, type_values={"hypothesis": 4}),
+    ]
     fires = vrc.rule_new_type(current, prior)
     assert fires == []
 
 
 def test_new_type_does_not_fire_below_threshold():
     current = _mk_snapshot(type_values={"draft": 4})  # < min 5
-    fires = vrc.rule_new_type(current, [])
+    fires = vrc.rule_new_type(current, _empty_prior_snapshots(3))
     assert fires == []
+
+
+def test_new_type_does_not_fire_on_bootstrap():
+    """Without enough prior history, every existing type would otherwise
+    look 'new' — the rule must suppress."""
+    current = _mk_snapshot(type_values={"hypothesis": 5, "experiment": 3})
+    assert vrc.rule_new_type(current, []) == []
+    assert vrc.rule_new_type(current, _empty_prior_snapshots(2)) == []
 
 
 # ── rule_new_tag_family ──────────────────────────────────────────
@@ -312,6 +331,14 @@ def test_vault_recon_collect_writes_ledger_on_success(tmp_path, monkeypatch):
     assert snapshots[0]["snapshot_ts"] == snapshot["snapshot_ts"]
 
 
+def _seed_ledger_with_history(ledger_dir: Path, type_values: dict, n_snapshots: int = 3):
+    """Seed snapshots.json with N empty-of-this-type snapshots so the bootstrap
+    gate clears without contaminating historical_max for the type under test."""
+    ledger_dir.mkdir(parents=True, exist_ok=True)
+    snaps = [_mk_snapshot(days_ago=n_snapshots - i, type_values={}) for i in range(n_snapshots)]
+    (ledger_dir / "snapshots.json").write_text(json.dumps(snaps))
+
+
 def test_vault_recon_collect_dedupes_recent_escalations(tmp_path, monkeypatch):
     """An escalation already recorded within the suppression window doesn't fire again."""
     ledger_dir = tmp_path / "vault_recon"
@@ -319,8 +346,8 @@ def test_vault_recon_collect_dedupes_recent_escalations(tmp_path, monkeypatch):
     monkeypatch.setattr(vrc, "_ledger_dir", lambda: ledger_dir)
     monkeypatch.setattr(vrc, "_user_jobs_dir", lambda: user_jobs_dir)
 
-    ledger_dir.mkdir(parents=True, exist_ok=True)
-    # Pre-seed escalation history with a recent firing
+    _seed_ledger_with_history(ledger_dir, type_values={"hypothesis": 5})
+    # Pre-seed escalation history with a recent firing for the same focus
     (ledger_dir / "escalation_history.jsonl").write_text(
         json.dumps({
             "rule": "new_type",
@@ -346,6 +373,8 @@ def test_vault_recon_collect_spawns_investigation_job(tmp_path, monkeypatch):
     user_jobs_dir = tmp_path / "user_jobs"
     monkeypatch.setattr(vrc, "_ledger_dir", lambda: ledger_dir)
     monkeypatch.setattr(vrc, "_user_jobs_dir", lambda: user_jobs_dir)
+
+    _seed_ledger_with_history(ledger_dir, type_values={"hypothesis": 5})
 
     snapshot = _mk_snapshot(type_values={"hypothesis": 5})
 
