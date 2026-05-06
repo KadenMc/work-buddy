@@ -19,7 +19,7 @@ def script() -> str:
 // auto-clear once the name appears in the loaded jobs list.
 const _jobsPendingCreate = new Map();  // name -> {createdAt: ms, deadline: ms}
 
-// Surface handle for the Jobs tab. SSE handlers in script_event_bus.py
+// Surface handle for the Jobs tab. SSE handlers in core/event_bus.py
 // call refresh() on user_job.created (immediate) and cron.hot_reload
 // (when the sidecar's scheduler picks the file up, ~30s later) so the
 // table updates without polling.

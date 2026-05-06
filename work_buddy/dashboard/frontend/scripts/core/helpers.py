@@ -4,7 +4,7 @@ Tab-agnostic primitives: HTTP fetch, status badges, health-tree
 rendering, time formatters. Concatenated BEFORE every tab module so
 the helpers exist in scope when tab loaders run.
 
-Originally lived inside ``script_main.py``'s ``// ---- Helpers ----``
+Originally lived inside ``core/page.py``'s ``// ---- Helpers ----``
 section (~458 lines).
 """
 

@@ -5,7 +5,7 @@ hierarchy of domains → subsystems/components → requirements + affected
 capabilities. Phase E is read-only; Phase F will wire preference
 toggles into a ``POST /api/control/preference`` endpoint.
 
-The renderer reuses ``statusBadge()`` from ``script_main.py`` but
+The renderer reuses ``statusBadge()`` from ``core/page.py`` but
 extends the mapping for ``unconfigured`` and preference labels.
 """
 
@@ -167,7 +167,7 @@ function _isVisible(node) {
     return WB_MATCHED_SET.has(node.id);
 }
 
-// ---- Badge helper: extend script_main's statusBadge for control-graph states ----
+// ---- Badge helper: extend core/page's statusBadge for control-graph states ----
 //
 // Non-ok badges are clickable: clicking walks the graph downward from
 // the owning node, expands all ancestors, scrolls to the first bad
@@ -1124,7 +1124,7 @@ function renderSettingsTree() {
 }
 
 // Surface handle for the Settings tab. SSE handlers in
-// script_event_bus.py call refresh() on component.health_changed and
+// core/event_bus.py call refresh() on component.health_changed and
 // component.preference_changed — refetches /api/control/graph and
 // morphdom-merges into the tree. <details> open state is preserved
 // natively by morphdom; no panel-wide rewrite ever occurs.

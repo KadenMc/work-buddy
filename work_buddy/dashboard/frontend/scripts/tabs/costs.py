@@ -87,7 +87,7 @@ function _costsParseTs(s) {
 }
 
 // Human-readable timestamp formatter — adopted from the Chats tab's
-// ``formatTimestamp`` (script_main.py) so the two views agree on
+// ``formatTimestamp`` (core/page.py) so the two views agree on
 // "Today HH:MM / Yesterday HH:MM / Mon DD HH:MM" output.
 function costsFmtDate(s) {
     if (!s) return '\u2014';
@@ -1461,7 +1461,7 @@ function costsRenderSessionsTable(shape, data) {
 }
 
 // Surface handle for the Costs tab. SSE handlers in
-// script_event_bus.py call refresh() on llm.call_logged. Uses the
+// core/event_bus.py call refresh() on llm.call_logged. Uses the
 // existing data-only ``refreshCostsData`` path which preserves chip
 // rail / model filter / project selection by design — internally now
 // morphdom-merges via window._wbMorphReplace where it touches user

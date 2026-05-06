@@ -115,7 +115,7 @@ const _viewMeta = {};
 async function dismissAndRemoveTab(viewId) {
     // Only POST the dismiss if the workflow view was actually
     // registered. Without this guard, every call (e.g. from
-    // script_threads.py's _autoDismissResolutionToasts) hits
+    // tabs/threads/main.py's _autoDismissResolutionToasts) hits
     // /api/workflow-views/<id>/dismiss which 404s for thread state
     // changes that — since PR #75's _surfaces_for change — never
     // create a workflow view in the first place. Pure frontend-side

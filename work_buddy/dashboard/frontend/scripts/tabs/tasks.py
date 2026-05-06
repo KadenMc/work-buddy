@@ -156,7 +156,7 @@ async function loadTasks() {
     }
 }
 
-// Surface handle for the Tasks tab. SSE handlers in script_event_bus.py
+// Surface handle for the Tasks tab. SSE handlers in core/event_bus.py
 // call refresh() on task.created / task.state_changed /
 // task.description_changed — re-runs _refreshTaskView which fetches
 // /api/tasks and morphdom-merges the table. The user's typing in

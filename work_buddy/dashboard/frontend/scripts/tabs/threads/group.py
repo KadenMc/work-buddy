@@ -852,7 +852,7 @@ def script() -> str:
             // sub-thread shows the pre-move ``context_items`` from the
             // stale cache. The umbrella's ``groupsByUmbrella`` cache
             // is updated by the optimistic step + SSE refresh, but
-            // ``_threadDetailCache`` is independent (script_threads
+            // ``_threadDetailCache`` is independent (tabs/threads/main
             // owns it) and needs explicit invalidation.
             try {
                 if (typeof window.invalidateThreadCache === "function") {
@@ -1035,7 +1035,7 @@ def script() -> str:
         }
     }
 
-    // ---- Keyboard handler — extends script_threads's j/k --------
+    // ---- Keyboard handler — extends tabs/threads/main's j/k --------
 
     if (!window._threadsGroupKbdInstalled) {
         window._threadsGroupKbdInstalled = true;

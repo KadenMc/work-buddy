@@ -1,7 +1,7 @@
 """Conversation chat component JS.
 
-Renamed from ``script_threads.py`` — the ``Thread`` name is reserved
-for the universal-entity primitive (rendered by ``script_threads.py``
+Renamed from ``tabs/threads/main.py`` — the ``Thread`` name is reserved
+for the universal-entity primitive (rendered by ``tabs/threads/main.py``
 in its current form). The chat UI here is for agent-user dialogue
 and is rendered as a Conversation.
 """

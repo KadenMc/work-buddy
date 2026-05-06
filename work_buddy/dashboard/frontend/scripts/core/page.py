@@ -36,10 +36,10 @@ const staticLoaders = {
     costs: () => loadCosts(),
     settings: () => loadSettings(),
 };
-// Expose globally so script_threads.py can register its loader at
+// Expose globally so tabs/threads/main.py can register its loader at
 // IIFE-execution time (loadThreads is defined later in the script
 // concatenation order; this lets the threads module wire itself in
-// without depending on script_main.py's exact placement).
+// without depending on core/page.py's exact placement).
 window.staticLoaders = staticLoaders;
 
 function switchTab(tabName) {
@@ -86,7 +86,7 @@ document.querySelectorAll('.tab-btn').forEach(btn =>
 //   ntf  — workflow view ID (paired with tab=ntf); maps to wv-<id> internally
 //
 // The legacy `#view/<id>` deep-link format is still handled by the existing
-// hashchange route in script_workflows.py — `_initFromHash` stays out of its
+// hashchange route in core/workflows.py — `_initFromHash` stays out of its
 // way so old links keep working.
 
 function _persistHash() {
@@ -137,7 +137,7 @@ function _persistHash() {
 
 async function _initFromHash() {
     const hash = window.location.hash || '';
-    // Legacy `#view/<id>` is owned by script_workflows.handleHashRoute.
+    // Legacy `#view/<id>` is owned by core/workflows.handleHashRoute.
     if (/^#view\//.test(hash)) return;
 
     const params = new URLSearchParams(hash.slice(1));
@@ -236,7 +236,7 @@ let _readOnly = false;
 // re-introducing the same destructive rewrite for those tabs.
 //
 // Both are gone. The dashboard now updates from the server-pushed
-// event bus (see script_event_bus.py + work_buddy/dashboard/events.py
+// event bus (see core/event_bus.py + work_buddy/dashboard/events.py
 // + the SSE endpoint /api/events). The smart-refresh policy in the
 // bus dispatcher refreshes the active tab when an event affects it,
 // AND defers when the user is typing in an input/textarea inside the
