@@ -1136,4 +1136,39 @@ window.settingsSurface = {
         return !!document.getElementById('settings-tree');
     },
 };
+
+// ---- Setup-wizard launcher ----
+    if (_readOnly) return;
+    const origText = btn.textContent;
+    btn.textContent = 'Launching...';
+    btn.disabled = true;
+
+    const prompt = '/wb-setup diagnose ' + componentId;
+
+    try {
+        const r = await fetch('/api/launch-agent', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                prompt: prompt,
+                mode: mode,
+                context: {source: 'setup_wizard', component_id: componentId}
+            }),
+        });
+        const data = await r.json();
+        if (data.success) {
+            btn.textContent = 'Launched \u2713';
+            btn.style.background = 'var(--green-subtle)';
+            btn.style.borderColor = 'var(--green)';
+            btn.style.color = 'var(--green)';
+        } else {
+            btn.textContent = data.error || 'Failed';
+            btn.disabled = false;
+        }
+    } catch (err) {
+        btn.textContent = 'Error';
+        btn.disabled = false;
+        console.error('Setup agent launch failed:', err);
+    }
+}
 """

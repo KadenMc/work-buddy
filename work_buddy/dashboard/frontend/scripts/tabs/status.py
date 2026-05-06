@@ -202,4 +202,53 @@ async function loadStatus() {
         }
     } catch(e) { /* notification log optional */ }
 }
+
+// ---- Log actions ----
+function copyLog() {
+    const events = window._logEvents || [];
+    if (!events.length) return;
+    const text = events.map(e => {
+        const dt = new Date(e.ts * 1000);
+        const time = dt.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+        const kind = (e.kind || '').replace(/_/g, ' ').padEnd(16);
+        const level = (e.level || 'info').toUpperCase().padEnd(5);
+        return `${time}  ${level}  ${kind}  ${e.source}: ${e.summary}`;
+    }).join('\\n');
+    navigator.clipboard.writeText(text).then(() => {
+        const btn = document.querySelector('.log-toolbar-btn');
+        if (btn) { btn.textContent = 'Copied!'; setTimeout(() => btn.textContent = 'Copy Log', 1500); }
+    });
+}
+
+async function investigateEvent(idx) {
+    if (_readOnly) return;
+    const e = (window._logEvents || [])[idx];
+    if (!e) return;
+
+    const btn = event.target;
+    btn.textContent = 'Launching...';
+    btn.disabled = true;
+
+    try {
+        const r = await fetch('/api/investigate', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({event: e}),
+        });
+        const data = await r.json();
+        if (data.success) {
+            btn.textContent = 'Launched';
+            btn.style.background = 'var(--green-subtle)';
+            btn.style.borderColor = 'var(--green)';
+            btn.style.color = 'var(--green)';
+        } else {
+            btn.textContent = data.error || 'Failed';
+            btn.disabled = false;
+        }
+    } catch (err) {
+        btn.textContent = 'Error';
+        btn.disabled = false;
+        console.error('Investigate failed:', err);
+    }
+}
 """
