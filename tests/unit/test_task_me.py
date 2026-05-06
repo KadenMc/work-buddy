@@ -1,4 +1,4 @@
-"""Slice 5b tests — ``work_buddy.task_me`` orchestration helpers.
+"""Tests for ``work_buddy.task_me`` orchestration helpers.
 
 Covers:
 
@@ -6,7 +6,7 @@ Covers:
    subkeys, degrades gracefully when sub-calls fail, forwards
    ``user_current_contexts`` into the engage view.
 2. ``build_now_plan`` reads focused tasks from the engage view (so
-   Slice-5a context filtering applies), falls back to task_briefing
+   action-context filtering applies), falls back to task_briefing
    when engage is unavailable, returns a plan list + status.
 3. ``top_recommendations`` honours the actionable filter and the
    state/urgency/contract sort.

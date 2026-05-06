@@ -43,6 +43,72 @@ logger = logging.getLogger(__name__)
 _ACTIVE_RUNS: dict[str, WorkflowDAG] = {}
 
 
+def _validate_workflow_params(
+    entry: WorkflowDefinition,
+    params: dict[str, Any] | None,
+) -> tuple[bool, str | None]:
+    """Check caller-provided params against the workflow's declared schema.
+
+    Strict policy: a workflow without ``params_schema`` rejects any
+    non-empty params; a workflow with a schema rejects unknown keys and
+    requires all keys marked ``required: true`` to be present.
+
+    Returns ``(ok, error_message)``. On success, ``error_message`` is None.
+    """
+    schema = entry.params_schema or {}
+    params = params or {}
+
+    if not schema:
+        if params:
+            return False, (
+                f"Workflow {entry.name!r} declares no params_schema but received "
+                f"params: {sorted(params.keys())}. Declare a schema on the workflow "
+                f"to accept caller params."
+            )
+        return True, None
+
+    unknown = sorted(set(params) - set(schema))
+    if unknown:
+        return False, (
+            f"Unknown param(s) {unknown} for workflow {entry.name!r}; "
+            f"declared params: {sorted(schema)}."
+        )
+
+    missing = sorted(
+        name for name, spec in schema.items()
+        if isinstance(spec, dict) and spec.get("required") and name not in params
+    )
+    if missing:
+        return False, (
+            f"Missing required param(s) {missing} for workflow {entry.name!r}."
+        )
+
+    return True, None
+
+
+def _resolve_params_source(
+    source: str,
+    initial_params: dict[str, Any] | None,
+) -> tuple[bool, Any]:
+    """Resolve a ``__params__`` (optionally dotted) source from initial params.
+
+    ``__params__`` returns the whole dict; ``__params__.foo`` walks one
+    level; ``__params__.a.b`` walks deeper. Returns ``(found, value)``.
+    Missing keys at any depth → ``(False, None)``.
+    """
+    initial_params = initial_params or {}
+    if source == "__params__":
+        return True, initial_params
+    if not source.startswith("__params__."):
+        return False, None
+    cursor: Any = initial_params
+    for part in source.split(".")[1:]:
+        if not isinstance(cursor, dict) or part not in cursor:
+            return False, None
+        cursor = cursor[part]
+    return True, cursor
+
+
 def start_workflow(
     workflow_name: str,
     params: dict[str, Any] | None = None,
@@ -64,12 +130,19 @@ def start_workflow(
     if not entry.steps:
         return {"error": f"Workflow {workflow_name!r} has no steps defined in frontmatter."}
 
+    ok, err = _validate_workflow_params(entry, params)
+    if not ok:
+        return {"error": err}
+
     run_id = f"wf_{uuid.uuid4().hex[:8]}"
 
     dag = WorkflowDAG(
         name=f"{workflow_name}:{run_id}",
         description=f"Run of workflow {workflow_name}",
     )
+    # Stash caller-provided params on the DAG. Persisted via _save and
+    # re-read by _execute_auto_run when an input_map references __params__.
+    dag.initial_params = dict(params or {})  # type: ignore[attr-defined]
 
     # Populate the DAG from frontmatter-defined steps — including workflow_file
     for step in entry.steps:
@@ -126,6 +199,12 @@ def start_workflow(
     # Include workflow-level context (philosophy, constraints) on start only
     if entry.context:
         response["workflow_context"] = entry.context
+
+    # Surface caller-provided initial params to the agent so a reasoning
+    # first step can read them. Only included when the workflow accepts
+    # params and the caller actually supplied some.
+    if dag.initial_params:  # type: ignore[attr-defined]
+        response["initial_params"] = dag.initial_params  # type: ignore[attr-defined]
 
     return response
 
@@ -567,6 +646,7 @@ def _build_response(
             auto_run_spec,
             dag.get_all_results(),
             agent_session_id=getattr(dag, "agent_session_id", None),
+            initial_params=getattr(dag, "initial_params", None),
         )
 
         # Re-grant workflow consent if we suspended it
@@ -686,6 +766,7 @@ def _execute_auto_run(
     step_results: dict[str, Any],
     *,
     agent_session_id: str | None = None,
+    initial_params: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Execute an auto_run callable in an isolated subprocess.
 
@@ -703,6 +784,9 @@ def _execute_auto_run(
             consent checks read the same consent.db as the agent's own
             grants. Falls back to the MCP server's own env session if
             unset (legacy behavior for non-workflow callers).
+        initial_params: Caller-provided params from ``start_workflow``.
+            Reachable from ``input_map`` via the ``__params__`` source
+            (``__params__`` → whole dict; ``__params__.foo`` → nested key).
 
     Returns:
         ``{"success": True, "value": <return value>}`` or
@@ -734,8 +818,25 @@ def _execute_auto_run(
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
 
     # --- Resolve input_map: wire prior step results into kwargs ---
+    # Sources beginning with ``__params__`` resolve from the workflow's
+    # caller-provided initial params instead of step_results. Supports
+    # dotted-key walks: ``__params__`` → whole dict; ``__params__.foo``
+    # → initial_params["foo"]; ``__params__.a.b`` → nested.
     input_map = spec.get("input_map") or {}
     for kwarg_name, source_step_id in input_map.items():
+        if isinstance(source_step_id, str) and source_step_id.startswith("__params__"):
+            found, value = _resolve_params_source(source_step_id, initial_params)
+            if not found:
+                return {
+                    "success": False,
+                    "error": (
+                        f"input_map references {source_step_id!r} for kwarg "
+                        f"{kwarg_name!r}, but the workflow's initial_params has no "
+                        "such key"
+                    ),
+                }
+            kwargs[kwarg_name] = value
+            continue
         if source_step_id in step_results:
             kwargs[kwarg_name] = step_results[source_step_id]
         else:

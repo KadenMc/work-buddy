@@ -30,6 +30,12 @@ class Job:
     schedule: str  # 5-field cron expression
     recurring: bool = True
 
+    # Origin of the job file: "system" (ships with work-buddy, git-tracked
+    # under sidecar_jobs/) or "user" (authored locally, gitignored under
+    # <data_root>/user_jobs/). Used by the dashboard to group jobs and
+    # by the loader to decide collision policy (user overrides system).
+    source: str = "system"
+
     # Job type determines execution path
     job_type: str = "prompt"  # capability | workflow | prompt
 
@@ -65,7 +71,7 @@ def _parse_bool(value: Any) -> bool:
     return bool(value)
 
 
-def load_jobs(jobs_dir: Path) -> list[Job]:
+def load_jobs(jobs_dir: Path, source: str = "system") -> list[Job]:
     """Load all job ``.md`` files from a directory.
 
     Files without a ``schedule`` in their frontmatter are skipped.
@@ -73,6 +79,8 @@ def load_jobs(jobs_dir: Path) -> list[Job]:
 
     Args:
         jobs_dir: Directory containing job ``.md`` files.
+        source: Origin label stamped on every loaded job
+            (``"system"`` or ``"user"``).
 
     Returns:
         List of parsed Job objects.
@@ -86,7 +94,7 @@ def load_jobs(jobs_dir: Path) -> list[Job]:
             continue
 
         try:
-            job = _parse_job_file(md_path)
+            job = _parse_job_file(md_path, source=source)
             if job is not None:
                 jobs.append(job)
         except Exception as exc:
@@ -95,7 +103,38 @@ def load_jobs(jobs_dir: Path) -> list[Job]:
     return jobs
 
 
-def _parse_job_file(file_path: Path) -> Job | None:
+def load_jobs_from_many(dirs: list[tuple[Path, str]]) -> list[Job]:
+    """Load jobs from a list of ``(directory, source)`` pairs and merge.
+
+    Later entries override earlier ones on filename-stem collisions.
+    A collision logs a WARN naming both the loser and the winner so
+    surprised users can see which file is in effect. Concretely, the
+    intended ordering is ``[(system_dir, "system"), (user_dir, "user")]``,
+    so a user file with the same stem as a system file wins and the
+    system file is dropped.
+
+    Args:
+        dirs: Ordered list of ``(jobs_dir, source_label)`` pairs.
+
+    Returns:
+        Merged list of Job objects, deduplicated by ``Job.name``.
+    """
+    by_name: dict[str, Job] = {}
+    for jobs_dir, source in dirs:
+        for job in load_jobs(jobs_dir, source=source):
+            existing = by_name.get(job.name)
+            if existing is not None:
+                logger.warning(
+                    "Job name collision on %r: %s job at %s overrides "
+                    "%s job at %s.",
+                    job.name, job.source, job.file_path,
+                    existing.source, existing.file_path,
+                )
+            by_name[job.name] = job
+    return list(by_name.values())
+
+
+def _parse_job_file(file_path: Path, source: str = "system") -> Job | None:
     """Parse a single job file.
 
     Returns None if the file has no schedule (not a valid job).
@@ -136,6 +175,7 @@ def _parse_job_file(file_path: Path) -> Job | None:
         file_path=file_path,
         schedule=schedule.strip(),
         recurring=recurring,
+        source=source,
         job_type=job_type,
         capability=fm.get("capability", ""),
         params=fm.get("params", {}) or {},
@@ -169,4 +209,110 @@ def clear_job_schedule(job: Job) -> None:
 
 def job_fingerprint(job: Job) -> str:
     """Generate a fingerprint for change detection during hot-reload."""
-    return f"{job.name}:{job.schedule}:{job.job_type}:{job.capability}:{job.workflow}"
+    return (
+        f"{job.name}:{job.schedule}:{job.job_type}:"
+        f"{job.capability}:{job.workflow}:{job.source}"
+    )
+
+
+_NAME_PATTERN = __import__("re").compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
+
+
+def create_user_job_file(
+    target_dir: Path,
+    *,
+    name: str,
+    schedule: str,
+    job_type: str = "prompt",
+    capability: str = "",
+    params: dict | None = None,
+    workflow: str = "",
+    prompt: str = "",
+    enabled: bool = True,
+    recurring: bool = True,
+) -> dict:
+    """Validate inputs and write a user job .md file.
+
+    Pure function — takes the destination directory explicitly so tests can
+    point it at a temp dir without monkeypatching paths.data_dir. Refuses to
+    overwrite an existing file. Returns ``{"success": bool, ...}``.
+    """
+    import json as _json
+
+    from work_buddy.sidecar.scheduler.cron import parse_cron_field
+
+    name = (name or "").strip()
+    if not name:
+        return {"success": False, "error": "name is required."}
+    if not _NAME_PATTERN.fullmatch(name):
+        return {
+            "success": False,
+            "error": (
+                "name must be 1-64 chars, start alphanumeric, and contain "
+                "only letters, digits, hyphens, or underscores."
+            ),
+        }
+
+    schedule = (schedule or "").strip()
+    fields = schedule.split()
+    if len(fields) != 5:
+        return {
+            "success": False,
+            "error": "schedule must be a 5-field cron expression "
+                     "(MIN HOUR DOM MON DOW).",
+        }
+    ranges = [(0, 59), (0, 23), (1, 31), (1, 12), (0, 6)]
+    for i, (field, (lo, hi)) in enumerate(zip(fields, ranges)):
+        if not parse_cron_field(field, lo, hi):
+            return {
+                "success": False,
+                "error": f"schedule field #{i+1} ({field!r}) is invalid.",
+            }
+
+    if job_type not in ("capability", "workflow", "prompt"):
+        return {
+            "success": False,
+            "error": f"job_type must be capability|workflow|prompt, got {job_type!r}.",
+        }
+    if job_type == "capability" and not (capability or "").strip():
+        return {"success": False, "error": "type=capability requires 'capability'."}
+    if job_type == "workflow" and not (workflow or "").strip():
+        return {"success": False, "error": "type=workflow requires 'workflow'."}
+    if job_type == "prompt" and not (prompt or "").strip():
+        return {"success": False, "error": "type=prompt requires 'prompt'."}
+
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target = target_dir / f"{name}.md"
+    if target.exists():
+        return {
+            "success": False,
+            "error": f"User job {name!r} already exists at {target}.",
+        }
+
+    fm_lines = [
+        "---",
+        f'schedule: "{schedule}"',
+        f"type: {job_type}",
+        f"recurring: {str(bool(recurring)).lower()}",
+        f"enabled: {str(bool(enabled)).lower()}",
+    ]
+    if job_type == "capability":
+        fm_lines.append(f"capability: {capability.strip()}")
+    elif job_type == "workflow":
+        fm_lines.append(f"workflow: {workflow.strip()}")
+    if job_type in ("capability", "workflow") and params:
+        fm_lines.append(f"params: {_json.dumps(params)}")
+    fm_lines.append("---")
+
+    body = prompt if job_type == "prompt" else ""
+    target.write_text("\n".join(fm_lines) + "\n\n" + body.strip() + "\n", encoding="utf-8")
+
+    return {
+        "success": True,
+        "name": name,
+        "file_path": str(target),
+        "message": (
+            f"User job {name!r} created. Scheduler will pick it up on the "
+            "next hot-reload (~30s)."
+        ),
+    }

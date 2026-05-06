@@ -203,6 +203,15 @@ class WorkflowDefinition:
     # hand-author; see `_compute_workflow_requires()`.
     requires: list[str] = field(default_factory=list)
 
+    # Optional schema for caller-provided initial params, mirrors
+    # ``Capability.parameters``: ``{name: {type, description, required}}``.
+    # Workflows that declare no schema reject any non-empty params at
+    # ``start_workflow`` time. Consumed by ``input_map`` via the
+    # synthetic ``__params__`` source key (see conductor) and surfaced
+    # to reasoning steps via ``initial_params`` in the first-step
+    # response payload.
+    params_schema: dict[str, dict[str, Any]] = field(default_factory=dict)
+
     # ---------------- Action Catalog fields (defaults are the legacy non-action shape) ----
     # Workflows can also be Action Catalog
     # entries (i.e. a Standard Action whose execution dispatches
@@ -4750,6 +4759,28 @@ def _sidecar_capabilities() -> list[Capability]:
         data["running"] = alive
         return data
 
+    def _user_job_create(
+        name: str,
+        schedule: str,
+        job_type: str = "prompt",
+        capability: str = "",
+        params: dict | None = None,
+        workflow: str = "",
+        prompt: str = "",
+        enabled: bool = True,
+        recurring: bool = True,
+    ) -> dict:
+        """Author a user job by writing a .md file under <data_root>/user_jobs/."""
+        from work_buddy.paths import data_dir
+        from work_buddy.sidecar.scheduler.jobs import create_user_job_file
+
+        return create_user_job_file(
+            data_dir("user_jobs"),
+            name=name, schedule=schedule, job_type=job_type,
+            capability=capability, params=params, workflow=workflow,
+            prompt=prompt, enabled=enabled, recurring=recurring,
+        )
+
     def _sidecar_jobs() -> dict:
         from work_buddy.sidecar.state import load_state
         state = load_state()
@@ -4840,6 +4871,69 @@ def _sidecar_capabilities() -> list[Capability]:
             parameters={},
             callable=_sidecar_jobs,
             search_aliases=["cron", "scheduled jobs", "heartbeat", "sidecar schedule"],
+        ),
+        Capability(
+            name="user_job_create",
+            description=(
+                "Author a personal scheduled cron job by writing a .md file under "
+                "<data_root>/user_jobs/. Validates the cron expression and refuses "
+                "to overwrite an existing job. The scheduler hot-reloads (~30s) "
+                "and starts firing the job. See features/user-jobs for the schema."
+            ),
+            category="status",
+            parameters={
+                "name": {
+                    "type": "str",
+                    "description": "Job name (becomes the filename stem); 1-64 chars, alphanumeric + - + _.",
+                    "required": True,
+                },
+                "schedule": {
+                    "type": "str",
+                    "description": "5-field cron expression (MIN HOUR DOM MON DOW).",
+                    "required": True,
+                },
+                "job_type": {
+                    "type": "str",
+                    "description": "One of: capability, workflow, prompt.",
+                    "required": False,
+                },
+                "capability": {
+                    "type": "str",
+                    "description": "(type=capability) Registered capability name to invoke.",
+                    "required": False,
+                },
+                "params": {
+                    "type": "dict",
+                    "description": "(type=capability) Parameters dict for the capability.",
+                    "required": False,
+                },
+                "workflow": {
+                    "type": "str",
+                    "description": "(type=workflow) Registered workflow name to start.",
+                    "required": False,
+                },
+                "prompt": {
+                    "type": "str",
+                    "description": "(type=prompt) Body text used as the agent prompt.",
+                    "required": False,
+                },
+                "enabled": {
+                    "type": "bool",
+                    "description": "Whether the job is enabled at create time. Default true.",
+                    "required": False,
+                },
+                "recurring": {
+                    "type": "bool",
+                    "description": "False = one-shot (schedule cleared after first fire). Default true.",
+                    "required": False,
+                },
+            },
+            callable=_user_job_create,
+            search_aliases=[
+                "create user job", "add user job", "schedule cron task",
+                "personal job", "new scheduled job", "wb-job-new",
+            ],
+            mutates_state=True,
         ),
         # DISABLED: service_restart for mcp_gateway kills the MCP server
         # process, but Claude Code's MCP client does NOT auto-reconnect.
@@ -6319,6 +6413,7 @@ def _discover_workflows_from_store() -> list[WorkflowDefinition]:
             steps=steps,
             context=context,
             slash_command=unit.command,
+            params_schema=unit.params_schema or {},
         ))
 
     return workflows
@@ -6720,6 +6815,16 @@ def _knowledge_capabilities() -> list[Capability]:
                 "tags": {"type": "str", "description": "Comma-separated search tags", "required": False},
                 "aliases": {"type": "str", "description": "Comma-separated search aliases", "required": False},
                 "dev_notes": {"type": "str", "description": "Dev-mode-only notes about the workflow's internals", "required": False},
+                "params_schema": {
+                    "type": "str",
+                    "description": (
+                        "Optional JSON object declaring caller-provided initial "
+                        "params: {param_name: {type, description, required}}. "
+                        "Mirrors capability parameters. Workflows that omit this "
+                        "reject any non-empty params at start."
+                    ),
+                    "required": False,
+                },
             },
             callable=workflow_create,
             mutates_state=True,
@@ -6775,6 +6880,14 @@ def _knowledge_capabilities() -> list[Capability]:
                 "tags": {"type": "str", "description": "New comma-separated tags (replaces)", "required": False},
                 "aliases": {"type": "str", "description": "New comma-separated aliases (replaces)", "required": False},
                 "dev_notes": {"type": "str", "description": "New dev-mode-only notes. Pass an empty string to clear.", "required": False},
+                "params_schema": {
+                    "type": "str",
+                    "description": (
+                        "New params schema (JSON object). Replaces existing "
+                        "schema entirely; pass an empty dict to clear."
+                    ),
+                    "required": False,
+                },
             },
             callable=workflow_update,
             mutates_state=True,

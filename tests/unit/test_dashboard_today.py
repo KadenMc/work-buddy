@@ -1,4 +1,4 @@
-"""Slice 5b dashboard surface: ``GET /api/automation/today``.
+"""Tests for the dashboard's ``GET /api/automation/today`` endpoint.
 
 Smoke-test that the endpoint composes the engage view + the now-plan
 + recommendations + work-hour metadata, and forwards

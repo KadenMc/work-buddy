@@ -265,7 +265,13 @@ sidecar:
       module: "work_buddy.dashboard"
       port: 5127
       enabled: true
+  # System jobs ship with work-buddy and live in this git-tracked directory.
   jobs_dir: "sidecar_jobs"
+  # User jobs are personal cron tasks you author yourself — gitignored,
+  # not shared across installs. Default location is `<paths.data_root>/user_jobs/`
+  # (the data root is gitignored, so user jobs are too). Set this to override
+  # with an absolute or repo-relative path. Empty = use the default.
+  user_jobs_dir: ""
   exclusion_windows: []
     # Quiet hours example:
     # - start: "23:00"

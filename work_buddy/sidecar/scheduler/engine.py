@@ -11,12 +11,14 @@ runs synchronously within the daemon's tick cycle rather than
 as independent intervals.
 """
 
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from work_buddy.logging_config import get_logger
+from work_buddy.paths import data_dir
 from work_buddy.sidecar.scheduler.cron import cron_matches, next_cron_match
 from work_buddy.sidecar.scheduler.heartbeat import (
     ExclusionWindow,
@@ -27,7 +29,7 @@ from work_buddy.sidecar.scheduler.jobs import (
     Job,
     clear_job_schedule,
     job_fingerprint,
-    load_jobs,
+    load_jobs_from_many,
 )
 from work_buddy.sidecar.state import JobState, SidecarState
 
@@ -100,16 +102,10 @@ class Scheduler:
         self._timezone: str = config.get("timezone", "America/New_York")
         self._event_log = event_log
 
-        sidecar_cfg = config.get("sidecar", {})
-        self._jobs_dir = Path(config.get("repos_root", ".")).parent / sidecar_cfg.get(
-            "jobs_dir", "sidecar_jobs"
-        )
-        # Fallback: try repo-relative path
-        repo_root = Path(__file__).parent.parent.parent.parent
-        if not self._jobs_dir.is_dir():
-            self._jobs_dir = repo_root / sidecar_cfg.get("jobs_dir", "sidecar_jobs")
+        self._jobs_dirs: list[tuple[Path, str]] = self._resolve_jobs_dirs(config)
 
         # Exclusion windows (quiet hours — no jobs fire during these periods)
+        sidecar_cfg = config.get("sidecar", {})
         self._exclusion_windows: list[ExclusionWindow] = parse_exclusion_windows(
             sidecar_cfg.get("exclusion_windows", [])
         )
@@ -122,16 +118,57 @@ class Scheduler:
         self._last_reload: float = 0.0
         self._reload_interval: float = 30.0  # seconds
 
+        # Set by JobsWatcher (filesystem watcher) when a .md file changes
+        # in any of self._jobs_dirs. The next tick checks this and calls
+        # _hot_reload() immediately, bypassing the 30s interval. Cleared
+        # after the reload runs. Doubles as a wake-up signal for the
+        # daemon's main-loop sleep so a watcher event jumps the queue.
+        self.jobs_reload_pending: threading.Event = threading.Event()
+
         # Deduplication: track which jobs fired this minute
         self._last_cron_minute: int = -1
         self._fired_this_minute: set[str] = set()
 
+    @staticmethod
+    def _resolve_jobs_dirs(config: dict[str, Any]) -> list[tuple[Path, str]]:
+        """Resolve the (system, user) job directory pair from config.
+
+        System dir: ``sidecar.jobs_dir`` relative to ``repos_root``'s parent,
+        falling back to a repo-relative path so ``Scheduler`` works in
+        development checkouts where ``repos_root`` is unset.
+
+        User dir: ``sidecar.user_jobs_dir`` if set; otherwise
+        ``<data_root>/user_jobs/`` (gitignored, configurable via
+        ``paths.data_root``).
+        """
+        sidecar_cfg = config.get("sidecar", {})
+        repos_parent = Path(config.get("repos_root", ".")).parent
+        repo_root = Path(__file__).parent.parent.parent.parent
+
+        # System dir
+        system_dir = repos_parent / sidecar_cfg.get("jobs_dir", "sidecar_jobs")
+        if not system_dir.is_dir():
+            system_dir = repo_root / sidecar_cfg.get("jobs_dir", "sidecar_jobs")
+
+        # User dir — explicit override wins; otherwise default under data_root
+        user_override = sidecar_cfg.get("user_jobs_dir") or ""
+        if user_override:
+            user_path = Path(user_override)
+            user_dir = user_path if user_path.is_absolute() else repo_root / user_path
+        else:
+            user_dir = data_dir("user_jobs")
+
+        return [(system_dir, "system"), (user_dir, "user")]
+
     def start(self) -> None:
         """Initial load of jobs."""
-        self.jobs = load_jobs(self._jobs_dir)
+        self.jobs = load_jobs_from_many(self._jobs_dirs)
         self._job_fingerprints = self._compute_fingerprints()
 
-        logger.info("Scheduler started: %d jobs loaded.", len(self.jobs))
+        logger.info(
+            "Scheduler started: %d jobs loaded from %d source(s).",
+            len(self.jobs), len(self._jobs_dirs),
+        )
 
     def tick(self) -> None:
         """Called on every daemon tick. Checks cron, reload."""
@@ -141,9 +178,17 @@ class Scheduler:
         if is_excluded(now, self._exclusion_windows, self._timezone):
             return
 
-        # --- Hot-reload (every 30s) ---
-        if time.time() - self._last_reload >= self._reload_interval:
+        # --- Hot-reload ---
+        # Two triggers: the 30s polling interval (safety net) AND the
+        # JobsWatcher's filesystem-event flag (instant on file change).
+        # After reload the flag is cleared so the next tick doesn't
+        # double-reload.
+        if (
+            self.jobs_reload_pending.is_set()
+            or time.time() - self._last_reload >= self._reload_interval
+        ):
             self._hot_reload()
+            self.jobs_reload_pending.clear()
 
         # --- Cron tick ---
         current_minute = now.minute + now.hour * 60 + now.day * 1440
@@ -199,8 +244,20 @@ class Scheduler:
         """Reload config and jobs from disk if changed."""
         self._last_reload = time.time()
 
-        # Reload jobs
-        new_jobs = load_jobs(self._jobs_dir)
+        # Reload config first so a changed user_jobs_dir takes effect this tick
+        from work_buddy.config import load_config
+
+        cfg = load_config()
+        sidecar_cfg = cfg.get("sidecar", {})
+
+        new_windows = parse_exclusion_windows(sidecar_cfg.get("exclusion_windows", []))
+        self._exclusion_windows = new_windows
+        self._config = cfg
+        self._timezone = cfg.get("timezone", "America/New_York")
+        self._jobs_dirs = self._resolve_jobs_dirs(cfg)
+
+        # Reload jobs from all configured directories
+        new_jobs = load_jobs_from_many(self._jobs_dirs)
         new_fps = "\n".join(sorted(job_fingerprint(j) for j in new_jobs))
 
         if new_fps != self._job_fingerprints:
@@ -217,17 +274,17 @@ class Scheduler:
                     "hot_reload", "scheduler",
                     f"Jobs reloaded: {old_count} \u2192 {len(new_jobs)}",
                 )
-
-        # Reload config (timezone, exclusion windows)
-        from work_buddy.config import load_config
-
-        cfg = load_config()
-        sidecar_cfg = cfg.get("sidecar", {})
-
-        new_windows = parse_exclusion_windows(sidecar_cfg.get("exclusion_windows", []))
-        self._exclusion_windows = new_windows
-        self._config = cfg
-        self._timezone = cfg.get("timezone", "America/New_York")
+            # Publish to the dashboard event bus so the Jobs tab can refresh
+            # without polling. publish_auto routes via the messaging-service
+            # bridge from the sidecar process; failures are swallowed.
+            try:
+                from work_buddy.dashboard.events import publish_auto
+                publish_auto("cron.hot_reload", {
+                    "old_count": old_count,
+                    "new_count": len(new_jobs),
+                })
+            except Exception:
+                logger.debug("cron.hot_reload publish failed (non-fatal)", exc_info=True)
 
     def _compute_fingerprints(self) -> str:
         return "\n".join(sorted(job_fingerprint(j) for j in self.jobs))
@@ -250,6 +307,7 @@ class Scheduler:
                 last_run_at=job.last_run_at,
                 last_result=job.last_result,
                 last_error=job.last_error,
+                source=job.source,
             ))
 
         state.set_job_states(job_states)

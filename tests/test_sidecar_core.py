@@ -27,7 +27,9 @@ from work_buddy.sidecar.pid import (
 )
 from work_buddy.sidecar.scheduler.jobs import (
     Job,
+    create_user_job_file,
     load_jobs,
+    load_jobs_from_many,
     _parse_job_file,
     job_fingerprint,
 )
@@ -171,6 +173,206 @@ def test_job_fingerprint():
     fp = job_fingerprint(job)
     assert "test" in fp
     assert "task_briefing" in fp
+
+
+def _write_job(dir_path: Path, stem: str, schedule: str = "0 9 * * *") -> Path:
+    p = dir_path / f"{stem}.md"
+    p.write_text(
+        f"---\nschedule: \"{schedule}\"\ntype: capability\ncapability: noop\n---\n",
+        encoding="utf-8",
+    )
+    return p
+
+
+def test_load_jobs_tags_source():
+    with tempfile.TemporaryDirectory() as tmp:
+        _write_job(Path(tmp), "alpha")
+        jobs = load_jobs(Path(tmp), source="user")
+        assert len(jobs) == 1
+        assert jobs[0].source == "user"
+
+
+def test_load_jobs_from_many_no_collision():
+    with tempfile.TemporaryDirectory() as sys_dir, tempfile.TemporaryDirectory() as usr_dir:
+        _write_job(Path(sys_dir), "system-only")
+        _write_job(Path(usr_dir), "user-only")
+
+        jobs = load_jobs_from_many([
+            (Path(sys_dir), "system"),
+            (Path(usr_dir), "user"),
+        ])
+        names = {j.name: j.source for j in jobs}
+        assert names == {"system-only": "system", "user-only": "user"}
+
+
+def test_load_jobs_from_many_user_overrides_system(caplog):
+    with tempfile.TemporaryDirectory() as sys_dir, tempfile.TemporaryDirectory() as usr_dir:
+        sys_path = _write_job(Path(sys_dir), "shared", schedule="0 9 * * *")
+        usr_path = _write_job(Path(usr_dir), "shared", schedule="*/5 * * * *")
+
+        with caplog.at_level("WARNING", logger="work_buddy.sidecar.scheduler.jobs"):
+            jobs = load_jobs_from_many([
+                (Path(sys_dir), "system"),
+                (Path(usr_dir), "user"),
+            ])
+
+        assert len(jobs) == 1
+        assert jobs[0].source == "user"
+        assert jobs[0].schedule == "*/5 * * * *"
+        assert jobs[0].file_path == usr_path
+
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert any("collision" in r.getMessage().lower() for r in warnings), (
+            f"Expected a collision warning, got: {[r.getMessage() for r in warnings]}"
+        )
+        # The warning should name both files so the user can locate the loser.
+        msg = next(r.getMessage() for r in warnings if "collision" in r.getMessage().lower())
+        assert str(sys_path) in msg
+        assert str(usr_path) in msg
+
+
+def test_job_source_round_trips_through_jobstate():
+    job = Job(
+        name="rt", file_path=Path("."), schedule="0 9 * * *",
+        source="user", job_type="prompt",
+    )
+    js = JobState(
+        name=job.name, schedule=job.schedule, source=job.source,
+    )
+    # Round-trip through asdict + JobState(**dict) (mirrors save_state/load_state).
+    from dataclasses import asdict
+    rebuilt = JobState(**asdict(js))
+    assert rebuilt.source == "user"
+
+
+def test_jobstate_default_source_is_system():
+    """Old state files written without a source field must still load."""
+    js = JobState(name="legacy", schedule="0 9 * * *")
+    assert js.source == "system"
+
+
+def test_create_user_job_file_writes_loadable_prompt_job(tmp_path):
+    res = create_user_job_file(
+        tmp_path,
+        name="hello-prompt", schedule="*/5 * * * *", job_type="prompt",
+        prompt="Say hello.",
+    )
+    assert res["success"] is True
+    assert res["file_path"].endswith("hello-prompt.md")
+
+    # File must round-trip through load_jobs as a real Job
+    jobs = load_jobs(tmp_path, source="user")
+    assert len(jobs) == 1
+    j = jobs[0]
+    assert j.name == "hello-prompt"
+    assert j.job_type == "prompt"
+    assert j.schedule == "*/5 * * * *"
+    assert j.prompt == "Say hello."
+    assert j.source == "user"
+    assert j.enabled is True
+
+
+def test_create_user_job_file_capability_with_params(tmp_path):
+    res = create_user_job_file(
+        tmp_path,
+        name="briefing", schedule="0 9 * * 1-5", job_type="capability",
+        capability="task_briefing", params={"same_day": True},
+    )
+    assert res["success"] is True
+    job = load_jobs(tmp_path)[0]
+    assert job.job_type == "capability"
+    assert job.capability == "task_briefing"
+    assert job.params == {"same_day": True}
+
+
+def test_create_user_job_file_rejects_bad_name(tmp_path):
+    for bad in ("", "  ", "../escape", "with spaces", "trailing.dot",
+                "-leading-hyphen", "_leading_underscore"):
+        res = create_user_job_file(
+            tmp_path, name=bad, schedule="0 9 * * *",
+            job_type="prompt", prompt="x",
+        )
+        assert res["success"] is False, f"expected reject for {bad!r}"
+        assert "name" in res["error"].lower()
+
+
+def test_create_user_job_file_rejects_bad_schedule(tmp_path):
+    for bad in ("", "every minute", "0 9 * *", "0 9 * * * *",
+                "60 * * * *", "* 24 * * *", "* * 32 * *", "* * * 13 *",
+                "* * * * 7"):
+        res = create_user_job_file(
+            tmp_path, name=f"test-{abs(hash(bad)) % 9999}",
+            schedule=bad, job_type="prompt", prompt="x",
+        )
+        assert res["success"] is False, f"expected reject for schedule {bad!r}"
+
+
+def test_create_user_job_file_requires_type_specific_field(tmp_path):
+    res = create_user_job_file(
+        tmp_path, name="missing-cap", schedule="0 9 * * *",
+        job_type="capability",
+    )
+    assert res["success"] is False
+    assert "capability" in res["error"].lower()
+
+    res = create_user_job_file(
+        tmp_path, name="missing-wf", schedule="0 9 * * *",
+        job_type="workflow",
+    )
+    assert res["success"] is False
+    assert "workflow" in res["error"].lower()
+
+    res = create_user_job_file(
+        tmp_path, name="missing-prompt", schedule="0 9 * * *",
+        job_type="prompt",
+    )
+    assert res["success"] is False
+    assert "prompt" in res["error"].lower()
+
+
+def test_create_user_job_file_refuses_overwrite(tmp_path):
+    res1 = create_user_job_file(
+        tmp_path, name="dupe", schedule="0 9 * * *",
+        job_type="prompt", prompt="first",
+    )
+    assert res1["success"] is True
+
+    res2 = create_user_job_file(
+        tmp_path, name="dupe", schedule="0 10 * * *",
+        job_type="prompt", prompt="second",
+    )
+    assert res2["success"] is False
+    assert "already exists" in res2["error"].lower()
+    # Original file content must be preserved
+    job = load_jobs(tmp_path)[0]
+    assert job.prompt == "first"
+
+
+def test_scheduler_init_and_start_smoke(tmp_path):
+    """Constructing Scheduler with a realistic config must not raise.
+
+    Catches refactor regressions (e.g. accidentally referencing a removed
+    local variable inside __init__) that unit-testing only the loader
+    misses, since loader tests bypass the constructor entirely.
+    """
+    from work_buddy.sidecar.scheduler.engine import Scheduler
+
+    cfg = {
+        "timezone": "UTC",
+        "sidecar": {
+            "jobs_dir": str(tmp_path / "system"),
+            "user_jobs_dir": str(tmp_path / "user"),
+            "exclusion_windows": [],
+        },
+    }
+    (tmp_path / "system").mkdir()
+    (tmp_path / "user").mkdir()
+    _write_job(tmp_path / "user", "smoke")
+
+    sch = Scheduler(cfg)
+    sch.start()
+
+    assert any(j.name == "smoke" and j.source == "user" for j in sch.jobs)
 
 
 # --- Heartbeat/exclusion tests ---

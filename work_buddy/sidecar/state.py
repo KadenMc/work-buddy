@@ -44,6 +44,7 @@ class JobState:
     last_run_at: float = 0.0
     last_result: str = ""  # ok | error | skipped
     last_error: str = ""  # human-readable error reason
+    source: str = "system"  # "system" (sidecar_jobs/) | "user" (<data_root>/user_jobs/)
 
 
 @dataclass

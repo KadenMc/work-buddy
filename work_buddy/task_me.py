@@ -1,4 +1,4 @@
-"""Slice 5b: ``/wb-task-me`` orchestration helpers.
+"""``/wb-task-me`` orchestration helpers — load context, build a clamp-to-now plan.
 
 Two pure-ish callables that the ``tasks/task-me`` workflow uses for
 its auto_run code steps:
@@ -17,8 +17,8 @@ its auto_run code steps:
 
 Both callables degrade gracefully — a missing capability returns the
 partial state with a status field so the engage step can render
-"calendar unavailable, working with task-only context."  Slice 11's
-reactive contexts work consumes these health flags in turn.
+"calendar unavailable, working with task-only context."  Downstream
+reactive-contexts code consumes these health flags in turn.
 
 The workflow JSON definition lives in
 ``knowledge/store/workflows.json`` under ``tasks/task-me``; the
@@ -138,7 +138,7 @@ def load_context_for_task_me(
         logger.debug("task_me: contracts fetch unavailable: %s", exc)
         out["contract_constraints"] = {}
 
-    # --- Engage view (Slice 5a) -------------------------------------
+    # --- Engage view ------------------------------------------------
     try:
         from work_buddy.dashboard.service import _build_engage_view_payload
         out["engage"] = _build_engage_view_payload(

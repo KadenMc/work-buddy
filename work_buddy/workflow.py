@@ -392,6 +392,10 @@ class WorkflowDAG:
             "saved_at": datetime.now(timezone.utc).isoformat(),
             "nodes": {},
             "edges": [],
+            # Caller-provided initial params (set by start_workflow when the
+            # workflow declares a params_schema). Persisted so a workflow
+            # that resumes after MCP restart still has them.
+            "initial_params": getattr(self, "initial_params", None),
         }
         for node_id in self._graph.nodes:
             data["nodes"][node_id] = dict(self._graph.nodes[node_id])
@@ -412,6 +416,8 @@ class WorkflowDAG:
         raw = json.loads(path.read_text(encoding="utf-8"))
         dag = cls(name=raw["name"], description=raw.get("description", ""))
         dag._created_at = raw.get("created_at", "")
+        # Restore initial_params if persisted (None for older save files).
+        dag.initial_params = raw.get("initial_params")  # type: ignore[attr-defined]
 
         # Rebuild graph
         for node_id, node_data in raw["nodes"].items():

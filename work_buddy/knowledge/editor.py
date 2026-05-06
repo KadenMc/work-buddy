@@ -211,7 +211,7 @@ def create_unit(
                     unit_data[k] = extra[k]
     elif kind == "workflow":
         if extra:
-            for k in ("workflow_name", "execution", "allow_override", "steps", "step_instructions"):
+            for k in ("workflow_name", "execution", "allow_override", "steps", "step_instructions", "params_schema"):
                 if k in extra:
                     unit_data[k] = extra[k]
         if command:
@@ -624,7 +624,7 @@ def docs_move(*, old_path: str, new_path: str) -> dict[str, Any]:
 # strings (parsed here) so the MCP transport can stay flat-typed; callers
 # can still pass dicts when invoking the Python function directly.
 
-_WORKFLOW_EXTRA_KEYS = ("workflow_name", "execution", "allow_override", "steps", "step_instructions")
+_WORKFLOW_EXTRA_KEYS = ("workflow_name", "execution", "allow_override", "steps", "step_instructions", "params_schema")
 
 
 def _coerce_json(value: Any, label: str) -> Any:
@@ -655,6 +655,7 @@ def workflow_create(
     tags: str | None = None,
     aliases: str | None = None,
     dev_notes: str | None = None,
+    params_schema: Any = None,
 ) -> dict[str, Any]:
     """Create a new workflow unit in the knowledge store.
 
@@ -693,6 +694,7 @@ def workflow_create(
     try:
         steps_parsed = _coerce_json(steps, "steps")
         instructions_parsed = _coerce_json(step_instructions, "step_instructions")
+        params_schema_parsed = _coerce_json(params_schema, "params_schema")
     except ValueError as exc:
         return {"error": str(exc)}
 
@@ -700,6 +702,8 @@ def workflow_create(
         return {"error": "steps must be a non-empty list of step dicts"}
     if instructions_parsed is not None and not isinstance(instructions_parsed, dict):
         return {"error": "step_instructions must be a dict keyed by step id"}
+    if params_schema_parsed is not None and not isinstance(params_schema_parsed, dict):
+        return {"error": "params_schema must be a dict keyed by param name"}
 
     extra: dict[str, Any] = {
         "workflow_name": workflow_name,
@@ -709,6 +713,8 @@ def workflow_create(
     }
     if instructions_parsed:
         extra["step_instructions"] = instructions_parsed
+    if params_schema_parsed:
+        extra["params_schema"] = params_schema_parsed
 
     return create_unit(
         path=path,
@@ -745,6 +751,7 @@ def workflow_update(
     tags: str | None = None,
     aliases: str | None = None,
     dev_notes: str | None = None,
+    params_schema: Any = None,
 ) -> dict[str, Any]:
     """Update an existing workflow unit.
 
@@ -763,6 +770,11 @@ def workflow_update(
             if step_instructions is not None
             else None
         )
+        params_schema_parsed = (
+            _coerce_json(params_schema, "params_schema")
+            if params_schema is not None
+            else None
+        )
     except ValueError as exc:
         return {"error": str(exc)}
 
@@ -770,6 +782,8 @@ def workflow_update(
         return {"error": "steps must be a non-empty list of step dicts"}
     if instructions_parsed is not None and not isinstance(instructions_parsed, dict):
         return {"error": "step_instructions must be a dict keyed by step id"}
+    if params_schema_parsed is not None and not isinstance(params_schema_parsed, dict):
+        return {"error": "params_schema must be a dict keyed by param name"}
 
     updates: dict[str, Any] = {}
     if name is not None:
@@ -802,6 +816,8 @@ def workflow_update(
         updates["steps"] = steps_parsed
     if instructions_parsed is not None:
         updates["step_instructions"] = instructions_parsed
+    if params_schema_parsed is not None:
+        updates["params_schema"] = params_schema_parsed
 
     if not updates:
         return {"error": "No fields to update."}

@@ -760,6 +760,16 @@ def run(foreground: bool = True) -> None:
     scheduler = Scheduler(cfg, event_log=event_log)
     scheduler.start()
 
+    # --- Initialize jobs filesystem watcher ---
+    # Sets scheduler.jobs_reload_pending the moment a .md file lands in
+    # any of the jobs directories. The main-loop sleep below waits on
+    # that event so reload latency drops from ~30s (poll interval) to
+    # ~50ms (kernel filesystem event). The 30s poll stays as a fallback.
+    from work_buddy.sidecar.scheduler.watcher import JobsWatcher
+
+    jobs_watcher = JobsWatcher(scheduler)
+    jobs_watcher.start()
+
     # --- Initialize message poller ---
     from work_buddy.sidecar.dispatch.router import MessagePoller
 
@@ -837,25 +847,53 @@ def run(foreground: bool = True) -> None:
             state.last_tick_at = time.time()
             save_state(state)
 
-            # Sleep until next tick (target: health_interval seconds)
+            # Sleep until next tick (target: health_interval seconds).
+            # Wakes early on a JobsWatcher filesystem event so the next
+            # tick reloads jobs immediately instead of waiting out the
+            # full interval.
             elapsed = time.time() - tick_start
-            sleep_time = max(1, health_interval - elapsed)
-            _interruptible_sleep(sleep_time)
+            sleep_time = max(1.0, health_interval - elapsed)
+            _interruptible_sleep(sleep_time, waker=scheduler.jobs_reload_pending)
 
     except KeyboardInterrupt:
         logger.info("Keyboard interrupt — shutting down.")
     finally:
+        jobs_watcher.stop()
         monitor.stop()
         event_log.emit("daemon_stop", "daemon", "Sidecar shutting down")
         state.events = event_log.recent(50)
         _shutdown(children, state)
 
 
-def _interruptible_sleep(seconds: float) -> None:
-    """Sleep in 1-second increments so signals can interrupt."""
+def _interruptible_sleep(
+    seconds: float,
+    *,
+    waker: "threading.Event | None" = None,
+) -> None:
+    """Sleep up to ``seconds``, wakeable by signals or a ``waker`` event.
+
+    The shutdown flag (``_shutdown_requested``) is checked in 1-second
+    increments so a SIGINT / SIGTERM stops the sleep within at most a
+    second. When ``waker`` is provided, the sleep also wakes the moment
+    the event is set — used by the main loop to react to filesystem
+    events from ``JobsWatcher`` without waiting out the full tick
+    interval. Either way, the function returns once the deadline is
+    reached, the shutdown flag flips, or the waker fires.
+    """
     end = time.time() + seconds
     while time.time() < end and not _shutdown_requested:
-        time.sleep(min(1.0, end - time.time()))
+        remaining = end - time.time()
+        if remaining <= 0:
+            break
+        chunk = min(1.0, remaining)
+        if waker is not None:
+            # ``Event.wait`` returns True iff the event was set during
+            # the wait; True means "exit early", caller's next tick
+            # will see the flag and act on it.
+            if waker.wait(timeout=chunk):
+                return
+        else:
+            time.sleep(chunk)
 
 
 def _shutdown(children: list[ChildService], state: SidecarState) -> None:

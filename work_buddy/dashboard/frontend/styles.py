@@ -3424,6 +3424,195 @@ body {
     padding: 0; margin: -1px; overflow: hidden;
     clip: rect(0 0 0 0); white-space: nowrap; border: 0;
 }
+
+/* -- Jobs tab: Add-job toolbar + form ---------------------------------- */
+
+.jobs-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 12px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+}
+.jobs-add-btn {
+    background: var(--accent);
+    color: #fff;
+    border: 0;
+    padding: 6px 12px;
+    border-radius: 4px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+}
+.jobs-add-btn:hover { filter: brightness(1.1); }
+
+.jobs-add-form {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 16px;
+    margin-bottom: 16px;
+}
+.jobs-form-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px 16px;
+    margin-bottom: 12px;
+}
+.jobs-add-form label:not([hidden]) {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+.jobs-add-form input[type="text"],
+.jobs-add-form select,
+.jobs-add-form textarea {
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 6px 8px;
+    font-size: 13px;
+    font-family: inherit;
+}
+.jobs-add-form textarea { font-family: ui-monospace, monospace; resize: vertical; }
+.jobs-add-form small {
+    color: var(--text-muted);
+    font-size: 11px;
+    line-height: 1.4;
+}
+.jobs-add-form small code {
+    background: var(--bg-tertiary);
+    padding: 1px 4px;
+    border-radius: 3px;
+    font-size: 11px;
+}
+.job-form-type-row { grid-column: 1 / -1; }
+/* Use :not([hidden]) so toggling the `hidden` attribute from JS actually
+   collapses the row — the bare `display: grid` rule would otherwise win
+   over the user-agent default of `[hidden] { display: none }`. */
+.job-form-row:not([hidden]) {
+    margin-bottom: 12px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px 16px;
+}
+.job-form-row > label:only-child { grid-column: 1 / -1; }
+.job-form-error {
+    background: var(--bg-tertiary);
+    border-left: 3px solid var(--red);
+    color: var(--text-primary);
+    padding: 8px 12px;
+    border-radius: 0 4px 4px 0;
+    font-size: 12px;
+    margin-bottom: 12px;
+}
+.job-form-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+}
+.jobs-form-cancel,
+.jobs-form-submit {
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 6px 14px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+}
+.jobs-form-cancel {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+}
+.jobs-form-submit {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+}
+.jobs-form-submit:hover { filter: brightness(1.1); }
+
+/* Cron preview — neutral hint while empty/typing, green text when the
+   expression parses, red when it doesn't. Stays in the same DOM slot so
+   the form layout never jumps. */
+.cron-preview-hint    { color: var(--text-muted); }
+.cron-preview-valid   { color: var(--green); font-weight: 500; }
+.cron-preview-invalid { color: var(--red); }
+
+/* Capability params schema rendered under the params textarea — gives the
+   user the registered parameters' names/types/descriptions so they can
+   compose the JSON without leaving the form. */
+.job-form-params-schema {
+    margin-top: 8px;
+    padding: 8px 10px;
+    background: var(--bg-tertiary);
+    border-radius: 4px;
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+.job-form-params-schema .schema-title {
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 6px;
+}
+.job-form-params-schema ul { margin: 0; padding: 0; list-style: none; }
+.job-form-params-schema li {
+    padding: 4px 0;
+    border-top: 1px solid var(--border);
+}
+.job-form-params-schema li:first-child { border-top: 0; }
+.job-form-params-schema .schema-name code {
+    color: var(--text-primary);
+    font-weight: 600;
+    font-size: 12px;
+}
+.job-form-params-schema .schema-required {
+    color: var(--orange);
+    font-weight: 600;
+    margin-left: 6px;
+}
+.job-form-params-schema .schema-optional {
+    color: var(--text-muted);
+    margin-left: 6px;
+}
+.job-form-params-schema .schema-desc {
+    margin-top: 2px;
+    color: var(--text-muted);
+    line-height: 1.4;
+}
+.job-form-params-schema em {
+    color: var(--text-muted);
+    font-style: italic;
+}
+
+/* Pending-create banner — shows after the form posts a new user job
+   successfully. Stays visible until the daemon's next hot-reload (~30s)
+   picks up the file and the job appears in the table. */
+.jobs-pending-banner {
+    background: var(--bg-secondary);
+    border: 1px solid var(--green-subtle);
+    border-left: 3px solid var(--green);
+    border-radius: 0 4px 4px 0;
+    padding: 10px 14px;
+    margin-bottom: 12px;
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+.jobs-pending-banner strong { color: var(--green); }
+.jobs-pending-banner ul {
+    margin: 6px 0 0;
+    padding-left: 18px;
+}
+.jobs-pending-banner code {
+    color: var(--text-primary);
+    background: var(--bg-tertiary);
+    padding: 1px 4px;
+    border-radius: 3px;
+}
 """
 
 
