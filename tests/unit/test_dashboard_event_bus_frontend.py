@@ -195,10 +195,8 @@ def test_assembled_javascript_init_runs():
     Runtime smoke test that catches what ``--check`` (syntax-only)
     misses. Particularly: TDZ ReferenceErrors when a module's top-level
     code touches a ``let``/``const`` from a module that hasn't evaluated
-    yet (the bug class that produced
-    'Cannot access "_jobRegistryPromise" before initialization' and
-    'Cannot access "costsState" before initialization' after the
-    scripts/{core,tabs,surfaces}/ restructure).
+    yet — for example, the page-shell init block calling a tab loader
+    whose body references a ``let`` declared in that tab's module.
 
     Skips when Node isn't on PATH; the test harness ``eval_dashboard_init.cjs``
     sets up a minimal browser stub (document, window, EventSource, fetch,
@@ -247,9 +245,9 @@ def test_assembled_javascript_parses():
     page concatenates them all into one ``<script>`` block. Per-module
     string-content tests do NOT detect cross-module breakage like an
     orphan function body whose ``function`` declaration was lost
-    during an extraction (the failure mode that produced
-    'Uncaught SyntaxError: Illegal return statement' after the
-    scripts/{core,tabs,surfaces}/ restructure).
+    during an extraction (which surfaces in the browser as
+    'Uncaught SyntaxError: Illegal return statement' and halts every
+    script on the page).
 
     Skips when Node.js isn't available — in CI the runner provides it.
     """

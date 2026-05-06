@@ -73,16 +73,15 @@ from .tabs.threads import main as threads
 # * ``threads_card``, ``threads_actions``, ``threads_group`` after
 #   ``threads.script`` — the latter publishes ``window.threadsSurface``
 #   onto which the cluster modules attach.
-# * ``page`` LAST. core/page.py's init block calls ``_loadJobRegistry()``
-#   synchronously and queues ``_initFromHash`` for ``DOMContentLoaded``.
-#   Both touch ``let``/``const`` declarations in tab modules
-#   (``_jobRegistryPromise`` in tabs/jobs.py, ``costsState`` in
-#   tabs/costs.py, ``chatsState`` in tabs/chats.py). Those vars stay in
-#   the Temporal Dead Zone until their declaring module evaluates, so
-#   page.py MUST run after every tab module to avoid TDZ ReferenceError.
-#   This is the single load-bearing reversal vs the original
-#   script_main.py order, where these lived in one big file and were
-#   declared above the init call by line number.
+# * ``page`` LAST. ``core/page.py`` runs init at script-load time:
+#   ``_loadJobRegistry()`` synchronously and ``_initFromHash`` queued
+#   for ``DOMContentLoaded``. Both touch ``let``/``const`` declarations
+#   that live in tab modules (``_jobRegistryPromise`` in tabs/jobs.py,
+#   ``costsState`` in tabs/costs.py, ``chatsState`` in tabs/chats.py).
+#   Those vars stay in the Temporal Dead Zone until their declaring
+#   module evaluates, so page.py MUST run after every tab module —
+#   touching a TDZ ``let`` raises ReferenceError and halts the whole
+#   ``<script>`` block.
 SCRIPTS = [
     event_bus.script,
     helpers.script,
