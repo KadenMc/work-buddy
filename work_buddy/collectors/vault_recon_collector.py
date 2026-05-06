@@ -103,6 +103,15 @@ def _escalation_history_path() -> Path:
     return _ledger_dir() / "escalation_history.jsonl"
 
 
+def _accepted_queries_path() -> Path:
+    """Persisted Datacore queries the user has accepted via investigation
+    proposals. Read by datacore_collector at every bundle assembly and
+    merged with its built-in CONTEXT_QUERIES list. Each entry is a
+    CONTEXT_QUERIES-shaped dict augmented with provenance metadata
+    (source rule, focus, accepted_at, notification_id) for auditability."""
+    return _ledger_dir() / "accepted_queries.json"
+
+
 # ── Ledger I/O ──────────────────────────────────────────────────
 
 
@@ -746,6 +755,222 @@ def _surface_consent_request_for_investigation(rule: dict) -> str:
         return ""
 
 
+# ── Accepted-queries persistence + query derivation ─────────────
+#
+# When a user clicks an `act` choice on an investigation proposal, the
+# system records the commitment AND derives a Datacore query that
+# matches the (rule, focus) shape. The query is appended to a JSON file
+# the datacore_collector reads at every context-bundle assembly. No
+# further agent prompting required — (rule, focus) uniquely determines
+# a sensible recurring query.
+
+
+def _read_accepted_queries() -> list[dict]:
+    p = _accepted_queries_path()
+    if not p.exists():
+        return []
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        return data if isinstance(data, list) else []
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning("Failed to read accepted_queries.json: %s", e)
+        return []
+
+
+def _write_accepted_queries(queries: list[dict]) -> None:
+    p = _accepted_queries_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(".tmp")
+    tmp.write_text(json.dumps(queries, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(p)
+
+
+def _query_for_firing(rule_name: str, focus: str, evidence: dict | None = None) -> dict | None:
+    """Derive a CONTEXT_QUERIES-shaped dict from a rule firing.
+
+    Returns ``None`` if the (rule, focus) shape isn't recognized — the
+    caller skips the auto-add. Each entry follows the schema in
+    work_buddy/collectors/datacore_collector.py:
+    {name, description, query, fields, limit, format, key_field}.
+
+    Conventions:
+    - new_type:<value>          → all pages with that frontmatter type
+    - stuck_state:<type>:<status> → pages at that type+status combo
+    - status_backlog_growing:<type>:<status> → same query as stuck_state
+    - new_tag_family:#<root>/<child> → pages tagged in that family
+    - path_activity_spike:path:<prefix> → pages under that path prefix
+    """
+    evidence = evidence or {}
+
+    # Datacore exposes frontmatter fields as direct field references on
+    # @page (NOT via $frontmatter.<name> — that path errors with
+    # "null index string" when pages lack the field). Use the bare field
+    # name in the query and gate with `exists(field)` to filter to pages
+    # that have it.
+
+    if rule_name == "new_type":
+        # focus shape: "type:hypothesis"
+        if not focus.startswith("type:"):
+            return None
+        type_value = focus.split(":", 1)[1]
+        return {
+            "name": f"Pages with type = {type_value}",
+            "description": (
+                f"Surface all pages where frontmatter type is "
+                f"'{type_value}' (auto-added from vault-recon "
+                f"new_type firing)."
+            ),
+            "query": f'@page and exists(type) and type = "{type_value}"',
+            "fields": ["$path", "status", "$mtime"],
+            "limit": 50,
+            "format": "table",
+            "key_field": "$path",
+        }
+
+    if rule_name in ("stuck_state", "status_backlog_growing"):
+        # focus shape: "hypothesis:PROPOSED"
+        parts = focus.split(":", 1)
+        if len(parts) != 2:
+            return None
+        type_value, status_value = parts
+        return {
+            "name": f"{type_value} at status {status_value!r}",
+            "description": (
+                f"Surface pages where type='{type_value}' and "
+                f"status='{status_value}' (auto-added from vault-recon "
+                f"{rule_name} firing)."
+            ),
+            "query": (
+                f'@page and exists(type) and type = "{type_value}" '
+                f'and exists(status) and status = "{status_value}"'
+            ),
+            "fields": ["$path", "$mtime"],
+            "limit": 50,
+            "format": "table",
+            "key_field": "$path",
+        }
+
+    if rule_name == "new_tag_family":
+        # focus shape: "#mide/workflow"
+        if not focus.startswith("#"):
+            return None
+        tag = focus
+        return {
+            "name": f"Pages tagged {tag}",
+            "description": (
+                f"Surface pages tagged {tag} (auto-added from vault-recon "
+                f"new_tag_family firing)."
+            ),
+            "query": f"@page and {tag}",
+            "fields": ["$path", "$mtime"],
+            "limit": 50,
+            "format": "table",
+            "key_field": "$path",
+        }
+
+    if rule_name == "path_activity_spike":
+        # focus shape: "path:repos/electricrag"
+        if not focus.startswith("path:"):
+            return None
+        path_prefix = focus.split(":", 1)[1]
+        return {
+            "name": f"Recent activity in {path_prefix}",
+            "description": (
+                f"Surface pages under path('{path_prefix}') "
+                f"(auto-added from vault-recon path_activity_spike firing)."
+            ),
+            "query": f'@page and path("{path_prefix}")',
+            "fields": ["$path", "$mtime"],
+            "limit": 50,
+            "format": "table",
+            "key_field": "$path",
+        }
+
+    return None
+
+
+def _process_accept_responses(history: list[dict]) -> tuple[list[dict], int]:
+    """Scan escalation history for newly-accepted (kind=act) responses
+    and append derived queries to accepted_queries.json.
+
+    Mutates ``history`` entries in-place to mark them ``processed_act=true``
+    so later runs skip them. Caller is responsible for persisting the
+    updated history back to disk.
+
+    Returns (updated_history, num_queries_added).
+    """
+    accepted = _read_accepted_queries()
+    existing_ids = {q.get("source_notification_id") for q in accepted}
+    added = 0
+
+    for entry in history:
+        if entry.get("processed_act"):
+            continue
+        notification_id = entry.get("notification_id")
+        if not notification_id:
+            continue
+        if notification_id in existing_ids:
+            entry["processed_act"] = True  # already added in a prior run
+            continue
+        kind, responded_at = _resolve_response_kind(notification_id)
+        if kind != "act":
+            # not an accept — nothing to wire; mark processed only if
+            # response is final (decline / defer); leave pending alone
+            # so we re-check after the user responds.
+            if kind in ("decline", "defer"):
+                entry["processed_act"] = True
+            continue
+
+        rule_name = entry.get("rule")
+        focus = entry.get("focus")
+        if not rule_name or not focus:
+            entry["processed_act"] = True
+            continue
+
+        derived = _query_for_firing(rule_name, focus, entry.get("evidence"))
+        if derived is None:
+            logger.warning(
+                "Accept on rule=%s focus=%s but no query derivation defined; skipping",
+                rule_name, focus,
+            )
+            entry["processed_act"] = True
+            continue
+
+        derived["source_rule"] = rule_name
+        derived["source_focus"] = focus
+        derived["source_notification_id"] = notification_id
+        derived["accepted_at"] = responded_at or datetime.now(timezone.utc).isoformat()
+        accepted.append(derived)
+        existing_ids.add(notification_id)
+        entry["processed_act"] = True
+        added += 1
+        logger.info(
+            "vault-recon: accepted query auto-added for rule=%s focus=%s "
+            "notification=%s",
+            rule_name, focus, notification_id,
+        )
+
+    if added:
+        _write_accepted_queries(accepted)
+    return history, added
+
+
+def _rewrite_escalation_history(history: list[dict]) -> None:
+    """Atomically rewrite escalation_history.jsonl with the given list.
+
+    Used after _process_accept_responses mutates entries with
+    ``processed_act=true``. JSONL is append-only by convention but for
+    in-place state updates we rewrite atomically via .tmp + replace.
+    """
+    p = _escalation_history_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(".tmp")
+    with tmp.open("w", encoding="utf-8") as f:
+        for entry in history:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    tmp.replace(p)
+
+
 # ── Main entry point ────────────────────────────────────────────
 
 
@@ -800,6 +1025,15 @@ def vault_recon_collect(
             logger.error("rule %s raised: %s", rule_fn.__name__, e)
 
     escalation_history = _read_escalation_history()
+
+    # Process any newly-accepted (kind=act) responses on past escalations:
+    # derive a Datacore query from (rule, focus), append to the persisted
+    # accepted_queries.json so datacore_collector picks it up next bundle,
+    # and mark the entry processed so we don't double-add.
+    escalation_history, accepted_queries_added = _process_accept_responses(escalation_history)
+    if accepted_queries_added:
+        _rewrite_escalation_history(escalation_history)
+
     consent_granted = _agent_spawn_consent_granted()
     spawns = []
     consent_requests = []
@@ -844,6 +1078,7 @@ def vault_recon_collect(
         "rules_fired": len(fires),
         "escalations_spawned": len(spawns),
         "consent_requested": len(consent_requests),
+        "accepted_queries_added": accepted_queries_added,
         "fires_detail": [{"rule": f["rule"], "focus": f["focus"]} for f in fires],
         "spawns_detail": spawns,
         "consent_requests_detail": consent_requests,

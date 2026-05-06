@@ -453,6 +453,190 @@ def test_missing_kind_falls_back_to_7d_legacy(monkeypatch):
     assert vrc._is_recent_escalation("new_type", "type:hypothesis", history) is False
 
 
+# ── Query derivation per rule ───────────────────────────────────
+
+
+def test_query_for_firing_new_type():
+    q = vrc._query_for_firing("new_type", "type:hypothesis")
+    assert q is not None
+    # Direct field access (`type = ...`), NOT `$frontmatter.type` — the
+    # latter errors with "null index string" when pages lack the field.
+    # `exists(...)` guards against that.
+    assert q["query"] == '@page and exists(type) and type = "hypothesis"'
+    assert "hypothesis" in q["name"]
+    assert "format" in q
+    assert "fields" in q
+
+
+def test_query_for_firing_stuck_state():
+    q = vrc._query_for_firing("stuck_state", "hypothesis:PROPOSED")
+    assert q is not None
+    assert '"hypothesis"' in q["query"]
+    assert '"PROPOSED"' in q["query"]
+    assert "exists(type)" in q["query"]
+    assert "exists(status)" in q["query"]
+    # Should NOT use $frontmatter.X path (errors on missing fields)
+    assert "$frontmatter." not in q["query"]
+
+
+def test_query_for_firing_status_backlog_growing_same_as_stuck():
+    q1 = vrc._query_for_firing("stuck_state", "hypothesis:PROPOSED")
+    q2 = vrc._query_for_firing("status_backlog_growing", "hypothesis:PROPOSED")
+    assert q1["query"] == q2["query"]
+
+
+def test_query_for_firing_new_tag_family():
+    q = vrc._query_for_firing("new_tag_family", "#mide/workflow")
+    assert q is not None
+    assert "#mide/workflow" in q["query"]
+    assert q["query"].startswith("@page")
+
+
+def test_query_for_firing_path_activity_spike():
+    q = vrc._query_for_firing("path_activity_spike", "path:repos/electricrag")
+    assert q is not None
+    assert 'path("repos/electricrag")' in q["query"]
+
+
+def test_query_for_firing_unknown_rule_returns_none():
+    assert vrc._query_for_firing("nonexistent_rule", "type:foo") is None
+
+
+def test_query_for_firing_malformed_focus_returns_none():
+    # new_type expects "type:<value>"
+    assert vrc._query_for_firing("new_type", "no_prefix") is None
+    # stuck_state expects "<type>:<status>" with colon
+    assert vrc._query_for_firing("stuck_state", "no_colon") is None
+
+
+# ── Accepted-queries persistence + processing ──────────────────
+
+
+def test_process_accept_responses_no_responses(tmp_path, monkeypatch):
+    """No notification_id on entries → nothing to process."""
+    monkeypatch.setattr(vrc, "_ledger_dir", lambda: tmp_path)
+    history = [
+        {"rule": "new_type", "focus": "type:foo", "ts": _ts(days_ago=1)},
+    ]
+    out, added = vrc._process_accept_responses(history)
+    assert added == 0
+    assert not (tmp_path / "accepted_queries.json").exists()
+
+
+def test_process_accept_responses_writes_query_on_act(tmp_path, monkeypatch):
+    """kind=act response → query derived + appended to file + entry marked processed."""
+    monkeypatch.setattr(vrc, "_ledger_dir", lambda: tmp_path)
+    notif = _FakeNotif(
+        value="add_stuck_monitor",
+        choices=[{"key": "add_stuck_monitor", "label": "Watch it", "kind": "act"}],
+        responded_at=_ts(days_ago=0),
+    )
+    _patch_get_notification(monkeypatch, {"req_X": notif})
+
+    history = [{
+        "rule": "new_type", "focus": "type:hypothesis",
+        "ts": _ts(days_ago=1), "notification_id": "req_X",
+    }]
+    out, added = vrc._process_accept_responses(history)
+
+    assert added == 1
+    assert out[0]["processed_act"] is True
+
+    accepted_path = tmp_path / "accepted_queries.json"
+    assert accepted_path.exists()
+    queries = json.loads(accepted_path.read_text(encoding="utf-8"))
+    assert len(queries) == 1
+    q = queries[0]
+    assert q["source_rule"] == "new_type"
+    assert q["source_focus"] == "type:hypothesis"
+    assert q["source_notification_id"] == "req_X"
+    assert "hypothesis" in q["query"]
+
+
+def test_process_accept_responses_skips_decline(tmp_path, monkeypatch):
+    """kind=decline → no query added, but entry IS marked processed (terminal)."""
+    monkeypatch.setattr(vrc, "_ledger_dir", lambda: tmp_path)
+    notif = _FakeNotif(
+        value="dismiss",
+        choices=[{"key": "dismiss", "label": "no", "kind": "decline"}],
+        responded_at=_ts(days_ago=0),
+    )
+    _patch_get_notification(monkeypatch, {"req_X": notif})
+
+    history = [{
+        "rule": "new_type", "focus": "type:hypothesis",
+        "ts": _ts(days_ago=1), "notification_id": "req_X",
+    }]
+    out, added = vrc._process_accept_responses(history)
+
+    assert added == 0
+    assert out[0]["processed_act"] is True  # decline is terminal — don't re-check
+    assert not (tmp_path / "accepted_queries.json").exists()
+
+
+def test_process_accept_responses_leaves_pending_unprocessed(tmp_path, monkeypatch):
+    """No response yet → don't mark processed (will re-check next run)."""
+    monkeypatch.setattr(vrc, "_ledger_dir", lambda: tmp_path)
+    notif = _FakeNotif(value=None, choices=[], responded_at=None)
+    _patch_get_notification(monkeypatch, {"req_X": notif})
+
+    history = [{
+        "rule": "new_type", "focus": "type:hypothesis",
+        "ts": _ts(days_ago=1), "notification_id": "req_X",
+    }]
+    out, added = vrc._process_accept_responses(history)
+
+    assert added == 0
+    assert "processed_act" not in out[0]
+
+
+def test_process_accept_responses_dedupes_via_existing_file(tmp_path, monkeypatch):
+    """Re-running on the same accepted notification doesn't re-add the query."""
+    monkeypatch.setattr(vrc, "_ledger_dir", lambda: tmp_path)
+    notif = _FakeNotif(
+        value="add_stuck_monitor",
+        choices=[{"key": "add_stuck_monitor", "label": "Watch", "kind": "act"}],
+        responded_at=_ts(days_ago=0),
+    )
+    _patch_get_notification(monkeypatch, {"req_X": notif})
+
+    history = [{
+        "rule": "new_type", "focus": "type:hypothesis",
+        "ts": _ts(days_ago=1), "notification_id": "req_X",
+    }]
+    # First run: should add
+    _, added1 = vrc._process_accept_responses(history)
+    assert added1 == 1
+
+    # Reset the entry (simulate a fresh run that hasn't seen processed_act yet,
+    # e.g., entries appended later via _rewrite logic — the file-level dedup
+    # via existing_ids should catch it).
+    history[0].pop("processed_act", None)
+    _, added2 = vrc._process_accept_responses(history)
+    assert added2 == 0
+    queries = json.loads((tmp_path / "accepted_queries.json").read_text(encoding="utf-8"))
+    assert len(queries) == 1
+
+
+def test_process_accept_responses_unknown_rule_marks_processed(tmp_path, monkeypatch):
+    """Act on a rule with no known query template → log warning, mark processed."""
+    monkeypatch.setattr(vrc, "_ledger_dir", lambda: tmp_path)
+    notif = _FakeNotif(
+        value="some_act",
+        choices=[{"key": "some_act", "label": "x", "kind": "act"}],
+        responded_at=_ts(days_ago=0),
+    )
+    _patch_get_notification(monkeypatch, {"req_X": notif})
+
+    history = [{
+        "rule": "weird_rule_with_no_template", "focus": "anything",
+        "ts": _ts(days_ago=1), "notification_id": "req_X",
+    }]
+    out, added = vrc._process_accept_responses(history)
+    assert added == 0
+    assert out[0]["processed_act"] is True  # don't keep re-checking
+
+
 # ── prune_old ────────────────────────────────────────────────────
 
 
