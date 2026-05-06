@@ -29,7 +29,7 @@ inline.
 
 from __future__ import annotations
 
-from .core import event_bus, notifications, page, palette, workflows
+from .core import event_bus, helpers, notifications, page, palette, workflows
 from .surfaces import resolution, triage
 # resolution_decorator is intentionally NOT imported into the registry.
 # It is the older Triage decorator that was shadowed by the FSM
@@ -62,6 +62,7 @@ from .tabs.threads import main as threads
 #   onto which the cluster modules attach.
 SCRIPTS = [
     event_bus.script,
+    helpers.script,
     page.script,
     workflows.script,
     notifications.script,
