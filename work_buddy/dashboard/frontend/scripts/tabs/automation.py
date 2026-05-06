@@ -5,21 +5,21 @@ Log / Engage). Those views were removed once the Threads tab became
 the canonical resolution surface. What remains here are two small
 utilities still used by other modules:
 
-- ``_autEsc`` — the HTML-escape helper used by ``script_today.py``.
+- ``_autEsc`` — the HTML-escape helper used by ``tabs/today.py``.
 - ``.section-subtitle`` — the small grey caption next to section
   titles, used by Today and the (kept) Review Queue / inline
   controls.
 
-Kept named ``script_automation.*`` to minimize churn in
+Kept named ``tabs/automation.*`` to minimize churn in
 ``frontend/__init__.py`` and the rendered ``<script>`` order. If a
 future cleanup pass moves these utilities into ``styles.py`` and
-``script_today.py``, this module can be deleted.
+``tabs/today.py``, this module can be deleted.
 """
 
 from __future__ import annotations
 
 
-def _automation_script() -> str:
+def script() -> str:
     return r"""
 // ---- Shared frontend helpers ------------------------------------------
 
@@ -31,7 +31,7 @@ function _autEsc(s) {
 """
 
 
-def _automation_styles() -> str:
+def styles() -> str:
     return r"""
 /* Section-title caption — small grey suffix used by Today and other
  * tabs that want a "<title> · subtitle" header. Was originally

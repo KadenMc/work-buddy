@@ -144,7 +144,7 @@ def _html() -> str:
 <!-- Background-triage pending-review pool. Populated by the hourly
      journal-triage cron (and any future background-triage producer).
      Inline, persistent view — uses the shared triage renderer from
-     script_triage.py (same layout as the Chrome triage modal). -->
+     surfaces/triage.py (same layout as the Chrome triage modal). -->
 <div class="tab-panel" id="panel-review">
     <div class="review-toolbar">
         <div class="section-title">Triage Review</div>
@@ -161,7 +161,7 @@ def _html() -> str:
 </div>
 
 <!-- Item-detail drawer. Persistent in the DOM, slides in/out from
-     the right. Populated by script_review.py when an item's eye
+     the right. Populated by tabs/review.py when an item's eye
      icon is clicked. Lives outside the tab panels so it overlays
      the whole page regardless of which tab is active. -->
 <aside id="review-drawer" class="review-drawer" aria-hidden="true">
@@ -376,7 +376,7 @@ def _html() -> str:
         <div class="costs-toolbar-right">
             <!-- Rate-limit headroom chip + popover. Hidden until we have
                  at least one observation. Click expands; click outside
-                 collapses. See script_costs.py for behaviour. -->
+                 collapses. See tabs/costs.py for behaviour. -->
             <span id="costs-rate-chip" class="costs-rate-chip"
                   style="display: none;"
                   onclick="costsToggleRateLimitPopover(event)"

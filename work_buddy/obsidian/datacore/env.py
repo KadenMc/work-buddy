@@ -213,18 +213,56 @@ def evaluate(
 def schema_summary(sample_limit: int = 200) -> dict[str, Any]:
     """Summarize the vault's Datacore schema.
 
-    Samples pages to discover common tags, frontmatter keys, path prefixes,
-    and object type counts.
+    Walks all pages to count tags, frontmatter keys, and path prefixes.
 
     Args:
-        sample_limit: Maximum pages to sample for tag/field discovery.
+        sample_limit: Retained for API compatibility; ignored. Earlier versions
+            stride-sampled pages, which undercounted by ~36x on a 6k-page vault.
 
     Returns:
         Dict with 'object_types', 'top_tags', 'frontmatter_keys',
-        'path_prefixes', 'task_statuses'.
+        'path_prefixes', 'task_statuses', 'pages_sampled', 'pages_total'.
+        ``pages_sampled`` equals ``pages_total`` (full walk).
     """
     return _run_js(
         "schema_summary.js",
         {"__SAMPLE_LIMIT__": str(sample_limit)},
-        timeout=20,
+        timeout=60,
+    )
+
+
+@reduces_risk_for("obsidian.eval_js", "low")
+def vault_recon(
+    path_prefix: str | None = None,
+    activity_days: int = 30,
+    timeout: int = 90,
+) -> dict[str, Any]:
+    """Diagnostic-grade vault reconnaissance.
+
+    Single page walk that produces cross-tabs an agent can reason over to
+    spot recurring conventions: frontmatter state machines (type x status),
+    tag families (depth-3 tree), path-by-type distribution, recent activity
+    by region. Cardinality caps prevent UUID-style frontmatter and timestamp
+    leaves from drowning the result.
+
+    Args:
+        path_prefix: Optional vault-relative path prefix (e.g. "repos/electricrag/")
+            to scope the walk. ``None`` walks the full vault.
+        activity_days: Lookback window for ``recent_activity_by_path`` (default 30).
+        timeout: Bridge timeout. 90s safety margin against bridge spikes; the
+            actual JS work over a 6k-page vault runs in <1s.
+
+    Returns:
+        Dict with snapshot_ts, object_types, pages_total, pages_walked,
+        top_tags, frontmatter_keys, frontmatter_values (capped), path_prefixes,
+        tag_tree (depth 3), type_by_status, path_by_type, recent_activity_by_path,
+        high_cardinality_keys, task_statuses, tasks_total.
+    """
+    return _run_js(
+        "vault_recon.js",
+        {
+            "__PATH_PREFIX__": _escape_js(path_prefix) if path_prefix else "",
+            "__ACTIVITY_DAYS__": str(activity_days),
+        },
+        timeout=timeout,
     )

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 
-def _triage_clarify_script() -> str:
+def clarify_script() -> str:
     return r"""
 registerViewRenderer('triage_clarify', function(container, viewId, payload) {
     const pres = payload.presentation || {};
@@ -206,7 +206,7 @@ registerViewRenderer('triage_clarify', function(container, viewId, payload) {
 # ---------------------------------------------------------------------------
 
 
-def _triage_review_script() -> str:
+def review_script() -> str:
     return r"""
 // Mount-anywhere renderer for the triage-review UI. Originally only
 // used inside the workflow-view modal (via `registerViewRenderer` on
@@ -226,7 +226,7 @@ def _triage_review_script() -> str:
 //       path uses it to remove the workflow tab; Review tab uses it
 //       to refresh the pool.
 // Card-action helpers shared by the inline button (renderItem below)
-// and the Review-drawer (script_review.py). Module-scoped so they're
+// and the Review-drawer (tabs/review.py). Module-scoped so they're
 // not redefined per render; defined as window properties so the drawer
 // can call them across script files.
 //
@@ -1180,7 +1180,7 @@ function renderTriageReview(container, presentation, options) {
     // Per-card mutation handle (SSE-driven incremental updates)
     // ------------------------------------------------------------------
     //
-    // The dispatcher in script_event_bus.py calls these mutators when a
+    // The dispatcher in core/event_bus.py calls these mutators when a
     // pool.* event arrives. The handle closes over the same `state`,
     // `dragItem`/`dragSourceGroup`, and helpers as the rest of this
     // function — no closure-lift required. SSE handlers MUST NOT call
@@ -1212,7 +1212,7 @@ function renderTriageReview(container, presentation, options) {
         );
     }
     function _decorate(card, group) {
-        // Resolution Surface decorator is idempotent (script_resolution.py:85).
+        // Resolution Surface decorator is idempotent (surfaces/resolution_decorator.py:85).
         const dec = (typeof options.decorateCard === 'function')
             ? options.decorateCard
             : (() => {});
@@ -1391,7 +1391,7 @@ function renderTriageReview(container, presentation, options) {
             const card = _findCard(run_id, item_id);
             if (!card) return;
             // Same visual retire as the user-initiated Re-direct path
-            // in script_resolution.py:385-392 — keeps consistency.
+            // in surfaces/resolution_decorator.py:385-392 — keeps consistency.
             card.classList.add('wv-card-redirected');
         },
 

@@ -11,7 +11,7 @@ UX.md §2 (navigation) and §11 (URLs) are the spec.
 from __future__ import annotations
 
 
-def _threads_script() -> str:
+def script() -> str:
     return r"""
 // ===========================================================================
 // Threads tab — URL routing + recursive UI scaffold
@@ -23,7 +23,7 @@ def _threads_script() -> str:
     // ----- State ---------------------------------------------------------
     //
     // window._threadsState is the single source of truth. _persistHash
-    // (in script_main.py) reads it to encode the URL; _initFromHash writes
+    // (in core/page.py) reads it to encode the URL; _initFromHash writes
     // it to seed the initial render.
     //
     // Shape:
@@ -637,8 +637,8 @@ def _threads_script() -> str:
             // detects ``parent_relationship === 'group'`` and swaps
             // its flat list for the multi-column drag/drop grid via
             // ``window.renderGroupSubThreads`` — see
-            // script_threads_card.py:_renderSubThreadsLink and
-            // script_threads_group.py. Earlier wave had a
+            // tabs/threads/card.py:_renderSubThreadsLink and
+            // tabs/threads/group.py. Earlier wave had a
             // top-level diversion that hid the standard header,
             // intent, namespace tags, actions, and timeline button
             // from group-parents — fixed here.
@@ -1089,11 +1089,11 @@ def _threads_script() -> str:
     }
 
     window.loadThreads = function (_opts) {
-        // Apply any state seeded by _initFromHash (script_main.py)
+        // Apply any state seeded by _initFromHash (core/page.py)
         renderThreads();
     };
 
-    // Exposed so card-state mutators (in script_threads_card.py)
+    // Exposed so card-state mutators (in tabs/threads/card.py)
     // can trigger a re-render after toggling X-flags or changing
     // focus, without re-implementing renderThreads here.
     window._renderActiveThread = renderThreads;
@@ -1103,7 +1103,7 @@ def _threads_script() -> str:
         if (typeof window.staticLoaders === "object" && window.staticLoaders) {
             window.staticLoaders.threads = window.loadThreads;
         }
-    } catch (e) { /* deferred to script_main's pre-registration */ }
+    } catch (e) { /* deferred to core/page's pre-registration */ }
 
     // Wave C — keyboard navigation. Per the user's MEMORY note,
     // j is UP and k is DOWN (inverted vim convention). Other
@@ -1300,7 +1300,7 @@ def _threads_script() -> str:
 
     // Hashchange listener: when the user uses browser back/forward, the
     // hash changes; re-extract state and re-render iff currently on the
-    // Threads tab. (script_main.py already calls _initFromHash on
+    // Threads tab. (core/page.py already calls _initFromHash on
     // pageload; this handles in-session hash changes.)
     window.addEventListener("hashchange", function () {
         const params = new URLSearchParams(
@@ -1319,7 +1319,7 @@ def _threads_script() -> str:
 """
 
 
-def _threads_styles() -> str:
+def styles() -> str:
     return r"""
 /* Stage 4.1 — placeholder + breadcrumbs + inspector modal scaffold */
 

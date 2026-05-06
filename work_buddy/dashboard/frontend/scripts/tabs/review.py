@@ -2,7 +2,7 @@
 
 Thin adapter: fetches the pending-review presentation and mounts the
 Slice 1.5 Resolution Surface (``mountResolutionSurface`` defined in
-``script_resolution.py``), which decorates the shared
+``surfaces/resolution_decorator.py``), which decorates the shared
 ``renderTriageReview`` renderer with type-aware affordances:
 
 - pipeline-blocker badges (typed reasons per ROADMAP §3.3)
@@ -28,7 +28,7 @@ the shared renderer eliminates both problems.
 from __future__ import annotations
 
 
-def _review_script() -> str:
+def script() -> str:
     return r"""
 // ---- Review tab: background-triage pending-review pool ----
 
@@ -68,7 +68,7 @@ async function loadReview() {
 
     if (typeof window.mountResolutionSurface !== 'function') {
         container.innerHTML = '<div class="empty-state">Resolution Surface not loaded \u2014 ' +
-            'script_resolution.py and script_triage.py must be included in the page.</div>';
+            'surfaces/resolution_decorator.py and surfaces/triage.py must be included in the page.</div>';
         return;
     }
 
@@ -171,7 +171,7 @@ function openReviewDrawer(item, group, presentation) {
     }
 
     // --- Per-source "open in app" actions (e.g. email → Thunderbird) ---
-    // Same shape and POST target as the inline buttons in script_triage.py.
+    // Same shape and POST target as the inline buttons in surfaces/triage.py.
     // Source-of-truth: work_buddy.clarify.card_actions.
     if (Array.isArray(item.actions) && item.actions.length > 0) {
         const sec = document.createElement('div');

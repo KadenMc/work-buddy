@@ -1567,6 +1567,7 @@ def _context_capabilities() -> list[Capability]:
         datacore_schema,
         datacore_compile_plan,
         datacore_run_plan,
+        vault_recon,
     )
     from work_buddy.embedding.client import ir_index as _ir_index_client
     from work_buddy.sessions.inspector import (
@@ -2598,6 +2599,28 @@ def _context_capabilities() -> list[Capability]:
             ],
             parameters={},
             callable=datacore_schema,
+            requires=["obsidian", "datacore"],
+        ),
+        Capability(
+            name="vault_recon",
+            description="Diagnostic-grade vault reconnaissance. Returns cross-tabs an agent can reason over to spot recurring conventions: frontmatter state machines (type x status), tag families (depth-3 tree), path-by-type distribution, recent activity by region, cardinality-capped frontmatter values. Single page walk with anti-noise caps.",
+            category="context",
+            search_aliases=[
+                "vault reconnaissance",
+                "vault recon",
+                "vault structure analysis",
+                "frontmatter state machine",
+                "type by status",
+                "tag tree",
+                "vault cross-tab",
+                "vault patterns",
+                "discover vault conventions",
+            ],
+            parameters={
+                "path_prefix": {"type": "str", "description": "Optional vault-relative path prefix to scope the walk (e.g. 'repos/electricrag/'). Default: full vault.", "required": False},
+                "activity_days": {"type": "int", "description": "Lookback window in days for recent_activity_by_path. Default: 30.", "required": False},
+            },
+            callable=vault_recon,
             requires=["obsidian", "datacore"],
         ),
         Capability(

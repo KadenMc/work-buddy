@@ -3,7 +3,7 @@ entries whose groups had decisions submitted — not the entire pool.
 
 Prior behavior walked all groups in the presentation and stamped every
 entry, so submitting one card via the per-group-submit frontend
-(``perGroupSubmit: true`` in script_review.py) caused every other card
+(``perGroupSubmit: true`` in scripts/tabs/review.py) caused every other card
 to silently disappear from the Review tab. Bug surfaced when raw
 entries (Slice 1's verdict-pass-off mode) all clustered in the
 ``leave`` bucket, making the data-loss obvious.

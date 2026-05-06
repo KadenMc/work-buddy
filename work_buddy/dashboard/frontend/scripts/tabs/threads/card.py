@@ -4,7 +4,7 @@ Implements the two-pane confirmation card layout (UX.md §4 + §5).
 
 Exposed:
 - ``window.renderConfirmationCard(threadData)`` — returns HTML for
-  the card. Used by ``renderThreadDetail`` (in script_threads.py).
+  the card. Used by ``renderThreadDetail`` (in tabs/threads/main.py).
 - ``window.threadCardState`` — per-card local state (X-flags, edits,
   focused element). Persists in-page until card refresh.
 
@@ -32,7 +32,7 @@ The card data shape (mocked in 4.2; real backend in 4.3):
 from __future__ import annotations
 
 
-def _threads_card_script() -> str:
+def script() -> str:
     return r"""
 // ===========================================================================
 // Stage 4.2 — Confirmation card layout (visual only)
@@ -169,7 +169,7 @@ def _threads_card_script() -> str:
         // No re-render — the user is typing
     };
 
-    // Public helper — the commit handler in script_threads.py
+    // Public helper — the commit handler in tabs/threads/main.py
     // calls this to assemble the request body for /api/threads/<id>/accept.
     // Returns ``null`` if there are no edits (so we don't pollute
     // the request).
@@ -695,7 +695,7 @@ def _threads_card_script() -> str:
         // "sub-thread list shows children of that Thread").
         // 2026-05-04: group-parents render the multi-column drag/
         // drop grid here in place of the flat list — see
-        // script_threads_group.py:renderGroupSubThreads. The
+        // tabs/threads/group.py:renderGroupSubThreads. The
         // section header + aggregated state badges stay; the body
         // is the only thing that swaps.
         const isGroup = thread.parent_relationship === 'group'
@@ -1487,7 +1487,7 @@ def _threads_card_script() -> str:
 """
 
 
-def _threads_card_styles() -> str:
+def styles() -> str:
     return r"""
 /* Stage 4.2 — Confirmation card layout */
 

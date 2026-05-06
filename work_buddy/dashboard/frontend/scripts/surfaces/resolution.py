@@ -18,7 +18,7 @@ rendered when called. **Nothing emits resolution_request views yet
 in Stage 1.** Stage 2 wires the FSM to publish them through the
 consent system.
 
-Note: the older ``script_resolution.py`` is a *Triage* surface
+Note: the older ``surfaces/resolution_decorator.py`` is a *Triage* surface
 decorator that does not interpret ``ResolutionRequest`` payloads —
 the Threads-FSM surface is implemented here so the legacy triage
 path stays intact alongside it.
@@ -27,7 +27,7 @@ path stays intact alongside it.
 from __future__ import annotations
 
 
-def _resolution_surface_script() -> str:
+def script() -> str:
     return r"""
 // ---------------------------------------------------------------------------
 // Resolution Surface
@@ -179,7 +179,7 @@ def _resolution_surface_script() -> str:
 """
 
 
-def _resolution_surface_styles() -> str:
+def styles() -> str:
     return r"""
 .rs-card {
     max-width: 720px;

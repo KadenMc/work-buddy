@@ -18,20 +18,17 @@ return (async () => {
         }
     }
 
-    // Sample pages for tags and frontmatter keys
+    // Walk all pages for accurate tag and frontmatter counts.
+    // Per-page work is microsecond-level (cached field reads), so a full
+    // walk over a vault of thousands of pages still completes in <1s. The
+    // sampleLimit parameter is retained for API compatibility but ignored.
     try {
         const pages = api.query('@page');
         const tagCounts = {};
         const fmKeys = {};
         const prefixes = {};
 
-        // Stride-sample across the full page set for representative coverage
-        const stride = Math.max(1, Math.floor(pages.length / sampleLimit));
-        const sample = [];
-        for (let i = 0; i < pages.length && sample.length < sampleLimit; i += stride) {
-            sample.push(pages[i]);
-        }
-        for (const p of sample) {
+        for (const p of pages) {
             // Tags
             const tags = p.$tags || [];
             for (const t of tags) {
@@ -70,17 +67,17 @@ return (async () => {
             .sort((a, b) => b[1] - a[1])
             .map(([prefix, count]) => ({prefix, count}));
 
-        summary.pages_sampled = sample.length;
+        summary.pages_sampled = pages.length;
         summary.pages_total = pages.length;
     } catch(e) {
         summary.sample_error = e.message;
     }
 
-    // Sample task statuses
+    // Walk all task statuses for accurate counts.
     try {
         const tasks = api.query('@task');
         const statuses = {};
-        for (const t of tasks.slice(0, sampleLimit)) {
+        for (const t of tasks) {
             const s = t.$status || 'unknown';
             statuses[s] = (statuses[s] || 0) + 1;
         }

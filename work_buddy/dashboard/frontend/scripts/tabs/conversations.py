@@ -1,7 +1,7 @@
 """Conversation chat component JS.
 
-Renamed from ``script_threads.py`` — the ``Thread`` name is reserved
-for the universal-entity primitive (rendered by ``script_threads.py``
+Renamed from ``tabs/threads/main.py`` — the ``Thread`` name is reserved
+for the universal-entity primitive (rendered by ``tabs/threads/main.py``
 in its current form). The chat UI here is for agent-user dialogue
 and is rendered as a Conversation.
 """
@@ -9,7 +9,7 @@ and is rendered as a Conversation.
 from __future__ import annotations
 
 
-def _conversation_chat_script() -> str:
+def script() -> str:
     return """
 // ---- ConversationChat: reusable chat component ----
 // Mount into any container. Used by the conversation_chat view renderer

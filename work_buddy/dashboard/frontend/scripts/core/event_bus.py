@@ -21,17 +21,17 @@ bus) and the SSE generator in ``service.py`` (``_sse_stream``).
 from __future__ import annotations
 
 
-def _event_bus_script() -> str:
+def script() -> str:
     return r"""
 // ---- Real-time event bus (server-sent events) ----
 //
 // Single EventSource connection per tab. Handlers are registered by
-// per-domain modules (script_review, script_main task list, etc.) and
+// per-domain modules (tabs/review, core/page task list, etc.) and
 // are looked up by event_type. Handlers receive (payload, full_event).
 //
 // The bus does not replay events from before a reconnect; handlers
 // must be idempotent and per-tab visibility refresh is handled by the
-// `visibilitychange` listener in script_main.py.
+// `visibilitychange` listener in core/page.py.
 (function() {
     // Global morphdom-replace helper. Used by every panel renderer
     // that needs to refresh content without destroying user state

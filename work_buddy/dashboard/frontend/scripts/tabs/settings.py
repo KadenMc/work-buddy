@@ -5,14 +5,14 @@ hierarchy of domains → subsystems/components → requirements + affected
 capabilities. Phase E is read-only; Phase F will wire preference
 toggles into a ``POST /api/control/preference`` endpoint.
 
-The renderer reuses ``statusBadge()`` from ``script_main.py`` but
+The renderer reuses ``statusBadge()`` from ``core/page.py`` but
 extends the mapping for ``unconfigured`` and preference labels.
 """
 
 from __future__ import annotations
 
 
-def _settings_script() -> str:
+def script() -> str:
     return r"""
 // ---- Settings tab: unified control graph ----
 
@@ -167,7 +167,7 @@ function _isVisible(node) {
     return WB_MATCHED_SET.has(node.id);
 }
 
-// ---- Badge helper: extend script_main's statusBadge for control-graph states ----
+// ---- Badge helper: extend core/page's statusBadge for control-graph states ----
 //
 // Non-ok badges are clickable: clicking walks the graph downward from
 // the owning node, expands all ancestors, scrolls to the first bad
@@ -1124,7 +1124,7 @@ function renderSettingsTree() {
 }
 
 // Surface handle for the Settings tab. SSE handlers in
-// script_event_bus.py call refresh() on component.health_changed and
+// core/event_bus.py call refresh() on component.health_changed and
 // component.preference_changed — refetches /api/control/graph and
 // morphdom-merges into the tree. <details> open state is preserved
 // natively by morphdom; no panel-wide rewrite ever occurs.
@@ -1136,4 +1136,40 @@ window.settingsSurface = {
         return !!document.getElementById('settings-tree');
     },
 };
+
+// ---- Setup-wizard launcher ----
+async function launchSetupAgent(componentId, mode, btn) {
+    if (_readOnly) return;
+    const origText = btn.textContent;
+    btn.textContent = 'Launching...';
+    btn.disabled = true;
+
+    const prompt = '/wb-setup diagnose ' + componentId;
+
+    try {
+        const r = await fetch('/api/launch-agent', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                prompt: prompt,
+                mode: mode,
+                context: {source: 'setup_wizard', component_id: componentId}
+            }),
+        });
+        const data = await r.json();
+        if (data.success) {
+            btn.textContent = 'Launched \u2713';
+            btn.style.background = 'var(--green-subtle)';
+            btn.style.borderColor = 'var(--green)';
+            btn.style.color = 'var(--green)';
+        } else {
+            btn.textContent = data.error || 'Failed';
+            btn.disabled = false;
+        }
+    } catch (err) {
+        btn.textContent = 'Error';
+        btn.disabled = false;
+        console.error('Setup agent launch failed:', err);
+    }
+}
 """

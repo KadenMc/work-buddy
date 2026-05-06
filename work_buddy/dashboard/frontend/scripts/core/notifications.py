@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 
-def _notification_script() -> str:
+def script() -> str:
     return """
 // ---- Browser notification permission ----
 if ('Notification' in window && Notification.permission === 'default') {

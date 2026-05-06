@@ -15,6 +15,7 @@ from work_buddy.obsidian.datacore.env import (  # noqa: F401
     query,
     schema_summary,
     validate_query,
+    vault_recon,
 )
 from work_buddy.obsidian.datacore.compiler import (  # noqa: F401
     compile_plan,

@@ -45,7 +45,7 @@ roundtrip) so dismiss never 404s.
 from __future__ import annotations
 
 
-def _group_view_script() -> str:
+def script() -> str:
     return r"""
 (function () {
     if (!window._groupState) {
@@ -852,7 +852,7 @@ def _group_view_script() -> str:
             // sub-thread shows the pre-move ``context_items`` from the
             // stale cache. The umbrella's ``groupsByUmbrella`` cache
             // is updated by the optimistic step + SSE refresh, but
-            // ``_threadDetailCache`` is independent (script_threads
+            // ``_threadDetailCache`` is independent (tabs/threads/main
             // owns it) and needs explicit invalidation.
             try {
                 if (typeof window.invalidateThreadCache === "function") {
@@ -1035,7 +1035,7 @@ def _group_view_script() -> str:
         }
     }
 
-    // ---- Keyboard handler — extends script_threads's j/k --------
+    // ---- Keyboard handler — extends tabs/threads/main's j/k --------
 
     if (!window._threadsGroupKbdInstalled) {
         window._threadsGroupKbdInstalled = true;
@@ -1159,7 +1159,7 @@ def _group_view_script() -> str:
 """
 
 
-def _group_view_styles() -> str:
+def styles() -> str:
     return r"""
 /* Group-view multi-column layout. Renders inside the
  * standard thread-detail card's "Sub-threads" section when the

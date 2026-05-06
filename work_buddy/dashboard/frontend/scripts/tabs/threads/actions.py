@@ -21,7 +21,7 @@ UX.md §7.
 from __future__ import annotations
 
 
-def _threads_actions_script() -> str:
+def script() -> str:
     return r"""
 // ===========================================================================
 // Stage 4.6 — Per-action UI registry + specialized renderers
@@ -385,7 +385,7 @@ def _threads_actions_script() -> str:
 """
 
 
-def _threads_actions_styles() -> str:
+def styles() -> str:
     return r"""
 /* Stage 4.6 — per-action specialized UI */
 

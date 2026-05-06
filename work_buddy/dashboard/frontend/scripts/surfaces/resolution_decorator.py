@@ -22,7 +22,7 @@ multi-record schemas can swap individual decorations for full
 per-resolution-type renderers without touching this glue.
 
 The module owns a single public entry point — ``mountResolutionSurface``
-— that script_review.py calls instead of the bare ``renderTriageReview``.
+— that tabs/review.py calls instead of the bare ``renderTriageReview``.
 All Slice 1 patterns (``user_initiated`` consent context,
 success-only ``mark_reviewed`` filter, ``operation_errors`` surfacing,
 raw-entry rendering, ``perGroupSubmit``, bridge-timeout handling) are
@@ -33,7 +33,7 @@ this module only adds adjacent affordances.
 from __future__ import annotations
 
 
-def _resolution_surface_script() -> str:
+def script() -> str:
     return r"""
 // ---------------------------------------------------------------------------
 // Resolution Surface — Slice 1.5
@@ -246,7 +246,7 @@ window.mountResolutionSurface = function(container, presentation, options) {
     // renderTriageReview returns a per-card mutation handle (appendCard /
     // removeCard / updateCard / bumpAttractionPasses / setForcedContextStored
     // / isMounted). We pass it through verbatim so the SSE dispatcher
-    // (script_event_bus.py) can call surface mutators against the live
+    // (core/event_bus.py) can call surface mutators against the live
     // tab without touching the wholesale loader. See architecture/event-bus.
     //
     // ── LISTENER-SCOPE RULE ─────────────────────────────────────────────
@@ -736,7 +736,7 @@ function _resEsc(s) {
 """
 
 
-def _resolution_surface_styles() -> str:
+def styles() -> str:
     return r"""
 /* Resolution Surface (Slice 1.5) -- visual layer for the new affordances. */
 

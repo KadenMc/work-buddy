@@ -10,8 +10,10 @@ The dispatcher is JS embedded in a Python string. We test:
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from work_buddy.dashboard.frontend import render_page
-from work_buddy.dashboard.frontend.script_event_bus import _event_bus_script
+from work_buddy.dashboard.frontend.scripts.core.event_bus import script as _event_bus_script
 
 
 def test_dispatcher_exposes_public_api():
@@ -115,10 +117,10 @@ def test_review_surface_handle_uses_morphdom():
     diffing — not container.innerHTML rewrites or hand-rolled
     attribute mutators that miss edge cases. Phoenix LiveView /
     Hotwire convention."""
-    from work_buddy.dashboard.frontend.script_triage import (
-        _triage_review_script,
+    from work_buddy.dashboard.frontend.scripts.surfaces.triage import (
+        review_script,
     )
-    src = _triage_review_script()
+    src = review_script()
     assert "window.morphdom" in src or "morphdom(" in src
     # Sanity: the handle's mutators are present on the return value.
     assert "appendCard" in src and "removeCard" in src and "updateCard" in src
@@ -127,10 +129,10 @@ def test_review_surface_handle_uses_morphdom():
 def test_review_surface_announces_via_aria_live():
     """removeCard / appendCard must write to a polite aria-live region
     so screen-reader users hear card transitions. WCAG 4.1.3 AA."""
-    from work_buddy.dashboard.frontend.script_triage import (
-        _triage_review_script,
+    from work_buddy.dashboard.frontend.scripts.surfaces.triage import (
+        review_script,
     )
-    src = _triage_review_script()
+    src = review_script()
     assert "role" in src and "'status'" in src
     assert "aria-live" in src
     assert "_announce(" in src
@@ -141,10 +143,10 @@ def test_review_surface_has_pending_removals_set():
     before cross-process add events for the same card. removeCard
     must record the key in _pendingRemovals when no card is found,
     and appendCard must consult that set before mounting."""
-    from work_buddy.dashboard.frontend.script_triage import (
-        _triage_review_script,
+    from work_buddy.dashboard.frontend.scripts.surfaces.triage import (
+        review_script,
     )
-    src = _triage_review_script()
+    src = review_script()
     assert "_pendingRemovals" in src
 
 
@@ -156,8 +158,8 @@ def test_legacy_30s_timer_is_gone():
 
     See knowledge: 'Refresh-bug guardrail' in services/dashboard.
     """
-    from work_buddy.dashboard.frontend.script_main import _script
-    src = _script()
+    from work_buddy.dashboard.frontend.scripts.core.page import script
+    src = script()
     # Only updateClock may use setInterval — no panel-refresh interval.
     interval_lines = [l for l in src.splitlines() if "setInterval(" in l]
     for line in interval_lines:
@@ -180,7 +182,103 @@ def test_legacy_30s_timer_is_gone():
 
 
 def test_visibilitychange_listener_refreshes_active_tab():
-    from work_buddy.dashboard.frontend.script_main import _script
-    src = _script()
+    from work_buddy.dashboard.frontend.scripts.core.page import script
+    src = script()
     assert "addEventListener('visibilitychange'" in src
     assert "document.visibilityState" in src
+
+
+def test_assembled_javascript_init_runs():
+    """Eval the rendered <script> in a stubbed Node context and confirm it
+    completes without throwing.
+
+    Runtime smoke test that catches what ``--check`` (syntax-only)
+    misses. Particularly: TDZ ReferenceErrors when a module's top-level
+    code touches a ``let``/``const`` from a module that hasn't evaluated
+    yet — for example, the page-shell init block calling a tab loader
+    whose body references a ``let`` declared in that tab's module.
+
+    Skips when Node isn't on PATH; the test harness ``eval_dashboard_init.cjs``
+    sets up a minimal browser stub (document, window, EventSource, fetch,
+    setInterval) so the script's init phase can run end-to-end.
+    """
+    import shutil
+    import subprocess
+    import tempfile
+
+    import pytest
+
+    if shutil.which("node") is None:
+        pytest.skip("node not on PATH")
+
+    # Render the page to a temp file the harness can read.
+    html = render_page()
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".html", encoding="utf-8", delete=False
+    ) as fh:
+        fh.write(html)
+        html_path = fh.name
+
+    harness = (
+        Path(__file__).parent / "eval_dashboard_init.cjs"
+    ).resolve()
+    try:
+        result = subprocess.run(
+            ["node", str(harness), html_path],
+            capture_output=True,
+            text=True,
+        )
+    finally:
+        import os
+        os.unlink(html_path)
+
+    assert result.returncode == 0, (
+        f"Dashboard JS threw during init:\nstdout:\n{result.stdout}\n"
+        f"stderr:\n{result.stderr}"
+    )
+
+
+def test_assembled_javascript_parses():
+    """The full ``render_page()`` JS must be syntactically valid.
+
+    Each script module's content lives in a Python r-string, but the
+    page concatenates them all into one ``<script>`` block. Per-module
+    string-content tests do NOT detect cross-module breakage like an
+    orphan function body whose ``function`` declaration was lost
+    during an extraction (which surfaces in the browser as
+    'Uncaught SyntaxError: Illegal return statement' and halts every
+    script on the page).
+
+    Skips when Node.js isn't available — in CI the runner provides it.
+    """
+    import re
+    import shutil
+    import subprocess
+    import tempfile
+
+    import pytest
+
+    if shutil.which("node") is None:
+        pytest.skip("node not on PATH")
+
+    html = render_page()
+    m = re.search(r"<script>(.*?)</script>\s*</body>", html, re.S)
+    assert m, "render_page output is missing the body <script> block"
+    js = m.group(1)
+
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".js", encoding="utf-8", delete=False
+    ) as fh:
+        fh.write(js)
+        path = fh.name
+    try:
+        result = subprocess.run(
+            ["node", "--check", path], capture_output=True, text=True
+        )
+    finally:
+        import os
+        os.unlink(path)
+
+    assert result.returncode == 0, (
+        f"Assembled JS failed Node syntax check:\n{result.stderr}"
+    )

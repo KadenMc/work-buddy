@@ -1787,6 +1787,23 @@ def datacore_schema() -> dict:
     return schema_summary(sample_limit=200)
 
 
+def vault_recon(path_prefix: str | None = None, activity_days: int = 30) -> dict:
+    """Diagnostic-grade vault reconnaissance: cross-tabs an agent can reason over.
+
+    Returns frontmatter state machines (type x status), tag families (depth-3 tree),
+    path-by-type distribution, recent activity by region, and cardinality-capped
+    frontmatter values. Single page walk with anti-noise caps.
+
+    Args:
+        path_prefix: Optional vault-relative path prefix to scope the walk
+            (e.g. "repos/electricrag/"). None = full vault.
+        activity_days: Lookback window for recent_activity_by_path (default 30).
+    """
+    from work_buddy.obsidian.datacore.env import vault_recon as _vault_recon
+
+    return _vault_recon(path_prefix=path_prefix, activity_days=activity_days)
+
+
 def datacore_compile_plan(plan_json: str) -> dict:
     """Compile a structured JSON query plan into a Datacore query string.
 
