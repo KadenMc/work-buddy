@@ -277,27 +277,22 @@ def test_kind_from_choice_explicit_wins():
     assert vrc._kind_from_choice({"key": "anything", "kind": "defer"}) == "defer"
 
 
-def test_kind_from_choice_heuristic_decline():
-    for k in ("dismiss", "decline", "no", "skip", "ignore"):
-        assert vrc._kind_from_choice({"key": k}) == "decline", f"key={k}"
+def test_kind_from_choice_returns_none_when_missing():
+    """No `kind` field at all → None (caller falls back to legacy 7d)."""
+    # Key name does NOT influence the result — heuristic was removed.
+    assert vrc._kind_from_choice({"key": "morning_bundle"}) is None
+    assert vrc._kind_from_choice({"key": "contract_now"}) is None
+    assert vrc._kind_from_choice({"key": "dismiss"}) is None
+    assert vrc._kind_from_choice({"key": "more"}) is None
+    assert vrc._kind_from_choice({}) is None
 
 
-def test_kind_from_choice_heuristic_defer():
-    for k in ("more", "tell_me_more", "later", "snooze"):
-        assert vrc._kind_from_choice({"key": k}) == "defer", f"key={k}"
-
-
-def test_kind_from_choice_default_act():
-    # Unknown keys default to act (the proposal-specific positive choices)
-    assert vrc._kind_from_choice({"key": "morning_bundle"}) == "act"
-    assert vrc._kind_from_choice({"key": "contract_now"}) == "act"
-    assert vrc._kind_from_choice({}) == "act"
-
-
-def test_kind_from_choice_invalid_explicit_kind_falls_back():
-    # Garbage `kind` falls back to heuristic
-    assert vrc._kind_from_choice({"key": "dismiss", "kind": "nonsense"}) == "decline"
-    assert vrc._kind_from_choice({"key": "morning_bundle", "kind": "nonsense"}) == "act"
+def test_kind_from_choice_returns_none_for_invalid_kind():
+    """Garbage `kind` value → None (caller falls back to legacy 7d)."""
+    assert vrc._kind_from_choice({"key": "dismiss", "kind": "nonsense"}) is None
+    assert vrc._kind_from_choice({"key": "morning_bundle", "kind": "nonsense"}) is None
+    assert vrc._kind_from_choice({"kind": ""}) is None
+    assert vrc._kind_from_choice({"kind": None}) is None
 
 
 # ── Kind-aware suppression windows ──────────────────────────────
@@ -432,21 +427,30 @@ def test_legacy_entry_without_notification_id_uses_7_days():
     assert vrc._is_recent_escalation("new_type", "type:hypothesis", history) is False
 
 
-def test_decline_via_heuristic_when_kind_field_missing(monkeypatch):
-    """Backwards compat: agent didn't supply `kind`, key=dismiss → decline → 90d."""
+def test_missing_kind_falls_back_to_7d_legacy(monkeypatch):
+    """Choices without `kind` are treated as if no response landed: the
+    entry uses the 7-day legacy window from firing `ts`, not 90 days
+    from `responded_at`. Symmetric with no-notification and pending-
+    response cases — keeps resolution clean."""
     notif = _FakeNotif(
         value="dismiss",
         choices=[{"key": "dismiss", "label": "Not interesting"}],  # no `kind`
-        responded_at=_ts(days_ago=15),
+        responded_at=_ts(days_ago=2),
     )
     _patch_get_notification(monkeypatch, {"req_X": notif})
 
+    # Firing 2 days ago + 7-day legacy window → still suppressing
     history = [{
         "rule": "new_type", "focus": "type:hypothesis",
-        "ts": _ts(days_ago=15), "notification_id": "req_X",
+        "ts": _ts(days_ago=2), "notification_id": "req_X",
     }]
-    # 15 days ago + 90-day window via heuristic → still suppressing
     assert vrc._is_recent_escalation("new_type", "type:hypothesis", history) is True
+
+    # Firing 10 days ago → past the 7-day legacy window → no longer suppressing
+    # (would still be within 90-day window if heuristic were active — proves it's gone)
+    history[0]["ts"] = _ts(days_ago=10)
+    notif.responded_at = _ts(days_ago=10)
+    assert vrc._is_recent_escalation("new_type", "type:hypothesis", history) is False
 
 
 # ── prune_old ────────────────────────────────────────────────────

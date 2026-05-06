@@ -63,25 +63,16 @@ _BACKLOG_MIN_FINAL_COUNT = 3
 
 # Suppression windows by response kind. The collector reads the user's
 # response (if any) on the most-recent escalation for a (rule, focus)
-# tuple and applies the appropriate window. Investigation agents are
-# directed to emit a `kind` field on each choice (act / defer / decline);
-# legacy choices without `kind` are mapped heuristically by key name.
+# tuple and applies the appropriate window. Investigation agents MUST
+# emit a valid `kind` field on each choice (act / defer / decline) per
+# vault/investigation-directions; choices missing or invalid `kind` are
+# treated as if no response landed and fall back to the legacy 7-day
+# window from firing time.
 _ESCALATION_SUPPRESS_DAYS = 7  # default + `defer` kind + no-response fallback
 _SUPPRESS_DAYS_BY_KIND = {
     "act": 30,      # user committed to the action; suppress while commitment is fresh
     "defer": 7,     # user wants this later — re-surface naturally
     "decline": 90,  # user doesn't want this kind of surfacing — long quiet
-}
-
-# Heuristic mapping when a choice doesn't carry an explicit `kind` field.
-# Investigation agents should specify `kind` explicitly going forward;
-# this exists for backwards compat with already-recorded responses and
-# legacy choice generators.
-_KIND_KEY_HEURISTICS = {
-    "decline": ("dismiss", "decline", "deny", "no", "not_interesting", "skip", "ignore"),
-    "defer":   ("more", "tell_me_more", "later", "snooze", "not_now", "remind_later"),
-    # everything else is treated as `act` (positive engagement with the
-    # specific proposal — the keys describe the chosen action)
 }
 
 
@@ -189,31 +180,37 @@ def _append_escalation_history(entry: dict) -> None:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
-def _kind_from_choice(choice: dict) -> str:
+def _kind_from_choice(choice: dict) -> str | None:
     """Resolve the response `kind` for a choice dict.
 
-    Explicit `kind` field wins. Otherwise falls back to a key-name
-    heuristic. Defaults to `act` on no match (positive engagement is
-    the safer default — it suppresses for 30d, less than `decline`'s 90d
-    but more than `defer`'s 7d).
+    Returns the explicit `kind` field if it's a valid key in
+    ``_SUPPRESS_DAYS_BY_KIND``; otherwise returns ``None`` (signalling
+    "no usable kind data"). Callers should treat ``None`` symmetrically
+    with "no response" / "no notification" — i.e. fall back to the
+    7-day legacy suppression from firing time.
+
+    Investigation agents are required by ``vault/investigation-directions``
+    to emit a valid ``kind`` on every choice.
     """
     explicit = choice.get("kind")
     if explicit in _SUPPRESS_DAYS_BY_KIND:
         return explicit
-    key = (choice.get("key") or "").lower()
-    for kind, candidates in _KIND_KEY_HEURISTICS.items():
-        if key in candidates:
-            return kind
-    return "act"
+    return None
 
 
 def _resolve_response_kind(notification_id: str) -> tuple[str, str | None]:
     """Look up a notification's response and return (kind, responded_at).
 
-    Returns ``("pending", None)`` if no notification exists, or no
-    response has been recorded. Otherwise reads the chosen choice's
-    `kind` field (or the key-heuristic fallback) and the `responded_at`
-    timestamp.
+    Returns ``("pending", None)`` when ANY of the following holds:
+      - no notification record exists
+      - no response has been recorded
+      - the chosen choice can't be matched in the notification
+      - the chosen choice has no valid ``kind`` field
+
+    The last case is intentional symmetry: a missing/invalid ``kind`` is
+    treated identically to "no response yet" — the caller falls back to
+    the 7-day legacy suppression. Agents that don't emit ``kind`` per
+    the directions get short suppression by design.
     """
     try:
         from work_buddy.notifications.store import get_notification
@@ -231,6 +228,8 @@ def _resolve_response_kind(notification_id: str) -> tuple[str, str | None]:
     if chosen is None:
         return ("pending", None)
     kind = _kind_from_choice(chosen)
+    if kind is None:
+        return ("pending", None)
     responded_at = getattr(notif, "responded_at", None)
     return (kind, responded_at)
 
