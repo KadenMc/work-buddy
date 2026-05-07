@@ -173,6 +173,21 @@ def _html() -> str:
     <div class="review-drawer-body" id="review-drawer-body"></div>
 </aside>
 
+<!-- Reusable chat sidebar. Slides in from the right when
+     window.wbChatSidebar.open(...) is called; mounts the existing
+     conversation_chat renderer (attachConversationChat) into the body.
+     The sidebar squishes the main content via body padding-right (see
+     core/chat_sidebar.py styles). Persistent in the DOM, hidden by
+     default via transform: translateX(100%). -->
+<aside id="wb-chat-sidebar" class="wb-chat-sidebar" aria-hidden="true">
+    <div class="wb-chat-header">
+        <div class="wb-chat-title" id="wb-chat-title"></div>
+        <button class="wb-chat-close" type="button" aria-label="Close chat"
+                onclick="window.wbChatSidebar.close()">&times;</button>
+    </div>
+    <div class="wb-chat-body" id="wb-chat-body"></div>
+</aside>
+
 <!-- STATUS -->
 <div class="tab-panel" id="panel-status">
     <div id="status-bridge"><div class="loading">Loading bridge status...</div></div>
@@ -200,6 +215,16 @@ def _html() -> str:
     </div>
 
     <div id="jobs-add-form" class="jobs-add-form" hidden>
+        <!-- Chat-walkthrough escape hatch — for users who don't want to fill
+             this form by hand. Opens the chat sidebar with bound_tab='jobs';
+             the agent populates these same fields live as it gathers info,
+             then submits via user_job_create when the user confirms. -->
+        <button id="jobs-help-btn" class="jobs-form-help-btn" type="button"
+                onclick="onJobsHelpClick()"
+                title="Open a chat that walks you through filling this form">
+            💬 Help me fill this out
+        </button>
+
         <div class="jobs-form-grid">
             <label>Name
                 <input id="job-form-name" type="text"
@@ -267,6 +292,12 @@ def _html() -> str:
                     onclick="submitAddJobForm()">Create job</button>
         </div>
     </div>
+
+    <!-- Pending-action banners (Created / Updated / Deleted). Lives
+         outside #jobs-user so its rendering is decoupled from the
+         /api/state-driven table refresh — banners appear instantly on
+         the user's action without waiting for a fresh server read. -->
+    <div id="jobs-pending-banners"></div>
 
     <div id="jobs-user"><div class="loading">Loading...</div></div>
 

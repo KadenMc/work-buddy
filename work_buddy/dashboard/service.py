@@ -252,17 +252,23 @@ def api_registry_list():
     workflows = []
     for name, entry in sorted(reg.items()):
         desc = (getattr(entry, "description", "") or "").split("\n", 1)[0]
+        # ``slash_command`` is the user-facing name many users actually
+        # remember (e.g. ``wb-morning`` for the ``morning-routine``
+        # workflow). Surface it so the typeahead can match either name.
+        slash = getattr(entry, "slash_command", None) or ""
         if isinstance(entry, WorkflowDefinition):
             workflows.append({
                 "name": name,
                 "description": desc,
                 "parameters": _project_schema(entry.params_schema),
+                "slash_command": slash,
             })
         elif isinstance(entry, Capability):
             capabilities.append({
                 "name": name,
                 "description": desc,
                 "parameters": _project_schema(entry.parameters),
+                "slash_command": slash,
             })
     return jsonify({"capabilities": capabilities, "workflows": workflows})
 
@@ -319,6 +325,227 @@ def api_user_job_create():
             "file_path": result.get("file_path"),
         })
     return jsonify(result), status
+
+
+@app.get("/api/user_jobs/<name>")
+def api_user_job_get(name: str):
+    """Return the parsed frontmatter + body of a single user job.
+
+    Used by the dashboard's Edit-job flow to populate the form. Returns
+    the same field shape ``user_job_create`` accepts as input, so the
+    frontend can hand the dict back through ``submitAddJobForm`` with
+    ``overwrite: true`` to save edits.
+    """
+    from work_buddy.paths import data_dir
+    if not _user_job_name_safe(name):
+        return jsonify({"ok": False, "error": "invalid job name"}), 400
+    target = data_dir("user_jobs") / f"{name}.md"
+    if not target.exists():
+        return jsonify({"ok": False, "error": "not found"}), 404
+    try:
+        from work_buddy.sidecar.scheduler.jobs import _parse_job_file
+        job = _parse_job_file(target, source="user")
+    except Exception as exc:
+        logger.exception("user_job parse failed for %s", name)
+        return jsonify({"ok": False, "error": f"parse failed: {exc}"}), 500
+    if job is None:
+        return jsonify({"ok": False, "error": "file is not a valid job (no schedule)"}), 400
+    return jsonify({
+        "ok": True,
+        "name": job.name,
+        "schedule": job.schedule,
+        "job_type": job.job_type,
+        "capability": job.capability,
+        "workflow": job.workflow,
+        "params": job.params,
+        "prompt": job.prompt,
+        "enabled": job.enabled,
+        "recurring": job.recurring,
+    })
+
+
+@app.delete("/api/user_jobs/<name>")
+def api_user_job_delete(name: str):
+    """Delete a user-authored scheduled job by removing its .md file.
+
+    The sidecar's filesystem watcher picks up the deletion within ~50ms
+    and drops the job from the schedule. We also publish a
+    ``user_job.deleted`` event so the dashboard's Jobs table refreshes
+    immediately rather than waiting for the next ``cron.hot_reload``.
+    """
+    blocked = _reject_read_only()
+    if blocked is not None:
+        return blocked
+    from work_buddy.paths import data_dir
+    if not _user_job_name_safe(name):
+        return jsonify({"ok": False, "error": "invalid job name"}), 400
+    target = data_dir("user_jobs") / f"{name}.md"
+    if not target.exists():
+        return jsonify({"ok": False, "error": "not found"}), 404
+    try:
+        target.unlink()
+    except OSError as exc:
+        logger.exception("user_job delete failed for %s", name)
+        return jsonify({"ok": False, "error": f"delete failed: {exc}"}), 500
+    try:
+        from work_buddy.dashboard.events import publish_auto
+        publish_auto("user_job.deleted", {"name": name})
+    except Exception:
+        pass  # Best-effort — file is gone either way; watcher will reconcile.
+    return jsonify({"ok": True, "name": name})
+
+
+def _user_job_name_safe(name: str) -> bool:
+    """Defensive name check matching the create-flow regex.
+
+    Prevents path traversal in URL params: a stem like ``../../etc/passwd``
+    would otherwise resolve outside the user_jobs/ directory.
+    """
+    import re
+    return bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", name or ""))
+
+
+@app.post("/api/user_jobs/help")
+def api_user_jobs_help():
+    """Open a chat-driven walkthrough for authoring a user job.
+
+    Pairs with the dashboard's chat sidebar. Creates a conversation
+    silently (calling the store layer directly so no CHAT toast or
+    workflow-view tab spawns), seeds it with an opening agent message,
+    then fire-and-forgets a headless Claude session bound to that
+    conversation_id. The frontend opens its sidebar with the returned
+    conversation_id.
+    """
+    blocked = _reject_read_only()
+    if blocked is not None:
+        return blocked
+
+    from work_buddy.conversations.store import (
+        add_message,
+        close_conversation,
+        create_conversation,
+    )
+    from work_buddy.dashboard.jobs_help import spawn_job_author_session
+
+    conv = create_conversation(
+        title="Help me create a job",
+        source="dashboard:user_jobs_help",
+    )
+    # Seed as a *question* (response_type=freeform) — not a plain text
+    # message. This binds the user's first reply as the answer to a
+    # pending question, which the spawned agent retrieves via
+    # conversation_poll. With a plain text seed, conversation_poll
+    # returns 'no_pending_question' and the agent falls back to its
+    # own greeting (the duplicate-greeting bug from the first run).
+    add_message(
+        conv.conversation_id,
+        "agent",
+        "Hi! I'll help you set up a scheduled job. What do you want it to do?",
+        message_type="question",
+        response_type="freeform",
+    )
+
+    result = spawn_job_author_session(conv.conversation_id)
+    if result.get("status") != "ok":
+        # Conversation exists but no driver — close it so it doesn't dangle.
+        close_conversation(conv.conversation_id)
+        return jsonify({
+            "ok": False,
+            "error": result.get("error", "Failed to spawn job-author agent."),
+        }), 500
+
+    # Register the driving pid so /api/conversations/<id> can report
+    # whether the agent process is still alive — the chat sidebar uses
+    # that signal to know when to stop the typing indicator and tell
+    # the user the agent stopped (budget cap, crash, kill).
+    pid = result.get("pid")
+    if pid:
+        from work_buddy.conversations.agents import register as register_agent
+        register_agent(conv.conversation_id, pid)
+
+    return jsonify({
+        "ok": True,
+        "conversation_id": conv.conversation_id,
+        "title": "Help me create a job",
+        "pid": result.get("pid"),
+    })
+
+
+@app.post("/api/dashboard/interact")
+def api_dashboard_interact():
+    """Drive a dashboard form on behalf of an agent.
+
+    The MCP capability ``dashboard_interact`` is a thin HTTP forwarder
+    that POSTs here. The actual logic — schema validation, event
+    publishing, and (for ``form_submit`` / ``form_get_state``) the
+    rendezvous wait for the frontend's postback — lives in this
+    process so the rendezvous map and the receiving postback share
+    process memory.
+
+    Body: ``{"action": str, "form_id": str, "field": str?, "value": any?, "timeout_seconds": float?}``.
+    Response: typed dict from ``dashboard.interact.dashboard_interact``.
+    """
+    blocked = _reject_read_only()
+    if blocked is not None:
+        return blocked
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict):
+        return jsonify({"ok": False, "error": "body must be a JSON object"}), 400
+    action = payload.get("action") or ""
+    form_id = payload.get("form_id") or ""
+    if not action or not form_id:
+        return jsonify({
+            "ok": False,
+            "error": "action and form_id are required",
+        }), 400
+    try:
+        from work_buddy.dashboard.interact import dashboard_interact
+        result = dashboard_interact(
+            action=action,
+            form_id=form_id,
+            field=payload.get("field", ""),
+            value=payload.get("value"),
+            timeout_seconds=float(payload.get("timeout_seconds", 10.0)),
+        )
+    except NotImplementedError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 501
+    except Exception as exc:
+        logger.exception("dashboard_interact failed for %s/%s", action, form_id)
+        return jsonify({"ok": False, "error": str(exc)}), 500
+    status = 200 if result.get("ok") else 400
+    return jsonify(result), status
+
+
+@app.post("/api/dashboard/interact/result/<request_id>")
+def api_dashboard_interact_result(request_id: str):
+    """Frontend → capability postback for rendezvous-backed actions.
+
+    The ``dashboard_interact`` capability publishes ``form_submit`` /
+    ``form_get_state`` events with a request_id and blocks on a queue
+    keyed by it. The frontend bridge runs the registered handler, then
+    POSTs the result here; this endpoint hands the payload to the
+    capability via :func:`work_buddy.dashboard.interact.deliver_result`.
+
+    Body: ``{"ok": bool, "error": str?, "errors_by_field": dict?, "fields": dict?, ...}``.
+    """
+    blocked = _reject_read_only()
+    if blocked is not None:
+        return blocked
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict):
+        return jsonify({"ok": False, "error": "body must be a JSON object"}), 400
+    try:
+        from work_buddy.dashboard.interact import deliver_result
+        delivered = deliver_result(request_id, payload)
+    except Exception as exc:
+        logger.exception("interact result delivery failed for %s", request_id)
+        return jsonify({"ok": False, "error": str(exc)}), 500
+    if not delivered:
+        return jsonify({
+            "ok": False,
+            "error": "no pending rendezvous for this request_id (already delivered or expired)",
+        }), 404
+    return jsonify({"ok": True})
 
 
 @app.get("/api/diagnose/<component_id>")
@@ -2986,12 +3213,23 @@ def api_conversations_list():
 
 @app.get("/api/conversations/<conversation_id>")
 def api_conversation_get(conversation_id: str):
-    """Get a conversation with all messages in chronological order."""
+    """Get a conversation with all messages in chronological order.
+
+    Includes ``conversation.agent_alive``: ``true``/``false`` if a
+    driving agent pid was registered for this conversation, ``null``
+    if no agent was ever registered (e.g. user-driven conversations
+    without a spawned driver). The chat sidebar uses this to drive
+    the typing indicator and surface a clear "agent stopped" state
+    when the process exits (budget cap, crash, kill).
+    """
     try:
         from work_buddy.conversations.store import get_conversation_with_messages
+        from work_buddy.conversations.agents import is_alive
         result = get_conversation_with_messages(conversation_id)
         if result is None:
             return jsonify({"error": "Conversation not found"}), 404
+        if isinstance(result, dict) and isinstance(result.get("conversation"), dict):
+            result["conversation"]["agent_alive"] = is_alive(conversation_id)
         return jsonify(result)
     except Exception as exc:
         logger.error("Conversation get failed for %s: %s", conversation_id, exc)
@@ -3044,7 +3282,11 @@ def api_conversation_close(conversation_id: str):
         return blocked
     try:
         from work_buddy.conversations.store import close_conversation
+        from work_buddy.conversations.agents import unregister as unregister_agent
         ok = close_conversation(conversation_id)
+        # Drop the agent pid registration even on close failure — if
+        # the conversation is gone, the registration is orphaned.
+        unregister_agent(conversation_id)
         if not ok:
             return jsonify({"error": "Conversation not found"}), 404
         return jsonify({"closed": True})

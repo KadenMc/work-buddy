@@ -338,6 +338,129 @@ def _resolve_spawn_mode(mode_str: str) -> SpawnMode:
         return SpawnMode.HEADLESS_EPHEMERAL
 
 
+def _build_headless_agent_argv(
+    *,
+    prompt: str,
+    session_name: str,
+    model: str,
+    max_budget_usd: float,
+    persistent: bool,
+) -> list[str]:
+    """Build the ``claude --print`` argv for a headless agent spawn.
+
+    Shared between the synchronous ``_spawn_agent`` (waits for exit, used
+    by scheduled-job dispatch) and the detached ``spawn_headless_agent_detached``
+    (fires and forgets, used by the dashboard chat-sidebar). Centralizes
+    the flag list so both paths stay in sync — adding a new flag means
+    one edit, not two.
+    """
+    # Note: Do NOT use --bare — it disables OAuth/keychain, causing auth failure.
+    cmd = [
+        "claude",
+        "--print",
+        "--model", model,
+        "--output-format", "json",
+        "--max-budget-usd", str(max_budget_usd),
+        "--dangerously-skip-permissions",
+        "--name", session_name,
+    ]
+    if not persistent:
+        cmd.append("--no-session-persistence")
+    cmd.append(prompt)
+    return cmd
+
+
+def spawn_headless_agent_detached(
+    *,
+    name: str,
+    prompt: str,
+    max_budget_usd: float | None = None,
+) -> dict[str, Any]:
+    """Fire-and-forget headless ``claude --print`` spawn — returns immediately.
+
+    Sibling of ``_spawn_agent`` for callers that cannot block (e.g. Flask
+    request handlers). The agent process runs in the background, drives
+    whatever it was prompted to do (typically a long-lived
+    conversation_send/ask/close loop against a pre-created conversation),
+    and exits on its own. The caller gets back the PID so it can record
+    or surface it, but does not need to reap the process.
+
+    Persistent mode only — ephemeral fire-and-forget without persistence
+    would lose the session_id with no way to recover it. If the session
+    needs to be resumable, the caller pairs this with the conversation
+    record that holds the conversation_id.
+
+    Consent-gated on ``sidecar:agent_spawn``.
+    """
+    if not prompt:
+        return {"status": "error", "error": "Empty prompt."}
+
+    if not _check_agent_spawn_consent():
+        return {
+            "status": "consent_required",
+            "error": (
+                f"Detached agent spawn for '{name}' requires consent. "
+                f"Grant '{AGENT_SPAWN_CONSENT_OP}' to enable."
+            ),
+        }
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if api_key:
+        logger.warning(
+            "ANTHROPIC_API_KEY is set — detached agent spawn will use API billing."
+        )
+
+    cfg = load_config()
+    agent_cfg = cfg.get("sidecar", {}).get("agent_spawn", {})
+    if max_budget_usd is None:
+        # Fallback matches config.py's documented default. Bumping the
+        # hardcoded fallback from 0.50 prevents a silent under-cap when
+        # config.local.yaml doesn't declare ``sidecar.agent_spawn`` —
+        # in that case the user expects the documented default, not a
+        # half-priced ceiling that exits the agent mid-flow.
+        max_budget_usd = agent_cfg.get("max_budget_usd", 1.00)
+    model = agent_cfg.get("model", "sonnet")
+    session_name = f"{DAEMON_SESSION_PREFIX}{name}"
+
+    cmd = _build_headless_agent_argv(
+        prompt=prompt,
+        session_name=session_name,
+        model=model,
+        max_budget_usd=max_budget_usd,
+        persistent=True,
+    )
+
+    logger.info(
+        "Spawning detached agent: name='%s', model=%s, budget=$%.2f, prompt_len=%d",
+        name, model, max_budget_usd, len(prompt),
+    )
+
+    try:
+        from work_buddy.compat import subprocess_creation_flags
+        proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            cwd=str(_REPO_ROOT),
+            creationflags=subprocess_creation_flags(),
+            close_fds=True,
+        )
+    except FileNotFoundError:
+        logger.error(
+            "claude CLI not found on PATH. Ensure Claude Code is installed."
+        )
+        return {"status": "error", "error": "claude CLI not found on PATH."}
+    except Exception as exc:
+        logger.error(
+            "Detached agent spawn failed: name='%s', error=%s",
+            name, exc, exc_info=True,
+        )
+        return {"status": "error", "error": str(exc)}
+
+    return {"status": "ok", "pid": proc.pid, "session_name": session_name}
+
+
 def _spawn_agent(
     *,
     name: str,
@@ -428,32 +551,22 @@ def _spawn_agent(
     if timeout_seconds is None:
         timeout_seconds = agent_cfg.get("timeout_seconds", 300)
     if max_budget_usd is None:
-        max_budget_usd = agent_cfg.get("max_budget_usd", 0.50)
+        # Fallback matches config.py's documented default. Bumping the
+        # hardcoded fallback from 0.50 prevents a silent under-cap when
+        # config.local.yaml doesn't declare ``sidecar.agent_spawn`` —
+        # in that case the user expects the documented default, not a
+        # half-priced ceiling that exits the agent mid-flow.
+        max_budget_usd = agent_cfg.get("max_budget_usd", 1.00)
 
     model = agent_cfg.get("model", "sonnet")
-
-    # --- Build session name ---
-    # Convention: "daemon:<job-name>" so daemon-spawned sessions are
-    # distinguishable from user-initiated ones.  Phase C (routing) will
-    # use this prefix to avoid hijacking user sessions.
     session_name = f"{DAEMON_SESSION_PREFIX}{name}"
-
-    # --- Build command ---
-    # Note: Do NOT use --bare — it disables OAuth/keychain, causing auth failure.
-    cmd = [
-        "claude",
-        "--print",
-        "--model", model,
-        "--output-format", "json",
-        "--max-budget-usd", str(max_budget_usd),
-        "--dangerously-skip-permissions",
-        "--name", session_name,
-    ]
-
-    if not spawn_mode.is_persistent:
-        cmd.append("--no-session-persistence")
-
-    cmd.append(prompt)
+    cmd = _build_headless_agent_argv(
+        prompt=prompt,
+        session_name=session_name,
+        model=model,
+        max_budget_usd=max_budget_usd,
+        persistent=spawn_mode.is_persistent,
+    )
 
     logger.info(
         "Spawning agent: job='%s', mode=%s, model=%s, timeout=%ds, "
@@ -625,7 +738,12 @@ def _spawn_interactive_agent(
     if timeout_seconds is None:
         timeout_seconds = agent_cfg.get("timeout_seconds", 300)
     if max_budget_usd is None:
-        max_budget_usd = agent_cfg.get("max_budget_usd", 0.50)
+        # Fallback matches config.py's documented default. Bumping the
+        # hardcoded fallback from 0.50 prevents a silent under-cap when
+        # config.local.yaml doesn't declare ``sidecar.agent_spawn`` —
+        # in that case the user expects the documented default, not a
+        # half-priced ceiling that exits the agent mid-flow.
+        max_budget_usd = agent_cfg.get("max_budget_usd", 1.00)
 
     model = agent_cfg.get("model", "sonnet")
     session_name = f"{DAEMON_SESSION_PREFIX}{name}"

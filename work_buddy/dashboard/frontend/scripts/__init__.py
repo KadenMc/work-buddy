@@ -29,7 +29,16 @@ inline.
 
 from __future__ import annotations
 
-from .core import event_bus, helpers, notifications, page, palette, workflows
+from .core import (
+    chat_sidebar,
+    event_bus,
+    form_bridge,
+    helpers,
+    notifications,
+    page,
+    palette,
+    workflows,
+)
 from .surfaces import resolution, triage
 # resolution_decorator is intentionally NOT imported into the registry.
 # It is the older Triage decorator that was shadowed by the FSM
@@ -87,6 +96,8 @@ SCRIPTS = [
     helpers.script,
     workflows.script,
     notifications.script,
+    chat_sidebar.script,
+    form_bridge.script,
     triage.clarify_script,
     triage.review_script,
     resolution.script,
@@ -120,4 +131,5 @@ STYLES = [
     threads_group.styles,
     automation.styles,
     today.styles,
+    chat_sidebar.styles,
 ]

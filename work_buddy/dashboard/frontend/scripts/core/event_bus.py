@@ -283,7 +283,12 @@ def script() -> str:
     // pending banner) and on sidecar hot-reload (jobs appear in /api/state
     // for the first time, banner auto-clears).
     window.eventBus.on('user_job.created',  () => _refreshSoon('jobsSurface'));
+    window.eventBus.on('user_job.deleted',  () => _refreshSoon('jobsSurface'));
     window.eventBus.on('cron.hot_reload',   () => _refreshSoon('jobsSurface'));
+    // Note: the schema-driven form bridge (core/form_bridge.py) owns
+    // the dashboard.form.* event family (field_set, open, submit,
+    // get_state). Per-tab JS no longer subscribes here — register a
+    // wbFormBridge handler instead. See services/dashboard/form-bridge.
 
     // Diagnostics handles for tests.
     window.eventBus._panelHandlers = () => ({
@@ -297,6 +302,13 @@ def script() -> str:
         'component.health_changed':      'settingsSurface.refresh (morphdom)',
         'component.preference_changed':  'settingsSurface.refresh (morphdom)',
         'llm.call_logged':               'costsSurface.refresh (morphdom)',
+        'user_job.created':              'jobsSurface.refresh (morphdom)',
+        'user_job.deleted':              'jobsSurface.refresh (morphdom)',
+        'cron.hot_reload':                'jobsSurface.refresh (morphdom)',
+        'dashboard.form.field_set':      'wbFormBridge → registered fieldHandlers',
+        'dashboard.form.open':           'wbFormBridge → registered openHandler',
+        'dashboard.form.submit':         'wbFormBridge → registered submitHandler (rendezvous)',
+        'dashboard.form.get_state':      'wbFormBridge → registered getStateHandler (rendezvous)',
     });
 
     if (document.readyState === 'loading') {

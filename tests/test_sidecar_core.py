@@ -272,13 +272,23 @@ def test_create_user_job_file_writes_loadable_prompt_job(tmp_path):
     assert j.enabled is True
 
 
-def test_create_user_job_file_capability_with_params(tmp_path):
+def test_create_user_job_file_capability_with_params(tmp_path, monkeypatch):
+    # Hermetic — don't depend on whether the registry has been built in
+    # this process (CI builds lazily and may not have ``task_briefing``
+    # registered when this unit test runs). The validator already
+    # degrades to lenient behavior on a registry-fetch failure; here we
+    # force the "registered" branch with a stub.
+    from work_buddy.sidecar.scheduler import jobs as jobs_mod
+    monkeypatch.setattr(
+        jobs_mod, "_registry_names",
+        lambda kind: ["task_briefing"] if kind == "capability" else [],
+    )
     res = create_user_job_file(
         tmp_path,
         name="briefing", schedule="0 9 * * 1-5", job_type="capability",
         capability="task_briefing", params={"same_day": True},
     )
-    assert res["success"] is True
+    assert res["success"] is True, res.get("error")
     job = load_jobs(tmp_path)[0]
     assert job.job_type == "capability"
     assert job.capability == "task_briefing"

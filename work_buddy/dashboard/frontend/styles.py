@@ -2007,20 +2007,75 @@ body {
 .thread-input {
     display: flex; gap: 6px; padding: 10px 14px;
     border-top: 1px solid var(--border); flex-shrink: 0;
+    align-items: flex-end;  /* button stays aligned to bottom of growing textarea */
 }
-.thread-input input {
+.thread-input input,
+.thread-input textarea {
     flex: 1; padding: 7px 10px;
     border: 1px solid var(--border); border-radius: 8px;
     background: var(--bg-secondary); color: var(--text-primary);
     font-size: 13px; outline: none;
+    font-family: inherit;
 }
-.thread-input input:focus { border-color: var(--accent); }
+.thread-input textarea {
+    resize: none;
+    min-height: 32px;
+    max-height: 96px;   /* ~4 lines at 13px/1.4 line-height + padding */
+    line-height: 1.4;
+    overflow-y: auto;
+}
+.thread-input input:focus,
+.thread-input textarea:focus { border-color: var(--accent); }
 .thread-input button {
     padding: 7px 14px; border-radius: 8px;
     background: var(--accent); color: #fff; border: none;
     font-size: 13px; cursor: pointer; white-space: nowrap;
 }
 .thread-input button:hover { opacity: .85; }
+
+/* "Agent stopped responding" notice — rendered inside the messages
+   pane when conversation.agent_alive is false. The user can no
+   longer expect a reply, so the input is disabled and this notice
+   tells them why. */
+.chat-agent-stopped {
+    margin: 8px 14px;
+    padding: 8px 12px;
+    border-left: 3px solid var(--red);
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    font-size: 12px;
+    border-radius: 0 4px 4px 0;
+}
+.thread-input textarea:disabled,
+.thread-input input:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+.thread-input button:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+/* Typing indicator — three pulsing dots in an assistant-styled bubble.
+   Shown after the user sends and before the agent's next message
+   arrives. The pulse cycle is staggered per dot so the dots ripple
+   left → right. */
+.chat-msg-typing .chat-msg-bubble {
+    display: inline-flex; gap: 4px; align-items: center;
+    padding: 10px 14px;
+}
+.chat-msg-typing .typing-dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--text-muted);
+    opacity: 0.3;
+    animation: wb-typing-pulse 1.2s infinite ease-in-out;
+}
+.chat-msg-typing .typing-dot:nth-child(2) { animation-delay: 0.2s; }
+.chat-msg-typing .typing-dot:nth-child(3) { animation-delay: 0.4s; }
+@keyframes wb-typing-pulse {
+    0%, 60%, 100% { opacity: 0.3; transform: scale(1); }
+    30%           { opacity: 1;   transform: scale(1.25); }
+}
 
 .thread-status-bar {
     padding: 5px 14px; text-align: center;
@@ -3448,6 +3503,61 @@ body {
 }
 .jobs-add-btn:hover { filter: brightness(1.1); }
 
+/* Per-row edit / delete icon buttons. Visible only on user jobs;
+   system-job rows render an empty cell in the same column for
+   alignment. The destructive variant tints red on hover so the
+   delete button reads as the more-consequential action. */
+.jobs-row-actions {
+    width: 60px;
+    text-align: right;
+    white-space: nowrap;
+}
+.jobs-row-icon-btn {
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    padding: 4px 6px;
+    border-radius: 4px;
+    line-height: 0;
+    vertical-align: middle;
+}
+.jobs-row-icon-btn:hover {
+    color: var(--text-primary);
+    background: var(--bg-tertiary);
+}
+.jobs-row-icon-destructive:hover {
+    color: var(--red);
+}
+
+/* In-form chat-walkthrough escape hatch. Sits at the top of the
+   add-job form as a secondary entry point — visually paired with
+   the form ("you can fill this out, or chat with me"). Outline-
+   style so it doesn't compete visually with the primary Create-job
+   submit at the bottom of the form. */
+.jobs-form-help-btn {
+    display: block;
+    width: 100%;
+    box-sizing: border-box;
+    background: transparent;
+    color: var(--accent);
+    border: 1px dashed var(--accent);
+    padding: 8px 12px;
+    border-radius: 4px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    margin-bottom: 14px;
+    text-align: left;
+}
+.jobs-form-help-btn:hover {
+    background: var(--accent-subtle);
+}
+.jobs-form-help-btn:disabled {
+    opacity: 0.6;
+    cursor: progress;
+}
+
 .jobs-add-form {
     background: var(--bg-secondary);
     border: 1px solid var(--border);
@@ -3536,6 +3646,14 @@ body {
 }
 .jobs-form-submit:hover { filter: brightness(1.1); }
 
+/* Per-field validation highlight — applied by submitAddJobForm when the
+   server returns errors_by_field. Cleared on the next successful
+   submit or when the user starts editing the field. */
+.jobs-form-field-invalid {
+    border-color: var(--red) !important;
+    box-shadow: 0 0 0 1px var(--red);
+}
+
 /* Cron preview — neutral hint while empty/typing, green text when the
    expression parses, red when it doesn't. Stays in the same DOM slot so
    the form layout never jumps. */
@@ -3613,6 +3731,21 @@ body {
     padding: 1px 4px;
     border-radius: 3px;
 }
+
+/* Tone variants for non-create transitions. The default (no variant
+   class) is green — used for "Created.". Edit and delete reuse the
+   same banner shape with different accent colors so the visual
+   language is consistent and the action is unambiguous at a glance. */
+.jobs-pending-banner-destructive {
+    border: 1px solid var(--btn-deny-mid);
+    border-left: 3px solid var(--red);
+}
+.jobs-pending-banner-destructive strong { color: var(--red); }
+.jobs-pending-banner-neutral {
+    border: 1px solid var(--btn-neutral-mid);
+    border-left: 3px solid var(--btn-neutral);
+}
+.jobs-pending-banner-neutral strong { color: var(--btn-neutral); }
 """
 
 

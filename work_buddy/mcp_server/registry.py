@@ -4814,6 +4814,7 @@ def _sidecar_capabilities() -> list[Capability]:
         prompt: str = "",
         enabled: bool = True,
         recurring: bool = True,
+        overwrite: bool = False,
     ) -> dict:
         """Author a user job by writing a .md file under <data_root>/user_jobs/."""
         from work_buddy.paths import data_dir
@@ -4824,6 +4825,7 @@ def _sidecar_capabilities() -> list[Capability]:
             name=name, schedule=schedule, job_type=job_type,
             capability=capability, params=params, workflow=workflow,
             prompt=prompt, enabled=enabled, recurring=recurring,
+            overwrite=overwrite,
         )
 
     def _sidecar_jobs() -> dict:
@@ -4836,6 +4838,54 @@ def _sidecar_capabilities() -> list[Capability]:
             "jobs": [asdict(j) for j in state.jobs],
             "exclusion_active": state.exclusion_active,
         }
+
+    def _dashboard_interact(
+        action: str,
+        form_id: str,
+        field: str = "",
+        value=None,
+        timeout_seconds: float = 10.0,
+    ) -> dict:
+        """Forward to the dashboard's /api/dashboard/interact endpoint.
+
+        The capability is a thin HTTP wrapper because the rendezvous
+        for form_submit / form_get_state lives in the dashboard
+        process — the frontend's result-postback hits the dashboard
+        and must share process memory with whoever opened the
+        rendezvous. Routing through the dashboard endpoint keeps the
+        whole transaction in one process.
+        """
+        import json as _json
+        import urllib.error as _urlerr
+        import urllib.request as _urlreq
+
+        body = _json.dumps({
+            "action": action,
+            "form_id": form_id,
+            "field": field,
+            "value": value,
+            "timeout_seconds": timeout_seconds,
+        }).encode("utf-8")
+        # Submit/get_state can block for the full timeout in the
+        # dashboard. Add a small buffer so HTTP doesn't time out before
+        # the capability does.
+        http_timeout = max(15.0, float(timeout_seconds) + 5.0)
+        req = _urlreq.Request(
+            "http://localhost:5127/api/dashboard/interact",
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with _urlreq.urlopen(req, timeout=http_timeout) as resp:
+                return _json.loads(resp.read().decode("utf-8"))
+        except _urlerr.HTTPError as exc:
+            try:
+                return _json.loads(exc.read().decode("utf-8"))
+            except Exception:
+                return {"ok": False, "error": f"dashboard returned HTTP {exc.code}"}
+        except Exception as exc:
+            return {"ok": False, "error": f"dashboard unreachable: {exc}"}
 
     def _service_restart(service: str) -> dict:
         """Kill a sidecar-managed service so the supervisor auto-restarts it.
@@ -4972,11 +5022,74 @@ def _sidecar_capabilities() -> list[Capability]:
                     "description": "False = one-shot (schedule cleared after first fire). Default true.",
                     "required": False,
                 },
+                "overwrite": {
+                    "type": "bool",
+                    "description": (
+                        "If true, replace an existing job file with the same name. "
+                        "Default false (refuses to overwrite). Used by the Edit-job "
+                        "flow in the dashboard."
+                    ),
+                    "required": False,
+                },
             },
             callable=_user_job_create,
             search_aliases=[
                 "create user job", "add user job", "schedule cron task",
                 "personal job", "new scheduled job", "wb-job-new",
+            ],
+            mutates_state=True,
+        ),
+        Capability(
+            name="dashboard_interact",
+            description=(
+                "Drive a dashboard form on the user's behalf — fill fields, "
+                "open the form, click submit, or read current state. Single "
+                "typed entry point for chat-walkthrough agents; each call is "
+                "validated against the form's registered FormSchema before "
+                "anything reaches the frontend. See the brief's structural "
+                "section for the form_id and field names you can address."
+            ),
+            category="status",
+            parameters={
+                "action": {
+                    "type": "str",
+                    "description": (
+                        "One of: form_field_set, form_open, form_submit, "
+                        "form_get_state."
+                    ),
+                    "required": True,
+                },
+                "form_id": {
+                    "type": "str",
+                    "description": "Registered form to address (e.g. 'jobs-add-job').",
+                    "required": True,
+                },
+                "field": {
+                    "type": "str",
+                    "description": "Field name (form_field_set only).",
+                    "required": False,
+                },
+                "value": {
+                    "type": "any",
+                    "description": (
+                        "Field value (form_field_set only). Type-checked "
+                        "against the field's declared type in the schema."
+                    ),
+                    "required": False,
+                },
+                "timeout_seconds": {
+                    "type": "float",
+                    "description": (
+                        "Rendezvous timeout for form_submit / form_get_state "
+                        "in seconds. Default 10. Ignored for other actions."
+                    ),
+                    "required": False,
+                },
+            },
+            callable=_dashboard_interact,
+            search_aliases=[
+                "fill form", "click submit", "drive ui",
+                "agent ui interaction", "form bridge", "set form field",
             ],
             mutates_state=True,
         ),
