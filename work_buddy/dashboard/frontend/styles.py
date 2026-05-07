@@ -3530,6 +3530,24 @@ body {
     color: var(--red);
 }
 
+/* Inline annotation on the "Next Run" cell when a job declares
+   jitter_seconds. The pill carries a tooltip explaining the offset;
+   it sits to the right of the relative time so the column still
+   sorts visually by upcoming-fire. Subtle background to match the
+   secondary status badges elsewhere on the dashboard. */
+.jobs-jitter-tag {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 1px 6px;
+    border-radius: 9px;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    font-size: 11px;
+    font-weight: 500;
+    line-height: 1.4;
+    cursor: help;
+}
+
 /* In-form chat-walkthrough escape hatch. Sits at the top of the
    add-job form as a secondary entry point — visually paired with
    the form ("you can fill this out, or chat with me"). Outline-

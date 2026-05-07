@@ -335,13 +335,23 @@ function renderJobsTable(jobs, emptyHtml) {
                     ${_wbJobIcon('trash')}
                 </button>
             </td>` : '<td class="jobs-row-actions"></td>';
+        // Prefer effective_at (next_at + jitter offset, or queued
+        // pending due time) when present, falling back to next_at for
+        // back-compat with older sidecar_state.json shapes.
+        const fireAt = j.effective_at || j.next_at;
+        const jitter = j.jitter_seconds || 0;
+        const nextCell = jitter > 0
+            ? `${timeUntil(fireAt)}<span class="jobs-jitter-tag" title="`
+                + `Schedule has jitter_seconds=${jitter}; deterministic offset spreads firing.`
+                + `">+${jitter}s jit</span>`
+            : timeUntil(fireAt);
         return `
             <tr>
                 <td>${j.name}</td>
                 <td title="${j.schedule}">${j.schedule_desc || j.schedule}</td>
                 <td>${j.last_result ? statusBadge(j.last_result, j.last_error) : '\u2014'}</td>
                 <td>${timeAgo(j.last_run_at)}</td>
-                <td>${timeUntil(j.next_at)}</td>
+                <td>${nextCell}</td>
                 ${actions}
             </tr>
         `;
