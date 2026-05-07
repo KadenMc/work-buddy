@@ -40,11 +40,17 @@ class JobState:
 
     name: str
     schedule: str
-    next_at: float = 0.0  # epoch seconds
+    next_at: float = 0.0  # epoch seconds — raw cron eligibility (no jitter)
     last_run_at: float = 0.0
     last_result: str = ""  # ok | error | skipped
     last_error: str = ""  # human-readable error reason
     source: str = "system"  # "system" (sidecar_jobs/) | "user" (<data_root>/user_jobs/)
+    # Jitter observability: 0 means no jitter applied. ``effective_at`` is
+    # the timestamp the scheduler will actually fire at — equal to
+    # ``next_at + stable_offset`` for non-pending jobs, or to the queued
+    # pending due time when a fire is already deferred.
+    jitter_seconds: int = 0
+    effective_at: float = 0.0
 
 
 @dataclass

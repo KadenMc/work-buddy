@@ -175,6 +175,139 @@ def test_job_fingerprint():
     assert "task_briefing" in fp
 
 
+# --- Jitter parsing/fingerprint tests ---
+
+def test_jitter_default_is_zero():
+    """Frontmatter without jitter_seconds → Job.jitter_seconds == 0."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        job_file = Path(tmpdir) / "no-jitter.md"
+        job_file.write_text("""---
+schedule: "*/5 * * * *"
+type: capability
+capability: noop
+---
+""")
+        job = _parse_job_file(job_file)
+        assert job is not None
+        assert job.jitter_seconds == 0
+
+
+def test_jitter_parses_int():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        job_file = Path(tmpdir) / "with-jitter.md"
+        job_file.write_text("""---
+schedule: "*/5 * * * *"
+type: capability
+capability: noop
+jitter_seconds: 90
+---
+""")
+        job = _parse_job_file(job_file)
+        assert job is not None
+        assert job.jitter_seconds == 90
+
+
+def test_jitter_parses_string_int():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        job_file = Path(tmpdir) / "with-jitter-str.md"
+        job_file.write_text("""---
+schedule: "*/5 * * * *"
+type: capability
+capability: noop
+jitter_seconds: "120"
+---
+""")
+        job = _parse_job_file(job_file)
+        assert job is not None
+        assert job.jitter_seconds == 120
+
+
+def test_jitter_invalid_falls_back_to_zero(caplog):
+    """Non-int / negative → 0 with WARN logged, never raise."""
+    for bad in ('"banana"', "-5", "1.5"):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            job_file = Path(tmpdir) / "bad-jitter.md"
+            job_file.write_text(f"""---
+schedule: "*/5 * * * *"
+type: capability
+capability: noop
+jitter_seconds: {bad}
+---
+""")
+            with caplog.at_level("WARNING", logger="work_buddy.sidecar.scheduler.jobs"):
+                job = _parse_job_file(job_file)
+            assert job is not None, f"parse failed for jitter_seconds: {bad}"
+            assert job.jitter_seconds == 0, (
+                f"expected 0 for jitter_seconds: {bad}, got {job.jitter_seconds}"
+            )
+
+
+def test_job_fingerprint_includes_jitter():
+    """Hot-reload must detect jitter-only changes."""
+    base = Job(
+        name="t", file_path=Path("."), schedule="*/5 * * * *",
+        job_type="capability", capability="noop",
+    )
+    fp_no = job_fingerprint(base)
+    base.jitter_seconds = 60
+    fp_60 = job_fingerprint(base)
+    base.jitter_seconds = 90
+    fp_90 = job_fingerprint(base)
+    assert fp_no != fp_60 != fp_90, (
+        f"Fingerprint should change with jitter: {fp_no!r}, {fp_60!r}, {fp_90!r}"
+    )
+
+
+def _stub_registry_for_noop(monkeypatch):
+    """Registry-validator stub: pretend ``noop`` capability is registered.
+
+    The jitter tests below exercise create_user_job_file plumbing and
+    don't care about the registry-name check; this keeps them hermetic
+    in CI where the registry may not have built when this module runs.
+    """
+    from work_buddy.sidecar.scheduler import jobs as jobs_mod
+    monkeypatch.setattr(
+        jobs_mod, "_registry_names",
+        lambda kind: ["noop"] if kind == "capability" else [],
+    )
+
+
+def test_create_user_job_file_writes_jitter(tmp_path, monkeypatch):
+    _stub_registry_for_noop(monkeypatch)
+    res = create_user_job_file(
+        tmp_path,
+        name="jittered", schedule="*/5 * * * *", job_type="capability",
+        capability="noop", jitter_seconds=90,
+    )
+    assert res["success"] is True, res.get("error")
+    job = load_jobs(tmp_path)[0]
+    assert job.jitter_seconds == 90
+
+
+def test_create_user_job_file_omits_zero_jitter(tmp_path, monkeypatch):
+    """jitter_seconds=0 (default) should NOT be written to frontmatter."""
+    _stub_registry_for_noop(monkeypatch)
+    res = create_user_job_file(
+        tmp_path,
+        name="no-jitter", schedule="*/5 * * * *", job_type="capability",
+        capability="noop",
+    )
+    assert res["success"] is True, res.get("error")
+    text = (tmp_path / "no-jitter.md").read_text(encoding="utf-8")
+    assert "jitter_seconds" not in text
+
+
+def test_create_user_job_file_rejects_negative_jitter(tmp_path, monkeypatch):
+    _stub_registry_for_noop(monkeypatch)
+    res = create_user_job_file(
+        tmp_path,
+        name="bad", schedule="*/5 * * * *", job_type="capability",
+        capability="noop", jitter_seconds=-1,
+    )
+    assert res["success"] is False
+    assert "jitter" in res["error"].lower()
+
+
 def _write_job(dir_path: Path, stem: str, schedule: str = "0 9 * * *") -> Path:
     p = dir_path / f"{stem}.md"
     p.write_text(

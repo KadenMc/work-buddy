@@ -56,6 +56,13 @@ class Job:
     # Agent spawn control (for type=prompt and workflow reasoning steps)
     spawn_mode: str = ""  # headless_ephemeral | headless_persistent | interactive_persistent
 
+    # Optional stable jitter applied on top of the cron eligibility minute.
+    # 0 = no jitter (fire on the first matching tick). Positive values delay
+    # firing by a deterministic offset in [0, jitter_seconds] computed from
+    # name+schedule+jitter_seconds. Tick cadence is health_check_interval
+    # (default 30s) so values < ~60s are quantized away.
+    jitter_seconds: int = 0
+
     # Runtime state (not persisted in .md frontmatter — populated by scheduler)
     last_run_at: float = 0.0
     last_result: str = ""  # ok | error
@@ -170,6 +177,24 @@ def _parse_job_file(file_path: Path, source: str = "system") -> Job | None:
         )
         spawn_mode = ""
 
+    # Jitter: clamp to non-negative int, fall back to 0 with a WARN on bad input.
+    # Reject floats explicitly — ``int(1.5)`` silently truncates to 1, which
+    # is exactly the kind of "looks fine, off by a second" surprise we want
+    # to avoid in scheduled-fire offsets.
+    raw_jitter = fm.get("jitter_seconds", 0)
+    try:
+        if isinstance(raw_jitter, float):
+            raise ValueError(f"non-integer jitter: {raw_jitter}")
+        jitter_seconds = int(raw_jitter)
+        if jitter_seconds < 0:
+            raise ValueError(f"negative jitter: {jitter_seconds}")
+    except (TypeError, ValueError):
+        logger.warning(
+            "Invalid jitter_seconds %r in %s — defaulting to 0.",
+            raw_jitter, name,
+        )
+        jitter_seconds = 0
+
     return Job(
         name=name,
         file_path=file_path,
@@ -184,6 +209,7 @@ def _parse_job_file(file_path: Path, source: str = "system") -> Job | None:
         description=body.strip(),
         enabled=enabled,
         spawn_mode=spawn_mode,
+        jitter_seconds=jitter_seconds,
     )
 
 
@@ -208,10 +234,19 @@ def clear_job_schedule(job: Job) -> None:
 
 
 def job_fingerprint(job: Job) -> str:
-    """Generate a fingerprint for change detection during hot-reload."""
+    """Generate a fingerprint for change detection during hot-reload.
+
+    Includes every field whose change should re-trigger scheduler bookkeeping
+    (re-resolving pending fires, refreshing dashboards, etc.). Notably,
+    ``enabled`` and ``recurring`` flip-flops affect future fires and must
+    register here — without them, toggling ``enabled: false`` would leave
+    stale pending fires queued for the now-disabled job.
+    """
     return (
         f"{job.name}:{job.schedule}:{job.job_type}:"
-        f"{job.capability}:{job.workflow}:{job.source}"
+        f"{job.capability}:{job.workflow}:{job.source}:"
+        f"enabled={job.enabled}:recurring={job.recurring}:"
+        f"jitter={job.jitter_seconds}"
     )
 
 
@@ -377,6 +412,7 @@ def create_user_job_file(
     enabled: bool = True,
     recurring: bool = True,
     overwrite: bool = False,
+    jitter_seconds: int = 0,
 ) -> dict:
     """Validate inputs and write a user job .md file.
 
@@ -468,6 +504,16 @@ def create_user_job_file(
             "error": f"User job {name!r} already exists at {target}.",
         }
 
+    try:
+        jitter_int = int(jitter_seconds)
+        if jitter_int < 0:
+            raise ValueError("jitter_seconds must be >= 0")
+    except (TypeError, ValueError):
+        return {
+            "success": False,
+            "error": f"jitter_seconds must be a non-negative integer, got {jitter_seconds!r}.",
+        }
+
     fm_lines = [
         "---",
         f'schedule: "{schedule}"',
@@ -481,6 +527,8 @@ def create_user_job_file(
         fm_lines.append(f"workflow: {workflow.strip()}")
     if job_type in ("capability", "workflow") and params:
         fm_lines.append(f"params: {_json.dumps(params)}")
+    if jitter_int > 0:
+        fm_lines.append(f"jitter_seconds: {jitter_int}")
     fm_lines.append("---")
 
     body = prompt if job_type == "prompt" else ""
