@@ -218,6 +218,152 @@ def job_fingerprint(job: Job) -> str:
 _NAME_PATTERN = __import__("re").compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
 
 
+def _registry_names(kind: str) -> list[str]:
+    """Return registered names for ``kind`` ('capability' or 'workflow').
+
+    Lazy import — avoids a hard sidecar→mcp_server dependency at module
+    load. Returns an empty list on any registry-fetch failure rather
+    than blocking job creation; in that case the caller's name passes
+    through unchecked (degrades to the previous lenient behavior).
+    """
+    try:
+        from work_buddy.mcp_server.registry import (
+            get_registry, Capability, WorkflowDefinition,
+        )
+        reg = get_registry()
+        if kind == "capability":
+            return [n for n, e in reg.items() if isinstance(e, Capability)]
+        return [n for n, e in reg.items() if isinstance(e, WorkflowDefinition)]
+    except Exception:
+        return []
+
+
+def _slash_command_to_registry(provided: str, kind: str) -> str | None:
+    """If ``provided`` looks like a slash-command name (e.g. ``wb-morning``
+    or ``morning`` where a slash command ``wb-morning`` exists), return
+    the underlying registry entry name (e.g. ``morning-routine``).
+    """
+    try:
+        from work_buddy.mcp_server.registry import (
+            get_registry, Capability, WorkflowDefinition,
+        )
+        reg = get_registry()
+        # The "stem" we're looking for: try with and without the wb- prefix.
+        stems = [provided, f"wb-{provided}"]
+        if provided.startswith("wb-"):
+            stems.append(provided[3:])
+        type_filter = (Capability if kind == "capability"
+                       else WorkflowDefinition)
+        for stem in stems:
+            for name, entry in reg.items():
+                if not isinstance(entry, type_filter):
+                    continue
+                if (getattr(entry, "slash_command", None) or "") == stem:
+                    return name
+    except Exception:
+        return None
+    return None
+
+
+def _suggest_close_name(provided: str, choices: list[str], n: int = 3) -> list[str]:
+    """Return up to ``n`` closest matches for ``provided`` from ``choices``."""
+    import difflib
+    return difflib.get_close_matches(provided, choices, n=n, cutoff=0.4)
+
+
+def _validate_registry_name(kind: str, provided: str) -> dict | None:
+    """Return None if ``provided`` is a registered name for ``kind``,
+    else a typed error dict ready to return from create_user_job_file.
+
+    The error prioritizes a slash-command-to-registry match if one
+    exists — users (and agents) often remember the user-facing
+    ``wb-morning`` slash command rather than its underlying
+    ``morning-routine`` workflow.
+    """
+    choices = _registry_names(kind)
+    if not choices:
+        # Couldn't reach the registry — don't block creation. Caller
+        # will hit a clearer error at fire time.
+        return None
+    if provided in choices:
+        return None
+    # Slash-command-aware suggestion takes priority over fuzzy match.
+    slash_resolved = _slash_command_to_registry(provided, kind)
+    if slash_resolved:
+        msg = (
+            f"Unknown {kind} {provided!r} — did you mean "
+            f"``{slash_resolved}``? (``{provided}`` is the slash-command "
+            f"name; the underlying {kind} is ``{slash_resolved}``.)"
+        )
+        return {
+            "success": False,
+            "error": msg,
+            "errors_by_field": {kind: msg},
+            "suggestions": [slash_resolved],
+        }
+    suggestions = _suggest_close_name(provided, choices)
+    msg = f"Unknown {kind} {provided!r}."
+    if suggestions:
+        quoted = ", ".join(repr(s) for s in suggestions)
+        msg += f" Did you mean: {quoted}?"
+    return {
+        "success": False,
+        "error": msg,
+        "errors_by_field": {kind: msg},
+        "suggestions": suggestions,
+    }
+
+
+def _validate_workflow_params(workflow_name: str, params: dict) -> dict | None:
+    """Pre-validate workflow params against the workflow's declared
+    ``params_schema`` (if any). Mirrors the conductor's start-time
+    validation but at job-create time so typos surface immediately
+    instead of on first fire.
+    """
+    try:
+        from work_buddy.mcp_server.registry import (
+            get_registry, WorkflowDefinition,
+        )
+        reg = get_registry()
+        wf = reg.get(workflow_name)
+        if not isinstance(wf, WorkflowDefinition):
+            return None  # Already caught by name validation above.
+    except Exception:
+        return None
+    schema = getattr(wf, "params_schema", None) or {}
+    if not schema and params:
+        return {
+            "success": False,
+            "error": (
+                f"Workflow {workflow_name!r} does not declare a params schema "
+                f"but params were provided: {sorted(params.keys())}."
+            ),
+            "errors_by_field": {"params": "this workflow accepts no params"},
+        }
+    if not schema:
+        return None
+    declared = set(schema.keys())
+    provided = set(params.keys())
+    unknown = provided - declared
+    required = {k for k, v in schema.items() if isinstance(v, dict) and v.get("required")}
+    missing = required - provided
+    errors = []
+    if unknown:
+        errors.append(f"unknown param(s): {sorted(unknown)}")
+    if missing:
+        errors.append(f"missing required param(s): {sorted(missing)}")
+    if not errors:
+        return None
+    return {
+        "success": False,
+        "error": (
+            f"Params validation failed for workflow {workflow_name!r}: "
+            + "; ".join(errors)
+        ),
+        "errors_by_field": {"params": "; ".join(errors)},
+    }
+
+
 def create_user_job_file(
     target_dir: Path,
     *,
@@ -230,12 +376,15 @@ def create_user_job_file(
     prompt: str = "",
     enabled: bool = True,
     recurring: bool = True,
+    overwrite: bool = False,
 ) -> dict:
     """Validate inputs and write a user job .md file.
 
     Pure function — takes the destination directory explicitly so tests can
     point it at a temp dir without monkeypatching paths.data_dir. Refuses to
-    overwrite an existing file. Returns ``{"success": bool, ...}``.
+    overwrite an existing file unless ``overwrite=True`` (used by the
+    Edit-job flow, which needs to replace an existing file in place).
+    Returns ``{"success": bool, ...}``.
     """
     import json as _json
 
@@ -274,16 +423,46 @@ def create_user_job_file(
             "success": False,
             "error": f"job_type must be capability|workflow|prompt, got {job_type!r}.",
         }
-    if job_type == "capability" and not (capability or "").strip():
+    # Normalize a leading slash and surrounding whitespace from the
+    # capability/workflow names. Users and agents often paste the
+    # slash-command form they remember (``/wb-morning``); without
+    # this strip, the validator sees "/wb-morning" and rejects it
+    # without recognizing the slash-command stem behind it.
+    capability = (capability or "").strip().lstrip("/")
+    workflow = (workflow or "").strip().lstrip("/")
+
+    if job_type == "capability" and not capability:
         return {"success": False, "error": "type=capability requires 'capability'."}
-    if job_type == "workflow" and not (workflow or "").strip():
+    if job_type == "workflow" and not workflow:
         return {"success": False, "error": "type=workflow requires 'workflow'."}
     if job_type == "prompt" and not (prompt or "").strip():
         return {"success": False, "error": "type=prompt requires 'prompt'."}
 
+    # Registry-backed name validation. Hallucinated names (agent confuses
+    # the slash-command ``/wb-morning`` with a workflow named "morning",
+    # or types ``task_create`` instead of ``task_create_simple``, etc.)
+    # used to write a syntactically-valid file that silently failed at
+    # fire time — possibly days later for a weekly cron. Validate now;
+    # surface a typed error with the closest match so the caller (form
+    # or chat agent) can correct the input immediately.
+    if job_type in ("capability", "workflow"):
+        provided = capability if job_type == "capability" else workflow
+        registry_err = _validate_registry_name(job_type, provided)
+        if registry_err is not None:
+            return registry_err
+        # For workflows, also pre-validate params against any declared
+        # params_schema so a typo'd param key isn't caught only at fire
+        # time. Capabilities don't have an introspection-time schema we
+        # can validate against here without dragging in heavy imports;
+        # the executor will surface those at fire time.
+        if job_type == "workflow" and params is not None:
+            params_err = _validate_workflow_params(provided, params)
+            if params_err is not None:
+                return params_err
+
     target_dir.mkdir(parents=True, exist_ok=True)
     target = target_dir / f"{name}.md"
-    if target.exists():
+    if target.exists() and not overwrite:
         return {
             "success": False,
             "error": f"User job {name!r} already exists at {target}.",
