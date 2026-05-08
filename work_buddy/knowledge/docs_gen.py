@@ -27,7 +27,6 @@ from work_buddy.knowledge.model import (
     CapabilityUnit,
     DirectionsUnit,
     PromptUnit,
-    SystemUnit,
     WorkflowUnit,
 )
 from work_buddy.knowledge.store import load_store
@@ -78,24 +77,19 @@ def _render_directions(unit: DirectionsUnit) -> str:
     return "\n".join(lines)
 
 
-def _render_system(unit: SystemUnit) -> str:
-    """Render a SystemUnit as a Markdown page."""
+def _render_generic(unit: PromptUnit) -> str:
+    """Render any PromptUnit using only ``KnowledgeUnit`` base fields.
+
+    This is the safe-by-construction default renderer: it never touches
+    kind-specific attributes, so it cannot ``AttributeError`` on a unit
+    whose typed class doesn't declare a given field. New kinds can be
+    introduced without writing a renderer; they get a perfectly usable
+    page from the base fields alone.
+    """
     lines = [f"# {unit.name}", ""]
 
     if unit.description:
         lines += [f"> {unit.description}", ""]
-
-    if unit.ports:
-        lines += ["## Ports", ""]
-        for port in unit.ports:
-            lines.append(f"- `{port}`")
-        lines.append("")
-
-    if unit.entry_points:
-        lines += ["## Entry points", ""]
-        for ep in unit.entry_points:
-            lines.append(f"- `{ep}`")
-        lines.append("")
 
     content = unit.content.get("full") or unit.content.get("summary", "")
     if content:
@@ -196,9 +190,12 @@ def _render_workflow(unit: WorkflowUnit) -> str:
 
 _RENDERERS: dict[str, Any] = {
     "directions": _render_directions,
-    "system": _render_system,
     "capability": _render_capability,
     "workflow": _render_workflow,
+    # All other kinds (system, service, integration, reference, concept,
+    # plus any future ad-hoc kind) default to _render_generic. Specialized
+    # renderers — e.g., a service template highlighting ports/health URL —
+    # can be added later when product intent justifies the differentiation.
 }
 
 
@@ -224,8 +221,14 @@ def _format_code_references(text: str) -> str:
 
 
 def _render_unit(unit: PromptUnit) -> str:
-    """Render a unit to Markdown using its kind-specific renderer."""
-    renderer = _RENDERERS.get(unit.kind, _render_system)
+    """Render a unit to Markdown using its kind-specific renderer.
+
+    Unknown kinds fall back to ``_render_generic``, which only touches base
+    ``KnowledgeUnit`` fields and therefore cannot raise ``AttributeError``.
+    Adding a new kind never breaks the docs build; the new kind simply
+    renders generically until a specialized template is registered.
+    """
+    renderer = _RENDERERS.get(unit.kind, _render_generic)
     return _format_code_references(renderer(unit))
 
 

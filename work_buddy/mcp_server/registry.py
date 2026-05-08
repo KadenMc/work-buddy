@@ -6654,7 +6654,8 @@ def _knowledge_capabilities() -> list[Capability]:
                 "kind": {
                     "type": "str",
                     "description": (
-                        "Filter by kind: directions, system, capability, workflow"
+                        "Filter by kind: directions, capability, workflow, "
+                        "system, service, integration, reference, concept"
                     ),
                     "required": False,
                 },
@@ -6804,7 +6805,7 @@ def _knowledge_capabilities() -> list[Capability]:
             category="context",
             parameters={
                 "path": {"type": "str", "description": "Unique path ID (e.g. 'tasks/my-directions')", "required": True},
-                "kind": {"type": "str", "description": "Unit type: directions, system, capability, workflow", "required": True},
+                "kind": {"type": "str", "description": "Unit type: directions, capability, workflow, system, service, integration, reference, concept", "required": True},
                 "name": {"type": "str", "description": "Human-readable name", "required": True},
                 "description": {"type": "str", "description": "One-line summary", "required": True},
                 "content_full": {"type": "str", "description": "Full content text (newlines preserved)", "required": False},
@@ -6881,6 +6882,15 @@ def _knowledge_capabilities() -> list[Capability]:
                     "description": (
                         "New comma-separated dotted module paths "
                         "(replaces existing)."
+                    ),
+                    "required": False,
+                },
+                "kind": {
+                    "type": "str",
+                    "description": (
+                        "Reclassify the unit's kind. Must be one of: "
+                        "directions, system, service, integration, reference, "
+                        "concept, capability, workflow, personal."
                     ),
                     "required": False,
                 },
@@ -7100,8 +7110,8 @@ def _knowledge_capabilities() -> list[Capability]:
                 "kind": {
                     "type": "str",
                     "description": (
-                        "Filter by kind: directions, system, capability, "
-                        "workflow, personal."
+                        "Filter by kind: directions, capability, workflow, "
+                        "system, service, integration, reference, concept, personal."
                     ),
                     "required": False,
                 },

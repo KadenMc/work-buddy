@@ -99,7 +99,7 @@
     }
   },
   "context/sessions": {
-    "kind": "system",
+    "kind": "concept",
     "name": "Session Inspection",
     "description": "Random-access into individual Claude Code conversation sessions — browsing, search, context expansion, git commit extraction",
     "aliases": [

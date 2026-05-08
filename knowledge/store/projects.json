@@ -10,11 +10,19 @@
       "observations"
     ],
     "children": [
+      "projects/project-delete-directions",
+      "projects/project-discover-directions",
       "projects/project-list-directions",
       "projects/project-new-directions",
-      "projects/project-delete-directions",
       "projects/project-observe-directions",
-      "projects/project-discover-directions"
+      "projects/project_create",
+      "projects/project_delete",
+      "projects/project_discover",
+      "projects/project_get",
+      "projects/project_list",
+      "projects/project_memory",
+      "projects/project_observe",
+      "projects/project_update"
     ],
     "content": {
       "summary": "Projects are registered entities tracked by slug. Each project has identity (name, status, description), observations (strategic notes retained into Hindsight), and memory (semantic recall via project_memory). Use project_list to browse, project_get for detail, project_observe to record decisions/pivots.",

@@ -1,6 +1,6 @@
 {
   "vault": {
-    "kind": "system",
+    "kind": "integration",
     "name": "Vault Health Namespace",
     "description": "Cross-cutting concerns about the vault as a whole — reconnaissance, drift detection, hygiene checks, schema validation. First member: vault_recon (diagnostic) and the vault-recon collector (periodic discovery loop).",
     "content": {

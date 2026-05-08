@@ -4,10 +4,18 @@ Two parallel hierarchies share a common base:
 
 * **KnowledgeUnit** — abstract base with shared fields and methods
   * **PromptUnit** — system documentation (JSON-backed, ``knowledge/store/``)
-    * DirectionsUnit, SystemUnit, CapabilityUnit, WorkflowUnit
+    * DirectionsUnit, CapabilityUnit, WorkflowUnit
+    * SystemUnit — coherent functional domain whose persistent state work-buddy owns
+    * ServiceUnit — internal work-buddy component with a network surface
+    * IntegrationUnit — connection to an external system
+    * ReferenceUnit — Python module API surface documentation
+    * ConceptUnit — architectural narrative or design prose
   * **VaultUnit** — personal knowledge (markdown-backed, Obsidian vault)
 
-The DAG structure (parents/children) enables hierarchical navigation.
+The DAG structure (parents/children) enables hierarchical navigation. Multi-parent
+is supported and intended: a subsystem may live at one path for navigation and
+declare additional parent systems via ``parents``.
+
 Context chaining (context_before/context_after) enables automatic content
 inclusion without duplication — use sparingly for genuine shared foundations.
 """
@@ -15,9 +23,12 @@ inclusion without duplication — use sparingly for genuine shared foundations.
 from __future__ import annotations
 
 import argparse
+import logging
 import re
 from dataclasses import dataclass, field
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -300,17 +311,17 @@ class KnowledgeUnit:
 
 @dataclass
 class PromptUnit(KnowledgeUnit):
-    """System knowledge unit (JSON-backed). Exists for type discrimination.
+    """System knowledge unit (JSON-backed). Abstract type boundary.
 
     All system documentation units inherit from this. The class itself adds
     no fields — it serves as the type boundary between system and personal
     knowledge in isinstance checks and store scoping.
 
-    PromptUnit also doubles as a generic fallback container when
+    PromptUnit also serves as a last-resort fallback container when
     ``unit_from_dict`` encounters an on-disk ``kind`` that doesn't match
-    any typed subclass (see ``automation/contexts``, etc., which carry
-    ``"kind": "module"``). The deserializer is responsible for passing
-    ``kind`` through explicitly in that case.
+    any typed subclass. That path emits a warning and is not the intended
+    home for new kinds: introduce a typed subclass and register it in
+    ``_KIND_MAP`` whenever a new ``kind`` is added.
     """
     pass
 
@@ -356,14 +367,79 @@ class DirectionsUnit(PromptUnit):
 
 @dataclass
 class SystemUnit(PromptUnit):
-    """System documentation — architecture, integration guides, reference."""
+    """System — coherent functional domain whose persistent state work-buddy owns.
+
+    A ``SystemUnit`` is a domain anchor (e.g., ``tasks``, ``triage``, ``inline``)
+    whose operational details — capabilities, schemas, lifecycle — live on its
+    children. The unit itself is prose-first; structured fields (ports,
+    entry_points) belong on more specific kinds (``ServiceUnit``,
+    ``IntegrationUnit``, ``ReferenceUnit``).
+
+    Memory ownership is the strongest disambiguator: a ``system`` is a domain
+    work-buddy persists state for. Domains whose state lives outside (Obsidian
+    vault, Thunderbird, etc.) belong to ``IntegrationUnit`` instead.
+    """
 
     kind: str = field(default="system", init=False)
-    ports: list[int] = field(default_factory=list)          # service ports
-    entry_points: list[str] = field(default_factory=list)   # key Python modules
+
+
+# ---------------------------------------------------------------------------
+# Service — internal work-buddy component with network surface
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ServiceUnit(PromptUnit):
+    """Service — internal work-buddy component listening on a port (sidecar-managed).
+
+    The dashboard, messaging service, embedding service, and MCP gateway are
+    all ``ServiceUnit``s. ``IntegrationUnit`` covers the *external* counterpart
+    (a service work-buddy talks to but doesn't run).
+    """
+
+    kind: str = field(default="service", init=False)
+    ports: list[int] = field(default_factory=list)
+    health_url: str = ""                               # e.g. "/health"
+    entry_points: list[str] = field(default_factory=list)
 
     def _kind_fields(self) -> dict[str, Any]:
         d: dict[str, Any] = {}
+        if self.ports:
+            d["ports"] = self.ports
+        if self.health_url:
+            d["health_url"] = self.health_url
+        if self.entry_points:
+            d["entry_points"] = self.entry_points
+        return d
+
+    _kind_dict = _kind_fields
+
+
+# ---------------------------------------------------------------------------
+# Integration — connection to an external system
+# ---------------------------------------------------------------------------
+
+@dataclass
+class IntegrationUnit(PromptUnit):
+    """Integration — connection to an external system whose state lives elsewhere.
+
+    Examples: Obsidian (vault state lives in the user's vault), Thunderbird,
+    Tailscale, LM Studio. Integrations may run an internal bridge (a Flask
+    app, a CLI wrapper) — the bridge's port belongs here, but the integration's
+    identity is the external dependency, not the bridge mechanism.
+    """
+
+    kind: str = field(default="integration", init=False)
+    external_system: str = ""                          # "Obsidian" / "Thunderbird" / ...
+    bridge_module: str = ""                            # Python module wrapping the integration
+    ports: list[int] = field(default_factory=list)     # bridge ports (if any)
+    entry_points: list[str] = field(default_factory=list)
+
+    def _kind_fields(self) -> dict[str, Any]:
+        d: dict[str, Any] = {}
+        if self.external_system:
+            d["external_system"] = self.external_system
+        if self.bridge_module:
+            d["bridge_module"] = self.bridge_module
         if self.ports:
             d["ports"] = self.ports
         if self.entry_points:
@@ -371,6 +447,50 @@ class SystemUnit(PromptUnit):
         return d
 
     _kind_dict = _kind_fields
+
+
+# ---------------------------------------------------------------------------
+# Reference — Python module API surface documentation
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ReferenceUnit(PromptUnit):
+    """Reference — documents the API surface of one or more Python modules.
+
+    Anchored on ``entry_points``: fully-qualified Python identifiers
+    (functions, classes, constants) that constitute the module's public
+    surface. Reference units are entry-points-led; their content describes
+    what those entry points do, not architectural narrative about the
+    surrounding subsystem.
+    """
+
+    kind: str = field(default="reference", init=False)
+    entry_points: list[str] = field(default_factory=list)
+
+    def _kind_fields(self) -> dict[str, Any]:
+        d: dict[str, Any] = {}
+        if self.entry_points:
+            d["entry_points"] = self.entry_points
+        return d
+
+    _kind_dict = _kind_fields
+
+
+# ---------------------------------------------------------------------------
+# Concept — architectural narrative or design prose
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ConceptUnit(PromptUnit):
+    """Concept — architectural narrative, design philosophy, or domain heading.
+
+    Concepts are prose-first with no structured fields beyond the base. Use
+    when the unit explains *how* or *why* something is the way it is, or when
+    it serves as a navigational heading for a category of related docs
+    (``architecture``, ``dev``, ``metacognition``).
+    """
+
+    kind: str = field(default="concept", init=False)
 
 
 # ---------------------------------------------------------------------------
@@ -499,6 +619,10 @@ class VaultUnit(KnowledgeUnit):
 _KIND_MAP: dict[str, type[KnowledgeUnit]] = {
     "directions": DirectionsUnit,
     "system": SystemUnit,
+    "service": ServiceUnit,
+    "integration": IntegrationUnit,
+    "reference": ReferenceUnit,
+    "concept": ConceptUnit,
     "capability": CapabilityUnit,
     "workflow": WorkflowUnit,
     "personal": VaultUnit,
@@ -532,8 +656,19 @@ def unit_from_dict(path: str, data: dict[str, Any]) -> KnowledgeUnit:
         base_kwargs["command"] = data.get("command")
         base_kwargs["workflow"] = data.get("workflow")
         base_kwargs["capabilities"] = data.get("capabilities", [])
-    elif cls is SystemUnit:
+    elif cls is SystemUnit or cls is ConceptUnit:
+        # Both are prose-first with no kind-specific fields beyond the base.
+        pass
+    elif cls is ServiceUnit:
         base_kwargs["ports"] = data.get("ports", [])
+        base_kwargs["health_url"] = data.get("health_url", "")
+        base_kwargs["entry_points"] = data.get("entry_points", [])
+    elif cls is IntegrationUnit:
+        base_kwargs["external_system"] = data.get("external_system", "")
+        base_kwargs["bridge_module"] = data.get("bridge_module", "")
+        base_kwargs["ports"] = data.get("ports", [])
+        base_kwargs["entry_points"] = data.get("entry_points", [])
+    elif cls is ReferenceUnit:
         base_kwargs["entry_points"] = data.get("entry_points", [])
     elif cls is CapabilityUnit:
         base_kwargs["capability_name"] = data.get("capability_name", "")
@@ -557,10 +692,16 @@ def unit_from_dict(path: str, data: dict[str, Any]) -> KnowledgeUnit:
         base_kwargs["observation_count"] = data.get("observation_count", 0)
         base_kwargs["source_file"] = data.get("source_file", "")
     elif cls is PromptUnit:
-        # Fallback path: the JSON's ``kind`` didn't match any of the
-        # typed subclasses (e.g. ad-hoc ``"module"`` units). Pass it
-        # through so the loaded unit reflects the actual JSON kind
-        # rather than PromptUnit's default ``"system"``.
+        # Last-resort fallback: the JSON's ``kind`` didn't match any typed
+        # subclass. Surface this loudly so the next ad-hoc kind doesn't
+        # silently break downstream consumers (e.g., docs_gen renderers).
+        # The fix is always to introduce a typed subclass and register it
+        # in ``_KIND_MAP``; this fallback only prevents load-time crashes.
+        logger.warning(
+            "Unknown unit kind %r at %s — falling back to bare PromptUnit. "
+            "Add a typed subclass to _KIND_MAP if this kind is intentional.",
+            kind, path,
+        )
         base_kwargs["kind"] = kind
 
     return cls(**base_kwargs)

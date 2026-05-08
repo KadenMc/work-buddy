@@ -62,8 +62,8 @@ def tmp_store(tmp_path):
 def test_create_unit_accepts_dev_notes_and_entry_points(tmp_store):
     result = editor.create_unit(
         path="architecture/example-sys",
-        kind="system",
-        name="Example System",
+        kind="reference",
+        name="Example Reference",
         description="A demo for this test",
         content_full="Body text",
         parents=["architecture"],
@@ -86,7 +86,7 @@ def test_docs_create_mcp_wrapper_passes_dev_notes_through(tmp_store):
     way to the stored unit, not silently drop it."""
     result = editor.docs_create(
         path="architecture/mcp-test",
-        kind="system",
+        kind="reference",
         name="MCP Test",
         description="Round-trip test through the MCP wrapper",
         content_full="body",
@@ -120,7 +120,7 @@ def test_docs_update_replaces_dev_notes(tmp_store):
 def test_docs_update_replaces_entry_points(tmp_store):
     editor.docs_create(
         path="architecture/entry-upd",
-        kind="system",
+        kind="reference",
         name="E",
         description="d",
         entry_points="work_buddy.old",

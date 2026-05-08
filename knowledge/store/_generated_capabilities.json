@@ -114,7 +114,7 @@
       },
       "kind": {
         "type": "str",
-        "description": "Filter by kind: directions, system, capability, workflow",
+        "description": "Filter by kind: directions, capability, workflow, system, service, integration, reference, concept",
         "required": false
       },
       "depth": {
@@ -536,10 +536,103 @@
       "context"
     ]
   },
+  "context/chrome_route_to_tasks": {
+    "kind": "capability",
+    "name": "Chrome Route To Tasks",
+    "description": "Walk a Chrome-group thread's tabs and create one task per tab. Each tab's title becomes the task text; the URL goes into a linked summary note.",
+    "capability_name": "chrome_route_to_tasks",
+    "category": "context",
+    "aliases": [
+      "create tasks from chrome group",
+      "tabs to task list",
+      "spin out tabs as tasks"
+    ],
+    "parameters": {
+      "thread_id": {
+        "type": "str",
+        "description": "Chrome group sub-thread to route",
+        "required": true
+      },
+      "urgency": {
+        "type": "str",
+        "description": "low | medium (default) | high",
+        "required": false
+      },
+      "project": {
+        "type": "str",
+        "description": "Project slug applied to every created task",
+        "required": false
+      }
+    },
+    "requires": [
+      "obsidian"
+    ],
+    "mutates_state": true,
+    "retry_policy": "manual",
+    "tags": [
+      "context",
+      "chrome",
+      "route",
+      "to",
+      "tasks"
+    ],
+    "parents": [
+      "context"
+    ]
+  },
+  "context/chrome_route_to_umbrella_task": {
+    "kind": "capability",
+    "name": "Chrome Route To Umbrella Task",
+    "description": "Create a single task representing the whole Chrome group. The cluster label becomes the task text; the tabs are listed in the linked summary note.",
+    "capability_name": "chrome_route_to_umbrella_task",
+    "category": "context",
+    "aliases": [
+      "create umbrella task from chrome group",
+      "single task for tab group"
+    ],
+    "parameters": {
+      "thread_id": {
+        "type": "str",
+        "description": "Chrome group sub-thread to route",
+        "required": true
+      },
+      "urgency": {
+        "type": "str",
+        "description": "low | medium (default) | high",
+        "required": false
+      },
+      "project": {
+        "type": "str",
+        "description": "Project slug for the task",
+        "required": false
+      },
+      "title_override": {
+        "type": "str",
+        "description": "Override the task text; defaults to the cluster label",
+        "required": false
+      }
+    },
+    "requires": [
+      "obsidian"
+    ],
+    "mutates_state": true,
+    "retry_policy": "manual",
+    "tags": [
+      "context",
+      "chrome",
+      "route",
+      "to",
+      "umbrella",
+      "task"
+    ],
+    "parents": [
+      "context"
+    ]
+  },
   "context/chrome_tab_close": {
     "kind": "capability",
     "name": "Chrome Tab Close",
-    "description": "Close specified Chrome tabs by tab ID. Returns count of closed/missing tabs. Use after triage decisions.",
+    "description": "Close specified Chrome tabs by tab ID. Returns count of closed/missing tabs.",
     "capability_name": "chrome_tab_close",
     "category": "context",
     "aliases": [
@@ -1857,6 +1950,58 @@
       "conversations"
     ]
   },
+  "status/dashboard_interact": {
+    "kind": "capability",
+    "name": "Dashboard Interact",
+    "description": "Drive a dashboard form on the user's behalf — fill fields, open the form, click submit, or read current state. Single typed entry point for chat-walkthrough agents; each call is validated against the form's registered FormSchema before anything reaches the frontend. See the brief's structural section for the form_id and field names you can address.",
+    "capability_name": "dashboard_interact",
+    "category": "status",
+    "aliases": [
+      "fill form",
+      "click submit",
+      "drive ui",
+      "agent ui interaction",
+      "form bridge",
+      "set form field"
+    ],
+    "parameters": {
+      "action": {
+        "type": "str",
+        "description": "One of: form_field_set, form_open, form_submit, form_get_state.",
+        "required": true
+      },
+      "form_id": {
+        "type": "str",
+        "description": "Registered form to address (e.g. 'jobs-add-job').",
+        "required": true
+      },
+      "field": {
+        "type": "str",
+        "description": "Field name (form_field_set only).",
+        "required": false
+      },
+      "value": {
+        "type": "any",
+        "description": "Field value (form_field_set only). Type-checked against the field's declared type in the schema.",
+        "required": false
+      },
+      "timeout_seconds": {
+        "type": "float",
+        "description": "Rendezvous timeout for form_submit / form_get_state in seconds. Default 10. Ignored for other actions.",
+        "required": false
+      }
+    },
+    "mutates_state": true,
+    "retry_policy": "manual",
+    "tags": [
+      "status",
+      "dashboard",
+      "interact"
+    ],
+    "parents": [
+      "status"
+    ]
+  },
   "context/datacore_compile_plan": {
     "kind": "capability",
     "name": "Datacore Compile Plan",
@@ -2297,7 +2442,7 @@
       },
       "kind": {
         "type": "str",
-        "description": "Unit type: directions, system, capability, workflow",
+        "description": "Unit type: directions, capability, workflow, system, service, integration, reference, concept",
         "required": true
       },
       "name": {
@@ -2639,6 +2784,11 @@
         "type": "str",
         "description": "New comma-separated dotted module paths (replaces existing).",
         "required": false
+      },
+      "kind": {
+        "type": "str",
+        "description": "Reclassify the unit's kind. Must be one of: directions, system, service, integration, reference, concept, capability, workflow, personal.",
+        "required": false
       }
     },
     "mutates_state": true,
@@ -2958,6 +3108,191 @@
       "context"
     ]
   },
+  "journal/journal_append_to_note": {
+    "kind": "capability",
+    "name": "Journal Append To Note",
+    "description": "Append all items in a journal-group thread as bullets to a single existing vault note. Useful for project-observation clusters.",
+    "capability_name": "journal_append_to_note",
+    "category": "journal",
+    "aliases": [
+      "append journal group to note",
+      "log group items to project note"
+    ],
+    "parameters": {
+      "thread_id": {
+        "type": "str",
+        "description": "Group sub-thread to route",
+        "required": true
+      },
+      "note_path": {
+        "type": "str",
+        "description": "Vault-relative note to append to",
+        "required": true
+      },
+      "vault_root": {
+        "type": "str",
+        "description": "Override the configured vault root",
+        "required": false
+      },
+      "bullet_prefix": {
+        "type": "str",
+        "description": "Bullet marker (default '- ')",
+        "required": false
+      }
+    },
+    "requires": [
+      "obsidian"
+    ],
+    "mutates_state": true,
+    "retry_policy": "manual",
+    "tags": [
+      "journal",
+      "append",
+      "to",
+      "note"
+    ],
+    "parents": [
+      "journal"
+    ]
+  },
+  "journal/journal_rewrite_running_notes": {
+    "kind": "capability",
+    "name": "Journal Rewrite Running Notes",
+    "description": "Remove processed lines from today's daily note. Consent-gated wrapper around ``journal_backlog.rewrite_running_notes``. Umbrella-level cleanup: typically run after all the umbrella's groups have been routed.",
+    "capability_name": "journal_rewrite_running_notes",
+    "category": "journal",
+    "aliases": [
+      "rewrite daily note",
+      "remove processed journal lines",
+      "clean up running notes"
+    ],
+    "parameters": {
+      "preview": {
+        "type": "dict",
+        "description": "Output of build_rewrite_preview",
+        "required": true
+      },
+      "vault_root": {
+        "type": "str",
+        "description": "Override the configured vault root",
+        "required": false
+      }
+    },
+    "requires": [
+      "obsidian"
+    ],
+    "mutates_state": true,
+    "retry_policy": "manual",
+    "tags": [
+      "journal",
+      "rewrite",
+      "running",
+      "notes"
+    ],
+    "parents": [
+      "journal"
+    ]
+  },
+  "journal/journal_route_to_considerations": {
+    "kind": "capability",
+    "name": "Journal Route To Considerations",
+    "description": "Walk a journal-group thread's context items and create one consideration note per item. Each item's label becomes the title; raw text becomes the body.",
+    "capability_name": "journal_route_to_considerations",
+    "category": "journal",
+    "aliases": [
+      "create considerations from journal group",
+      "route group to considerations"
+    ],
+    "parameters": {
+      "thread_id": {
+        "type": "str",
+        "description": "Group sub-thread to route",
+        "required": true
+      },
+      "vault_root": {
+        "type": "str",
+        "description": "Override the configured vault root",
+        "required": false
+      },
+      "project": {
+        "type": "str",
+        "description": "Project slug for all new considerations (default 'inbox')",
+        "required": false
+      },
+      "type": {
+        "type": "str",
+        "description": "Consideration type (default 'consideration')",
+        "required": false
+      },
+      "status": {
+        "type": "str",
+        "description": "Initial status (default 'open')",
+        "required": false
+      }
+    },
+    "requires": [
+      "obsidian"
+    ],
+    "mutates_state": true,
+    "retry_policy": "manual",
+    "tags": [
+      "journal",
+      "route",
+      "to",
+      "considerations"
+    ],
+    "parents": [
+      "journal"
+    ]
+  },
+  "journal/journal_route_to_tasks": {
+    "kind": "capability",
+    "name": "Journal Route To Tasks",
+    "description": "Walk a journal-group thread's context items and create one task per item in the master task list. Each item's label becomes the task text. Continue-on-error: a single failed item doesn't block the rest.",
+    "capability_name": "journal_route_to_tasks",
+    "category": "journal",
+    "aliases": [
+      "create tasks from journal group",
+      "route group to task list",
+      "spin out group as tasks"
+    ],
+    "parameters": {
+      "thread_id": {
+        "type": "str",
+        "description": "Group sub-thread to route",
+        "required": true
+      },
+      "vault_root": {
+        "type": "str",
+        "description": "Override the configured vault root",
+        "required": false
+      },
+      "urgency": {
+        "type": "str",
+        "description": "low | medium (default) | high",
+        "required": false
+      },
+      "project": {
+        "type": "str",
+        "description": "Project slug applied to every created task",
+        "required": false
+      }
+    },
+    "requires": [
+      "obsidian"
+    ],
+    "mutates_state": true,
+    "retry_policy": "manual",
+    "tags": [
+      "journal",
+      "route",
+      "to",
+      "tasks"
+    ],
+    "parents": [
+      "journal"
+    ]
+  },
   "journal/journal_sign_in": {
     "kind": "capability",
     "name": "Journal Sign In",
@@ -3170,7 +3505,7 @@
       },
       "kind": {
         "type": "str",
-        "description": "Filter by kind: directions, system, capability, workflow, personal.",
+        "description": "Filter by kind: directions, capability, workflow, system, service, integration, reference, concept, personal.",
         "required": false
       },
       "category": {
@@ -6468,6 +6803,171 @@
       "messaging"
     ]
   },
+  "status/user_job_create": {
+    "kind": "capability",
+    "name": "User Job Create",
+    "description": "Author a personal scheduled cron job by writing a .md file under <data_root>/user_jobs/. Validates the cron expression and refuses to overwrite an existing job. The scheduler hot-reloads (~30s) and starts firing the job. See features/user-jobs for the schema.",
+    "capability_name": "user_job_create",
+    "category": "status",
+    "aliases": [
+      "create user job",
+      "add user job",
+      "schedule cron task",
+      "personal job",
+      "new scheduled job",
+      "wb-job-new"
+    ],
+    "parameters": {
+      "name": {
+        "type": "str",
+        "description": "Job name (becomes the filename stem); 1-64 chars, alphanumeric + - + _.",
+        "required": true
+      },
+      "schedule": {
+        "type": "str",
+        "description": "5-field cron expression (MIN HOUR DOM MON DOW).",
+        "required": true
+      },
+      "job_type": {
+        "type": "str",
+        "description": "One of: capability, workflow, prompt.",
+        "required": false
+      },
+      "capability": {
+        "type": "str",
+        "description": "(type=capability) Registered capability name to invoke.",
+        "required": false
+      },
+      "params": {
+        "type": "dict",
+        "description": "(type=capability) Parameters dict for the capability.",
+        "required": false
+      },
+      "workflow": {
+        "type": "str",
+        "description": "(type=workflow) Registered workflow name to start.",
+        "required": false
+      },
+      "prompt": {
+        "type": "str",
+        "description": "(type=prompt) Body text used as the agent prompt.",
+        "required": false
+      },
+      "enabled": {
+        "type": "bool",
+        "description": "Whether the job is enabled at create time. Default true.",
+        "required": false
+      },
+      "recurring": {
+        "type": "bool",
+        "description": "False = one-shot (schedule cleared after first fire). Default true.",
+        "required": false
+      },
+      "overwrite": {
+        "type": "bool",
+        "description": "If true, replace an existing job file with the same name. Default false (refuses to overwrite). Used by the Edit-job flow in the dashboard.",
+        "required": false
+      },
+      "jitter_seconds": {
+        "type": "int",
+        "description": "Optional stable jitter applied on top of cron eligibility. Non-negative integer; jobs fire at scheduled_at + a deterministic offset in [0, jitter_seconds]. Default 0 (no jitter — fire inline on cron match). Tick cadence quantizes values < ~30s away in practice; recommended floor is 60. See features/user-jobs.",
+        "required": false
+      }
+    },
+    "mutates_state": true,
+    "retry_policy": "manual",
+    "tags": [
+      "status",
+      "user",
+      "job",
+      "create"
+    ],
+    "parents": [
+      "status"
+    ]
+  },
+  "context/vault_recon": {
+    "kind": "capability",
+    "name": "Vault Recon",
+    "description": "Diagnostic-grade vault reconnaissance. Returns cross-tabs an agent can reason over to spot recurring conventions: frontmatter state machines (type x status), tag families (depth-3 tree), path-by-type distribution, recent activity by region, cardinality-capped frontmatter values. Single page walk with anti-noise caps.",
+    "capability_name": "vault_recon",
+    "category": "context",
+    "aliases": [
+      "vault reconnaissance",
+      "vault recon",
+      "vault structure analysis",
+      "frontmatter state machine",
+      "type by status",
+      "tag tree",
+      "vault cross-tab",
+      "vault patterns",
+      "discover vault conventions"
+    ],
+    "parameters": {
+      "path_prefix": {
+        "type": "str",
+        "description": "Optional vault-relative path prefix to scope the walk (e.g. 'repos/electricrag/'). Default: full vault.",
+        "required": false
+      },
+      "activity_days": {
+        "type": "int",
+        "description": "Lookback window in days for recent_activity_by_path. Default: 30.",
+        "required": false
+      }
+    },
+    "requires": [
+      "obsidian",
+      "datacore"
+    ],
+    "tags": [
+      "context",
+      "vault",
+      "recon"
+    ],
+    "parents": [
+      "context"
+    ]
+  },
+  "context/vault_recon_collect": {
+    "kind": "capability",
+    "name": "Vault Recon Collect",
+    "description": "Periodic vault reconnaissance entry point: snapshot the vault via vault_recon, append to a 60-day rolling ledger at .data/vault_recon/snapshots.json, compute deltas against prior snapshots, apply 5 curated significance rules, and write a one-shot type:prompt investigation job to .data/user_jobs/ on each rule firing (deduplicated per (rule, focus) over a 7-day window). Designed to be fired daily by sidecar_jobs/vault-recon.md.",
+    "capability_name": "vault_recon_collect",
+    "category": "context",
+    "aliases": [
+      "vault recon collect",
+      "vault recon collector",
+      "vault snapshot",
+      "vault delta detection",
+      "vault discovery loop",
+      "periodic vault recon"
+    ],
+    "parameters": {
+      "window_days": {
+        "type": "int",
+        "description": "Snapshot retention window (default 60).",
+        "required": false
+      },
+      "skip_escalation": {
+        "type": "bool",
+        "description": "If true, evaluate rules but do not spawn investigation jobs. Useful for dry runs.",
+        "required": false
+      }
+    },
+    "requires": [
+      "obsidian",
+      "datacore"
+    ],
+    "tags": [
+      "context",
+      "vault",
+      "recon",
+      "collect"
+    ],
+    "parents": [
+      "context"
+    ]
+  },
   "journal/vault_write_at_location": {
     "kind": "capability",
     "name": "Vault Write At Location",
@@ -6646,6 +7146,11 @@
         "type": "str",
         "description": "Dev-mode-only notes about the workflow's internals",
         "required": false
+      },
+      "params_schema": {
+        "type": "str",
+        "description": "Optional JSON object declaring caller-provided initial params: {param_name: {type, description, required}}. Mirrors capability parameters. Workflows that omit this reject any non-empty params at start.",
+        "required": false
       }
     },
     "mutates_state": true,
@@ -6752,6 +7257,11 @@
       "dev_notes": {
         "type": "str",
         "description": "New dev-mode-only notes. Pass an empty string to clear.",
+        "required": false
+      },
+      "params_schema": {
+        "type": "str",
+        "description": "New params schema (JSON object). Replaces existing schema entirely; pass an empty dict to clear.",
         "required": false
       }
     },

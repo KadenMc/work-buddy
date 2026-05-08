@@ -7,6 +7,10 @@ from work_buddy.knowledge.model import (
     PromptUnit,
     DirectionsUnit,
     SystemUnit,
+    ServiceUnit,
+    IntegrationUnit,
+    ReferenceUnit,
+    ConceptUnit,
     CapabilityUnit,
     WorkflowUnit,
     VaultUnit,
@@ -246,6 +250,86 @@ class TestVaultUnit:
         assert "high" in phrases
 
 
+class TestNewKinds:
+    """The 9-kind taxonomy: service, integration, reference, concept (added);
+    SystemUnit narrowed to a prose-first domain anchor."""
+
+    def test_system_unit_has_no_kind_specific_fields(self):
+        s = SystemUnit(path="tasks", name="Tasks", description="Tasks domain")
+        assert s.kind == "system"
+        assert s._kind_fields() == {}
+        assert not hasattr(s, "ports")
+        assert not hasattr(s, "entry_points")
+
+    def test_service_unit_construction(self):
+        s = ServiceUnit(
+            path="services/dashboard",
+            name="Dashboard",
+            description="Web UI",
+            ports=[5127],
+            health_url="/health",
+            entry_points=["work_buddy.dashboard.service:main"],
+        )
+        assert s.kind == "service"
+        assert s.ports == [5127]
+        assert s.health_url == "/health"
+        assert s._kind_fields() == {
+            "ports": [5127],
+            "health_url": "/health",
+            "entry_points": ["work_buddy.dashboard.service:main"],
+        }
+
+    def test_service_unit_omits_empty_fields_in_dict(self):
+        s = ServiceUnit(path="x", name="X", description="x")
+        assert s._kind_fields() == {}
+
+    def test_integration_unit_construction(self):
+        i = IntegrationUnit(
+            path="obsidian/bridge",
+            name="Obsidian bridge",
+            description="Plugin bridge",
+            external_system="Obsidian",
+            bridge_module="work_buddy.obsidian.bridge",
+            ports=[27125],
+        )
+        assert i.kind == "integration"
+        assert i.external_system == "Obsidian"
+        assert i.bridge_module == "work_buddy.obsidian.bridge"
+        assert i.ports == [27125]
+
+    def test_reference_unit_construction(self):
+        r = ReferenceUnit(
+            path="automation/contexts",
+            name="Action contexts",
+            description="resolve_who_can_act",
+            entry_points=[
+                "work_buddy.automation.contexts.resolve_who_can_act",
+                "work_buddy.automation.contexts.CONTEXT_REGISTRY",
+            ],
+        )
+        assert r.kind == "reference"
+        assert len(r.entry_points) == 2
+        assert r._kind_fields() == {
+            "entry_points": [
+                "work_buddy.automation.contexts.resolve_who_can_act",
+                "work_buddy.automation.contexts.CONTEXT_REGISTRY",
+            ]
+        }
+
+    def test_concept_unit_has_no_kind_specific_fields(self):
+        c = ConceptUnit(
+            path="architecture/repo-structure",
+            name="Repo structure",
+            description="Layout",
+        )
+        assert c.kind == "concept"
+        assert c._kind_fields() == {}
+
+    def test_all_new_kinds_are_prompt_units(self):
+        for cls in (SystemUnit, ServiceUnit, IntegrationUnit, ReferenceUnit, ConceptUnit):
+            assert issubclass(cls, PromptUnit)
+
+
 class TestDeserialization:
     def test_unit_from_dict_personal(self):
         data = {
@@ -284,6 +368,88 @@ class TestDeserialization:
         u = unit_from_dict("old/unit", data)
         assert u.context_before == []
         assert u.context_after == []
+
+    def test_unit_from_dict_service(self):
+        data = {
+            "kind": "service",
+            "name": "Dashboard",
+            "description": "Web UI",
+            "ports": [5127],
+            "health_url": "/health",
+            "entry_points": ["work_buddy.dashboard.service:main"],
+        }
+        u = unit_from_dict("services/dashboard", data)
+        assert isinstance(u, ServiceUnit)
+        assert u.ports == [5127]
+        assert u.health_url == "/health"
+        assert u.entry_points == ["work_buddy.dashboard.service:main"]
+
+    def test_unit_from_dict_integration(self):
+        data = {
+            "kind": "integration",
+            "name": "Obsidian bridge",
+            "description": "Plugin bridge",
+            "external_system": "Obsidian",
+            "bridge_module": "work_buddy.obsidian.bridge",
+            "ports": [27125],
+        }
+        u = unit_from_dict("obsidian/bridge", data)
+        assert isinstance(u, IntegrationUnit)
+        assert u.external_system == "Obsidian"
+        assert u.bridge_module == "work_buddy.obsidian.bridge"
+        assert u.ports == [27125]
+
+    def test_unit_from_dict_reference(self):
+        data = {
+            "kind": "reference",
+            "name": "Action contexts",
+            "description": "API surface",
+            "entry_points": ["work_buddy.automation.contexts.resolve_who_can_act"],
+        }
+        u = unit_from_dict("automation/contexts", data)
+        assert isinstance(u, ReferenceUnit)
+        assert u.entry_points == ["work_buddy.automation.contexts.resolve_who_can_act"]
+
+    def test_unit_from_dict_concept(self):
+        data = {
+            "kind": "concept",
+            "name": "Repo structure",
+            "description": "Layout",
+        }
+        u = unit_from_dict("architecture/repo-structure", data)
+        assert isinstance(u, ConceptUnit)
+        assert u.kind == "concept"
+
+    def test_unit_from_dict_round_trips(self):
+        """Each new kind survives deserialize → to_dict round trip."""
+        cases = [
+            {"kind": "service", "name": "S", "description": "s",
+             "ports": [5125], "health_url": "/h", "entry_points": ["m:f"]},
+            {"kind": "integration", "name": "I", "description": "i",
+             "external_system": "X", "bridge_module": "m"},
+            {"kind": "reference", "name": "R", "description": "r",
+             "entry_points": ["m:f"]},
+            {"kind": "concept", "name": "C", "description": "c"},
+            {"kind": "system", "name": "Y", "description": "y"},
+        ]
+        for data in cases:
+            u = unit_from_dict("test/path", data)
+            d = u.to_dict()
+            for k, v in data.items():
+                assert d[k] == v, f"round-trip lost {k} for kind={data['kind']}"
+
+    def test_unknown_kind_falls_back_and_warns(self, caplog):
+        """An unknown kind deserializes as bare PromptUnit and emits a warning,
+        so future ad-hoc kinds surface visibly in load_store logs rather than
+        silently breaking docs_gen renderers."""
+        import logging
+        data = {"kind": "made-up-kind", "name": "X", "description": "x"}
+        with caplog.at_level(logging.WARNING, logger="work_buddy.knowledge.model"):
+            u = unit_from_dict("ad/hoc", data)
+        assert type(u) is PromptUnit
+        assert u.kind == "made-up-kind"
+        assert any("made-up-kind" in r.message for r in caplog.records)
+        assert any("ad/hoc" in r.message for r in caplog.records)
 
 
 class TestValidateDag:

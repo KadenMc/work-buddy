@@ -216,11 +216,19 @@ def create_unit(
                     unit_data[k] = extra[k]
         if command:
             unit_data["command"] = command
-    elif kind == "system":
+    elif kind == "service":
         if extra:
-            for k in ("ports", "entry_points"):
+            for k in ("ports", "health_url", "entry_points"):
                 if k in extra:
                     unit_data[k] = extra[k]
+    elif kind == "integration":
+        if extra:
+            for k in ("external_system", "bridge_module", "ports", "entry_points"):
+                if k in extra:
+                    unit_data[k] = extra[k]
+    elif kind == "reference":
+        if extra and "entry_points" in extra:
+            unit_data["entry_points"] = extra["entry_points"]
 
     if extra:
         # Pass through requires
@@ -536,6 +544,7 @@ def docs_update(
     aliases: str | None = None,
     dev_notes: str | None = None,
     entry_points: str | None = None,
+    kind: str | None = None,
 ) -> dict[str, Any]:
     """Update fields on an existing knowledge unit.
 
@@ -553,7 +562,14 @@ def docs_update(
         children: New comma-separated child paths (replaces existing).
         tags: New comma-separated tags (replaces existing).
         aliases: New comma-separated aliases (replaces existing).
+        kind: New kind. Must be a registered kind (see ``_KIND_MAP``).
+            Use sparingly — kind changes are reclassifications, not edits.
     """
+    if kind is not None and kind not in _KIND_MAP:
+        return {
+            "error": f"Unknown kind {kind!r}. Valid kinds: {sorted(_KIND_MAP)}",
+        }
+
     updates: dict[str, Any] = {}
     if name is not None:
         updates["name"] = name
@@ -579,6 +595,8 @@ def docs_update(
         updates["dev_notes"] = dev_notes
     if entry_points is not None:
         updates["entry_points"] = _split_csv(entry_points)
+    if kind is not None:
+        updates["kind"] = kind
 
     if not updates:
         return {"error": "No fields to update."}

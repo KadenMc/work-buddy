@@ -1,6 +1,6 @@
 {
   "browser": {
-    "kind": "system",
+    "kind": "integration",
     "name": "Browser",
     "description": "Chrome tab triage and browser-integrated workflows",
     "tags": [

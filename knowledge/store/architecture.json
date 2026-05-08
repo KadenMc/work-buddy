@@ -1,6 +1,6 @@
 {
   "architecture": {
-    "kind": "system",
+    "kind": "concept",
     "name": "Architecture & Repo Structure",
     "description": "Repository layout, subsystem organization, and development conventions",
     "tags": [
@@ -31,7 +31,7 @@
     }
   },
   "architecture/repo-structure": {
-    "kind": "system",
+    "kind": "concept",
     "name": "Repository Structure",
     "description": "Directory layout — what lives where, with subsystem README pointers",
     "aliases": [
@@ -55,7 +55,7 @@
     }
   },
   "architecture/workflows": {
-    "kind": "system",
+    "kind": "concept",
     "name": "Workflow System",
     "description": "Workflow execution — DAG, execution policy, auto-run steps, conductor, step result visibility",
     "aliases": [
@@ -82,7 +82,7 @@
     "dev_notes": "## Initial params — implementation pointers\n\n- Validation: `_validate_workflow_params(entry, params)` near the top of `work_buddy/mcp_server/conductor.py`. Returns `(ok, error_message)`. Strict policy enforced here — don't loosen without updating `features/user-jobs` and the `architecture/workflows` content above.\n- Source resolution: `_resolve_params_source(source, initial_params)` walks the dotted path. Returns `(found, value)`. Treats `__params__` alone as \"whole dict.\"\n- DAG storage: `start_workflow` sets `dag.initial_params = dict(params or {})` after validation. The attribute is dynamic on the DAG instance (not in `__init__`) — read everywhere via `getattr(dag, 'initial_params', None)` to stay safe against pre-feature DAG instances.\n- Persistence: `WorkflowDAG._save` / `WorkflowDAG.load` (in `workflow.py`) round-trip `initial_params` via `getattr(self, 'initial_params', None)` and `raw.get('initial_params')`. Save files written before this feature simply restore as `None`; everything downstream tolerates that.\n\n## Forward-compat warning\n\nIf instruction-text template substitution (`{{params.foo}}`) is ever added, it becomes the third surface where params reach a step (alongside `input_map` and `initial_params` in the response). The substitution mechanism, validation rules, and error semantics must stay consistent with both existing paths — the agent should not see different validation behavior depending on which surface they read from. Prefer extending `_resolve_params_source` (so the dotted-walk semantics match) rather than writing a parallel resolver.\n\n## Sidecar executor\n\n`work_buddy/sidecar/dispatch/executor.py::_execute_workflow(name, params)` forwards to `start_workflow(name, params=params or None)`. Job files (.md frontmatter) carry `params: {...}` under either capability or workflow types; `create_user_job_file` writes it for both. The whole pipeline is exercised by `tests/unit/test_workflow_params.py`."
   },
   "architecture/contracts": {
-    "kind": "system",
+    "kind": "concept",
     "name": "Contracts",
     "description": "Explicit work commitments — schema, lifecycle, bounded deliverables",
     "aliases": [
@@ -106,7 +106,7 @@
     }
   },
   "architecture/knowledge-system": {
-    "kind": "system",
+    "kind": "concept",
     "name": "Knowledge System",
     "description": "Unified agent self-documentation — typed units, DAG hierarchy, full-content search index with BM25 + dense embeddings",
     "aliases": [
@@ -132,11 +132,11 @@
     ],
     "content": {
       "summary": "Two parallel stores (system JSON + personal vault) sharing one KnowledgeUnit schema; DAG hierarchy; progressive disclosure; inline <<wb:path>> placeholders.",
-      "full": "Two parallel knowledge stores share a common `KnowledgeUnit` base:\n\n- **System docs** (`knowledge/store/*.json`) — behavioral directions, system docs, capability metadata, workflow structure. Queried via `agent_docs`.\n- **Personal knowledge** (Obsidian vault markdown at `<vault_root>/<personal_knowledge.vault_path>`) — user-authored patterns, feedback, preferences, calibration. Queried via `knowledge_personal`. Created/updated via `knowledge_mint`.\n\n## Unit types\n\n- `directions` — how to do X\n- `system` — what is X (reference)\n- `capability` — auto-generated from the MCP registry\n- `workflow` — hand-authored DAG definitions (not generated)\n- `personal` — vault-backed, user-owned\n\n## DAG hierarchy\n\nUnits have parents / children for hierarchical navigation. An agent querying `journal/` sees children without loading siblings it doesn't need.\n\n## Progressive disclosure\n\n`depth=\"index\"` (name + children list) → `\"summary\"` (core info) → `\"full\"` (complete content). Typical pattern: \"index to map the domain, summary to triage, full for the one unit you're acting on.\"\n\n## Context chaining\n\nUnits can declare `context_before` / `context_after` paths. At `depth=\"full\"`, referenced units' content is automatically prepended / appended. Non-recursive. Use sparingly for genuine shared foundations (e.g., `dev/retro` chains `dev/dev-mode` so it inherits dev-mode orientation without duplicating content).\n\n## Inline placeholders\n\nContent can reference other units inline with `<<wb:path>>` or `<<wb:path --recursive>>`. At `depth=\"full\"`, placeholders are resolved to the referenced unit's content. `--recursive` resolves the referenced unit's own chains transitively. Parsed with argparse (extensible to `--depth`, `--section`, etc.). Works in both JSON content strings and vault markdown files.\n\n## Dev notes\n\nUnits can carry a `dev_notes` string — development-facing guidance that only surfaces when the agent is in dev mode (set via `dev_mode_toggle`) or when the caller passes `dev=True`. Use for architectural constraints, non-obvious dependencies, and hard-won lessons that future agents could easily clobber. All subsequent knowledge queries in the session auto-include `dev_notes` once dev mode is active.\n\n## Search index\n\nA persistent BM25 + dense vector index over full unit content is warmed eagerly on MCP server startup. Inline placeholders are resolved before indexing so searching for content inside a referenced unit also surfaces the referencing unit. This powers `knowledge` and `agent_docs` search with hybrid ranking (keyword + semantic). See `architecture/embedding-service` for the model registry behind dense retrieval.\n\n## MCP capabilities\n\n- `knowledge` — unified search across both system docs and personal knowledge\n- `knowledge_personal` — personal vault knowledge only (supports `category` and `severity` filters)\n- `knowledge_mint` — create or update a personal knowledge unit in the vault\n- `agent_docs_rebuild` — reload both stores from disk after edits\n- `dev_mode_toggle` — toggle dev mode for the session\n- `knowledge_index_rebuild` — force rebuild knowledge search index with full embeddings\n- `knowledge_index_status` — check index health\n- `docs_create` / `docs_update` / `docs_delete` / `docs_move` / `docs_validate` — structured editing\n\n## Build system\n\n`python -m work_buddy.knowledge.build --write` generates capability units from the live registry. Workflow definitions live in `knowledge/store/workflows.json` as hand-authored content (not generated). See `knowledge/README.md` for the full schema and architecture."
+      "full": "Two parallel knowledge stores share a common `KnowledgeUnit` base:\n\n- **System docs** (`knowledge/store/*.json`) — behavioral directions, system docs, capability metadata, workflow structure. Queried via `agent_docs`.\n- **Personal knowledge** (Obsidian vault markdown at `<vault_root>/<personal_knowledge.vault_path>`) — user-authored patterns, feedback, preferences, calibration. Queried via `knowledge_personal`. Created/updated via `knowledge_mint`.\n\n## Unit types\n\nNine kinds, each positively anchored to a clear functional or structural definition:\n\n- `directions` — behavioral guide loaded by a slash command (\"how to do X\")\n- `capability` — callable from MCP via `wb_run`; auto-generated from the registry\n- `workflow` — DAG of steps the conductor advances; hand-authored\n- `personal` — user-authored knowledge backed by the Obsidian vault\n- `system` — coherent functional domain whose persistent state work-buddy owns (e.g. `tasks`, `triage`, `journal`)\n- `service` — internal work-buddy component with a network surface (e.g. `services/dashboard`, `architecture/embedding-service`)\n- `integration` — connection to an external system (e.g. `obsidian/bridge`, `email`, `vault`)\n- `reference` — documents the API surface of one or more Python modules (entry-points-led)\n- `concept` — architectural narrative, design philosophy, or domain-category heading\n\nThe `system` / `integration` boundary is anchored on **memory ownership**: a domain whose persistent state work-buddy itself manages is a `system`; a domain whose state lives outside (Obsidian vault, Thunderbird, etc.) is an `integration`, even when work-buddy provides operations against it.\n\nThe `service` / `integration` boundary is internal vs. external: a `service` is something work-buddy *runs* (sidecar-managed); an `integration` is something work-buddy *talks to* (the bridge that wraps it may be a Flask app, but the unit's identity is the external dependency).\n\n## DAG hierarchy and multi-parent nesting\n\nUnits have parents / children for hierarchical navigation. An agent querying `journal/` sees children without loading siblings it doesn't need.\n\n**The `parents` field is a list, not a singleton.** The DAG validator allows multiple parents and only forbids cycles. A subsystem can live at one path for navigation and declare additional parent systems via `parents`. When creating a `system` unit that is a subsystem of a larger system, include the parent system in `parents` regardless of where the path lives. Path picks one navigation entry point; the DAG carries the full relationship graph.\n\nThe \"subsystem-of-system\" relationship is derivable: walk a unit's `parents` and filter by `kind == \"system\"`.\n\n## Progressive disclosure\n\n`depth=\"index\"` (name + children list) → `\"summary\"` (core info) → `\"full\"` (complete content). Typical pattern: \"index to map the domain, summary to triage, full for the one unit you're acting on.\"\n\n## Context chaining\n\nUnits can declare `context_before` / `context_after` paths. At `depth=\"full\"`, referenced units' content is automatically prepended / appended. Non-recursive. Use sparingly for genuine shared foundations (e.g., `dev/retro` chains `dev/dev-mode` so it inherits dev-mode orientation without duplicating content).\n\n## Inline placeholders\n\nContent can reference other units inline with `<<wb:path>>` or `<<wb:path --recursive>>`. At `depth=\"full\"`, placeholders are resolved to the referenced unit's content. `--recursive` resolves the referenced unit's own chains transitively. Parsed with argparse (extensible to `--depth`, `--section`, etc.). Works in both JSON content strings and vault markdown files.\n\n## Dev notes\n\nUnits can carry a `dev_notes` string — development-facing guidance that only surfaces when the agent is in dev mode (set via `dev_mode_toggle`) or when the caller passes `dev=True`. Use for architectural constraints, non-obvious dependencies, and hard-won lessons that future agents could easily clobber. All subsequent knowledge queries in the session auto-include `dev_notes` once dev mode is active.\n\n## Search index\n\nA persistent BM25 + dense vector index over full unit content is warmed eagerly on MCP server startup. Inline placeholders are resolved before indexing so searching for content inside a referenced unit also surfaces the referencing unit. This powers `knowledge` and `agent_docs` search with hybrid ranking (keyword + semantic). See `architecture/embedding-service` for the model registry behind dense retrieval.\n\n## MCP capabilities\n\n- `knowledge` — unified search across both system docs and personal knowledge\n- `knowledge_personal` — personal vault knowledge only (supports `category` and `severity` filters)\n- `knowledge_mint` — create or update a personal knowledge unit in the vault\n- `agent_docs_rebuild` — reload both stores from disk after edits\n- `dev_mode_toggle` — toggle dev mode for the session\n- `knowledge_index_rebuild` — force rebuild knowledge search index with full embeddings\n- `knowledge_index_status` — check index health\n- `docs_create` / `docs_update` / `docs_delete` / `docs_move` / `docs_validate` — structured editing. `docs_update` accepts a `kind` parameter for reclassifying existing units.\n\n## Build system\n\n`python -m work_buddy.knowledge.build --write` generates capability units from the live registry and parent stubs for capability domains. Workflow definitions live in `knowledge/store/workflows.json` as hand-authored content (not generated). Parent stubs default to `kind: \"concept\"` (category heading); domains whose persistent state work-buddy owns are listed in `_SYSTEM_PARENT_DOMAINS` in `build.py` and emit as `kind: \"system\"`. See `knowledge/README.md` for the full schema and architecture."
     }
   },
   "architecture/retry-queue": {
-    "kind": "system",
+    "kind": "concept",
     "name": "Async Execution Queue",
     "description": "Unified disk-backed queue for three kinds of background work: retries of transient failures, deferred submissions (llm_submit), and scheduled jobs — shared sidecar sweep, per-reason policy (backoff, failure escalation)",
     "aliases": [
@@ -177,7 +177,7 @@
     "dev_notes": "## Sweep-side disabled-capability recovery\n\n`_replay` checks `get_disabled_registry()` when the active registry lookup misses. If the capability is disabled, calls `recheck_disabled_capability(name)` (per-capability re-probe with 30s cool-down). If recheck recovers, re-fetches from the active registry. If recheck still fails, falls back to invoking the disabled entry's callable anyway — the bridge call inside will raise a typed transient exception, which the existing exception handler re-queues correctly. Strictly better than reporting `\"not found in registry\"`.\n\nDo NOT reach for `invalidate_registry()` here. Full registry rebuild is ~6–8s and re-probes every tool. Per-capability is the right tool for transient probe failures. See `architecture/capability-registry` for the picking rule.\n\n## Effects-aware pre-verify in the sweep\n\n`_pre_verify_pwu(pwu_carrier, record)` takes the op record as a second arg so it can look up the capability's declared effects. When `entry.effects` is non-empty, calls `verify_post_write_effects(effects, params=record['params'])` instead of single-effect verify. Same verdicts; only `verified` (all effects present) skips the replay.\n\nThe partial verdict triggers a normal replay — the sweep runs the full capability via `entry.callable(**params)`. Capabilities with declared effects are required to be idempotent under retry. Future work: declarative sub-step dispatch so partial recovery can replay only the missing effect, not the full pipeline.\n\n## Why op-record `originating_session_id` is the consent reference\n\nThe op record already carries `originating_session_id` (set by `_save_operation` from `WORK_BUDDY_SESSION_ID`). The sidecar's `_replay` plumbs it via the existing `set_originating_session` contextvar. The consent layer's by-reference lookup just consults the contextvar at check time. Net: zero schema changes, zero new persistence, full cross-session inheritance for replays."
   },
   "architecture/mcp-import-discipline": {
-    "kind": "system",
+    "kind": "concept",
     "name": "MCP Server Import Discipline",
     "description": "Critical safety constraint: why heavy library imports in capability callables deadlock the MCP server, and the correct pattern to avoid it",
     "content": {
@@ -206,7 +206,7 @@
     ]
   },
   "architecture/llm-with-tools": {
-    "kind": "system",
+    "kind": "concept",
     "name": "Local LLM With Tools",
     "description": "[LEGACY — phase-8 deprecated] Local LM Studio-served models invoke a restricted whitelist of work-buddy MCP tools via /api/v1/chat. Gateway-enforced security via session_acl. Superseded for internal callers by architecture/llm-runner; retained here because the MCP-exposed `llm_with_tools` capability still uses this path.",
     "tags": [
@@ -244,7 +244,7 @@
     }
   },
   "architecture/embedding-service": {
-    "kind": "system",
+    "kind": "service",
     "name": "Embedding Service",
     "description": "Local HTTP service on port 5124 providing dense vector embeddings for search and similarity; exposes a symmetric default model plus an asymmetric query/document pair via role-aware client wrappers.",
     "content": {
@@ -278,7 +278,7 @@
     ]
   },
   "architecture/artifact-system": {
-    "kind": "system",
+    "kind": "reference",
     "name": "Artifact System",
     "description": "Centralized storage for all agent-produced output with per-type TTL and automatic cleanup.",
     "parents": [
@@ -312,7 +312,7 @@
     "dev_notes": "## Adding a new pruner\n\nTwo parts:\n\n1. **Define the function** in `work_buddy/artifacts.py` with the signature `(path: Path, config: dict, *, dry_run: bool) -> dict`. Return a dict with at least `bytes_before` and `bytes_after`; conventional extra fields are `pruned`, `remaining`, `pruned_files`, `rollup_groups`. Honor `dry_run` strictly — no writes, no DELETE, no VACUUM under dry-run.\n\n2. **Register it** in `work_buddy.paths.PRUNERS` with `(callable_path, default_config)`. The dispatcher in `_run_pruners` resolves the path two ways depending on the key:\n   - If the key matches a `RESOURCES` entry (e.g. `db/messages`), it goes through `resolve()` and the pruner receives a registered file path.\n   - Otherwise the key's first segment becomes a `data_dir(category)` lookup (e.g. `agents/sessions` → `data_dir(\"agents\")`). The pruner receives the directory and walks it itself.\n\nThe fallback's first-segment-only behavior is intentional and worth knowing: a pruner key like `runtime/service-logs` does NOT resolve to `data_dir(\"runtime/service_logs\")`; it resolves to `data_dir(\"runtime\")` and the pruner has to drill down. Either register a `RESOURCES` entry first, or hardcode the subdir inside the pruner function.\n\n## Pruner shapes\n\nThree patterns in the existing set; use the closest match when adding a new one:\n\n- **Pure-data filter** (`prune_chrome_ledger`, `prune_llm_cache`) — read JSON, drop expired entries, atomic rewrite via `tmp + replace`. Idempotent. Cheap. Status reported via `pruned` / `remaining` / `bytes_before` / `bytes_after`.\n- **SQL purge** (`prune_messages_db`) — open SQLite, count + delete + VACUUM in one transaction. Status reporting uses `pruned` for row count and `bytes_before` / `bytes_after` to capture VACUUM's effect. **Status guards matter** — `prune_messages_db` uses a denylist (`status != 'pending' AND status IS NOT NULL`) rather than an allowlist of terminal statuses, so cleanup tolerates new status names appearing in the schema without code change. The single hard invariant is \"never delete pending or unread messages.\"\n- **Rollup-then-delete** (`prune_claude_code_usage_db`) — group source rows past the horizon into a daily-aggregate sibling table, then delete the originals and VACUUM. The aggregate `INSERT … ON CONFLICT … DO UPDATE SET col = col + excluded.col` makes the rollup an idempotent additive merge: re-running with no eligible rows is a no-op; an overlapping pass accumulates correctly rather than `INSERT OR REPLACE`'s last-write-wins. Use this pattern when the consumer reads aggregates anyway and per-row drilldown of old data is unused.\n\n## VACUUM and transactions\n\nVACUUM cannot run inside a transaction. SQL-purge pruners must commit before VACUUMing; sqlite3's default autocommit-after-commit handles that. Future refactors that wrap a pruner in `with conn:` will throw `cannot VACUUM from within a transaction` — keep the explicit commit.\n\n## Why the cron fires twice daily\n\nThe 03:00 + 15:00 cadence in `sidecar_jobs/artifact-cleanup.md` exists so a busy day (heavy chrome browsing, lots of agent sessions) gets cleaned before the next morning's start; nightly-only would let a full active day's worth of artifacts pile up across the user's most active hours. Tune via the cron schedule string, not by adding a second cleanup job."
   },
   "architecture/llm-runner": {
-    "kind": "system",
+    "kind": "concept",
     "name": "LLM Runner",
     "description": "Unified LLM call entry point (LLMRunner, llm_call) with semantic tier enum, normalized LLMResponse, and built-in tier escalation. Replaces the split between run_task (structured output) and llm_with_tools (tool calls).",
     "content": {
@@ -358,7 +358,7 @@
     ]
   },
   "architecture/context-pipeline": {
-    "kind": "system",
+    "kind": "reference",
     "name": "Context Pipeline",
     "description": "Unified two-stage context collection + curation. ContextCollector fetches raw JSON from registered sources (git, tasks, projects, chrome + 9 markdown wrappers), ContextCurator renders into depth-adapted markdown or JSON. Feeds LLM prompts (build_triage_context retrofits onto this) and bundle files (collect.py retrofits onto this).",
     "content": {
@@ -398,7 +398,7 @@
     ]
   },
   "architecture/control-graph": {
-    "kind": "system",
+    "kind": "concept",
     "name": "Control Graph",
     "description": "Unified view-model over preferences, requirements, health, and registry. Powers the Settings tab; backs the fix + help systems.",
     "content": {
@@ -437,11 +437,11 @@
     ]
   },
   "architecture/inference": {
-    "kind": "system",
+    "kind": "concept",
     "name": "Inference",
     "description": "Local inference subsystems — admission control, LLM backends, embedding service, and provider dispatch for LM Studio / LM Link.",
     "content": {
-      "full": "Local-inference subsystems — everything that decides **when**, **where**, and **how** a call to a local model happens.\n\n## What lives here\n\n- **[Broker](./broker)** — ``work_buddy.inference.broker.LocalInferenceBroker``. Per-profile slot limits, priority classes (INTERACTIVE / WORKFLOW / BACKGROUND), split queue-wait vs inference timeouts, and per-call metrics. Every outbound local-inference call (embedding or LLM) routes through it so work-buddy — not LM Studio — is the scheduler of record.\n\n## What WILL live here (pending restructure)\n\nToday these are flat siblings under ``architecture/``; a follow-up PR (``docs_move`` pass) will re-home them under ``architecture/inference/`` alongside the broker:\n\n- ``architecture/llm-runner`` — unified LLM entry point + tier dispatch.\n- ``architecture/llm-with-tools`` — legacy tool-call loop (kept for MCP-exposed capability).\n- ``architecture/embedding-service`` — the Flask service on port 5124 + asymmetric / symmetric model registry.\n\nUntil that restructure lands, follow the flat-path links in ``architecture`` parent for those three.\n\n## Why group these\n\nAll four concerns (broker, LLM calls, embedding calls, runner) share the same underlying infrastructure: LM Studio on localhost:1234 (possibly routing via LM Link to remote compute), per-profile slot accounting, and the same error vocabulary (``LocalInferenceError`` + its kinds in ``work_buddy/llm/backends/_errors.py``). Keeping them together makes it easy to find the right entry point for a new inference-adjacent feature without scanning a flat architecture/ index.",
+      "full": "Local-inference subsystems — everything that decides **when**, **where**, and **how** a call to a local model happens.\n\n## What lives here\n\n- **[Broker](architecture_inference_broker.md)** — ``work_buddy.inference.broker.LocalInferenceBroker``. Per-profile slot limits, priority classes (INTERACTIVE / WORKFLOW / BACKGROUND), split queue-wait vs inference timeouts, and per-call metrics. Every outbound local-inference call (embedding or LLM) routes through it so work-buddy — not LM Studio — is the scheduler of record.\n\n## What WILL live here (pending restructure)\n\nToday these are flat siblings under ``architecture/``; a follow-up PR (``docs_move`` pass) will re-home them under ``architecture/inference/`` alongside the broker:\n\n- ``architecture/llm-runner`` — unified LLM entry point + tier dispatch.\n- ``architecture/llm-with-tools`` — legacy tool-call loop (kept for MCP-exposed capability).\n- ``architecture/embedding-service`` — the Flask service on port 5124 + asymmetric / symmetric model registry.\n\nUntil that restructure lands, follow the flat-path links in ``architecture`` parent for those three.\n\n## Why group these\n\nAll four concerns (broker, LLM calls, embedding calls, runner) share the same underlying infrastructure: LM Studio on localhost:1234 (possibly routing via LM Link to remote compute), per-profile slot accounting, and the same error vocabulary (``LocalInferenceError`` + its kinds in ``work_buddy/llm/backends/_errors.py``). Keeping them together makes it easy to find the right entry point for a new inference-adjacent feature without scanning a flat architecture/ index.",
       "summary": "Parent grouping for local-inference subsystems: the LocalInferenceBroker (admission + priority + metrics), LLM backends (lmstudio_native, openai_compat), and the embedding provider path. Currently sparse; architecture/llm-runner, architecture/llm-with-tools, and architecture/embedding-service will move under this parent in a follow-up restructure (see task t-<pending>)."
     },
     "tags": [
@@ -469,7 +469,7 @@
     ]
   },
   "architecture/inference/broker": {
-    "kind": "system",
+    "kind": "reference",
     "name": "Local Inference Broker",
     "description": "Admission-control + priority scheduling + per-call metrics for every local-inference call. Work-buddy is the scheduler of record for LM Studio / LM Link traffic, not LM Studio itself.",
     "content": {
@@ -504,7 +504,7 @@
     ]
   },
   "architecture/capability-registry": {
-    "kind": "system",
+    "kind": "concept",
     "name": "Capability Registry",
     "description": "How capabilities are registered, probed for tool availability, disabled when a probe fails, and recovered cheaply via per-capability re-probe (CP-A3) instead of a full registry rebuild. Authoritative reference for the heavy-vs-light recovery decision.",
     "tags": [
@@ -545,7 +545,7 @@
     ]
   },
   "architecture/event-bus": {
-    "kind": "system",
+    "kind": "concept",
     "name": "Dashboard Event Bus",
     "description": "In-process pub/sub + SSE stream + cross-process bridge that powers real-time dashboard updates without a global panel-refresh timer.",
     "content": {

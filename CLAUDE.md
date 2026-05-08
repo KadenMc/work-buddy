@@ -76,7 +76,7 @@ Before writing Python that touches work-buddy state, search first. work-buddy ha
 
 |                          | `wb_search`                                              | `agent_docs(query=...)`                                                              |
 |--------------------------|----------------------------------------------------------|--------------------------------------------------------------------------------------|
-| **Indexes**              | capabilities + workflows (callable things)               | every knowledge unit (directions, system, capability, workflow)                      |
+| **Indexes**              | capabilities + workflows (callable things)               | every knowledge unit kind (see `architecture/knowledge-system` for the full taxonomy) |
 | **Use when you want to…** | **call** something                                      | **read** something                                                                   |
 | **Question shape**       | "What's the capability for X?" / "What params does Y take?" | "What's the rule for X?" / "How does subsystem Y work?" / "What does the X directions unit say?" |
 | **Returns**              | callable name + parameter schema                         | knowledge unit prose                                                                 |

@@ -1,6 +1,6 @@
 {
   "clarify/multi-record-schema": {
-    "kind": "system",
+    "kind": "concept",
     "name": "Multi-record verdict schema (Slice 3)",
     "description": "GTD-shaped Clarify verdict: a captured item produces zero or more records, each typed by destination (task, reference, calendar_only, delete). Refusal is mutually exclusive with records for low-confidence verdicts.",
     "content": {
@@ -77,7 +77,7 @@
     ]
   },
   "clarify/deadline-extract": {
-    "kind": "system",
+    "kind": "reference",
     "name": "Deadline + dependency extraction (Slice 3)",
     "description": "Cheap Haiku-tier pre-pass that detects deadline / dependency mentions in a captured item before the main Sonnet Clarify call. Hints get merged into resulting task_proposals.",
     "content": {
@@ -110,7 +110,7 @@
     ]
   },
   "clarify/reference-filing": {
-    "kind": "module",
+    "kind": "reference",
     "name": "Reference filing pipeline (Slice 6)",
     "description": "Composition pipeline for destination=reference captures. semantic_search -> SmartSource.drill_down(content) -> vault_schema -> Clarify-style LLM call -> FilingVerdict. Read-side ships in Slice 6; write step parks for follow-up.",
     "content": {
