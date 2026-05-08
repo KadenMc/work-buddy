@@ -117,11 +117,13 @@ DOMAINS: list[_DomainDef] = [
         "id": "domain:runtime",
         "label": "Runtime",
         "description": (
-            "work-buddy's own service processes — the dashboard, the "
-            "inter-agent messaging service, and the embedding service."
+            "work-buddy's own service processes plus the network plumbing "
+            "that publishes them — the dashboard, the inter-agent "
+            "messaging service, the embedding service, and the Tailscale "
+            "tunnel that exposes the dashboard to remote devices."
         ),
         "grouping_parents": [],
-        "children_components": ["dashboard", "messaging", "embedding"],
+        "children_components": ["dashboard", "messaging", "embedding", "tailscale"],
     },
     {
         "id": "domain:system",

@@ -275,3 +275,140 @@ def check_sidecar_heartbeat() -> dict[str, Any]:
             "detail": f"sidecar last tick was {int(age)}s ago (threshold 120s) — daemon likely frozen",
         }
     return {"ok": True, "detail": f"sidecar alive (pid {pid}, tick age {int(age)}s)"}
+
+
+# ---------------------------------------------------------------------------
+# Tailscale
+# ---------------------------------------------------------------------------
+#
+# Single helper shared by:
+#   - The ``tailscale_status`` MCP capability (registry.py).
+#   - The ``check_tailscale_*`` component health checks below.
+#   - The ``check_tailscale_*`` requirement checks in requirement_checks.py.
+#
+# Each ``setup_help`` / ``setup_wizard(mode="diagnose")`` invocation runs
+# multiple of these in quick succession; without memoization that means
+# 3+ subprocess calls to ``tailscale status``. The 5-second TTL keeps them
+# coherent within a diagnose pass without holding a stale view.
+
+_TAILSCALE_CACHE: dict[str, Any] = {"ts": 0.0, "result": None}
+_TAILSCALE_CACHE_TTL_SEC = 5.0
+
+
+def get_tailscale_status(force: bool = False) -> dict[str, Any]:
+    """Fetch Tailscale daemon + Serve state via the local CLI.
+
+    Returns a dict with at least ``installed`` (bool), ``running`` (bool),
+    and ``serve`` (dict | None). When the daemon is reachable, also fills
+    ``backend_state``, ``tailnet``, ``self``, and ``peers``. Failures
+    populate ``error`` rather than raising.
+
+    Memoized for ``_TAILSCALE_CACHE_TTL_SEC`` seconds so multiple checks
+    in one diagnose pass don't each shell out. Pass ``force=True`` to
+    bypass the cache (e.g. immediately after a fixer runs).
+    """
+    import time as _time
+
+    now = _time.time()
+    cached = _TAILSCALE_CACHE.get("result")
+    if (
+        not force
+        and cached is not None
+        and (now - _TAILSCALE_CACHE["ts"]) < _TAILSCALE_CACHE_TTL_SEC
+    ):
+        return cached
+
+    import subprocess
+    import json as _json
+
+    result: dict[str, Any] = {"installed": False, "running": False, "serve": None}
+
+    try:
+        proc = subprocess.run(
+            ["tailscale", "status", "--json"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if proc.returncode != 0:
+            result["installed"] = True
+            result["error"] = proc.stderr.strip()[:200]
+            _TAILSCALE_CACHE.update({"ts": now, "result": result})
+            return result
+
+        data = _json.loads(proc.stdout)
+        result["installed"] = True
+        result["running"] = True
+        result["backend_state"] = data.get("BackendState", "")
+        result["tailnet"] = data.get("MagicDNSSuffix", "")
+        result["self"] = {
+            "name": data.get("Self", {}).get("HostName", ""),
+            "dns_name": data.get("Self", {}).get("DNSName", ""),
+            "online": data.get("Self", {}).get("Online", False),
+            "os": data.get("Self", {}).get("OS", ""),
+            "ips": data.get("Self", {}).get("TailscaleIPs", []),
+        }
+        peers = data.get("Peer", {})
+        result["peers"] = [
+            {
+                "name": p.get("HostName", ""),
+                "dns_name": p.get("DNSName", ""),
+                "online": p.get("Online", False),
+                "os": p.get("OS", ""),
+                "last_seen": p.get("LastSeen", ""),
+            }
+            for p in peers.values()
+        ]
+    except FileNotFoundError:
+        _TAILSCALE_CACHE.update({"ts": now, "result": result})
+        return result
+    except Exception as exc:
+        result["error"] = str(exc)[:200]
+        _TAILSCALE_CACHE.update({"ts": now, "result": result})
+        return result
+
+    try:
+        serve_proc = subprocess.run(
+            ["tailscale", "serve", "status", "--json"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if serve_proc.returncode == 0 and serve_proc.stdout.strip():
+            result["serve"] = _json.loads(serve_proc.stdout)
+        else:
+            result["serve"] = None
+    except Exception:
+        result["serve"] = None
+
+    _TAILSCALE_CACHE.update({"ts": now, "result": result})
+    return result
+
+
+def check_tailscale_daemon() -> dict[str, Any]:
+    """Component health check: Tailscale daemon is installed and running."""
+    status = get_tailscale_status()
+    if not status.get("installed"):
+        return {"ok": False, "detail": "tailscale CLI not found on PATH"}
+    if status.get("error"):
+        return {"ok": False, "detail": f"tailscale status failed: {status['error']}"}
+    if not status.get("running"):
+        return {"ok": False, "detail": "tailscale daemon not running"}
+    backend = status.get("backend_state", "")
+    if backend != "Running":
+        return {"ok": False, "detail": f"tailscale backend_state is {backend!r}, expected 'Running'"}
+    return {"ok": True, "detail": f"tailscale daemon running (backend {backend})"}
+
+
+def check_tailscale_self_online() -> dict[str, Any]:
+    """Component health check: this device is online on the tailnet."""
+    status = get_tailscale_status()
+    if not status.get("running"):
+        return {"ok": False, "detail": "tailscale daemon not running — can't determine online state"}
+    self_info = status.get("self") or {}
+    if not self_info.get("online"):
+        name = self_info.get("name") or "this device"
+        return {
+            "ok": False,
+            "detail": f"{name} is not online on the tailnet (Tailscale signed out, paused, or key expired?)",
+        }
+    return {
+        "ok": True,
+        "detail": f"{self_info.get('name', 'self')} online on tailnet {status.get('tailnet', '')}".strip(),
+    }
