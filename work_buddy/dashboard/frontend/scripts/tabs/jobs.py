@@ -841,7 +841,9 @@ function _setJitterMaxFromCron(maxJitter, intervalSec) {
         const reason = (intervalSec && intervalSec > 0)
             ? 'Schedule fires too often for jitter to be useful.'
             : 'Type a valid schedule to enable.';
-        hintEl.classList.remove('cron-preview-valid', 'cron-preview-invalid');
+        hintEl.classList.remove(
+            'cron-preview-valid', 'cron-preview-invalid', 'cron-preview-warning',
+        );
         hintEl.classList.add('cron-preview-hint');
         hintEl.textContent = reason;
         inputEl.classList.remove('jobs-form-field-invalid');
@@ -859,42 +861,54 @@ function _setJitterMaxFromCron(maxJitter, intervalSec) {
 
 function onJitterInput() {
     // Live validation hint for the Jitter input. ``max`` is set
-    // dynamically from the schedule's interval; sub-30s is allowed
-    // but flagged as marginal because the scheduler's ~30s tick will
-    // quantize it away.
+    // dynamically from the schedule's interval; values < 30 are
+    // accepted but flagged with a warning because the scheduler only
+    // checks every 30s and won't actually shift fire time.
     const el = document.getElementById('job-form-jitter-hint');
     const inputEl = document.getElementById('job-form-jitter');
     if (!el || !inputEl) return;
     const cap = _jitterMax();
     const raw = inputEl.value.trim();
+    const _resetClasses = () => {
+        el.classList.remove(
+            'cron-preview-hint', 'cron-preview-valid',
+            'cron-preview-invalid', 'cron-preview-warning',
+        );
+    };
     if (!raw) {
-        el.classList.remove('cron-preview-valid', 'cron-preview-invalid');
+        _resetClasses();
         el.classList.add('cron-preview-hint');
         el.textContent = cap > 0
-            ? `Spread phase-aligned starts. Max ${cap}s for this schedule.`
+            ? `Max ${cap}s for this schedule. Spreads simultaneous starts.`
             : 'Type a valid schedule to enable.';
         inputEl.classList.remove('jobs-form-field-invalid');
         return;
     }
     const n = Number(raw);
     if (!Number.isInteger(n) || n < 0 || (cap > 0 && n > cap)) {
-        el.classList.remove('cron-preview-hint', 'cron-preview-valid');
+        _resetClasses();
         el.classList.add('cron-preview-invalid');
         el.textContent = cap > 0
-            ? `✗ Must be a non-negative integer ≤ ${cap}s for this schedule.`
+            ? `✗ Must be between 0 and ${cap}s for this schedule.`
             : '✗ Type a valid schedule first.';
         inputEl.classList.add('jobs-form-field-invalid');
         return;
     }
     inputEl.classList.remove('jobs-form-field-invalid');
-    el.classList.remove('cron-preview-hint', 'cron-preview-invalid');
-    el.classList.add('cron-preview-valid');
+    _resetClasses();
     if (n === 0) {
-        el.textContent = '✓ No jitter — fires inline on cron match.';
+        el.classList.add('cron-preview-valid');
+        el.textContent = '✓ No jitter — fires on the cron minute.';
     } else if (n < 30) {
-        el.textContent = `✓ ${n}s — likely quantized away by the ~30s scheduler tick.`;
+        // The scheduler only checks for due jobs every ~30s, so an
+        // offset smaller than that won't actually shift fire time.
+        // Yellow warning rather than green check — the value is
+        // accepted but won't have the user's intended effect.
+        el.classList.add('cron-preview-warning');
+        el.textContent = `⚠ Too small to take effect — the scheduler only checks every 30s.`;
     } else {
-        el.textContent = `✓ Spreads firing across [0, ${n}s] past the cron minute.`;
+        el.classList.add('cron-preview-valid');
+        el.textContent = `✓ Randomly delays firing (max ${n}s) to distribute system load.`;
     }
 }
 

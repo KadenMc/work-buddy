@@ -3608,6 +3608,7 @@ body {
     color: var(--text-secondary);
 }
 .jobs-add-form input[type="text"],
+.jobs-add-form input[type="number"],
 .jobs-add-form select,
 .jobs-add-form textarea {
     background: var(--bg-primary);
@@ -3689,6 +3690,7 @@ body {
 .cron-preview-hint    { color: var(--text-muted); }
 .cron-preview-valid   { color: var(--green); font-weight: 500; }
 .cron-preview-invalid { color: var(--red); }
+.cron-preview-warning { color: var(--yellow); font-weight: 500; }
 
 /* Capability params schema rendered under the params textarea — gives the
    user the registered parameters' names/types/descriptions so they can
