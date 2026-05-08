@@ -94,6 +94,20 @@ JOBS_FORM_SCHEMA = FormSchema(
                 "or workflow and the chosen target declares parameters."
             ),
         ),
+        Field(
+            name="jitter_seconds",
+            type="int",
+            ui_id="job-form-jitter",
+            description=(
+                "Optional non-negative integer in [0, 3600]. Jobs fire at "
+                "the cron eligibility minute plus a deterministic offset "
+                "in [0, jitter_seconds]; 0 (the default) fires inline on "
+                "cron match. Recommended floor 60 — values below the "
+                "scheduler tick (~30s) are quantized away. Use to spread "
+                "phase-aligned schedules (e.g. */5 jobs that all coincide "
+                "at minute :00). Leave blank for no jitter."
+            ),
+        ),
     ),
 )
 

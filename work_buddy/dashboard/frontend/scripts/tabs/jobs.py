@@ -167,11 +167,13 @@ function _wbJobsReadFormState() {
     const get = (id) => (document.getElementById(id) || {}).value || '';
     const typeSel = get('job-form-type');
     const kindSel = get('job-form-invoke-kind');
+    const jitterRaw = get('job-form-jitter');
     const out = {
         name: get('job-form-name'),
         schedule: get('job-form-schedule'),
         prompt: get('job-form-prompt'),
         params: get('job-form-params'),
+        jitter_seconds: jitterRaw ? parseInt(jitterRaw, 10) || 0 : 0,
     };
     if (typeSel === 'prompt') {
         out.job_type = 'prompt';
@@ -207,6 +209,14 @@ if (window.wbFormBridge && typeof window.wbFormBridge.register === 'function') {
                     _wbJobsSetInput('job-form-params', json);
                     if (typeof onParamsInput === 'function') onParamsInput();
                 } catch (e) { /* non-serializable — skip */ }
+            },
+            jitter_seconds: v => {
+                // Bridge passes int; <input type=number> wants string.
+                // Clamp to non-negative; the schema doesn't enforce bounds
+                // so guard at the UI layer too.
+                const n = Math.max(0, Math.floor(Number(v) || 0));
+                _wbJobsSetInput('job-form-jitter', n === 0 ? '' : String(n));
+                if (typeof onJitterInput === 'function') onJitterInput();
             },
         },
         // submitHandler / getStateHandler arrive in step 4 of the bridge
@@ -335,13 +345,26 @@ function renderJobsTable(jobs, emptyHtml) {
                     ${_wbJobIcon('trash')}
                 </button>
             </td>` : '<td class="jobs-row-actions"></td>';
+        // "Next Run" reads effective_at (next_at + stable jitter offset, or
+        // queued pending due time) when present, falling back to next_at for
+        // back-compat with sidecar_state.json shapes that pre-date jitter.
+        // The dedicated Jitter column carries the configured offset so the
+        // user can correlate the displayed fire time with its cause.
+        const fireAt = j.effective_at || j.next_at;
+        const jitter = j.jitter_seconds || 0;
+        const jitterCell = jitter > 0
+            ? `<span class="jobs-jitter-cell" title="`
+              + `Configured jitter window: deterministic offset in [0, ${jitter}s] is added to the cron eligibility minute.`
+              + `">+${jitter}s</span>`
+            : `<span class="jobs-jitter-empty">\u2014</span>`;
         return `
             <tr>
                 <td>${j.name}</td>
                 <td title="${j.schedule}">${j.schedule_desc || j.schedule}</td>
                 <td>${j.last_result ? statusBadge(j.last_result, j.last_error) : '\u2014'}</td>
                 <td>${timeAgo(j.last_run_at)}</td>
-                <td>${timeUntil(j.next_at)}</td>
+                <td>${timeUntil(fireAt)}</td>
+                <td class="jobs-jitter-col">${jitterCell}</td>
                 ${actions}
             </tr>
         `;
@@ -351,6 +374,8 @@ function renderJobsTable(jobs, emptyHtml) {
             <thead><tr>
                 <th>Job</th><th>Schedule</th><th>Last Result</th>
                 <th>Last Run</th><th>Next Run</th>
+                <th class="jobs-jitter-col"
+                    title="Per-job opt-in jitter. When set, the scheduler delays firing by a deterministic offset in [0, jitter_seconds]; the same job always lands at the same offset across restarts. Spreads phase-aligned schedules so they don't pile up at common minute boundaries.">Jitter</th>
                 <th class="jobs-row-actions"></th>
             </tr></thead>
             <tbody>${rows}</tbody>
@@ -398,6 +423,12 @@ async function onEditJobClick(name) {
     document.getElementById('job-form-name').value = data.name || '';
     document.getElementById('job-form-schedule').value = data.schedule || '';
     if (typeof onCronInput === 'function') onCronInput();
+    const jitterEl = document.getElementById('job-form-jitter');
+    if (jitterEl) {
+        const j = parseInt(data.jitter_seconds, 10) || 0;
+        jitterEl.value = j ? String(j) : '';
+        if (typeof onJitterInput === 'function') onJitterInput();
+    }
     if (data.job_type === 'prompt') {
         document.getElementById('job-form-type').value = 'prompt';
         if (typeof onJobTypeChange === 'function') onJobTypeChange();
@@ -498,8 +529,9 @@ function hideAddJobForm() {
     document.getElementById('jobs-add-btn').hidden = false;
     // Clear inputs and any error so a re-open starts fresh
     ['job-form-name','job-form-schedule','job-form-prompt',
-     'job-form-invoke-name','job-form-params']
+     'job-form-invoke-name','job-form-params','job-form-jitter']
         .forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+    if (typeof onJitterInput === 'function') onJitterInput();
     document.getElementById('job-form-type').value = 'prompt';
     document.getElementById('job-form-invoke-kind').value = 'capability';
     document.getElementById('job-form-invoke-hint').textContent = '';
@@ -753,6 +785,43 @@ function onParamsInput() {
     el.textContent = `✓ Matches schema (${givenKeys.length} of ${schema.length} declared keys).`;
 }
 
+function onJitterInput() {
+    // Live validation hint for the Jitter input. The number input itself
+    // already enforces min/max via the browser; we additionally surface
+    // the tick-quantization caveat so the user understands why <30s is
+    // pointless and roughly when their job will fire.
+    const el = document.getElementById('job-form-jitter-hint');
+    const inputEl = document.getElementById('job-form-jitter');
+    if (!el || !inputEl) return;
+    const raw = inputEl.value.trim();
+    if (!raw) {
+        el.classList.remove('cron-preview-valid', 'cron-preview-invalid');
+        el.classList.add('cron-preview-hint');
+        el.innerHTML = 'Spread phase-aligned schedules. 0 = no jitter (default). '
+            + 'Values &lt; ~30s are quantized away by the scheduler tick.';
+        inputEl.classList.remove('jobs-form-field-invalid');
+        return;
+    }
+    const n = Number(raw);
+    if (!Number.isInteger(n) || n < 0 || n > 3600) {
+        el.classList.remove('cron-preview-hint', 'cron-preview-valid');
+        el.classList.add('cron-preview-invalid');
+        el.textContent = '✗ Must be a non-negative integer ≤ 3600.';
+        inputEl.classList.add('jobs-form-field-invalid');
+        return;
+    }
+    inputEl.classList.remove('jobs-form-field-invalid');
+    el.classList.remove('cron-preview-hint', 'cron-preview-invalid');
+    el.classList.add('cron-preview-valid');
+    if (n === 0) {
+        el.textContent = '✓ No jitter — fires inline on cron match.';
+    } else if (n < 30) {
+        el.textContent = `✓ ${n}s — likely quantized away by the ~30s scheduler tick. Try ≥ 60.`;
+    } else {
+        el.textContent = `✓ Spreads firing across [0, ${n}s] past the cron minute.`;
+    }
+}
+
 function onCronInput() {
     const expr = document.getElementById('job-form-schedule').value.trim();
     const el = document.getElementById('job-form-cron-preview');
@@ -788,6 +857,18 @@ async function submitAddJobForm() {
         name: document.getElementById('job-form-name').value.trim(),
         schedule: document.getElementById('job-form-schedule').value.trim(),
     };
+    const jitterRaw = document.getElementById('job-form-jitter').value.trim();
+    if (jitterRaw) {
+        const n = parseInt(jitterRaw, 10);
+        if (!Number.isInteger(n) || n < 0 || n > 3600) {
+            errEl.textContent = 'Jitter must be a non-negative integer ≤ 3600.';
+            errEl.hidden = false;
+            document.getElementById('job-form-jitter')
+                .classList.add('jobs-form-field-invalid');
+            return { success: false, error: errEl.textContent };
+        }
+        if (n > 0) payload.jitter_seconds = n;
+    }
     // In edit mode (entered via the row's pencil button), the form's
     // primary action is "Save changes" — same backend path as create
     // but with overwrite=true so the existing file is replaced rather
@@ -863,6 +944,7 @@ async function submitAddJobForm() {
             workflow: 'job-form-invoke-name',
             prompt: 'job-form-prompt',
             params: 'job-form-params',
+            jitter_seconds: 'job-form-jitter',
         };
         for (const fieldKey of Object.keys(fieldErrors)) {
             const inputId = fieldToInputId[fieldKey];

@@ -3530,6 +3530,32 @@ body {
     color: var(--red);
 }
 
+/* Dedicated Jitter column on the Jobs table. The header carries a
+   tooltip explaining what jitter is; the cells show "+Ns" for jobs
+   that opt in (with a hover-tooltip on the offset window) or an
+   em-dash for jobs that fire inline on cron match. The column is
+   narrow because the values are short and the user mostly wants to
+   know "is this job jittered, yes/no, by how much". */
+.jobs-jitter-col {
+    width: 70px;
+    text-align: right;
+    white-space: nowrap;
+    cursor: help;
+}
+.jobs-jitter-cell {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 9px;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    font-size: 11px;
+    font-weight: 500;
+    cursor: help;
+}
+.jobs-jitter-empty {
+    color: var(--text-muted);
+}
+
 /* In-form chat-walkthrough escape hatch. Sits at the top of the
    add-job form as a secondary entry point — visually paired with
    the form ("you can fill this out, or chat with me"). Outline-

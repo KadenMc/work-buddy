@@ -284,6 +284,19 @@ def _html() -> str:
             </label>
         </div>
 
+        <div class="job-form-row">
+            <label>Jitter (seconds, optional)
+                <input id="job-form-jitter" type="number"
+                       min="0" max="3600" step="1"
+                       placeholder="0" autocomplete="off"
+                       oninput="onJitterInput()" />
+                <small id="job-form-jitter-hint" class="cron-preview-hint">
+                    Spread phase-aligned schedules. 0 = no jitter (default).
+                    Values &lt; ~30s are quantized away by the scheduler tick.
+                </small>
+            </label>
+        </div>
+
         <div id="job-form-error" class="job-form-error" hidden></div>
         <div class="job-form-actions">
             <button type="button" class="jobs-form-cancel"

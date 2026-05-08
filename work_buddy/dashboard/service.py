@@ -361,6 +361,7 @@ def api_user_job_get(name: str):
         "prompt": job.prompt,
         "enabled": job.enabled,
         "recurring": job.recurring,
+        "jitter_seconds": job.jitter_seconds,
     })
 
 
