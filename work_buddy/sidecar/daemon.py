@@ -243,6 +243,28 @@ def _resolve_child_python(cfg: dict[str, Any] | None = None) -> str:
     return pinned
 
 
+def _build_child_env() -> dict[str, str]:
+    """Build the env dict children inherit when spawned by the sidecar.
+
+    Sets ``PYTHONUTF8=1`` so child interpreters wrap stdout/stderr in
+    UTF-8 ``TextIOWrapper``s. Without this, on Windows the child picks
+    cp1252 (the system ANSI code page) and ``logging.StreamHandler``
+    raises ``UnicodeEncodeError`` on any non-Latin-1 codepoint reaching
+    a log line — a recurring class of bug since log messages routinely
+    interpolate vault content, task descriptions, and other user data.
+
+    ``setdefault`` semantics: an explicit user override (e.g. setting
+    ``PYTHONUTF8=0`` to debug a bytes-vs-str regression) is preserved.
+
+    Returns a fresh dict — must not mutate ``os.environ`` itself, or
+    the override would leak into the parent and into any subprocess
+    spawn that bypasses this helper.
+    """
+    env = os.environ.copy()
+    env.setdefault("PYTHONUTF8", "1")
+    return env
+
+
 # ---------------------------------------------------------------------------
 # Startup banner
 # ---------------------------------------------------------------------------
@@ -407,6 +429,7 @@ def _start_child(svc: ChildService) -> None:
         svc.process = subprocess.Popen(
             cmd,
             cwd=str(_REPO_ROOT),
+            env=_build_child_env(),
             stdout=log_fh if log_fh else subprocess.DEVNULL,
             stderr=subprocess.STDOUT if log_fh else subprocess.DEVNULL,
             creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,

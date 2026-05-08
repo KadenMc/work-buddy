@@ -371,7 +371,7 @@ def task_sync() -> dict[str, Any]:
                     "line_number": file_info["line_number"],
                 })
                 logger.info(
-                    "task_sync: resolved mismatch %s — store %s → %s (line %d)",
+                    "task_sync: resolved mismatch %s - store %s -> %s (line %d)",
                     task_id, store_record["state"], new_state,
                     file_info["line_number"],
                 )
