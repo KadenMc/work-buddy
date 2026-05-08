@@ -1,6 +1,6 @@
 {
   "obsidian": {
-    "kind": "system",
+    "kind": "integration",
     "name": "Obsidian Integration",
     "description": "Obsidian vault integration — bridge, tasks, datacore, smart connections, vault writer",
     "tags": [
@@ -15,6 +15,7 @@
       "obsidian/datacore-query-directions",
       "obsidian/day-planner",
       "obsidian/ktr",
+      "obsidian/obsidian_retry",
       "obsidian/smart-ecosystem",
       "obsidian/tags",
       "obsidian/tasks-plugin",
@@ -29,7 +30,7 @@
     }
   },
   "obsidian/bridge": {
-    "kind": "system",
+    "kind": "integration",
     "name": "Obsidian Bridge",
     "description": "HTTP bridge to Obsidian — eval_js, latency handling, timeout retry rules",
     "aliases": [
@@ -65,7 +66,7 @@
     "dev_notes": "## eval_js_internal vs eval_js_for_write\n\nBoth bypass the `obsidian.eval_js` consent gate. The difference shows up on TIMEOUT:\n\n- `eval_js_internal` returns `None` silently on timeout (uses `_request`).\n- `eval_js_for_write(code, *, write_path, content_hint, write_mode='insert', timeout=15)` raises typed `ObsidianPostWriteUncertain` (uses `_request_with_status`).\n\nFor any JS body that mutates the vault, ALWAYS use `eval_js_for_write`. The silent-None path lets atomic-write helpers fall through to non-atomic paths without signal, which can clobber concurrent user typing in the editor. The PWU translation routes recovery through the gateway's verify-then-decide handler so the partial-write is detected.\n\n## write_mode=\"absent\" decision matrix\n\nFor delete-style operations the witness's ABSENCE proves the delete landed. The verifier:\n\n- file doesn't exist on disk → verified (strongest absent state)\n- file exists, witness IS in content → absent (delete didn't land)\n- file exists, witness NOT in content → verified\n\nWithout this mode, atomic-delete operations get inverted verify semantics: a successful delete substring-verifies as \"absent\" → enqueues retry, retry idempotent-no-ops as \"file already clean.\" End state correct but with wasted work.\n\n## Substring vs sha256 witness trade-off\n\nFor concurrently-modified files (master task list, archive, journals), substring witness is robust to unrelated changes. sha256 verify gives false negatives any time anything else touches the file between PUT and verify — trips spurious retry-exhausted notifications. Reach for substring whenever the inserted content has a unique-by-construction marker (task_id, timestamp, header line)."
   },
   "obsidian/vault-writer": {
-    "kind": "system",
+    "kind": "reference",
     "name": "Vault Location Writer",
     "description": "Section-aware vault writing — insert content at specific locations in notes",
     "aliases": [
@@ -131,7 +132,7 @@
     }
   },
   "obsidian/calendar": {
-    "kind": "system",
+    "kind": "integration",
     "name": "Google Calendar Integration",
     "description": "Google Calendar access via Obsidian Google Calendar plugin (stale/unmaintained) + eval_js bridge",
     "content": {
@@ -154,7 +155,7 @@
     ]
   },
   "obsidian/day-planner": {
-    "kind": "system",
+    "kind": "integration",
     "name": "Day Planner Plugin Integration",
     "description": "Obsidian Day Planner plugin (v0.28.0) integration -- plan entry format, settings, runtime surface",
     "content": {
@@ -177,7 +178,7 @@
     ]
   },
   "obsidian/ktr": {
-    "kind": "system",
+    "kind": "integration",
     "name": "Keep the Rhythm Integration",
     "description": "Writing activity tracking via KTR plugin (v0.2.8) -- per-file word/char deltas in 5-minute buckets",
     "content": {
@@ -202,11 +203,11 @@
     ]
   },
   "obsidian/smart-ecosystem": {
-    "kind": "system",
+    "kind": "integration",
     "name": "Smart Connections Ecosystem",
     "description": "Smart Plugins ecosystem (9 plugins, Pro license) -- SmartEnv runtime, embedding, semantic search, memory pressure",
     "content": {
-      "full": "Smart Plugins ecosystem integration (9 plugins, Pro license $1400+).\n\n## Smart Environment (window.smart_env)\n\nShared runtime globally accessible. Key collections: smart_sources (51K+ documents), smart_blocks (229K+ sub-document items), embedding_models, smart_contexts (named context packs), smart_templates, event_logs (47 event types). All collections shared regardless of which plugin registered them -- Pro gates UI views, not data access.\n\n## Embedding Model\n\nTaylorAI/bge-micro-v2, 384 dimensions, 512 max tokens. Runs locally in Obsidian via Transformers.js in a hidden iframe (smart_embed_iframe). No external API calls.\n\n## Integration Vectors\n\n1. eval_js bridge (primary): Python -> HTTP POST -> plugin bridge -> JS eval -> SmartEnv\n2. Direct disk (.smart-env/multi/*.ajson): Append-only JSON with embeddings per source, readable without Obsidian running\n3. Omnisearch (lexical): globalThis.omnisearch.search(query) -> BM25 results up to 50\n\n## Confirmed Capabilities\n\n- Embed arbitrary text: em.embed('text') -> {vec: Float32Array(384), tokens}\n- Batch embedding: em.embed_batch([{embed_input: '...'}, ...])\n- Semantic nearest-neighbor: entities_vector_adapter.nearest(vec, {}) for both sources and blocks (~51 results default)\n- Full embed-then-search pipeline confirmed end-to-end\n- lookup_context action: dynamically loaded module, takes {hypotheticals, limit, env}, creates SmartContext with ranked results. Supports multi-query fusion.\n- Smart Context: create via env.smart_contexts.new_context()\n\n## Memory Pressure (Critical)\n\nSmartEnv with large vault uses ~3.8GB of 4GB V8 heap limit (94%). Check check_ready()[\"performance_memory\"][\"js_heap_used_mb\"] before heavy operations. Avoid rapid-fire embedding calls. SmartEnv takes 60-90+ seconds to fully load after Obsidian starts.\n\n## Known Issues\n\n- Iframe adapter lazy loading: embed() fails if iframe not initialized. Call em.load() first.\n- Message queue stalling: Failed embed calls leave dead entries in em.message_queue blocking subsequent calls. Clear manually with reject+delete loop.\n- No api.search on Smart Connections v4.4.0 (changed from older versions).\n- connect_pro:error spam: \"All tunnels dead\" errors. Harmless if not using ChatGPT tunnel.\n- __pycache__ indexing: Smart Connections tries to index Python cache dirs. Add to exclusion list.\n\n## Stale Warning\n\nAll internal surfaces undocumented, bundled/minified. Runtime probing is the only discovery method. Pin to tested versions and use capability detection.\n\n<<wb:obsidian/bridge>>"
+      "full": "Smart Plugins ecosystem integration (9 plugins, Pro license $1400+).\n\n## Smart Environment (window.smart_env)\n\nShared runtime globally accessible. Key collections: smart_sources (51K+ documents), smart_blocks (229K+ sub-document items), embedding_models, smart_contexts (named context packs), smart_templates, event_logs (47 event types). All collections shared regardless of which plugin registered them -- Pro gates UI views, not data access.\n\n## Embedding Model\n\nTaylorAI/bge-micro-v2, 384 dimensions, 512 max tokens. Runs locally in Obsidian via Transformers.js in a hidden iframe (smart_embed_iframe). No external API calls.\n\n## Integration Vectors\n\n1. eval_js bridge (primary): Python -> HTTP POST -> plugin bridge -> JS eval -> SmartEnv\n2. Direct disk (.smart-env/multi/*.ajson): Append-only JSON with embeddings per source, readable without Obsidian running\n3. Omnisearch (lexical): globalThis.omnisearch.search(query) -> BM25 results up to 50\n\n## Confirmed Capabilities\n\n- Embed arbitrary text: em.embed('text') -> {vec: Float32Array(384), tokens}\n- Batch embedding: em.embed_batch([{embed_input: '...'}, ...])\n- Semantic nearest-neighbor: entities_vector_adapter.nearest(vec, {}) for both sources and blocks (~51 results default)\n- Full embed-then-search pipeline confirmed end-to-end\n- lookup_context action: dynamically loaded module, takes {hypotheticals, limit, env}, creates SmartContext with ranked results. Supports multi-query fusion.\n- Smart Context: create via env.smart_contexts.new_context()\n\n## Memory Pressure (Critical)\n\nSmartEnv with large vault uses ~3.8GB of 4GB V8 heap limit (94%). Check `check_ready()[\"performance_memory\"][\"js_heap_used_mb\"]` before heavy operations. Avoid rapid-fire embedding calls. SmartEnv takes 60-90+ seconds to fully load after Obsidian starts.\n\n## Known Issues\n\n- Iframe adapter lazy loading: embed() fails if iframe not initialized. Call em.load() first.\n- Message queue stalling: Failed embed calls leave dead entries in em.message_queue blocking subsequent calls. Clear manually with reject+delete loop.\n- No api.search on Smart Connections v4.4.0 (changed from older versions).\n- connect_pro:error spam: \"All tunnels dead\" errors. Harmless if not using ChatGPT tunnel.\n- __pycache__ indexing: Smart Connections tries to index Python cache dirs. Add to exclusion list.\n\n## Stale Warning\n\nAll internal surfaces undocumented, bundled/minified. Runtime probing is the only discovery method. Pin to tested versions and use capability detection.\n\n<<wb:obsidian/bridge>>"
     },
     "tags": [
       "obsidian",
@@ -229,7 +230,7 @@
     ]
   },
   "obsidian/tags": {
-    "kind": "system",
+    "kind": "integration",
     "name": "Tag Wrangler Integration",
     "description": "Tag operations via Tag Wrangler plugin (v0.6.4) + metadataCache -- read, rename, merge, tag pages",
     "content": {
@@ -254,7 +255,7 @@
     ]
   },
   "obsidian/tasks-plugin": {
-    "kind": "system",
+    "kind": "integration",
     "name": "Obsidian Tasks Plugin Integration",
     "description": "Runtime integration with Tasks plugin (v7.23.1) -- cache API, ownership split, mutation pipeline, tag behavior",
     "content": {
@@ -280,7 +281,7 @@
     ]
   },
   "obsidian/vault-events": {
-    "kind": "system",
+    "kind": "concept",
     "name": "Vault Event Tracking",
     "description": "Event-driven file change tracking for Obsidian -- replaces O(n) mtime scanning, persists in localStorage",
     "content": {
@@ -304,7 +305,7 @@
     ]
   },
   "obsidian/vault-write-decision": {
-    "kind": "system",
+    "kind": "concept",
     "name": "Picking a Vault Write Path",
     "description": "When to use bridge.write_file_raw directly vs. vault_write — the safe/fallback distinction explained",
     "content": {
@@ -336,7 +337,7 @@
     ]
   },
   "obsidian/typed-exceptions": {
-    "kind": "system",
+    "kind": "concept",
     "name": "Typed Obsidian Exception Hierarchy",
     "description": "Typed ObsidianError subclasses raised by the bridge layer; classified by isinstance + error_kind rather than substring matching",
     "content": {

@@ -31,6 +31,26 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 # Cache for unfiltered registry (built once per process)
 _UNFILTERED: dict | None = None
 
+# Top-level domains whose generated parent stub should be classified as
+# ``system`` (coherent functional domain whose persistent state work-buddy
+# owns) rather than the default ``concept`` (category heading for
+# capabilities/workflows). Anything not listed here defaults to ``concept``.
+# Adding a new top-level system domain → add it here.
+_SYSTEM_PARENT_DOMAINS: set[str] = {
+    "artifacts",
+    "contracts",
+    "conversations",
+    "journal",
+    "memory",     # work-buddy memory layer (Hindsight integration is a future split)
+    "messaging",
+    "tasks",
+    "triage",
+    # See knowledge/store/*.json hand-authored entries for additional system
+    # domains (e.g. clarify, daily-journal, inline, notifications, projects,
+    # threads); those are not generated stubs because they have hand-authored
+    # parent docs.
+}
+
 
 def _get_unfiltered_registry() -> dict:
     """Build the registry WITHOUT filtering out capabilities with unmet tool requirements.
@@ -209,8 +229,11 @@ def build_parent_stubs(
             )
             continue
 
+        stub_kind = (
+            "system" if parent_path in _SYSTEM_PARENT_DOMAINS else "concept"
+        )
         stubs[parent_path] = {
-            "kind": "system",
+            "kind": stub_kind,
             "name": _humanize(parent_path.rsplit("/", 1)[-1]),
             "description": f"{_humanize(parent_path.rsplit('/', 1)[-1])} capabilities and workflows",
             "tags": [parent_path.replace("/", " ")],
@@ -233,6 +256,76 @@ def _name_to_tags(name: str, category: str) -> list[str]:
     parts = name.replace("-", "_").split("_")
     tags = [category] + [p for p in parts if p != category]
     return list(dict.fromkeys(tags))  # dedupe preserving order
+
+
+def reconcile_handauthored_children(cap_units: dict[str, dict]) -> int:
+    """Add auto-generated capability paths to hand-authored parents' ``children``.
+
+    Hand-authored parent units (e.g. ``memory``) declare their own ``children``
+    list. Auto-generated capabilities declare ``parents: [...]`` pointing at
+    those parents. Without reconciliation, the hand-authored parent's
+    children list goes stale relative to the live registry — capabilities
+    exist in the store but are missing from the parent's children, breaking
+    nav rendering for that subtree.
+
+    This pass walks every generated capability and ensures its declared
+    parents (when hand-authored, not auto-stub) include the capability path
+    in their ``children`` list. Only adds; never removes — so hand-authored
+    children that aren't auto-generated (siblings, sub-systems) survive.
+
+    Returns the number of hand-authored parent files modified.
+    """
+    from work_buddy.knowledge.store import load_store
+
+    store = load_store()
+
+    # Index hand-authored files by path
+    gen_paths: set[str] = set()
+    for json_file in _STORE_DIR.glob("_generated_*.json"):
+        try:
+            data = json.loads(json_file.read_text(encoding="utf-8"))
+            gen_paths.update(data.keys())
+        except Exception:
+            continue
+
+    # For each capability, find its hand-authored parents and add it to their children
+    additions: dict[str, set[str]] = {}  # parent_path -> {child_path, ...}
+    for cap_path, cap_data in cap_units.items():
+        for parent_path in cap_data.get("parents", []):
+            # Skip if parent doesn't exist or is itself auto-generated
+            if parent_path not in store or parent_path in gen_paths:
+                continue
+            additions.setdefault(parent_path, set()).add(cap_path)
+
+    if not additions:
+        return 0
+
+    # Walk hand-authored files and merge in the discovered children
+    files_modified = 0
+    for json_file in _STORE_DIR.glob("*.json"):
+        if json_file.name.startswith("_generated_"):
+            continue
+        try:
+            data = json.loads(json_file.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        changed = False
+        for parent_path, new_children in additions.items():
+            if parent_path not in data:
+                continue
+            existing = set(data[parent_path].get("children", []))
+            merged = existing | new_children
+            if merged != existing:
+                data[parent_path]["children"] = sorted(merged)
+                changed = True
+        if changed:
+            json_file.write_text(
+                json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+            files_modified += 1
+
+    return files_modified
 
 
 def build_all(write: bool = False) -> dict[str, Any]:
@@ -263,9 +356,17 @@ def build_all(write: bool = False) -> dict[str, Any]:
         stub_path.write_text(json.dumps(stubs, indent=2, ensure_ascii=False), encoding="utf-8")
         result["parents_file"] = str(stub_path)
 
+        # Reconcile hand-authored parents with newly-generated capability children.
+        # Must run after generated files are written, since reconcile reads the
+        # live store to know which paths are auto-generated.
+        from work_buddy.knowledge.store import invalidate_store
+        invalidate_store()
+        modified = reconcile_handauthored_children(caps)
+        result["handauthored_parents_updated"] = modified
+
         logger.info(
-            "Generated store files: %d capabilities, %d parent stubs",
-            len(caps), len(stubs),
+            "Generated store files: %d capabilities, %d parent stubs, %d hand-authored parents updated",
+            len(caps), len(stubs), modified,
         )
 
     return result

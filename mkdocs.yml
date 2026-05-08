@@ -61,10 +61,14 @@ nav:
 - Architecture:
   - Architecture & Repo Structure: handbook/architecture.md
   - Artifact System: handbook/architecture_artifact-system.md
+  - Capability Registry: handbook/architecture_capability-registry.md
   - Context Pipeline: handbook/architecture_context-pipeline.md
   - Contracts: handbook/architecture_contracts.md
   - Control Graph: handbook/architecture_control-graph.md
   - Embedding Service: handbook/architecture_embedding-service.md
+  - Dashboard Event Bus: handbook/architecture_event-bus.md
+  - Inference: handbook/architecture_inference.md
+  - Local Inference Broker: handbook/architecture_inference_broker.md
   - Knowledge System: handbook/architecture_knowledge-system.md
   - LLM Runner: handbook/architecture_llm-runner.md
   - Local LLM With Tools: handbook/architecture_llm-with-tools.md
@@ -80,10 +84,20 @@ nav:
   - Artifact List: handbook/artifacts_artifact_list.md
   - Artifact Save: handbook/artifacts_artifact_save.md
   - Commit Record: handbook/artifacts_commit_record.md
+- Automation:
+  - Automation: handbook/automation.md
+  - Action contexts (Slice 5a): handbook/automation_contexts.md
+  - Pickup-time readiness (Slice 7): handbook/automation_pickup.md
+  - Risk model + automation tiers + dynamic resurfacing: handbook/automation_risk.md
 - Browser:
   - Browser: handbook/browser.md
   - Chrome Triage: handbook/browser_chrome-triage.md
   - Chrome Triage Directions: handbook/browser_chrome-triage-directions.md
+- Clarify:
+  - Clarify: handbook/clarify.md
+  - Deadline + dependency extraction (Slice 3): handbook/clarify_deadline-extract.md
+  - Multi-record verdict schema (Slice 3): handbook/clarify_multi-record-schema.md
+  - Reference filing pipeline (Slice 6): handbook/clarify_reference-filing.md
 - Context:
   - Context: handbook/context.md
   - Agent Docs: handbook/context_agent_docs.md
@@ -91,6 +105,8 @@ nav:
   - Chrome Activity: handbook/context_chrome_activity.md
   - Chrome Content: handbook/context_chrome_content.md
   - Chrome Infer: handbook/context_chrome_infer.md
+  - Chrome Route To Tasks: handbook/context_chrome_route_to_tasks.md
+  - Chrome Route To Umbrella Task: handbook/context_chrome_route_to_umbrella_task.md
   - Chrome Tab Close: handbook/context_chrome_tab_close.md
   - Chrome Tab Group: handbook/context_chrome_tab_group.md
   - Chrome Tab Move: handbook/context_chrome_tab_move.md
@@ -135,8 +151,10 @@ nav:
   - Knowledge Index Status: handbook/context_knowledge_index_status.md
   - Knowledge Mint: handbook/context_knowledge_mint.md
   - Knowledge Personal: handbook/context_knowledge_personal.md
+  - Resolution Surface Pool: handbook/context_resolution_surface_pool.md
   - Review Latest Bundle: handbook/context_review-latest-bundle.md
   - Session Find Uncommitted: handbook/context_session-find-uncommitted.md
+  - Session Identify: handbook/context_session-identify.md
   - Session Commits: handbook/context_session_commits.md
   - Session Expand: handbook/context_session_expand.md
   - Session Get: handbook/context_session_get.md
@@ -147,8 +165,12 @@ nav:
   - Session Inspection: handbook/context_sessions.md
   - Triage Execute: handbook/context_triage_execute.md
   - Triage Item Detail: handbook/context_triage_item_detail.md
+  - Triage Pool Quarantine Entry: handbook/context_triage_pool_quarantine_entry.md
+  - Triage Pool Sweep: handbook/context_triage_pool_sweep.md
   - Triage Review Pool: handbook/context_triage_review_pool.md
   - Triage Submit: handbook/context_triage_submit.md
+  - Vault Recon: handbook/context_vault_recon.md
+  - Vault Recon Collect: handbook/context_vault_recon_collect.md
   - Workflow Create: handbook/context_workflow_create.md
   - Workflow Update: handbook/context_workflow_update.md
 - Contracts:
@@ -164,6 +186,15 @@ nav:
   - Create Contract: handbook/contracts_create-contract.md
   - Overdue Contracts: handbook/contracts_overdue_contracts.md
   - Stale Contracts: handbook/contracts_stale_contracts.md
+- Conversations:
+  - Conversations: handbook/conversations.md
+  - Conversation Management Directions: handbook/conversations_conversation-directions.md
+  - Conversation Ask: handbook/conversations_conversation_ask.md
+  - Conversation Close: handbook/conversations_conversation_close.md
+  - Conversation Create: handbook/conversations_conversation_create.md
+  - Conversation List: handbook/conversations_conversation_list.md
+  - Conversation Poll: handbook/conversations_conversation_poll.md
+  - Conversation Send: handbook/conversations_conversation_send.md
 - Daily Journal:
   - Daily Journal: handbook/daily-journal.md
   - Journal Backlog Processing Directions: handbook/daily-journal_backlog-directions.md
@@ -184,10 +215,14 @@ nav:
   - Obsidian Plugin Integration: handbook/dev_plugin-integration.md
   - Session Retrospective: handbook/dev_retro.md
   - Stress Test: handbook/dev_stress-test.md
+- Email:
+  - Email integration (Thunderbird bridge): handbook/email.md
+  - Email triage directions: handbook/email_triage-directions.md
 - Features:
   - Features: handbook/features.md
   - LM Studio Embedding Offload Setup: handbook/features_lmstudio-offload-setup.md
   - Feature Preferences: handbook/features_preferences.md
+  - User-authored Scheduled Jobs: handbook/features_user-jobs.md
 - Inline:
   - Inline Commands: handbook/inline.md
   - Inline Consume Modes: handbook/inline_consume-modes.md
@@ -199,6 +234,10 @@ nav:
   - Activity Timeline: handbook/journal_activity_timeline.md
   - Day Planner: handbook/journal_day_planner.md
   - Hot Files: handbook/journal_hot_files.md
+  - Journal Append To Note: handbook/journal_journal_append_to_note.md
+  - Journal Rewrite Running Notes: handbook/journal_journal_rewrite_running_notes.md
+  - Journal Route To Considerations: handbook/journal_journal_route_to_considerations.md
+  - Journal Route To Tasks: handbook/journal_journal_route_to_tasks.md
   - Journal Sign In: handbook/journal_journal_sign_in.md
   - Journal State: handbook/journal_journal_state.md
   - Journal Triage Scan: handbook/journal_journal_triage_scan.md
@@ -208,10 +247,7 @@ nav:
   - Vault Write At Location: handbook/journal_vault_write_at_location.md
 - Memory:
   - Memory: handbook/memory.md
-  - Memory Prune: handbook/memory_memory_prune.md
-  - Memory Read: handbook/memory_memory_read.md
-  - Memory Reflect: handbook/memory_memory_reflect.md
-  - Memory Write: handbook/memory_memory_write.md
+  - Hindsight Memory Server: handbook/memory_hindsight.md
 - Messaging:
   - Messaging: handbook/messaging.md
   - Get Thread: handbook/messaging_get_thread.md
@@ -255,6 +291,7 @@ nav:
   - Smart Connections Ecosystem: handbook/obsidian_smart-ecosystem.md
   - Tag Wrangler Integration: handbook/obsidian_tags.md
   - Obsidian Tasks Plugin Integration: handbook/obsidian_tasks-plugin.md
+  - Typed Obsidian Exception Hierarchy: handbook/obsidian_typed-exceptions.md
   - Vault Event Tracking: handbook/obsidian_vault-events.md
   - Picking a Vault Write Path: handbook/obsidian_vault-write-decision.md
   - Vault Location Writer: handbook/obsidian_vault-writer.md
@@ -284,15 +321,22 @@ nav:
 - Services:
   - Services & Infrastructure: handbook/services.md
   - Dashboard: handbook/services_dashboard.md
-  - Hindsight Memory: handbook/services_memory.md
+  - "Dashboard \u2014 Automation surfaces": handbook/services_dashboard_automation-surfaces.md
+  - Dashboard Chat Sidebar: handbook/services_dashboard_chat-sidebar.md
+  - "Dashboard \u2014 Costs tab": handbook/services_dashboard_costs.md
+  - Dashboard Form Bridge: handbook/services_dashboard_form-bridge.md
   - Inter-Agent Messaging: handbook/services_messaging.md
   - Sidecar Daemon: handbook/services_sidecar.md
 - Status:
   - Status: handbook/status.md
+  - Claude Code Usage Scan: handbook/status_claude_code_usage_scan.md
+  - Dashboard Interact: handbook/status_dashboard_interact.md
+  - Escalation Recent: handbook/status_escalation_recent.md
   - Feature Status: handbook/status_feature_status.md
   - List Sessions: handbook/status_list_sessions.md
   - Llm Call: handbook/status_llm_call.md
   - Llm Costs: handbook/status_llm_costs.md
+  - Llm Costs Query: handbook/status_llm_costs_query.md
   - Llm Submit: handbook/status_llm_submit.md
   - Llm With Tools: handbook/status_llm_with_tools.md
   - Mcp Registry Reload: handbook/status_mcp_registry_reload.md
@@ -300,6 +344,7 @@ nav:
   - Remote Session List: handbook/status_remote_session_list.md
   - Service Health: handbook/status_service_health.md
   - Session Activity: handbook/status_session_activity.md
+  - Session Resume: handbook/status_session_resume.md
   - Session Summary: handbook/status_session_summary.md
   - Setup Help Directions: handbook/status_setup-help-directions.md
   - Setup Wizard Directions: handbook/status_setup-wizard-directions.md
@@ -309,19 +354,25 @@ nav:
   - Sidecar Status: handbook/status_sidecar_status.md
   - Tailscale Status Directions: handbook/status_tailscale-status-directions.md
   - Tailscale Status: handbook/status_tailscale_status.md
+  - User Job Create: handbook/status_user_job_create.md
 - Tasks:
   - Tasks: handbook/tasks.md
+  - Task action items (Slice 7): handbook/tasks_action-items.md
   - Task Assign Directions: handbook/tasks_assign-directions.md
   - Task Briefing Directions: handbook/tasks_briefing-directions.md
   - Task Handoff Directions: handbook/tasks_handoff-directions.md
   - Inline Todos: handbook/tasks_inline-todos.md
   - Inline TODOs Directions: handbook/tasks_inline-todos-directions.md
   - Namespace Lookup: handbook/tasks_namespace_lookup.md
+  - "Task Me \u2014 what should I do right now?": handbook/tasks_task-me.md
+  - Task Me Directions: handbook/tasks_task-me-directions.md
   - Task New: handbook/tasks_task-new.md
   - Task Creation Directions: handbook/tasks_task-new-directions.md
   - Task Read Directions: handbook/tasks_task-read-directions.md
   - Scattered Tasks Directions: handbook/tasks_task-scattered-directions.md
+  - Task Search Directions: handbook/tasks_task-search-directions.md
   - Task Triage: handbook/tasks_task-triage.md
+  - Task Update Description Directions: handbook/tasks_task-update-description-directions.md
   - Task Archive: handbook/tasks_task_archive.md
   - Task Assign: handbook/tasks_task_assign.md
   - Task Briefing: handbook/tasks_task_briefing.md
@@ -332,24 +383,35 @@ nav:
   - Task Read: handbook/tasks_task_read.md
   - Task Review Inbox: handbook/tasks_task_review_inbox.md
   - Task Scattered: handbook/tasks_task_scattered.md
+  - Task Search: handbook/tasks_task_search.md
   - Task Set Tags: handbook/tasks_task_set_tags.md
   - Task Stale Check: handbook/tasks_task_stale_check.md
   - Task Sync: handbook/tasks_task_sync.md
   - Task Toggle: handbook/tasks_task_toggle.md
+  - Task Update Description: handbook/tasks_task_update_description.md
   - Task Triage Directions: handbook/tasks_triage-directions.md
   - Weekly Review: handbook/tasks_weekly-review.md
   - Weekly Review Directions: handbook/tasks_weekly-review-directions.md
   - Weekly Review Data: handbook/tasks_weekly_review_data.md
 - Threads:
-  - Threads: handbook/threads.md
-  - Thread Management Directions: handbook/threads_thread-directions.md
-  - Thread Ask: handbook/threads_thread_ask.md
-  - Thread Close: handbook/threads_thread_close.md
-  - Thread Create: handbook/threads_thread_create.md
-  - Thread List: handbook/threads_thread_list.md
-  - Thread Poll: handbook/threads_thread_poll.md
-  - Thread Send: handbook/threads_thread_send.md
+  - "Threads \u2014 universal-entity primitive": handbook/threads.md
+  - Action Catalog (typed lens over capability + workflow registries): handbook/threads_action-catalog.md
+  - "Aggregator \u2014 read-only synthesis of legacy entities as Threads": handbook/threads_aggregator.md
+  - Autonomy policy (composed, not enum): handbook/threads_autonomy.md
+  - Thread event log (canonical state): handbook/threads_event-log.md
+  - Thread FSM (resolution phase): handbook/threads_fsm.md
+  - "Threads \u2014 group-relationship pattern": handbook/threads_grouping.md
+  - LLM-call priority queue (lives in work_buddy/llm/, not threads/): handbook/threads_llm-call-queue.md
+  - Resolution phase (vs. execution): handbook/threads_resolution-phase.md
 - Triage:
   - Triage: handbook/triage.md
+  - Triage card actions (open-in-app seam): handbook/triage_card-actions.md
   - Inline Triage Scan: handbook/triage_inline_triage_scan.md
+  - PoolEntry Lifecycle: handbook/triage_pool-entry-lifecycle.md
+  - Resolution Surface (Slice 1.5): handbook/triage_resolution-surface.md
+  - Source Descriptors (Triage Pool): handbook/triage_source-descriptors.md
+- Vault:
+  - Vault Health Namespace: handbook/vault.md
+  - Vault Investigation Agent Directions: handbook/vault_investigation-directions.md
+  - Vault Recon Directions: handbook/vault_recon-directions.md
 # AUTOGEN_NAV_END

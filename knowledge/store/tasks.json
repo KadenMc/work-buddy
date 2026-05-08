@@ -373,7 +373,7 @@
     }
   },
   "tasks/action-items": {
-    "kind": "module",
+    "kind": "reference",
     "name": "Task action items (Slice 7)",
     "description": "Per-action-item rows attached to a parent task. Each item carries its own risk profile + required contexts + definition_of_done. Safety rule: items with user_authored=0 AND approved_at IS NULL cannot be executed by the agent -- is_executable enforces this.",
     "content": {

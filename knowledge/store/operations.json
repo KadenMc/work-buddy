@@ -1,6 +1,6 @@
 {
   "operations": {
-    "kind": "system",
+    "kind": "concept",
     "name": "Operations",
     "description": "How to operate work-buddy — MCP gateway, sessions, Python environment",
     "tags": [
@@ -11,8 +11,9 @@
       "conda"
     ],
     "children": [
+      "operations/agent-sessions",
       "operations/mcp-gateway",
-      "operations/agent-sessions"
+      "operations/retry"
     ],
     "content": {
       "summary": "Core operational knowledge: how to discover and call MCP capabilities, how agent sessions work, and how to run Python in the conda environment.",
@@ -52,7 +53,7 @@
     }
   },
   "operations/agent-sessions": {
-    "kind": "system",
+    "kind": "reference",
     "name": "Agent Sessions",
     "description": "Session ID setup, agent directories, Python conda environment, and Poetry dependency management",
     "aliases": [

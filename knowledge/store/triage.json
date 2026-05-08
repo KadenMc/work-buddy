@@ -1,6 +1,6 @@
 {
   "triage/source-descriptors": {
-    "kind": "system",
+    "kind": "concept",
     "name": "Source Descriptors (Triage Pool)",
     "description": "Per-source lifecycle declarations driving TTL and quarantine triggers in the daily pool sweep",
     "content": {
@@ -35,7 +35,7 @@
     ]
   },
   "triage/pool-entry-lifecycle": {
-    "kind": "system",
+    "kind": "concept",
     "name": "PoolEntry Lifecycle",
     "description": "PoolEntry lifecycle in the triage pool — state enum, expires_at, sweep transitions",
     "content": {
@@ -74,7 +74,7 @@
     ]
   },
   "triage/card-actions": {
-    "kind": "system",
+    "kind": "reference",
     "name": "Triage card actions (open-in-app seam)",
     "description": "Declarative per-source button on Review cards that dispatches an MCP capability via /api/palette/execute, with auto-quarantine on declared error_kinds",
     "content": {
@@ -108,7 +108,7 @@
     ]
   },
   "triage/resolution-surface": {
-    "kind": "system",
+    "kind": "concept",
     "name": "Resolution Surface (Slice 1.5)",
     "description": "Type-aware decorator over the Review-tab card renderer; adds typed pipeline-blocker badges, attraction-passes display, Defer + Re-direct affordances, and a j/k/enter/r/s/? keyboard layer. Dispatches per resolution_type. Reads multi-record + refusal verdicts (Slice 3).",
     "content": {

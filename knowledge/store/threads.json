@@ -25,7 +25,7 @@
     }
   },
   "threads/fsm": {
-    "kind": "system",
+    "kind": "concept",
     "name": "Thread FSM (resolution phase)",
     "description": "14-state FSM that runs from inciting event to terminal. Transitions wired in Stage 2; data structures (state catalog, transition table) land in Stage 1.",
     "tags": [
@@ -42,7 +42,7 @@
     }
   },
   "threads/resolution-phase": {
-    "kind": "system",
+    "kind": "concept",
     "name": "Resolution phase (vs. execution)",
     "description": "Resolution = the cyclic, human-in-loop FSM where the system decides what to do. Execution = whichever runtime owns the dispatched action; the threads FSM dispatches but does not itself host the action runtime.",
     "tags": [
@@ -59,7 +59,7 @@
     }
   },
   "threads/event-log": {
-    "kind": "system",
+    "kind": "concept",
     "name": "Thread event log (canonical state)",
     "description": "Every state-affecting operation produces an event. The current-state cache exists for query convenience but events are authoritative.",
     "tags": [
@@ -76,7 +76,7 @@
     }
   },
   "threads/llm-call-queue": {
-    "kind": "system",
+    "kind": "concept",
     "name": "LLM-call priority queue (lives in work_buddy/llm/, not threads/)",
     "description": "General infrastructure for dispatching LLM work by priority. Threads enqueue; the queue dispatches. Reusable by any client (scheduled jobs, agents, batch ops). MUST NOT be reimplemented inside the Thread package.",
     "tags": [
@@ -94,7 +94,7 @@
     }
   },
   "threads/action-catalog": {
-    "kind": "system",
+    "kind": "concept",
     "name": "Action Catalog (typed lens over capability + workflow registries)",
     "description": "Filtered view over the existing capability + workflow registries: entries where is_action=True. Four action kinds: Standard, Improvised, Suggestion, Clarification.",
     "tags": [
@@ -111,7 +111,7 @@
     }
   },
   "threads/autonomy": {
-    "kind": "system",
+    "kind": "concept",
     "name": "Autonomy policy (composed, not enum)",
     "description": "Per-Thread policy composed from orthogonal axes. Saved compositions are configuration, not types. Sub-threads override DOWN axis-by-axis only. Stage 5 wired the runtime — auto-advance branch resolvers gate every INFERRING_* → AWAITING_*_CONFIRMATION transition.",
     "tags": [
@@ -127,7 +127,7 @@
     }
   },
   "threads/aggregator": {
-    "kind": "system",
+    "kind": "concept",
     "name": "Aggregator — read-only synthesis of legacy entities as Threads",
     "description": "Lets Thread query paths see legacy task_metadata / task_action_items / ClarifyPool data without a migration. Cutover by replacing this with real migrated rows.",
     "tags": [
@@ -145,7 +145,7 @@
   },
   "threads/grouping": {
     "name": "Threads — group-relationship pattern",
-    "kind": "system",
+    "kind": "concept",
     "description": "Parent-child relationship pattern alongside 'decompose'. Group umbrellas hold N group sub-threads; each child carries its items as ContextItems and supports per-cluster actions (close-tabs, route-to-tasks, etc.) proposed by the shared LLM cluster-refinement step. Drag-and-drop moves items between sibling children at ContextItem granularity.",
     "parents": [
       "threads"

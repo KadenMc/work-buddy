@@ -30,6 +30,10 @@
       "journal/activity_timeline",
       "journal/day_planner",
       "journal/hot_files",
+      "journal/journal_append_to_note",
+      "journal/journal_rewrite_running_notes",
+      "journal/journal_route_to_considerations",
+      "journal/journal_route_to_tasks",
       "journal/journal_sign_in",
       "journal/journal_state",
       "journal/journal_triage_scan",
@@ -38,11 +42,11 @@
       "journal/vault_write_at_location"
     ],
     "content": {
-      "summary": "Container for 9 capabilities and workflows."
+      "summary": "Container for 13 capabilities and workflows."
     }
   },
   "context": {
-    "kind": "system",
+    "kind": "concept",
     "name": "Context",
     "description": "Context capabilities and workflows",
     "tags": [
@@ -54,6 +58,8 @@
       "context/chrome_activity",
       "context/chrome_content",
       "context/chrome_infer",
+      "context/chrome_route_to_tasks",
+      "context/chrome_route_to_umbrella_task",
       "context/chrome_tab_close",
       "context/chrome_tab_group",
       "context/chrome_tab_move",
@@ -109,11 +115,13 @@
       "context/triage_pool_sweep",
       "context/triage_review_pool",
       "context/triage_submit",
+      "context/vault_recon",
+      "context/vault_recon_collect",
       "context/workflow_create",
       "context/workflow_update"
     ],
     "content": {
-      "summary": "Container for 63 capabilities and workflows."
+      "summary": "Container for 66 capabilities and workflows."
     }
   },
   "artifacts": {
@@ -136,7 +144,7 @@
     }
   },
   "status": {
-    "kind": "system",
+    "kind": "concept",
     "name": "Status",
     "description": "Status capabilities and workflows",
     "tags": [
@@ -144,6 +152,7 @@
     ],
     "children": [
       "status/claude_code_usage_scan",
+      "status/dashboard_interact",
       "status/escalation_recent",
       "status/feature_status",
       "status/list_sessions",
@@ -163,10 +172,11 @@
       "status/setup_wizard",
       "status/sidecar_jobs",
       "status/sidecar_status",
-      "status/tailscale_status"
+      "status/tailscale_status",
+      "status/user_job_create"
     ],
     "content": {
-      "summary": "Container for 21 capabilities and workflows."
+      "summary": "Container for 23 capabilities and workflows."
     }
   },
   "conversations": {

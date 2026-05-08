@@ -1,6 +1,6 @@
 {
   "features": {
-    "kind": "system",
+    "kind": "concept",
     "name": "Features",
     "description": "User-facing component opt-in/out system and configuration-time requirements.",
     "parents": [],

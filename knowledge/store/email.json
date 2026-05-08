@@ -1,6 +1,6 @@
 {
   "email": {
-    "kind": "system",
+    "kind": "integration",
     "name": "Email integration (Thunderbird bridge)",
     "description": "How work-buddy reads email via the thunderbird-work-buddy companion extension and feeds it into the triage Review pool",
     "content": {

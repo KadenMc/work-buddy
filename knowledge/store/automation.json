@@ -1,6 +1,6 @@
 {
   "automation": {
-    "kind": "system",
+    "kind": "concept",
     "name": "Automation",
     "description": "Lazy-resolution layer that decides how far the agent may take a task (operating tier) and how loudly to resurface it. Pure-function resolvers over stored signals; no I/O, no DB writes — surfaces (dashboard, engage view, audit log) call them per-read.",
     "content": {
@@ -26,7 +26,7 @@
     ]
   },
   "automation/risk": {
-    "kind": "system",
+    "kind": "concept",
     "name": "Risk model + automation tiers + dynamic resurfacing",
     "description": "Operating-tier and dynamic resurfacing-level resolvers. Pure functions reading the four risk dimensions (financial, privacy, accuracy, compute) + three amplifiers (reversibility, regret_potential, inference_uncertainty) against the user's tolerance config. Returns OperatingTierDecision / ResurfacingDecision dataclasses with typed pipeline_blocker per ROADMAP §3.3.",
     "content": {
@@ -65,7 +65,7 @@
     ]
   },
   "automation/contexts": {
-    "kind": "module",
+    "kind": "reference",
     "name": "Action contexts (Slice 5a)",
     "description": "resolve_who_can_act answers \"who can act on this task now?\" by consulting the CONTEXT_REGISTRY against the live tool-status cache. Tasks declare agent_required_contexts + user_required_contexts; the resolver returns a WhoCanActDecision with per-side unmet tokens and a handoff-eligible flag.",
     "content": {
@@ -100,7 +100,7 @@
     "dev_notes": "Pure function -- only I/O is the in-memory _TOOL_STATUS lookup via is_tool_available. Tests inject tool_status= to bypass the global cache. Empty list ([]) vs None sentinel discipline is load-bearing -- get this wrong and all tasks become user-only OR all become universal. The user-side resolver trusts declared contexts (always satisfies for known + universal tokens); the engage-view filter user_satisfies_against answers the orthogonal \"is the user CURRENTLY in this context?\" question."
   },
   "automation/pickup": {
-    "kind": "module",
+    "kind": "reference",
     "name": "Pickup-time readiness (Slice 7)",
     "description": "compute_pickup_readiness pure function -- 5-rule precedence ladder deciding whether a task is ready to execute as-is or should develop first when picked up. Reads creation_effort + user_involvement + provenance + staleness + deadline + has_action_items.",
     "content": {

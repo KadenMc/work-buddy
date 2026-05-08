@@ -1,6 +1,6 @@
 {
   "services": {
-    "kind": "system",
+    "kind": "concept",
     "name": "Services & Infrastructure",
     "description": "Sidecar-managed services — dashboard, messaging, embedding, and service pointers",
     "tags": [
@@ -13,7 +13,6 @@
     "children": [
       "services/dashboard",
       "services/messaging",
-      "services/memory",
       "services/sidecar"
     ],
     "content": {
@@ -22,7 +21,7 @@
     }
   },
   "services/dashboard": {
-    "kind": "system",
+    "kind": "service",
     "name": "Dashboard",
     "description": "Web dashboard for system observability — Flask service, dev mode, remote access, development rules",
     "aliases": [
@@ -62,7 +61,7 @@
     "dev_notes": "## Hard rule for SSE handler authors\n\nDo NOT call ``loadReview`` / ``loadTasks`` / ``loadSettings`` / ``loadCosts`` / ``refreshCostsData`` / ``staticLoaders[panel]()`` from any ``window.eventBus.on(...)`` handler. Use the panel's surface mutators instead:\n\n- Review tab: ``window.reviewSurface.{appendCard, removeCard, updateCard, bumpAttractionPasses, setForcedContextStored}``.\n- Tasks / Settings / Costs / Jobs: ``window.<panel>Surface.refresh()`` — internally morphdom-merges via ``window._wbMorphReplace``, preserving user state.\n\nThe regression test ``test_no_wholesale_loader_calls_in_event_handlers`` in ``tests/unit/test_dashboard_event_bus_frontend.py`` enforces this at the JS string level. See ``architecture/event-bus`` for the full per-card mutation contract.\n\n## No global panel-refresh timer\n\nThere is no ``setInterval`` driving panel refresh. The dashboard updates from server-pushed events; ``morphdom-umd.min.js`` v2.7.4 (``frontend/vendor/``) is the surgical-update primitive. If a tab needs periodic refresh, the answer is an event in the taxonomy, not a timer."
   },
   "services/messaging": {
-    "kind": "system",
+    "kind": "service",
     "name": "Inter-Agent Messaging",
     "description": "Inter-agent messaging service for cross-session communication",
     "aliases": [
@@ -89,36 +88,8 @@
       "full": "Flask HTTP API backed by SQLite for exchanging messages between Claude Code agents across different repos. Runs on localhost:5123.\n\nStarting: powershell.exe -Command \"cd <repo-root>; conda activate work-buddy; python -m work_buddy.messaging.service\"\n\nHooks (global, in ~/.claude/settings.json):\n- SessionStart (startup/resume/compact) — shows pending messages + send/reply instructions\n- UserPromptSubmit (every prompt) — shows pending messages only (no instructions, saves context)\n\nSending and replying: Agents in other repos send via curl POST localhost:5123/messages. Replies default to broadcast (recipient_session=NULL), visible to any session in the target project. Pass recipient_session explicitly only when targeting a specific session.\n\nKnown limitation (Claude Desktop): UserPromptSubmit hook output is injected into agent context but NOT visible in user UI. Agent sees messages; user does not. SessionStart hook output IS visible. This is a Claude Desktop behavior as of v2.1.87."
     }
   },
-  "services/memory": {
-    "kind": "system",
-    "name": "Hindsight Memory",
-    "description": "Persistent personal memory layer via Hindsight — semantic search, mental models, retention",
-    "aliases": [
-      "hindsight",
-      "memory_read",
-      "memory_write",
-      "memory_reflect",
-      "personal memory"
-    ],
-    "tags": [
-      "memory",
-      "hindsight",
-      "semantic-search",
-      "mental-models"
-    ],
-    "parents": [
-      "services"
-    ],
-    "entry_points": [
-      "work_buddy.memory"
-    ],
-    "content": {
-      "summary": "Hindsight provides persistent personal memory. Claude Code plugin handles ambient auto-recall/retain. Programmatic access via work_buddy/memory/.",
-      "full": "Persistent personal memory layer for building a digital twin. Captures soft personal context (preferences, habits, emotional state, recurring patterns) that artifacts systematically miss.\n\nTwo integration paths share one local Hindsight server:\n1. Claude Code plugin (hooks) — ambient auto-recall before every prompt, auto-retain after responses.\n2. Python adapter (work_buddy/memory/) — programmatic retain/recall/reflect for context collection, workflows, and MCP gateway capabilities.\n\nCost: Every retain call costs LLM tokens (Anthropic API key required). recall is cheap (embedding search). reflect also costs tokens.\n\nBank: One personal bank (user by default, configurable via hindsight.bank_id in config). Tag taxonomy: user:default, source:*, kind:*, domain:*, workflow:*, session:*. Observations (automatic pattern consolidation) and mental models (pre-computed reflect summaries) build up the digital twin.\n\nServer requirements: hindsight-api-slim (server, Poetry), hindsight-client (SDK, Poetry), external PostgreSQL with pgvector. Env vars: HINDSIGHT_API_LLM_PROVIDER, HINDSIGHT_API_LLM_API_KEY, HINDSIGHT_API_LLM_MODEL.\n\nStarting: HINDSIGHT_API_LLM_PROVIDER=anthropic HINDSIGHT_API_LLM_API_KEY=$ANTHROPIC_API_KEY HINDSIGHT_API_LLM_MODEL=claude-haiku-4-5-20251001 hindsight-api\n\nMCP capabilities: memory_read (semantic + keyword search), memory_write (store a fact/preference/constraint), memory_reflect (LLM-powered reasoning over memories, consent-gated), memory_prune (delete memories, consent-gated, irreversible).\n\nBank bootstrap: Call ensure_bank() from work_buddy.memory.setup to create the bank with missions, directives, and mental models. Idempotent."
-    }
-  },
   "services/sidecar": {
-    "kind": "system",
+    "kind": "service",
     "name": "Sidecar Daemon",
     "description": "Unified process supervisor, cron scheduler, and message-driven job dispatcher",
     "aliases": [
@@ -148,7 +119,7 @@
     "dev_notes": "## Service-log rotation pattern\n\nSubprocess stdout/stderr lands in raw OS file handles, not Python's logging framework — `RotatingFileHandler` doesn't apply. The daemon emulates RotatingFileHandler's policy explicitly via `_rotate_if_oversize(log_path)` called immediately before `_start_child` opens its append-mode handle:\n\n- if the file is missing or below the cap, no-op;\n- otherwise rotate by renaming `<name>.<N>.log` → drop, `<name>.<N-1>.log` → `<name>.<N>.log`, …, `<name>.<1>.log` → `<name>.<2>.log`, current `<name>.log` → `<name>.<1>.log`.\n\n`_SERVICE_LOG_CAP_BYTES` (16 MiB) and `_SERVICE_LOG_BACKUP_COUNT` (4) are module-level constants in `sidecar/daemon.py`. The fresh `<name>.log` is created by the next `open(..., \"a\")` call.\n\nThe rotation only fires at child start. A child that streams output continuously between restarts can exceed the cap mid-run; that's acceptable in practice because typical restart cadence is \"once or twice a week\" and the cap × backup-count = 80 MB ceiling per service is well within disk budget. If you need stricter bounding, switch to piping child stdout through a Python logger thread per child — but that loses the \"captured stdout always observable in a raw file\" property the original design preserves.\n\nThe naming `<name>.1.log` mirrors what `RotatingFileHandler` produces for the per-session and telegram logs, keeping the layout consistent across the whole repo.\n\n## Child-process insulation: takeover + interpreter pin\n\nTwo defenses, layered. Both exist because Windows makes the obvious approach impossible.\n\n**The class of bug**: a child service outlives the daemon that spawned it, keeps holding its port, and serves stale in-memory bytecode indefinitely while the supervisor thinks everything's fine (the orphan answers `/health` 200 OK).\n\n**Why graceful shutdown can't carry the load**: on Windows `os.kill(pid, signal.SIGTERM)` is `TerminateProcess` — a hard kill, not a catchable signal. Across two unrelated processes there is no IPC channel for a polite shutdown. So the existing daemon's signal handler / `_shutdown` / `_stop_child` chain is unreliable as a children-cleanup mechanism. We don't try to make it work; we route around it.\n\n### Defense 1 — takeover reaps children itself\n\n`work_buddy/sidecar/pid.py:takeover_existing_daemon` enumerates the old daemon's direct children via `compat.find_child_pids(old_pid)` and force-kills each **before** killing the daemon. The new daemon doesn't depend on the old daemon's cleanup at all — it has the OS authority to kill processes itself, so it does.\n\n**Order is load-bearing**: kill children first, then the daemon. Once the parent dies its children reparent (PPID=1 on Unix, orphaned on Windows) and enumeration via the original PID returns empty — you lose the only handle you had on them. Don't \"simplify\" by reordering.\n\n`compat.find_child_pids`: Windows uses WMIC (~100ms, deprecated but ships) with `Get-CimInstance -NoProfile` fallback (~6-15s cold). Unix uses `pgrep -P`. Best-effort — returns `set()` on enumeration failure; the supervisor's per-port clean-up in `_start_child` (`_kill_process_on_port`) is the secondary backstop.\n\n### Defense 2 — children spawn under a pinned interpreter\n\n`work_buddy/sidecar/daemon.py:_resolve_child_python(cfg)` is the single chokepoint for which Python children get spawned with: `cfg['sidecar']['python_executable']` if set and existing, else `sys.executable`.\n\n**Why a config pin and not a startup guard**: `sys.executable` is locked in by the launch context (scheduled task, shell activation, etc.) — the daemon can't change it once it's running. What the daemon *can* control is which interpreter its children inherit. Moving the pin from \"how the daemon launched\" to \"what the daemon spawns\" puts it inside our authority. A daemon accidentally booted on the wrong interpreter (e.g. a Windows scheduled task whose `conda activate` no-op'd in headless context) still spawns children on the right one.\n\nMismatch between pin and `sys.executable` logs a WARNING; missing pinned file logs an ERROR and falls back. **Warn-only, not refuse-to-start** — hard-stop would brick boot for users who haven't opted in. Easy to escalate to `raise` if you want fail-closed.\n\nDo not bypass `_resolve_child_python` by reading `sys.executable` directly in `_start_child`. The config pin is the user's only knob for fixing a misconfigured launch context; bypassing it silently invalidates the knob.\n\n## Scheduler jitter: pending-fire layer\n\nThe ``Scheduler`` keeps a ``_pending_fires: dict[(name, scheduled_at_epoch), due_at_epoch]`` between ``cron_matches`` and ``_fire_job``. When a cron match has ``jitter_seconds > 0``, the match becomes a *queue* operation rather than a fire; ``_fire_due_pending`` (called at the top of every tick) pops entries whose due time has passed and runs them through the same ``_fire_job`` path as no-jitter jobs.\n\n**No-jitter fast path.** When ``jitter_seconds == 0`` the queue is bypassed entirely: the per-minute name dedupe in ``_fired_this_minute: set[str]`` runs and ``_fire_job`` is called inline on cron match.\n\n**Per-occurrence dedupe key.** The pending-fire key is ``(name, scheduled_at.timestamp())`` where ``scheduled_at = now.replace(second=0, microsecond=0)`` — the cron eligibility minute. Same minute, repeated tick within the same minute: idempotent. Different minute (jitter > schedule period or tick rolls minutes): a separate pending entry is allowed, so rapid-recurrence jobs don't collapse occurrences.\n\n**Stable hash.** ``_stable_jitter_offset(job)`` uses ``hashlib.sha256(f\"{name}\\n{schedule}\\n{jitter_seconds}\".encode())`` — deterministic across processes (Python's built-in ``hash()`` is process-randomized and would silently re-shuffle offsets on every restart). Adding the name+schedule into the seed means renaming a job or changing its schedule reshuffles its offset; that's intentional and documented.\n\n**One-shot interaction.** ``recurring=false`` jobs with jitter are *not* cleared at first match — only after the deferred ``_fire_job`` actually executes. ``_fire_job`` clears the schedule line on the file as the last step regardless of jitter, so the on-disk frontmatter and the in-memory ``Job.schedule`` agree.\n\n**Hot-reload prune.** ``_hot_reload`` runs ``valid_names = {j.name for j in self.jobs if j.enabled and j.schedule}`` after loading the new jobs and drops any pending fire whose name isn't valid (deleted, disabled, lost schedule). The prune runs **unconditionally** every reload — outside the fingerprint-changed branch — so a partial-load recovery or a simple disable can't leave stale pending entries. Per-occurrence schedule/jitter invalidation is a stricter refinement that can layer on later if a stale-pending bug surfaces.\n\n**``_now()`` indirection.** The scheduler's wall clock reads through ``Scheduler._now()`` rather than ``datetime.now(timezone.utc)`` directly so tests can subclass and inject a fake clock. Production behavior is unchanged. Tests that drive ``tick()`` should also stub ``work_buddy.config.load_config`` to avoid clobbering the test's ``_jobs_dirs`` from the real ``config.yaml`` on the first hot-reload.\n\n**``job_fingerprint`` includes ``enabled`` and ``recurring``.** These flags are load-bearing for hot-reload: a job that flips ``enabled`` or ``recurring`` must re-trigger the loader (and therefore the pending-fire prune). Don't drop them when extending the fingerprint.\n\n## Schedule-aware jitter ceiling\n\n``compute_max_jitter_seconds(interval_seconds)`` in ``cron.py`` is the single source of truth for the per-schedule cap that bounds ``jitter_seconds``: ``min(interval_seconds // 10, 300)``, rounded down to the nearest 10s. The ``//10`` keeps a jittered fire inside the same logical interval bucket (the spreading effect, not interval drift); the 5-minute hard cap protects daily/weekly schedules from oversized spread windows.\n\nThe interval itself comes from ``cron_interval_seconds(expr)``, which walks 8 consecutive matches from a fixed Monday-midnight reference and returns the **smallest** gap. The min-of-gaps form is needed because irregular schedules like ``0 9,13 * * *`` have unequal gaps (4h then 20h) and jitter must not exceed the smaller one or two firings would interleave. For the typical ``*/N`` / hourly / daily case every gap is identical and the loop just confirms the value.\n\nThe dashboard's ``/api/cron/describe`` endpoint surfaces ``interval_seconds`` and ``max_jitter_seconds`` alongside the human-readable description; the Add-job form uses these to set the Jitter input's ``max`` attribute live as the user types a schedule, and clamps any pre-existing value down when the schedule narrows. The form-bridge ``jitter_seconds`` field handler also clamps agent-pushed values to the same ceiling, so a chat-walkthrough agent setting `jitter_seconds: 600` on a `*/5` schedule (cap 30) silently lands at 30 rather than the form rejecting it.\n\n**Don't re-implement the cap on the server-side write path.** ``create_user_job_file`` validates only ``jitter_seconds >= 0``; the schedule-aware cap is purely a UI-side recommendation, not a hard backend rule. A user who wants to override the cap by hand-editing a `.md` file can. If you ever want to hard-enforce it, do it once in the underlying create function so all three create paths (direct file, dashboard form, agent) get it for free — don't sprinkle the same check across each path."
   },
   "services/dashboard/costs": {
-    "kind": "system",
+    "kind": "concept",
     "name": "Dashboard — Costs tab",
     "description": "LLM cost / usage view with two complementary sources (per-call internal log + Claude Code transcripts), row-level backend filters, and the Anthropic rate-limit observation chip. The unified ``llm_costs_query`` capability reads both sources.",
     "content": {
@@ -186,7 +157,7 @@
     ]
   },
   "services/dashboard/automation-surfaces": {
-    "kind": "system",
+    "kind": "concept",
     "name": "Dashboard — Automation surfaces",
     "description": "Dashboard surfaces that project the operating-tier resolver and who-can-act decision into the Today tab. The earlier Review Queue, Daily Log, and Engage tabs were retired when the Threads tab became the canonical resolution surface; what remains is the Today tab and the per-task Auto column on the Tasks tab.",
     "content": {
@@ -219,7 +190,7 @@
     ]
   },
   "services/dashboard/chat-sidebar": {
-    "kind": "system",
+    "kind": "concept",
     "name": "Dashboard Chat Sidebar",
     "description": "Reusable right-rail chat surface that slides in beside the main view; mounts the conversation_chat renderer and squishes content via body padding.",
     "content": {
@@ -247,7 +218,7 @@
     ]
   },
   "services/dashboard/form-bridge": {
-    "kind": "system",
+    "kind": "concept",
     "name": "Dashboard Form Bridge",
     "description": "Schema-driven agent ↔ form interaction subsystem: one MCP capability, one frontend bridge, one contract test asserting schema↔DOM stay in sync.",
     "content": {
