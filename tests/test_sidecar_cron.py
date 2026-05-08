@@ -9,6 +9,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 os.environ.setdefault("WORK_BUDDY_SESSION_ID", "test-sidecar")
 
 from work_buddy.sidecar.scheduler.cron import (
+    JITTER_MAX_HARD_CAP_SECONDS,
+    compute_max_jitter_seconds,
+    cron_interval_seconds,
     cron_matches,
     next_cron_match,
     parse_cron_field,
@@ -102,6 +105,87 @@ def test_next_cron_match_with_timezone():
     assert nxt is not None
     # Should match 10:30 ET = 14:30 UTC
     assert nxt.minute == 30
+
+
+# --- cron_interval_seconds + compute_max_jitter_seconds ---
+
+def test_interval_every_5_minutes():
+    assert cron_interval_seconds("*/5 * * * *") == 300
+
+
+def test_interval_every_10_minutes():
+    assert cron_interval_seconds("*/10 * * * *") == 600
+
+
+def test_interval_every_3_minutes():
+    assert cron_interval_seconds("*/3 * * * *") == 180
+
+
+def test_interval_every_30_minutes():
+    assert cron_interval_seconds("*/30 * * * *") == 1800
+
+
+def test_interval_hourly():
+    assert cron_interval_seconds("0 * * * *") == 3600
+
+
+def test_interval_daily():
+    assert cron_interval_seconds("0 9 * * *") == 86400
+
+
+def test_interval_irregular_picks_smaller_gap():
+    # 9am and 1pm: 4h gap then 20h gap. Smaller gap (14400s) is the
+    # right one to bound jitter against.
+    assert cron_interval_seconds("0 9,13 * * *") == 14400
+
+
+def test_interval_unparseable_returns_none():
+    assert cron_interval_seconds("not a cron") is None
+
+
+def test_max_jitter_for_3min_schedule():
+    # interval/10 = 18, rounded down to 10. User's intuition was
+    # "around 20-30s ceiling" — heuristic lands at 10s, indicating
+    # jitter is barely useful at this frequency.
+    assert compute_max_jitter_seconds(180) == 10
+
+
+def test_max_jitter_for_5min_schedule():
+    assert compute_max_jitter_seconds(300) == 30
+
+
+def test_max_jitter_for_10min_schedule():
+    assert compute_max_jitter_seconds(600) == 60
+
+
+def test_max_jitter_for_30min_schedule():
+    # User's example: every 30 minutes → max ~3 minutes.
+    assert compute_max_jitter_seconds(1800) == 180
+
+
+def test_max_jitter_hourly_clamped():
+    # 3600/10 = 360s, hard cap is 300s.
+    assert compute_max_jitter_seconds(3600) == JITTER_MAX_HARD_CAP_SECONDS
+
+
+def test_max_jitter_daily_clamped():
+    # User's example: once-or-twice-daily can have full 5-minute cap.
+    assert compute_max_jitter_seconds(86400) == JITTER_MAX_HARD_CAP_SECONDS
+
+
+def test_max_jitter_no_interval_returns_zero():
+    # Unparseable schedule → UI should disable the input.
+    assert compute_max_jitter_seconds(None) == 0
+
+
+def test_max_jitter_round_to_clean_increment():
+    # 187 // 10 = 18, then *10 = 180. Result is always a multiple of 10.
+    assert compute_max_jitter_seconds(1870) == 180
+
+
+def test_max_jitter_zero_or_negative_interval_returns_zero():
+    assert compute_max_jitter_seconds(0) == 0
+    assert compute_max_jitter_seconds(-100) == 0
 
 
 if __name__ == "__main__":

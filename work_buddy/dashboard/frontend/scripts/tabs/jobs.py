@@ -212,9 +212,12 @@ if (window.wbFormBridge && typeof window.wbFormBridge.register === 'function') {
             },
             jitter_seconds: v => {
                 // Bridge passes int; <input type=number> wants string.
-                // Clamp to non-negative; the schema doesn't enforce bounds
-                // so guard at the UI layer too.
-                const n = Math.max(0, Math.floor(Number(v) || 0));
+                // Clamp to non-negative AND to the schedule-derived
+                // ceiling so an agent that pushes a too-large value
+                // gets visibly clamped rather than silently invalid.
+                let n = Math.max(0, Math.floor(Number(v) || 0));
+                const cap = _jitterMax();
+                if (cap > 0 && n > cap) n = cap;
                 _wbJobsSetInput('job-form-jitter', n === 0 ? '' : String(n));
                 if (typeof onJitterInput === 'function') onJitterInput();
             },
@@ -422,7 +425,32 @@ async function onEditJobClick(name) {
 
     document.getElementById('job-form-name').value = data.name || '';
     document.getElementById('job-form-schedule').value = data.schedule || '';
-    if (typeof onCronInput === 'function') onCronInput();
+    // Eagerly resolve the schedule's interval & max-jitter so the
+    // Jitter input's bound is in place before we populate its value
+    // (otherwise the validator runs against max=0 and flags a valid
+    // saved value as invalid). Bypasses onCronInput's 250ms debounce.
+    if (data.schedule) {
+        try {
+            const cronResp = await fetch(
+                `/api/cron/describe?expr=${encodeURIComponent(data.schedule)}`
+            );
+            const cronData = await cronResp.json();
+            const previewEl = document.getElementById('job-form-cron-preview');
+            if (previewEl) {
+                previewEl.classList.remove('cron-preview-hint', 'cron-preview-invalid');
+                previewEl.classList.add('cron-preview-valid');
+                previewEl.textContent = cronData.description || data.schedule;
+            }
+            _setJitterMaxFromCron(
+                cronData.max_jitter_seconds, cronData.interval_seconds,
+            );
+        } catch (_) {
+            // Network blip — fall back to the debounced path.
+            if (typeof onCronInput === 'function') onCronInput();
+        }
+    } else if (typeof onCronInput === 'function') {
+        onCronInput();
+    }
     const jitterEl = document.getElementById('job-form-jitter');
     if (jitterEl) {
         const j = parseInt(data.jitter_seconds, 10) || 0;
@@ -697,6 +725,9 @@ function resetCronPreview() {
     el.classList.remove('cron-preview-valid', 'cron-preview-invalid');
     el.classList.add('cron-preview-hint');
     el.innerHTML = _CRON_PREVIEW_DEFAULT;
+    // Schedule cleared → no basis for a jitter ceiling. Disable the
+    // Jitter input until a valid expression comes back.
+    _setJitterMaxFromCron(0, null);
 }
 // Validate the params textarea against the picked entry's parameters
 // schema — same rules as the backend (no unknown keys, all required
@@ -785,28 +816,73 @@ function onParamsInput() {
     el.textContent = `✓ Matches schema (${givenKeys.length} of ${schema.length} declared keys).`;
 }
 
+// Schedule-aware jitter ceiling. ``onCronInput`` updates the input's
+// ``max`` attribute from /api/cron/describe; ``onJitterInput`` reads
+// it back so a value the user typed before/after schedule changes is
+// always validated against the *current* per-schedule cap.
+//
+// Defaults: max=0 (input disabled until schedule parses); the cron
+// describe handler enables/disables and rewrites the hint text.
+function _jitterMax() {
+    const inputEl = document.getElementById('job-form-jitter');
+    return inputEl ? (parseInt(inputEl.max, 10) || 0) : 0;
+}
+
+function _setJitterMaxFromCron(maxJitter, intervalSec) {
+    const inputEl = document.getElementById('job-form-jitter');
+    const hintEl = document.getElementById('job-form-jitter-hint');
+    if (!inputEl || !hintEl) return;
+    const cap = Math.max(0, parseInt(maxJitter, 10) || 0);
+    inputEl.max = String(cap);
+    inputEl.disabled = cap === 0;
+    if (cap === 0) {
+        // Either the schedule doesn't parse yet, or it's so frequent
+        // that jitter would always be quantized away.
+        const reason = (intervalSec && intervalSec > 0)
+            ? 'Schedule fires too often for jitter to be useful.'
+            : 'Type a valid schedule to enable.';
+        hintEl.classList.remove('cron-preview-valid', 'cron-preview-invalid');
+        hintEl.classList.add('cron-preview-hint');
+        hintEl.textContent = reason;
+        inputEl.classList.remove('jobs-form-field-invalid');
+        // Clamp any value the user typed earlier — it's no longer valid.
+        if (inputEl.value) inputEl.value = '';
+        return;
+    }
+    // Clamp existing value if it now exceeds the cap.
+    const current = parseInt(inputEl.value, 10);
+    if (Number.isInteger(current) && current > cap) {
+        inputEl.value = String(cap);
+    }
+    onJitterInput();
+}
+
 function onJitterInput() {
-    // Live validation hint for the Jitter input. The number input itself
-    // already enforces min/max via the browser; we additionally surface
-    // the tick-quantization caveat so the user understands why <30s is
-    // pointless and roughly when their job will fire.
+    // Live validation hint for the Jitter input. ``max`` is set
+    // dynamically from the schedule's interval; sub-30s is allowed
+    // but flagged as marginal because the scheduler's ~30s tick will
+    // quantize it away.
     const el = document.getElementById('job-form-jitter-hint');
     const inputEl = document.getElementById('job-form-jitter');
     if (!el || !inputEl) return;
+    const cap = _jitterMax();
     const raw = inputEl.value.trim();
     if (!raw) {
         el.classList.remove('cron-preview-valid', 'cron-preview-invalid');
         el.classList.add('cron-preview-hint');
-        el.innerHTML = 'Spread phase-aligned schedules. 0 = no jitter (default). '
-            + 'Values &lt; ~30s are quantized away by the scheduler tick.';
+        el.textContent = cap > 0
+            ? `Spread phase-aligned starts. Max ${cap}s for this schedule.`
+            : 'Type a valid schedule to enable.';
         inputEl.classList.remove('jobs-form-field-invalid');
         return;
     }
     const n = Number(raw);
-    if (!Number.isInteger(n) || n < 0 || n > 3600) {
+    if (!Number.isInteger(n) || n < 0 || (cap > 0 && n > cap)) {
         el.classList.remove('cron-preview-hint', 'cron-preview-valid');
         el.classList.add('cron-preview-invalid');
-        el.textContent = '✗ Must be a non-negative integer ≤ 3600.';
+        el.textContent = cap > 0
+            ? `✗ Must be a non-negative integer ≤ ${cap}s for this schedule.`
+            : '✗ Type a valid schedule first.';
         inputEl.classList.add('jobs-form-field-invalid');
         return;
     }
@@ -816,7 +892,7 @@ function onJitterInput() {
     if (n === 0) {
         el.textContent = '✓ No jitter — fires inline on cron match.';
     } else if (n < 30) {
-        el.textContent = `✓ ${n}s — likely quantized away by the ~30s scheduler tick. Try ≥ 60.`;
+        el.textContent = `✓ ${n}s — likely quantized away by the ~30s scheduler tick.`;
     } else {
         el.textContent = `✓ Spreads firing across [0, ${n}s] past the cron minute.`;
     }
@@ -836,10 +912,13 @@ function onCronInput() {
                 el.classList.remove('cron-preview-invalid');
                 el.classList.add('cron-preview-valid');
                 el.textContent = data.description;
+                // Update the Jitter input's ceiling for the parsed schedule.
+                _setJitterMaxFromCron(data.max_jitter_seconds, data.interval_seconds);
             } else {
                 el.classList.remove('cron-preview-valid');
                 el.classList.add('cron-preview-invalid');
                 el.textContent = "Doesn't parse as a 5-field cron expression.";
+                _setJitterMaxFromCron(0, null);
             }
         } catch (_) {
             // Network blip — leave the preview in its current state rather
@@ -860,8 +939,11 @@ async function submitAddJobForm() {
     const jitterRaw = document.getElementById('job-form-jitter').value.trim();
     if (jitterRaw) {
         const n = parseInt(jitterRaw, 10);
-        if (!Number.isInteger(n) || n < 0 || n > 3600) {
-            errEl.textContent = 'Jitter must be a non-negative integer ≤ 3600.';
+        const cap = _jitterMax();
+        if (!Number.isInteger(n) || n < 0 || (cap > 0 && n > cap)) {
+            errEl.textContent = cap > 0
+                ? `Jitter must be a non-negative integer ≤ ${cap}s for this schedule.`
+                : 'Type a valid schedule before setting jitter.';
             errEl.hidden = false;
             document.getElementById('job-form-jitter')
                 .classList.add('jobs-form-field-invalid');

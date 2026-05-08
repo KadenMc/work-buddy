@@ -280,16 +280,33 @@ def api_cron_describe():
     Used by the dashboard's Add-job form to give live feedback under the
     schedule input. Returns ``{"valid": false}`` when the expression can't
     be parsed so the form can stay quiet rather than showing junk.
+
+    Also returns the typical interval between firings (``interval_seconds``)
+    and a suggested jitter ceiling (``max_jitter_seconds``) so the form's
+    Jitter input can clamp itself to a sensible range for the schedule.
     """
     expr = (request.args.get("expr") or "").strip()
     if not expr:
-        return jsonify({"valid": False, "description": ""})
+        return jsonify({
+            "valid": False, "description": "",
+            "interval_seconds": None, "max_jitter_seconds": 0,
+        })
     from work_buddy.dashboard.api import _describe_cron
+    from work_buddy.sidecar.scheduler.cron import (
+        compute_max_jitter_seconds, cron_interval_seconds,
+    )
 
     desc = _describe_cron(expr)
     # _describe_cron returns the raw expression on parse failure; treat
     # that as "couldn't humanize" so the UI suppresses the preview line.
-    return jsonify({"valid": desc != expr, "description": desc})
+    valid = desc != expr
+    interval = cron_interval_seconds(expr) if valid else None
+    return jsonify({
+        "valid": valid,
+        "description": desc,
+        "interval_seconds": interval,
+        "max_jitter_seconds": compute_max_jitter_seconds(interval),
+    })
 
 
 @app.post("/api/user_jobs")

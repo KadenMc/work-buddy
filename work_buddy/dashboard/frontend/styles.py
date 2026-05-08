@@ -3593,7 +3593,10 @@ body {
 }
 .jobs-form-grid {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    /* Name + Schedule + Jitter share the row. Jitter is narrower because
+       the value range is small (≤ 5 minutes) and a wide numeric field
+       reads as more important than it is. */
+    grid-template-columns: 1.4fr 1.4fr 0.7fr;
     gap: 12px 16px;
     margin-bottom: 12px;
 }
