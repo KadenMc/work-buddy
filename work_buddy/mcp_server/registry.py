@@ -1149,72 +1149,36 @@ def _contract_capabilities() -> list[Capability]:
     ]
 
 
+def _setup_help_component_param_description() -> str:
+    """Build the setup_help component-id param description from the live
+    COMPONENT_CATALOG so the available list never goes stale when a new
+    component is registered. Falls back to a generic line if the catalog
+    isn't yet populated (e.g. during a partial import)."""
+    try:
+        from work_buddy.health.components import COMPONENT_CATALOG
+        ids = sorted(COMPONENT_CATALOG.keys())
+    except Exception:
+        ids = []
+    base = "Component ID to diagnose, or 'all' for overview."
+    if not ids:
+        return base
+    return f"{base} Available: {', '.join(ids)}"
+
+
 def _status_capabilities() -> list[Capability]:
     from work_buddy.messaging import client
     from work_buddy import agent_session
     from work_buddy.mcp_server.tools.gateway import retry_operation as _retry_operation
 
     def _tailscale_status() -> dict:
-        """Check Tailscale daemon status and Serve configuration."""
-        import subprocess
-        import json as _json
+        """Check Tailscale daemon status and Serve configuration.
 
-        result: dict = {"installed": False, "running": False, "serve": None}
-
-        # Check tailscale status
-        try:
-            proc = subprocess.run(
-                ["tailscale", "status", "--json"],
-                capture_output=True, text=True, timeout=10,
-            )
-            if proc.returncode != 0:
-                result["installed"] = True
-                result["error"] = proc.stderr.strip()[:200]
-                return result
-
-            data = _json.loads(proc.stdout)
-            result["installed"] = True
-            result["running"] = True
-            result["backend_state"] = data.get("BackendState", "")
-            result["tailnet"] = data.get("MagicDNSSuffix", "")
-            result["self"] = {
-                "name": data.get("Self", {}).get("HostName", ""),
-                "dns_name": data.get("Self", {}).get("DNSName", ""),
-                "online": data.get("Self", {}).get("Online", False),
-                "os": data.get("Self", {}).get("OS", ""),
-                "ips": data.get("Self", {}).get("TailscaleIPs", []),
-            }
-            peers = data.get("Peer", {})
-            result["peers"] = [
-                {
-                    "name": p.get("HostName", ""),
-                    "dns_name": p.get("DNSName", ""),
-                    "online": p.get("Online", False),
-                    "os": p.get("OS", ""),
-                    "last_seen": p.get("LastSeen", ""),
-                }
-                for p in peers.values()
-            ]
-        except FileNotFoundError:
-            return result
-        except Exception as exc:
-            result["error"] = str(exc)[:200]
-            return result
-
-        # Check tailscale serve status
-        try:
-            serve_proc = subprocess.run(
-                ["tailscale", "serve", "status", "--json"],
-                capture_output=True, text=True, timeout=5,
-            )
-            if serve_proc.returncode == 0 and serve_proc.stdout.strip():
-                result["serve"] = _json.loads(serve_proc.stdout)
-            else:
-                result["serve"] = None
-        except Exception:
-            result["serve"] = None
-
-        return result
+        Thin wrapper over the shared helper in ``work_buddy.health.checks``;
+        the helper is also used by the requirement and component health
+        checks so a single ``setup_help`` invocation only shells out once.
+        """
+        from work_buddy.health.checks import get_tailscale_status
+        return get_tailscale_status()
 
     def _feature_status(verbose: bool = False, force: bool = False) -> dict:
         """Show which tools, features, and capabilities are available or disabled.
@@ -1376,12 +1340,7 @@ def _status_capabilities() -> list[Capability]:
             parameters={
                 "component": {
                     "type": "str",
-                    "description": (
-                        "Component ID to diagnose, or 'all' for overview. "
-                        "Available: postgresql, obsidian, hindsight, chrome_extension, "
-                        "messaging, embedding, telegram, dashboard, smart_connections, "
-                        "datacore, google_calendar"
-                    ),
+                    "description": _setup_help_component_param_description(),
                     "required": False,
                 },
             },

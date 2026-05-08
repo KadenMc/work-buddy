@@ -713,3 +713,83 @@ def check_thunderbird_bridge() -> dict[str, Any]:
         return {"ok": False, "detail": f"work_buddy.email module not importable: {exc}"}
     available, reason = probe_thunderbird_bridge()
     return {"ok": bool(available), "detail": reason or ("ok" if available else "not reachable")}
+
+
+# ---------------------------------------------------------------------------
+# Tailscale (remote access)
+# ---------------------------------------------------------------------------
+#
+# Both checks delegate to the shared helper in ``work_buddy.health.checks``
+# (the same one the ``tailscale_status`` MCP capability uses), mirroring
+# the ``check_lmstudio_reachable`` pattern. The helper memoizes briefly so
+# running these alongside the component health checks doesn't trigger
+# multiple ``tailscale`` subprocess invocations within one diagnose pass.
+
+
+def check_tailscale_installed() -> dict[str, Any]:
+    """Tailscale CLI is installed and on PATH."""
+    from work_buddy.health.checks import get_tailscale_status
+    status = get_tailscale_status()
+    if not status.get("installed"):
+        return {
+            "ok": False,
+            "detail": (
+                "tailscale CLI not found on PATH. Install from "
+                "https://tailscale.com/download (Windows installer registers "
+                "it under C:\\Program Files\\Tailscale\\)."
+            ),
+        }
+    return {"ok": True, "detail": "tailscale CLI present"}
+
+
+def check_tailscale_serve_configured() -> dict[str, Any]:
+    """Tailscale Serve publishes the dashboard on HTTPS.
+
+    Looks for any Web handler whose Proxy points at ``127.0.0.1:<port>``
+    where ``<port>`` matches the configured dashboard port. We don't pin
+    the published hostname — Tailscale picks it from the device's tailnet
+    DNS name and a user re-naming the device shouldn't fail this check.
+    """
+    from work_buddy.health.checks import get_tailscale_status
+
+    status = get_tailscale_status()
+    if not status.get("installed"):
+        return {"ok": False, "detail": "tailscale not installed (see integrations/tailscale/installed)"}
+    if not status.get("running"):
+        return {
+            "ok": False,
+            "detail": "tailscale daemon not running — Serve config can't be queried",
+        }
+
+    serve = status.get("serve") or {}
+    web = serve.get("Web") or {}
+    if not web:
+        return {
+            "ok": False,
+            "detail": "tailscale serve has no Web handlers configured",
+        }
+
+    dashboard_port = (
+        _cfg().get("sidecar", {})
+        .get("services", {})
+        .get("dashboard", {})
+        .get("port", 5127)
+    )
+    target = f"127.0.0.1:{dashboard_port}"
+
+    for hostname, host_cfg in web.items():
+        for path, handler in (host_cfg.get("Handlers") or {}).items():
+            proxy = handler.get("Proxy", "")
+            if target in proxy:
+                return {
+                    "ok": True,
+                    "detail": f"published at https://{hostname}{path} -> {proxy}",
+                }
+
+    return {
+        "ok": False,
+        "detail": (
+            f"no tailscale serve handler proxies to {target}. "
+            f"Run `tailscale serve --bg {dashboard_port}` (or click Fix)."
+        ),
+    }

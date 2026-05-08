@@ -539,3 +539,80 @@ def fix_telegram_bot_token(*, bot_token: str) -> dict[str, Any]:
         }
     ok, detail, side = _set_env_var("TELEGRAM_BOT_TOKEN", bot_token)
     return {"ok": ok, "detail": detail, "side_effects": side}
+
+
+# ---------------------------------------------------------------------------
+# Remote access — Tailscale Serve
+# ---------------------------------------------------------------------------
+
+def fix_tailscale_serve_configured() -> dict[str, Any]:
+    """Publish the dashboard via Tailscale Serve.
+
+    Idempotent — running ``tailscale serve --bg <port>`` against an
+    already-configured handler updates in place. Reads the dashboard
+    port from config so a non-default sidecar deployment still publishes
+    correctly. HTTPS is Serve's default mode; the CLI takes a single
+    target argument (port number or URL).
+    """
+    side_effects: list[str] = []
+
+    try:
+        from work_buddy.config import load_config
+        port = (
+            load_config()
+            .get("sidecar", {})
+            .get("services", {})
+            .get("dashboard", {})
+            .get("port", 5127)
+        )
+    except Exception as exc:
+        return {
+            "ok": False,
+            "detail": f"Could not read dashboard port from config: {exc}",
+            "side_effects": side_effects,
+        }
+
+    import subprocess
+    try:
+        proc = subprocess.run(
+            ["tailscale", "serve", "--bg", str(port)],
+            capture_output=True, text=True, timeout=15,
+        )
+    except FileNotFoundError:
+        return {
+            "ok": False,
+            "detail": (
+                "tailscale CLI not found on PATH. Fix the "
+                "integrations/tailscale/installed requirement first."
+            ),
+            "side_effects": side_effects,
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "detail": f"`tailscale serve` invocation failed: {exc}",
+            "side_effects": side_effects,
+        }
+
+    if proc.returncode != 0:
+        stderr = (proc.stderr or "").strip()[:300]
+        return {
+            "ok": False,
+            "detail": f"`tailscale serve` exited {proc.returncode}: {stderr}",
+            "side_effects": side_effects,
+        }
+
+    side_effects.append(f"tailscale serve --bg {port}")
+
+    # Bust the helper's memo so the post-fix recheck reads fresh state.
+    try:
+        from work_buddy.health.checks import get_tailscale_status
+        get_tailscale_status(force=True)
+    except Exception:
+        pass
+
+    return {
+        "ok": True,
+        "detail": f"Tailscale Serve now publishes the dashboard (port {port}) over HTTPS",
+        "side_effects": side_effects,
+    }

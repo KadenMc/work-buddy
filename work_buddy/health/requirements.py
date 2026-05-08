@@ -745,6 +745,84 @@ _register(RequirementDef(
 ))
 
 
+# --- Remote access ---
+
+_register(RequirementDef(
+    id="integrations/tailscale/installed",
+    component="tailscale",
+    description="Tailscale CLI is installed and on PATH",
+    check_fn="work_buddy.health.requirement_checks.check_tailscale_installed",
+    # Recommended, not required: only matters if the user wants remote
+    # access. Local-only users opt out via the tailscale component
+    # preference, which skips this requirement automatically.
+    severity="recommended",
+    fix_hint=(
+        "Install Tailscale from https://tailscale.com/download. After "
+        "install, sign in via the tray app (Windows / macOS) or "
+        "`tailscale up` (Linux) and verify the device shows up in your "
+        "tailnet at https://login.tailscale.com/admin/machines."
+    ),
+    setup_group="remote_access",
+    fix_kind="agent_handoff",
+    fix_preview=(
+        "Spawns a Claude Code session that walks you through installing "
+        "Tailscale (with OS-specific steps) and confirming this device "
+        "shows up on your tailnet."
+    ),
+    fix_agent_brief=(
+        "You are helping the user install Tailscale on this machine and "
+        "join their tailnet. Tailscale is what publishes the work-buddy "
+        "dashboard to other devices (e.g. their phone) over an encrypted "
+        "VPN. Without it, remote-access features stop working.\n\n"
+        "## Steps to walk the user through\n\n"
+        "1. Detect the OS (`platform.system()` from Python, or just ask).\n"
+        "2. Point them at https://tailscale.com/download and tell them "
+        "which installer to grab:\n"
+        "   - Windows: the .msi installer; sign-in lives in the system "
+        "tray after install.\n"
+        "   - macOS: the App Store version or the standalone .pkg.\n"
+        "   - Linux: distribution-specific instructions on the download "
+        "page (apt / dnf / etc.); finish with `sudo tailscale up`.\n"
+        "3. After install, confirm `tailscale --version` works in a "
+        "terminal — that's what `check_tailscale_installed` looks for.\n"
+        "4. Open the admin console at https://login.tailscale.com/admin/"
+        "machines and confirm this device appears in the list. If it "
+        "doesn't, sign-in didn't complete — re-run `tailscale up`.\n"
+        "5. Tell the user to refresh the dashboard Settings tab. The "
+        "`integrations/tailscale/installed` requirement should flip "
+        "green; the `integrations/tailscale/serve-configured` "
+        "requirement may still need its own click-to-fix.\n\n"
+        "If the user already has Tailscale installed but the requirement "
+        "is failing, the daemon may not be running or the CLI may not "
+        "be on PATH. On Windows, the CLI lives at "
+        "`C:\\Program Files\\Tailscale\\tailscale.exe` — adding that "
+        "directory to PATH (or restarting the terminal) often resolves it."
+    ),
+))
+
+_register(RequirementDef(
+    id="integrations/tailscale/serve-configured",
+    component="tailscale",
+    description="Tailscale Serve publishes the dashboard on HTTPS",
+    check_fn="work_buddy.health.requirement_checks.check_tailscale_serve_configured",
+    severity="recommended",
+    fix_hint=(
+        "Run `tailscale serve --bg 5127` from a terminal to publish "
+        "the dashboard via your tailnet's HTTPS endpoint (5127 is "
+        "the dashboard's local port; Tailscale Serve defaults to HTTPS). "
+        "Or click Fix to apply this automatically."
+    ),
+    setup_group="remote_access",
+    fix_kind="programmatic",
+    fix_fn="work_buddy.health.fixers.fix_tailscale_serve_configured",
+    fix_preview=(
+        "Runs `tailscale serve --bg <dashboard-port>` to publish the "
+        "dashboard via your tailnet's HTTPS endpoint. Idempotent — "
+        "safe to re-run if the config has drifted."
+    ),
+))
+
+
 # ---------------------------------------------------------------------------
 # RequirementChecker
 # ---------------------------------------------------------------------------

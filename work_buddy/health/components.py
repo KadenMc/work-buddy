@@ -225,6 +225,47 @@ _register(ComponentDef(
 ))
 
 _register(ComponentDef(
+    id="tailscale",
+    display_name="Tailscale Remote Access",
+    category="integration",
+    # Non-core: a local-only setup is a legitimate configuration. Users
+    # who don't want remote dashboard access opt out via preferences and
+    # the requirement / probe pair below skips entirely.
+    is_core=False,
+    # 'custom' over 'tool_probe' — we don't want the engine polling
+    # `tailscale status` continuously. Status resolves only when the user
+    # asks (setup_help / setup_wizard diagnose).
+    health_source="custom",
+    requirements=[
+        "integrations/tailscale/installed",
+        "integrations/tailscale/serve-configured",
+    ],
+    check_sequence=[
+        CheckStep(
+            description="Tailscale daemon running",
+            check_fn="work_buddy.health.checks.check_tailscale_daemon",
+            on_fail=(
+                "Tailscale daemon is not running. On Windows, open the "
+                "Tailscale tray app, or run `net start Tailscale` from an "
+                "elevated PowerShell. On macOS / Linux, launch the app "
+                "or `sudo tailscale up`."
+            ),
+        ),
+        CheckStep(
+            description="This device online on the tailnet",
+            check_fn="work_buddy.health.checks.check_tailscale_self_online",
+            on_fail=(
+                "This device is not currently connected to the tailnet. "
+                "Open the Tailscale app and toggle it on / sign in. Node "
+                "keys can also expire after long inactivity — "
+                "reauthenticate at "
+                "https://login.tailscale.com/admin/machines if prompted."
+            ),
+        ),
+    ],
+))
+
+_register(ComponentDef(
     id="hindsight",
     display_name="Hindsight Memory Server",
     category="integration",

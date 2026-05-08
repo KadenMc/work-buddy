@@ -4183,6 +4183,177 @@
       "status"
     ]
   },
+  "memory/memory_prune": {
+    "kind": "capability",
+    "name": "Memory Prune",
+    "description": "Delete memories from the bank. CONSENT-GATED, IRREVERSIBLE. Call with no args to list documents for review. Then provide document_id to delete a specific document's memories, or memory_type to bulk-delete a category (world/experience/observation).",
+    "capability_name": "memory_prune",
+    "category": "memory",
+    "aliases": [
+      "forget memories",
+      "delete memory bank",
+      "clear memory",
+      "remove memories",
+      "prune hindsight",
+      "wipe memories"
+    ],
+    "parameters": {
+      "document_id": {
+        "type": "str",
+        "description": "Delete a specific document and its derived memories",
+        "required": false
+      },
+      "memory_type": {
+        "type": "str",
+        "description": "Bulk delete by type: world, experience, or observation",
+        "required": false
+      }
+    },
+    "requires": [
+      "hindsight"
+    ],
+    "tags": [
+      "memory",
+      "prune"
+    ],
+    "parents": [
+      "memory"
+    ]
+  },
+  "memory/memory_read": {
+    "kind": "capability",
+    "name": "Memory Read",
+    "description": "Read from personal memory (Hindsight). No LLM cost. Modes: 'search' (default) — semantic + keyword recall, use descriptive topic phrases with specific entity names for best results; 'model' — fetch a mental model by ID; 'recent' — list latest memories.",
+    "capability_name": "memory_read",
+    "category": "memory",
+    "aliases": [
+      "what do I remember",
+      "recall memory",
+      "search hindsight",
+      "retrieve memories",
+      "personal memory search",
+      "remember what I told you",
+      "recall my preferences",
+      "search personal memory"
+    ],
+    "parameters": {
+      "query": {
+        "type": "str",
+        "description": "Descriptive topic phrase for search mode. Use specific terminology and entity names (e.g. named work-pattern vocabulary) rather than generic labels like 'blindspots'. Ignored for model/recent modes.",
+        "required": false
+      },
+      "mode": {
+        "type": "str",
+        "description": "search (default) — semantic + keyword recall. model — fetch a mental model (self-profile, work-patterns, blindspots, preferences, current-constraints). recent — list N most recent memories.",
+        "required": false
+      },
+      "model_id": {
+        "type": "str",
+        "description": "Mental model ID for mode=model (default: self-profile)",
+        "required": false
+      },
+      "limit": {
+        "type": "int",
+        "description": "Max memories for mode=recent (default 20)",
+        "required": false
+      },
+      "budget": {
+        "type": "str",
+        "description": "Retrieval depth for mode=search: low (fast, default), mid, high",
+        "required": false
+      }
+    },
+    "requires": [
+      "hindsight"
+    ],
+    "tags": [
+      "memory",
+      "read"
+    ],
+    "parents": [
+      "memory"
+    ]
+  },
+  "memory/memory_reflect": {
+    "kind": "capability",
+    "name": "Memory Reflect",
+    "description": "LLM-powered reasoning over memories. CONSENT-GATED: triggers a server-side LLM call against your Anthropic API key (~1-3K tokens per call). Use memory_read for free retrieval first.",
+    "capability_name": "memory_reflect",
+    "category": "memory",
+    "aliases": [
+      "reason about memories",
+      "analyze my memories",
+      "LLM reflection on memory",
+      "think about memories",
+      "memory synthesis",
+      "synthesize from memory"
+    ],
+    "parameters": {
+      "query": {
+        "type": "str",
+        "description": "Question to reason about using memory",
+        "required": true
+      },
+      "budget": {
+        "type": "str",
+        "description": "Retrieval depth: low (default), mid, high",
+        "required": false
+      }
+    },
+    "requires": [
+      "hindsight"
+    ],
+    "tags": [
+      "memory",
+      "reflect"
+    ],
+    "parents": [
+      "memory"
+    ]
+  },
+  "memory/memory_write": {
+    "kind": "capability",
+    "name": "Memory Write",
+    "description": "Store a personal fact, preference, or constraint in memory",
+    "capability_name": "memory_write",
+    "category": "memory",
+    "aliases": [
+      "remember this",
+      "save to memory",
+      "store a preference",
+      "add memory",
+      "record fact",
+      "save to hindsight",
+      "memorize this"
+    ],
+    "parameters": {
+      "content": {
+        "type": "str",
+        "description": "The fact or preference to remember",
+        "required": true
+      },
+      "kind": {
+        "type": "str",
+        "description": "Memory kind: preference, habit, constraint, blindspot, relationship, decision, life-context (default preference)",
+        "required": false
+      },
+      "domain": {
+        "type": "str",
+        "description": "Domain: work, life, health (default life)",
+        "required": false
+      }
+    },
+    "requires": [
+      "hindsight"
+    ],
+    "tags": [
+      "memory",
+      "write"
+    ],
+    "parents": [
+      "memory"
+    ]
+  },
   "tasks/namespace_lookup": {
     "kind": "capability",
     "name": "Namespace Lookup",
@@ -5640,7 +5811,7 @@
     "parameters": {
       "component": {
         "type": "str",
-        "description": "Component ID to diagnose, or 'all' for overview. Available: postgresql, obsidian, hindsight, chrome_extension, messaging, embedding, telegram, dashboard, smart_connections, datacore, google_calendar",
+        "description": "Component ID to diagnose, or 'all' for overview. Available: chrome_extension, dashboard, datacore, embedding, google_calendar, hindsight, lmstudio, messaging, obsidian, postgresql, sidecar, smart_connections, tailscale, telegram, thunderbird",
         "required": false
       }
     },
