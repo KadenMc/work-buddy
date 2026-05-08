@@ -1,6 +1,7 @@
 ---
 schedule: "*/10 * * * *"  # every 10 minutes
 recurring: true
+jitter_seconds: 180  # spread 10-minute pile-ups (especially at :00 / :30)
 type: capability
 capability: inline_sync
 params: {}

@@ -94,6 +94,25 @@ JOBS_FORM_SCHEMA = FormSchema(
                 "or workflow and the chosen target declares parameters."
             ),
         ),
+        Field(
+            name="jitter_seconds",
+            type="int",
+            ui_id="job-form-jitter",
+            description=(
+                "Optional non-negative integer. Jobs fire at the cron "
+                "eligibility minute plus a deterministic offset in "
+                "[0, jitter_seconds]; 0 (the default) fires inline on "
+                "cron match. The form caps the value at roughly "
+                "schedule_interval / 10 (max 5 minutes) — for example, "
+                "a */5 schedule allows up to 30s, a */30 schedule "
+                "allows up to 180s, daily/weekly schedules allow the "
+                "full 5-minute cap. Pushing a larger value through the "
+                "form bridge is silently clamped to the schedule's "
+                "ceiling. Use to spread phase-aligned schedules (e.g. "
+                "several */5 jobs that coincide at minute :00). Leave "
+                "blank for no jitter."
+            ),
+        ),
     ),
 )
 

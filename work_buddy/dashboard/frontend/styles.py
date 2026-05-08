@@ -3530,6 +3530,32 @@ body {
     color: var(--red);
 }
 
+/* Dedicated Jitter column on the Jobs table. The header carries a
+   tooltip explaining what jitter is; the cells show "+Ns" for jobs
+   that opt in (with a hover-tooltip on the offset window) or an
+   em-dash for jobs that fire inline on cron match. The column is
+   narrow because the values are short and the user mostly wants to
+   know "is this job jittered, yes/no, by how much". */
+.jobs-jitter-col {
+    width: 70px;
+    text-align: right;
+    white-space: nowrap;
+    cursor: help;
+}
+.jobs-jitter-cell {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 9px;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    font-size: 11px;
+    font-weight: 500;
+    cursor: help;
+}
+.jobs-jitter-empty {
+    color: var(--text-muted);
+}
+
 /* In-form chat-walkthrough escape hatch. Sits at the top of the
    add-job form as a secondary entry point — visually paired with
    the form ("you can fill this out, or chat with me"). Outline-
@@ -3567,7 +3593,10 @@ body {
 }
 .jobs-form-grid {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    /* Name + Schedule + Jitter share the row. Jitter is narrower because
+       the value range is small (≤ 5 minutes) and a wide numeric field
+       reads as more important than it is. */
+    grid-template-columns: 1.4fr 1.4fr 0.7fr;
     gap: 12px 16px;
     margin-bottom: 12px;
 }
@@ -3579,6 +3608,7 @@ body {
     color: var(--text-secondary);
 }
 .jobs-add-form input[type="text"],
+.jobs-add-form input[type="number"],
 .jobs-add-form select,
 .jobs-add-form textarea {
     background: var(--bg-primary);
@@ -3588,6 +3618,14 @@ body {
     padding: 6px 8px;
     font-size: 13px;
     font-family: inherit;
+}
+.jobs-add-form input:disabled,
+.jobs-add-form select:disabled,
+.jobs-add-form textarea:disabled {
+    background: var(--bg-tertiary);
+    color: var(--text-muted);
+    cursor: not-allowed;
+    opacity: 0.6;
 }
 .jobs-add-form textarea { font-family: ui-monospace, monospace; resize: vertical; }
 .jobs-add-form small {
@@ -3660,6 +3698,7 @@ body {
 .cron-preview-hint    { color: var(--text-muted); }
 .cron-preview-valid   { color: var(--green); font-weight: 500; }
 .cron-preview-invalid { color: var(--red); }
+.cron-preview-warning { color: var(--yellow); font-weight: 500; }
 
 /* Capability params schema rendered under the params textarea — gives the
    user the registered parameters' names/types/descriptions so they can

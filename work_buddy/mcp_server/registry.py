@@ -4815,6 +4815,7 @@ def _sidecar_capabilities() -> list[Capability]:
         enabled: bool = True,
         recurring: bool = True,
         overwrite: bool = False,
+        jitter_seconds: int = 0,
     ) -> dict:
         """Author a user job by writing a .md file under <data_root>/user_jobs/."""
         from work_buddy.paths import data_dir
@@ -4825,7 +4826,7 @@ def _sidecar_capabilities() -> list[Capability]:
             name=name, schedule=schedule, job_type=job_type,
             capability=capability, params=params, workflow=workflow,
             prompt=prompt, enabled=enabled, recurring=recurring,
-            overwrite=overwrite,
+            overwrite=overwrite, jitter_seconds=jitter_seconds,
         )
 
     def _sidecar_jobs() -> dict:
@@ -5028,6 +5029,18 @@ def _sidecar_capabilities() -> list[Capability]:
                         "If true, replace an existing job file with the same name. "
                         "Default false (refuses to overwrite). Used by the Edit-job "
                         "flow in the dashboard."
+                    ),
+                    "required": False,
+                },
+                "jitter_seconds": {
+                    "type": "int",
+                    "description": (
+                        "Optional stable jitter applied on top of cron eligibility. "
+                        "Non-negative integer; jobs fire at scheduled_at + a "
+                        "deterministic offset in [0, jitter_seconds]. Default 0 "
+                        "(no jitter — fire inline on cron match). Tick cadence "
+                        "quantizes values < ~30s away in practice; recommended "
+                        "floor is 60. See features/user-jobs."
                     ),
                     "required": False,
                 },

@@ -110,6 +110,100 @@ def cron_matches(expr: str, dt: datetime, timezone: str | None = None) -> bool:
     )
 
 
+def cron_interval_seconds(
+    expr: str,
+    *,
+    timezone: str | None = None,
+    sample_after: datetime | None = None,
+    sample_count: int = 8,
+) -> int | None:
+    """Estimate the smallest seconds-between-firings for a schedule.
+
+    Useful for sizing a sane jitter ceiling per schedule. Walks
+    ``sample_count`` consecutive matches and returns the minimum gap —
+    "minimum" because jitter must not exceed the *smallest* interval,
+    or two firings can collide.
+
+    Defaults to a fixed Monday-midnight UTC reference so the result is
+    deterministic across calls. Returns ``None`` if the expression
+    doesn't parse or fewer than two matches land inside the search
+    window (a 1-week-per-step scan).
+
+    For typical schedules (``*/N``, ``0 * * * *``, daily, weekly) every
+    gap is identical and the loop is just confirming the value. For
+    irregular schedules (``0 9,13 * * *``: 4h then 20h) the loop finds
+    the small gap whichever sample window happens to land in.
+    """
+    if sample_after is None:
+        sample_after = datetime(2026, 1, 5, 0, 0, tzinfo=timezone_utc())
+
+    matches: list[datetime] = []
+    cursor = sample_after
+    for _ in range(sample_count + 1):
+        nxt = next_cron_match(expr, cursor, timezone, max_minutes=10080)
+        if nxt is None:
+            break
+        matches.append(nxt)
+        cursor = nxt
+
+    if len(matches) < 2:
+        return None
+
+    gaps = [
+        int((b - a).total_seconds())
+        for a, b in zip(matches, matches[1:])
+    ]
+    return min(g for g in gaps if g > 0) if any(g > 0 for g in gaps) else None
+
+
+def timezone_utc():
+    """tz-aware UTC; small helper to keep the import surface contained."""
+    from datetime import timezone as _tz
+    return _tz.utc
+
+
+# Largest jitter we'll suggest as a max, regardless of schedule. Keeps
+# the upper bound recognizable and protects daily/weekly jobs from
+# accidentally getting 10-minute spread windows where 5 is plenty.
+JITTER_MAX_HARD_CAP_SECONDS = 300
+
+
+def compute_max_jitter_seconds(interval_seconds: int | None) -> int:
+    """Suggested ``jitter_seconds`` ceiling for a schedule with this gap.
+
+    Heuristic: roughly ``interval / 10``, clamped to the hard 5-minute
+    cap. The 1/10 rule keeps the jittered fire well inside the same
+    "logical" bucket — a */5 minute job at +30s is still firmly the
+    "every 5 minutes" job, just shifted. Going much higher than that
+    starts overlapping with the next interval and stops being a
+    spreading mechanism.
+
+    Special handling:
+
+    * ``interval_seconds is None`` (unparseable schedule) → 0. The UI
+      can use this to disable the jitter input until the schedule
+      parses.
+    * Very frequent schedules where ``interval / 10`` is below the
+      ~30s scheduler tick — return that tiny value anyway. The user
+      sees it in the UI and a hint warns that the value will be
+      quantized away by the tick. We don't pretend jitter is unsupported
+      there; we just don't pretend it's useful either.
+
+    Round to clean increments (10s) so the displayed cap reads as a
+    bound the user might actually pick rather than an unround
+    arithmetic byproduct.
+    """
+    if interval_seconds is None or interval_seconds <= 0:
+        return 0
+    raw = interval_seconds // 10
+    capped = min(raw, JITTER_MAX_HARD_CAP_SECONDS)
+    if capped <= 0:
+        return 0
+    # Round down to nearest 10s for display; ensures the displayed
+    # max is always a multiple of 10 (e.g. 18s → 10s, 187s → 180s).
+    return (capped // 10) * 10
+
+
 def next_cron_match(
     expr: str,
     after: datetime,

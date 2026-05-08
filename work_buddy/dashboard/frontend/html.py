@@ -241,6 +241,16 @@ def _html() -> str:
                     Example: <code>*/15 * * * *</code> = every 15 min.
                 </small>
             </label>
+            <label>Jitter
+                <input id="job-form-jitter" type="number"
+                       min="0" max="0" step="1"
+                       placeholder="0" autocomplete="off"
+                       disabled
+                       oninput="onJitterInput()" />
+                <small id="job-form-jitter-hint" class="cron-preview-hint">
+                    Type a schedule to enable. Spreads phase-aligned starts.
+                </small>
+            </label>
             <label class="job-form-type-row">What does this job do?
                 <select id="job-form-type" onchange="onJobTypeChange()">
                     <option value="prompt">Run a prompt — agent does a freeform task</option>

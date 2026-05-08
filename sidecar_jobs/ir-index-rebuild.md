@@ -1,6 +1,7 @@
 ---
 schedule: "*/5 * * * *"  # every 5 minutes
 recurring: true
+jitter_seconds: 90  # spread 5-minute pile-ups; lands at name+schedule-derived offset
 type: capability
 capability: ir_index
 params:
