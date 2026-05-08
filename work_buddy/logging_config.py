@@ -43,6 +43,18 @@ def setup_logging(level: int = logging.INFO) -> None:
         return
     _configured = True
 
+    # Force std streams to UTF-8 with backslashreplace so non-ASCII log
+    # output (e.g. Obsidian task descriptions, vault content) never
+    # raises UnicodeEncodeError on Windows where the default codec is
+    # cp1252. Layer 1 (PYTHONUTF8=1 in sidecar child env) covers the
+    # production path; this is the standalone-launch / test fallback.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+            except (ValueError, OSError):
+                pass
+
     log_dir = _get_log_dir()
     log_file = log_dir / "work_buddy.log"
 
