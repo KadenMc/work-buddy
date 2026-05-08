@@ -3619,6 +3619,14 @@ body {
     font-size: 13px;
     font-family: inherit;
 }
+.jobs-add-form input:disabled,
+.jobs-add-form select:disabled,
+.jobs-add-form textarea:disabled {
+    background: var(--bg-tertiary);
+    color: var(--text-muted);
+    cursor: not-allowed;
+    opacity: 0.6;
+}
 .jobs-add-form textarea { font-family: ui-monospace, monospace; resize: vertical; }
 .jobs-add-form small {
     color: var(--text-muted);
