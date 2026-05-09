@@ -393,6 +393,7 @@ class JournalBacklogPipeline:
 
     def umbrella_summary(
         self, run_metadata: dict[str, Any],
+        items: list[CapturedItem] | None = None,
     ) -> dict[str, Any]:
         journal_date = run_metadata.get("journal_date") or "unknown"
         scan_id = run_metadata.get("scan_id")

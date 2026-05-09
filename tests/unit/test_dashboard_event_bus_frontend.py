@@ -56,23 +56,25 @@ def test_header_has_event_bus_status_indicator():
     assert 'id="event-bus-status"' in page
 
 
-def test_dispatcher_routes_pool_events_to_review_surface_mutators():
-    """The dispatcher must call per-card mutators on window.reviewSurface,
-    not panel-wide loaders. See architecture/event-bus."""
+def test_dispatcher_does_not_route_pool_events():
+    """The pool.* SSE handlers were removed alongside the Review tab in
+    the clarify -> Threads migration. Triage now flows through the
+    unified source pipeline; per-cluster actions surface on the Threads
+    tab via group sub-threads. This is a regression guardrail — the
+    dispatcher must NOT re-introduce pool-driven mutator calls."""
     src = _event_bus_script()
-    # All four pool events are handled.
-    assert "'pool.entry_added'" in src
-    assert "'pool.entry_state_changed'" in src
-    assert "'pool.attraction_passes_bumped'" in src
-    assert "'pool.forced_context_stored'" in src
-    # Each calls a per-card mutator on reviewSurface (via _withSurface).
-    assert "appendCard" in src
-    assert "removeCard" in src
-    assert "updateCard" in src
-    assert "bumpAttractionPasses" in src
-    assert "setForcedContextStored" in src
-    # Terminal-state list drives remove vs update branching.
-    assert "'reviewed'" in src and "'quarantined'" in src
+    forbidden = [
+        "'pool.entry_added'",
+        "'pool.entry_state_changed'",
+        "'pool.attraction_passes_bumped'",
+        "'pool.forced_context_stored'",
+        "bumpAttractionPasses",
+        "setForcedContextStored",
+    ]
+    for pattern in forbidden:
+        assert pattern not in src, (
+            f"deleted pool-driven SSE handler reappeared: {pattern!r}"
+        )
 
 
 def test_dispatcher_uses_isMounted_guard_for_all_surfaces():

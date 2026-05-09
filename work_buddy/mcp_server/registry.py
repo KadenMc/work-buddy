@@ -1511,11 +1511,9 @@ def _context_capabilities() -> list[Capability]:
         chrome_activity,
         chrome_infer,
         chrome_content,
-        triage_execute,
         chrome_tab_close,
         chrome_tab_group,
         chrome_tab_move,
-        triage_item_detail_wrapper,
         llm_costs,
         datacore_status,
         datacore_query,
@@ -2004,222 +2002,6 @@ def _context_capabilities() -> list[Capability]:
             callable=chrome_content,
             requires=["chrome_extension"],
         ),
-        Capability(
-            name="triage_item_detail",
-            description="Retrieve the Haiku summary and/or raw content for a specific triage item. Use during triage review to inspect items with content gaps. Works for any source (Chrome tabs, journal entries, conversations). Requires a prior triage pipeline run.",
-            category="context",
-            search_aliases=[
-                "tab summary",
-                "item detail",
-                "triage detail",
-                "inspect item",
-                "page summary",
-                "what is this tab",
-            ],
-            parameters={
-                "item_id": {"type": "str", "description": "TriageItem ID (e.g., 'tab_786de35645')", "required": True},
-                "include_raw": {"type": "bool", "description": "Also return raw content (page text, etc.). Default: false — prefer summaries.", "required": False},
-                "max_raw_chars": {"type": "int", "description": "Max characters of raw content (default 5000)", "required": False},
-            },
-            callable=triage_item_detail_wrapper,
-            requires=["chrome_extension"],
-        ),
-        # ── Triage execution ───────────────────────────────────
-        Capability(
-            name="triage_execute",
-            description=(
-                "Execute triage decisions from the review view. Takes the user's "
-                "Phase 2 response (group_decisions, reassignments) and the original "
-                "presentation, then performs all actions: close tabs, create tasks, "
-                "record into tasks, organize tab groups."
-            ),
-            category="context",
-            parameters={
-                "decisions": {"type": "dict", "description": "The Phase 2 review response (group_decisions + reassignments)", "required": True},
-                "presentation": {"type": "dict", "description": "The original presentation dict (for item metadata)", "required": True},
-            },
-            callable=triage_execute,
-            search_aliases=[
-                "execute triage",
-                "apply triage",
-                "triage actions",
-                "carry out triage decisions",
-                "apply cleanup decisions",
-                "commit triage plan",
-                "run triage executor",
-            ],
-            requires=["chrome_extension"],
-            mutates_state=True,
-        ),
-
-        # ── Background triage (source-agnostic) ─────────────────
-        Capability(
-            name="triage_submit",
-            description=(
-                "Record a triage verdict for one item of an active background "
-                "triage run. Called by local agents in the triage_agent preset; "
-                "validates the run/item and writes a PoolEntry. Does not dispatch "
-                "a modal or mutate the vault. Safe to call from any context — "
-                "unknown run_ids return a structured error."
-            ),
-            category="context",
-            search_aliases=[
-                "submit triage verdict",
-                "record triage decision",
-                "emit triage recommendation",
-            ],
-            parameters={
-                "run_id": {"type": "str", "description": "The producer-assigned background-triage run id (from the agent's prompt).", "required": True},
-                "item_id": {"type": "str", "description": "The id of the item this verdict applies to.", "required": True},
-                "rationale": {"type": "str", "description": "One-to-three-sentence justification.", "required": True},
-                "group_intent": {"type": "str", "description": "Short noun-phrase naming the underlying intent (≤8 words, distinct from the action name and the rationale). Used as the card title in the Resolution Surface.", "required": False},
-                "confidence": {"type": "float", "description": "Optional [0,1] confidence score.", "required": False},
-                # ---- Slice 3 multi-record fields (preferred for new captures) ----
-                "records": {"type": "list", "description": "Slice 3+: list of records produced from the captured item. Each is {destination: 'task'|'reference'|'calendar_only'|'delete', task_proposal/reference_proposal/calendar_proposal/delete_reason: ...}. Empty list = 'no record produced'. Mutually exclusive with refusal.", "required": False},
-                "refusal": {"type": "dict", "description": "Slice 3+: {question: '...', missing_context: [...]} when the agent doesn't have enough context to commit a verdict. Renders as a clarification card on the Resolution Surface. Mutually exclusive with records.", "required": False},
-                "pipeline_blocker": {"type": "dict", "description": "Slice 1.5: typed stop reason per ROADMAP §3.3. String (just kind) or dict with kind + optional detail. Surfaced as a typed badge on the Resolution Surface card.", "required": False},
-                # ---- Legacy single-action fields (Slice 1 compatibility) ----
-                "recommended_action": {"type": "str", "description": "Legacy: one of close, group, create_task, record_into_task, leave. Required ONLY when records/refusal are not provided.", "required": False},
-                "target_task_id": {"type": "str", "description": "Legacy: for record_into_task, the existing task id.", "required": False},
-                "suggested_task_text": {"type": "str", "description": "Legacy: for create_task, the proposed task body.", "required": False},
-                "related_item_ids": {"type": "list", "description": "Legacy: other item_ids from this run that belong to the same cluster.", "required": False},
-            },
-            callable=(lambda **kw: __import__(
-                "work_buddy.clarify.capabilities.triage_submit",
-                fromlist=["triage_submit"],
-            ).triage_submit(**kw)),
-            mutates_state=True,
-            auto_retry=False,
-        ),
-        Capability(
-            name="resolution_surface_pool",
-            description=(
-                "Open the dashboard Resolution Surface over pending Clarify "
-                "proposals. Aggregates unreviewed ClarifyEntries, composes a "
-                "presentation (Slice 3 multi-record schema or legacy "
-                "single-action), dispatches the modal, and (on response) "
-                "executes the user's decisions via the Clarify executor. "
-                "On-demand — nothing fires automatically. "
-                "Slice 3 rename of triage_review_pool; the legacy name is "
-                "kept as a search alias so old callers still resolve."
-            ),
-            category="context",
-            search_aliases=[
-                "review clarify proposals",
-                "open resolution surface",
-                "drain clarify pool",
-                "review pending clarify",
-                # Legacy aliases — Slice 1/1.5 callers used these names.
-                "triage_review_pool",
-                "review triage proposals",
-                "open triage modal",
-                "drain triage pool",
-                "review pending triage",
-            ],
-            parameters={
-                "source": {"type": "str", "description": "Optional source filter (e.g. 'journal_thread', 'chrome_tab').", "required": False},
-                "adapter": {"type": "str", "description": "Optional adapter-name filter (e.g. 'journal_triage').", "required": False},
-                "since": {"type": "str", "description": "ISO timestamp; only entries created at-or-after are included.", "required": False},
-                "max_items": {"type": "int", "description": "Safety cap on pending entries loaded (default 100).", "required": False},
-                "dispatch": {"type": "bool", "description": "False to compose the presentation without opening the modal.", "required": False},
-            },
-            callable=(lambda **kw: __import__(
-                "work_buddy.clarify.capabilities.triage_review_pool",
-                fromlist=["triage_review_pool"],
-            ).triage_review_pool(**kw)),
-            mutates_state=True,
-            auto_retry=False,
-        ),
-        # Legacy capability name alias for Slice 1/1.5 callers. Same
-        # callable, same parameters — just a different name in the
-        # registry so ``wb_run("triage_review_pool", ...)`` still
-        # resolves. Search hits surface ``resolution_surface_pool``
-        # first (it's the canonical name); this entry exists purely
-        # for back-compat through the Slice 1→3 cutover.
-        Capability(
-            name="triage_review_pool",
-            description=(
-                "Legacy alias for ``resolution_surface_pool`` (Slice 3 "
-                "rename). Identical behavior — opens the dashboard "
-                "Resolution Surface over pending Clarify proposals. "
-                "Prefer ``resolution_surface_pool`` for new callers."
-            ),
-            category="context",
-            search_aliases=["legacy", "deprecated"],
-            parameters={
-                "source": {"type": "str", "description": "Optional source filter (e.g. 'journal_thread', 'chrome_tab').", "required": False},
-                "adapter": {"type": "str", "description": "Optional adapter-name filter (e.g. 'journal_triage').", "required": False},
-                "since": {"type": "str", "description": "ISO timestamp; only entries created at-or-after are included.", "required": False},
-                "max_items": {"type": "int", "description": "Safety cap on pending entries loaded (default 100).", "required": False},
-                "dispatch": {"type": "bool", "description": "False to compose the presentation without opening the modal.", "required": False},
-            },
-            callable=(lambda **kw: __import__(
-                "work_buddy.clarify.capabilities.triage_review_pool",
-                fromlist=["triage_review_pool"],
-            ).triage_review_pool(**kw)),
-            mutates_state=True,
-            auto_retry=False,
-        ),
-        Capability(
-            name="triage_pool_quarantine_entry",
-            description=(
-                "Quarantine a single pool entry by (run_id, item_id). "
-                "Lighter-weight counterpart to triage_pool_sweep — used "
-                "when the caller already knows a specific entry is "
-                "stale (e.g. an 'open in app' action click returned "
-                "email_message_not_found). Idempotent."
-            ),
-            category="context",
-            search_aliases=[
-                "quarantine pool entry",
-                "drop one triage card",
-                "mark triage entry gone",
-                "remove pool entry source removed",
-            ],
-            parameters={
-                "run_id": {"type": "str", "description": "Pool run id (visible on the Review-card group as pool_run_id).", "required": True},
-                "item_id": {"type": "str", "description": "TriageItem id (visible on the Review-card item as id).", "required": True},
-                "reason": {"type": "str", "description": "Quarantine reason. Defaults to 'source_removed' to match the sweep's reason taxonomy.", "required": False},
-            },
-            callable=(lambda **kw: __import__(
-                "work_buddy.clarify.capabilities.triage_pool_quarantine_entry",
-                fromlist=["triage_pool_quarantine_entry"],
-            ).triage_pool_quarantine_entry(**kw)),
-            mutates_state=True,
-            auto_retry=False,
-        ),
-        Capability(
-            name="triage_pool_sweep",
-            description=(
-                "Daily liveness pass over the triage pool (Slice 1). Walks every "
-                "pending PoolEntry: marks expired entries as 'stale' (TTL from "
-                "the source descriptor) and quarantines entries whose source no "
-                "longer resolves (file deleted, journal text drifted beyond the "
-                "match threshold, etc.). Source-specific behavior lives in the "
-                "source descriptor registry (work_buddy/triage/sources.py). "
-                "Non-destructive: state changes only; entries stay on disk."
-            ),
-            category="context",
-            search_aliases=[
-                "sweep triage pool",
-                "quarantine stale triage",
-                "triage liveness check",
-                "drop ghost pool entries",
-                "purge stale triage",
-            ],
-            parameters={
-                "dry_run": {"type": "bool", "description": "When true, computes what would change but does not write back. Useful for rehearsal.", "required": False},
-                "source": {"type": "str", "description": "Optional source filter (e.g. 'journal_thread', 'inline'). Other sources untouched.", "required": False},
-                "max_entries": {"type": "int", "description": "Safety cap on entries inspected per pass.", "required": False},
-            },
-            callable=(lambda **kw: __import__(
-                "work_buddy.clarify.capabilities.triage_pool_sweep",
-                fromlist=["triage_pool_sweep"],
-            ).triage_pool_sweep(**kw)),
-            mutates_state=True,
-            auto_retry=False,
-        ),
-
         # ── Chrome tab mutations ────────────────────────────────
         # All three are flagged is_action=True so they show up in
         # the per-source action library / action chip dropdown for
@@ -3265,105 +3047,12 @@ def _journal_capabilities() -> list[Capability]:
             # loop health-checks the bridge between attempts itself.
             retry_policy="manual",
         ),
-        # ── Background triage producer (journal) ────────────────
-        Capability(
-            name="journal_triage_scan",
-            description=(
-                "Run one background-triage pass over today's Running Notes "
-                "section. Segments the same-day content into threads via "
-                "the local LLM, enriches each with hybrid-IR context, and "
-                "(when triage.verdict_pass.enabled=true) asks Sonnet "
-                "(escalating to Opus on failure) for a constrained-JSON "
-                "verdict per thread. Slice 1 default is verdict_pass off — "
-                "captures land in the pool as raw entries (verdict={raw: "
-                "true}) until Slice 3 brings GTD-shaped verdicts back. "
-                "Never mutates the vault. Idempotent on unchanged content. "
-                "Cadence is a sidecar-job concern; safe to call manually "
-                "for testing."
-            ),
-            category="journal",
-            search_aliases=[
-                "journal triage scan",
-                "background running notes triage",
-                "process running notes proposals",
-                "triage running notes",
-            ],
-            parameters={
-                "journal_date": {"type": "str", "description": "YYYY-MM-DD. Default: today.", "required": False},
-                "force": {"type": "bool", "description": "Ignore the unchanged-content idempotence gate.", "required": False},
-                "profile": {"type": "str", "description": "Override the configured triage.segment_profile (segmentation LLM, not the agent).", "required": False},
-                "tier": {"type": "str", "description": "Override the starting ModelTier for the agent (default frontier_balanced).", "required": False},
-                "enrich": {"type": "bool", "description": "Pre-fetch hybrid-IR context per candidate (default True).", "required": False},
-                "dry_run": {"type": "bool", "description": "Collect + enrich candidates but skip the agent loop.", "required": False},
-            },
-            callable=(lambda **kw: __import__(
-                "work_buddy.clarify.capabilities.journal_triage_scan",
-                fromlist=["journal_triage_scan"],
-            ).journal_triage_scan(**kw)),
-            requires=["obsidian"],
-            mutates_state=True,
-            # Producer uses LLMRunner's escalation internally — retries
-            # at the tier level on timeout / context-exceeded. No outer
-            # retry-on-timeout needed (would just stack queued passes).
-            auto_retry=False,
-        ),
-        # NOTE: an older ``seed_test_data`` capability used to
-        # populate the Threads tab with fake data. It was removed
-        # once real journal/Chrome source pipelines produced live
-        # threads. The ``seed_test_data`` Python module remains in
-        # work_buddy/threads/ for any future debugging needs but is
-        # no longer registered as a callable capability.
+        # The legacy ``journal_triage_scan`` and ``inline_triage_scan``
+        # capabilities (which dropped pool entries for the dead Review
+        # tab) are gone. Triage now flows through ``run_source_pipeline``
+        # for the journal cron path and through ``pipelines.inline_capture``
+        # for the right-click handoff (see send_to_agent inline handler).
 
-        # The legacy per-source ``journal`` scan capability is gone
-        # — the canonical entry point is now ``run_source_pipeline``
-        # (see
-        # ``_pipeline_capabilities()``), which dispatches to
-        # ``JournalBacklogPipeline`` end-to-end. The unified pipeline
-        # subsumes segmentation + manifest tagging + clustering + LLM
-        # refinement + per-cluster action proposals into one call.
-
-        # ── Inline-selection triage producer ────────────────────
-        Capability(
-            name="inline_triage_scan",
-            description=(
-                "Run one triage pass over a single user-sent Obsidian "
-                "selection (from the 'Send to agent' right-click or tag). "
-                "Builds one TriageItem with source='inline'. When "
-                "triage.verdict_pass.enabled=true, collects the "
-                "user-context packet and asks Sonnet for a constrained-JSON "
-                "verdict (escalates to Opus on timeout / context-exceeded / "
-                "empty content / rate-limited). Slice 1 default is "
-                "verdict_pass off — captures land in the pool as raw "
-                "entries (verdict={raw: true}) until Slice 3 brings the "
-                "GTD-shaped multi-record schema back. User-initiated, "
-                "so force=True by default."
-            ),
-            category="triage",
-            search_aliases=[
-                "send to agent",
-                "inline selection triage",
-                "triage selection",
-                "obsidian selection handoff",
-            ],
-            parameters={
-                "file_path": {"type": "str", "description": "Vault-relative source path.", "required": True},
-                "selection": {"type": "str", "description": "The user's literal selection.", "required": False},
-                "paragraph": {"type": "str", "description": "Surrounding paragraph (used when selection is empty).", "required": False},
-                "cursor_line": {"type": "int", "description": "0-indexed cursor line.", "required": False},
-                "hint": {"type": "str", "description": "Optional user-typed intent hint.", "required": False},
-                "force": {"type": "bool", "description": "Bypass idempotence gate (default True for user-initiated).", "required": False},
-                "tier": {"type": "str", "description": "Override the starting ModelTier (default frontier_balanced).", "required": False},
-                "enrich": {"type": "bool", "description": "Include the user-context packet (default True).", "required": False},
-                "dry_run": {"type": "bool", "description": "Collect the item, skip the LLM call.", "required": False},
-            },
-            callable=(lambda **kw: __import__(
-                "work_buddy.clarify.capabilities.inline_triage_scan",
-                fromlist=["inline_triage_scan"],
-            ).inline_triage_scan(**kw)),
-            requires=["obsidian"],
-            mutates_state=True,
-            auto_retry=False,
-        ),
         # ----------------------------------------------------------------
         # Journal-backlog per-thread actions — backing the journal
         # pipeline's per-group action library. Each walks the target
@@ -4134,21 +3823,31 @@ def _pipeline_capabilities() -> list[Capability]:
             name="run_source_pipeline",
             description=(
                 "Run an end-to-end source pipeline: collect raw items, "
-                "annotate with LLM tags + summary, embedding-cluster, "
-                "Sonnet-refine cluster boundaries + per-cluster action "
-                "proposals, and spawn a group umbrella thread + group "
-                "sub-threads with the items as ContextItems. Replaces "
-                "the per-source journal/chrome scan entry points."
+                "annotate with tags + summary, algorithmically cluster, "
+                "LLM-refine cluster boundaries + per-cluster action "
+                "proposals (local-first tier_chain), and spawn a group "
+                "umbrella thread + group sub-threads with the items as "
+                "ContextItems. Replaces the per-source journal/chrome/"
+                "email scan entry points."
             ),
             category="threads",
             parameters={
-                "source": {"type": "str", "description": "Registered pipeline name (e.g. 'chrome_triage', 'journal_backlog')", "required": True},
+                "source": {"type": "str", "description": "Registered pipeline name (one of 'chrome_triage', 'email_triage', 'journal_backlog')", "required": True},
+                # Journal pipeline kwargs.
                 "journal_date": {"type": "str", "description": "Journal pipeline: YYYY-MM-DD; defaults to today", "required": False},
                 "profile": {"type": "str", "description": "Journal pipeline: override segmentation tier profile", "required": False},
+                # Chrome pipeline kwargs.
                 "engagement_window": {"type": "str", "description": "Chrome pipeline: engagement lookback (e.g. '12h', '24h')", "required": False},
                 "include_summaries": {"type": "bool", "description": "Chrome pipeline: attach cached Haiku summaries (default True)", "required": False},
                 "summary": {"type": "str", "description": "Chrome pipeline: human-readable scrape summary for the umbrella title", "required": False},
                 "scrape_id": {"type": "str", "description": "Chrome pipeline: per-scrape id surfaced in audit metadata", "required": False},
+                # Email pipeline kwargs.
+                "days_back": {"type": "int", "description": "Email pipeline: how far back to scan in days (default 2)", "required": False},
+                "max_messages": {"type": "int", "description": "Email pipeline: hard cap on candidates per run (default 50)", "required": False},
+                "unread_only": {"type": "bool", "description": "Email pipeline: only consider unread messages (default true)", "required": False},
+                "folder_path": {"type": "str", "description": "Email pipeline: limit to a specific folder URI", "required": False},
+                "account_id": {"type": "str", "description": "Email pipeline: limit to a specific account", "required": False},
+                "include_body_chars": {"type": "int", "description": "Email pipeline: fetch body up to N chars per message (default 0 = headers only)", "required": False},
             },
             callable=run_source_pipeline,
             mutates_state=True,
@@ -4157,6 +3856,8 @@ def _pipeline_capabilities() -> list[Capability]:
                 "process backlog",
                 "scan journal",
                 "triage chrome",
+                "triage email",
+                "scan inbox",
                 "run source pipeline",
                 "spawn group threads",
             ],
@@ -7711,7 +7412,6 @@ def _email_capabilities() -> list[Capability]:
         email_display,
         email_get,
         email_health,
-        email_triage_run,
     )
 
     return [
@@ -7747,37 +7447,6 @@ def _email_capabilities() -> list[Capability]:
             search_aliases=[
                 "list email accounts", "show mail accounts",
                 "thunderbird accounts", "what email is connected",
-            ],
-        ),
-        Capability(
-            name="email_triage_run",
-            description=(
-                "Run one BackgroundTriageProducer pass over recent email and "
-                "drop new messages into the triage Review pool as raw entries. "
-                "Idempotent — re-running over an unchanged inbox is a no-op. "
-                "Slice 1: verdict pass disabled; Sonnet/Opus classification of "
-                "email is a follow-up."
-            ),
-            category="email",
-            parameters={
-                "days_back": {"type": "int", "description": "How far back to scan (default 2)", "required": False},
-                "max_messages": {"type": "int", "description": "Hard cap on candidates per run (default 50)", "required": False},
-                "unread_only": {"type": "bool", "description": "Only consider unread messages (default true)", "required": False},
-                "folder_path": {"type": "str", "description": "Limit to a specific folder URI (e.g. an inbox)", "required": False},
-                "account_id": {"type": "str", "description": "Limit to a specific account", "required": False},
-                "include_body_chars": {"type": "int", "description": "Fetch body up to N chars per message and include in TriageItem.text. Defaults: 0 when triage.verdict_pass.enabled is false (headers-only is plenty for raw capture); 1500 when verdict pass is on (the LLM needs body content to discriminate newsletter vs action-required).", "required": False},
-                "force": {"type": "bool", "description": "Bypass idempotence and per-item dedup", "required": False},
-                "dry_run": {"type": "bool", "description": "Collect candidates but don't write to the pool", "required": False},
-                "tier": {"type": "str", "description": "Override starting LLM tier for the verdict agent (only used when triage.verdict_pass.enabled is true). One of 'local_fast', 'frontier_balanced' (default), 'frontier_best'. call_for_verdict still escalates on failure.", "required": False},
-            },
-            callable=email_triage_run,
-            requires=["thunderbird"],
-            mutates_state=True,
-            retry_policy="manual",
-            search_aliases=[
-                "triage email", "scan inbox", "email triage scan",
-                "check unread mail", "process new email",
-                "feed email into triage", "email backlog",
             ],
         ),
         Capability(
@@ -7817,6 +7486,137 @@ def _email_capabilities() -> list[Capability]:
             search_aliases=[
                 "open in thunderbird", "show email in thunderbird",
                 "display message", "open mail in client",
+            ],
+        ),
+
+        # ── Email-cluster thread actions ─────────────────────────────
+        # Backed by the EmailTriagePipeline action library. Each takes
+        # a thread_id pointing at a group sub-thread spawned by the
+        # pipeline (one per email cluster). Surface in the per-source
+        # action chip dropdown for email group sub-threads.
+        Capability(
+            name="email_close",
+            description=(
+                "Mark an email cluster as not actionable — newsletters, "
+                "automated notifications, etc. Advisory only: dismisses "
+                "the Thread without touching the underlying mailbox "
+                "(Thunderbird bridge is read-first in v1)."
+            ),
+            category="email",
+            is_action=True,
+            intrinsic_amplifiers={
+                "irreversibility": "low",
+                "regret_potential": "low",
+            },
+            parameters={
+                "thread_id": {"type": "str", "description": "Email-cluster sub-thread to close", "required": True},
+                "reason": {"type": "str", "description": "Optional dismissal reason for the audit log", "required": False},
+            },
+            callable=(lambda **kw: __import__(
+                "work_buddy.email.thread_actions",
+                fromlist=["email_close"],
+            ).email_close(**kw)),
+            mutates_state=True,
+            search_aliases=[
+                "close email cluster", "dismiss emails",
+                "drop email group", "skip email cluster",
+            ],
+        ),
+        Capability(
+            name="email_create_tasks",
+            description=(
+                "Walk an email-cluster thread and create one task per "
+                "email. The subject becomes the task text; sender + "
+                "date land in the linked summary note."
+            ),
+            category="email",
+            is_action=True,
+            intrinsic_amplifiers={
+                "irreversibility": "low",
+                "regret_potential": "low",
+            },
+            parameters={
+                "thread_id": {"type": "str", "description": "Email-cluster sub-thread to route", "required": True},
+                "urgency": {"type": "str", "description": "low | medium (default) | high", "required": False},
+                "project": {"type": "str", "description": "Project slug applied to every created task", "required": False},
+            },
+            callable=(lambda **kw: __import__(
+                "work_buddy.email.thread_actions",
+                fromlist=["email_create_tasks"],
+            ).email_create_tasks(**kw)),
+            requires=["obsidian"],
+            mutates_state=True,
+            search_aliases=[
+                "create tasks from email cluster",
+                "emails to task list",
+                "spin out emails as tasks",
+            ],
+        ),
+        Capability(
+            name="email_create_umbrella_task",
+            description=(
+                "Create a single task representing the whole email "
+                "cluster. The cluster label becomes the task text; the "
+                "linked summary note lists every email's subject + "
+                "sender + date for context."
+            ),
+            category="email",
+            is_action=True,
+            intrinsic_amplifiers={
+                "irreversibility": "low",
+                "regret_potential": "low",
+            },
+            parameters={
+                "thread_id": {"type": "str", "description": "Email-cluster sub-thread to route", "required": True},
+                "urgency": {"type": "str", "description": "low | medium (default) | high", "required": False},
+                "project": {"type": "str", "description": "Project slug for the task", "required": False},
+                "title_override": {"type": "str", "description": "Override the task text; defaults to the cluster label", "required": False},
+            },
+            callable=(lambda **kw: __import__(
+                "work_buddy.email.thread_actions",
+                fromlist=["email_create_umbrella_task"],
+            ).email_create_umbrella_task(**kw)),
+            requires=["obsidian"],
+            mutates_state=True,
+            search_aliases=[
+                "create umbrella task from email cluster",
+                "single task for email group",
+            ],
+        ),
+        Capability(
+            name="email_record_into_task",
+            description=(
+                "File an email cluster as a context section on an "
+                "existing task's linked note. Use when the cluster is "
+                "context for ongoing work (replies on an active "
+                "deliverable, PR-review notifications about a task "
+                "you're already tracking) rather than a new task. The "
+                "target task must already have a note attached; this "
+                "capability does not implicitly create one. Appends a "
+                "bulleted 'Emails recorded' section listing each "
+                "email's subject + sender + date."
+            ),
+            category="email",
+            is_action=True,
+            intrinsic_amplifiers={
+                "irreversibility": "low",
+                "regret_potential": "low",
+            },
+            parameters={
+                "thread_id": {"type": "str", "description": "Email-cluster sub-thread carrying the emails to record", "required": True},
+                "target_task_id": {"type": "str", "description": "Task ID (e.g. 't-a3f8c1e2') to file the cluster against. Must already have a linked note.", "required": True},
+                "section_heading": {"type": "str", "description": "Optional section-heading override (default: 'Emails recorded').", "required": False},
+            },
+            callable=(lambda **kw: __import__(
+                "work_buddy.email.thread_actions",
+                fromlist=["email_record_into_task"],
+            ).email_record_into_task(**kw)),
+            requires=["obsidian"],
+            mutates_state=True,
+            search_aliases=[
+                "record emails into task",
+                "file emails as task context",
+                "attach emails to existing task",
             ],
         ),
     ]

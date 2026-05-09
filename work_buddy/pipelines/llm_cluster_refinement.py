@@ -114,13 +114,41 @@ def refine_clusters(
     *,
     source_name: str,
     action_library: "ActionLibrary",
+    tier_chain: list[str] | None = None,
 ) -> list[ClusterSpec]:
-    """Refine algorithmic clusters via Sonnet + propose per-cluster
-    actions.
+    """Refine algorithmic clusters + propose per-cluster actions via an
+    LLM, walking a tier chain on failure.
+
+    Tier-chain semantics (mirrors :func:`work_buddy.clarify.adapters.journal._segment_with_escalation`):
+
+    - Walks ``tier_chain`` in order. For each tier, calls the LLM at
+      that tier and validates the response.
+    - On ``LLMRunner`` error, missing structured output, or
+      :class:`_ValidationError` from ``_validate_and_assemble``,
+      escalates to the next tier.
+    - On full exhaustion, returns ``pre`` unchanged (algorithmic
+      clusters with no proposed actions). This preserves the prior
+      "fallback to ``pre``" contract callers depend on.
+
+    Default chain comes from ``triage.refine_clusters.tier_chain``
+    (see :data:`work_buddy.clarify.config.TRIAGE_DEFAULTS`); local
+    tiers first per the user's local-LLM-queue convention. Pass
+    ``tier_chain`` explicitly to override (tests use this to pin
+    behavior).
+
+    Args:
+        items: Captured items the algorithmic clusterer saw.
+        pre: Algorithmic clusters to refine.
+        source_name: Source pipeline identifier (e.g. ``"chrome_triage"``).
+        action_library: Per-source + universal action descriptors. The
+            LLM may pick at most one action per cluster from this set.
+        tier_chain: Optional override; each entry is a string matching
+            a :class:`work_buddy.llm.ModelTier` value. Defaults to the
+            ``triage.refine_clusters.tier_chain`` config key.
 
     Returns:
-        A list of :class:`ClusterSpec`. On any failure: ``pre``
-        unchanged with no action proposals.
+        Validated clusters with proposed actions on success, or ``pre``
+        unchanged on full failure.
     """
     if not pre or not items:
         return list(pre)
@@ -132,48 +160,100 @@ def refine_clusters(
         # ``proposed_action`` must be null for every cluster.
         pass
 
-    try:
-        response = _call_llm(
-            items=items,
-            pre=pre,
-            source_name=source_name,
-            per_group_actions=[d.to_dict() for d in per_group_actions],
+    chain = list(tier_chain) if tier_chain is not None else _resolve_tier_chain()
+    if not chain:
+        logger.warning(
+            "refine_clusters [%s]: empty tier_chain — falling back to "
+            "algorithmic clusters without LLM call",
+            source_name,
         )
+        return list(pre)
+
+    actions_payload = [d.to_dict() for d in per_group_actions]
+
+    last_error: str | None = None
+    for tier in chain:
+        try:
+            response = _call_llm(
+                items=items,
+                pre=pre,
+                source_name=source_name,
+                per_group_actions=actions_payload,
+                tier=tier,
+            )
+        except Exception as e:
+            logger.warning(
+                "refine_clusters [%s]: LLM call raised %s at tier=%s; "
+                "trying next tier",
+                source_name, e, tier,
+            )
+            last_error = f"{type(e).__name__}: {e}"
+            continue
+
+        if response is None:
+            last_error = "no_structured_output_or_llm_error"
+            continue
+
+        parsed, tier_used, model_used = response
+        try:
+            validated = _validate_and_assemble(
+                parsed,
+                items=items,
+                action_library=action_library,
+                tier_used=tier_used,
+                model_used=model_used,
+            )
+        except _ValidationError as e:
+            logger.warning(
+                "refine_clusters [%s]: response invalid at tier=%s (%s); "
+                "trying next tier",
+                source_name, tier, e,
+            )
+            last_error = f"validation: {e}"
+            continue
+
+        logger.info(
+            "refine_clusters [%s]: %d input clusters → %d output; "
+            "%d carry proposed actions (tier=%s)",
+            source_name, len(pre), len(validated),
+            sum(1 for c in validated if c.proposed_action is not None),
+            tier_used or tier,
+        )
+        return validated
+
+    logger.warning(
+        "refine_clusters [%s]: all tiers in chain %r exhausted "
+        "(last_error=%s); falling back to algorithmic clusters",
+        source_name, chain, last_error,
+    )
+    return list(pre)
+
+
+def _resolve_tier_chain() -> list[str]:
+    """Return the ``triage.refine_clusters.tier_chain`` value from config.
+
+    Falls back to the :data:`TRIAGE_DEFAULTS` value when config loading
+    fails (e.g. in tests with no config.yaml). Returns a list of string
+    tier names, validated to be a non-empty list of strings.
+    """
+    try:
+        from work_buddy.clarify.config import load_triage_config
+
+        cfg = load_triage_config() or {}
     except Exception as e:
         logger.warning(
-            "refine_clusters [%s]: LLM call raised %s; falling back to "
-            "algorithmic clusters",
-            source_name, e,
+            "refine_clusters: load_triage_config failed (%s); "
+            "using shipped defaults",
+            e,
         )
-        return list(pre)
+        from work_buddy.clarify.config import TRIAGE_DEFAULTS as _D
 
-    if response is None:
-        return list(pre)
-
-    parsed, tier_used, model_used = response
-    try:
-        validated = _validate_and_assemble(
-            parsed,
-            items=items,
-            action_library=action_library,
-            tier_used=tier_used,
-            model_used=model_used,
-        )
-    except _ValidationError as e:
-        logger.warning(
-            "refine_clusters [%s]: response invalid (%s); falling back to "
-            "algorithmic clusters",
-            source_name, e,
-        )
-        return list(pre)
-
-    logger.info(
-        "refine_clusters [%s]: %d input clusters → %d output; "
-        "%d carry proposed actions",
-        source_name, len(pre), len(validated),
-        sum(1 for c in validated if c.proposed_action is not None),
-    )
-    return validated
+        cfg = _D
+    rc = cfg.get("refine_clusters") or {}
+    chain = rc.get("tier_chain") or []
+    if not isinstance(chain, list):
+        return []
+    return [str(t) for t in chain if isinstance(t, str)]
 
 
 # ---------------------------------------------------------------------------
@@ -192,8 +272,9 @@ def _call_llm(
     pre: list[ClusterSpec],
     source_name: str,
     per_group_actions: list[dict[str, Any]],
+    tier: str | "ModelTier" = "frontier_balanced",
 ) -> tuple[dict[str, Any], str | None, str | None] | None:
-    """Render the prompt + run the LLM.
+    """Render the prompt + run the LLM at ``tier``.
 
     Returns ``(parsed, tier_used, model_used)`` on success, or ``None`` on
     any failure. ``tier_used`` is the resolved :class:`ModelTier` value
@@ -202,14 +283,22 @@ def _call_llm(
     ``"claude-sonnet-4-5"``). Both flow into per-cluster
     :class:`ActionProposal` instances so the synthetic ``action_inferred``
     event records its true provenance.
+
+    ``tier`` accepts a :class:`ModelTier` instance OR its string value;
+    the latter is the on-disk config form. Unknown strings raise
+    ``ValueError`` from ``ModelTier(...)`` — caller's responsibility to
+    pass valid tiers.
     """
     from work_buddy.llm import LLMRunner, ModelTier
+
+    if isinstance(tier, str):
+        tier = ModelTier(tier)
 
     system = _render_system_prompt(source_name, per_group_actions)
     user = _render_user_payload(items, pre, per_group_actions)
 
     resp = LLMRunner().call(
-        tier=ModelTier.FRONTIER_BALANCED,
+        tier=tier,
         system=system,
         user=user,
         output_schema=REFINE_OUTPUT_SCHEMA,

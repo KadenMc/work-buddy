@@ -40,12 +40,6 @@ from .core import (
     workflows,
 )
 from .surfaces import resolution, triage
-# resolution_decorator is intentionally NOT imported into the registry.
-# It is the older Triage decorator that was shadowed by the FSM
-# resolution_request renderer's identical export names; the rename
-# resolves the namespace collision but the decorator's content has
-# been dead in production since the shadow began. Reviving it is
-# tracked by task t-105354de.
 from .tabs import (
     automation,
     chats,
@@ -55,7 +49,6 @@ from .tabs import (
     jobs,
     overview,
     projects,
-    review,
     settings,
     status,
     tasks,
@@ -101,7 +94,6 @@ SCRIPTS = [
     triage.clarify_script,
     triage.review_script,
     resolution.script,
-    review.script,
     automation.script,
     today.script,
     settings.script,

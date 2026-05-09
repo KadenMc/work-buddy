@@ -273,7 +273,7 @@ class TestTasksSource:
                 "inbox": [{"task_id": "t-3", "contract": ""}],
             }.get(state, []),
         ), patch(
-            "work_buddy.triage.task_match._read_task_texts",
+            "work_buddy.clarify.task_match._read_task_texts",
             return_value={"t-1": "first", "t-2": "second", "t-3": "third"},
         ):
             section = src.collect(ContextRequest())
@@ -409,13 +409,13 @@ class TestGitSource:
 
 class TestBuildTriageContextRetrofit:
     def test_returns_expected_dict_shape(self, tmp_cache_root):
-        from work_buddy.triage.recommend import build_triage_context
+        from work_buddy.clarify.recommend import build_triage_context
 
         with patch(
             "work_buddy.obsidian.tasks.store.query",
             side_effect=lambda state: {"focused": [{"task_id": "t-f", "contract": ""}]}.get(state, []),
         ), patch(
-            "work_buddy.triage.task_match._read_task_texts",
+            "work_buddy.clarify.task_match._read_task_texts",
             return_value={"t-f": "focus task"},
         ), patch(
             "work_buddy.projects.store.list_projects",
@@ -450,7 +450,7 @@ class TestBuildTriageContextRetrofit:
         assert result["recent_commits"] == ["s1 m1"]
 
     def test_max_tasks_cap_is_honored(self, tmp_cache_root):
-        from work_buddy.triage.recommend import build_triage_context
+        from work_buddy.clarify.recommend import build_triage_context
 
         with patch(
             "work_buddy.obsidian.tasks.store.query",
@@ -458,7 +458,7 @@ class TestBuildTriageContextRetrofit:
                 {"task_id": f"t-{state}-{i}", "contract": ""} for i in range(10)
             ],
         ), patch(
-            "work_buddy.triage.task_match._read_task_texts",
+            "work_buddy.clarify.task_match._read_task_texts",
             return_value={
                 f"t-{state}-{i}": f"{state} task {i}"
                 for state in ("inbox", "mit", "focused")

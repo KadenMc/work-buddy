@@ -27,7 +27,6 @@ const staticLoaders = {
     threads: () => loadThreads(),
     today: () => loadToday(),
     tasks: () => loadTasks(),
-    review: () => loadReview(),
     status: () => loadStatus(),
     jobs: () => loadJobs(),
     chats: () => loadChats(),
@@ -113,10 +112,6 @@ function _persistHash() {
             const shortId = sid.slice(0, 8);
             const matches = (chatsState.chats || []).filter(c => c.short_id === shortId);
             params.set('ci', matches.length === 1 ? shortId : sid);
-        } else if (tab === 'review') {
-            const rsEl = document.getElementById('review-source-filter');
-            const rs = rsEl && rsEl.value;
-            if (rs) params.set('rs', rs);
         } else if (tab === 'tasks' && window._selectedNamespace) {
             params.set('tn', window._selectedNamespace);
         } else if (tab === 'threads' && typeof window._threadsState === 'object'

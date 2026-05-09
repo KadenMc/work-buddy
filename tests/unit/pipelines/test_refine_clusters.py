@@ -319,3 +319,157 @@ class TestValidation:
                 action_library=_library(),
             )
         assert out == pre
+
+
+# ---------------------------------------------------------------------------
+# Tier-chain escalation
+# ---------------------------------------------------------------------------
+
+
+class TestTierChain:
+    """Refinement walks the tier_chain on failure and short-circuits on success."""
+
+    def _good_response(self) -> LLMResponse:
+        return _ok({
+            "clusters": [
+                {
+                    "label": "All",
+                    "item_ids": ["i0", "i1"],
+                    "proposed_action": None,
+                },
+            ],
+        })
+
+    def test_explicit_tier_chain_overrides_config(self):
+        """Passing ``tier_chain=...`` skips ``load_triage_config``."""
+        items = _items(2)
+        pre = [ClusterSpec(label="A", item_ids=("i0", "i1"))]
+        with _patch_runner(self._good_response()):
+            out = refine_clusters(
+                items=items, pre=pre,
+                source_name="journal_backlog",
+                action_library=_library(),
+                tier_chain=["frontier_balanced"],
+            )
+        assert len(out) == 1
+        assert out[0].label == "All"
+
+    def test_first_tier_succeeds_no_escalation(self):
+        items = _items(2)
+        pre = [ClusterSpec(label="A", item_ids=("i0", "i1"))]
+        runner_instance = MagicMock()
+        runner_instance.call.return_value = self._good_response()
+        runner_cls = MagicMock(return_value=runner_instance)
+        with patch("work_buddy.llm.LLMRunner", runner_cls):
+            out = refine_clusters(
+                items=items, pre=pre,
+                source_name="journal_backlog",
+                action_library=_library(),
+                tier_chain=["local_tool_calling", "frontier_balanced"],
+            )
+        # Only the first tier was tried; success short-circuits.
+        assert runner_instance.call.call_count == 1
+        assert len(out) == 1
+
+    def test_escalates_on_llm_error(self):
+        """First tier returns LLMResponse error → second tier called and wins."""
+        items = _items(2)
+        pre = [ClusterSpec(label="A", item_ids=("i0", "i1"))]
+        runner_instance = MagicMock()
+        runner_instance.call.side_effect = [
+            _err("timeout"),
+            self._good_response(),
+        ]
+        runner_cls = MagicMock(return_value=runner_instance)
+        with patch("work_buddy.llm.LLMRunner", runner_cls):
+            out = refine_clusters(
+                items=items, pre=pre,
+                source_name="journal_backlog",
+                action_library=_library(),
+                tier_chain=["local_tool_calling", "frontier_balanced"],
+            )
+        assert runner_instance.call.call_count == 2
+        assert len(out) == 1
+        assert out[0].label == "All"
+
+    def test_escalates_on_validation_failure(self):
+        """First tier returns valid LLMResponse but bad cluster shape →
+        validation fails → escalates to next tier which produces good output."""
+        items = _items(2)
+        pre = [ClusterSpec(label="A", item_ids=("i0", "i1"))]
+        bad = _ok({
+            "clusters": [
+                {
+                    "label": "Missing item",
+                    "item_ids": ["i0"],  # missing i1
+                    "proposed_action": None,
+                },
+            ],
+        })
+        runner_instance = MagicMock()
+        runner_instance.call.side_effect = [bad, self._good_response()]
+        runner_cls = MagicMock(return_value=runner_instance)
+        with patch("work_buddy.llm.LLMRunner", runner_cls):
+            out = refine_clusters(
+                items=items, pre=pre,
+                source_name="journal_backlog",
+                action_library=_library(),
+                tier_chain=["local_tool_calling", "frontier_balanced"],
+            )
+        assert runner_instance.call.call_count == 2
+        assert len(out) == 1
+        assert out[0].label == "All"
+
+    def test_all_tiers_exhausted_falls_back_to_pre(self):
+        items = _items(2)
+        pre = [ClusterSpec(label="A", item_ids=("i0", "i1"))]
+        runner_instance = MagicMock()
+        runner_instance.call.return_value = _err("timeout")
+        runner_cls = MagicMock(return_value=runner_instance)
+        with patch("work_buddy.llm.LLMRunner", runner_cls):
+            out = refine_clusters(
+                items=items, pre=pre,
+                source_name="journal_backlog",
+                action_library=_library(),
+                tier_chain=["local_tool_calling", "local_fast", "frontier_fast"],
+            )
+        assert runner_instance.call.call_count == 3
+        assert out == pre
+
+    def test_empty_tier_chain_falls_back_without_call(self):
+        """Empty ``tier_chain`` short-circuits without invoking the LLM."""
+        items = _items(2)
+        pre = [ClusterSpec(label="A", item_ids=("i0", "i1"))]
+        runner_instance = MagicMock()
+        runner_cls = MagicMock(return_value=runner_instance)
+        with patch("work_buddy.llm.LLMRunner", runner_cls):
+            out = refine_clusters(
+                items=items, pre=pre,
+                source_name="journal_backlog",
+                action_library=_library(),
+                tier_chain=[],
+            )
+        assert runner_instance.call.call_count == 0
+        assert out == pre
+
+    def test_continues_past_exception(self):
+        """An exception (not just LLMResponse error) at one tier is logged
+        and the next tier is tried."""
+        items = _items(2)
+        pre = [ClusterSpec(label="A", item_ids=("i0", "i1"))]
+        runner_instance = MagicMock()
+        runner_instance.call.side_effect = [
+            RuntimeError("boom"),
+            self._good_response(),
+        ]
+        runner_cls = MagicMock(return_value=runner_instance)
+        with patch("work_buddy.llm.LLMRunner", runner_cls):
+            out = refine_clusters(
+                items=items, pre=pre,
+                source_name="journal_backlog",
+                action_library=_library(),
+                tier_chain=["local_tool_calling", "frontier_balanced"],
+            )
+        assert runner_instance.call.call_count == 2
+        assert len(out) == 1
+        assert out[0].label == "All"

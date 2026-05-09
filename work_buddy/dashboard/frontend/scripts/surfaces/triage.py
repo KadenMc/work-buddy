@@ -1212,7 +1212,10 @@ function renderTriageReview(container, presentation, options) {
         );
     }
     function _decorate(card, group) {
-        // Resolution Surface decorator is idempotent (surfaces/resolution_decorator.py:85).
+        // Decorator callback (when callers want to layer extra
+        // affordances onto the rendered card). Idempotent on
+        // re-renders; callers should remove their own elements before
+        // re-adding to stay re-render-safe.
         const dec = (typeof options.decorateCard === 'function')
             ? options.decorateCard
             : (() => {});
@@ -1390,8 +1393,9 @@ function renderTriageReview(container, presentation, options) {
         setForcedContextStored(run_id, item_id) {
             const card = _findCard(run_id, item_id);
             if (!card) return;
-            // Same visual retire as the user-initiated Re-direct path
-            // in surfaces/resolution_decorator.py:385-392 — keeps consistency.
+            // Visual retire for cards whose original verdict has been
+            // superseded — keep card visible but de-emphasised so the
+            // user sees what changed.
             card.classList.add('wv-card-redirected');
         },
 

@@ -18,6 +18,7 @@ import logging
 from typing import Any
 
 from work_buddy.pipelines.chrome import ChromeTriagePipeline
+from work_buddy.pipelines.email import EmailTriagePipeline
 from work_buddy.pipelines.journal import JournalBacklogPipeline
 from work_buddy.pipelines.protocol import SourcePipeline
 from work_buddy.pipelines.runner import run_pipeline
@@ -36,6 +37,7 @@ logger = logging.getLogger(__name__)
 
 PIPELINES: dict[str, type[SourcePipeline]] = {
     "chrome_triage": ChromeTriagePipeline,
+    "email_triage": EmailTriagePipeline,
     "journal_backlog": JournalBacklogPipeline,
 }
 

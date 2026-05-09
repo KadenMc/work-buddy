@@ -36,13 +36,12 @@
       "journal/journal_route_to_tasks",
       "journal/journal_sign_in",
       "journal/journal_state",
-      "journal/journal_triage_scan",
       "journal/journal_write",
       "journal/running_notes",
       "journal/vault_write_at_location"
     ],
     "content": {
-      "summary": "Container for 13 capabilities and workflows."
+      "summary": "Container for 12 capabilities and workflows."
     }
   },
   "context": {
@@ -101,7 +100,6 @@
       "context/knowledge_index_status",
       "context/knowledge_mint",
       "context/knowledge_personal",
-      "context/resolution_surface_pool",
       "context/session_commits",
       "context/session_expand",
       "context/session_get",
@@ -109,19 +107,13 @@
       "context/session_search",
       "context/session_uncommitted",
       "context/session_wb_activity",
-      "context/triage_execute",
-      "context/triage_item_detail",
-      "context/triage_pool_quarantine_entry",
-      "context/triage_pool_sweep",
-      "context/triage_review_pool",
-      "context/triage_submit",
       "context/vault_recon",
       "context/vault_recon_collect",
       "context/workflow_create",
       "context/workflow_update"
     ],
     "content": {
-      "summary": "Container for 66 capabilities and workflows."
+      "summary": "Container for 59 capabilities and workflows."
     }
   },
   "artifacts": {
@@ -216,20 +208,6 @@
     ],
     "content": {
       "summary": "Container for 6 capabilities and workflows."
-    }
-  },
-  "triage": {
-    "kind": "system",
-    "name": "Triage",
-    "description": "Triage capabilities and workflows",
-    "tags": [
-      "triage"
-    ],
-    "children": [
-      "triage/inline_triage_scan"
-    ],
-    "content": {
-      "summary": "Container for 1 capabilities and workflows."
     }
   },
   "tasks": {

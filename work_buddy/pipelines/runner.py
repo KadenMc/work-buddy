@@ -124,7 +124,8 @@ def run_pipeline(
     # Stage 5: spawn umbrella + group children + items.
     run_metadata = dict(collect_kwargs)
     run_metadata.setdefault("source", pipeline.name)
-    umbrella_summary = pipeline.umbrella_summary(run_metadata)
+    run_metadata["item_count"] = len(items)
+    umbrella_summary = pipeline.umbrella_summary(run_metadata, items=items)
 
     umbrella_id = _spawn_umbrella(
         pipeline_name=pipeline.name,

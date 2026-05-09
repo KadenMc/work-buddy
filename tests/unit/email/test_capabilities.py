@@ -49,17 +49,6 @@ def loaded_provider(monkeypatch) -> FakeEmailProvider:
     return p
 
 
-@pytest.fixture
-def isolated_pool(tmp_path):
-    import work_buddy.triage.background as bg
-    pool_dir = tmp_path / "triage_pool"
-    pool_dir.mkdir()
-    pool = bg.TriagePool(pool_dir=pool_dir)
-    bg.set_pool_for_tests(pool)
-    yield pool
-    bg.set_pool_for_tests(None)
-
-
 def test_email_health_happy_path(loaded_provider):
     from work_buddy.email.capabilities import email_health
     out = email_health()
@@ -112,27 +101,7 @@ def test_email_display_calls_provider(loaded_provider):
     assert len(loaded_provider.display_log) == 1
 
 
-def test_email_triage_run_dry_run_does_not_touch_pool(loaded_provider, isolated_pool):
-    from work_buddy.email.capabilities import email_triage_run
-    out = email_triage_run(dry_run=True)
-    assert out["status"] == "dry_run"
-    assert out["item_count"] == 1
-    assert isolated_pool.pending_count() == 0
-
-
-def test_email_triage_run_writes_pool_on_real_run(loaded_provider, isolated_pool):
-    from work_buddy.email.capabilities import email_triage_run
-    out = email_triage_run(force=False)
-    assert out["status"] == "ok"
-    assert out["submitted"] == 1
-    pending = isolated_pool.pending(source="email_message")
-    assert len(pending) == 1
-    assert pending[0].source == "email_message"
-
-
-def test_email_triage_run_idempotent(loaded_provider, isolated_pool):
-    from work_buddy.email.capabilities import email_triage_run
-    out1 = email_triage_run()
-    assert out1["status"] == "ok"
-    out2 = email_triage_run()
-    assert out2["status"] == "skipped"
+# NOTE: tests for the legacy email_triage_run capability were removed
+# during the clarify -> Threads migration. Email triage now flows
+# through pipelines.email.EmailTriagePipeline (see
+# tests/unit/pipelines/test_email_pipeline.py).

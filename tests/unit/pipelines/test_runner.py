@@ -76,7 +76,7 @@ class _StubPipeline:
     def precluster(self, items):
         return list(self._clusters)
 
-    def umbrella_summary(self, run_metadata):
+    def umbrella_summary(self, run_metadata, items=None):
         return {
             "source": self.name,
             "title": "Test umbrella",
