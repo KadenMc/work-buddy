@@ -6460,7 +6460,7 @@
   "tasks/task_set_tags": {
     "kind": "capability",
     "name": "Task Set Tags",
-    "description": "Replace the namespace tags on an existing task's master-list line. Preserves #todo, #projects/*, wikilinks, and plugin emojis.",
+    "description": "Replace the user-modifiable tags on an existing task's master-list line. Manages free-form namespace tags (e.g. #admin/uhn), project tags (#projects/<slug>/...), and opt-in prefixes (#ns/..., #task/...). Pass the complete desired list; anything missing is removed. Preserved: #todo, #tasker/* (mirrors store-owned state — mutate via task_change_state), #wb/todo, #wb/done, wikilinks, 🆔, plugin emojis. Project slugs are validated against the project registry — unknown slugs raise ValueError.",
     "capability_name": "task_set_tags",
     "category": "tasks",
     "aliases": [
@@ -6468,7 +6468,10 @@
       "retag task",
       "add namespace to task",
       "remove tag from task",
-      "set task namespace"
+      "set task namespace",
+      "set task project",
+      "assign project to task",
+      "retroactively tag with project"
     ],
     "parameters": {
       "task_id": {
@@ -6478,7 +6481,7 @@
       },
       "namespace_tags": {
         "type": "list[str]",
-        "description": "Replacement list of namespace tags (no leading '#'). An empty list strips all user namespace tags.",
+        "description": "Replacement list of tags (no leading '#'). Includes project tags (e.g. 'projects/work-buddy/systems/task-system') and free-form namespace tags. An empty list strips all user-modifiable tags.",
         "required": true
       }
     },

@@ -3804,11 +3804,21 @@ def _task_capabilities() -> list[Capability]:
         ),
         Capability(
             name="task_set_tags",
-            description="Replace the namespace tags on an existing task's master-list line. Preserves #todo, #projects/*, wikilinks, and plugin emojis.",
+            description=(
+                "Replace the user-modifiable tags on an existing task's "
+                "master-list line. Manages free-form namespace tags "
+                "(e.g. #admin/uhn), project tags (#projects/<slug>/...), "
+                "and opt-in prefixes (#ns/..., #task/...). Pass the complete "
+                "desired list; anything missing is removed. Preserved: "
+                "#todo, #tasker/* (mirrors store-owned state — mutate via "
+                "task_change_state), #wb/todo, #wb/done, wikilinks, 🆔, "
+                "plugin emojis. Project slugs are validated against the "
+                "project registry — unknown slugs raise ValueError."
+            ),
             category="tasks",
             parameters={
                 "task_id": {"type": "str", "description": "Task ID (e.g., 't-a3f8c1e2')", "required": True},
-                "namespace_tags": {"type": "list[str]", "description": "Replacement list of namespace tags (no leading '#'). An empty list strips all user namespace tags.", "required": True},
+                "namespace_tags": {"type": "list[str]", "description": "Replacement list of tags (no leading '#'). Includes project tags (e.g. 'projects/work-buddy/systems/task-system') and free-form namespace tags. An empty list strips all user-modifiable tags.", "required": True},
             },
             callable=set_task_tags_on_line,
             search_aliases=[
@@ -3817,6 +3827,9 @@ def _task_capabilities() -> list[Capability]:
                 "add namespace to task",
                 "remove tag from task",
                 "set task namespace",
+                "set task project",
+                "assign project to task",
+                "retroactively tag with project",
             ],
             requires=["obsidian"],
             mutates_state=True,
