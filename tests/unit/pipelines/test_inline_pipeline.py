@@ -86,6 +86,30 @@ def _patch_deadline_extract(hints: dict | None = None):
     )
 
 
+def _patch_pick_projects(candidates: list[dict] | None = None):
+    """Patch the project-picker so the inline pipeline doesn't make a real
+    LLM call for project candidates.
+
+    Without this patch, ``pick_projects`` constructs its own LLMRunner via
+    ``run_subcall`` (which imports LLMRunner from ``work_buddy.llm.runner_v2``
+    directly, NOT from ``work_buddy.llm``) — so the existing
+    ``_patch_runner`` patch on ``work_buddy.llm.LLMRunner`` doesn't reach
+    it. Live tests showed inline-pipeline tests were leaking real
+    project-picker LLM calls; this helper plugs the leak.
+    """
+    default_candidates = [
+        {
+            "project_tag": None,
+            "confidence": 1.0,
+            "rationale": "Test stub: no project signal.",
+        },
+    ]
+    return patch(
+        "work_buddy.clarify.project_picker.pick_projects",
+        return_value={"candidates": candidates or default_candidates},
+    )
+
+
 # ---------------------------------------------------------------------------
 # Action-payload mapping
 # ---------------------------------------------------------------------------
@@ -246,6 +270,7 @@ class TestSingleRecordPaths:
                 side_effect=_stub_collect(),
             ),
             _patch_deadline_extract(),
+            _patch_pick_projects(),
             patch(
                 "work_buddy.clarify.recommend.build_triage_context",
                 return_value={},
@@ -291,6 +316,7 @@ class TestSingleRecordPaths:
                 side_effect=_stub_collect("..."),
             ),
             _patch_deadline_extract(),
+            _patch_pick_projects(),
             patch(
                 "work_buddy.clarify.recommend.build_triage_context",
                 return_value={},
@@ -345,6 +371,7 @@ class TestMultiRecordPaths:
                 side_effect=_stub_collect("Buy gift for Sarah's birthday May 12"),
             ),
             _patch_deadline_extract(),
+            _patch_pick_projects(),
             patch(
                 "work_buddy.clarify.recommend.build_triage_context",
                 return_value={},
@@ -392,6 +419,7 @@ class TestMultiRecordPaths:
                 side_effect=_stub_collect(),
             ),
             _patch_deadline_extract(),
+            _patch_pick_projects(),
             patch(
                 "work_buddy.clarify.recommend.build_triage_context",
                 return_value={},
@@ -432,6 +460,7 @@ class TestRefusal:
                 side_effect=_stub_collect("Vague stuff"),
             ),
             _patch_deadline_extract(),
+            _patch_pick_projects(),
             patch(
                 "work_buddy.clarify.recommend.build_triage_context",
                 return_value={},
@@ -483,6 +512,7 @@ class TestErrorPaths:
                 side_effect=_stub_collect(),
             ),
             _patch_deadline_extract(),
+            _patch_pick_projects(),
             patch(
                 "work_buddy.clarify.recommend.build_triage_context",
                 return_value={},
@@ -517,6 +547,7 @@ class TestErrorPaths:
                 side_effect=_stub_collect(),
             ),
             _patch_deadline_extract(),
+            _patch_pick_projects(),
             patch(
                 "work_buddy.clarify.recommend.build_triage_context",
                 return_value={},
