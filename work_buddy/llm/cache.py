@@ -172,11 +172,14 @@ def get(
     if "input_hash" not in entry:
         return None
 
-    # Check expiry
+    # Check expiry. Boundary-inclusive (<=): an entry whose deadline is
+    # exactly now() has used up its lifetime and should be treated as
+    # expired. Strict < missed the boundary case where put-then-get
+    # happened within a single clock tick (see t-96e45c67).
     expires_at = entry.get("expires_at", "")
     if expires_at:
         try:
-            if datetime.fromisoformat(expires_at) < datetime.now():
+            if datetime.fromisoformat(expires_at) <= datetime.now():
                 return None
         except ValueError:
             pass
@@ -285,7 +288,8 @@ def prune() -> int:
         expires_at = entry.get("expires_at", "")
         if expires_at:
             try:
-                if datetime.fromisoformat(expires_at) < now:
+                # Boundary-inclusive (<=) to match get() — see t-96e45c67.
+                if datetime.fromisoformat(expires_at) <= now:
                     to_remove.append(scoped_task_id)
             except ValueError:
                 to_remove.append(scoped_task_id)
