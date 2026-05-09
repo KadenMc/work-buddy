@@ -1,23 +1,29 @@
-"""Cheap Haiku-tier deadline / dependency extraction for Clarify (Slice 3).
+"""Cheap structured-output deadline / dependency extraction (Clarify Slice 3).
 
-Runs BEFORE the main Sonnet verdict pass. Detects deadline mentions
+Runs BEFORE the main multi-record verdict pass. Detects deadline mentions
 ("by Friday", "before May 15", "next Tuesday") and dependency mentions
 ("waiting on Bob", "after the meeting") in a single captured item's
-text, returning structured hints. The main verdict pass receives these
+text, returning structured hints. The verdict pass receives these
 as inputs so the resulting ``task_proposal`` can populate Slice 2's
 ``has_deadline`` / ``deadline_date`` / ``has_dependency`` /
 ``dependency_hint`` fields without burning frontier-balanced tokens
 on a structured-text-classification task.
 
-Failure-tolerant by design: if Haiku errors, returns a sentinel
-"no hints found" result rather than raising. The main verdict pass
-still runs (just without the hints). Sparse captures get sparse
-results — the function does NOT hallucinate dates the text doesn't
-mention. The output schema requires explicit booleans + nullable
-strings so the model can't sneak through partial guesses.
+Implemented as a :class:`work_buddy.llm.SubCall` declaration on the
+decomposed-judgment framework. The tier chain — local-first, escalating
+to ``frontier_fast`` only on full local exhaustion — lives in
+``triage.deadline_extract.tier_chain`` and is overridable in
+``config.local.yaml`` like the segmenter / refine_clusters chains.
 
-The function is module-level + caches the LLMRunner instance so
-producers can call it once per item without per-call overhead.
+Failure-tolerant by design: the SubCall's ``soft_fail_default`` is the
+all-false sentinel ``hint_extraction_failed=True``, so chain-exhaustion
+or any other LLM error bubbles up as "no hints found" rather than
+raising. The verdict pass still runs (just without the hints).
+
+Sparse captures get sparse results — the system prompt forbids
+hallucinating dates the text doesn't mention. The output schema requires
+explicit booleans + nullable strings so the model can't sneak through
+partial guesses.
 """
 
 from __future__ import annotations
@@ -25,7 +31,7 @@ from __future__ import annotations
 from datetime import date as _date_cls
 from typing import Any
 
-from work_buddy.llm import LLMRunner, ModelTier
+from work_buddy.llm import LLMRunner, SubCall, run_subcall
 from work_buddy.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -91,12 +97,59 @@ _DEADLINE_SCHEMA: dict[str, Any] = {
 }
 
 
-# Module-level singleton. Producers create N items; we only want
-# one runner instance.
+def _build_deadline_user_prompt(inputs: dict[str, Any]) -> str:
+    """SubCall user-prompt builder. Reads ``text`` and ``message_date_iso``."""
+    text = (inputs.get("text") or "").strip()
+    date_iso = inputs.get("message_date_iso") or ""
+    return (
+        f"message_date: {date_iso}\n"
+        f"\n--- captured text ---\n"
+        f"{text}\n"
+        f"--- end ---\n"
+        f"\nReturn the JSON object."
+    )
+
+
+# All-false sentinel that substitutes for hints when the LLM call exhausts.
+# ``hint_extraction_failed=True`` is the tell that lets the verdict
+# rendering surface "extraction failed" to the user instead of "no hints".
+_FAILURE_SENTINEL: dict[str, Any] = {
+    "has_deadline": False,
+    "deadline_date": None,
+    "has_dependency": False,
+    "dependency_hint": None,
+    "hint_extraction_failed": True,
+}
+
+
+# The SubCall declaration. Operational dials (tier_chain, max_tokens,
+# temperature, cache_ttl_minutes) live in
+# ``clarify/config.py:TRIAGE_DEFAULTS["deadline_extract"]`` and are
+# overridable via ``config.local.yaml`` under
+# ``triage.deadline_extract.*``.
+DEADLINE_HINTS_SUBCALL = SubCall(
+    name="deadline_hints",
+    system_prompt=_DEADLINE_SYSTEM_PROMPT,
+    user_prompt=_build_deadline_user_prompt,
+    output_schema=_DEADLINE_SCHEMA,
+    config_key="triage.deadline_extract",
+    fail_policy="soft",
+    soft_fail_default=_FAILURE_SENTINEL,
+)
+
+
+# Module-level runner singleton. Producers create N items per pass; we
+# only want one runner instance. Tests can monkeypatch :func:`_get_runner`
+# (back-compat) or pass an explicit ``runner`` to ``extract_deadline_hints``.
 _runner: LLMRunner | None = None
 
 
 def _get_runner() -> LLMRunner:
+    """Return the module-level runner singleton.
+
+    Preserved as a public-by-convention helper so existing tests that
+    monkeypatch :func:`_get_runner` keep working without rewrites.
+    """
     global _runner
     if _runner is None:
         _runner = LLMRunner()
@@ -107,16 +160,18 @@ def extract_deadline_hints(
     text: str,
     *,
     message_date: _date_cls | str | None = None,
-    tier: ModelTier | str | None = None,
-    tier_chain: list[str] | None = None,
     item_id: str = "",
+    runner: LLMRunner | None = None,
 ) -> dict[str, Any]:
     """Local-first cheap call extracting deadline / dependency hints.
 
-    Walks a tier chain (default ``["local_tool_calling", "local_fast",
-    "frontier_fast"]`` from ``triage.deadline_extract.tier_chain``) on
-    LLMRunner error or empty structured output. Mirrors the
-    segmenter / refine_clusters tier-chain pattern.
+    Routes through the decomposed-judgment framework's :func:`run_subcall`
+    using :data:`DEADLINE_HINTS_SUBCALL`. The tier chain comes from
+    ``triage.deadline_extract.tier_chain`` (default
+    ``["local_tool_calling", "local_fast", "frontier_fast"]``); on full
+    chain exhaustion, returns the all-false sentinel with
+    ``hint_extraction_failed=True`` so the verdict pass surfaces graceful
+    degradation rather than raising.
 
     Args:
         text: The captured-item text to scan.
@@ -124,20 +179,19 @@ def extract_deadline_hints(
             phrases like "Friday" can be resolved to absolute dates.
             Pass ``None`` to use today's date. Accepts ``date`` or ISO
             string.
-        tier: Single-tier override (back-compat). When provided, skips
-            the chain walk and runs only this tier. Prefer
-            ``tier_chain`` for new callers.
-        tier_chain: Explicit list of tiers to walk. ``None`` reads from
-            config (``triage.deadline_extract.tier_chain``).
-        item_id: Used in escalation log trace IDs; optional.
+        item_id: Used in the trace_id so escalation_log entries can be
+            correlated back to the originating capture.
+        runner: Optional :class:`LLMRunner` override. When None, uses
+            the module-level singleton via :func:`_get_runner`. Tests
+            can pass a mock to control the underlying call without
+            monkey-patching.
 
     Returns:
         ``{"has_deadline": bool, "deadline_date": str | None,
            "has_dependency": bool, "dependency_hint": str | None}``
 
-        On full chain exhaustion (every tier failed), returns the
-        all-false sentinel with ``hint_extraction_failed: True``. The
-        main verdict pass still runs, just without hints.
+        On full exhaustion, ``hint_extraction_failed: True`` is added
+        so the renderer can surface degradation gracefully.
     """
     if not text or not text.strip():
         return {
@@ -154,131 +208,33 @@ def extract_deadline_hints(
     else:
         date_iso = str(message_date)
 
-    user_prompt = (
-        f"message_date: {date_iso}\n"
-        f"\n--- captured text ---\n"
-        f"{text.strip()}\n"
-        f"--- end ---\n"
-        f"\nReturn the JSON object."
+    inputs = {"text": text, "message_date_iso": date_iso}
+    trace_id = f"deadline_extract:{item_id}" if item_id else "deadline_extract"
+
+    result = run_subcall(
+        DEADLINE_HINTS_SUBCALL,
+        inputs,
+        trace_id=trace_id,
+        runner=runner if runner is not None else _get_runner(),
     )
 
-    # Build the tier walk. If ``tier`` is given, run just that tier
-    # (back-compat for callers that don't want a chain).
-    if tier is not None:
-        chain: list[str] = [
-            tier.value if isinstance(tier, ModelTier) else str(tier),
-        ]
-    elif tier_chain is not None:
-        chain = list(tier_chain)
-    else:
-        chain = _resolve_tier_chain()
-    if not chain:
-        logger.warning(
-            "deadline_extract: empty tier_chain; falling back to no-hints",
-        )
-        return _failure_sentinel()
-
-    runner = _get_runner()
-    last_kind = None
-    last_err: str | None = None
-    for tier_str in chain:
-        try:
-            tier_enum = ModelTier(tier_str)
-        except ValueError:
-            logger.warning(
-                "deadline_extract: unknown tier %r in chain; skipping",
-                tier_str,
-            )
-            continue
-        try:
-            resp = runner.call(
-                tier=tier_enum,
-                system=_DEADLINE_SYSTEM_PROMPT,
-                user=user_prompt,
-                output_schema=_DEADLINE_SCHEMA,
-                cache_ttl_minutes=0,  # No caching: text-keyed but the
-                                      # message_date in the prompt makes
-                                      # the cache key unstable across days.
-                trace_id=f"deadline_extract:{item_id}" if item_id else "deadline_extract",
-            )
-        except Exception as exc:
-            logger.warning(
-                "deadline_extract: runner.call threw at tier=%s: %s; "
-                "trying next tier",
-                tier_str, exc,
-            )
-            last_err = str(exc)
-            continue
-
-        if resp.is_error():
-            logger.info(
-                "deadline_extract: %s tier=%s — %s; trying next tier",
-                resp.error_kind, resp.tier_used, resp.error,
-            )
-            last_kind = resp.error_kind
-            last_err = resp.error
-            continue
-
-        out = resp.structured_output or {}
-        if not out:
-            logger.info(
-                "deadline_extract: empty structured_output at tier=%s; "
-                "trying next tier",
-                tier_str,
-            )
-            continue
-
-        # Defensive normalization — booleans + nullable strings.
-        return {
-            "has_deadline": bool(out.get("has_deadline")),
-            "deadline_date": out.get("deadline_date") or None,
-            "has_dependency": bool(out.get("has_dependency")),
-            "dependency_hint": out.get("dependency_hint") or None,
-        }
-
-    logger.info(
-        "deadline_extract: all tiers in chain %r exhausted (last_kind=%s, "
-        "last_err=%s); falling back to no-hints",
-        chain, last_kind, last_err,
-    )
-    return _failure_sentinel()
-
-
-def _resolve_tier_chain() -> list[str]:
-    """Return ``triage.deadline_extract.tier_chain`` from config.
-
-    Falls back to the :data:`TRIAGE_DEFAULTS` value when config loading
-    fails (tests without a config.yaml). Returns a list of string tier
-    names, validated to be a non-empty list of strings.
-    """
-    try:
-        from work_buddy.clarify.config import load_triage_config
-
-        cfg = load_triage_config() or {}
-    except Exception as exc:
-        logger.warning(
-            "deadline_extract: load_triage_config failed (%s); "
-            "using shipped defaults",
-            exc,
-        )
-        from work_buddy.clarify.config import TRIAGE_DEFAULTS as _D
-
-        cfg = _D
-    de = cfg.get("deadline_extract") or {}
-    chain = de.get("tier_chain") or []
-    if not isinstance(chain, list):
-        return []
-    return [str(t) for t in chain if isinstance(t, str)]
+    out = result.output or {}
+    normalized: dict[str, Any] = {
+        "has_deadline": bool(out.get("has_deadline")),
+        "deadline_date": out.get("deadline_date") or None,
+        "has_dependency": bool(out.get("has_dependency")),
+        "dependency_hint": out.get("dependency_hint") or None,
+    }
+    if out.get("hint_extraction_failed"):
+        # Preserve the failure marker so renderers can surface
+        # "extraction failed" rather than "no hints detected".
+        normalized["hint_extraction_failed"] = True
+    return normalized
 
 
 def _failure_sentinel() -> dict[str, Any]:
-    return {
-        "has_deadline": False,
-        "deadline_date": None,
-        "has_dependency": False,
-        "dependency_hint": None,
-        "hint_extraction_failed": True,
-    }
+    """Public alias preserved for tests that import the sentinel directly."""
+    return dict(_FAILURE_SENTINEL)
 
 
 def merge_hints_into_records(
@@ -288,9 +244,9 @@ def merge_hints_into_records(
     """Stamp deadline hints onto each task_proposal in records[].
 
     Idempotent: if a record's task_proposal already declares
-    ``has_deadline`` / ``has_dependency`` (e.g., the Sonnet verdict
-    ALSO independently extracted them), the existing values WIN. The
-    Haiku pass is a hint, not a constraint.
+    ``has_deadline`` / ``has_dependency`` (e.g., the verdict ALSO
+    independently extracted them), the existing values WIN. The
+    pre-pass is a hint, not a constraint.
 
     Returns the records list (mutating in place is fine but the
     return makes the call site read cleaner).
@@ -314,7 +270,14 @@ def merge_hints_into_records(
             continue
         for f in fields_to_merge:
             if f in proposal and proposal[f] not in (None, ""):
-                # Sonnet already filled it; honor the verdict.
+                # Verdict already filled it; honor it.
                 continue
             proposal[f] = hints.get(f)
     return records
+
+
+__all__ = [
+    "DEADLINE_HINTS_SUBCALL",
+    "extract_deadline_hints",
+    "merge_hints_into_records",
+]

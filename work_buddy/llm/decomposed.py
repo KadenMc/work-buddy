@@ -483,18 +483,35 @@ def _call_one(
     primary = tier_chain[0]
     fallbacks = list(tier_chain[1:])
 
-    return runner.call(
-        tier=primary,
-        system=system_prompt,
-        user=user_prompt,
-        output_schema=output_schema,
-        escalate_on=list(escalate_on),
-        escalate_to=fallbacks,
-        max_tokens=max_tokens,
-        temperature=temperature,
-        cache_ttl_minutes=cache_ttl_minutes,
-        trace_id=trace_id,
-    )
+    try:
+        return runner.call(
+            tier=primary,
+            system=system_prompt,
+            user=user_prompt,
+            output_schema=output_schema,
+            escalate_on=list(escalate_on),
+            escalate_to=fallbacks,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            cache_ttl_minutes=cache_ttl_minutes,
+            trace_id=trace_id,
+        )
+    except Exception as exc:  # noqa: BLE001 — convert any backend exception into a soft failure
+        # Convert raw exceptions to a synthetic error response so callers
+        # don't have to wrap every call in try/except. The legacy
+        # deadline_extract had its own try/except around runner.call
+        # specifically for unknown-tier ValueError and network errors;
+        # this preserves that behavior at the framework level.
+        logger.warning(
+            "decomposed: %s call %r raised at primary tier %s: %s; "
+            "returning synthetic backend_unavailable response",
+            "main" if name else "sub", name, primary, exc,
+        )
+        return LLMResponse(
+            tier_used=primary.value if hasattr(primary, "value") else str(primary),
+            error=str(exc),
+            error_kind=ErrorKind.BACKEND_UNAVAILABLE,
+        )
 
 
 def _resolve_dials(config_key: str | None) -> dict[str, Any]:
