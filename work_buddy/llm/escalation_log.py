@@ -65,10 +65,11 @@ logger = logging.getLogger(__name__)
 # runtime when this module is loaded.
 _lock = threading.Lock()
 
-# Old-record cleanup is handled by ``work_buddy.artifacts.prune_escalation_log``
-# registered against ``logs/escalations`` in :data:`work_buddy.paths.PRUNERS`.
-# That pruner runs as part of the scheduled artifact-cleanup job and culls
-# records older than ``window_days`` (default 30). No file-level rotation
+# Old-record cleanup is handled by the ``escalations-log`` artifact
+# registered at the bottom of this module on the unified artifact
+# registry (see ``architecture/artifact-system``). That artifact runs
+# as part of the scheduled artifact-cleanup job and culls records
+# older than ``window_days`` (default 30). No file-level rotation
 # logic lives here on purpose — adding both record-level pruning and
 # size-based rotation would let the two policies disagree.
 
