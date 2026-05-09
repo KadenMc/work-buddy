@@ -242,7 +242,7 @@ class TestSingleRecordPaths:
         runner_patch, _runner = _patch_runner(verdict)
         with (
             patch(
-                "work_buddy.clarify.adapters.inline.collect_inline_selection",
+                "work_buddy.pipelines.inline._collect_inline_selection",
                 side_effect=_stub_collect(),
             ),
             _patch_deadline_extract(),
@@ -287,7 +287,7 @@ class TestSingleRecordPaths:
         runner_patch, _runner = _patch_runner(verdict)
         with (
             patch(
-                "work_buddy.clarify.adapters.inline.collect_inline_selection",
+                "work_buddy.pipelines.inline._collect_inline_selection",
                 side_effect=_stub_collect("..."),
             ),
             _patch_deadline_extract(),
@@ -341,7 +341,7 @@ class TestMultiRecordPaths:
         runner_patch, _runner = _patch_runner(verdict)
         with (
             patch(
-                "work_buddy.clarify.adapters.inline.collect_inline_selection",
+                "work_buddy.pipelines.inline._collect_inline_selection",
                 side_effect=_stub_collect("Buy gift for Sarah's birthday May 12"),
             ),
             _patch_deadline_extract(),
@@ -388,7 +388,7 @@ class TestMultiRecordPaths:
         runner_patch, _runner = _patch_runner(verdict)
         with (
             patch(
-                "work_buddy.clarify.adapters.inline.collect_inline_selection",
+                "work_buddy.pipelines.inline._collect_inline_selection",
                 side_effect=_stub_collect(),
             ),
             _patch_deadline_extract(),
@@ -428,7 +428,7 @@ class TestRefusal:
         runner_patch, _runner = _patch_runner(verdict)
         with (
             patch(
-                "work_buddy.clarify.adapters.inline.collect_inline_selection",
+                "work_buddy.pipelines.inline._collect_inline_selection",
                 side_effect=_stub_collect("Vague stuff"),
             ),
             _patch_deadline_extract(),
@@ -461,7 +461,7 @@ class TestErrorPaths:
     def test_collect_failure_returns_error(self, fresh_db):
         with (
             patch(
-                "work_buddy.clarify.adapters.inline.collect_inline_selection",
+                "work_buddy.pipelines.inline._collect_inline_selection",
                 return_value=([], None),
             ),
         ):
@@ -479,7 +479,7 @@ class TestErrorPaths:
         runner_cls = MagicMock(return_value=runner_instance)
         with (
             patch(
-                "work_buddy.clarify.adapters.inline.collect_inline_selection",
+                "work_buddy.pipelines.inline._collect_inline_selection",
                 side_effect=_stub_collect(),
             ),
             _patch_deadline_extract(),
@@ -513,7 +513,7 @@ class TestErrorPaths:
         runner_cls = MagicMock(return_value=runner_instance)
         with (
             patch(
-                "work_buddy.clarify.adapters.inline.collect_inline_selection",
+                "work_buddy.pipelines.inline._collect_inline_selection",
                 side_effect=_stub_collect(),
             ),
             _patch_deadline_extract(),

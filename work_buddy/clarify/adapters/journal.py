@@ -125,14 +125,24 @@ def collect_same_day_candidates(
         ``content_hash`` is a short stable hash of the same-day
         input (or ``None`` when there was nothing to hash).
     """
+    import hashlib
+
     from work_buddy.journal_backlog import read_running_notes
     from work_buddy.journal_backlog.segment import strip_banners
     from work_buddy.llm import ModelTier
-    from work_buddy.clarify.background import content_hash as _hash
     from work_buddy.clarify.config import (
         adapter_config,
         load_triage_config,
     )
+
+    def _hash(parts):
+        """Stable short content hash. Folded from the deleted
+        clarify/background.py during the clarify -> Threads migration."""
+        h = hashlib.sha1(usedforsecurity=False)
+        for p in parts:
+            h.update((p or "").encode("utf-8", errors="replace"))
+            h.update(b"\x1f")
+        return h.hexdigest()[:16]
 
     cfg = load_triage_config()
     seg_cfg = cfg.get("segment", {}) or {}

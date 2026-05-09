@@ -37,7 +37,7 @@ def _isolate_segmentation_cache(monkeypatch, tmp_path):
 
 def test_journal_adapter_returns_empty_when_no_notes(monkeypatch) -> None:
     """No running-notes text → empty items, no hash."""
-    from work_buddy.triage.adapters import journal as adapter_mod
+    from work_buddy.clarify.adapters import journal as adapter_mod
 
     monkeypatch.setattr(
         "work_buddy.journal_backlog.read_running_notes",
@@ -51,7 +51,7 @@ def test_journal_adapter_returns_empty_when_no_notes(monkeypatch) -> None:
 
 
 def test_journal_adapter_returns_empty_when_read_raises(monkeypatch) -> None:
-    from work_buddy.triage.adapters import journal as adapter_mod
+    from work_buddy.clarify.adapters import journal as adapter_mod
 
     def boom(**kw: Any) -> str:
         raise RuntimeError("vault down")
@@ -68,7 +68,7 @@ def test_journal_adapter_returns_empty_when_read_raises(monkeypatch) -> None:
 
 def test_journal_adapter_empty_when_segmentation_fails(monkeypatch) -> None:
     """Read returns content; segmenter returns unparseable output → [] ."""
-    from work_buddy.triage.adapters import journal as adapter_mod
+    from work_buddy.clarify.adapters import journal as adapter_mod
 
     notes = "- alpha\n- beta\n- gamma"
     monkeypatch.setattr(
@@ -93,7 +93,7 @@ def test_journal_adapter_builds_items_from_valid_segmentation(
 ) -> None:
     """Model returns valid line-range groups → TriageItems produced with
     locally-generated ids and correct raw_text."""
-    from work_buddy.triage.adapters import journal as adapter_mod
+    from work_buddy.clarify.adapters import journal as adapter_mod
 
     original = "- alpha idea\n- beta idea"
     monkeypatch.setattr(
@@ -127,7 +127,7 @@ def test_journal_adapter_builds_items_from_valid_segmentation(
 def test_journal_adapter_escalates_on_validation_failure(monkeypatch) -> None:
     """First tier produces invalid content (missing coverage); escalation
     to the next tier produces valid content."""
-    from work_buddy.triage.adapters import journal as adapter_mod
+    from work_buddy.clarify.adapters import journal as adapter_mod
 
     original = "- alpha idea\n- beta idea"
     monkeypatch.setattr(
@@ -166,7 +166,7 @@ def test_journal_adapter_exhausts_tier_chain_and_logs_audit(
 ) -> None:
     """Every tier fails content validation → empty items + audit log."""
     import logging
-    from work_buddy.triage.adapters import journal as adapter_mod
+    from work_buddy.clarify.adapters import journal as adapter_mod
 
     original = "- alpha idea\n- beta idea"
     monkeypatch.setattr(
@@ -214,7 +214,7 @@ def test_journal_adapter_exhausts_tier_chain_and_logs_audit(
 def test_segmenter_reuses_cache_on_identical_content(monkeypatch) -> None:
     """First scan writes the segmentation cache; second scan with the
     same input must hit the cache and NOT call the LLM."""
-    from work_buddy.triage.adapters import journal as adapter_mod
+    from work_buddy.clarify.adapters import journal as adapter_mod
 
     original = "- alpha idea\n- beta idea\n- gamma idea"
     monkeypatch.setattr(
@@ -248,7 +248,7 @@ def test_segmenter_reuses_cache_on_identical_content(monkeypatch) -> None:
 def test_segmenter_cache_misses_on_content_change(monkeypatch) -> None:
     """Changing one line of input must miss the cache and call the LLM
     afresh (no SimHash fuzzy-hit on stale line numbers)."""
-    from work_buddy.triage.adapters import journal as adapter_mod
+    from work_buddy.clarify.adapters import journal as adapter_mod
 
     original_a = "- alpha idea\n- beta idea\n- gamma idea"
     original_b = "- alpha idea\n- BETA EDITED\n- gamma idea"
@@ -286,7 +286,7 @@ def test_segmenter_cache_misses_on_content_change(monkeypatch) -> None:
 def test_segmenter_cache_robust_to_blank_line_insertion(monkeypatch) -> None:
     """Adding/removing blank lines doesn't change the content set →
     cache hits and re-emits groups for the new line numbers."""
-    from work_buddy.triage.adapters import journal as adapter_mod
+    from work_buddy.clarify.adapters import journal as adapter_mod
 
     raw = {"current": "- alpha idea\n- beta idea"}
     monkeypatch.setattr(

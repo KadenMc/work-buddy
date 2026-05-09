@@ -20,7 +20,11 @@
       "memory_prune"
     ],
     "children": [
-      "memory/hindsight"
+      "memory/hindsight",
+      "memory/memory_prune",
+      "memory/memory_read",
+      "memory/memory_reflect",
+      "memory/memory_write"
     ],
     "content": {
       "full": "Persistent personal memory layer for building a digital twin. Captures soft personal context (preferences, habits, emotional state, recurring patterns) that artifacts systematically miss.\n\nBacked by Hindsight, the external server that handles storage, semantic search, and LLM-powered reflection. See `memory/hindsight` for server components, env vars, and startup details.\n\n## Integration paths\n\nTwo paths share one local Hindsight server:\n\n1. **Claude Code plugin (hooks)** — ambient auto-recall before every prompt, auto-retain after responses.\n2. **Python adapter** (`work_buddy/memory/`) — programmatic retain/recall/reflect for context collection, workflows, and MCP gateway capabilities.\n\n## MCP capabilities\n\n- `memory_read` — semantic + keyword search over stored memories\n- `memory_write` — store a fact, preference, or constraint\n- `memory_reflect` — LLM-powered reasoning over memories (consent-gated)\n- `memory_prune` — delete memories (consent-gated, irreversible)\n\n## Bank and tags\n\nOne personal bank (user by default, configurable via `hindsight.bank_id` in `config.yaml`). Tag taxonomy: `user:default`, `source:*`, `kind:*`, `domain:*`, `workflow:*`, `session:*`. Observations (automatic pattern consolidation) and mental models (pre-computed reflect summaries) build up the digital twin over time.\n\n## Bank bootstrap\n\nCall `ensure_bank()` from `work_buddy.memory.setup` to create the bank with missions, directives, and mental models. Idempotent — safe to call repeatedly.\n",

@@ -627,30 +627,6 @@ def chrome_infer(
     return "\n".join(lines)
 
 
-def triage_item_detail_wrapper(
-    *,
-    item_id: str,
-    include_raw: bool = False,
-    max_raw_chars: int = 5000,
-) -> str:
-    """Retrieve detail for a specific triage item (summary and/or raw content).
-
-    Use during the review phase to inspect items with content gaps.
-    Prefer summaries over raw content unless the detail matters.
-
-    Args:
-        item_id: The TriageItem ID (e.g., "tab_786de35645").
-        include_raw: If True, also return raw page content.
-        max_raw_chars: Max characters of raw content.
-    """
-    from work_buddy.clarify.detail import triage_item_detail_capability
-    return triage_item_detail_capability(
-        item_id=item_id,
-        include_raw=include_raw,
-        max_raw_chars=max_raw_chars,
-    )
-
-
 def chrome_content(
     *,
     tab_filter: str | None = None,
@@ -1622,15 +1598,6 @@ def day_planner(
 
 
 # ── Chrome tab mutations ──────────────────────────────────────────
-
-
-def triage_execute(
-    decisions: dict,
-    presentation: dict,
-) -> dict:
-    """Execute triage decisions from the review view."""
-    from work_buddy.clarify.execute import execute_triage_decisions
-    return execute_triage_decisions(decisions, presentation)
 
 
 def chrome_tab_close(tab_ids: list) -> dict:

@@ -57,11 +57,79 @@ group children (see ``runner._initialize_group_child_state``).
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from datetime import date as _date_cls
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Inline-selection capture (folded from the legacy clarify/adapters/inline)
+# ---------------------------------------------------------------------------
+
+
+def _derive_label(text: str, *, max_chars: int = 72) -> str:
+    """First non-empty stripped line, truncated."""
+    for line in (text or "").splitlines():
+        stripped = line.strip().lstrip("-*+# ").strip()
+        if stripped:
+            if len(stripped) > max_chars:
+                return stripped[: max_chars - 1] + "…"
+            return stripped
+    return "(empty selection)"
+
+
+def _content_hash(parts: list[str]) -> str:
+    """Stable short hash of N strings — used for inline item ids."""
+    h = hashlib.sha1(usedforsecurity=False)
+    for p in parts:
+        h.update((p or "").encode("utf-8", errors="replace"))
+        h.update(b"\x1f")  # field separator
+    return h.hexdigest()
+
+
+def _collect_inline_selection(
+    *,
+    file_path: str,
+    selection: str,
+    paragraph: str,
+    cursor_line: int,
+    hint: str,
+):
+    """Return ``([TriageItem], content_hash)`` from one inline capture.
+
+    Folded from the legacy ``clarify/adapters/inline.py`` so the
+    Threads-native inline pipeline doesn't depend on the deleted
+    legacy clarify pool surface. Uses the still-FOLD-pending
+    ``clarify/items.py::TriageItem`` until that module moves.
+    """
+    from work_buddy.clarify.items import TriageItem
+
+    body = (selection or "").strip() or (paragraph or "").strip()
+    if not body:
+        return [], None
+
+    label_seed = hint or body
+    label = _derive_label(label_seed, max_chars=72)
+
+    ch = _content_hash([body, file_path or ""])
+    item_id = f"inline_{ch[:12]}"
+
+    item = TriageItem(
+        id=item_id,
+        text=body,
+        label=label,
+        source="inline",
+        metadata={
+            "file_path": file_path or "",
+            "cursor_line": int(cursor_line or 0),
+            "hint": hint or "",
+            "paragraph": (paragraph or "")[:500],
+        },
+    )
+    return [item], ch
 
 
 # ---------------------------------------------------------------------------
@@ -109,14 +177,13 @@ def inline_capture(
               "error": str | None,
             }
     """
-    from work_buddy.clarify.adapters.inline import collect_inline_selection
     from work_buddy.clarify.deadline_extract import (
         extract_deadline_hints,
         merge_hints_into_records,
     )
 
     # ---- 1. Build the TriageItem --------------------------------------
-    items, _ch = collect_inline_selection(
+    items, _ch = _collect_inline_selection(
         file_path=file_path,
         selection=selection,
         paragraph=paragraph,
