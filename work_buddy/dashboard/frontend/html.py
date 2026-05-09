@@ -396,7 +396,7 @@ def _html() -> str:
             </span>
             <div id="costs-rate-popover" class="costs-rate-popover" style="display: none;"></div>
             <span id="costs-meta" class="costs-meta"></span>
-            <button class="chats-accent-btn" onclick="loadCosts(true)">Refresh</button>
+            <button class="chats-accent-btn" onclick="costsRefresh(this)">Refresh</button>
         </div>
     </div>
 

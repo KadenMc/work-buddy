@@ -227,15 +227,28 @@ function _costsSyncActivityVisibility() {
     _costsSyncActivityPills();
 }
 
-async function costsRescanClaudeCode(btn) {
-    if (btn) { btn.disabled = true; btn.textContent = 'Scanning...'; }
+// Manual refresh: kick the Claude Code transcript scanner first, then
+// reload. Shared by the toolbar Refresh button and the empty-state CTA.
+// Without the rescan, ``loadCosts`` only re-fetches ``/api/costs`` and
+// renders the same cached numbers — clicking Refresh would be a no-op
+// against a stale cache.
+//
+// Read-only mode 403s the rescan endpoint — fall through to a plain
+// reload rather than surfacing an error; the user can still see whatever
+// is already cached.
+async function costsRefresh(btn) {
+    const originalLabel = btn ? btn.textContent : null;
+    if (btn) { btn.disabled = true; btn.textContent = 'Refreshing...'; }
     try {
         const r = await fetch('/api/costs/rescan', { method: 'POST' });
-        await r.json();
+        if (r.status !== 403) await r.json();
     } catch (e) {
         console.error('rescan failed', e);
     }
-    if (btn) { btn.disabled = false; btn.textContent = 'Rescan Claude Code'; }
+    if (btn) {
+        btn.disabled = false;
+        if (originalLabel !== null) btn.textContent = originalLabel;
+    }
     await loadCosts(true);
 }
 
@@ -597,7 +610,7 @@ function costsRenderAll(opts) {
             `<div class="empty-state" style="padding:24px;text-align:center;">
                 <div style="margin-bottom:12px;">${costsEsc(data.message || 'No Claude Code usage cached yet.')}</div>
                 <button class="chats-accent-btn"
-                        onclick="costsRescanClaudeCode(this)">Rescan Claude Code</button>
+                        onclick="costsRefresh(this)">Rescan Claude Code</button>
             </div>`;
         document.getElementById('costs-models-filter').innerHTML = '';
         document.getElementById('costs-model-table').innerHTML = '';
