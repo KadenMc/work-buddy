@@ -109,6 +109,20 @@ TRIAGE_DEFAULTS: dict[str, Any] = {
         "temperature": 0.2,
     },
 
+    # Deadline / dependency pre-pass for inline captures (Phase 2).
+    # Same tier-chain pattern: structured-output extraction over short
+    # text, walked local-first. On full exhaustion, the inline path
+    # proceeds without hints (the failure-sentinel from
+    # ``deadline_extract``). Schema is small (4 fields) so the local
+    # tiers handle it well; frontier_fast is kept as escalation only.
+    "deadline_extract": {
+        "tier_chain": [
+            "local_tool_calling",
+            "local_fast",
+            "frontier_fast",
+        ],
+    },
+
     # Per-item agent stage (llm_with_tools). The agent gets the
     # triage_agent preset and must call triage_submit.
     "agent": {

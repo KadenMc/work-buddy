@@ -1,16 +1,19 @@
-"""``send-to-agent`` inline command — user handoff to the triage agent.
+"""``send-to-agent`` inline command — user handoff to the agent.
 
-Replaces the old ``task/new`` handler with a generic "user sent this
-selection, figure out what it wants" handoff. Rather than opening a
-modal thread and asking the user to confirm a single pre-baked action,
-we drop the selection into the same pipeline the background journal
-producer uses: a :class:`BackgroundTriageProducer` pass creates exactly
-one :class:`TriageItem` with ``source="inline"``, runs it through the
-``triage_agent`` local-LLM preset, and lands the agent's verdict in the
-pending-review pool for the user to resolve from the dashboard.
+When the user right-clicks in Obsidian and picks "Send to agent" (or
+fires a persistent ``#wb/cmd/...`` capture tag), this handler drops
+the selection into the inline pipeline. That pipeline runs a
+local-first deadline pre-pass + multi-record verdict, then spawns
+1+ Threads carrying the inferred actions for the user to resolve via
+the dashboard's Threads tab.
 
 The handler returns immediately; the LLM call happens in a daemon
 thread so the Obsidian plugin's POST doesn't block on model latency.
+
+Phase 2 of the clarify -> Threads migration replaced the legacy
+``inline_triage_scan`` capability path (which dropped pool entries
+for the dead Review tab) with the native ``pipelines.inline_capture``
+path that writes directly to the Threads table.
 """
 
 from __future__ import annotations
@@ -32,28 +35,28 @@ def _run_producer(
     cursor_line: int,
     hint: str,
 ) -> None:
-    """Thread target — invoke the triage-scan capability and log outcome."""
+    """Thread target — invoke the inline pipeline and log outcome."""
     try:
-        from work_buddy.clarify.capabilities.inline_triage_scan import (
-            inline_triage_scan,
-        )
+        from work_buddy.pipelines.inline import inline_capture
 
-        result = inline_triage_scan(
+        result = inline_capture(
             file_path=file_path,
             selection=selection,
             paragraph=paragraph,
             cursor_line=cursor_line,
             hint=hint,
-            force=True,
         )
         logger.info(
-            "send-to-agent: triage pass status=%s run_id=%s submitted=%s",
+            "send-to-agent: inline_capture status=%s umbrella=%s "
+            "single=%s children=%d dropped=%d",
             result.get("status"),
-            result.get("run_id"),
-            result.get("submitted"),
+            result.get("umbrella_id"),
+            result.get("single_thread_id"),
+            len(result.get("child_thread_ids") or []),
+            result.get("dropped_count", 0),
         )
     except Exception:
-        logger.exception("send-to-agent: inline_triage_scan raised")
+        logger.exception("send-to-agent: inline_capture raised")
 
 
 @inline_command(
