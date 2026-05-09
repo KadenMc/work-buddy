@@ -353,14 +353,20 @@ _TASK_PROPOSAL_SCHEMA: dict[str, Any] = {
             ),
         },
         "required_contexts_source": {
+            # Anthropic strict structured-output rejects enums that mix
+            # null with string values when the enclosing type is a union.
+            # Express null acceptance via the type union and constrain
+            # only the string values via enum. (Pre-Slice-5a we had
+            # ``"enum": ["agent_inferred", "user_authored", None]`` —
+            # 400 from the API as of the inline_capture live test.)
             "type": ["string", "null"],
-            "enum": ["agent_inferred", "user_authored", None],
+            "enum": ["agent_inferred", "user_authored"],
             "description": (
                 "Slice 5a provenance for the two context lists. "
                 "Clarify writes ``agent_inferred``; the dashboard "
                 "flips to ``user_authored`` once the user edits the "
                 "list so future Clarify re-runs don't clobber the "
-                "edit."
+                "edit. Null when neither has been set."
             ),
         },
         # ---- Project picker (sub-LLM evidence + verdict's pick) -----

@@ -61,3 +61,47 @@ def test_multi_record_verdict_schema_is_anthropic_strict_compliant() -> None:
         "additionalProperties:false (Anthropic strict mode rejects):\n  "
         + "\n  ".join(problems)
     )
+
+
+def _walk_enum_compat(node: Any, path: str, problems: list[str]) -> None:
+    """Walk for enum/type-union mismatches.
+
+    Anthropic strict structured-output rejects schemas that mix Python
+    ``None`` (i.e. JSON null) into ``enum`` arrays. The acceptable
+    pattern is to constrain string values via ``enum`` and express
+    null acceptance separately via the type union.
+    """
+    if isinstance(node, list):
+        for i, item in enumerate(node):
+            _walk_enum_compat(item, f"{path}[{i}]", problems)
+        return
+    if not isinstance(node, dict):
+        return
+
+    if "enum" in node and isinstance(node["enum"], list):
+        if any(v is None for v in node["enum"]):
+            problems.append(
+                f"{path}: enum contains None — Anthropic strict mode rejects. "
+                f"Drop None and rely on ``type: ['string', 'null']`` for null."
+            )
+
+    for k, v in node.items():
+        _walk_enum_compat(v, f"{path}.{k}", problems)
+
+
+def test_multi_record_verdict_schema_no_null_in_enums() -> None:
+    """Enum fields must not contain Python None (JSON null).
+
+    Anthropic's strict mode rejects ``"enum": ["foo", "bar", None]`` even
+    when the field's type is ``["string", "null"]``. Express nullability
+    via the type union; keep enum entries homogeneously string.
+
+    Regression guard for the Slice-5a required_contexts_source bug
+    surfaced at second live verdict call (see DECISIONS.md D-011).
+    """
+    problems: list[str] = []
+    _walk_enum_compat(MULTI_RECORD_VERDICT_SCHEMA, "$", problems)
+    assert not problems, (
+        "MULTI_RECORD_VERDICT_SCHEMA has enum/null violations:\n  "
+        + "\n  ".join(problems)
+    )
