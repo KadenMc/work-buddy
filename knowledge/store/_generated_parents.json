@@ -136,11 +136,12 @@
       "artifacts/artifact_delete",
       "artifacts/artifact_get",
       "artifacts/artifact_list",
+      "artifacts/artifact_registry",
       "artifacts/artifact_save",
       "artifacts/commit_record"
     ],
     "content": {
-      "summary": "Container for 6 capabilities and workflows."
+      "summary": "Container for 7 capabilities and workflows."
     }
   },
   "status": {

@@ -92,3 +92,57 @@ def rollup_old_turns(
     # rewrites the file to actually reclaim freed pages.
     conn.execute("VACUUM")
     return {"rollup_groups": len(rows), "rolled_turns": deleted}
+
+
+# ---------------------------------------------------------------------------
+# Lifecycle registration — claude-code-usage artifact
+# ---------------------------------------------------------------------------
+#
+# Registers a SqliteRollupStorage + TimeWindow + TransformAndDelete
+# artifact under "claude-code-usage". The TransformAndDelete action
+# wraps the rollup_old_turns function above so it plugs in unchanged.
+
+import logging as _logging
+_logger = _logging.getLogger(__name__)
+
+
+def _register_claude_code_usage_artifact() -> None:
+    try:
+        from work_buddy.artifacts import (
+            Artifact,
+            Lifecycle,
+            register_artifact,
+            SqliteRollupStorage,
+            TimeWindow,
+            TransformAndDelete,
+        )
+        from work_buddy.paths import resolve
+
+        register_artifact(Artifact(
+            name="claude-code-usage",
+            storage=SqliteRollupStorage(
+                db_path=resolve("cache/claude-code-usage"),
+                source_table="turns",
+                rollup_table="turns_daily",
+                id_column="id",
+            ),
+            lifecycle=Lifecycle(
+                # The trigger doesn't actually drive the action's
+                # behavior here — TransformAndDelete uses the storage's
+                # open_connection() to do its own SQL-driven row
+                # selection (the cutoff lives inside rollup_old_turns).
+                # The trigger's role is just to declare TIME_WINDOW so
+                # the artifact's capabilities are honest about what it
+                # does.
+                trigger=TimeWindow(
+                    timestamp_field="timestamp",
+                    window_days=90,
+                ),
+                action=TransformAndDelete(transform_fn=rollup_old_turns),
+            ),
+        ))
+    except Exception as exc:  # pragma: no cover — defensive
+        _logger.warning("Failed to register claude-code-usage artifact: %s", exc)
+
+
+_register_claude_code_usage_artifact()

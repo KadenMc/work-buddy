@@ -65,10 +65,11 @@ logger = logging.getLogger(__name__)
 # runtime when this module is loaded.
 _lock = threading.Lock()
 
-# Old-record cleanup is handled by ``work_buddy.artifacts.prune_escalation_log``
-# registered against ``logs/escalations`` in :data:`work_buddy.paths.PRUNERS`.
-# That pruner runs as part of the scheduled artifact-cleanup job and culls
-# records older than ``window_days`` (default 30). No file-level rotation
+# Old-record cleanup is handled by the ``escalations-log`` artifact
+# registered at the bottom of this module on the unified artifact
+# registry (see ``architecture/artifact-system``). That artifact runs
+# as part of the scheduled artifact-cleanup job and culls records
+# older than ``window_days`` (default 30). No file-level rotation
 # logic lives here on purpose — adding both record-level pruning and
 # size-based rotation would let the two policies disagree.
 
@@ -238,3 +239,44 @@ def summarize_escalations(*, limit: int | None = None) -> dict[str, Any]:
         "by_outcome": by_outcome,
         "by_final_tier": by_final_tier,
     }
+
+
+# ---------------------------------------------------------------------------
+# Lifecycle registration — escalations-log artifact
+# ---------------------------------------------------------------------------
+#
+# Registers a JsonlStorage + TimeWindow(timestamp, 30d) + Delete
+# artifact under "escalations-log". Malformed lines are preserved by
+# default (matches the original prune_escalation_log behavior).
+
+def _register_escalation_log_artifact() -> None:
+    try:
+        from work_buddy.artifacts import (
+            Artifact,
+            Delete,
+            JsonlStorage,
+            Lifecycle,
+            TimeWindow,
+            register_artifact,
+        )
+
+        register_artifact(Artifact(
+            name="escalations-log",
+            storage=JsonlStorage(
+                path=_log_path(),
+                artifact_name="escalations-log",
+                preserve_malformed_lines=True,
+            ),
+            lifecycle=Lifecycle(
+                trigger=TimeWindow(
+                    timestamp_field="timestamp",
+                    window_days=30,
+                ),
+                action=Delete(),
+            ),
+        ))
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.warning("Failed to register escalations-log artifact: %s", exc)
+
+
+_register_escalation_log_artifact()

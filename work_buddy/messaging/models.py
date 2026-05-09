@@ -418,3 +418,68 @@ def _format_age(iso_timestamp: str) -> str:
         return f"{days}d ago"
     except (ValueError, TypeError):
         return "unknown age"
+
+
+# ---------------------------------------------------------------------------
+# Lifecycle registration — messages artifact
+# ---------------------------------------------------------------------------
+#
+# Registers a SqliteRowsStorage + PerRecordTtl(created_at, default 30d)
+# + Delete + retention_predicate(keep pending) + SessionTagged
+# (sender_session, recipient_session) artifact under "messages".
+#
+# The retention predicate keeps `status == 'pending'` rows regardless
+# of age — matching the existing prune_messages_db status guard.
+
+import logging as _logging
+_logger = _logging.getLogger(__name__)
+
+
+def _messages_keep_pending(record: dict) -> bool:
+    """Return True (keep) for messages still in flight."""
+    return record.get("status") == "pending"
+
+
+def _register_messages_artifact() -> None:
+    try:
+        from work_buddy.artifacts import (
+            Artifact,
+            Delete,
+            Lifecycle,
+            PerRecordTtl,
+            register_artifact,
+            SessionTagged,
+            SqliteRowsStorage,
+        )
+
+        register_artifact(Artifact(
+            name="messages",
+            storage=SqliteRowsStorage(
+                db_path=_db_path(),
+                table="messages",
+                id_column="id",
+                post_delete_sql=[
+                    # Clean orphaned message_reads in the same transaction
+                    # as the parent delete — same as prune_messages_db.
+                    "DELETE FROM message_reads "
+                    "WHERE message_id NOT IN (SELECT id FROM messages)",
+                ],
+                vacuum_on_delete=True,
+            ),
+            lifecycle=Lifecycle(
+                trigger=PerRecordTtl(
+                    ttl_field="created_at",
+                    default_ttl_days=30,
+                ),
+                action=Delete(),
+                retention_predicate=_messages_keep_pending,
+            ),
+            provenance=SessionTagged(
+                session_columns=["sender_session", "recipient_session"],
+            ),
+        ))
+    except Exception as exc:  # pragma: no cover — defensive
+        _logger.warning("Failed to register messages artifact: %s", exc)
+
+
+_register_messages_artifact()

@@ -177,7 +177,7 @@
   "artifacts/artifact_cleanup": {
     "kind": "capability",
     "name": "Artifact Cleanup",
-    "description": "Run TTL-based cleanup: delete all artifacts past their expiry. Use dry_run=true (default) to preview what would be deleted.",
+    "description": "Run TTL-based cleanup over registered artifacts. By default, sweeps every registered artifact (filesystem, llm-cache, messages, notifications, llm-queue, …). Pass `name` to scope the sweep to a single artifact. Use `dry_run=true` (default) to preview what would be deleted. The `name` field is deliberately distinct from `artifact_save`'s `type` field (which means filesystem subtype) — they live in different namespaces.",
     "capability_name": "artifact_cleanup",
     "category": "artifacts",
     "aliases": [
@@ -191,6 +191,11 @@
       "dry_run": {
         "type": "bool",
         "description": "Preview only, don't delete (default: true)",
+        "required": false
+      },
+      "name": {
+        "type": "str",
+        "description": "Registered artifact name (e.g. 'llm-cache', 'messages'). Omit to sweep all.",
         "required": false
       }
     },
@@ -318,6 +323,29 @@
       "artifacts",
       "artifact",
       "list"
+    ],
+    "parents": [
+      "artifacts"
+    ]
+  },
+  "artifacts/artifact_registry": {
+    "kind": "capability",
+    "name": "Artifact Registry",
+    "description": "Return the cross-backend artifact-registry introspection map. For each registered artifact, lists its name, storage kind (FilesystemStorage, SqliteRowsStorage, JsonRecordsStorage, …), lifecycle kind (trigger+action+optional retention), provenance kind (SessionTagged or none), declared capabilities, and the MCP operations it exposes. Single source of truth for 'what does this persisted resource look like.'",
+    "capability_name": "artifact_registry",
+    "category": "artifacts",
+    "aliases": [
+      "artifact registry",
+      "list artifact types",
+      "show backends",
+      "artifact introspection",
+      "artifact map",
+      "registered artifacts"
+    ],
+    "tags": [
+      "artifacts",
+      "artifact",
+      "registry"
     ],
     "parents": [
       "artifacts"

@@ -10,6 +10,11 @@ Data flow:
   → query functions compute views from raw snapshots
 
 Storage: ~2-5 KB per snapshot, ~2 MB/week at 5-min intervals.
+
+Lifecycle: registers as ``chrome-ledger`` in the unified artifact
+registry (module-import time). The registration uses the default
+ledger path and config; the standalone :func:`work_buddy.artifacts.prune_chrome_ledger`
+function remains for tests that need to prune custom paths.
 """
 
 from __future__ import annotations
@@ -865,3 +870,49 @@ def ledger_status() -> dict[str, Any]:
         "ledger_path": path.as_posix(),
         "window_days": _window_days(),
     }
+
+
+# ---------------------------------------------------------------------------
+# Lifecycle registration — chrome-ledger artifact
+# ---------------------------------------------------------------------------
+#
+# Registers a JsonRecordsStorage(LIST shape) + TimeWindow trigger +
+# Delete action artifact under the name "chrome-ledger". The
+# unified-cleanup tick (artifact_cleanup MCP capability or sweep_all
+# from the registry) will drive this artifact's prune as part of the
+# cross-backend sweep. The standalone prune_chrome_ledger function in
+# work_buddy.artifacts.meta_pruners remains for ad-hoc / test usage
+# with custom paths.
+
+def _register_chrome_ledger_artifact() -> None:
+    try:
+        from work_buddy.artifacts import (
+            Artifact,
+            Delete,
+            JsonRecordsShape,
+            JsonRecordsStorage,
+            Lifecycle,
+            TimeWindow,
+            register_artifact,
+        )
+
+        register_artifact(Artifact(
+            name="chrome-ledger",
+            storage=JsonRecordsStorage(
+                path=_ledger_path(),
+                shape=JsonRecordsShape.LIST,
+                artifact_name="chrome-ledger",
+            ),
+            lifecycle=Lifecycle(
+                trigger=TimeWindow(
+                    timestamp_field="captured_at",
+                    window_days=_window_days(),
+                ),
+                action=Delete(),
+            ),
+        ))
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.warning("Failed to register chrome-ledger artifact: %s", exc)
+
+
+_register_chrome_ledger_artifact()

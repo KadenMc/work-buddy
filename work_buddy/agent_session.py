@@ -255,3 +255,65 @@ def list_sessions() -> list[dict[str, Any]]:
             except (json.JSONDecodeError, OSError):
                 continue
     return sessions
+
+
+# ---------------------------------------------------------------------------
+# Lifecycle registration — agent-sessions artifact
+# ---------------------------------------------------------------------------
+#
+# Registers a DirectoryTreeStorage(SESSION_DIRS) + MtimeWindow(created_at,
+# 14d, activity_check) + Delete + SessionTagged artifact under
+# "agent-sessions". The activity_check defers eviction when the session
+# has files modified within the cutoff window — same compound rule as
+# the original prune_stale_sessions.
+
+import logging as _logging
+_logger = _logging.getLogger(__name__)
+
+
+def _agent_sessions_recent_activity(record: dict, cutoff) -> bool:
+    """Return True if the session has had recent file activity."""
+    from work_buddy.artifacts.expiry import _parse_to_utc
+
+    latest = _parse_to_utc(record.get("_latest_mtime", ""))
+    if latest is None:
+        return False
+    return latest >= cutoff
+
+
+def _register_agent_sessions_artifact() -> None:
+    try:
+        from work_buddy.artifacts import (
+            Artifact,
+            Delete,
+            DirectoryTreeStorage,
+            DirShape,
+            Lifecycle,
+            MtimeWindow,
+            register_artifact,
+            SessionTagged,
+        )
+
+        register_artifact(Artifact(
+            name="agent-sessions",
+            storage=DirectoryTreeStorage(
+                root=get_agents_dir(),
+                shape=DirShape.SESSION_DIRS,
+                manifest_filename="manifest.json",
+                artifact_name="agent-sessions",
+            ),
+            lifecycle=Lifecycle(
+                trigger=MtimeWindow(
+                    mtime_field="created_at",
+                    max_age_days=14,
+                    activity_check=_agent_sessions_recent_activity,
+                ),
+                action=Delete(),
+            ),
+            provenance=SessionTagged(session_field="session_id"),
+        ))
+    except Exception as exc:  # pragma: no cover — defensive
+        _logger.warning("Failed to register agent-sessions artifact: %s", exc)
+
+
+_register_agent_sessions_artifact()

@@ -482,3 +482,69 @@ def _audit(event: str, notification: Notification, extra: str = "") -> None:
             f.write(line + "\n")
     except OSError:
         pass
+
+
+# ---------------------------------------------------------------------------
+# Lifecycle registration — notifications artifact
+# ---------------------------------------------------------------------------
+#
+# Previously, notifications had no scheduled pruner — only an
+# opportunistic-on-read sweep in list_pending(). Notifications addressed
+# to dead sessions could pile up indefinitely if list_pending wasn't
+# called frequently. This registration brings notifications under the
+# unified cleanup tick.
+#
+# Storage: DirectoryTreeStorage(JSON_FILES) under agents/consent/requests/
+# Lifecycle: PerRecordTtl(expires_at) + Delete + retention_predicate(
+#   keep notifications still in flight, i.e. status PENDING/DELIVERED)
+
+import logging as _notif_logging
+_notif_logger = _notif_logging.getLogger(__name__)
+
+
+def _notification_keep_in_flight(record: dict) -> bool:
+    """Return True (keep) for non-terminal notifications.
+
+    Pending and delivered (= awaiting response) are kept regardless of
+    expires_at. Only terminal-state records (responded / cancelled /
+    expired) are eligible for deletion.
+    """
+    from work_buddy.notifications.models import NotificationStatus
+
+    status = record.get("status", "")
+    return status in (
+        NotificationStatus.PENDING.value,
+        NotificationStatus.DELIVERED.value,
+    )
+
+
+def _register_notifications_artifact() -> None:
+    try:
+        from work_buddy.artifacts import (
+            Artifact,
+            Delete,
+            DirectoryTreeStorage,
+            DirShape,
+            Lifecycle,
+            PerRecordTtl,
+            register_artifact,
+        )
+
+        register_artifact(Artifact(
+            name="notifications",
+            storage=DirectoryTreeStorage(
+                root=_get_store_dir(),
+                shape=DirShape.JSON_FILES,
+                artifact_name="notifications",
+            ),
+            lifecycle=Lifecycle(
+                trigger=PerRecordTtl(ttl_field="expires_at"),
+                action=Delete(),
+                retention_predicate=_notification_keep_in_flight,
+            ),
+        ))
+    except Exception as exc:  # pragma: no cover — defensive
+        _notif_logger.warning("Failed to register notifications artifact: %s", exc)
+
+
+_register_notifications_artifact()

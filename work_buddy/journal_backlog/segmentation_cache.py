@@ -191,10 +191,14 @@ def get_cached_segmentation(
     if entry is None:
         return None
 
+    # Boundary-inclusive (<=): an entry whose deadline is exactly now()
+    # has used up its lifetime and should be treated as expired. Strict
+    # < missed the boundary case where put-then-get happened within a
+    # single clock tick (see t-96e45c67).
     expires_at = entry.get("expires_at", "")
     if expires_at:
         try:
-            if datetime.fromisoformat(expires_at) < datetime.now():
+            if datetime.fromisoformat(expires_at) <= datetime.now():
                 return None
         except ValueError:
             return None
@@ -298,7 +302,9 @@ def prune(cache_path: Path | None = None) -> int:
         expires_at = entry.get("expires_at", "")
         if expires_at:
             try:
-                if datetime.fromisoformat(expires_at) < now:
+                # Boundary-inclusive (<=) to match get_cached_segmentation()
+                # — see t-96e45c67.
+                if datetime.fromisoformat(expires_at) <= now:
                     to_remove.append(key)
             except ValueError:
                 to_remove.append(key)
@@ -312,3 +318,42 @@ def prune(cache_path: Path | None = None) -> int:
             "Pruned %d expired segmentation cache entries", len(to_remove),
         )
     return len(to_remove)
+
+
+# ---------------------------------------------------------------------------
+# Lifecycle registration — segmentation-cache artifact
+# ---------------------------------------------------------------------------
+#
+# Registers a JsonRecordsStorage(DICT) + PerRecordTtl + Delete artifact
+# under "segmentation-cache". The standalone prune() function above
+# remains for ad-hoc use; cleanup() drives this through the registry.
+
+def _register_segmentation_cache_artifact() -> None:
+    try:
+        from work_buddy.artifacts import (
+            Artifact,
+            Delete,
+            JsonRecordsShape,
+            JsonRecordsStorage,
+            Lifecycle,
+            PerRecordTtl,
+            register_artifact,
+        )
+
+        register_artifact(Artifact(
+            name="segmentation-cache",
+            storage=JsonRecordsStorage(
+                path=_DEFAULT_CACHE_PATH,
+                shape=JsonRecordsShape.DICT,
+                artifact_name="segmentation-cache",
+            ),
+            lifecycle=Lifecycle(
+                trigger=PerRecordTtl(ttl_field="expires_at"),
+                action=Delete(),
+            ),
+        ))
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.warning("Failed to register segmentation-cache artifact: %s", exc)
+
+
+_register_segmentation_cache_artifact()

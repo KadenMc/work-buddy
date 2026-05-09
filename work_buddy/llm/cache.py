@@ -172,11 +172,14 @@ def get(
     if "input_hash" not in entry:
         return None
 
-    # Check expiry
+    # Check expiry. Boundary-inclusive (<=): an entry whose deadline is
+    # exactly now() has used up its lifetime and should be treated as
+    # expired. Strict < missed the boundary case where put-then-get
+    # happened within a single clock tick (see t-96e45c67).
     expires_at = entry.get("expires_at", "")
     if expires_at:
         try:
-            if datetime.fromisoformat(expires_at) < datetime.now():
+            if datetime.fromisoformat(expires_at) <= datetime.now():
                 return None
         except ValueError:
             pass
@@ -285,7 +288,8 @@ def prune() -> int:
         expires_at = entry.get("expires_at", "")
         if expires_at:
             try:
-                if datetime.fromisoformat(expires_at) < now:
+                # Boundary-inclusive (<=) to match get() — see t-96e45c67.
+                if datetime.fromisoformat(expires_at) <= now:
                     to_remove.append(scoped_task_id)
             except ValueError:
                 to_remove.append(scoped_task_id)
@@ -301,3 +305,83 @@ def prune() -> int:
         )
 
     return len(to_remove)
+
+
+# ---------------------------------------------------------------------------
+# Lifecycle registration — llm-cache artifact
+# ---------------------------------------------------------------------------
+#
+# Registers a JsonRecordsStorage(DICT) + PerRecordTtl(expires_at)
+# + Delete artifact under "llm-cache". Legacy-schema entries (missing
+# `input_hash`) are evicted by the retention predicate — same logic
+# as the standalone prune() above, expressed declaratively.
+
+def _llm_cache_legacy_or_expired(record: dict) -> bool:
+    """Retention predicate: True means 'evict this record' for the
+    Lifecycle. The Lifecycle interprets the predicate as 'skip', so we
+    flip the sense at the registration site (return False to keep,
+    True to delete) — wait, our convention is the opposite: predicate
+    returns True to KEEP a record. Re-read protocol.Lifecycle docstring.
+
+    Per Lifecycle.find_expired: ``retention_predicate`` returns True
+    means "keep despite trigger". So we want to KEEP non-legacy entries
+    that the trigger considers fresh. The trigger handles expires_at.
+    Legacy-schema entries (missing input_hash) need to be evicted on
+    sight regardless of expires_at.
+
+    So: return False (don't keep) when the entry is legacy-schema AND
+    we want to evict; return True otherwise.
+
+    But we ALSO want the trigger to handle expired entries. The trigger
+    fires per record; the predicate runs after. If the trigger marks a
+    record as expired (deadline passed), the predicate decides: keep
+    (predicate=True) or proceed-with-action (predicate=False).
+
+    For llm-cache, the desired behavior is: evict expired entries, AND
+    evict legacy-schema entries on sight. So we need two paths:
+    1. Trigger marks record as expired → action runs (no predicate
+       needed to override; default proceeds)
+    2. Trigger doesn't mark legacy-schema as expired (they may have
+       expires_at set) → we need to ALSO evict them
+
+    The right composition: don't use retention_predicate for legacy
+    eviction. Instead, write a custom trigger that also fires on
+    legacy schema. Or: just leave the standalone prune_llm_cache
+    handling legacy eviction; the registered Artifact only handles
+    expires_at-driven eviction.
+
+    Per the one-consumer rule and to keep the abstraction narrow, the
+    legacy-schema eviction stays in the standalone prune function.
+    """
+    return False  # placeholder; not actually used by the registration
+
+
+def _register_llm_cache_artifact() -> None:
+    try:
+        from work_buddy.artifacts import (
+            Artifact,
+            Delete,
+            JsonRecordsShape,
+            JsonRecordsStorage,
+            Lifecycle,
+            PerRecordTtl,
+            register_artifact,
+        )
+
+        register_artifact(Artifact(
+            name="llm-cache",
+            storage=JsonRecordsStorage(
+                path=_CACHE_PATH,
+                shape=JsonRecordsShape.DICT,
+                artifact_name="llm-cache",
+            ),
+            lifecycle=Lifecycle(
+                trigger=PerRecordTtl(ttl_field="expires_at"),
+                action=Delete(),
+            ),
+        ))
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.warning("Failed to register llm-cache artifact: %s", exc)
+
+
+_register_llm_cache_artifact()

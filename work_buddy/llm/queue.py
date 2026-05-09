@@ -607,3 +607,63 @@ def _init_schema_safe() -> None:
 
 
 _init_schema_safe()
+
+
+# ---------------------------------------------------------------------------
+# Lifecycle registration — llm-queue artifact
+# ---------------------------------------------------------------------------
+#
+# The queue previously had NO pruner — every terminal-status row stuck
+# around forever (UPDATE on completion, no DELETE). Audit confirmed
+# rows accumulate indefinitely, with each row carrying the full prompt
+# JSON + LLM response (~10-100 KB / row). This registration brings the
+# queue under the unified cleanup tick.
+#
+# Storage: SqliteRowsStorage(db/llm_queue, table=llm_call_queue, id=id)
+# Lifecycle: PerRecordTtl(completed_at, default_ttl_days=30) + Delete +
+#   retention_predicate(keep pending/in_flight rows regardless of age)
+
+def _llm_queue_keep_live(record: dict) -> bool:
+    """Return True (keep) for queue rows still in flight.
+
+    pending and in_flight rows must NEVER be deleted — they're load-
+    bearing for the dispatcher. Only terminal statuses (done, failed,
+    cancelled, rejected) are eligible for deletion.
+    """
+    return record.get("status") in ("pending", "in_flight")
+
+
+def _register_llm_queue_artifact() -> None:
+    try:
+        from work_buddy.artifacts import (
+            Artifact,
+            Delete,
+            Lifecycle,
+            PerRecordTtl,
+            register_artifact,
+            SqliteRowsStorage,
+        )
+        from work_buddy.paths import resolve
+
+        register_artifact(Artifact(
+            name="llm-queue",
+            storage=SqliteRowsStorage(
+                db_path=resolve("db/llm_queue"),
+                table="llm_call_queue",
+                id_column="id",
+                vacuum_on_delete=True,
+            ),
+            lifecycle=Lifecycle(
+                trigger=PerRecordTtl(
+                    ttl_field="completed_at",
+                    default_ttl_days=30,
+                ),
+                action=Delete(),
+                retention_predicate=_llm_queue_keep_live,
+            ),
+        ))
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.warning("Failed to register llm-queue artifact: %s", exc)
+
+
+_register_llm_queue_artifact()
