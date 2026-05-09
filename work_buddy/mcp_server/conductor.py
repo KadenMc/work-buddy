@@ -30,6 +30,11 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from work_buddy.mcp_server._response_audit import (
+    DEFAULT_MIN_CONTAINED_KEYS,
+    DEFAULT_MIN_SUBTREE,
+    find_step_result_accumulations,
+)
 from work_buddy.mcp_server.registry import (
     ResultVisibility, WorkflowDefinition, WorkflowStep, get_entry,
 )
@@ -274,6 +279,13 @@ def advance_workflow(
             }
 
     dag.complete_task(current_id, result=serialized_result)
+
+    # Surface cross-step accumulation if the just-completed step's result
+    # contains a prior step's result as a key-by-key subset (Problem C).
+    # Logged at WARN, never blocking — agents in the wild may slip into
+    # the pattern and the conductor's job is to make it audible, not to
+    # silently mutate the response.
+    _warn_if_accumulating(dag, current_id)
 
     # If the completed step opted into individual consent, re-grant the
     # workflow blanket so subsequent (non-opted-out) steps resume their
@@ -1353,6 +1365,56 @@ def _validate_step_result(
             )
 
     return None
+
+
+def _warn_if_accumulating(dag: WorkflowDAG, completed_step_id: str) -> None:
+    """Log a sidecar warning when the just-completed step's result contains
+    an upstream step's result as a key-by-key subset.
+
+    This surfaces the cross-step accumulation pattern (Problem C) — each
+    step echoing the prior step's fields plus its own delta, which silently
+    inflates ``step_results`` over a multi-step workflow.  The warning
+    points at the offending step pair and suggests the right fix (use a
+    new key for modified values).  Detection only — no automatic
+    stripping; the conductor never mutates step results behind the agent's
+    back.
+
+    Cost: O(N^2) JSON comparisons across step_results, gated by a
+    min-size threshold so trivial accumulations don't pay the cost.  Runs
+    once per ``advance_workflow`` call.
+    """
+    try:
+        all_results = dag.get_all_results()
+    except Exception:  # noqa: BLE001 — defensive; warning is best-effort
+        return
+    if not isinstance(all_results, dict) or len(all_results) < 2:
+        return
+
+    accumulations = find_step_result_accumulations(
+        all_results,
+        min_size=DEFAULT_MIN_SUBTREE,
+        min_keys=DEFAULT_MIN_CONTAINED_KEYS,
+    )
+    # Filter to accumulations involving the just-completed step.  Other
+    # pairs (between two prior steps) would have been logged on their own
+    # completion already, so re-warning on every advance would be noisy.
+    relevant = [
+        (a, b, sz)
+        for a, b, sz in accumulations
+        if completed_step_id in (a, b)
+    ]
+    if not relevant:
+        return
+
+    for upstream_id, downstream_id, size in relevant:
+        logger.warning(
+            "Step '%s' result contains step '%s' as a subtree (%d chars). "
+            "Step results should be deltas — return only your new fields. "
+            "If you intentionally modified the upstream data, use a new "
+            "key name (e.g., 'annotated_<key>') instead of echoing the "
+            "same key.",
+            downstream_id, upstream_id, size,
+        )
 
 
 def _safe_serialize(obj: Any) -> Any:
