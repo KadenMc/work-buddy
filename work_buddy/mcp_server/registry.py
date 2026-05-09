@@ -7425,11 +7425,58 @@ def _artifact_capabilities() -> list[Capability]:
         found = store.delete(id)
         return {"deleted": found, "id": id}
 
-    def artifact_cleanup(dry_run: bool = True) -> dict:
-        from work_buddy.artifacts import get_store
+    def artifact_cleanup(dry_run: bool = True, name: str = "") -> dict:
+        """Run TTL-based cleanup over registered artifacts.
 
+        Drives off the unified artifact registry (every consumer that
+        registered an Artifact participates). Pass ``name`` to scope
+        the sweep to a single artifact (e.g. ``"llm-cache"``,
+        ``"messages"``). Returns the legacy result dict shape for
+        backward compat with existing callers.
+        """
+        from work_buddy.artifacts import get_store
+        from work_buddy.artifacts.registry import sweep_all
+
+        if name:
+            # Scoped sweep: just one artifact, return its SweepResult
+            # in the per-pruner shape so callers can introspect it.
+            results = sweep_all(dry_run=dry_run, name=name)
+            sr = results[0] if results else None
+            if sr is None:
+                return {"dry_run": dry_run, "name": name, "error": "unknown artifact"}
+            return {
+                "dry_run": dry_run,
+                "name": sr.artifact_name,
+                "pruned": sr.pruned,
+                "remaining": sr.remaining,
+                "bytes_before": sr.bytes_before,
+                "bytes_after": sr.bytes_after,
+                **({"transformed": sr.transformed} if sr.transformed else {}),
+                **({"error": sr.error} if sr.error else {}),
+                **sr.extra,
+            }
+
+        # Default path — run the full cleanup orchestrator on the
+        # filesystem store, which now drives off the registry.
         store = get_store()
         return store.cleanup(dry_run=dry_run)
+
+    def artifact_registry() -> dict:
+        """Return the cross-backend artifact-registry introspection map.
+
+        For each registered artifact, returns its name, storage kind,
+        lifecycle kind, provenance kind, declared capabilities, and
+        the operations it exposes via MCP. This is the single place
+        agents and operators look to see "what does each persisted
+        resource in work-buddy look like."
+        """
+        from work_buddy.artifacts.registry import artifact_registry_dump
+
+        registry = artifact_registry_dump()
+        return {
+            "count": len(registry),
+            "artifacts": registry,
+        }
 
     def commit_record(
         commit_hash: str,
@@ -7579,12 +7626,19 @@ def _artifact_capabilities() -> list[Capability]:
         Capability(
             name="artifact_cleanup",
             description=(
-                "Run TTL-based cleanup: delete all artifacts past their expiry. "
-                "Use dry_run=true (default) to preview what would be deleted."
+                "Run TTL-based cleanup over registered artifacts. By default, "
+                "sweeps every registered artifact (filesystem, llm-cache, "
+                "messages, notifications, llm-queue, …). Pass `name` to scope "
+                "the sweep to a single artifact. Use `dry_run=true` (default) "
+                "to preview what would be deleted. The `name` field is "
+                "deliberately distinct from `artifact_save`'s `type` field "
+                "(which means filesystem subtype) — they live in different "
+                "namespaces."
             ),
             category="artifacts",
             parameters={
                 "dry_run": {"type": "bool", "description": "Preview only, don't delete (default: true)", "required": False},
+                "name": {"type": "str", "description": "Registered artifact name (e.g. 'llm-cache', 'messages'). Omit to sweep all.", "required": False},
             },
             callable=artifact_cleanup,
             mutates_state=True,
@@ -7592,6 +7646,25 @@ def _artifact_capabilities() -> list[Capability]:
             search_aliases=[
                 "cleanup artifacts", "sweep expired", "artifact gc",
                 "prune artifacts", "data cleanup",
+            ],
+        ),
+        Capability(
+            name="artifact_registry",
+            description=(
+                "Return the cross-backend artifact-registry introspection map. "
+                "For each registered artifact, lists its name, storage kind "
+                "(FilesystemStorage, SqliteRowsStorage, JsonRecordsStorage, …), "
+                "lifecycle kind (trigger+action+optional retention), provenance "
+                "kind (SessionTagged or none), declared capabilities, and the "
+                "MCP operations it exposes. Single source of truth for 'what "
+                "does this persisted resource look like.'"
+            ),
+            category="artifacts",
+            parameters={},
+            callable=artifact_registry,
+            search_aliases=[
+                "artifact registry", "list artifact types", "show backends",
+                "artifact introspection", "artifact map", "registered artifacts",
             ],
         ),
         Capability(
