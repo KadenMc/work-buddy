@@ -203,48 +203,11 @@ def script() -> str:
         catch (e) { console.error('[event-bus] surface', name, 'mutator threw:', e); }
     }
 
-    const TERMINAL_POOL_STATES = ['reviewed', 'quarantined', 'stale', 'dropped'];
-
-    window.eventBus.on('pool.entry_added', (p) => {
-        if (!p || !p.run_id || !p.item_id) return;
-        _withSurface('reviewSurface', (s) => {
-            if (p.group && typeof s.appendCard === 'function') {
-                s.appendCard(p.group);
-            } else if (typeof s.removeCard === 'function') {
-                // Skinny add (no group composed): record in
-                // _pendingRemovals via removeCard's key path so a
-                // subsequent state-change can no-op cleanly.
-                // Otherwise this is a silent drop — appropriate when
-                // the server couldn't compose the rendered group.
-            }
-        });
-    });
-    window.eventBus.on('pool.entry_state_changed', (p) => {
-        if (!p || !p.run_id || !p.item_id) return;
-        _withSurface('reviewSurface', (s) => {
-            if (TERMINAL_POOL_STATES.includes(p.state)) {
-                if (typeof s.removeCard === 'function') s.removeCard(p.run_id, p.item_id);
-            } else if (typeof s.updateCard === 'function' && p.group) {
-                s.updateCard(p.run_id, p.item_id, p.group);
-            }
-        });
-    });
-    window.eventBus.on('pool.attraction_passes_bumped', (p) => {
-        if (!p || !p.run_id || !p.item_id) return;
-        _withSurface('reviewSurface', (s) => {
-            if (typeof s.bumpAttractionPasses === 'function') {
-                s.bumpAttractionPasses(p.run_id, p.item_id, p.count);
-            }
-        });
-    });
-    window.eventBus.on('pool.forced_context_stored', (p) => {
-        if (!p || !p.run_id || !p.item_id) return;
-        _withSurface('reviewSurface', (s) => {
-            if (typeof s.setForcedContextStored === 'function') {
-                s.setForcedContextStored(p.run_id, p.item_id);
-            }
-        });
-    });
+    // Pool-driven event handlers (pool.entry_added, pool.entry_state_changed,
+    // pool.attraction_passes_bumped, pool.forced_context_stored) were
+    // removed alongside the Review tab in the clarify -> Threads
+    // migration. Triage now flows through the unified source pipeline
+    // and surfaces on the Threads tab.
 
     // Tasks / Settings / Costs surfaces use a morphdom-merge refresh
     // pattern (Phoenix LiveView convention): the panel's own
@@ -292,10 +255,6 @@ def script() -> str:
 
     // Diagnostics handles for tests.
     window.eventBus._panelHandlers = () => ({
-        'pool.entry_added':              'reviewSurface.appendCard',
-        'pool.entry_state_changed':      'reviewSurface.removeCard|updateCard',
-        'pool.attraction_passes_bumped': 'reviewSurface.bumpAttractionPasses',
-        'pool.forced_context_stored':    'reviewSurface.setForcedContextStored',
         'task.created':                  'tasksSurface.refresh (morphdom)',
         'task.state_changed':            'tasksSurface.refresh (morphdom)',
         'task.description_changed':      'tasksSurface.refresh (morphdom)',
