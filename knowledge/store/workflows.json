@@ -785,7 +785,7 @@
   "tasks/task-new": {
     "kind": "workflow",
     "name": "Task New",
-    "description": "Interactive task creation with namespace-tag inference. Plans the task, enriches with tag-universe context, confirms with the user (especially for new namespaces), then applies via task_create.",
+    "description": "Interactive task creation with project + namespace-tag inference. Plans the task, enriches with project-registry + tag-universe context, confirms with the user (only when minting a new project, new project subtree, or new namespace), then applies via task_create.",
     "workflow_name": "task-new",
     "execution": "main",
     "steps": [
@@ -829,6 +829,7 @@
           "include_keys": [
             "suggestions",
             "tag_status",
+            "project_status",
             "universe_size"
           ]
         },
@@ -836,7 +837,7 @@
       },
       {
         "id": "confirm",
-        "name": "Confirm plan with user (especially any new namespaces)",
+        "name": "Confirm plan with user (especially any new namespaces or new project assignments)",
         "step_type": "reasoning",
         "depends_on": [
           "enrich"
@@ -896,12 +897,13 @@
     ],
     "allow_override": false,
     "step_instructions": {
-      "plan": "Agentic step. Read the user's request (from the slash-command argument or the surrounding conversation) and emit a structured plan.\n\nAdvance with a dict of this exact shape (omit optional fields when unknown; do NOT invent):\n\n```json\n{\n  \"task_text\": \"short single-line description (required)\",\n  \"urgency\": \"low | medium | high\",\n  \"project\": \"slug, if obvious or explicit\",\n  \"contract\": \"contract slug the task serves, if known\",\n  \"due_date\": \"YYYY-MM-DD, only if the user mentioned a date\",\n  \"summary\": \"only if the user asked for a linked note\",\n  \"proposed_tags\": [\"paper/ecg-classifier\", \"experiment/augmentation\"]\n}\n```\n\nReason about namespace tags at this step using whatever context you have (session, active contract, recent git, recent conversation). Reserved prefixes (`projects/`, `todo`, `wb/`, `tasker/`) are not user namespaces — don't propose them as tags. The next step enriches your proposal with existence + near-match checks against the namespace universe.",
-      "enrich": "Auto-run. Calls namespace_suggest.enrich_plan on the plan from the prior step. Returns:\n- `suggestions`: ranked existing namespaces relevant to task_text\n- `tag_status`: per proposed_tag, whether it already exists, and if not, the closest near-matches\n- `universe_size`: total registered namespaces\nYou don't call this directly — the conductor does.",
-      "confirm": "Agentic step. Using the enriched output:\n\n1. If all proposed_tags have `tag_status[tag].exists == true`, and they look right given the suggestions, you can confirm without asking.\n2. If any proposed_tag has `exists: false`, you are about to mint a new namespace. Present the tag, its near-matches (from tag_status), and ask the user: keep as new / use an existing near-match / rename.\n3. If the suggestions include a strong match you hadn't proposed, consider it briefly and surface to the user only if it changes the answer.\n\nAdvance with:\n\n```json\n{\n  \"final_plan\": {\n    \"task_text\": \"...\",\n    \"tags\": [\"final\", \"list\", \"of\", \"tags\"],\n    \"urgency\": \"medium\",\n    \"project\": \"optional\",\n    \"contract\": \"optional\",\n    \"due_date\": \"optional\",\n    \"summary\": \"optional\"\n  },\n  \"confirmed\": true\n}\n```\n\nIf the user declines (e.g. changed their mind), advance with `{\"final_plan\": {}, \"confirmed\": false}`. The apply step will no-op.",
+      "plan": "Agentic step. Read the user's request (from the slash-command argument or the surrounding conversation) and emit a structured plan.\n\nAdvance with a dict of this exact shape (omit optional fields when unknown; do NOT invent):\n\n```json\n{\n  \"task_text\": \"short single-line description (required)\",\n  \"urgency\": \"low | medium | high\",\n  \"project\": \"slug, if obvious or explicit\",\n  \"contract\": \"contract slug the task serves, if known\",\n  \"due_date\": \"YYYY-MM-DD, only if the user mentioned a date\",\n  \"summary\": \"only if the user asked for a linked note\",\n  \"proposed_tags\": [\"projects/work-buddy/systems/task-system\", \"admin/uhn\"]\n}\n```\n\nReason about both project assignment and free-form namespace tags here, using whatever context you have (session, active contract, recent git, recent conversation, current working directory, the task_text itself):\n\n1. **Project**: try to infer one. If a project is obvious (the user named it, the cwd is a project repo, the task is clearly an ECG-paper task, etc.), set `project` to its slug. If you also have a sensible subtree, include the full path as a tag in `proposed_tags` — `projects/<slug>/<area>/<subarea>` matches the in-vault convention better than the bare slug. Skip only when the project is genuinely ambiguous; don't default to skipping.\n2. **Namespace tags**: free-form user namespaces (`#admin/uhn`, `#paper/ecg-classifier`, etc.) go in `proposed_tags`.\n3. Don't propose `#todo` (auto-added), `#tasker/*` (state metadata), or `#wb/todo`/`#wb/done` (inline-todo markers). Those are managed elsewhere.\n\nThe next step enriches your proposal with project-registry checks, existing-subtree lookups, and near-match data against the namespace universe.",
+      "enrich": "Auto-run. Calls namespace_suggest.enrich_plan on the plan from the prior step. Returns:\n- `suggestions`: ranked existing namespaces relevant to task_text (includes #projects/* tags)\n- `tag_status`: per proposed_tag, whether it already exists, and if not, the closest near-matches\n- `project_status`: registry-aware project info — `known_projects` (the registered project list), `proposed_slug` (echoed back), `slug_exists` (whether plan.project / the project slug from proposed_tags is in the registry), `near_subtrees` (existing #projects/<slug>/... paths under the proposed slug), `subtree_matches` (did-you-mean ranker output if a full subtree path was proposed)\n- `universe_size`: total registered namespaces\nYou don't call this directly — the conductor does.",
+      "confirm": "Agentic step. Using the enriched output:\n\n1. **Project gate**:\n   - If `project_status.proposed_slug` is set and `project_status.slug_exists` is true, accept the slug silently — it's a registered project.\n   - If `proposed_slug` is set but `slug_exists` is false, the agent is about to mint a new project. Ask: is this a real new project (then call `project_create` first) or did you mean one of the existing slugs (`project_status.known_projects`)? Do NOT silently call task_create — the slug will be rejected by the registry validation in `_normalize_tags` / `create_task`.\n   - If a full subtree path was proposed (`projects/<slug>/<subtree>`) and `near_subtrees` shows existing paths, surface them only when the proposed subtree is novel under an existing project (e.g., proposing `systems/artifacts` when only `systems/knowledge` and `systems/projects` exist). Default-silent when the subtree already exists or when the user clearly named it.\n2. **Tag gate**:\n   - If all proposed_tags have `tag_status[tag].exists == true`, accept silently.\n   - If any proposed_tag has `exists: false`, you're minting a new namespace. Present the tag, its near-matches, and ask: keep as new / use an existing near-match / rename.\n3. **Suggestion gate** (lowest-priority): if `suggestions` includes a strong match you hadn't proposed, consider it briefly and surface to the user only if it changes the answer.\n\nAdvance with:\n\n```json\n{\n  \"final_plan\": {\n    \"task_text\": \"...\",\n    \"tags\": [\"projects/work-buddy/systems/task-system\", \"admin/uhn\"],\n    \"project\": \"work-buddy\",\n    \"urgency\": \"medium\",\n    \"contract\": \"optional\",\n    \"due_date\": \"optional\",\n    \"summary\": \"optional\"\n  },\n  \"confirmed\": true\n}\n```\n\nIf the user declines (e.g. changed their mind), advance with `{\"final_plan\": {}, \"confirmed\": false}`. The apply step will no-op.",
       "apply": "If the confirm step's `confirmed` is false, skip the create call entirely and return `{\"success\": true, \"skipped\": true}`.\n\nOtherwise, read the confirm step's `final_plan` and call task_create via the gateway (which handles consent):\n\n```\nfinal_plan = <confirm.final_plan>\nparams = {\"task_text\": final_plan[\"task_text\"]}\nfor k in (\"urgency\", \"project\", \"due_date\", \"contract\", \"summary\", \"tags\"):\n    if final_plan.get(k) is not None:\n        params[k] = final_plan[k]\nresult = mcp__work-buddy__wb_run(\"task_create\", params)\n```\n\nReturn the task_create result as the step output. If task_create returns a consent timeout, the user can approve on any surface — do not retry inside this step; the report step will tell them what happened.",
       "report": "Agentic step. One-line confirmation: task ID and a short paraphrase. Do NOT open the note, do NOT suggest follow-ups unless the user asked. If apply.skipped is true, say the task was not created."
-    }
+    },
+    "dev_notes": ""
   },
   "tasks/task-triage": {
     "kind": "workflow",
@@ -997,17 +999,6 @@
           "callable": "work_buddy.journal.read_journal_state",
           "kwargs": {},
           "timeout": 30
-        },
-        "visibility": {
-          "mode": "summary",
-          "include_keys": [
-            "target_date",
-            "ambiguous",
-            "hint",
-            "collect_since",
-            "collect_until",
-            "last_log_ts"
-          ]
         },
         "invokes": []
       },
@@ -1221,13 +1212,7 @@
           "timeout": 60
         },
         "visibility": {
-          "mode": "summary",
-          "include_keys": [
-            "count",
-            "first",
-            "last",
-            "checksum"
-          ]
+          "mode": "full"
         },
         "invokes": []
       },
@@ -1296,16 +1281,6 @@
           },
           "timeout": 30
         },
-        "visibility": {
-          "mode": "summary",
-          "include_keys": [
-            "changed_files",
-            "classified",
-            "subsystem_slugs",
-            "candidate_units",
-            "warnings"
-          ]
-        },
         "invokes": []
       },
       {
@@ -1336,12 +1311,11 @@
         ],
         "result_schema": {
           "required_keys": [
-            "final_proposals",
             "confirmed"
           ],
           "key_types": {
-            "final_proposals": "list",
-            "confirmed": "bool"
+            "confirmed": "bool",
+            "final_proposals": "list"
           }
         },
         "invokes": []
@@ -1388,7 +1362,6 @@
             "passed",
             "failed",
             "summary",
-            "errors",
             "total_units"
           ]
         },
@@ -1407,8 +1380,8 @@
     "step_instructions": {
       "scan": "Auto-run. The conductor calls `work_buddy.dev.document.scan_changes(base_ref=\"HEAD\")` and wires the result into the next step. You don't invoke this — it returns:\n- `changed_files`: repo-relative paths of uncommitted + untracked files\n- `classified`: files grouped by bucket (module / knowledge / slash / tests / config / other)\n- `subsystem_slugs`: module keys derived from the changed paths (e.g. `obsidian/tasks`, `namespace_suggest`)\n- `candidate_units`: knowledge units whose text references a changed file or subsystem, ranked by match strength. **First-pass net only** — you must still do your own semantic searches in the next step.\n- `warnings`: non-fatal issues (empty diff, direct JSON edits).",
       "propose": "Reasoning step. You're looking at the `scan` output and producing a list of concrete knowledge-store edits. You know the code you just wrote; the scan shows you which existing units textually reference it. Cross-check both, then fill the gap the scan cannot fill: **semantic drift** (the unit still reads correctly in grep but describes a behavior you just changed).\n\n## Required actions\n\n1. **Read each candidate_unit at `depth=\"full\"`** via `agent_docs(path=..., depth=\"full\")` that you haven't already loaded. Skim, decide: is this unit's content still accurate? Does it need new content added?\n\n2. **Do 2-4 semantic searches** against `agent_docs(query=...)` for concepts your change touches that the scan may have missed. Examples: if you added a workflow, query `\"workflow authoring\"`, `\"how to add workflow\"`, and the specific capability names. The scan uses grep — semantic search catches units that describe the same concept with different vocabulary.\n\n3. **Check CLAUDE.md** (the top-level instruction surface) for stale references: grep for keywords from your change. Stale entries in CLAUDE.md mislead every future agent.\n\n4. **Consider new units**: if you added a new subsystem, capability cluster, or workflow, there may be nothing in the store that describes it yet. Propose `action: \"create\"` with an appropriate path, kind, and content.\n\n## Field placement — `content_full` vs `dev_notes`\n\nEvery proposal must consciously route content between **two** body fields:\n\n- **`content_full`** — read by every agent (operational + dev) on `agent_docs(depth=\"full\")`. Surfaces, semantic contracts, user-visible behavior.\n- **`dev_notes`** — surfaced only when dev mode is on (`dev_mode_toggle`, auto-enabled by `/wb-dev`). Implementation patterns, snapshot/cache invariants, refactor footguns, decision rationale.\n\nThe default failure mode is dumping everything into `content_full`. **Resist it.** Operational agents reading this unit shouldn't have their context window filled with implementation detail they cannot act on. The decision test: \"if an operational agent was calling this subsystem from a capability, would they want this in their context window?\" Yes → `content_full`. No, only useful while editing the code → `dev_notes`.\n\nWhen updating an existing unit, route **new** facts by their nature, not by which field you happen to be editing. Adding both a public surface and an internal pattern to the same unit is **two** `fields` entries on the same proposal: one for `content_full`, one for `dev_notes`.\n\nSee `dev/dev-document-directions` for the full criteria, anti-patterns, and worked examples.\n\n## Advance with\n\n```json\n{\n  \"proposals\": [\n    {\n      \"action\": \"update\" | \"create\" | \"delete\" | \"no_op\",\n      \"path\": \"<unit path>\",\n      \"kind\": \"directions\" | \"system\" | \"workflow\" (required for create),\n      \"rationale\": \"<one-sentence why>\",\n      \"fields\": {\n        /* for update: only the fields changing */\n        /* for create: all fields needed by docs_create or workflow_create */\n        \"content_full\": \"...\",\n        \"dev_notes\": \"...\",\n        \"description\": \"...\",\n        /* for workflow kind, include steps (as a list) and step_instructions (as a dict) */\n      }\n    }\n  ]\n}\n```\n\nAn empty `proposals: []` is a valid honest answer — if nothing is stale, don't invent work. But \"I can't find anything\" and \"I didn't look\" are different; you must have loaded at least the top candidate_units and done your semantic searches first.",
-      "confirm": "Reasoning step. Present the proposed edits to the user in a compact, readable form. For each proposal show: action, path, one-sentence rationale, and for content updates a brief diff hint (what's being added / changed / removed — not the full prose).\n\nAsk the user to accept, reject, or modify each. Batch the ask when the proposals are obviously independent; itemize when any single one might be contentious.\n\n## Advance with\n\n```json\n{\n  \"final_proposals\": [ /* the accepted subset, possibly modified */ ],\n  \"confirmed\": true | false\n}\n```\n\nIf the user declines entirely, pass `final_proposals: []` and `confirmed: false` — the apply step will skip.",
-      "apply": "Code step. Read `confirm.final_proposals` and iterate. For each:\n\n- `action: \"update\"` + `kind` in {directions, system} → `docs_update(path=..., **fields)`\n- `action: \"create\"` + `kind` in {directions, system} → `docs_create(path=..., kind=..., name=..., description=..., **fields)`\n- `action: \"update\"` + `kind == \"workflow\"` → `workflow_update(path=..., **fields)` (serialize `steps` and `step_instructions` as JSON strings)\n- `action: \"create\"` + `kind == \"workflow\"` → `workflow_create(path=..., name=..., description=..., workflow_name=..., steps=..., **fields)`\n- `action: \"delete\"` → `docs_delete(path=...)`\n- `action: \"no_op\"` → skip.\n\n**Fault tolerance**: one failure does not abort the loop. Collect results as `{applied: [path, ...], failed: [{path, error}, ...], skipped: [path, ...]}` and return them.\n\nIf `confirmed` is false, skip all and return `{applied: [], failed: [], skipped: [<all paths>], message: \"User declined; no edits applied.\"}`.",
+      "confirm": "Reasoning step. Present the proposed edits to the user in a compact, readable form. For each proposal show: action, path, one-sentence rationale, and for content updates a brief diff hint (what's being added / changed / removed — not the full prose).\n\nAsk the user to accept, reject, or modify each. Batch the ask when the proposals are obviously independent; itemize when any single one might be contentious.\n\n## Advance with\n\n**Common case** — user accepted all proposals as-is, OR declined entirely:\n\n```json\n{\"confirmed\": true}\n```\n\nor, if declined:\n\n```json\n{\"confirmed\": false}\n```\n\n**Modified case** — you (or the user) trimmed or edited the proposal list. Pass the modified list under `final_proposals`:\n\n```json\n{\"confirmed\": true, \"final_proposals\": [/* the modified subset */]}\n```\n\nDo NOT pass `final_proposals` when it's identical to `propose.proposals` — that just round-trips a potentially large list through the response. The apply step reads from `step_results.propose.proposals` by default; only override when you actually changed the list.",
+      "apply": "Code step. The proposals to apply come from one of two places:\n\n- If `step_results.confirm.final_proposals` is present (agent modified the list), use it.\n- Otherwise, read `step_results.propose.proposals` (the unmodified list from the propose step).\n\nIf `step_results.confirm.confirmed` is `false`, skip everything and return `{applied: [], failed: [], skipped: [<all paths from propose.proposals>], message: \"User declined; no edits applied.\"}`.\n\nOtherwise, iterate the proposals. For each:\n\n- `action: \"update\"` + `kind` in {directions, system} → `docs_update(path=..., **fields)`\n- `action: \"create\"` + `kind` in {directions, system} → `docs_create(path=..., kind=..., name=..., description=..., **fields)`\n- `action: \"update\"` + `kind == \"workflow\"` → `workflow_update(path=..., **fields)` (serialize `steps` and `step_instructions` as JSON strings)\n- `action: \"create\"` + `kind == \"workflow\"` → `workflow_create(path=..., name=..., description=..., workflow_name=..., steps=..., **fields)`\n- `action: \"delete\"` → `docs_delete(path=...)`\n- `action: \"no_op\"` → skip.\n\n**Fault tolerance**: one failure does not abort the loop. Collect results as `{applied: [path, ...], failed: [{path, error}, ...], skipped: [path, ...]}` and return them.",
       "report": "Reasoning step. Short summary of what changed:\n- Count of applied / failed / skipped edits (from `apply`).\n- **Validation outcome** (from `validate`): if `passed: false`, enumerate the errors by check type and path. These are structural problems you introduced and need to resolve before committing — they are not stylistic warnings.\n- For any CLAUDE.md or similar non-store files the user still needs to edit manually, flag them explicitly (the store capabilities don't touch CLAUDE.md).\n\nIf validation failed, recommend concrete next actions to the user: typically a follow-up `docs_update` or `workflow_update` to fix the referenced path/field. Do NOT treat validation failures as cosmetic; they indicate the store is in a broken state.\n\nDo NOT re-summarize the code change itself — the user already knows what they did. Focus on doc hygiene + validation outcomes.",
       "validate": "Auto-run. After edits land, the conductor calls `work_buddy.knowledge.validate.docs_validate()` with no args (all checks: dag_integrity, command_mapping, thinned_commands, store_path_validity, required_fields, directions_fields, kind_specific_fields, parent_child_symmetry). Returns:\n- `passed` (bool): true iff every check found zero errors.\n- `failed` (int): total error count across all checks.\n- `summary` ({check_name: count}): errors per check type.\n- `errors` (list[{check, path, message}]): the individual problems, if any.\n- `total_units`, `checks_run`: run metadata.\n\nYou don't invoke this — it runs automatically. The next (report) step is where you surface any failures to the user.\n\nWhy this gate exists: doc edits are easy to get structurally wrong (orphaned parents, typo'd path references, directions unit missing a trigger, slash command pointing at a non-existent unit). Catching these right after `apply` — not on the next unrelated commit — keeps drift localized."
     },
@@ -1454,17 +1427,6 @@
           "callable": "work_buddy.dev.commit.assess_state",
           "kwargs": {},
           "timeout": 20
-        },
-        "visibility": {
-          "mode": "summary",
-          "include_keys": [
-            "current_branch",
-            "is_main",
-            "changed_files",
-            "classified",
-            "test_candidates",
-            "warnings"
-          ]
         },
         "invokes": []
       },
@@ -1646,15 +1608,6 @@
         "invokes": [],
         "auto_run": {
           "callable": "work_buddy.task_me.load_context_for_task_me"
-        },
-        "visibility": {
-          "mode": "summary",
-          "include_keys": [
-            "status",
-            "task_briefing",
-            "engage",
-            "current_contexts"
-          ]
         }
       },
       {

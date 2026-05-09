@@ -85,6 +85,108 @@ class TestEnrichPlan:
         assert out["tag_status"] == {}
 
 
+# ── enrich_plan project_status ──────────────────────────────────
+
+
+@pytest.fixture
+def _patch_list_projects(monkeypatch):
+    """Patch the project registry's list_projects in the namespace_suggest
+    module so enrich_plan reads from a controlled list."""
+    def _patch(projects):
+        import work_buddy.projects.store as proj_store
+        monkeypatch.setattr(proj_store, "list_projects", lambda: list(projects))
+    return _patch
+
+
+class TestEnrichPlanProjectStatus:
+    def test_no_project_proposed(self, _isolated_store, _patch_list_projects):
+        _patch_list_projects([
+            {"slug": "work-buddy", "name": "Work Buddy", "status": "active"},
+        ])
+        out = enrich_plan({"task_text": "untargeted task"})
+        ps = out["project_status"]
+        assert ps["proposed_slug"] is None
+        assert ps["slug_exists"] is False
+        assert ps["near_subtrees"] == []
+        assert ps["subtree_matches"] == []
+        # known_projects is always populated
+        assert any(p["slug"] == "work-buddy" for p in ps["known_projects"])
+
+    def test_proposed_slug_via_project_field_exists(
+        self, _isolated_store, _patch_list_projects,
+    ):
+        _patch_list_projects([
+            {"slug": "work-buddy", "name": "Work Buddy", "status": "active"},
+        ])
+        out = enrich_plan({
+            "task_text": "do a work-buddy thing",
+            "project": "work-buddy",
+        })
+        ps = out["project_status"]
+        assert ps["proposed_slug"] == "work-buddy"
+        assert ps["slug_exists"] is True
+
+    def test_proposed_slug_via_project_field_unknown(
+        self, _isolated_store, _patch_list_projects,
+    ):
+        _patch_list_projects([
+            {"slug": "work-buddy", "name": "Work Buddy", "status": "active"},
+        ])
+        out = enrich_plan({
+            "task_text": "ambiguous",
+            "project": "typo-slug",
+        })
+        ps = out["project_status"]
+        assert ps["proposed_slug"] == "typo-slug"
+        assert ps["slug_exists"] is False
+
+    def test_full_subtree_path_via_proposed_tags(
+        self, _isolated_store, _patch_list_projects,
+    ):
+        """If the agent proposes `projects/<slug>/<subtree>` directly, the
+        enrichment extracts the slug AND surfaces existing subtrees."""
+        _patch_list_projects([
+            {"slug": "work-buddy", "name": "Work Buddy", "status": "active"},
+        ])
+        _seed({
+            "t-a": [("projects/work-buddy/systems/knowledge", True)],
+            "t-b": [("projects/work-buddy/systems/projects", True)],
+        })
+        out = enrich_plan({
+            "task_text": "wire up an artifact pipeline",
+            "proposed_tags": ["projects/work-buddy/systems/artifacts"],
+        })
+        ps = out["project_status"]
+        assert ps["proposed_slug"] == "work-buddy"
+        assert ps["slug_exists"] is True
+        # The two existing siblings under work-buddy should surface.
+        assert "projects/work-buddy/systems/knowledge" in ps["near_subtrees"]
+        assert "projects/work-buddy/systems/projects" in ps["near_subtrees"]
+        # subtree_matches uses namespace_lookup ranker — non-empty when
+        # similar paths exist.
+        assert isinstance(ps["subtree_matches"], list)
+
+    def test_near_subtrees_only_under_proposed_slug(
+        self, _isolated_store, _patch_list_projects,
+    ):
+        """near_subtrees must not leak subtrees from other projects."""
+        _patch_list_projects([
+            {"slug": "work-buddy", "name": "Work Buddy", "status": "active"},
+            {"slug": "electricrag", "name": "ElectricRag", "status": "active"},
+        ])
+        _seed({
+            "t-a": [("projects/work-buddy/systems/knowledge", True)],
+            "t-b": [("projects/electricrag/experiments", True)],
+        })
+        out = enrich_plan({
+            "task_text": "anything",
+            "project": "work-buddy",
+        })
+        near = out["project_status"]["near_subtrees"]
+        assert "projects/work-buddy/systems/knowledge" in near
+        assert "projects/electricrag/experiments" not in near
+
+
 # NOTE: The earlier `create_task_from_plan` helper was removed — the
 # task-new workflow now calls task_create via wb_run in the apply step,
 # so there's no orchestration wrapper to test here.

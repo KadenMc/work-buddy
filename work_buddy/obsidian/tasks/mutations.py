@@ -212,14 +212,62 @@ def extract_description_from_line(line: str) -> str:
     return text
 
 
-def _normalize_tags(tags: list[str] | None) -> list[str]:
+def _project_slug_from_tag(tag: str) -> str | None:
+    """Return the project slug from a `projects/<slug>[/<subtree>...]` tag.
+
+    The slug is the first path segment after `projects/`. The deeper
+    subtree (e.g. ``systems/task-system`` in
+    ``projects/work-buddy/systems/task-system``) is free-form and not
+    checked against the registry.
+
+    Returns None if ``tag`` is not a project-namespace tag or has no
+    slug segment.
+    """
+    tl = tag.lower()
+    if not tl.startswith("projects/"):
+        return None
+    parts = tl.split("/", 2)
+    if len(parts) < 2 or not parts[1]:
+        return None
+    return parts[1]
+
+
+def _validate_project_slug_exists(slug: str) -> None:
+    """Raise ValueError if ``slug`` is not in the project registry.
+
+    Looks up the slug via ``work_buddy.projects.store.get_project``.
+    Lazily imported so unit tests of pure tag rewriting don't drag in
+    the registry's SQLite connection.
+    """
+    from work_buddy.projects.store import get_project
+    if get_project(slug) is None:
+        raise ValueError(
+            f"Unknown project slug {slug!r}. Use project_create to register it "
+            f"first, or project_list to see existing slugs."
+        )
+
+
+def _normalize_tags(
+    tags: list[str] | None,
+    *,
+    validate_project_slugs: bool = True,
+) -> list[str]:
     """Accept a list of tag strings with or without leading '#'.
 
     Strips leading '#', rejects empties and malformed tokens, de-dupes
     (case-insensitive, preserving first-seen order). Returns a list of
     normalized tag names (no '#').
 
-    Raises ValueError on a malformed tag so create_task fails loudly.
+    For tags that look like ``projects/<slug>[/<subtree>...]``, the
+    slug (first path segment after ``projects/``) is validated against
+    the project registry when ``validate_project_slugs`` is True
+    (default). Subtree segments below the slug are free-form. The flag
+    exists so the idempotency-cache resolver — which only needs a
+    stable hash — can normalize without triggering a registry lookup
+    that could fail mid-retry.
+
+    Raises ValueError on a malformed tag or unknown project slug so
+    create_task / set_task_tags fail loudly.
     """
     if not tags:
         return []
@@ -240,6 +288,10 @@ def _normalize_tags(tags: list[str] | None) -> list[str]:
         if key in seen:
             continue
         seen.add(key)
+        if validate_project_slugs:
+            slug = _project_slug_from_tag(tag)
+            if slug is not None:
+                _validate_project_slug_exists(slug)
         out.append(tag)
     return out
 
@@ -357,7 +409,10 @@ def create_task_effects_resolver(
     IDs (right at the top of the function), so any time create_task
     has gotten far enough to PWU, the cache should be populated.
     """
-    namespace_tags = _normalize_tags(params.get("tags") or [])
+    namespace_tags = _normalize_tags(
+        params.get("tags") or [],
+        validate_project_slugs=False,
+    )
     key = _create_task_idempotency_key(
         task_text=params.get("task_text", ""),
         summary=params.get("summary"),
@@ -823,9 +878,13 @@ def _rewrite_namespace_tags(line: str, new_tags: list[str]) -> str:
     """Replace the set of namespace tags on a task line.
 
     Preserves: checkbox, leading text, `[[...|📓]]` wikilink, `#todo`,
-    `#projects/<slug>`, `#tasker/*`, plugin emojis (🆔, 📅, ✅, priority).
-    Strips: any other `#<tag>` on the line (i.e. existing user-supplied
-    namespace tags) plus `#ns/...` and `#task/...` opt-in tokens.
+    `#tasker/*`, the `#wb/todo` / `#wb/done` inline-todo markers, plugin
+    emojis (🆔, 📅, ✅, priority).
+    Strips: any other `#<tag>` on the line — including `#projects/*` —
+    so the new ``new_tags`` list fully describes the user-modifiable
+    tags after the call.  `#tasker/*` stays preserved because it mirrors
+    SQLite store metadata (state/urgency); editing it inline would lie
+    to the store.
     Inserts the new `#<tag>` list immediately before the `🆔` token (or
     at the end of the line if 🆔 is missing).
     """
@@ -833,13 +892,16 @@ def _rewrite_namespace_tags(line: str, new_tags: list[str]) -> str:
     # RESERVED_TAG_EXACT / RESERVED_TAG_PREFIXES: `wb/` is the canonical
     # user namespace prefix and must be rewritable, but the specific
     # inline-todo markers `wb/todo` and `wb/done` are preserved.
+    # `tasker/*` is preserved because it mirrors store-owned state.
+    # `projects/*` is NOT preserved — it's a user-modifiable categorization
+    # like any other namespace tag; project-slug validity is enforced in
+    # ``_normalize_tags`` against the project registry.
     def _is_preserved(tag: str) -> bool:
         tl = tag.lower()
         if tl in ("todo", "wb/todo", "wb/done"):
             return True
-        for prefix in ("projects/", "tasker/"):
-            if tl.startswith(prefix):
-                return True
+        if tl.startswith("tasker/"):
+            return True
         return False
 
     # Walk the line tokenwise so we don't disturb wikilinks or emoji.
@@ -902,12 +964,21 @@ def set_task_tags_on_line(
     task_id: str,
     namespace_tags: list[str],
 ) -> dict[str, Any]:
-    """Replace the namespace tags on a task line in the master list.
+    """Replace the user-modifiable tags on a task line in the master list.
 
-    The task line's `#todo`, `#projects/<slug>`, `#tasker/*`, `#wb/*`,
-    wikilink, 🆔, and plugin emojis are preserved. Existing user-namespace
-    tags (anything else matching `#<tag>`) are stripped, and ``namespace_tags``
-    are inserted before the 🆔 marker.
+    Manages every tag the user is free to change: free-form namespace
+    tags (`#admin/uhn`), project tags (`#projects/work-buddy/systems/...`),
+    and opt-in prefixes (`#ns/...`, `#task/...`). Pass the complete
+    desired list — anything not in ``namespace_tags`` is removed.
+
+    Preserved (untouched regardless of input): `#todo`, `#tasker/*`
+    (mirrors store-owned state metadata; mutate via task_change_state),
+    `#wb/todo` / `#wb/done` (inline-todo workflow markers), wikilinks,
+    🆔, and plugin emojis (📅, ✅, urgency).
+
+    Project-tag slugs are validated against the project registry — pass
+    ``projects/<unknown-slug>/...`` and the call raises ValueError. Use
+    ``project_create`` to register a new project first.
 
     After the markdown write, the ``task_tags`` cache for this task is
     refreshed from the new line to keep SQLite in sync immediately; the
@@ -1317,6 +1388,8 @@ def create_task(
         raise ValueError(f"Invalid creation_effort {creation_effort!r}")
     if user_involvement not in store.VALID_USER_INVOLVEMENTS:
         raise ValueError(f"Invalid user_involvement {user_involvement!r}")
+    if project:
+        _validate_project_slug_exists(project)
     namespace_tags = _normalize_tags(tags)
 
     # Slice 4: detect last_actor via the consent context — the

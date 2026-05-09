@@ -297,23 +297,19 @@ def advance_workflow(
 
     # Build response — auto_run steps are consumed transparently inside.
     # The auto_run chain may complete the workflow, producing a
-    # ``workflow_complete`` response.
-    response = _build_response(workflow_run_id, dag)
+    # ``workflow_complete`` response.  Pass ``prior_step_id`` so
+    # ``_build_response`` includes the just-completed step's result in
+    # ``step_results`` for continuity (no post-hoc override needed).
+    response = _build_response(workflow_run_id, dag, prior_step_id=current_id)
 
     if response.get("type") == "workflow_complete":
         # Auto-run chain finished the workflow — clean up
         _ACTIVE_RUNS.pop(workflow_run_id, None)
         return response
 
-    response["prior_step"] = {
-        "id": current_id,
-        "result": serialized_result,
-    }
-    # Override step_results with smart trimming (includes prior step)
-    next_step_id = response.get("current_step", {}).get("id", "")
-    response["step_results"] = _relevant_step_results(
-        dag, next_step_id, prior_step_id=current_id,
-    )
+    # ``prior_step`` is a pointer; the just-completed step's result lives
+    # in ``step_results[current_id]`` (kept canonical, single copy).
+    response["prior_step"] = {"id": current_id}
     return response
 
 
@@ -522,6 +518,8 @@ def fail_after_retry_exhaustion(
 def _build_response(
     run_id: str,
     dag: WorkflowDAG,
+    *,
+    prior_step_id: str | None = None,
 ) -> dict[str, Any]:
     """Build the standard response with the next available step.
 
@@ -529,6 +527,12 @@ def _build_response(
     executes it transparently (importing and calling the callable),
     stores the result, and loops until it reaches either a non-auto_run
     step (returned to the agent) or workflow completion.
+
+    ``prior_step_id`` (when provided by ``advance_workflow``) is threaded
+    into ``_relevant_step_results`` so the just-completed step's result
+    is included in ``step_results`` for continuity.  This consolidates
+    step_results building inside ``_build_response`` instead of having
+    ``advance_workflow`` override it after the fact.
     """
     auto_ran: list[dict[str, Any]] = []  # track what was auto-executed
     wf_def = _get_wf_def(dag)  # for visibility lookups
@@ -663,11 +667,15 @@ def _build_response(
         if result.get("success"):
             serialized = _safe_serialize(result["value"])
             dag.complete_task(task_id, result=serialized)
-            vis = _get_step_visibility(task_id, wf_def)
+            # ``auto_ran`` is a status ledger ({id, name} on success;
+            # {id, name, error} on failure; {id, name, skipped, reason}
+            # on skip).  The actual result data lives in step_results[id]
+            # — a single canonical surface — visibility-filtered when
+            # ``_relevant_step_results`` (or ``_visibility_filter_results``)
+            # builds the response.
             auto_ran.append({
                 "id": task_id,
                 "name": next_task["name"],
-                "result": _apply_visibility(task_id, serialized, vis),
             })
             logger.info("Auto-ran step %s -> success", task_id)
         else:
@@ -723,37 +731,47 @@ def _build_response(
         "remaining_steps": [
             t["task_id"] for t in available[1:]
         ],
-        "step_results": _relevant_step_results(dag, task_id),
+        "step_results": _relevant_step_results(
+            dag,
+            task_id,
+            prior_step_id=prior_step_id,
+            just_ran_step_ids=[ar["id"] for ar in auto_ran],
+        ),
         "diagram": _dag_to_mermaid(dag),
     }
 
     if auto_ran:
         response["auto_ran"] = auto_ran
 
-        # Detect timeout results in auto_ran steps and inject recovery info
-        timeout_steps = [
-            ar for ar in auto_ran
-            if isinstance(ar.get("result"), dict) and ar["result"].get("timeout")
-        ]
+        # Detect timeout results in auto_ran steps and inject recovery info.
+        # Result data is no longer carried in auto_ran[*]; read it from the
+        # DAG's stored results.  Timeout-bearing results carry ``timeout: True``
+        # and are preserved in full by ``_apply_visibility``.
+        all_results = dag.get_all_results()
+        timeout_steps = []
+        for ar in auto_ran:
+            res = all_results.get(ar["id"])
+            if isinstance(res, dict) and res.get("timeout"):
+                timeout_steps.append((ar, res))
         if timeout_steps:
             response["timeout_recovery"] = {
                 "timed_out_steps": [
                     {
-                        "step_id": ts["id"],
-                        "step_name": ts["name"],
-                        "request_id": ts["result"].get("request_id", ""),
+                        "step_id": ar["id"],
+                        "step_name": ar["name"],
+                        "request_id": res.get("request_id", ""),
                         "hint": (
-                            f"Step '{ts['id']}' timed out waiting for user "
+                            f"Step '{ar['id']}' timed out waiting for user "
                             f"response. Options: (1) re-poll via "
                             f"wb_run('request_poll', {{'notification_id': "
-                            f"'{ts['result'].get('request_id', '')}', "
+                            f"'{res.get('request_id', '')}', "
                             f"'timeout_seconds': 120}}), (2) present the "
                             f"data in chat and collect decisions "
                             f"interactively, (3) check if the user "
                             f"responded late."
                         ),
                     }
-                    for ts in timeout_steps
+                    for ar, res in timeout_steps
                 ],
             }
 
@@ -1200,6 +1218,7 @@ def _relevant_step_results(
     dag: WorkflowDAG,
     current_step_id: str,
     prior_step_id: str | None = None,
+    just_ran_step_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     """Return only the step results the agent needs right now.
 
@@ -1208,6 +1227,11 @@ def _relevant_step_results(
     2. All ``input_map`` source steps for the downstream auto_run chain
        (from the current step up to and including the next reasoning step)
     3. The prior step result (for continuity)
+    4. Any steps that just ran during the current ``_build_response``
+       invocation — guarantees the conductor never advertises an auto_run
+       step in ``auto_ran`` (the status ledger) without also surfacing
+       its data in ``step_results``, even when the next reasoning step
+       doesn't declare the auto_run step as a ``depends_on``.
 
     Falls back to capping all results if no workflow definition is found.
     """
@@ -1245,6 +1269,10 @@ def _relevant_step_results(
     # 3. Prior step (for continuity)
     if prior_step_id:
         needed.add(prior_step_id)
+
+    # 4. Steps that just ran in this _build_response invocation
+    if just_ran_step_ids:
+        needed.update(just_ran_step_ids)
 
     # Filter, apply per-step visibility, then cap any remaining oversized results
     filtered = {k: v for k, v in all_results.items() if k in needed}

@@ -306,17 +306,117 @@ def namespace_lookup(
 # ── Workflow adapter ───────────────────────────────────────────
 
 
+def _resolve_project_status(plan: dict[str, Any]) -> dict[str, Any]:
+    """Build the project_status block for the enrichment payload.
+
+    Returns:
+        ``{
+            "known_projects": [{"slug", "name", "status"}, ...],
+            "proposed_slug": str | None,
+            "slug_exists": bool,
+            "near_subtrees": [str, ...],   # existing #projects/<slug>/...
+                                            # paths under the proposed slug
+            "subtree_matches": [...]       # near-matches if a full
+                                            # projects/<slug>/<subtree>
+                                            # path was proposed
+        }``
+
+    The slug is the first path segment after ``projects/``. Subtree
+    matches use the same ranker as namespace_lookup. ``known_projects``
+    is included unconditionally so the confirm step can offer existing
+    slugs even when the plan didn't propose one.
+    """
+    from work_buddy.obsidian.tasks import store
+    try:
+        from work_buddy.projects.store import list_projects
+        known = list_projects()
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.warning("enrich_plan: list_projects failed: %s", exc)
+        known = []
+
+    proposed_slug: str | None = None
+    raw_slug = plan.get("project")
+    if isinstance(raw_slug, str) and raw_slug.strip():
+        proposed_slug = raw_slug.strip().lower()
+
+    # Also accept a project tag passed in proposed_tags (the agent may
+    # propose `projects/work-buddy/systems/task-system` directly without
+    # using the ``project`` shortcut). Use the first one we find.
+    full_project_tag: str | None = None
+    proposed_tags = plan.get("proposed_tags") or []
+    if isinstance(proposed_tags, list):
+        for raw in proposed_tags:
+            if not isinstance(raw, str):
+                continue
+            tag = raw.strip().lstrip("#").strip().lower()
+            if tag.startswith("projects/"):
+                full_project_tag = tag
+                if proposed_slug is None:
+                    parts = tag.split("/", 2)
+                    if len(parts) >= 2 and parts[1]:
+                        proposed_slug = parts[1]
+                break
+
+    slug_exists = False
+    if proposed_slug:
+        slug_exists = any(
+            (p.get("slug") or "").lower() == proposed_slug for p in known
+        )
+
+    # Existing subtrees under the proposed slug (from the tag universe).
+    near_subtrees: list[str] = []
+    if proposed_slug:
+        try:
+            universe = store.distinct_namespace_tags()
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.warning("enrich_plan: tag universe unavailable: %s", exc)
+            universe = []
+        prefix = f"projects/{proposed_slug}/"
+        near_subtrees = sorted({
+            row["tag"] for row in universe
+            if isinstance(row.get("tag"), str)
+            and row["tag"].lower().startswith(prefix)
+        })
+
+    # If the agent proposed a full subtree path, run the did-you-mean
+    # ranker against it too.
+    subtree_matches: list[dict[str, Any]] = []
+    if full_project_tag and "/" in full_project_tag.split("/", 1)[-1]:
+        lookup = namespace_lookup(query=full_project_tag, limit=5)
+        subtree_matches = lookup.get("matches", [])
+
+    return {
+        "known_projects": [
+            {
+                "slug": p.get("slug"),
+                "name": p.get("name"),
+                "status": p.get("status"),
+            }
+            for p in known if p.get("slug")
+        ],
+        "proposed_slug": proposed_slug,
+        "slug_exists": slug_exists,
+        "near_subtrees": near_subtrees,
+        "subtree_matches": subtree_matches,
+    }
+
+
 def enrich_plan(plan: dict[str, Any]) -> dict[str, Any]:
     """Workflow adapter: enrich a task-creation plan with tag-universe context.
 
     Called from the ``task-new`` workflow's ``enrich`` auto_run step. Takes
     the ``plan`` dict emitted by the prior reasoning step and returns it
-    unchanged alongside three enrichments the next reasoning step needs:
+    unchanged alongside enrichments the next reasoning step needs:
 
     - ``suggestions`` — ranked existing namespaces relevant to ``task_text``
+      (includes #projects/* tags — the universe is unfiltered)
     - ``tag_status`` — for each tag in ``proposed_tags``, whether it exists
       in the universe; if not, the closest existing matches (so the
       confirmation step can surface "did you mean?" options)
+    - ``project_status`` — registry-aware project info: the list of known
+      project slugs, whether the plan's proposed slug exists, and any
+      existing #projects/<slug>/... subtrees (so the confirm step can
+      surface "minting a new subtree under an existing project")
     - ``universe_size`` — how many namespaces exist today
 
     Args:
@@ -326,13 +426,20 @@ def enrich_plan(plan: dict[str, Any]) -> dict[str, Any]:
 
     Returns:
         ``{"plan": <original>, "suggestions": [...], "tag_status": {...},
-           "universe_size": int}``.
+           "project_status": {...}, "universe_size": int}``.
     """
     if not isinstance(plan, dict):
         return {
             "plan": {},
             "suggestions": [],
             "tag_status": {},
+            "project_status": {
+                "known_projects": [],
+                "proposed_slug": None,
+                "slug_exists": False,
+                "near_subtrees": [],
+                "subtree_matches": [],
+            },
             "universe_size": 0,
             "error": f"plan must be a dict, got {type(plan).__name__}",
         }
@@ -364,10 +471,13 @@ def enrich_plan(plan: dict[str, Any]) -> dict[str, Any]:
             "near_matches": lookup.get("matches", []),
         }
 
+    project_status = _resolve_project_status(plan)
+
     return {
         "plan": plan,
         "suggestions": suggestions_result.get("suggestions", []),
         "tag_status": tag_status,
+        "project_status": project_status,
         "universe_size": suggestions_result.get("universe_size", 0),
         "service_used": suggestions_result.get("service_used", "none"),
     }
