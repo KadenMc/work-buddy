@@ -473,6 +473,7 @@ class ChromeTriagePipeline:
 
     def umbrella_summary(
         self, run_metadata: dict[str, Any],
+        items: list[CapturedItem] | None = None,
     ) -> dict[str, Any]:
         scrape_id = run_metadata.get("scrape_id") or run_metadata.get("scan_id")
         scrape_summary = run_metadata.get("summary")

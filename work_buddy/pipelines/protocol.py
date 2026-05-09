@@ -101,13 +101,19 @@ class SourcePipeline(Protocol):
         ...
 
     def umbrella_summary(
-        self, run_metadata: dict[str, Any],
+        self, run_metadata: dict[str, Any], items: list[CapturedItem] | None = None,
     ) -> dict[str, Any]:
         """Build the umbrella thread's ``inciting_event_summary``.
 
         ``run_metadata`` carries the kwargs that were passed to
-        :meth:`collect` plus runner-derived bookkeeping. The returned
-        dict is stored verbatim on the umbrella's inciting event.
+        :meth:`collect` plus runner-derived bookkeeping (e.g.
+        ``item_count``). ``items`` is the post-annotate list — passed
+        so per-pipeline summaries can compute richer titles
+        (e.g. distinct sender count for email triage). Pipelines that
+        don't need it should accept and ignore the kwarg.
+
+        The returned dict is stored verbatim on the umbrella's
+        inciting event.
 
         At minimum the dict should set ``source`` (= ``self.name``)
         and ``title``; other fields are source-specific.

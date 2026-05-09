@@ -7819,4 +7819,99 @@ def _email_capabilities() -> list[Capability]:
                 "display message", "open mail in client",
             ],
         ),
+
+        # ── Email-cluster thread actions ─────────────────────────────
+        # Backed by the EmailTriagePipeline action library. Each takes
+        # a thread_id pointing at a group sub-thread spawned by the
+        # pipeline (one per email cluster). Surface in the per-source
+        # action chip dropdown for email group sub-threads.
+        Capability(
+            name="email_close",
+            description=(
+                "Mark an email cluster as not actionable — newsletters, "
+                "automated notifications, etc. Advisory only: dismisses "
+                "the Thread without touching the underlying mailbox "
+                "(Thunderbird bridge is read-first in v1)."
+            ),
+            category="email",
+            is_action=True,
+            intrinsic_amplifiers={
+                "irreversibility": "low",
+                "regret_potential": "low",
+            },
+            parameters={
+                "thread_id": {"type": "str", "description": "Email-cluster sub-thread to close", "required": True},
+                "reason": {"type": "str", "description": "Optional dismissal reason for the audit log", "required": False},
+            },
+            callable=(lambda **kw: __import__(
+                "work_buddy.email.thread_actions",
+                fromlist=["email_close"],
+            ).email_close(**kw)),
+            mutates_state=True,
+            search_aliases=[
+                "close email cluster", "dismiss emails",
+                "drop email group", "skip email cluster",
+            ],
+        ),
+        Capability(
+            name="email_create_tasks",
+            description=(
+                "Walk an email-cluster thread and create one task per "
+                "email. The subject becomes the task text; sender + "
+                "date land in the linked summary note."
+            ),
+            category="email",
+            is_action=True,
+            intrinsic_amplifiers={
+                "irreversibility": "low",
+                "regret_potential": "low",
+            },
+            parameters={
+                "thread_id": {"type": "str", "description": "Email-cluster sub-thread to route", "required": True},
+                "urgency": {"type": "str", "description": "low | medium (default) | high", "required": False},
+                "project": {"type": "str", "description": "Project slug applied to every created task", "required": False},
+            },
+            callable=(lambda **kw: __import__(
+                "work_buddy.email.thread_actions",
+                fromlist=["email_create_tasks"],
+            ).email_create_tasks(**kw)),
+            requires=["obsidian"],
+            mutates_state=True,
+            search_aliases=[
+                "create tasks from email cluster",
+                "emails to task list",
+                "spin out emails as tasks",
+            ],
+        ),
+        Capability(
+            name="email_create_umbrella_task",
+            description=(
+                "Create a single task representing the whole email "
+                "cluster. The cluster label becomes the task text; the "
+                "linked summary note lists every email's subject + "
+                "sender + date for context."
+            ),
+            category="email",
+            is_action=True,
+            intrinsic_amplifiers={
+                "irreversibility": "low",
+                "regret_potential": "low",
+            },
+            parameters={
+                "thread_id": {"type": "str", "description": "Email-cluster sub-thread to route", "required": True},
+                "urgency": {"type": "str", "description": "low | medium (default) | high", "required": False},
+                "project": {"type": "str", "description": "Project slug for the task", "required": False},
+                "title_override": {"type": "str", "description": "Override the task text; defaults to the cluster label", "required": False},
+            },
+            callable=(lambda **kw: __import__(
+                "work_buddy.email.thread_actions",
+                fromlist=["email_create_umbrella_task"],
+            ).email_create_umbrella_task(**kw)),
+            requires=["obsidian"],
+            mutates_state=True,
+            search_aliases=[
+                "create umbrella task from email cluster",
+                "single task for email group",
+            ],
+        ),
     ]
