@@ -744,9 +744,10 @@ def _spawn_inline_umbrella(*, item: Any, verdict: dict[str, Any]) -> str | None:
     from work_buddy.threads.models import Thread
 
     group_intent = (verdict.get("group_intent") or "").strip() or "Inline capture"
+    title = f"Inline selection: {group_intent}"
     summary = {
         "source": "inline_capture",
-        "title": group_intent,
+        "title": title,
         "description": group_intent,
         "captured_text": (item.text or "")[:500],
         "file_path": (item.metadata or {}).get("file_path"),

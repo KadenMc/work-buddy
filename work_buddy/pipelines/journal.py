@@ -398,7 +398,7 @@ class JournalBacklogPipeline:
         journal_date = run_metadata.get("journal_date") or "unknown"
         scan_id = run_metadata.get("scan_id")
         item_count = run_metadata.get("item_count", 0)
-        title = f"Daily journal scan: {journal_date}"
+        title = f"Daily note: {journal_date}"
         return {
             "source": self.name,
             "title": title,

@@ -354,7 +354,7 @@ class TestUmbrellaSummary:
         ]
         p = EmailTriagePipeline()
         s = p.umbrella_summary({"item_count": 5}, items=items)
-        assert s["title"] == "Email triage: 5 unread from 3 sender(s)"
+        assert s["title"] == "Email: 5 unread from 3 sender(s)"
         assert s["source"] == "email_triage"
         assert s["sender_count"] == 3
         assert s["item_count"] == 5
@@ -362,13 +362,13 @@ class TestUmbrellaSummary:
     def test_without_items_uses_count_only(self):
         p = EmailTriagePipeline()
         s = p.umbrella_summary({"item_count": 3})
-        assert s["title"] == "Email triage: 3 unread"
+        assert s["title"] == "Email: 3 unread"
         assert s["sender_count"] is None
 
     def test_empty_run(self):
         p = EmailTriagePipeline()
         s = p.umbrella_summary({"item_count": 0})
-        assert s["title"] == "Email triage: nothing pending"
+        assert s["title"] == "Email: nothing pending"
 
 
 # ---------------------------------------------------------------------------
