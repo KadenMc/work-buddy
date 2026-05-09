@@ -9,6 +9,26 @@ optional provenance to register an Artifact.
 
 from __future__ import annotations
 
+from work_buddy.artifacts.backends.directory_tree import (
+    DirectoryTreeStorage,
+    DirShape,
+)
 from work_buddy.artifacts.backends.filesystem import FilesystemStorage
+from work_buddy.artifacts.backends.json_records import (
+    JsonRecordsShape,
+    JsonRecordsStorage,
+)
+from work_buddy.artifacts.backends.jsonl import JsonlStorage
+from work_buddy.artifacts.backends.sqlite_rollup import SqliteRollupStorage
+from work_buddy.artifacts.backends.sqlite_rows import SqliteRowsStorage
 
-__all__ = ["FilesystemStorage"]
+__all__ = [
+    "DirShape",
+    "DirectoryTreeStorage",
+    "FilesystemStorage",
+    "JsonRecordsShape",
+    "JsonRecordsStorage",
+    "JsonlStorage",
+    "SqliteRollupStorage",
+    "SqliteRowsStorage",
+]

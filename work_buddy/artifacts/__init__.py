@@ -67,12 +67,27 @@ from work_buddy.artifacts.io import (  # noqa: F401
     atomic_write_text,
 )
 
-# --- Filesystem backend (legacy ArtifactStore) -----------------------------
+# --- Backends --------------------------------------------------------------
 
 from work_buddy.artifacts.backends.filesystem import (  # noqa: F401
     ARTIFACT_TYPES,
     ArtifactRecord,
     FilesystemStorage,
+)
+from work_buddy.artifacts.backends.sqlite_rows import (  # noqa: F401
+    SqliteRowsStorage,
+)
+from work_buddy.artifacts.backends.json_records import (  # noqa: F401
+    JsonRecordsShape,
+    JsonRecordsStorage,
+)
+from work_buddy.artifacts.backends.jsonl import JsonlStorage  # noqa: F401
+from work_buddy.artifacts.backends.sqlite_rollup import (  # noqa: F401
+    SqliteRollupStorage,
+)
+from work_buddy.artifacts.backends.directory_tree import (  # noqa: F401
+    DirectoryTreeStorage,
+    DirShape,
 )
 
 # Legacy public name. ``FilesystemStorage`` and ``ArtifactStore`` are the
