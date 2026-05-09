@@ -90,6 +90,20 @@ from work_buddy.artifacts.backends.directory_tree import (  # noqa: F401
     DirShape,
 )
 
+# --- Lifecycle components (Phase C) ----------------------------------------
+
+from work_buddy.artifacts.lifecycle.actions import (  # noqa: F401
+    Delete,
+    TransformAndDelete,
+)
+from work_buddy.artifacts.lifecycle.triggers import (  # noqa: F401
+    MtimeWindow,
+    PerRecordTtl,
+    PerTypeTtl,
+    TimeWindow,
+)
+from work_buddy.artifacts.provenance import SessionTagged  # noqa: F401
+
 # Legacy public name. ``FilesystemStorage`` and ``ArtifactStore`` are the
 # same class — the rename happened to make room for sibling backends
 # (SqliteRowsStorage, JsonRecordsStorage, etc.) that share the Storage
