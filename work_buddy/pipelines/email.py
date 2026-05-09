@@ -271,6 +271,22 @@ class EmailTriagePipeline:
     # Stage 1 — collect
     # ------------------------------------------------------------------
 
+    # Default body-char budget for the per-email LLM decision. The
+    # pipeline's per-email shape (one cluster per email) means the LLM
+    # is judging individual messages — newsletters, customer replies,
+    # CI notifications, etc. — and needs enough body content to tell
+    # them apart. Empirically tuned at 800 chars (~200 tokens):
+    # enough to discriminate "newsletter" from "customer asking a
+    # question", but bounded so the cluster-refinement prompt stays
+    # under a typical local-model context window even for a 50-email
+    # batch (50 × 200 ≈ 10k tokens of body content + system prompt +
+    # cluster boundaries metadata = comfortably under Qwen's 32k).
+    #
+    # Bump down for cheaper / faster runs; bump up for richer
+    # decisions on long-thread emails. Callers can override via
+    # ``include_body_chars=N`` (or ``0`` for headers only).
+    _DEFAULT_BODY_CHARS: int = 800
+
     def collect(
         self,
         *,
@@ -289,17 +305,18 @@ class EmailTriagePipeline:
         ``([], None)``; we mirror that by returning an empty list so
         the runner spawns an empty umbrella the user can see.
 
-        ``include_body_chars`` defaults to ``0`` (headers only) when
-        unspecified. Earlier versions of the email triage path bumped
-        this to ``800`` chars when the verdict-pass was enabled, but
-        the new pipeline does its LLM work at the cluster level (in
-        :func:`refine_clusters`) where labels/previews are sufficient
-        for cluster-boundary decisions. Callers who want the LLM to
-        see message bodies for finer-grained refinement can override.
+        ``include_body_chars`` defaults to :data:`_DEFAULT_BODY_CHARS`
+        (800) so the LLM sees enough body content to make sensible
+        per-email decisions on substantive messages — not just
+        newsletters detectable by sender domain alone. Pass ``0`` to
+        force a headers-only run.
         """
         from work_buddy.email.triage_adapter import collect_email_candidates
 
-        body_chars = include_body_chars if include_body_chars is not None else 0
+        body_chars = (
+            include_body_chars if include_body_chars is not None
+            else self._DEFAULT_BODY_CHARS
+        )
         triage_items, _content_hash = collect_email_candidates(
             days_back=days_back,
             max_messages=max_messages,

@@ -242,7 +242,25 @@ class TestCollect:
         assert captured_kwargs["max_messages"] == 25
         assert captured_kwargs["folder_path"] == "INBOX/Work"
         assert captured_kwargs["account_id"] == "acct_2"
-        assert captured_kwargs["include_body_chars"] == 0  # default
+        # Default body budget: 800 chars per email so the LLM has
+        # enough content for substantive per-email decisions.
+        assert captured_kwargs["include_body_chars"] == 800
+
+    def test_collect_explicit_zero_body_chars_respected(self):
+        """Caller can force headers-only by passing include_body_chars=0."""
+        captured_kwargs: dict = {}
+
+        def fake(**kwargs):
+            captured_kwargs.update(kwargs)
+            return [], None
+
+        with patch(
+            "work_buddy.email.triage_adapter.collect_email_candidates",
+            side_effect=fake,
+        ):
+            p = EmailTriagePipeline()
+            p.collect(include_body_chars=0)
+        assert captured_kwargs["include_body_chars"] == 0
 
 
 class TestAnnotateItems:
