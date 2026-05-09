@@ -18,6 +18,15 @@ Usage::
 """
 
 from work_buddy.llm.classify import classify
+from work_buddy.llm.decomposed import (
+    DecomposedJudgment,
+    DecomposedResult,
+    MainCall,
+    SubCall,
+    SubcallAudit,
+    SubcallResult,
+    run_subcall,
+)
 from work_buddy.llm.intent import (
     DataItem,
     IntentMatch,
@@ -43,6 +52,14 @@ __all__ = [
     "resolve_tier",
     "ToolCall",
     "TierAttempt",
+    # Decomposed-judgment framework (phase 2)
+    "SubCall",
+    "MainCall",
+    "DecomposedJudgment",
+    "SubcallResult",
+    "SubcallAudit",
+    "DecomposedResult",
+    "run_subcall",
     # Legacy runner (kept during phases 2–3 migration, removed in phase 8)
     "run_task",
     "TaskResult",
