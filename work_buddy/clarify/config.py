@@ -85,6 +85,30 @@ TRIAGE_DEFAULTS: dict[str, Any] = {
         "tier_chain": ["local_fast", "frontier_fast"],
     },
 
+    # Cluster-refinement stage (the LLM call inside the unified source
+    # pipeline that names clusters and proposes per-cluster actions).
+    # Mirrors the segmenter's ``tier_chain`` pattern: walk tiers in
+    # order; on LLMRunner error OR schema-validation failure, escalate
+    # to the next tier. On full exhaustion, refine_clusters falls back
+    # to the algorithmic clusters with no proposed actions.
+    #
+    # Why local-first: the user runs a local-LLM queue specifically so
+    # background pipelines don't burn API credits. Refinement is
+    # structured-output classification with a small JSON schema —
+    # ``local_tool_calling`` handles it well. Frontier tiers are kept
+    # in the chain as graceful escalation targets when the local model
+    # fails schema validation on dense or unusual scrapes.
+    "refine_clusters": {
+        "tier_chain": [
+            "local_tool_calling",
+            "local_fast",
+            "frontier_fast",
+            "frontier_balanced",
+        ],
+        "max_tokens": 4096,
+        "temperature": 0.2,
+    },
+
     # Per-item agent stage (llm_with_tools). The agent gets the
     # triage_agent preset and must call triage_submit.
     "agent": {
