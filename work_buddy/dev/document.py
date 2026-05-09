@@ -3,13 +3,15 @@ units that likely need updating.
 
 This module backs the ``dev-document`` workflow's ``scan`` auto_run step.
 The intelligence lives in the calling agent — this step provides a
-deterministic starting set (changed files, their subsystems, and knowledge
-units that textually reference them) so the agent does not have to
+deterministic starting set (changed files, their subsystems, and a ranked
+list of candidate knowledge units) so the agent does not have to
 reconstruct that by hand.
 
-The agent is expected to supplement this with semantic searches against
-``agent_docs`` during the subsequent reasoning step; ``scan_changes`` is
-deliberately a grep-level match, not a semantic one.
+The scan ranks candidates via the work-buddy knowledge search (BM25 +
+dense embeddings), with a scored substring-grep fallback when the
+embedding service is unhealthy. A small "force-include" override surfaces
+units whose ``entry_points`` or ``tags`` fields exactly match a changed
+module path — embeddings can miss those when a unit's prose is sparse.
 """
 
 from __future__ import annotations
@@ -43,6 +45,12 @@ _EXT_BUCKETS: dict[str, str] = {
     ".cfg": "config",
     ".ini": "config",
 }
+
+# Cap on candidates returned to the agent. Tuned for the propose step's
+# discipline: large enough to surface all plausible candidates for moderate
+# branches, small enough that the agent can realistically read each at full
+# depth.
+_TOP_N = 20
 
 
 def _run_git(*args: str) -> list[str]:
@@ -109,20 +117,129 @@ def _subsystem_slugs(path: str) -> list[str]:
     return [s for s in slugs if s]
 
 
-def _match_units(
+def _module_paths_from_changed(changed_files: list[str]) -> list[str]:
+    """Derive ``work_buddy.foo.bar`` dotted paths from changed file paths.
+
+    Used by ``_force_include_canonical_units`` to match against unit
+    ``entry_points`` (which typically read like ``work_buddy.dashboard.api``).
+    """
+    out: list[str] = []
+    for f in changed_files:
+        norm = f.replace("\\", "/")
+        if not (norm.startswith("work_buddy/") and norm.endswith(".py")):
+            continue
+        # Strip "work_buddy/" and ".py", convert "/" to ".", drop "__init__".
+        inner = norm[len("work_buddy/"): -len(".py")]
+        if inner.endswith("/__init__"):
+            inner = inner[: -len("/__init__")]
+        if inner:
+            out.append("work_buddy." + inner.replace("/", "."))
+    return out
+
+
+def _build_rag_query(changed_files: list[str], slugs: list[str]) -> str:
+    """Build a query string for the knowledge search.
+
+    Mixes subsystem slugs (high signal — these are subsystem names) with
+    leaf basenames from changed files (medium signal — module names).
+    Slashes in slugs are flattened to spaces so each token is independent.
+    """
+    parts: list[str] = []
+    for s in slugs:
+        parts.append(s.replace("/", " "))
+    for f in changed_files:
+        name = PurePosixPath(f.replace("\\", "/")).stem
+        if name and name != "__init__":
+            parts.append(name)
+    # Deduplicate while preserving order
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for p in parts:
+        if p not in seen:
+            seen.add(p)
+            deduped.append(p)
+    return " ".join(deduped)
+
+
+def _slim_search_hit(hit: dict[str, Any], why: str) -> dict[str, Any]:
+    """Reduce a search() result to the {path, name, description, score, why} contract."""
+    return {
+        "path": hit.get("path", ""),
+        "name": hit.get("name", ""),
+        "description": hit.get("description", ""),
+        "score": round(float(hit.get("score", 0.0)), 4),
+        "why": why,
+    }
+
+
+def _search_units_via_rag(
+    changed_files: list[str],
+    slugs: list[str],
+) -> list[dict[str, Any]] | None:
+    """Query the knowledge search for candidate units.
+
+    Returns:
+        A list of ``{path, name, description, score, why}`` dicts on success,
+        or ``None`` if the search failed (embedding service unavailable,
+        empty results, exception).  ``None`` is the signal for ``scan_changes``
+        to fall back to the scored grep path.
+    """
+    if not (changed_files or slugs):
+        return []
+
+    query = _build_rag_query(changed_files, slugs)
+    if not query.strip():
+        return []
+
+    try:
+        from work_buddy.knowledge.search import search
+        result = search(
+            query=query,
+            knowledge_scope="system",
+            top_n=_TOP_N,
+            depth="index",
+        )
+    except Exception as exc:  # noqa: BLE001 — fallback path is the recovery
+        logger.warning("RAG search failed (%s); falling back to grep.", exc)
+        return None
+
+    if "error" in result:
+        logger.warning("RAG search returned error (%s); falling back to grep.", result["error"])
+        return None
+
+    raw = result.get("results") or []
+    if not raw:
+        # Empty results from search aren't necessarily wrong (the diff might
+        # genuinely have no related units), but the contract requires us to
+        # surface them anyway.  Return an empty list, not None.
+        return []
+
+    # Synthesize a "why" from the slugs that contributed to the query.
+    why_summary = ", ".join(slugs[:3]) if slugs else "matched query terms"
+    why_label = f"matched: {why_summary}"
+    return [_slim_search_hit(hit, why=why_label) for hit in raw]
+
+
+def _match_units_via_grep(
     changed_files: list[str],
     subsystem_slugs: list[str],
 ) -> list[dict[str, Any]]:
-    """Find knowledge units whose text references a changed path or subsystem.
+    """Scored substring-grep fallback when the RAG search is unavailable.
 
-    Returns one entry per matching unit with the specific tokens that matched,
-    so the agent can judge why the unit was flagged.
+    Scoring weights:
+      - 3: unit's ``entry_points`` or ``tags`` exactly contain a changed
+        module path (path-component match).
+      - 2: subsystem slug appears as a word-boundary token in the
+        unit's text (stronger signal than substring).
+      - 1: changed-file path or basename appears as a substring in
+        the unit's text (any prose mention).
+
+    Returns up to ``_TOP_N`` candidates sorted by ``(-score, path)``.
     """
     if not (changed_files or subsystem_slugs):
         return []
 
-    # File-path tokens: the full repo-relative path, plus the bare filename.
-    # ``__init__.py`` is filtered — it appears in every package and yields noise.
+    # Path tokens: full repo-relative path + bare filename, minus __init__.py.
     path_tokens: set[str] = set()
     for f in changed_files:
         norm = f.replace("\\", "/")
@@ -132,14 +249,15 @@ def _match_units(
             path_tokens.add(name)
 
     slug_tokens: set[str] = {s for s in subsystem_slugs if len(s) >= 3}
+    module_paths = _module_paths_from_changed(changed_files)
 
     try:
         store = load_store(scope="system")
-    except Exception as exc:  # defensive; failure here shouldn't kill the scan
+    except Exception as exc:
         logger.warning("knowledge store load failed: %s", exc)
         return []
 
-    matches: list[dict[str, Any]] = []
+    scored: list[tuple[float, dict[str, Any]]] = []
     for unit_path, unit in store.items():
         haystack = " ".join(
             [
@@ -151,31 +269,111 @@ def _match_units(
                 " ".join(unit.tags or []),
             ]
         )
-        matched_on: list[str] = []
-        for tok in path_tokens:
-            if tok and tok in haystack:
-                matched_on.append(tok)
-        # Slug matches require word boundaries so "dev" doesn't match "developer".
-        # Cheap check: pad haystack with spaces and look for padded token.
+        score = 0.0
+        why_parts: list[str] = []
+
+        # Weight 3: unit explicitly names this module via entry_points or tags.
+        ep_tag_str = (
+            " ".join(getattr(unit, "entry_points", []) or [])
+            + " "
+            + " ".join(unit.tags or [])
+        )
+        for mp in module_paths:
+            if mp in ep_tag_str:
+                score += 3.0
+                why_parts.append(f"canonical: {mp}")
+
+        # Weight 2: subsystem slug as a word-boundary token.
         padded = f" {haystack} "
         for slug in slug_tokens:
             needle = slug.replace("/", " ")
-            # bare appearance, either space-delimited or punctuation-delimited
-            if f" {needle} " in padded or f"/{needle}" in haystack or f"{needle}." in haystack:
-                matched_on.append(slug)
-        if matched_on:
-            matches.append(
-                {
-                    "path": unit_path,
-                    "kind": unit.kind,
-                    "name": unit.name,
-                    "description": unit.description,
-                    "matched_on": sorted(set(matched_on)),
-                }
+            if (
+                f" {needle} " in padded
+                or f"/{needle}" in haystack
+                or f"{needle}." in haystack
+            ):
+                score += 2.0
+                why_parts.append(f"slug: {slug}")
+
+        # Weight 1: changed-file path or basename anywhere in haystack.
+        for tok in path_tokens:
+            if tok and tok in haystack:
+                score += 1.0
+                why_parts.append(f"path: {tok}")
+
+        if score > 0:
+            scored.append(
+                (
+                    score,
+                    {
+                        "path": unit_path,
+                        "name": unit.name or "",
+                        "description": unit.description or "",
+                        "score": round(score, 4),
+                        "why": "; ".join(why_parts[:3]),
+                    },
+                )
             )
-    # Deterministic ordering: units with more matches first, then by path.
-    matches.sort(key=lambda m: (-len(m["matched_on"]), m["path"]))
-    return matches
+
+    scored.sort(key=lambda t: (-t[0], t[1]["path"]))
+    return [c for _, c in scored[:_TOP_N]]
+
+
+def _force_include_canonical_units(
+    changed_files: list[str],
+    slugs: list[str],
+) -> list[dict[str, Any]]:
+    """Return units whose ``entry_points`` exactly contain a changed module path.
+
+    These are canonical-doc cases: a unit that documents
+    ``work_buddy.dashboard.forms`` will list that path under
+    ``entry_points``, but its prose may be too sparse for embeddings to bind
+    tightly.  Pinning these by structural match guarantees they surface.
+
+    Tag matches are weaker (tags are often free-form keywords); only
+    ``entry_points`` get the force-include treatment here.
+    """
+    module_paths = _module_paths_from_changed(changed_files)
+    if not module_paths:
+        return []
+
+    try:
+        store = load_store(scope="system")
+    except Exception as exc:
+        logger.warning("knowledge store load failed: %s", exc)
+        return []
+
+    out: list[dict[str, Any]] = []
+    for unit_path, unit in store.items():
+        eps = getattr(unit, "entry_points", []) or []
+        if not eps:
+            continue
+        matched = [mp for mp in module_paths if any(mp == ep or ep.startswith(mp + ".") or mp.startswith(ep + ".") for ep in eps)]
+        if matched:
+            out.append({
+                "path": unit_path,
+                "name": unit.name or "",
+                "description": unit.description or "",
+                "score": 1.0,  # Canonical pin — score is sentinel, not relative.
+                "why": f"canonical entry_points: {matched[0]}",
+            })
+    return out
+
+
+def _merge_candidates(
+    primary: list[dict[str, Any]],
+    forced: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Merge force-included canonicals into the primary list.
+
+    Forced entries that aren't already in the primary list are inserted at
+    the top (canonical pins outrank score-based ranking).  Primary entries
+    that overlap with forced are deduplicated, with the primary's score
+    preserved (it's the more discriminating signal).
+    """
+    seen = {c["path"] for c in primary}
+    new_forced = [f for f in forced if f["path"] not in seen]
+    return new_forced + primary
 
 
 def scan_changes(base_ref: str = "HEAD") -> dict[str, Any]:
@@ -193,10 +391,13 @@ def scan_changes(base_ref: str = "HEAD") -> dict[str, Any]:
             - ``changed_files`` (list[str]) - repo-relative, forward-slash paths
             - ``classified`` (dict[str, list[str]]) - files grouped by bucket
             - ``subsystem_slugs`` (list[str]) - unique module/subsystem keys
-            - ``candidate_units`` (list[dict]) - knowledge units referencing
-              a changed file or subsystem, newest-first by match strength
+            - ``candidate_units`` (list[dict]) - knowledge units relevant to
+              the changes, slimmed to ``{path, name, description, score, why}``,
+              capped at ``_TOP_N`` entries
             - ``base_ref`` (str) - echoed back for traceability
             - ``warnings`` (list[str]) - non-fatal issues (e.g. empty diff)
+            - ``_source`` (str) - ``"rag"`` or ``"grep_fallback"``, indicates
+              which matching path produced the candidates
     """
     # Tracked changes (unstaged + staged) vs base_ref.
     tracked = _run_git("diff", "--name-only", base_ref)
@@ -224,7 +425,18 @@ def scan_changes(base_ref: str = "HEAD") -> dict[str, Any]:
                 seen.add(s)
                 slugs.append(s)
 
-    candidates = _match_units(changed, slugs)
+    # Try RAG first; fall back to scored grep on failure.
+    rag_candidates = _search_units_via_rag(changed, slugs)
+    if rag_candidates is None:
+        candidates = _match_units_via_grep(changed, slugs)
+        source = "grep_fallback"
+    else:
+        candidates = rag_candidates
+        source = "rag"
+
+    # Force-include canonical units regardless of which path ran.
+    canonical = _force_include_canonical_units(changed, slugs)
+    candidates = _merge_candidates(candidates, canonical)[:_TOP_N]
 
     warnings: list[str] = []
     if not changed:
@@ -245,4 +457,5 @@ def scan_changes(base_ref: str = "HEAD") -> dict[str, Any]:
         "candidate_units": candidates,
         "base_ref": base_ref,
         "warnings": warnings,
+        "_source": source,
     }
