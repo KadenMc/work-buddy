@@ -110,10 +110,23 @@ def test_prune_default_window_days_30(tmp_path):
     assert result["remaining"] == 1
 
 
-def test_prune_registered_in_paths():
-    """Sanity: ``logs/escalations`` is in ``paths.PRUNERS``."""
-    from work_buddy.paths import PRUNERS
-    assert "logs/escalations" in PRUNERS
-    func_path, config = PRUNERS["logs/escalations"]
-    assert func_path == "work_buddy.artifacts.prune_escalation_log"
-    assert config.get("window_days") == 30
+def test_prune_registered_via_artifact_registry():
+    """Sanity: ``escalations-log`` is registered as an Artifact.
+
+    Updated for the artifact-system unification (t-aade2f16):
+    ``paths.PRUNERS`` is now empty (deprecated). The escalation-log
+    pruner is registered as an Artifact in the unified registry. We
+    call the registration helper directly here rather than rely on the
+    module's import-time side-effect, since other tests may have
+    cleared the registry after the module was first loaded.
+    """
+    import work_buddy.llm.escalation_log as escalation_log_mod
+    from work_buddy.artifacts import get_artifact
+
+    escalation_log_mod._register_escalation_log_artifact()
+    artifact = get_artifact("escalations-log")
+    assert artifact is not None
+    desc = artifact.describe()
+    assert desc["storage_kind"] == "JsonlStorage"
+    assert "TimeWindow" in desc["lifecycle_kind"]
+    assert "Delete" in desc["lifecycle_kind"]

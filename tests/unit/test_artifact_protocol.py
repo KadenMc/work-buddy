@@ -61,8 +61,17 @@ from work_buddy.artifacts.registry import _reset_for_tests
 
 @pytest.fixture(autouse=True)
 def _clean_registry():
-    """Each test starts with an empty global registry."""
+    """Each test starts with an empty global registry.
+
+    We also mark consumer modules as already-loaded so ``sweep_all``
+    doesn't auto-import them mid-test (which would re-populate the
+    registry with the production artifacts and break tests that expect
+    only their own registrations to be visible).
+    """
+    import work_buddy.artifacts.registry as _reg
+
     _reset_for_tests()
+    _reg._consumers_loaded = True  # opt out of auto-load during tests
     yield
     _reset_for_tests()
 

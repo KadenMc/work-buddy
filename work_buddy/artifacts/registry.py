@@ -17,12 +17,57 @@ modules that get reloaded.)
 
 from __future__ import annotations
 
+import importlib
+import logging
 from typing import Any
 
 from work_buddy.artifacts.protocol import Artifact, SweepResult
 
+logger = logging.getLogger(__name__)
+
 # Module-global registry keyed by artifact name.
 _ARTIFACT_REGISTRY: dict[str, Artifact] = {}
+
+# Modules whose import triggers an Artifact registration. Imported lazily
+# the first time sweep_all is called (or via ensure_consumers_loaded())
+# so that nobody pays the cost unless cleanup actually runs. Each entry
+# is a fully-qualified module path.
+_CONSUMER_MODULES: tuple[str, ...] = (
+    "work_buddy.collectors.chrome_ledger",
+    "work_buddy.llm.cache",
+    "work_buddy.journal_backlog.segmentation_cache",
+    "work_buddy.llm.escalation_log",
+    "work_buddy.messaging.models",
+    "work_buddy.agent_session",
+    "work_buddy.llm.claude_code_usage.rollup",
+    "work_buddy.notifications.store",
+    "work_buddy.llm.queue",
+)
+
+_consumers_loaded = False
+
+
+def ensure_consumers_loaded() -> None:
+    """Import every consumer module to trigger its Artifact registration.
+
+    Idempotent — only imports modules once. Errors are logged as
+    warnings but don't abort: a single broken consumer shouldn't take
+    down the cleanup tick.
+    """
+    global _consumers_loaded
+    if _consumers_loaded:
+        return
+    for mod_path in _CONSUMER_MODULES:
+        try:
+            importlib.import_module(mod_path)
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.warning(
+                "Failed to import consumer module %s during artifact "
+                "registry load: %s",
+                mod_path,
+                exc,
+            )
+    _consumers_loaded = True
 
 
 def register_artifact(artifact: Artifact) -> None:
@@ -49,6 +94,9 @@ def sweep_all(
 ) -> list[SweepResult]:
     """Run ``.prune()`` against every registered artifact (or one).
 
+    Triggers consumer-module imports first so all 11 artifacts are
+    registered before the sweep runs.
+
     Args:
         dry_run: If True, prune surveys but doesn't mutate.
         name: If given, prune only the artifact with this registered
@@ -58,6 +106,7 @@ def sweep_all(
     abort the sweep; failed artifacts come back with their ``error``
     field set.
     """
+    ensure_consumers_loaded()
     if name is not None:
         artifact = _ARTIFACT_REGISTRY.get(name)
         if artifact is None:
@@ -69,17 +118,22 @@ def sweep_all(
 def artifact_registry_dump() -> dict[str, dict[str, Any]]:
     """Return the cross-backend introspection map.
 
+    Triggers consumer-module imports first so all 11 artifacts appear.
+
     Used by ``artifact_registry()`` MCP capability so agents and
     operators can see at a glance what's registered, what each
     artifact's storage/lifecycle shape is, what capabilities each
     declares, and which operations are exposed via MCP.
     """
+    ensure_consumers_loaded()
     return {name: a.describe() for name, a in sorted(_ARTIFACT_REGISTRY.items())}
 
 
 def _reset_for_tests() -> None:
     """Clear the registry. Test-only — never call from production code."""
+    global _consumers_loaded
     _ARTIFACT_REGISTRY.clear()
+    _consumers_loaded = False
 
 
 def _safe_prune(artifact: Artifact, dry_run: bool) -> SweepResult:

@@ -83,44 +83,25 @@ RESOURCES: dict[str, str] = {
 
 
 # ---------------------------------------------------------------------------
-# Entry-level pruner registry
+# Entry-level pruner registry — DEPRECATED
 # ---------------------------------------------------------------------------
-# Maps resource IDs to ``(callable_path, default_config)`` pairs.
-# The callable is imported lazily at prune time to avoid heavy imports
-# at module load.  Each callable signature:
-#   prune_fn(path: Path, config: dict) -> dict
-#       Returns {"pruned": int, "remaining": int, "bytes_before": int, "bytes_after": int}
+# As of the artifact-system unification (t-aade2f16), every entry that
+# used to live here has been migrated to a registered :class:`Artifact`
+# in :mod:`work_buddy.artifacts`. The cleanup tick now drives off
+# :func:`work_buddy.artifacts.registry.sweep_all` instead of iterating
+# this dict.
+#
+# The dict is kept (empty) for backwards compatibility with any external
+# code that imports it. New consumers should NOT add entries here —
+# register an Artifact in their own module instead. See
+# ``architecture/artifact-system`` for the registration pattern.
+#
+# The standalone ``prune_*`` callables in
+# :mod:`work_buddy.artifacts.meta_pruners` (re-exported from
+# :mod:`work_buddy.artifacts`) remain importable so existing tests that
+# exercise them with custom paths keep working.
 
-PRUNERS: dict[str, tuple[str, dict[str, Any]]] = {
-    "chrome/ledger": (
-        "work_buddy.artifacts.prune_chrome_ledger",
-        {"window_days": 7},
-    ),
-    "cache/llm": (
-        "work_buddy.artifacts.prune_llm_cache",
-        {},  # uses expires_at from each entry
-    ),
-    "agents/sessions": (
-        "work_buddy.artifacts.prune_stale_sessions",
-        {"max_age_days": 14},
-    ),
-    "logs/global": (
-        "work_buddy.artifacts.prune_old_logs",
-        {"max_age_days": 7},
-    ),
-    "logs/escalations": (
-        "work_buddy.artifacts.prune_escalation_log",
-        {"window_days": 30},
-    ),
-    "db/messages": (
-        "work_buddy.artifacts.prune_messages_db",
-        {"ttl_days": 30},
-    ),
-    "cache/claude-code-usage": (
-        "work_buddy.artifacts.prune_claude_code_usage_db",
-        {"days_to_keep_full": 90},
-    ),
-}
+PRUNERS: dict[str, tuple[str, dict[str, Any]]] = {}
 
 
 # ---------------------------------------------------------------------------

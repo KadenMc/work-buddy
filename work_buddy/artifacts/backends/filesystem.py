@@ -296,58 +296,53 @@ class FilesystemStorage:
     # ----------------------------------------------------------- legacy lifecycle
 
     def cleanup(self, dry_run: bool = True) -> dict[str, Any]:
-        """Unified cleanup: file-level TTL sweep + entry-level pruning.
+        """Unified cleanup driven by the artifact registry.
 
-        1. Delete expired timestamped artifacts (file + meta).
-        2. Run registered pruners on singleton resources (chrome ledger,
-           LLM cache, etc.) to trim stale entries within long-lived files.
+        Iterates every registered :class:`Artifact` (via ``sweep_all``)
+        and aggregates results. The filesystem artifact (registered in
+        :mod:`work_buddy.artifacts.default_registrations`) handles what
+        was Phase 1; every other registered artifact handles what was
+        Phase 2.
 
-        Returns a summary of both phases.
-
-        .. note::
-           This legacy method is preserved for backwards compat. The
-           new path is ``registry.sweep_all(dry_run)``, which iterates
-           every registered :class:`Artifact`. Once all consumers have
-           migrated (Phase D/E of the artifact-system unification), the
-           Phase 2 portion here will become the ``sweep_all`` call.
+        Returns a dict with the same shape the legacy callers expect
+        (``artifacts_deleted``, ``artifacts_bytes_freed``, ``deleted``,
+        ``pruners``) so external code doesn't break.
         """
         # Lazy import to avoid circular dependency at module load.
-        from work_buddy.artifacts import meta_pruners
+        from work_buddy.artifacts.registry import sweep_all
 
-        now = datetime.now(timezone.utc)
+        results = sweep_all(dry_run=dry_run)
 
-        # --- Phase 1: file-level TTL sweep ---
+        # Project the SweepResult list onto the legacy dict shape.
+        # The "filesystem" artifact's result populates the
+        # artifacts_deleted/bytes_freed fields; every other result lands
+        # in the "pruners" list.
+        artifacts_deleted = 0
+        artifacts_bytes_freed = 0
         deleted: list[dict[str, Any]] = []
-        bytes_freed = 0
-
-        for d in self._root.iterdir():
-            if not d.is_dir() or d.name.startswith("_"):
-                continue
-            for meta_file in d.glob("*.meta.json"):
-                try:
-                    rec = ArtifactRecord.from_meta(meta_file)
-                except (json.JSONDecodeError, KeyError, OSError):
-                    continue
-                if now >= rec.expires_at:
-                    deleted.append(
-                        {"id": rec.id, "type": rec.type, "size_bytes": rec.size_bytes}
-                    )
-                    bytes_freed += rec.size_bytes
-                    if not dry_run:
-                        if rec.path.exists():
-                            rec.path.unlink()
-                        if rec.meta_path.exists():
-                            rec.meta_path.unlink()
-
-        # --- Phase 2: entry-level pruning of singleton resources ---
-        pruner_results = meta_pruners.run_pruners(dry_run=dry_run)
+        pruners: list[dict[str, Any]] = []
+        for r in results:
+            if r.artifact_name == "filesystem":
+                artifacts_deleted = r.pruned
+                artifacts_bytes_freed = max(0, r.bytes_before - r.bytes_after)
+            else:
+                pruners.append({
+                    "resource": r.artifact_name,
+                    "pruned": r.pruned,
+                    "remaining": r.remaining,
+                    "bytes_before": r.bytes_before,
+                    "bytes_after": r.bytes_after,
+                    **({"transformed": r.transformed} if r.transformed else {}),
+                    **({"error": r.error} if r.error else {}),
+                    **r.extra,
+                })
 
         return {
             "dry_run": dry_run,
-            "artifacts_deleted": len(deleted),
-            "artifacts_bytes_freed": bytes_freed,
+            "artifacts_deleted": artifacts_deleted,
+            "artifacts_bytes_freed": artifacts_bytes_freed,
             "deleted": deleted,
-            "pruners": pruner_results,
+            "pruners": pruners,
         }
 
     def cleanup_session(
