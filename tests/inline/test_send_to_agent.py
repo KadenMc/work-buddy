@@ -80,10 +80,8 @@ def test_run_producer_catches_exceptions(monkeypatch) -> None:
         raise RuntimeError("LLM down")
 
     import importlib
-    mod = importlib.import_module(
-        "work_buddy.triage.capabilities.inline_triage_scan"
-    )
-    monkeypatch.setattr(mod, "inline_triage_scan", _boom)
+    mod = importlib.import_module("work_buddy.pipelines.inline")
+    monkeypatch.setattr(mod, "inline_capture", _boom)
     # Should not raise even though the inner call blew up
     handler_mod._run_producer(
         file_path="x", selection="y", paragraph="", cursor_line=0, hint="",
@@ -93,15 +91,17 @@ def test_run_producer_catches_exceptions(monkeypatch) -> None:
 def test_run_producer_invokes_scan(monkeypatch) -> None:
     seen: dict = {}
 
-    def _fake_scan(**kw):
+    def _fake_capture(**kw):
         seen.update(kw)
-        return {"status": "ok", "run_id": "r1", "submitted": 1}
+        return {
+            "status": "ok",
+            "umbrella_id": "u1",
+            "child_thread_ids": [],
+        }
 
     import importlib
-    mod = importlib.import_module(
-        "work_buddy.triage.capabilities.inline_triage_scan"
-    )
-    monkeypatch.setattr(mod, "inline_triage_scan", _fake_scan)
+    mod = importlib.import_module("work_buddy.pipelines.inline")
+    monkeypatch.setattr(mod, "inline_capture", _fake_capture)
 
     handler_mod._run_producer(
         file_path="Notes/a.md",
@@ -116,7 +116,6 @@ def test_run_producer_invokes_scan(monkeypatch) -> None:
     assert seen["paragraph"] == "para"
     assert seen["cursor_line"] == 4
     assert seen["hint"] == "hint"
-    assert seen["force"] is True
 
 
 class _FakeThread:
