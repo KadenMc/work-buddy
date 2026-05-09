@@ -16,6 +16,7 @@ module path — embeddings can miss those when a unit's prose is sparse.
 
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import PurePosixPath
 from typing import Any
@@ -138,11 +139,14 @@ def _module_paths_from_changed(changed_files: list[str]) -> list[str]:
 
 
 def _build_rag_query(changed_files: list[str], slugs: list[str]) -> str:
-    """Build a query string for the knowledge search.
+    """Build the *structural* RAG query string from path tokens.
 
     Mixes subsystem slugs (high signal — these are subsystem names) with
     leaf basenames from changed files (medium signal — module names).
     Slashes in slugs are flattened to spaces so each token is independent.
+
+    This is one of two query sources fused by ``_search_units_via_rag``;
+    see ``_read_module_docstring`` for the other.
     """
     parts: list[str] = []
     for s in slugs:
@@ -161,13 +165,63 @@ def _build_rag_query(changed_files: list[str], slugs: list[str]) -> str:
     return " ".join(deduped)
 
 
+# Regex to extract a Python module's top-of-file docstring.  Anchored at the
+# start of the file (modulo optional encoding/comment lines) and matches the
+# first triple-quoted string at module scope.  Multiline / dotall flags so
+# embedded newlines work; non-greedy so the first ``"""`` closes the match.
+_MODULE_DOCSTRING_RE = re.compile(
+    r'^\s*(?:#[^\n]*\n)*\s*[ru]?"""(.+?)"""',
+    re.DOTALL,
+)
+
+
+def _read_module_docstring(file_path: str, max_chars: int = 500) -> str:
+    """Return the first paragraph of a Python module's top-of-file docstring.
+
+    Used to enrich the RAG query with domain-language tokens — file-path
+    tokens surface units that mention the file by name; docstring tokens
+    surface units that describe the *behavior* in domain language. The two
+    are fused via RRF (see ``_search_units_via_rag``).
+
+    For non-Python files, files without a top-of-file docstring, unreadable
+    files, or any I/O / decoding error: returns ``""``. Capped at
+    ``max_chars`` so a single very long docstring can't dominate the query.
+    """
+    if not file_path.endswith(".py"):
+        return ""
+    try:
+        # Reading 2KB is plenty for a module docstring — Python convention
+        # caps them around a few hundred chars.  Avoids loading huge files.
+        with open(repo_root() / file_path, "r", encoding="utf-8") as f:
+            head = f.read(2048)
+    except (OSError, UnicodeDecodeError):
+        return ""
+
+    match = _MODULE_DOCSTRING_RE.search(head)
+    if not match:
+        return ""
+
+    docstring = match.group(1).strip()
+    # Take the first paragraph only — implementation details live further
+    # down and add token noise without conceptual signal.
+    first_paragraph = docstring.split("\n\n")[0].strip()
+    return first_paragraph[:max_chars]
+
+
 def _slim_search_hit(hit: dict[str, Any], why: str) -> dict[str, Any]:
-    """Reduce a search() result to the {path, name, description, score, why} contract."""
+    """Reduce a search() result to the {path, name, description, score, why} contract.
+
+    When RRF fusion is applied (multi-query path), prefer ``rrf_score`` —
+    that's the signal that actually drove the ranking. Falls back to the
+    raw single-query ``score`` when ``rrf_score`` is absent (e.g. the
+    grep-fallback path).
+    """
+    raw_score = hit.get("rrf_score", hit.get("score", 0.0))
     return {
         "path": hit.get("path", ""),
         "name": hit.get("name", ""),
         "description": hit.get("description", ""),
-        "score": round(float(hit.get("score", 0.0)), 4),
+        "score": round(float(raw_score), 4),
         "why": why,
     }
 
@@ -176,48 +230,117 @@ def _search_units_via_rag(
     changed_files: list[str],
     slugs: list[str],
 ) -> list[dict[str, Any]] | None:
-    """Query the knowledge search for candidate units.
+    """Multi-query RAG search fused via Reciprocal Rank Fusion.
+
+    Two kinds of signal go in:
+
+    - **Structural query**: path tokens + subsystem slugs. Surfaces units
+      that mention the file by name (entry_points, tags, prose pointers).
+    - **Per-file docstring queries**: each ``.py`` file in ``changed_files``
+      contributes its top-of-file docstring's first paragraph as a separate
+      query. Surfaces units that describe the *behavior* in domain language
+      (e.g. ``architecture/workflows`` for changes to ``conductor.py``).
+
+    Each query produces its own ranked list; ``rrf_combine`` fuses them
+    rank-by-rank with equal voice. Concatenating the queries into one
+    string would dilute short structural signals under longer prosier
+    docstring text — running them separately and fusing keeps each
+    signal's discriminative power.
 
     Returns:
-        A list of ``{path, name, description, score, why}`` dicts on success,
-        or ``None`` if the search failed (embedding service unavailable,
-        empty results, exception).  ``None`` is the signal for ``scan_changes``
-        to fall back to the scored grep path.
+        A list of ``{path, name, description, score, why}`` dicts on
+        success, or ``None`` if the structural query failed (embedding
+        service unavailable, exception). ``None`` is the signal for
+        ``scan_changes`` to fall back to the scored grep path. Per-file
+        docstring queries that fail are logged and skipped — partial
+        rankings are better than no rankings.
     """
     if not (changed_files or slugs):
         return []
 
-    query = _build_rag_query(changed_files, slugs)
-    if not query.strip():
+    from work_buddy.knowledge.search import rrf_combine, search
+
+    rankings: list[list[dict[str, Any]]] = []
+    sources_per_path: dict[str, list[str]] = {}  # for "why" labels
+
+    # --- Source 1: structural query (paths + slugs). ---
+    structural_query = _build_rag_query(changed_files, slugs)
+    if structural_query.strip():
+        try:
+            result = search(
+                query=structural_query,
+                knowledge_scope="system",
+                top_n=_TOP_N,
+                depth="index",
+            )
+        except Exception as exc:  # noqa: BLE001 — fallback path is the recovery
+            logger.warning(
+                "RAG structural search failed (%s); falling back to grep.",
+                exc,
+            )
+            return None
+        if "error" in result:
+            logger.warning(
+                "RAG structural search returned error (%s); falling back to grep.",
+                result["error"],
+            )
+            return None
+        ranking = result.get("results") or []
+        if ranking:
+            rankings.append(ranking)
+            for hit in ranking:
+                sources_per_path.setdefault(hit["path"], []).append("paths")
+
+    # --- Source 2..N: per-file docstring queries. ---
+    for f in changed_files:
+        docstring = _read_module_docstring(f)
+        if not docstring:
+            continue
+        try:
+            result = search(
+                query=docstring,
+                knowledge_scope="system",
+                top_n=_TOP_N,
+                depth="index",
+            )
+        except Exception as exc:  # noqa: BLE001 — non-fatal: drop this signal
+            logger.warning(
+                "RAG docstring search for %s failed (%s); continuing without it.",
+                f, exc,
+            )
+            continue
+        if "error" in result:
+            logger.warning(
+                "RAG docstring search for %s returned error (%s); skipping.",
+                f, result["error"],
+            )
+            continue
+        ranking = result.get("results") or []
+        if ranking:
+            rankings.append(ranking)
+            label = f"docstring({PurePosixPath(f.replace(chr(92), '/')).stem})"
+            for hit in ranking:
+                sources_per_path.setdefault(hit["path"], []).append(label)
+
+    # If every source returned empty, surface that to the caller as an empty
+    # list (genuine "nothing matches"), not as a failure.  ``None`` is reserved
+    # for "the structural query couldn't even run" — that's where the grep
+    # fallback adds value.
+    if not rankings:
         return []
 
-    try:
-        from work_buddy.knowledge.search import search
-        result = search(
-            query=query,
-            knowledge_scope="system",
-            top_n=_TOP_N,
-            depth="index",
-        )
-    except Exception as exc:  # noqa: BLE001 — fallback path is the recovery
-        logger.warning("RAG search failed (%s); falling back to grep.", exc)
-        return None
+    fused = rrf_combine(rankings)
 
-    if "error" in result:
-        logger.warning("RAG search returned error (%s); falling back to grep.", result["error"])
-        return None
-
-    raw = result.get("results") or []
-    if not raw:
-        # Empty results from search aren't necessarily wrong (the diff might
-        # genuinely have no related units), but the contract requires us to
-        # surface them anyway.  Return an empty list, not None.
-        return []
-
-    # Synthesize a "why" from the slugs that contributed to the query.
-    why_summary = ", ".join(slugs[:3]) if slugs else "matched query terms"
-    why_label = f"matched: {why_summary}"
-    return [_slim_search_hit(hit, why=why_label) for hit in raw]
+    # Slim each candidate and synthesize the "why" from which sources
+    # contributed.  This is materially more useful than the old single-source
+    # "matched: <slugs>" label — a reader can tell at a glance whether a
+    # candidate landed via path-mention or domain-language match.
+    out: list[dict[str, Any]] = []
+    for hit in fused[:_TOP_N]:
+        sources = sources_per_path.get(hit["path"], [])
+        why = "fused: " + " + ".join(sources) if sources else "matched query"
+        out.append(_slim_search_hit(hit, why=why))
+    return out
 
 
 def _match_units_via_grep(

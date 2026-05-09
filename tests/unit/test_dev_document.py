@@ -160,10 +160,18 @@ def _fake_search_raises(*args: Any, **kwargs: Any) -> dict[str, Any]:
 
 
 def test_scan_uses_rag_when_available(fake_git):
-    """When search() returns scored hits, the candidates carry _source: rag."""
+    """When search() returns scored hits, the candidates carry _source: rag.
+
+    The scan now makes 1 + N search() calls (one structural query, plus one
+    per Python file with a docstring). The mock's ``side_effect`` returns
+    the same response for every call.
+    """
     fake_git["tracked"] = ["work_buddy/dashboard/forms.py"]
     fake_git["untracked"] = []
-    with patch("work_buddy.knowledge.search.search", side_effect=_fake_search_success):
+    # Stub _read_module_docstring to be deterministic — return empty so this
+    # test exercises the structural-query-only path.
+    with patch("work_buddy.knowledge.search.search", side_effect=_fake_search_success), \
+         patch("work_buddy.dev.document._read_module_docstring", return_value=""):
         result = dev_document.scan_changes()
     assert result["_source"] == "rag"
     # The fake hits surface in the candidate list.
@@ -172,10 +180,12 @@ def test_scan_uses_rag_when_available(fake_git):
     # Each candidate has a non-empty `why` describing the match.
     for cand in result["candidate_units"]:
         assert cand["why"]
+        # The new fused-source label is informative.
+        assert "fused" in cand["why"] or "matched" in cand["why"]
 
 
 def test_scan_falls_back_on_search_failure(fake_git):
-    """When search() raises, scan still completes via the grep fallback."""
+    """When search() raises on the structural query, scan falls back to grep."""
     fake_git["tracked"] = ["work_buddy/obsidian/tasks/namespace_suggest.py"]
     fake_git["untracked"] = []
     with patch("work_buddy.knowledge.search.search", side_effect=_fake_search_raises):
@@ -189,7 +199,7 @@ def test_scan_falls_back_on_search_failure(fake_git):
 
 
 def test_scan_caps_at_20_candidates(fake_git):
-    """A flood of search hits gets truncated to top 20."""
+    """A flood of fused search hits gets truncated to top 20."""
     many = [
         {
             "path": f"fake/unit-{i}",
@@ -202,10 +212,113 @@ def test_scan_caps_at_20_candidates(fake_git):
     fake = {"mode": "search", "query": "x", "count": 50, "results": many}
     fake_git["tracked"] = ["work_buddy/dev/document.py"]
     fake_git["untracked"] = []
-    with patch(
-        "work_buddy.knowledge.search.search",
-        return_value=fake,
-    ):
+    with patch("work_buddy.knowledge.search.search", return_value=fake), \
+         patch("work_buddy.dev.document._read_module_docstring", return_value=""):
         result = dev_document.scan_changes()
     assert result["_source"] == "rag"
     assert len(result["candidate_units"]) <= 20
+
+
+# ---------------------------------------------------------------------------
+# Multi-query + RRF fusion
+# ---------------------------------------------------------------------------
+
+def test_scan_fuses_path_and_docstring_signals(fake_git):
+    """A unit appearing in BOTH the structural and docstring rankings ranks
+    higher than a unit that appears in only one.
+
+    This is the property that makes RRF fusion the right tool — equal voice
+    across signal sources, regardless of query length.
+    """
+    # First call (structural query) returns A, B (in that order).
+    # Second call (docstring query) returns B, C.
+    # B appears in BOTH → should fuse to rank 1.
+    structural = {
+        "mode": "search", "count": 2,
+        "results": [
+            {"path": "fake/A", "name": "A", "description": "a", "score": 0.5},
+            {"path": "fake/B", "name": "B", "description": "b", "score": 0.4},
+        ],
+    }
+    docstring = {
+        "mode": "search", "count": 2,
+        "results": [
+            {"path": "fake/B", "name": "B", "description": "b", "score": 0.5},
+            {"path": "fake/C", "name": "C", "description": "c", "score": 0.4},
+        ],
+    }
+    fake_git["tracked"] = ["work_buddy/dev/document.py"]
+    fake_git["untracked"] = []
+    with patch(
+        "work_buddy.knowledge.search.search",
+        side_effect=[structural, docstring],
+    ), patch(
+        "work_buddy.dev.document._read_module_docstring",
+        return_value="some docstring text",
+    ):
+        result = dev_document.scan_changes()
+    paths = [c["path"] for c in result["candidate_units"]]
+    assert paths[0] == "fake/B", f"shared hit should rank first; got {paths}"
+    # B's `why` should mention both sources.
+    b_hit = next(c for c in result["candidate_units"] if c["path"] == "fake/B")
+    assert "paths" in b_hit["why"] and "docstring" in b_hit["why"]
+
+
+def test_scan_skips_files_without_docstrings(fake_git):
+    """Files with no docstring contribute no extra search call."""
+    structural = {
+        "mode": "search", "count": 1,
+        "results": [{"path": "fake/A", "name": "A", "description": "a", "score": 0.9}],
+    }
+    fake_git["tracked"] = ["work_buddy/dev/document.py"]
+    fake_git["untracked"] = []
+    mock_search = patch(
+        "work_buddy.knowledge.search.search",
+        return_value=structural,
+    )
+    with mock_search as m, patch(
+        "work_buddy.dev.document._read_module_docstring",
+        return_value="",
+    ):
+        dev_document.scan_changes()
+    # Only the structural query should have run.
+    assert m.call_count == 1, (
+        f"Expected 1 search call (structural only); got {m.call_count}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# _read_module_docstring
+# ---------------------------------------------------------------------------
+
+def test_read_module_docstring_extracts_first_paragraph():
+    """Real Python module: returns the first paragraph of its docstring."""
+    # work_buddy/dev/document.py has a real top-of-file docstring.
+    out = dev_document._read_module_docstring("work_buddy/dev/document.py")
+    assert out, "expected non-empty docstring"
+    # First paragraph stops at the first blank line — should be a single
+    # paragraph, no double-newlines inside.
+    assert "\n\n" not in out
+    # Domain words from the actual docstring.
+    assert "scan" in out.lower() or "knowledge" in out.lower()
+
+
+def test_read_module_docstring_returns_empty_for_non_python():
+    """Non-.py files (markdown, JSON, etc.) get the empty string."""
+    assert dev_document._read_module_docstring("README.md") == ""
+    assert dev_document._read_module_docstring("knowledge/store/dev.json") == ""
+
+
+def test_read_module_docstring_returns_empty_for_unreadable():
+    """Missing files don't crash — caller gets empty string."""
+    out = dev_document._read_module_docstring("does/not/exist.py")
+    assert out == ""
+
+
+def test_read_module_docstring_caps_at_max_chars():
+    """Very long docstrings get truncated to max_chars."""
+    # Use a real file but truncate aggressively.
+    out = dev_document._read_module_docstring(
+        "work_buddy/dev/document.py", max_chars=20
+    )
+    assert len(out) <= 20
