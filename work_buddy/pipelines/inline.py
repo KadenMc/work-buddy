@@ -181,6 +181,7 @@ def inline_capture(
         extract_deadline_hints,
         merge_hints_into_records,
     )
+    from work_buddy.clarify.project_picker import pick_projects
 
     # ---- 1. Build the TriageItem --------------------------------------
     items, _ch = _collect_inline_selection(
@@ -200,6 +201,7 @@ def inline_capture(
             "dropped_count": 0,
             "verdict": None,
             "deadline_hints": None,
+            "project_candidates": None,
         }
     item = items[0]
 
@@ -223,11 +225,23 @@ def inline_capture(
                 exc,
             )
 
+    # ---- 3.5. Project picker pre-pass --------------------------------
+    # Hedged ranked-candidate scoring against the user's active project
+    # registry. The verdict reads these as evidence and decides
+    # task_proposal.project_tag with broader context.
+    project_candidates_payload = pick_projects(
+        item.text or "",
+        active_projects=triage_context.get("active_projects") or [],
+        hint=(item.metadata or {}).get("hint", "") or "",
+        item_id=item.id,
+    )
+
     # ---- 4. Multi-record verdict --------------------------------------
     verdict, verdict_error = _call_multi_record_verdict(
         item=item,
         deadline_hints=deadline_hints,
         triage_context=triage_context,
+        project_candidates=project_candidates_payload.get("candidates") or [],
         tier_chain=tier_chain,
     )
 
@@ -241,6 +255,7 @@ def inline_capture(
             "dropped_count": 0,
             "verdict": None,
             "deadline_hints": deadline_hints,
+            "project_candidates": project_candidates_payload.get("candidates"),
         }
 
     # Refusal: agent declined to commit; spawn one Thread in
@@ -260,6 +275,7 @@ def inline_capture(
             "dropped_count": 0,
             "verdict": verdict,
             "deadline_hints": deadline_hints,
+            "project_candidates": project_candidates_payload.get("candidates"),
         }
 
     records = list(verdict.get("records") or [])
@@ -288,6 +304,7 @@ def inline_capture(
             "dropped_count": len(dropped),
             "verdict": verdict,
             "deadline_hints": deadline_hints,
+            "project_candidates": project_candidates_payload.get("candidates"),
         }
 
     if len(actionable) == 1:
@@ -307,6 +324,7 @@ def inline_capture(
             "dropped_count": len(dropped),
             "verdict": verdict,
             "deadline_hints": deadline_hints,
+            "project_candidates": project_candidates_payload.get("candidates"),
         }
 
     # 2+ actionable records: spawn umbrella + N children.
@@ -327,6 +345,7 @@ def inline_capture(
         "dropped_count": len(dropped),
         "verdict": verdict,
         "deadline_hints": deadline_hints,
+        "project_candidates": project_candidates_payload.get("candidates"),
     }
 
 
@@ -340,6 +359,7 @@ def _call_multi_record_verdict(
     item: Any,
     deadline_hints: dict[str, Any],
     triage_context: dict[str, Any],
+    project_candidates: list[dict[str, Any]] | None = None,
     tier_chain: list[str] | None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     """Call the multi-record verdict LLM.
@@ -352,6 +372,11 @@ def _call_multi_record_verdict(
     ``triage.refine_clusters.tier_chain``). Bypasses the legacy
     ``call_for_verdict`` wrapper because the legacy wrapper has its
     own retry semantics that don't compose with our chain walk.
+
+    ``project_candidates`` is the hedged ranked-candidate list from the
+    project-picker SubCall. The verdict reads it from the user prompt
+    and decides ``task_proposal.project_tag`` (single string or null)
+    based on its broader context.
     """
     from work_buddy.clarify.recommend import render_triage_context_block
     from work_buddy.clarify.verdict_schema import MULTI_RECORD_VERDICT_SCHEMA
@@ -365,6 +390,7 @@ def _call_multi_record_verdict(
         item=item,
         triage_context=triage_context,
         deadline_hints=deadline_hints,
+        project_candidates=project_candidates,
     )
 
     runner = LLMRunner()
@@ -483,6 +509,17 @@ A captured selection produces ZERO OR MORE records. Each record has a
   ``creation_provenance="inline-inferred"`` since the user explicitly
   sent this. When ``has_deadline`` or ``has_dependency`` are set in
   the pre-extracted hints, copy them into the task_proposal.
+
+  Set ``task_proposal.project_tag`` based on your reasoning over the
+  ``Project candidates`` block in the user message PLUS the broader
+  context (active contracts, user hint, recent commits, captured
+  text). Allowed values are slug strings from the candidate list, or
+  ``null``. Lean toward ``null`` when genuinely uncertain — declining
+  to assign a project is preferable to a wrong assignment. The
+  candidates are hedged guesses from a smaller LLM with limited
+  context; you may agree, override, or decline. You may also pass
+  through ``project_candidates`` verbatim (for the audit trail) but
+  must not invent slugs not in the candidate list.
 - ``reference`` — knowledge worth filing but not actionable. Populate
   ``reference_proposal.summary`` with a short noun-phrase description.
 - ``calendar_only`` — a date-anchored event the user wants on their
@@ -517,8 +554,10 @@ def _render_item_prompt(
     item: Any,
     triage_context: dict[str, Any],
     deadline_hints: dict[str, Any] | None = None,
+    project_candidates: list[dict[str, Any]] | None = None,
 ) -> str:
-    """Compose the verdict user prompt with file + hint + user context + hints."""
+    """Compose the verdict user prompt with file + hint + user context + hints + candidates."""
+    from work_buddy.clarify.project_picker import render_project_candidates_block
     from work_buddy.clarify.recommend import render_triage_context_block
 
     meta = item.metadata or {}
@@ -551,6 +590,11 @@ def _render_item_prompt(
         else:
             hints_block = "\nDeadline hints: none detected.\n"
 
+    project_candidates_block = render_project_candidates_block(project_candidates)
+    project_candidates_block = (
+        f"\n\n{project_candidates_block}\n" if project_candidates_block else ""
+    )
+
     return (
         f"Item id: {item.id}\n"
         f"File: {file_path}:{cursor_line}\n"
@@ -560,6 +604,7 @@ def _render_item_prompt(
         f"{(item.text or '').strip()}\n"
         f"--- End ---"
         f"{context_block}"
+        f"{project_candidates_block}"
     )
 
 
@@ -1027,12 +1072,20 @@ def _action_payload_for_record(
         # Build parameters dict for task_create. We pass the fields
         # the capability accepts; unknown / forward-compat fields stay
         # in the payload for the audit trail but don't go into params.
+        # ``project_tag`` (decided by the verdict from the project-picker
+        # sub-LLM's candidate list) routes to ``create_task(project=...)``
+        # which applies ``#projects/<slug>`` automatically. Null means
+        # no project — leave the kwarg unset.
+        project_slug = proposal.get("project_tag")
+        if not isinstance(project_slug, str) or not project_slug.strip():
+            project_slug = None
         parameters = {
             "task_text": task_text,
             "summary": proposal.get("definition_of_done")
             or proposal.get("outcome_text")
             or None,
             "urgency": "medium",
+            "project": project_slug,
             "creation_provenance": "inline-inferred",
             "user_involvement": "high",
             "has_deadline": bool(proposal.get("has_deadline")),

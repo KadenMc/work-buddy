@@ -356,6 +356,46 @@ _TASK_PROPOSAL_SCHEMA: dict[str, Any] = {
                 "edit."
             ),
         },
+        # ---- Project picker (sub-LLM evidence + verdict's pick) -----
+        "project_tag": {
+            "type": ["string", "null"],
+            "description": (
+                "The project this task belongs to, as a slug under "
+                "``#projects/<slug>``. Null means no project — a "
+                "first-class option, not a fallback. The verdict "
+                "(THIS prompt) decides this by reasoning over "
+                "``project_candidates`` (from the project-picker "
+                "sub-LLM) plus broader context. Lean toward null "
+                "when genuinely uncertain; declining to assign a "
+                "project is preferable to a wrong assignment. The "
+                "downstream ``triage_submit``/``task_create`` path "
+                "applies ``#projects/<slug>`` iff this is non-null."
+            ),
+        },
+        "project_candidates": {
+            "type": ["array", "null"],
+            "description": (
+                "Audit field: the ranked candidate list from the "
+                "project-picker sub-LLM. Each entry has "
+                "``project_tag`` (slug or null), ``confidence`` "
+                "(0-1), and ``rationale``. The verdict pre-pass "
+                "interpolates these into the user prompt as "
+                "evidence; the verdict reasons over them and sets "
+                "``project_tag`` accordingly. Pass through verbatim "
+                "from the user message unless overriding (drop "
+                "spurious candidates allowed; never invent new ones)."
+            ),
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "project_tag": {"type": ["string", "null"]},
+                    "confidence": {"type": "number"},
+                    "rationale": {"type": "string"},
+                },
+                "required": ["project_tag", "confidence", "rationale"],
+            },
+        },
     },
     "required": ["suggested_task_text"],
     "additionalProperties": False,
