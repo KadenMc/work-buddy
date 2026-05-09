@@ -14,6 +14,7 @@ from work_buddy.email.thread_actions import (
     email_close,
     email_create_tasks,
     email_create_umbrella_task,
+    email_record_into_task,
 )
 from work_buddy.threads import models, store
 
@@ -282,3 +283,124 @@ class TestEmailCreateUmbrellaTask:
         assert result["created"] is None
         assert len(result["failed"]) == 1
         assert "vault unreachable" in result["failed"][0]["error"]
+
+
+# ---------------------------------------------------------------------------
+# email_record_into_task
+# ---------------------------------------------------------------------------
+
+
+class TestEmailRecordIntoTask:
+    @pytest.fixture
+    def stub_vault(self, tmp_path, monkeypatch):
+        """Make ``load_config`` return a vault rooted at tmp_path so the
+        append helper has a real filesystem location to write into."""
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        # Prepare a task-note location the test will append to.
+        notes_dir = vault / "tasks" / "notes"
+        notes_dir.mkdir(parents=True)
+        note_path = "tasks/notes/abc-123.md"
+        (vault / note_path).write_text(
+            "# Existing task note\n\n"
+            "Pre-existing content.\n",
+            encoding="utf-8",
+        )
+
+        def _stub_load_config():
+            return {"vault_root": str(vault)}
+
+        monkeypatch.setattr(
+            "work_buddy.config.load_config",
+            _stub_load_config,
+        )
+        return {"vault": vault, "note_path": note_path}
+
+    def test_appends_section_with_email_bullets(self, fresh_db, stub_vault):
+        t = _make_thread_with_emails([
+            {"id": "e0", "subject": "Reply: Q4 status",
+             "sender": "alice@example.com", "date": "2026-05-08"},
+            {"id": "e1", "subject": "Re: Q4 status",
+             "sender": "bob@example.com", "date": "2026-05-09"},
+        ])
+
+        with patch(
+            "work_buddy.obsidian.tasks.mutations.read_task",
+            return_value={
+                "success": True, "task_id": "t-abc123",
+                "note_path": stub_vault["note_path"],
+            },
+        ):
+            result = email_record_into_task(
+                t.thread_id, target_task_id="t-abc123",
+            )
+
+        assert result["appended"] is True
+        assert result["email_count"] == 2
+        assert result["target_task_id"] == "t-abc123"
+        # Verify the section actually landed.
+        body = (stub_vault["vault"] / stub_vault["note_path"]).read_text(
+            encoding="utf-8",
+        )
+        assert "## Emails recorded" in body
+        assert "Reply: Q4 status" in body
+        assert "alice@example.com" in body
+        assert "bob@example.com" in body
+        # Pre-existing content preserved.
+        assert "Pre-existing content." in body
+
+    def test_section_heading_override(self, fresh_db, stub_vault):
+        t = _make_thread_with_emails([{"id": "e0", "subject": "X"}])
+        with patch(
+            "work_buddy.obsidian.tasks.mutations.read_task",
+            return_value={
+                "success": True, "note_path": stub_vault["note_path"],
+            },
+        ):
+            email_record_into_task(
+                t.thread_id, target_task_id="t-abc123",
+                section_heading="Q4 thread",
+            )
+        body = (stub_vault["vault"] / stub_vault["note_path"]).read_text(
+            encoding="utf-8",
+        )
+        assert "## Q4 thread" in body
+        assert "## Emails recorded" not in body
+
+    def test_target_task_without_note_returns_error(self, fresh_db, stub_vault):
+        t = _make_thread_with_emails([{"id": "e0", "subject": "X"}])
+        with patch(
+            "work_buddy.obsidian.tasks.mutations.read_task",
+            return_value={"success": True, "note_path": None},
+        ):
+            result = email_record_into_task(
+                t.thread_id, target_task_id="t-no-note",
+            )
+        assert result["appended"] is False
+        assert "no linked note" in result["error"]
+
+    def test_missing_target_task_raises(self, fresh_db, stub_vault):
+        t = _make_thread_with_emails([{"id": "e0", "subject": "X"}])
+        with patch(
+            "work_buddy.obsidian.tasks.mutations.read_task",
+            return_value={"success": False, "error": "not found"},
+        ):
+            with pytest.raises(EmailThreadActionError, match="not found"):
+                email_record_into_task(
+                    t.thread_id, target_task_id="t-bogus",
+                )
+
+    def test_empty_thread_returns_skipped_empty(self, fresh_db, stub_vault):
+        t = _make_thread_with_emails([])
+        result = email_record_into_task(
+            t.thread_id, target_task_id="t-abc123",
+        )
+        assert result.get("skipped_empty") is True
+        assert result["appended"] is False
+        assert result["email_count"] == 0
+
+    def test_missing_thread_raises(self, fresh_db, stub_vault):
+        with pytest.raises(EmailThreadActionError, match="not found"):
+            email_record_into_task(
+                "th-nope", target_task_id="t-abc123",
+            )

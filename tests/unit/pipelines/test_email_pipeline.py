@@ -74,11 +74,12 @@ class TestActionLibrary:
             "email_close",
             "email_create_tasks",
             "email_create_umbrella_task",
+            "email_record_into_task",
         }
 
     def test_all_per_group(self):
         per_group = EMAIL_ACTION_LIBRARY.per_group_actions()
-        assert len(per_group) == 3
+        assert len(per_group) == 4
 
     def test_pipeline_exposes_library(self):
         p = EmailTriagePipeline()

@@ -99,6 +99,22 @@ EMAIL_ACTIONS: list[ActionDescriptor] = [
         cardinality=CARDINALITY_PER_GROUP,
         icon="package",
     ),
+    ActionDescriptor(
+        capability_name="email_record_into_task",
+        label="Record into existing task",
+        description=(
+            "File the cluster's emails as a context section on an "
+            "existing task's linked note. Use when the cluster is "
+            "*context for ongoing work* — replies on an active "
+            "deliverable, PR-review notifications about a task you're "
+            "already tracking — rather than a new task itself. The "
+            "user picks the target task at approval time; the action "
+            "appends a bulleted Emails-recorded section listing each "
+            "email's subject + sender + date."
+        ),
+        cardinality=CARDINALITY_PER_GROUP,
+        icon="file-plus",
+    ),
 ]
 
 

@@ -7571,4 +7571,40 @@ def _email_capabilities() -> list[Capability]:
                 "single task for email group",
             ],
         ),
+        Capability(
+            name="email_record_into_task",
+            description=(
+                "File an email cluster as a context section on an "
+                "existing task's linked note. Use when the cluster is "
+                "context for ongoing work (replies on an active "
+                "deliverable, PR-review notifications about a task "
+                "you're already tracking) rather than a new task. The "
+                "target task must already have a note attached; this "
+                "capability does not implicitly create one. Appends a "
+                "bulleted 'Emails recorded' section listing each "
+                "email's subject + sender + date."
+            ),
+            category="email",
+            is_action=True,
+            intrinsic_amplifiers={
+                "irreversibility": "low",
+                "regret_potential": "low",
+            },
+            parameters={
+                "thread_id": {"type": "str", "description": "Email-cluster sub-thread carrying the emails to record", "required": True},
+                "target_task_id": {"type": "str", "description": "Task ID (e.g. 't-a3f8c1e2') to file the cluster against. Must already have a linked note.", "required": True},
+                "section_heading": {"type": "str", "description": "Optional section-heading override (default: 'Emails recorded').", "required": False},
+            },
+            callable=(lambda **kw: __import__(
+                "work_buddy.email.thread_actions",
+                fromlist=["email_record_into_task"],
+            ).email_record_into_task(**kw)),
+            requires=["obsidian"],
+            mutates_state=True,
+            search_aliases=[
+                "record emails into task",
+                "file emails as task context",
+                "attach emails to existing task",
+            ],
+        ),
     ]
