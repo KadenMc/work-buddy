@@ -75,11 +75,20 @@ class ArtifactRecord:
         return datetime.now(timezone.utc) >= self.expires_at
 
     def to_dict(self) -> dict[str, Any]:
+        # Lazy import to avoid circular dep at module load.
+        from work_buddy.artifacts.expiry import format_for_user
+
         d = asdict(self)
         d["path"] = self.path.as_posix()
         d["meta_path"] = self.meta_path.as_posix()
+        # Raw ISO for programmatic use.
         d["created_at"] = self.created_at.isoformat()
         d["expires_at"] = self.expires_at.isoformat()
+        # User-/agent-facing display strings, formatted in the configured
+        # timezone so agents and humans always see a TZ-explicit value
+        # rather than raw UTC ISO that can be misinterpreted.
+        d["created_at_display"] = format_for_user(self.created_at)
+        d["expires_at_display"] = format_for_user(self.expires_at)
         d["is_expired"] = self.is_expired
         return d
 
