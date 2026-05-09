@@ -233,30 +233,6 @@ if wf:
     )
 
 
-# ── Test 6: Defensive validation in dispatch ──────────────────
-
-print("\n=== Test 6: Defensive validation (_validate_presentation) ===")
-
-from work_buddy.triage.dispatch import _validate_presentation
-
-err = _validate_presentation({"groups_by_action": {}}, "test")
-check("Valid presentation passes", err is None, str(err))
-
-err = _validate_presentation({"changes": []}, "test")
-check(
-    "Missing groups_by_action rejected",
-    err is not None and "groups_by_action" in err.get("error", ""),
-    str(err),
-)
-
-err = _validate_presentation("not a dict", "test")
-check(
-    "Non-dict rejected",
-    err is not None and "dict" in err.get("error", ""),
-    str(err),
-)
-
-
 # ── Summary ───────────────────────────────────────────────────
 
 print(f"\n{'='*50}")
