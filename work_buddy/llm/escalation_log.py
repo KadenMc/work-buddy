@@ -238,3 +238,44 @@ def summarize_escalations(*, limit: int | None = None) -> dict[str, Any]:
         "by_outcome": by_outcome,
         "by_final_tier": by_final_tier,
     }
+
+
+# ---------------------------------------------------------------------------
+# Lifecycle registration — escalations-log artifact
+# ---------------------------------------------------------------------------
+#
+# Registers a JsonlStorage + TimeWindow(timestamp, 30d) + Delete
+# artifact under "escalations-log". Malformed lines are preserved by
+# default (matches the original prune_escalation_log behavior).
+
+def _register_escalation_log_artifact() -> None:
+    try:
+        from work_buddy.artifacts import (
+            Artifact,
+            Delete,
+            JsonlStorage,
+            Lifecycle,
+            TimeWindow,
+            register_artifact,
+        )
+
+        register_artifact(Artifact(
+            name="escalations-log",
+            storage=JsonlStorage(
+                path=_log_path(),
+                artifact_name="escalations-log",
+                preserve_malformed_lines=True,
+            ),
+            lifecycle=Lifecycle(
+                trigger=TimeWindow(
+                    timestamp_field="timestamp",
+                    window_days=30,
+                ),
+                action=Delete(),
+            ),
+        ))
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.warning("Failed to register escalations-log artifact: %s", exc)
+
+
+_register_escalation_log_artifact()

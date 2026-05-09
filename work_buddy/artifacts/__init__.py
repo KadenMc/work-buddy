@@ -104,6 +104,17 @@ from work_buddy.artifacts.lifecycle.triggers import (  # noqa: F401
 )
 from work_buddy.artifacts.provenance import SessionTagged  # noqa: F401
 
+# Eagerly register the default artifacts (filesystem, logs/global) at
+# package import time. Consumer-owned artifacts (chrome-ledger,
+# llm-cache, segmentation-cache, escalations-log, agent-sessions,
+# claude-code-usage, messages, llm-queue, notifications) register from
+# their own modules; they appear in the registry the first time those
+# modules are imported.
+from work_buddy.artifacts.default_registrations import (  # noqa: E402
+    register_default_artifacts,
+)
+register_default_artifacts()
+
 # Legacy public name. ``FilesystemStorage`` and ``ArtifactStore`` are the
 # same class — the rename happened to make room for sibling backends
 # (SqliteRowsStorage, JsonRecordsStorage, etc.) that share the Storage
