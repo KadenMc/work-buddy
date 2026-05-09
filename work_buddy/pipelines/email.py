@@ -198,6 +198,18 @@ def _domain_of(sender: str) -> str:
     return domain
 
 
+def _singleton_label(ci: CapturedItem) -> str:
+    """Per-email cluster label — uses the subject (truncated) so the
+    dashboard's per-cluster card title reads like an email subject
+    line rather than "Cluster of 1".
+    """
+    payload = ci.payload or {}
+    subject = (payload.get("subject") or ci.label or "(no subject)").strip()
+    if len(subject) > 80:
+        subject = subject[:79] + "…"
+    return subject or "(no subject)"
+
+
 def _synthesised_tags(payload: dict[str, Any]) -> tuple[str, ...]:
     """Build a small set of tags from the email's metadata + flags.
 
@@ -321,81 +333,51 @@ class EmailTriagePipeline:
         ]
 
     # ------------------------------------------------------------------
-    # Stage 3 — precluster (embedding-fused clustering)
+    # Stage 3 — precluster (one-cluster-per-email by design)
     # ------------------------------------------------------------------
 
     def precluster(
         self, items: list[CapturedItem],
     ) -> list[ClusterSpec]:
-        """Cluster emails using the existing
-        ``clarify/cluster.cluster_items``. Adapter converts
-        CapturedItem → TriageItem (the shape the helper expects) and
-        ClusterSpec ← TriageCluster on return.
+        """Return one singleton cluster per email — no algorithmic
+        grouping.
 
-        Empty input → empty output. On clusterer failure, falls back
-        to a single ``Ungrouped`` cluster so the user still sees one
-        umbrella with all the captured emails.
+        Email is **per-item** triage: each message gets its own
+        action proposal ("close this newsletter", "create a task from
+        this customer reply", "record this CI notification onto
+        t-ab12cd34"). Algorithmic clustering — which works for Chrome
+        tabs (8 tabs about LSTM training) and journal segments (5
+        paragraphs about figure 3) — would mostly invent noise on
+        unrelated inbox messages, forcing the user to mentally
+        un-group what the agent grouped.
+
+        Conversation-thread grouping (multiple messages of the same
+        RFC reply chain) is a real signal but Thunderbird already
+        groups by thread natively at its UI layer, and the bridge's
+        dedup-by-stable_key collapses Gmail labels-as-folders
+        duplicates within a single run. Re-grouping on top of that
+        adds little. If we ever want agent-driven thread grouping,
+        it would be a separate pipeline stage that consumes
+        In-Reply-To / References headers — not the same code path
+        as the chrome/journal Louvain clusterer.
+
+        Each returned cluster carries:
+        - ``label`` — the email subject (truncated). The dashboard
+          renders this as the per-card title.
+        - ``item_ids`` — exactly one id (the email's CapturedItem.id).
+
+        On empty input → empty output (the runner spawns an empty
+        umbrella so the operator sees the run executed).
         """
         if not items:
             return []
-        try:
-            return self._run_email_clusterer(items)
-        except Exception as e:
-            logger.warning(
-                "email pipeline.precluster: clusterer failed: %s; "
-                "falling back to a single Ungrouped cluster",
-                e,
+        return [
+            ClusterSpec(
+                label=_singleton_label(ci),
+                item_ids=(ci.id,),
             )
-            return [ClusterSpec(
-                label="Ungrouped",
-                item_ids=tuple(ci.id for ci in items),
-            )]
-
-    def _run_email_clusterer(
-        self, items: list[CapturedItem],
-    ) -> list[ClusterSpec]:
-        from work_buddy.clarify.cluster import cluster_items as email_cluster
-        from work_buddy.clarify.items import TriageItem
-
-        triage_items: list[TriageItem] = []
-        for ci in items:
-            payload = ci.payload or {}
-            triage_items.append(TriageItem(
-                id=ci.id,
-                text=ci.summary or ci.label,
-                label=ci.label,
-                source="email_message",
-                # Email items have no URL — the open-in-Thunderbird
-                # affordance flows through the source descriptor's
-                # ``open_action`` (see triage/card-actions). Keep the
-                # field empty rather than synthesising a fake one.
-                url="",
-                metadata={
-                    "subject": payload.get("subject"),
-                    "sender": payload.get("sender"),
-                    "domain": _domain_of(payload.get("sender") or ""),
-                    "folder_path": payload.get("folder_path"),
-                    "folder_type": payload.get("folder_type"),
-                    "account_id": payload.get("account_id"),
-                    "tags": list(ci.tags or ()),
-                    "stable_key": payload.get("stable_key"),
-                },
-            ))
-
-        email_clusters = email_cluster(triage_items)
-        out: list[ClusterSpec] = []
-        for tc in email_clusters or []:
-            ids = tuple(it.id for it in tc.items)
-            if not ids:
-                continue
-            label = tc.label or "Email cluster"
-            out.append(ClusterSpec(label=label, item_ids=ids))
-        if not out:
-            out = [ClusterSpec(
-                label="Ungrouped",
-                item_ids=tuple(ci.id for ci in items),
-            )]
-        return out
+            for ci in items
+        ]
 
     # ------------------------------------------------------------------
     # Stage 5 helper — umbrella inciting summary

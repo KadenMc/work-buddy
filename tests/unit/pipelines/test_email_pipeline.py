@@ -260,48 +260,69 @@ class TestAnnotateItems:
 
 
 class TestPrecluster:
+    """Email is per-item triage by design — precluster always returns
+    one singleton cluster per email. No algorithmic grouping.
+    """
+
     def test_precluster_empty_returns_empty(self):
         p = EmailTriagePipeline()
         assert p.precluster([]) == []
 
-    def test_precluster_falls_back_on_failure(self):
+    def test_precluster_returns_one_cluster_per_email(self):
         items = [
-            _captured_from_triage_item(_triage_item(f"email_{i}"))
+            _captured_from_triage_item(
+                _triage_item(f"email_{i}", subject=f"Subject {i}"),
+            )
+            for i in range(3)
+        ]
+        p = EmailTriagePipeline()
+        clusters = p.precluster(items)
+        assert len(clusters) == 3
+        # Each cluster has exactly one item (one email = one cluster).
+        assert all(len(c.item_ids) == 1 for c in clusters)
+        # item_ids cover the input set exactly.
+        assert {c.item_ids[0] for c in clusters} == {
+            f"email_{i}" for i in range(3)
+        }
+
+    def test_precluster_label_is_email_subject(self):
+        items = [
+            _captured_from_triage_item(
+                _triage_item("e0", subject="Re: Q4 status"),
+            ),
+        ]
+        p = EmailTriagePipeline()
+        clusters = p.precluster(items)
+        assert clusters[0].label == "Re: Q4 status"
+
+    def test_precluster_truncates_long_subject(self):
+        long_subject = "x" * 200
+        items = [
+            _captured_from_triage_item(
+                _triage_item("e0", subject=long_subject),
+            ),
+        ]
+        p = EmailTriagePipeline()
+        clusters = p.precluster(items)
+        assert len(clusters[0].label) <= 80
+        assert clusters[0].label.endswith("…")
+
+    def test_precluster_does_not_call_clusterer(self):
+        """Regression guardrail: email's per-item shape must NOT
+        invoke the algorithmic clusterer. Forcing emails through
+        Louvain produces noise the user has to mentally undo."""
+        items = [
+            _captured_from_triage_item(
+                _triage_item(f"email_{i}"),
+            )
             for i in range(3)
         ]
         with patch(
             "work_buddy.clarify.cluster.cluster_items",
-            side_effect=RuntimeError("clusterer broke"),
-        ):
+        ) as mock_cluster:
             p = EmailTriagePipeline()
-            clusters = p.precluster(items)
-        assert len(clusters) == 1
-        assert clusters[0].label == "Ungrouped"
-        assert len(clusters[0].item_ids) == 3
-
-    def test_precluster_happy_path(self):
-        items = [
-            _captured_from_triage_item(_triage_item(f"email_{i}"))
-            for i in range(2)
-        ]
-
-        class _FakeTriageCluster:
-            def __init__(self, label, items):
-                self.label = label
-                self.items = items
-
-        def fake_cluster_items(triage_items):
-            return [_FakeTriageCluster("Email cluster", triage_items)]
-
-        with patch(
-            "work_buddy.clarify.cluster.cluster_items",
-            side_effect=fake_cluster_items,
-        ):
-            p = EmailTriagePipeline()
-            clusters = p.precluster(items)
-        assert len(clusters) == 1
-        assert clusters[0].label == "Email cluster"
-        assert set(clusters[0].item_ids) == {"email_0", "email_1"}
+            p.precluster(items)
+        assert mock_cluster.call_count == 0
 
 
 class TestUmbrellaSummary:
