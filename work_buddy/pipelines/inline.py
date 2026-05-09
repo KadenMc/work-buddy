@@ -386,9 +386,21 @@ def _call_multi_record_verdict(
     if not chain:
         return None, "empty tier_chain"
 
+    # Trim the user-context block before rendering so the verdict's
+    # prompt + schema fit even on local-tier 4096-token windows when
+    # possible. Drops the active-projects double-context (the picker
+    # already ranked them) and IR-filters active tasks down to the
+    # top_k most relevant to the captured text + hint.
+    trimmed_context = _trim_context_for_verdict(
+        triage_context,
+        captured_text=(item.text or ""),
+        hint=(item.metadata or {}).get("hint", "") or "",
+        has_picker_candidates=bool(project_candidates),
+    )
+
     user_prompt = _render_item_prompt(
         item=item,
-        triage_context=triage_context,
+        triage_context=trimmed_context,
         deadline_hints=deadline_hints,
         project_candidates=project_candidates,
     )
@@ -547,6 +559,88 @@ Always populate ``rationale`` (one short sentence per record OR one
 overall sentence) and ``group_intent`` (≤8 words naming the
 underlying intent — used as the umbrella thread title when N > 1).
 """
+
+
+def _trim_context_for_verdict(
+    triage_context: dict[str, Any],
+    *,
+    captured_text: str,
+    hint: str = "",
+    has_picker_candidates: bool,
+    task_top_k: int = 5,
+) -> dict[str, Any]:
+    """Shrink the verdict's user-context block to fit the prompt budget.
+
+    Two trims, both rooted in "the verdict already has the relevant
+    information elsewhere" or "everything else is noise":
+
+    1. **Drop ``active_projects`` when the picker emitted candidates.**
+       The picker's job IS project shortlisting; its hedged ranked list
+       (with rationales) is interpolated into the verdict's user prompt
+       via ``render_project_candidates_block``. Re-emitting the full
+       active-project registry under ``## User's Current Context`` is
+       pure double-context — the picker already considered all of them.
+       Saves ~400 tokens for a registry of 5 projects with paragraph-
+       long descriptions.
+
+    2. **IR-rank ``active_tasks`` by relevance to the captured text;
+       keep top_k.** Today's pipeline dumps every active task (capped at
+       12 by an unrelated knob) into the prompt regardless of whether
+       any of them relate to the captured thought. The embedding service
+       provides ``hybrid_search`` (BM25 + embedding); we use it to keep
+       only the top_k most relevant tasks. Falls back to the original
+       list if the embedding service is down.
+
+    Both trims fail-safe: missing fields stay missing, IR errors log a
+    warning and pass tasks through unchanged.
+    """
+    out = dict(triage_context)
+
+    if has_picker_candidates:
+        out["active_projects"] = []
+
+    tasks = out.get("active_tasks") or []
+    if tasks and len(tasks) > task_top_k:
+        # Build a query that includes both the captured text AND the
+        # user's optional hint — the hint disambiguates short captures
+        # ("draft email" + hint "to advisor about TKA paper" → IR can
+        # surface tasks tagged with that paper's project).
+        query = captured_text or ""
+        if hint:
+            query = (query + "\n" + hint).strip()
+        if query:
+            try:
+                from work_buddy.embedding.client import hybrid_search
+
+                candidates = [
+                    {
+                        "name": str(t.get("task_id") or i),
+                        "texts": [t.get("text") or ""],
+                    }
+                    for i, t in enumerate(tasks)
+                ]
+                scored = hybrid_search(query, candidates)
+                if scored:
+                    by_id = {
+                        str(t.get("task_id") or i): t
+                        for i, t in enumerate(tasks)
+                    }
+                    ordered = []
+                    for s in scored[:task_top_k]:
+                        name = s.get("name")
+                        t = by_id.get(name)
+                        if t is not None:
+                            ordered.append(t)
+                    if ordered:
+                        out["active_tasks"] = ordered
+            except Exception as exc:
+                logger.warning(
+                    "inline_capture: hybrid_search failed (%s); "
+                    "passing tasks through unfiltered",
+                    exc,
+                )
+
+    return out
 
 
 def _render_item_prompt(
