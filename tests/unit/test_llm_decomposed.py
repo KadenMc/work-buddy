@@ -418,29 +418,31 @@ def test_resolve_dials_no_config_key_uses_fallbacks() -> None:
 
 
 def test_resolve_dials_unknown_tier_dropped(monkeypatch) -> None:
+    """Non-triage namespace: unknown tier names are dropped silently."""
     monkeypatch.setattr(
         "work_buddy.llm.decomposed.load_config",
-        lambda: {"triage": {"x": {
+        lambda: {"my_namespace": {"x": {
             "tier_chain": ["local_fast", "made_up", "frontier_fast"],
             "max_tokens": 99,
         }}},
     )
-    dials = _resolve_dials("triage.x")
+    dials = _resolve_dials("my_namespace.x")
     assert dials["tier_chain"] == [ModelTier.LOCAL_FAST, ModelTier.FRONTIER_FAST]
     assert dials["max_tokens"] == 99
 
 
 def test_resolve_dials_uses_config_block(monkeypatch) -> None:
+    """Non-triage namespace: dials come from the resolved config block."""
     monkeypatch.setattr(
         "work_buddy.llm.decomposed.load_config",
-        lambda: {"triage": {"my_step": {
+        lambda: {"my_namespace": {"my_step": {
             "tier_chain": ["frontier_balanced", "frontier_best"],
             "max_tokens": 4096,
             "temperature": 0.7,
             "cache_ttl_minutes": 60,
         }}},
     )
-    dials = _resolve_dials("triage.my_step")
+    dials = _resolve_dials("my_namespace.my_step")
     assert dials["tier_chain"] == [ModelTier.FRONTIER_BALANCED, ModelTier.FRONTIER_BEST]
     assert dials["max_tokens"] == 4096
     assert dials["temperature"] == 0.7
@@ -448,11 +450,12 @@ def test_resolve_dials_uses_config_block(monkeypatch) -> None:
 
 
 def test_resolve_dials_load_config_failure_falls_back(monkeypatch) -> None:
+    """When the loader raises, fall back rather than crash the call."""
     def boom() -> dict:
         raise RuntimeError("config unreadable")
     monkeypatch.setattr("work_buddy.llm.decomposed.load_config", boom)
 
-    dials = _resolve_dials("triage.x")
+    dials = _resolve_dials("my_namespace.x")
     # Falls back silently rather than crashing the LLM call.
     assert dials["tier_chain"] == [
         ModelTier.LOCAL_FAST, ModelTier.FRONTIER_FAST,
@@ -460,17 +463,23 @@ def test_resolve_dials_load_config_failure_falls_back(monkeypatch) -> None:
 
 
 def test_run_subcall_passes_resolved_dials_to_runner_call(monkeypatch) -> None:
-    """End-to-end: config_key resolves, dials reach LLMRunner.call kwargs."""
+    """End-to-end: config_key resolves, dials reach LLMRunner.call kwargs.
+
+    Uses a non-triage config_key so we can monkey-patch raw load_config
+    rather than the triage-loader path. (Triage paths go through
+    load_triage_config; that's covered by the dedicated regression test
+    below.)
+    """
     monkeypatch.setattr(
         "work_buddy.llm.decomposed.load_config",
-        lambda: {"triage": {"deadline_extract": {
+        lambda: {"my_namespace": {"my_step": {
             "tier_chain": ["local_fast", "frontier_fast"],
             "max_tokens": 256,
             "temperature": 0.3,
             "cache_ttl_minutes": 0,
         }}},
     )
-    sub = _make_subcall(config_key="triage.deadline_extract")
+    sub = _make_subcall(config_key="my_namespace.my_step")
     runner = MagicMock()
     runner.call.return_value = _ok_response({"v": 1})
 
@@ -485,12 +494,16 @@ def test_run_subcall_passes_resolved_dials_to_runner_call(monkeypatch) -> None:
 
 
 def test_call_one_rejects_empty_tier_chain(monkeypatch) -> None:
-    """Misconfigured empty tier_chain is a loud error, not a silent no-op."""
+    """Misconfigured empty tier_chain is a loud error, not a silent no-op.
+
+    Uses a non-triage config_key so this exercises the raw load_config
+    branch; triage paths have separate coverage.
+    """
     monkeypatch.setattr(
         "work_buddy.llm.decomposed.load_config",
-        lambda: {"triage": {"broken": {"tier_chain": []}}},
+        lambda: {"my_namespace": {"broken": {"tier_chain": []}}},
     )
-    sub = _make_subcall(config_key="triage.broken")
+    sub = _make_subcall(config_key="my_namespace.broken")
     runner = MagicMock()
 
     with pytest.raises(ValueError, match="empty"):
@@ -505,6 +518,50 @@ def test_call_one_rejects_empty_tier_chain(monkeypatch) -> None:
 def test_compose_trace_id_format() -> None:
     assert _compose_trace_id("chain", "step", "caller") == "chain::step::caller"
     assert _compose_trace_id("chain", "step", None) == "chain::step::-"
+
+
+# ---------------------------------------------------------------------------
+# Regression: triage.* keys must route through load_triage_config so that
+# TRIAGE_DEFAULTS in-code defaults are honored. (Discovered via live test:
+# the framework was silently bypassing the in-code defaults and falling
+# back to its own hardcoded chain when config.yaml had no override.)
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_dials_triage_key_uses_triage_defaults(monkeypatch) -> None:
+    """``triage.<key>`` must read from load_triage_config() so
+    TRIAGE_DEFAULTS values apply even when YAML has no override."""
+    from work_buddy.clarify import config as triage_cfg
+
+    # Pretend the user's YAML has no triage block at all. The loader
+    # should still return the in-code TRIAGE_DEFAULTS values via the
+    # deep-merge in load_triage_config.
+    monkeypatch.setattr(
+        "work_buddy.config.load_config", lambda: {},
+    )
+
+    dials = _resolve_dials("triage.deadline_extract")
+
+    # The shipped TRIAGE_DEFAULTS["deadline_extract"]["tier_chain"] starts
+    # with local_tool_calling. If the framework bypassed load_triage_config
+    # and fell back to _FALLBACK_TIER_CHAIN, this would not be present.
+    assert dials["tier_chain"][0] == ModelTier.LOCAL_TOOL_CALLING
+    # And the rest of the shipped chain is preserved.
+    assert ModelTier.LOCAL_FAST in dials["tier_chain"]
+    assert ModelTier.FRONTIER_FAST in dials["tier_chain"]
+
+
+def test_resolve_dials_non_triage_key_uses_load_config(monkeypatch) -> None:
+    """Non-triage keys go through raw load_config(), unchanged."""
+    monkeypatch.setattr(
+        "work_buddy.llm.decomposed.load_config",
+        lambda: {"some_other_subsystem": {"my_step": {
+            "tier_chain": ["frontier_balanced"], "max_tokens": 9999,
+        }}},
+    )
+    dials = _resolve_dials("some_other_subsystem.my_step")
+    assert dials["tier_chain"] == [ModelTier.FRONTIER_BALANCED]
+    assert dials["max_tokens"] == 9999
 
 
 # ---------------------------------------------------------------------------

@@ -521,17 +521,26 @@ def _resolve_dials(config_key: str | None) -> dict[str, Any]:
     ``max_tokens`` (int), ``temperature`` (float),
     ``cache_ttl_minutes`` (int).
 
-    Lookup order: ``load_config()`` walked by dotted path → in-code
-    fallbacks. Unknown tier names are dropped with a warning.
+    Lookup order: domain loader (e.g. ``load_triage_config()`` for
+    ``triage.*`` keys) → ``load_config()`` for non-domain keys →
+    in-code fallbacks. Unknown tier names are dropped with a warning.
+
+    The ``triage.*`` dispatch matters because ``TRIAGE_DEFAULTS`` is a
+    Python dict deep-merged with the user's YAML overrides by
+    ``load_triage_config``; consumers of ``triage.deadline_extract.tier_chain``
+    expect the ``TRIAGE_DEFAULTS`` value when no YAML override exists.
+    Going through raw ``load_config()`` would silently fall back to
+    ``_FALLBACK_TIER_CHAIN`` instead — exactly the bug live-testing
+    surfaced.
     """
     block: dict[str, Any] = {}
     if config_key:
         try:
-            cfg = load_config() or {}
+            cfg = _load_for_key(config_key)
         except Exception as exc:
             logger.warning(
-                "decomposed: load_config() failed (%s); using fallback dials.",
-                exc,
+                "decomposed: config load failed for %r (%s); using fallback dials.",
+                config_key, exc,
             )
             cfg = {}
         block = _walk_dotted(cfg, config_key) or {}
@@ -563,6 +572,31 @@ def _resolve_dials(config_key: str | None) -> dict[str, Any]:
             block.get("cache_ttl_minutes", _FALLBACK_CACHE_TTL_MINUTES)
         ),
     }
+
+
+def _load_for_key(config_key: str) -> dict[str, Any]:
+    """Load the config dict appropriate for ``config_key``.
+
+    Domain prefixes route through their respective loaders so the
+    domain's in-code defaults (e.g. ``TRIAGE_DEFAULTS``) are honored.
+    Otherwise falls through to raw ``load_config()``.
+
+    The ``triage.`` prefix specifically routes through
+    ``work_buddy.clarify.config.load_triage_config()`` (lazy import to
+    avoid coupling the LLM layer to the clarify package). This loader
+    deep-merges ``TRIAGE_DEFAULTS`` with the user's YAML overrides;
+    raw ``load_config()`` would not see the in-code defaults, and the
+    framework's last-resort fallbacks would (silently) win — which is
+    a bug live-testing exposed.
+
+    Add new domain loaders here when other call-sites land. Keep this
+    list small; the framework should not become a router for arbitrary
+    config-loading functions.
+    """
+    if config_key.startswith("triage."):
+        from work_buddy.clarify.config import load_triage_config
+        return {"triage": load_triage_config() or {}}
+    return load_config() or {}
 
 
 def _walk_dotted(d: dict[str, Any], path: str) -> dict[str, Any] | None:

@@ -266,16 +266,16 @@ def test_extract_deadline_hints_message_date_string() -> None:
 def test_extract_deadline_hints_walks_local_first_tier_chain(monkeypatch) -> None:
     """The SubCall framework reads triage.deadline_extract.tier_chain
     from config; the first entry becomes ``tier=`` and the rest become
-    ``escalate_to=``."""
-    from work_buddy.llm import decomposed as _decomposed
+    ``escalate_to=``.
+
+    Triage config goes through ``load_triage_config`` which deep-merges
+    TRIAGE_DEFAULTS with the user's YAML overrides. We monkey-patch the
+    raw YAML loader to be empty so TRIAGE_DEFAULTS supplies the chain
+    entirely from in-code defaults.
+    """
     from work_buddy.llm.tiers import ModelTier
 
-    monkeypatch.setattr(
-        _decomposed, "load_config",
-        lambda: {"triage": {"deadline_extract": {
-            "tier_chain": ["local_fast", "frontier_fast"],
-        }}},
-    )
+    monkeypatch.setattr("work_buddy.config.load_config", lambda: {})
 
     fake_runner = MagicMock()
     fake_runner.call.return_value = _ok({
@@ -285,8 +285,12 @@ def test_extract_deadline_hints_walks_local_first_tier_chain(monkeypatch) -> Non
     extract_deadline_hints("hello", runner=fake_runner)
 
     kwargs = fake_runner.call.call_args.kwargs
-    assert kwargs["tier"] == ModelTier.LOCAL_FAST
-    assert kwargs["escalate_to"] == [ModelTier.FRONTIER_FAST]
+    # TRIAGE_DEFAULTS["deadline_extract"]["tier_chain"] is
+    # ["local_tool_calling", "local_fast", "frontier_fast"]
+    assert kwargs["tier"] == ModelTier.LOCAL_TOOL_CALLING
+    assert kwargs["escalate_to"] == [
+        ModelTier.LOCAL_FAST, ModelTier.FRONTIER_FAST,
+    ]
 
 
 def test_extract_deadline_hints_subcall_declaration() -> None:
