@@ -22,8 +22,12 @@ from typing import Any
 import pytest
 
 from work_buddy.mcp_server._response_audit import (
+    DEFAULT_MIN_CONTAINED_KEYS,
     DEFAULT_MIN_SUBTREE,
+    find_contained_subtrees,
     find_duplicated_subtrees,
+    find_step_result_accumulations,
+    format_containment_report,
     format_duplication_report,
 )
 
@@ -42,6 +46,25 @@ def assert_no_duplicated_subtrees(
     dupes = find_duplicated_subtrees(resp, min_size=min_size)
     if dupes:
         pytest.fail(format_duplication_report(dupes, min_size=min_size))
+
+
+def assert_no_contained_subtrees(
+    resp: Any,
+    *,
+    min_size: int = DEFAULT_MIN_SUBTREE,
+    min_keys: int = DEFAULT_MIN_CONTAINED_KEYS,
+) -> None:
+    """Assert no dict subtree is a non-trivial subset of another at a non-nested path.
+
+    Catches the cross-step accumulation pattern (Problem C) where each
+    step's result echoes a prior step's fields plus its own delta.  A
+    stricter check than ``assert_no_duplicated_subtrees``: catches the
+    case where individual values are below the duplication threshold but
+    the cumulative key-by-key overlap is large.
+    """
+    triples = find_contained_subtrees(resp, min_size=min_size, min_keys=min_keys)
+    if triples:
+        pytest.fail(format_containment_report(triples))
 
 
 def assert_auto_ran_ledger_has_corresponding_step_results(resp: Any) -> None:
@@ -131,6 +154,86 @@ def test_no_silent_loss_helper_catches_missing_step_results():
         assert_auto_ran_ledger_has_corresponding_step_results(bad)
 
 
+def test_containment_helper_passes_distinct_dicts():
+    """Two dicts with no key overlap — should pass."""
+    clean = {
+        "step_results": {
+            "step_a": {"alpha": 1, "beta": 2, "gamma": "g" * 200},
+            "step_b": {"delta": 3, "epsilon": 4, "zeta": "z" * 200},
+        },
+    }
+    assert_no_contained_subtrees(clean)
+
+
+def test_containment_helper_catches_step_b_supersetting_step_a():
+    """Step B's dict contains every (k, v) pair from step A — must trip."""
+    items = ["x" * 50] * 8  # ~500 chars serialized
+    bad = {
+        "step_results": {
+            "categorize": {
+                "items": items,
+                "categories": ["c" * 30] * 5,
+                "extra1": "e" * 100,
+            },
+            "summarize": {
+                "items": items,
+                "categories": ["c" * 30] * 5,
+                "extra1": "e" * 100,
+                "summary": "the new field",
+            },
+        },
+    }
+    with pytest.raises(pytest.fail.Exception, match=r"is a subset of"):
+        assert_no_contained_subtrees(bad)
+
+
+def test_containment_helper_ignores_small_dicts():
+    """Trivial dicts (under min_keys) don't trigger containment warnings."""
+    payload = {
+        "step_results": {
+            "a": {"id": "x"},
+            "b": {"id": "x", "extra": "y"},
+        },
+    }
+    assert_no_contained_subtrees(payload)  # < 3 keys → ignored
+
+
+def test_containment_helper_ignores_exact_duplicates():
+    """Exact-equality is duplication, not containment — should not double-fire."""
+    val = {"a": 1, "b": 2, "c": 3, "long": "x" * 500}
+    payload = {
+        "step_results": {
+            "step_a": val,
+            "step_b": val,  # exactly equal — duplication, not containment
+        },
+    }
+    # Containment check passes (not a strict subset).
+    assert_no_contained_subtrees(payload)
+
+
+def test_step_result_accumulations_helper_basic():
+    """The runtime helper picks out (upstream, downstream, size) tuples."""
+    items = ["x" * 50] * 8
+    step_results = {
+        "categorize": {
+            "items": items,
+            "categories": ["c" * 30] * 5,
+            "extra": "e" * 100,
+        },
+        "summarize": {
+            "items": items,
+            "categories": ["c" * 30] * 5,
+            "extra": "e" * 100,
+            "summary": "delta",
+        },
+    }
+    pairs = find_step_result_accumulations(step_results)
+    assert any(
+        a == "categorize" and b == "summarize"
+        for a, b, _ in pairs
+    ), pairs
+
+
 def test_no_silent_loss_helper_exempts_failed_and_skipped():
     """Failed and skipped ledger entries don't need step_results — should pass."""
     payload = {
@@ -150,8 +253,10 @@ def test_no_silent_loss_helper_exempts_failed_and_skipped():
 #
 # These tests use ``workflow_create`` to register a minimal in-memory
 # workflow, then drive ``start_workflow`` / ``advance_workflow`` against
-# the real conductor.  They fail today (before commit 1's code change)
-# and pass after — the demonstration that the invariants catch the bug.
+# the real conductor.  They are the live regression gate for the
+# canonical-home rule: ``auto_ran[*]`` is a ledger, ``prior_step`` is a
+# pointer, and step result data lives in exactly one place
+# (``step_results[id]``).
 
 
 @pytest.fixture

@@ -284,3 +284,71 @@ def _apply_vault_filters(
         filtered[p] = u
 
     return filtered
+
+
+# ---------------------------------------------------------------------------
+# Outer-layer RRF: fuse multiple ``search()`` result lists
+# ---------------------------------------------------------------------------
+#
+# The hybrid index already combines BM25 + dense embeddings via
+# ``KnowledgeIndex._rrf_fuse`` (numpy-array shape, internal). ``rrf_combine``
+# is the *outer* layer for callers who run several independent ``search()``
+# calls — e.g. one query from file paths, another from module docstrings —
+# and want the same equal-voice rank fusion across those. Concatenating the
+# queries into one string would dilute short structural signals under longer
+# prosier ones; running them as separate searches and fusing the results
+# preserves each signal's discriminative power.
+#
+# The default ``k=60`` matches ``_RRF_K`` in
+# ``work_buddy/knowledge/index.py`` (Cormack/Clarke/Buettcher 2009). Keeping
+# the constant in lockstep means inner and outer fusion behave identically;
+# don't override unless you have a specific reason.
+
+def rrf_combine(
+    rankings: list[list[dict[str, Any]]],
+    k: int = 60,
+) -> list[dict[str, Any]]:
+    """Reciprocal Rank Fusion across multiple ``search()`` result lists.
+
+    Each ``ranking`` is the ``results`` list returned by ``search()`` — a
+    sequence of ``{path, score, ...}`` dicts ordered by score descending.
+    Each document's RRF score is the sum of ``1 / (k + rank)`` across every
+    ranking it appears in (1-based ranks). Documents present in only some
+    rankings still contribute via the rankings where they appear.
+
+    Returns a single ranked list ordered by RRF score descending. Each
+    output dict carries the metadata from its first occurrence (``path``,
+    ``name``, ``description``, etc.) plus a new ``rrf_score`` field. Inputs
+    are not mutated; output dicts are shallow copies.
+
+    Empty input (``[]`` or any combination of empty rankings) returns
+    ``[]``. Single-ranking input is idempotent — same paths in the same
+    order, with ``rrf_score = 1/(k+1), 1/(k+2), …`` populated.
+
+    Args:
+        rankings: List of ranked result lists. Each inner list must already
+            be sorted by relevance (higher first).
+        k: RRF constant (Cormack/Clarke/Buettcher 2009). Default ``60``
+            matches ``_RRF_K`` in ``work_buddy.knowledge.index`` so inner
+            and outer fusion behave identically. Higher values flatten
+            rank differences; lower values sharpen them.
+
+    Returns:
+        Fused result list with ``rrf_score`` populated on each entry.
+    """
+    rrf_scores: dict[str, float] = {}
+    first_seen: dict[str, dict[str, Any]] = {}
+    for ranking in rankings:
+        for rank_idx, hit in enumerate(ranking):
+            path = hit.get("path")
+            if not path:
+                continue
+            rrf_scores[path] = rrf_scores.get(path, 0.0) + 1.0 / (k + rank_idx + 1)
+            first_seen.setdefault(path, hit)
+
+    out: list[dict[str, Any]] = []
+    for path, score in sorted(rrf_scores.items(), key=lambda t: -t[1]):
+        merged = dict(first_seen[path])
+        merged["rrf_score"] = score
+        out.append(merged)
+    return out

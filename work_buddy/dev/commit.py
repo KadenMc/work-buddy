@@ -1,6 +1,6 @@
-"""Dev-commit auto_run helpers: assess git state and scan staged content for PII.
+"""Dev-PR auto_run helpers: assess git state and scan staged content for PII.
 
-Backs the ``assess`` and ``pii_check`` auto_run steps in the ``dev-commit``
+Backs the ``assess`` and ``pii_check`` auto_run steps in the ``dev-pr``
 workflow. Kept separate from ``document.py`` so the two workflows can share
 the deterministic-offloading pattern without bleeding concerns across files.
 """
