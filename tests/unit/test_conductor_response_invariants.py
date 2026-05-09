@@ -253,8 +253,10 @@ def test_no_silent_loss_helper_exempts_failed_and_skipped():
 #
 # These tests use ``workflow_create`` to register a minimal in-memory
 # workflow, then drive ``start_workflow`` / ``advance_workflow`` against
-# the real conductor.  They fail today (before commit 1's code change)
-# and pass after — the demonstration that the invariants catch the bug.
+# the real conductor.  They are the live regression gate for the
+# canonical-home rule: ``auto_ran[*]`` is a ledger, ``prior_step`` is a
+# pointer, and step result data lives in exactly one place
+# (``step_results[id]``).
 
 
 @pytest.fixture
