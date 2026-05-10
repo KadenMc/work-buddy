@@ -291,12 +291,31 @@ def cascade_terminal_to_parent(
         if not all(c.is_terminal for c in children):
             return None
 
-        # Yes — advance parent to DONE via the MONITORING+execution_done
-        # branch resolver (see engine._default_branch_resolver).
+        # Phase 4 — singular-umbrella terminal-mix:
+        # When the parent is a `parent_relationship='singular'` umbrella
+        # and every child terminated as DISMISSED (no approvals, no
+        # hand-offs), the umbrella itself is "all rejected" → DISMISSED.
+        # Otherwise (any DONE/HANDED_OFF child, or any
+        # non-singular parent), the existing all-terminal → DONE rule
+        # applies. Branch resolver in engine.py reads
+        # ``all_dismissed_singular`` and routes accordingly.
+        all_dismissed_singular = (
+            children
+            and getattr(parent, "parent_relationship", None) == "singular"
+            and all(
+                c.fsm_state == FSMState.DISMISSED for c in children
+            )
+        )
+
+        # Advance parent via the MONITORING+execution_done branch
+        # resolver (see engine._default_branch_resolver).
         result = engine.transition(
             parent.thread_id,
             TRIG_EXECUTION_DONE,
-            data={"all_terminal": True},
+            data={
+                "all_terminal": True,
+                "all_dismissed_singular": all_dismissed_singular,
+            },
             actor=ACTOR_FSM_ENGINE,
             conn=conn,
             # Fire side effects so any monitoring-completion
