@@ -532,14 +532,23 @@ def _run_child_accept(
             f"Child {child_id!r} in state {child.fsm_state.value!r} "
             f"has no Accept-equivalent trigger; user must handle individually",
         )
-    engine.transition(
-        child_id,
-        trigger,
-        data={"cascade_from_umbrella": True},
-        actor=actor,
-        conn=conn,
-        fire_side_effects=True,
-    )
+    # The umbrella's Approve-All click cascades to each child's
+    # accept-equivalent trigger; each may fire a synchronous side
+    # effect that invokes a @requires_consent-gated capability. Wrap
+    # in ``user_initiated`` so the user's umbrella-click counts as
+    # consent for the cascaded operations — same policy as
+    # ``_post_thread_action`` for direct per-thread Approve clicks.
+    # See architecture/consent/implied-consent.
+    from work_buddy.consent import user_initiated
+    with user_initiated(f"thread.cascade_approve.{trigger}"):
+        engine.transition(
+            child_id,
+            trigger,
+            data={"cascade_from_umbrella": True},
+            actor=actor,
+            conn=conn,
+            fire_side_effects=True,
+        )
 
 
 # ---------------------------------------------------------------------------
