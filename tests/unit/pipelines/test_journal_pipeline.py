@@ -237,7 +237,22 @@ class TestUmbrellaSummary:
         assert "2026-04-01" in s["title"]
         assert s["scan_id"] == "abc"
 
-    def test_summary_handles_missing_date(self):
+    def test_summary_defaults_missing_date_to_today(self):
+        """Pre-fix: ``run_metadata`` without ``journal_date`` produced a
+        title of ``Daily note: unknown`` because the scheduled
+        ``journal-triage-scan`` cron didn't pass the parameter and the
+        ``or "unknown"`` fallback kicked in. The user's dashboard
+        accumulated 18 stale ``Daily journal scan: unknown`` umbrellas
+        in one day.
+
+        Post-fix: ``umbrella_summary`` defaults missing journal_date to
+        today's ISO date so any caller (cron, ad-hoc, future API) gets
+        the right title without remembering to pass the date.
+        """
+        from datetime import date
+
         p = JournalBacklogPipeline()
         s = p.umbrella_summary({})
-        assert "unknown" in s["title"]
+        assert "unknown" not in s["title"]
+        assert date.today().isoformat() in s["title"]
+        assert s["title"].startswith("Daily note: ")

@@ -758,6 +758,14 @@ def _spawn_inline_umbrella(*, item: Any, verdict: dict[str, Any]) -> str | None:
     try:
         umbrella = Thread(
             fsm_state=FSMState.MONITORING,
+            # Distinguishes this umbrella shape from `'group'` (chrome /
+            # journal cluster scrapes) and `'decompose'` (agent-driven
+            # work breakdown). 'singular' = one matter whose verdict
+            # produced multiple proposed actions; the dashboard render
+            # hoists the children's actions onto this parent's card so
+            # the user sees one thread with N actions instead of an
+            # umbrella + N child cards. See `threads/grouping`.
+            parent_relationship="singular",
             inciting_event_summary=summary,
             autonomy_policy=default_spawn_policy(),
             context_items=(_selection_to_context_item(item),),

@@ -391,6 +391,11 @@ class TestMultiRecordPaths:
 
         umbrella = store.get_thread(result["umbrella_id"])
         assert umbrella.fsm_state == FSMState.MONITORING
+        # Singular-pattern marker (Stage 1 of the singular-fix). The
+        # render layer keys on this to hoist children's actions onto
+        # the umbrella's card. Distinguishes inline-singular from
+        # cluster-group umbrellas (chrome/journal/email use 'group').
+        assert umbrella.parent_relationship == "singular"
 
         for cid in result["child_thread_ids"]:
             child = store.get_thread(cid)
