@@ -21,9 +21,17 @@ Design:
   text.
 - Soft-fail default: empty list. Caller treats as a single-matter
   passthrough (don't fragment the user's input on segmenter failure).
-- Short-text bypass: skip the LLM entirely for selections under
-  ``short_text_bypass_chars`` (default 120). Tiny captures are almost
-  always one matter, and segmenter accuracy on short text is poor.
+- Short-text bypass: skip the LLM entirely for selections that are
+  BOTH under ``short_text_bypass_chars`` (default 120) AND visually
+  one logical block (≤1 significant newline, where bullet-prefixed
+  newlines like ``\\n- foo`` don't count as significant). The
+  multi-line clause matters because a short multi-matter capture —
+  e.g. ``"Email Bob about the report.\\n\\nRenew car insurance Friday."``
+  — would be 56 chars but contains two distinct matters; bypassing on
+  char count alone conflates them. A short bullet list — e.g.
+  ``"Read research paper\\n- Paper A\\n- Paper B"`` — IS one matter
+  even with multiple newlines, so the bullet-aware count keeps it
+  bypassed.
 - Bias-toward-cohesion in the prompt: only split when there's clear
   textual evidence of distinct subjects (different topics, conjunction
   shifts, paragraph breaks with no semantic continuity). Mirrors
@@ -41,12 +49,44 @@ What this segmenter does NOT subsume:
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from work_buddy.llm import LLMRunner, SubCall, run_subcall
 from work_buddy.logging_config import get_logger
 
 logger = get_logger(__name__)
+
+
+# Newlines immediately followed by a bullet marker (``-``, ``*``,
+# ``+``, or ``1.``-style numbered list) are list-item continuations
+# of the line above them, not matter boundaries. Subtracting them
+# from the raw newline count gives a "significant newlines" score
+# that the short-text bypass uses to distinguish "short single block"
+# from "short but visually multi-matter."
+_BULLET_NEWLINE_RE = re.compile(r"\n[ \t]*(?:[-*+]|\d+\.)\s")
+
+
+def _significant_newline_count(text: str) -> int:
+    """Count newlines that likely separate distinct matters.
+
+    Newlines followed by a bullet marker (``- foo``, ``* foo``,
+    ``+ foo``, ``1. foo``, with optional leading whitespace) are
+    treated as list-item separators within one matter, not as
+    inter-matter boundaries — and thus excluded from the count.
+
+    Examples::
+
+        "Email Bob"                              → 0
+        "Email Bob\\nFollow up Friday"            → 1
+        "Email Bob.\\n\\nRenew car insurance"     → 2  (multi-matter)
+        "Read paper\\n- Paper A\\n- Paper B"      → 0  (one matter, bulleted)
+        "A\\n\\nB\\n- bullet under B"             → 2  (the \\n\\n pair counts;
+                                                       the \\n- doesn't)
+    """
+    if not text:
+        return 0
+    return text.count("\n") - len(_BULLET_NEWLINE_RE.findall(text))
 
 
 # ---------------------------------------------------------------------------
@@ -337,27 +377,41 @@ def segment_into_matters(
     Bypass rules:
 
     - Empty / whitespace-only ``text`` → ``[]`` (caller treats as no work).
-    - ``len(text) < short_text_bypass_chars`` → single-segment
-      ``[{start: 0, end: len(text), label: "(short capture)", text}]``.
-      Segmentation on tiny text is unreliable and unnecessary.
+    - **Short single-block bypass**: when ``len(text) <
+      short_text_bypass_chars`` AND the text contains ≤1 significant
+      newline (bullet-prefixed newlines don't count), skip the LLM
+      and return a single-segment passthrough. Both clauses matter
+      independently:
+      - The char-count clause alone misses short multi-matter
+        captures: ``"Email Bob.\\n\\nRenew car insurance Friday."``
+        is 56 chars but is two distinct matters that the user expects
+        to land as two separate threads.
+      - The newline clause alone would over-segment short bullet lists:
+        ``"Read paper\\n- Paper A\\n- Paper B"`` has multiple newlines
+        but is one matter; the bullet-aware count of significant
+        newlines is 0, so it stays bypassed.
     - SubCall soft-fail (every tier exhausts) → single-segment with
-      the whole input. Worst case: behaves like Stage 1 (always-singular).
+      the whole input. Worst case: behaves like always-singular.
 
     Args:
         text: The captured-item body to segment.
         hint: Optional user-typed intent hint. Empty string when absent.
         item_id: Used in the trace_id for ``escalation_log`` correlation.
         short_text_bypass_chars: Lower bound below which segmentation
-            is skipped. Defaults to 120 chars (roughly two short
-            sentences).
+            is skipped (when paired with the single-block check).
+            Defaults to 120 chars (roughly two short sentences).
         runner: Optional :class:`LLMRunner` override for tests.
     """
     text_clean = text or ""
     if not text_clean.strip():
         return []
 
-    # Short-text bypass — single matter covering the whole input.
-    if len(text_clean) < short_text_bypass_chars:
+    # Short single-block bypass — see docstring for the both-clauses
+    # rationale. ≤1 significant newline approximates "one paragraph"
+    # without falsely tripping on bullet-list formatting.
+    is_short = len(text_clean) < short_text_bypass_chars
+    is_single_block = _significant_newline_count(text_clean) <= 1
+    if is_short and is_single_block:
         return [{
             "start_char": 0,
             "end_char": len(text_clean),

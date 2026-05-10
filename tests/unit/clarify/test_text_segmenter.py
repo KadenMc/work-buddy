@@ -89,7 +89,7 @@ def test_whitespace_only_text_returns_empty_list() -> None:
 
 
 def test_short_text_bypassed_to_single_matter() -> None:
-    """Texts under 120 chars (default) skip the LLM entirely."""
+    """Texts under 120 chars AND visually one block skip the LLM."""
     runner = MagicMock()
     short = "Email Bob about the report"
     out = segment_into_matters(short, runner=runner)
@@ -99,6 +99,81 @@ def test_short_text_bypassed_to_single_matter() -> None:
     assert out[0]["end_char"] == len(short)
     assert out[0]["text"] == short
     assert out[0]["label"] == "(short capture)"
+
+
+def test_short_multi_matter_text_segments_despite_length(monkeypatch) -> None:
+    """A short capture with multiple paragraph-break newlines (≥2
+    significant newlines) is multi-matter even at 56 chars; the
+    bypass should NOT fire and the LLM should run.
+
+    Live-discovered case: ``"Email Bob about the report.\\n\\n\\nRenew
+    car insurance Friday."`` is 56 chars but two distinct matters.
+    Bypassing on char count alone conflates them into one umbrella
+    with two derived actions instead of two flat threads.
+    """
+    monkeypatch.setattr(
+        "work_buddy.llm.decomposed.load_config",
+        lambda: {"triage": {"text_segmenter": {
+            "tier_chain": ["local_fast"],
+        }}},
+    )
+    runner = MagicMock()
+    multi = "Email Bob about the report.\n\n\nRenew car insurance Friday."
+    runner.call.return_value = _ok({
+        "segments": [
+            {"start_char": 0, "end_char": 27, "label": "Email Bob"},
+            {"start_char": 30, "end_char": len(multi),
+             "label": "Renew car insurance"},
+        ],
+    })
+    out = segment_into_matters(multi, runner=runner)
+    runner.call.assert_called_once()
+    assert len(out) == 2
+    assert out[0]["label"] == "Email Bob"
+    assert out[1]["label"] == "Renew car insurance"
+
+
+def test_short_bullet_list_stays_bypassed() -> None:
+    """A short bullet list — multiple newlines, but every newline is
+    bullet-prefixed — IS one matter (the bullets are sub-items of the
+    leading line). Bullet-aware ``_significant_newline_count`` keeps
+    it bypassed despite the raw newline count > 1.
+    """
+    runner = MagicMock()
+    bullet_list = "Read research paper\n- Paper A\n- Paper B"
+    out = segment_into_matters(bullet_list, runner=runner)
+    runner.call.assert_not_called()
+    assert len(out) == 1
+    assert out[0]["text"] == bullet_list
+    assert out[0]["label"] == "(short capture)"
+
+
+def test_short_numbered_list_stays_bypassed() -> None:
+    """Numbered lists ('1. foo', '2. bar') get the same treatment as
+    dashed bullets — same regex covers both."""
+    runner = MagicMock()
+    numbered = "Daily checklist\n1. Coffee\n2. Inbox\n3. Standup"
+    out = segment_into_matters(numbered, runner=runner)
+    runner.call.assert_not_called()
+    assert len(out) == 1
+
+
+def test_significant_newline_count_helper() -> None:
+    """Direct cases for the bullet-aware newline counter."""
+    from work_buddy.clarify.text_segmenter import _significant_newline_count
+    assert _significant_newline_count("") == 0
+    assert _significant_newline_count("Email Bob") == 0
+    assert _significant_newline_count("Email Bob\nRenew Friday") == 1
+    assert _significant_newline_count("A.\n\nB") == 2
+    # Bullets: dashes, stars, plus, numbered — all skipped
+    assert _significant_newline_count("a\n- b\n- c") == 0
+    assert _significant_newline_count("a\n* b\n* c") == 0
+    assert _significant_newline_count("a\n+ b\n+ c") == 0
+    assert _significant_newline_count("a\n1. b\n2. c") == 0
+    # Indented bullets still skipped
+    assert _significant_newline_count("a\n  - b\n  - c") == 0
+    # Mixed: paragraph break + bullets after it
+    assert _significant_newline_count("A\n\nB\n- bullet") == 2
 
 
 # ---------------------------------------------------------------------------
