@@ -19,6 +19,9 @@ This document records **what shipped**, **what changed during build**, and **wha
 | Stage 2 — Text-segmenter + per-matter spawn | `3e2c47d9` | `clarify/text_segmenter.py` SubCall (generic, reusable); `pipelines/singular.py:spawn_thread_for_matter` (source-agnostic primitive). One inline capture → 1+ matters → 1+ independent threads. |
 | Phase 3 — Sub-LLM outputs as ContextItems | `585bf664` | Deadline + picker outputs attached to every spawned thread (and child of a singular umbrella) as `source='subcall'` ContextItems. Generic across the four spawn shapes. |
 | Phase 4 — Smart DONE/DISMISSED cascade | `d5c2dd0f` | Singular umbrella with all-DISMISSED children → DISMISSED. Any DONE/HANDED_OFF child → DONE. Decompose / group umbrellas unaffected. |
+| Phase 5 — Per-action redirect (scoped re-inference) | `abdae019` + `a60c7182` | Hoisted action chip on singular umbrella gets a Redirect button. POST /api/threads/<host>/redirect_action with feedback → records KIND_ACTION_REDIRECTED → transitions to AWAITING_INFERENCE with target=action → bootstrap inference runner reads unresolved redirect feedback and surfaces it on the LLM prompt. render._latest picks the newest action_inferred as active. |
+| Implied consent on user clicks | `abdae019` | _post_thread_action and threads.group._run_child_accept wrap engine.transition in `consent.user_initiated()` for user-click triggers (execute, confirmed, etc.). Capabilities invoked via state-entry side effects no longer re-prompt for consent the user already gave by clicking Approve. |
+| Empty-umbrella spawn fix | `d5f6f334` | pipelines/runner.py early-returns a no-op PipelineRun when items=[]. Stops the hourly journal-triage cron from spawning empty "Daily note: <date>" umbrellas. |
 
 ## Decisions made during build (vs the plan)
 
@@ -66,19 +69,36 @@ This document records **what shipped**, **what changed during build**, and **wha
 
 **Decision:** the action card itself becomes a button (`role='button'`, onclick → `threadsPushPath(host_thread_id)`, onkeydown for Enter/Space). Inner Approve/Reject buttons get `event.stopPropagation()` so they don't double-fire. Matches the existing context-card click style.
 
+### 8. Phase 5 design simplifications
+
+The original plan called for:
+- A new helper `infer_replacement_action(...)` for action-only inference.
+- A new event kind `KIND_ACTION_SUPERSEDED` to mark the prior `action_inferred`.
+- An autonomy bypass to skip intent/context gates.
+
+What actually shipped used three observations from the existing code:
+
+- **No new helper needed.** `awaiting_inference_handler` already reads `data.get('target')` and enqueues only that target's inference. Passing `{"target": "action"}` on the existing `TRIG_REDIRECTED` transition gives action-only re-inference without a new entry point.
+- **No new event kind needed.** `render._latest(events, KIND_ACTION_INFERRED)` already picks the newest event for surfacing. Recording a new `action_inferred` automatically supersedes the old one in the rendered view. The prior one stays in event history for audit.
+- **No autonomy bypass needed.** After action inference fires, the FSM lands at AWAITING_CONFIRMATION via the existing `action_review_or_execute` branch resolver — it never walks back to intent / context.
+
+The new pieces are minimal: an endpoint that emits `KIND_ACTION_REDIRECTED` + fires the transition; a `_build_redirect_feedback_block` helper that surfaces *unresolved* redirect feedback into the LLM prompt (with a "resolved" check: a newer `action_inferred` event id means the feedback already got addressed); a frontend Redirect button. Total backend diff < 100 lines.
+
+### 9. Implied consent on user clicks
+
+Subagent audit found that `consent.user_initiated` already existed with full tests, but was never wired to the dashboard thread-approve path. So clicking Approve on a task_create action chip surfaced a fresh `ConsentRequired` and dumped the thread to AWAITING_REDIRECT — double-prompting consent the user already gave on the confirmation card.
+
+**Decision:** wrap `engine.transition` in `_post_thread_action` and `threads.group._run_child_accept` with `user_initiated()` for the user-click triggers (`execute`, `confirmed`, `review_accepted`, `provided`, `redirected`, `retry_cleanup`, `accept_cleanup_failure`). This counts the dashboard click as the consent boundary; capabilities invoked via state-entry side effects no longer re-prompt. `USER_INITIATED_COVERED` audit entries record what was subsumed.
+
+This came up because Test 2 of Phase 4's live verification hit the consent re-prompt and stalled in AWAITING_REDIRECT — a real bug, not a Phase 4 regression. Fixing the consent wiring unblocks the path.
+
+### 10. Empty-umbrella spawn guard
+
+The hourly journal-triage cron was spawning a fresh "Daily note: <date>" umbrella every fire, even when the journal had zero triageable content. The user accumulated 18+ identical empty threads on the dashboard.
+
+**Decision:** in `pipelines/runner.py:run_pipeline`, early-return a no-op `PipelineRun` when `items=[]`, before `_spawn_umbrella`. The original "operator-visible signal the pipeline ran" goal is served by the pipeline log; dashboard threads are wrong granularity. Cross-fire dedup (skip when a non-dismissed umbrella for the same journal_date exists) is the broader fix, deferred — this commit kills the symptom.
+
 ## Deferred (with intent)
-
-### Phase 5 — Per-action redirect with scoped re-inference
-
-The "Redirect" affordance on a per-action chip would re-infer just that action's payload (without rerunning intent/context inference) and replace it on the child thread.
-
-**Scope:**
-- New helper `infer_replacement_action(child_thread_id, redirect_feedback)` for action-only inference.
-- New `action_inferred` event supersedes the old one on the child; render shows the old as `superseded` (gray + badge) and the new as `pending`.
-- Autonomy bypass: skip auto-advance gates (intent / context already settled).
-- Frontend: per-action Redirect affordance with feedback prompt.
-
-**Status:** deferred. Estimated 1-2 days of focused work — too large for a single /afk window without risk of half-shipped state. The existing AWAITING_REDIRECT path (whole-thread redirect after EXECUTION_FAILED) already covers the failure case; per-action user-initiated redirect on a singular umbrella is a UX completeness concern, not a correctness concern.
 
 ### Other deferrals (from the plan, unchanged)
 
@@ -131,6 +151,7 @@ The "Redirect" affordance on a per-action chip would re-infer just that action's
 
 ## Outstanding work for the user / next session
 
-1. Phase 5 (per-action redirect) is the only remaining piece from the original task scope. Pickup notes are above and in the plan file.
-2. The pre-existing `freezegun` / `lmstudio` import errors in unrelated test modules are environment hygiene, not regressions.
-3. If the live multi-matter case ("Inline selection: Manage tasks and reminders") segments incorrectly, that's a prompt-tuning question for `text_segmenter`'s system prompt — the framework + plumbing are in place.
+1. **Cross-cron umbrella dedup for journal-triage** — current empty-umbrella fix kills bare empties, but if the journal genuinely has new content every hour, the cron creates a fresh non-empty umbrella every hour even when much of the content overlaps. The right fix is journal_date dedup: skip the spawn when a non-dismissed monitoring umbrella for the same journal_date already exists. Subagent recommended `pipelines/capability.py` or a new `dedup_key` parameter on `run_pipeline`.
+2. **Knowledge unit for implied-consent policy** — `architecture/consent/implied-consent` should be authored to document the click-as-consent rule, which triggers participate, the `USER_INITIATED_COVERED` audit, and the risk policy (no current capability is high-blast enough to override the click). Cited in commit `abdae019` but not yet in the store.
+3. **Pre-existing test environment hygiene** — `freezegun` / `lmstudio` / `knowledge_index` import errors in unrelated test modules are environment hygiene, not regressions on this branch.
+4. **Live verification of Test 2** — with implied consent now wired, the "Approve one + Reject one → DONE" path should run cleanly through to terminal. The previous live test stalled at AWAITING_REDIRECT because of the consent re-prompt; that bug is now fixed.
