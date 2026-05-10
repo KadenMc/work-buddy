@@ -149,10 +149,10 @@ def inline_capture(
 ) -> dict[str, Any]:
     """Run the Clarify pipeline on one inline selection and spawn Threads.
 
-    Stage 2 of the singular-pattern fix: the captured text is segmented
-    into distinct *matters* via :func:`text_segmenter.segment_into_matters`
-    BEFORE the verdict runs. Each matter is processed independently
-    via :func:`pipelines.singular.spawn_thread_for_matter`. The shape:
+    The captured text is segmented into distinct *matters* via
+    :func:`text_segmenter.segment_into_matters` before the verdict
+    runs. Each matter is processed independently via
+    :func:`pipelines.singular.spawn_thread_for_matter`. The shape:
 
     - **1 segment (typical case)**: one matter → one root Thread (flat
       or singular umbrella, depending on verdict's record count).
@@ -173,10 +173,10 @@ def inline_capture(
             ``triage.refine_clusters.tier_chain`` — local-first.
 
     Returns:
-        A dict summarising what was spawned. The shape preserves the
-        Stage 1 fields for back-compat callers (``umbrella_id``,
-        ``child_thread_ids``, ``single_thread_id``) but those are only
-        meaningful when exactly one matter was detected. The new
+        A dict summarising what was spawned. The legacy back-compat
+        fields (``umbrella_id``, ``child_thread_ids``,
+        ``single_thread_id``) carry single-matter values and are only
+        meaningful when exactly one matter was detected. The
         ``spawned`` field carries the per-matter results::
 
             {
@@ -279,7 +279,8 @@ def inline_capture(
 
 
 # ---------------------------------------------------------------------------
-# Result-shape helpers (Stage 2)
+# Result-shape helpers — aggregate per-matter spawn outcomes into the
+# single-dict caller contract
 # ---------------------------------------------------------------------------
 
 
@@ -324,11 +325,11 @@ def _aggregate_spawned_results(
 ) -> dict[str, Any]:
     """Build the inline_capture return dict from the per-matter results.
 
-    Stage 1 callers expect ``umbrella_id`` / ``child_thread_ids`` /
-    ``single_thread_id`` etc. We populate those for the single-matter
-    case (the typical one) for back-compat. For multi-matter, those
-    fields stay null/empty and the new ``spawned`` array carries the
-    per-matter detail.
+    Legacy single-matter callers expect ``umbrella_id`` /
+    ``child_thread_ids`` / ``single_thread_id``. Populate those for
+    the single-matter case (the typical one) for back-compat. For
+    multi-matter, those fields stay null / empty and ``spawned``
+    carries the per-matter detail.
     """
     spawned_payloads: list[dict[str, Any]] = []
     for r, m in zip(results, matters):

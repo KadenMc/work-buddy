@@ -278,7 +278,7 @@ def _maybe_format_action_catalog(schema: dict) -> str:
 
 
 def _build_redirect_feedback_block(thread) -> str:
-    """Phase 5: surface unresolved per-action redirect feedback.
+    """Surface unresolved per-action redirect feedback to the LLM prompt.
 
     Reads the thread's recent events for ``KIND_ACTION_REDIRECTED``
     that landed AFTER the most recent ``KIND_ACTION_INFERRED``. If
@@ -401,10 +401,11 @@ def _register_real_llm_runner() -> None:
             # consistently fell back to improvised/suggestion plans.
             catalog_block = _maybe_format_action_catalog(schema)
 
-            # Phase 5: per-action redirect feedback. If the user has
-            # asked us to re-infer THIS action with steering feedback
-            # (KIND_ACTION_REDIRECTED event), surface it on the prompt
-            # so the LLM produces a different proposal instead of
+            # Per-action redirect feedback. If the user has asked us
+            # to re-infer THIS action with steering feedback (a
+            # KIND_ACTION_REDIRECTED event with no newer
+            # KIND_ACTION_INFERRED yet), surface it on the prompt so
+            # the LLM produces a different proposal instead of
             # reproducing the same one. The prior action_inferred event
             # stays in history (render uses _latest to pick the new one);
             # we cite it here so the LLM understands what was rejected.

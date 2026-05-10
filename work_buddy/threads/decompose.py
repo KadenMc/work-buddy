@@ -291,14 +291,14 @@ def cascade_terminal_to_parent(
         if not all(c.is_terminal for c in children):
             return None
 
-        # Phase 4 — singular-umbrella terminal-mix:
-        # When the parent is a `parent_relationship='singular'` umbrella
+        # Singular-umbrella terminal-mix discrimination:
+        # when the parent is a `parent_relationship='singular'` umbrella
         # and every child terminated as DISMISSED (no approvals, no
         # hand-offs), the umbrella itself is "all rejected" → DISMISSED.
         # Otherwise (any DONE/HANDED_OFF child, or any
-        # non-singular parent), the existing all-terminal → DONE rule
-        # applies. Branch resolver in engine.py reads
-        # ``all_dismissed_singular`` and routes accordingly.
+        # non-singular parent), the all-terminal → DONE rule applies.
+        # Branch resolver in engine.py reads ``all_dismissed_singular``
+        # and routes accordingly.
         all_dismissed_singular = (
             children
             and getattr(parent, "parent_relationship", None) == "singular"

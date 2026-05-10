@@ -103,13 +103,13 @@ def _default_branch_resolver(ctx: BranchContext) -> FSMState:
             return FSMState.AWAITING_REVIEW
         return FSMState.DONE
     if label == "done_when_all_subthreads_terminal":
-        # Singular umbrella special case (Phase 4): when every child
-        # was dismissed (no approvals, no hand-offs), the umbrella
-        # itself is "all rejected" — terminal as DISMISSED, not DONE.
-        # Caller (decompose.cascade_terminal_to_parent) sets
+        # Singular umbrella special case: when every child was
+        # dismissed (no approvals, no hand-offs), the umbrella is
+        # "all rejected" — terminal as DISMISSED, not DONE. Caller
+        # (``decompose.cascade_terminal_to_parent``) sets
         # ``all_dismissed_singular`` after inspecting the children's
-        # terminal mix. Decompose/group umbrellas keep the simple
-        # all_terminal → DONE rule below.
+        # terminal mix; decompose / group umbrellas leave the flag
+        # unset and take the all_terminal → DONE rule below.
         if ctx.data.get("all_dismissed_singular"):
             return FSMState.DISMISSED
         if ctx.data.get("all_terminal"):

@@ -127,13 +127,13 @@ def script() -> str:
         }
     };
 
-    // Phase 5 — per-action redirect. Prompts the user for steering
-    // feedback, POSTs to /api/threads/<host>/redirect_action which
-    // records a KIND_ACTION_REDIRECTED event and re-runs ONLY
+    // Per-action redirect on a singular-hoisted action chip. Prompts
+    // for steering feedback, POSTs to /api/threads/<host>/redirect_action
+    // which records a KIND_ACTION_REDIRECTED event and re-runs ONLY
     // action-layer inference (no walk back through intent/context).
     // On success, refreshes the thread view so the new (or pending)
-    // action_inferred surfaces. Wired from singular-hoisted action
-    // chips via the Redirect button in ``_renderActionsSection``.
+    // action_inferred surfaces. Wired from the Redirect button in
+    // ``_renderActionsSection``.
     window.threadCardRedirectAction = async function (hostThreadId) {
         const feedback = window.prompt(
             "Redirect this action — describe what you want different\\n"
@@ -751,14 +751,13 @@ def script() -> str:
                       + 'threadCardFocus(\'' + tidEsc + '\', \''
                       + _esc(a.id) + '\')">'
                       + _icon("edit") + '</button>';
-                // Phase 5 — per-action Redirect. Hoisted singular
-                // actions carry host_thread_id, so the redirect
-                // targets the child Thread's FSM (where the
-                // action_inferred event lives). The handler prompts
-                // for steering feedback and POSTs to the new
-                // /api/threads/<host>/redirect_action endpoint, which
-                // re-runs ONLY action-layer inference (no walk back
-                // through intent/context).
+                // Per-action Redirect. Hoisted singular actions carry
+                // host_thread_id, so the redirect targets the child
+                // Thread's FSM (where the action_inferred event lives).
+                // The handler prompts for steering feedback and POSTs
+                // to /api/threads/<host>/redirect_action, which re-runs
+                // ONLY action-layer inference (no walk back through
+                // intent / context).
                 if (clickable) {
                     html += '<button class="threads-redirect-btn" '
                           + 'title="Redirect: ask the LLM to try this action '
@@ -1770,9 +1769,9 @@ def styles() -> str:
     color: var(--text, #ddd);
 }
 
-/* Phase 5 — per-action Redirect button. Same chrome as the edit
-   button so it doesn't visually shout; the action label is enough
-   signal that it's a re-inference affordance. */
+/* Per-action Redirect button. Same chrome as the edit button so it
+   doesn't visually shout; the action label is enough signal that it's
+   a re-inference affordance. */
 .threads-redirect-btn {
     background: transparent;
     color: var(--text-muted, #888);

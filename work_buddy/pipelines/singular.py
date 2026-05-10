@@ -22,16 +22,16 @@ verdict's output:
 - **refusal**: verdict refused → one root Thread in
   ``AWAITING_INTENT_CLARIFICATION`` with the refusal payload.
 
-Stage 2 of the singular-pattern fix introduces this module; the
-inline pipeline calls it once per matter (where matters are detected
-upstream by :mod:`work_buddy.clarify.text_segmenter`). Stage 1's
-helpers in ``pipelines.inline`` are reused via import — this module
-does NOT duplicate the spawn logic; it orchestrates the per-matter
-sub-calls and dispatches to the right spawn shape.
+The inline pipeline calls this once per matter (where matters are
+detected upstream by :mod:`work_buddy.clarify.text_segmenter`). The
+spawn helpers themselves live in ``pipelines.inline.*`` and are
+imported here — this module does NOT duplicate the spawn logic; it
+orchestrates the per-matter sub-calls and dispatches to the right
+spawn shape.
 
-A future cleanup may consolidate the spawn helpers themselves into
-this module; for now they remain importable from
-``pipelines.inline.*`` to minimise blast radius.
+Future singular-input pipelines (per-message email triage,
+right-click-on-anything paths) plug into this same primitive without
+rebuilding it.
 """
 
 from __future__ import annotations
@@ -261,11 +261,10 @@ def spawn_thread_for_matter(
     project_candidates = project_candidates_payload.get("candidates") or []
 
     # ---- Build sub-call ContextItems ---------------------------------
-    # Phase 3 of the singular work: each spawned Thread carries the
-    # deadline / project-picker outputs as durable ContextItems on top
-    # of the captured selection. Renders in the dashboard's
-    # context-items section so the user can inspect the model
-    # reasoning that produced the spawned thread.
+    # Each spawned Thread carries the deadline / project-picker outputs
+    # as durable ContextItems on top of the captured selection. Renders
+    # in the dashboard's context-items section so the user can inspect
+    # the model reasoning that produced the spawned thread.
     subcall_items = _build_subcall_context_items(
         deadline_hints=deadline_hints,
         project_candidates=project_candidates,
