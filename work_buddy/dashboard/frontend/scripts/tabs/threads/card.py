@@ -126,6 +126,49 @@ def script() -> str:
             window._renderActiveThread();
         }
     };
+
+    // Phase 5 — per-action redirect. Prompts the user for steering
+    // feedback, POSTs to /api/threads/<host>/redirect_action which
+    // records a KIND_ACTION_REDIRECTED event and re-runs ONLY
+    // action-layer inference (no walk back through intent/context).
+    // On success, refreshes the thread view so the new (or pending)
+    // action_inferred surfaces. Wired from singular-hoisted action
+    // chips via the Redirect button in ``_renderActionsSection``.
+    window.threadCardRedirectAction = async function (hostThreadId) {
+        const feedback = window.prompt(
+            "Redirect this action — describe what you want different\\n"
+            + "(e.g. 'reminder a week earlier', 'use different parameters'):",
+            ""
+        );
+        if (feedback === null) return;  // user cancelled
+        const trimmed = (feedback || "").trim();
+        if (!trimmed) return;  // empty input
+        try {
+            const resp = await fetch(
+                "/api/threads/" + encodeURIComponent(hostThreadId)
+                + "/redirect_action",
+                {
+                    method: "POST",
+                    headers: {"Content-Type": "application/json"},
+                    body: JSON.stringify({feedback: trimmed}),
+                },
+            );
+            const body = await resp.json().catch(() => ({}));
+            if (!resp.ok) {
+                window.alert(
+                    "Redirect failed: " + (body.error || resp.statusText)
+                );
+                return;
+            }
+            // Trigger a refresh of the active thread view so the
+            // re-inferred action surfaces when it lands.
+            if (typeof window._renderActiveThread === "function") {
+                window._renderActiveThread();
+            }
+        } catch (e) {
+            window.alert("Redirect failed: " + (e && e.message || e));
+        }
+    };
     // Keyboard handler shared by every Threads textarea. Attach via
     // ``onkeydown="return threadCardEditorKeydown(event, '<tid>', 'intent')"``.
     // Returns false to prevent the default newline insertion when we
@@ -692,13 +735,12 @@ def script() -> str:
             }
             if (!actionPerformed) {
                 // Wrap inner action buttons in a div with
-                // stopPropagation so clicking Edit / Flag doesn't
-                // double-fire the card-level navigate (when this is a
-                // singular-hoisted action with host_thread_id, the
-                // <li> itself is the click target). Inner _flagBtn
+                // stopPropagation so clicking Edit / Flag / Redirect
+                // doesn't double-fire the card-level navigate (when
+                // this is a singular-hoisted action with host_thread_id,
+                // the <li> itself is the click target). Inner _flagBtn
                 // already stopPropagates; the wrapper is belt-and-
-                // suspenders for the edit button + any future
-                // affordance.
+                // suspenders for the edit + redirect buttons.
                 html += '<div class="threads-item-actions"'
                       + (clickable ? ' onclick="event.stopPropagation()"' : '')
                       + '>';
@@ -709,6 +751,22 @@ def script() -> str:
                       + 'threadCardFocus(\'' + tidEsc + '\', \''
                       + _esc(a.id) + '\')">'
                       + _icon("edit") + '</button>';
+                // Phase 5 — per-action Redirect. Hoisted singular
+                // actions carry host_thread_id, so the redirect
+                // targets the child Thread's FSM (where the
+                // action_inferred event lives). The handler prompts
+                // for steering feedback and POSTs to the new
+                // /api/threads/<host>/redirect_action endpoint, which
+                // re-runs ONLY action-layer inference (no walk back
+                // through intent/context).
+                if (clickable) {
+                    html += '<button class="threads-redirect-btn" '
+                          + 'title="Redirect: ask the LLM to try this action '
+                          + 'again with your feedback" '
+                          + 'onclick="event.stopPropagation();'
+                          + 'threadCardRedirectAction(\'' + hostEsc + '\')">'
+                          + _icon("refresh-cw") + '</button>';
+                }
                 html += '</div>';
             }
             // Chevron hint that the card is clickable — same affordance
@@ -1710,6 +1768,26 @@ def styles() -> str:
 .threads-edit-btn:hover {
     background: var(--bg-tertiary, #0f0f0f);
     color: var(--text, #ddd);
+}
+
+/* Phase 5 — per-action Redirect button. Same chrome as the edit
+   button so it doesn't visually shout; the action label is enough
+   signal that it's a re-inference affordance. */
+.threads-redirect-btn {
+    background: transparent;
+    color: var(--text-muted, #888);
+    border: 1px solid var(--border, #333);
+    border-radius: 4px;
+    padding: 4px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 0;
+}
+.threads-redirect-btn:hover {
+    background: var(--bg-tertiary, #0f0f0f);
+    color: var(--accent, #6cf);
 }
 
 .threads-list {
