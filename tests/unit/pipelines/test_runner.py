@@ -97,19 +97,24 @@ def _ctx(item_id: str) -> CapturedItem:
 
 
 class TestEmptyAndMinimalRuns:
-    def test_empty_collect_still_spawns_umbrella(self, fresh_db):
+    def test_empty_collect_skips_umbrella_spawn(self, fresh_db):
+        """Phase-X empty-run fix: a pipeline that collected zero items
+        does NOT spawn a bare umbrella anymore. The hourly journal-
+        triage cron was producing dozens of empty 'Daily note: <date>'
+        threads on the dashboard; the operator-visible-signal that the
+        run executed lives in the pipeline-run log, not in a thread.
+
+        Run still returns a PipelineRun (so callers can inspect outcome),
+        but ``umbrella_id`` is empty + no thread exists in the store.
+        """
         pipeline = _StubPipeline(items=[], clusters=[])
         result = run_pipeline(
             pipeline, universal_actions=ActionLibrary([]),
         )
-        assert result.umbrella_id != ""
+        assert result.umbrella_id == ""
         assert result.child_thread_ids == ()
         assert result.item_count == 0
         assert result.cluster_count == 0
-        # Umbrella should be in MONITORING.
-        from work_buddy.threads.enums import FSMState
-        u = store.get_thread(result.umbrella_id)
-        assert u.fsm_state == FSMState.MONITORING
 
     def test_one_item_one_cluster(self, fresh_db):
         items = [_ctx("i0")]

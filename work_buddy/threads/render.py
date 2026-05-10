@@ -147,6 +147,46 @@ def build_render_data(thread_id: str) -> Optional[dict[str, Any]]:
             "model_used": latest_action.data.get("model_used"),
         }))
 
+    # Compute sub-threads once; reused both for the singular-pattern
+    # hoist (below) and for sub_thread_count / state-aggregation badges
+    # (further below). `list_threads(parent_id=...)` orders by
+    # `order_index ASC`, so iteration here is in spawn order.
+    sub_threads = store.list_threads(parent_id=thread_id)
+
+    # Singular-pattern hoist: when this thread is a `parent_relationship='singular'`
+    # umbrella (created by `pipelines/inline.py:_spawn_inline_umbrella` for inline
+    # captures whose verdict produced 2+ records), surface the children's actions
+    # inline on the parent's card. The umbrella itself has no `action_inferred`
+    # event — by spawn-time design — so `actions` is empty at this point. Each
+    # child thread carries exactly one action. We hoist them onto this parent's
+    # rendered actions array so the user sees ONE thread with N proposals
+    # instead of an empty umbrella + N detached child cards. See `threads/grouping`
+    # (singular pattern) for the architectural rationale.
+    if (
+        getattr(thread, "parent_relationship", "decompose") == "singular"
+        and not actions  # Umbrella shouldn't have its own action; defensive.
+    ):
+        for _child in sub_threads:
+            _child_render = build_render_data(_child.thread_id)
+            if _child_render is None:
+                continue
+            _child_state = _per_action_state_from_fsm(_child.fsm_state.value)
+            _settled = _child_state in ("done", "rejected", "failed")
+            for _child_action in (_child_render.get("actions") or []):
+                _hoisted = dict(_child_action)
+                _hoisted["host_thread_id"] = _child.thread_id
+                _hoisted["state"] = _child_state
+                _hoisted["settled"] = _settled
+                actions.append(_hoisted)
+        # Stable partition: pending first (in child-spawn order, which
+        # is the order `list_threads` returned them), settled last.
+        # Per the user's UX request: actions don't reorder once they
+        # appear (muscle memory holds).
+        actions = (
+            [a for a in actions if not a.get("settled")]
+            + [a for a in actions if a.get("settled")]
+        )
+
     # Urgency — derive from inciting summary or default to defer
     urgency = inciting.get("urgency", "defer")
 
@@ -174,7 +214,8 @@ def build_render_data(thread_id: str) -> Optional[dict[str, Any]]:
     # "5 done • 4 awaiting consent • 2 awaiting clarification"
     # at the top of the sub-thread list. We aggregate here so the
     # frontend can render the badges without an extra API call.
-    sub_threads = store.list_threads(parent_id=thread_id)
+    # `sub_threads` was already computed above for the singular-hoist
+    # path; reused here.
     sub_count = len(sub_threads)
     sub_thread_state_counts: dict[str, int] = {}
     for st in sub_threads:
@@ -279,6 +320,39 @@ def build_render_data(thread_id: str) -> Optional[dict[str, Any]]:
         "review_context": review_context,
         "cleanup_failure": cleanup_failure,
     }
+
+
+def _per_action_state_from_fsm(fsm_state: str) -> str:
+    """Map a child Thread's FSM state to a per-action-state label.
+
+    Used by the singular-pattern hoist (when a parent_relationship='singular'
+    umbrella surfaces its children's actions inline on its own card). Each
+    child thread is the host for exactly one action; the action's effective
+    state is a derived view of the child's fsm_state.
+
+    Returns one of: ``pending`` / ``executing`` / ``done`` / ``rejected`` /
+    ``failed``. The frontend uses this to gray-out settled actions and pick
+    a status badge.
+
+    Note: ``rejected`` vs ``failed`` distinction is approximate. ``DISMISSED``
+    state is reported as ``rejected`` here for v1 simplicity. A more precise
+    derivation would inspect the event log for ``execution_finished(success=False)``
+    vs a direct rejection, but the user-visible difference is minor (both
+    are settled-and-gray) and the cost-of-precision is meaningful.
+    """
+    state = fsm_state.lower() if isinstance(fsm_state, str) else ""
+    if state == "awaiting_confirmation":
+        return "pending"
+    if state == "executing":
+        return "executing"
+    if state == "done":
+        return "done"
+    if state == "dismissed":
+        return "rejected"
+    # Mid-process states (inferring_*, awaiting_intent_*, etc.) are
+    # still "pending" from the user's POV — not yet ready for approval,
+    # but also not settled.
+    return "pending"
 
 
 def _kind_fallback_name(kind: str) -> str:

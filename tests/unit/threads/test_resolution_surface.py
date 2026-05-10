@@ -161,6 +161,79 @@ class TestPublish:
         # Returns None on failure
         assert result is None
 
+    def test_publish_short_circuits_when_disabled_in_config(
+        self, fresh_db, monkeypatch,
+    ):
+        """``notifications.thread_resolution_surfaces.enabled = false``
+        in config silences off-dashboard pings. publish() returns
+        None without touching the dispatcher; the Threads tab still
+        renders the card via its own state-derivation path."""
+        monkeypatch.setattr(
+            "work_buddy.config.load_config",
+            lambda: {
+                "notifications": {
+                    "thread_resolution_surfaces": {"enabled": False},
+                },
+            },
+        )
+
+        # Trip-wire: if publish ever tries to reach the dispatcher,
+        # raise loudly so the test fails with a clear signal.
+        import sys
+        fake_mod = type(sys)("work_buddy.notifications.dispatcher")
+        class _ShouldNotBeCalled:
+            @classmethod
+            def from_config(cls):
+                raise AssertionError(
+                    "publish() reached SurfaceDispatcher despite "
+                    "enabled=False config"
+                )
+        fake_mod.SurfaceDispatcher = _ShouldNotBeCalled
+        monkeypatch.setitem(
+            sys.modules, "work_buddy.notifications.dispatcher", fake_mod,
+        )
+
+        t = Thread(fsm_state=FSMState.AWAITING_CONFIRMATION)
+        req = rs.build_resolution_request(t)
+        assert rs.publish(req) is None
+
+    def test_is_publish_enabled_default_true_when_key_absent(
+        self, monkeypatch,
+    ):
+        """The helper itself defaults to True when the config block
+        or key is missing — back-compat. Tested directly because the
+        full publish() path swallows downstream exceptions silently
+        and would mask whether the gate even fired."""
+        monkeypatch.setattr(
+            "work_buddy.config.load_config", lambda: {},
+        )
+        assert rs._is_publish_enabled() is True
+
+        monkeypatch.setattr(
+            "work_buddy.config.load_config",
+            lambda: {"notifications": {}},
+        )
+        assert rs._is_publish_enabled() is True
+
+        monkeypatch.setattr(
+            "work_buddy.config.load_config",
+            lambda: {"notifications": {"thread_resolution_surfaces": {}}},
+        )
+        assert rs._is_publish_enabled() is True
+
+    def test_is_publish_enabled_false_when_explicitly_disabled(
+        self, monkeypatch,
+    ):
+        monkeypatch.setattr(
+            "work_buddy.config.load_config",
+            lambda: {
+                "notifications": {
+                    "thread_resolution_surfaces": {"enabled": False},
+                },
+            },
+        )
+        assert rs._is_publish_enabled() is False
+
 
 # ---------------------------------------------------------------------------
 # State-entry handler integration with the engine

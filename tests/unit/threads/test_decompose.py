@@ -217,6 +217,118 @@ class TestCascade:
 
 
 # ---------------------------------------------------------------------------
+# Singular-umbrella DONE/DISMISSED branch (terminal-mix discrimination)
+# ---------------------------------------------------------------------------
+
+
+class TestSingularCascade:
+    """Singular umbrellas terminate as DISMISSED iff every child was
+    dismissed (no approvals, no hand-offs). Otherwise DONE — same as
+    decompose / group umbrellas. Verifies decompose.cascade_terminal_to_parent
+    + engine._default_branch_resolver wiring."""
+
+    def _setup_singular(
+        self,
+        children_terminal_states: list[FSMState],
+    ) -> tuple[str, list[str]]:
+        """Build a singular umbrella in MONITORING with N children
+        already at the requested terminal states. Returns
+        (parent_id, child_ids)."""
+        p = Thread(
+            autonomy_policy=autonomy.PLAN_THEN_REVIEW,
+            fsm_state=FSMState.MONITORING,
+            parent_relationship="singular",
+        )
+        store.insert_thread(p)
+        child_ids: list[str] = []
+        for state in children_terminal_states:
+            c = Thread(
+                parent_id=p.thread_id,
+                autonomy_policy=autonomy.PLAN_THEN_REVIEW,
+                fsm_state=state,
+            )
+            store.insert_thread(c)
+            child_ids.append(c.thread_id)
+        return p.thread_id, child_ids
+
+    def test_all_dismissed_children_singular_umbrella_goes_dismissed(
+        self, fresh_db,
+    ):
+        parent_id, child_ids = self._setup_singular(
+            [FSMState.DISMISSED, FSMState.DISMISSED],
+        )
+        out = decompose.cascade_terminal_to_parent(child_ids[-1])
+        assert out == FSMState.DISMISSED.value
+        assert store.get_thread(parent_id).fsm_state == FSMState.DISMISSED
+
+    def test_any_done_child_singular_umbrella_goes_done(self, fresh_db):
+        parent_id, child_ids = self._setup_singular(
+            [FSMState.DISMISSED, FSMState.DONE],
+        )
+        out = decompose.cascade_terminal_to_parent(child_ids[-1])
+        assert out == FSMState.DONE.value
+        assert store.get_thread(parent_id).fsm_state == FSMState.DONE
+
+    def test_all_done_children_singular_umbrella_goes_done(self, fresh_db):
+        parent_id, child_ids = self._setup_singular(
+            [FSMState.DONE, FSMState.DONE],
+        )
+        out = decompose.cascade_terminal_to_parent(child_ids[-1])
+        assert out == FSMState.DONE.value
+
+    def test_handed_off_child_counts_as_progress_not_dismissal(
+        self, fresh_db,
+    ):
+        parent_id, child_ids = self._setup_singular(
+            [FSMState.DISMISSED, FSMState.HANDED_OFF],
+        )
+        out = decompose.cascade_terminal_to_parent(child_ids[-1])
+        assert out == FSMState.DONE.value
+        assert store.get_thread(parent_id).fsm_state == FSMState.DONE
+
+    def test_decompose_umbrella_all_dismissed_still_done(self, fresh_db):
+        """Non-singular (decompose) umbrellas keep the all-terminal →
+        DONE rule even when all children are dismissed. The DISMISSED
+        cascade branch is opt-in via ``parent_relationship='singular'``."""
+        p = Thread(
+            autonomy_policy=autonomy.PLAN_THEN_REVIEW,
+            fsm_state=FSMState.MONITORING,
+            parent_relationship="decompose",
+        )
+        store.insert_thread(p)
+        child_ids = []
+        for _ in range(2):
+            c = Thread(
+                parent_id=p.thread_id,
+                autonomy_policy=autonomy.PLAN_THEN_REVIEW,
+                fsm_state=FSMState.DISMISSED,
+            )
+            store.insert_thread(c)
+            child_ids.append(c.thread_id)
+        out = decompose.cascade_terminal_to_parent(child_ids[-1])
+        assert out == FSMState.DONE.value
+        assert store.get_thread(p.thread_id).fsm_state == FSMState.DONE
+
+    def test_group_umbrella_all_dismissed_still_done(self, fresh_db):
+        """Same guard for group umbrellas — only ``singular`` parents
+        get the DISMISSED-on-all-dismissed branch."""
+        p = Thread(
+            autonomy_policy=autonomy.PLAN_THEN_REVIEW,
+            fsm_state=FSMState.MONITORING,
+            parent_relationship="group",
+        )
+        store.insert_thread(p)
+        c = Thread(
+            parent_id=p.thread_id,
+            autonomy_policy=autonomy.PLAN_THEN_REVIEW,
+            fsm_state=FSMState.DISMISSED,
+        )
+        store.insert_thread(c)
+        out = decompose.cascade_terminal_to_parent(c.thread_id)
+        assert out == FSMState.DONE.value
+
+
+# ---------------------------------------------------------------------------
 # force_close_parent
 # ---------------------------------------------------------------------------
 

@@ -126,6 +126,49 @@ def script() -> str:
             window._renderActiveThread();
         }
     };
+
+    // Per-action redirect on a singular-hoisted action chip. Prompts
+    // for steering feedback, POSTs to /api/threads/<host>/redirect_action
+    // which records a KIND_ACTION_REDIRECTED event and re-runs ONLY
+    // action-layer inference (no walk back through intent/context).
+    // On success, refreshes the thread view so the new (or pending)
+    // action_inferred surfaces. Wired from the Redirect button in
+    // ``_renderActionsSection``.
+    window.threadCardRedirectAction = async function (hostThreadId) {
+        const feedback = window.prompt(
+            "Redirect this action — describe what you want different\\n"
+            + "(e.g. 'reminder a week earlier', 'use different parameters'):",
+            ""
+        );
+        if (feedback === null) return;  // user cancelled
+        const trimmed = (feedback || "").trim();
+        if (!trimmed) return;  // empty input
+        try {
+            const resp = await fetch(
+                "/api/threads/" + encodeURIComponent(hostThreadId)
+                + "/redirect_action",
+                {
+                    method: "POST",
+                    headers: {"Content-Type": "application/json"},
+                    body: JSON.stringify({feedback: trimmed}),
+                },
+            );
+            const body = await resp.json().catch(() => ({}));
+            if (!resp.ok) {
+                window.alert(
+                    "Redirect failed: " + (body.error || resp.statusText)
+                );
+                return;
+            }
+            // Trigger a refresh of the active thread view so the
+            // re-inferred action surfaces when it lands.
+            if (typeof window._renderActiveThread === "function") {
+                window._renderActiveThread();
+            }
+        } catch (e) {
+            window.alert("Redirect failed: " + (e && e.message || e));
+        }
+    };
     // Keyboard handler shared by every Threads textarea. Attach via
     // ``onkeydown="return threadCardEditorKeydown(event, '<tid>', 'intent')"``.
     // Returns false to prevent the default newline insertion when we
@@ -539,12 +582,23 @@ def script() -> str:
         // ran. Suppress the per-action action-row in post-execution
         // states. The action label, plan, risk metadata, and rationale
         // still render as a historical record.
+        //
+        // 2026-05-09 update (singular pattern): when actions are HOISTED
+        // from sub-threads onto a `parent_relationship='singular'`
+        // umbrella's card (see backend `render.py:_per_action_state_from_fsm`),
+        // each action carries its own `settled` flag derived from its
+        // host child's fsm_state. The thread-level `actionPerformed`
+        // gate over-hides in this case (parent stays in MONITORING
+        // while children settle independently) — use per-action
+        // `a.settled` instead. For non-singular threads, fall back to
+        // the legacy thread-level gate so single-action threads keep
+        // their existing behaviour.
         const POST_ACTION_STATES = new Set([
             'executing', 'monitoring', 'cleaning_up',
             'done', 'dismissed', 'handed_off',
             'done_cleanup_successful', 'done_cleanup_unsuccessful',
         ]);
-        const actionPerformed = POST_ACTION_STATES.has(thread.fsm_state);
+        const threadActionPerformed = POST_ACTION_STATES.has(thread.fsm_state);
         let html = '<div class="threads-section">';
         html += '<div class="threads-section-label">Actions ('
               + actions.length + ')</div>';
@@ -552,9 +606,36 @@ def script() -> str:
         for (const a of actions) {
             const flagged = s.flagged.has(a.id);
             const blocked = !!a.context_blocked;
+            // Singular-pattern hoisted actions carry `a.settled`. Fall
+            // back to the thread-level gate when `a.settled` is undefined.
+            const actionPerformed = (typeof a.settled === 'boolean')
+                ? a.settled
+                : threadActionPerformed;
+            // Singular-pattern hoisted actions also carry
+            // `host_thread_id` pointing at the child Thread that hosts
+            // the action's FSM/event-log. When present, make the WHOLE
+            // <li> clickable to navigate to the child (full Approve /
+            // Edit / Reject / Redirect surface) — same pattern as the
+            // context-items list above. Inner buttons stopPropagation.
+            const hostId = a.host_thread_id;
+            const clickable = !!hostId;
+            const tidEsc = _esc(thread.thread_id);
+            const hostEsc = hostId ? _esc(hostId) : '';
             html += '<li class="threads-item'
+                  + (clickable ? ' threads-item-clickable' : '')
                   + (flagged ? ' threads-flagged' : '')
-                  + (blocked ? ' threads-ctx-blocked' : '') + '">';
+                  + (blocked ? ' threads-ctx-blocked' : '')
+                  + (actionPerformed ? ' threads-action-settled' : '') + '"'
+                  + (clickable
+                      ? (' role="button" tabindex="0" '
+                          + 'title="Click to open this action\'s thread '
+                          + 'for full Approve / Edit / Redirect / Reject" '
+                          + 'onclick="threadsPushPath(\'' + hostEsc + '\')" '
+                          + 'onkeydown="if(event.key===\'Enter\'||event.key===\' \''
+                          + '){event.preventDefault();'
+                          + 'threadsPushPath(\'' + hostEsc + '\')}"')
+                      : '')
+                  + '>';
             // Action label: kind icon + name + small kind chip
             // (so the user sees both "Research..." and that it's
             // an improvised plan, not a Standard Action).
@@ -562,9 +643,28 @@ def script() -> str:
                 ? ' <span class="threads-kind-chip ' + _esc(a.kind) + '">'
                   + _esc(a.kind) + '</span>'
                 : '';
+            // Per-action status badge for hoisted actions on singular
+            // umbrellas: shows ✓ done / ✗ rejected / ! failed inline so
+            // the user can see at a glance which of N proposals on this
+            // thread are still pending vs already settled.
+            let statusBadge = '';
+            if (a.state === 'done') {
+                statusBadge = ' <span class="threads-action-status-badge done" '
+                            + 'title="Action completed">✓ done</span>';
+            } else if (a.state === 'rejected') {
+                statusBadge = ' <span class="threads-action-status-badge rejected" '
+                            + 'title="Action dismissed">✗ rejected</span>';
+            } else if (a.state === 'failed') {
+                statusBadge = ' <span class="threads-action-status-badge failed" '
+                            + 'title="Action failed during execution">! failed</span>';
+            } else if (a.state === 'executing') {
+                statusBadge = ' <span class="threads-action-status-badge executing" '
+                            + 'title="Action executing">⟳ running</span>';
+            }
             html += '<div class="threads-item-label">'
                   + _kindIcon(a.kind, a.name) + ' ' + _esc(a.name || a.id)
                   + kindChip
+                  + statusBadge
                   + _confidenceBadge(a.confidence)
                   + '</div>';
             const summary = a.plan_summary || _summariseParams(a.parameters);
@@ -634,14 +734,48 @@ def script() -> str:
                       + '</div>';
             }
             if (!actionPerformed) {
-                html += '<div class="threads-item-actions">';
+                // Wrap inner action buttons in a div with
+                // stopPropagation so clicking Edit / Flag / Redirect
+                // doesn't double-fire the card-level navigate (when
+                // this is a singular-hoisted action with host_thread_id,
+                // the <li> itself is the click target). Inner _flagBtn
+                // already stopPropagates; the wrapper is belt-and-
+                // suspenders for the edit + redirect buttons.
+                html += '<div class="threads-item-actions"'
+                      + (clickable ? ' onclick="event.stopPropagation()"' : '')
+                      + '>';
                 html += _flagBtn(thread.thread_id, a.id, flagged);
                 html += '<button class="threads-edit-btn" '
                       + 'title="Edit action" '
-                      + 'onclick="threadCardFocus(\'' + _esc(thread.thread_id) + '\', \''
+                      + 'onclick="' + (clickable ? 'event.stopPropagation();' : '')
+                      + 'threadCardFocus(\'' + tidEsc + '\', \''
                       + _esc(a.id) + '\')">'
                       + _icon("edit") + '</button>';
+                // Per-action Redirect. Hoisted singular actions carry
+                // host_thread_id, so the redirect targets the child
+                // Thread's FSM (where the action_inferred event lives).
+                // The handler prompts for steering feedback and POSTs
+                // to /api/threads/<host>/redirect_action, which re-runs
+                // ONLY action-layer inference (no walk back through
+                // intent / context).
+                if (clickable) {
+                    html += '<button class="threads-redirect-btn" '
+                          + 'title="Redirect: ask the LLM to try this action '
+                          + 'again with your feedback" '
+                          + 'onclick="event.stopPropagation();'
+                          + 'threadCardRedirectAction(\'' + hostEsc + '\')">'
+                          + _icon("refresh-cw") + '</button>';
+                }
                 html += '</div>';
+            }
+            // Chevron hint that the card is clickable — same affordance
+            // as the context-items list. Only renders when the action
+            // is singular-hoisted (i.e. host_thread_id present); for
+            // top-level threads the action is rendered in-place and
+            // doesn't navigate.
+            if (clickable) {
+                html += '<span class="threads-expand-hint" aria-hidden="true">'
+                      + _icon("chevron-right") + '</span>';
             }
             html += '</li>';
         }
@@ -700,10 +834,18 @@ def script() -> str:
         // is the only thing that swaps.
         const isGroup = thread.parent_relationship === 'group'
             && typeof window.renderGroupSubThreads === 'function';
+        const isSingular = thread.parent_relationship === 'singular';
         const n = thread.sub_thread_count || 0;
         // Group-parents always render the section: sibling columns
         // may have content even when this group has zero children
         // of its own. Non-group parents hide the section at count=0.
+        // Singular-pattern umbrellas (inline-capture multi-record):
+        // children's actions have been HOISTED onto the parent's
+        // Actions section by the backend render. Showing them again
+        // here as Sub-threads is redundant — drop the section
+        // entirely so the umbrella card reads as ONE thread with N
+        // actions. See `threads/grouping` (singular pattern).
+        if (isSingular) return '';
         if (n === 0 && !isGroup) return '';
         const counts = thread.sub_thread_state_counts || {};
         const badges = _renderStateBadges(counts);
@@ -1627,6 +1769,26 @@ def styles() -> str:
     color: var(--text, #ddd);
 }
 
+/* Per-action Redirect button. Same chrome as the edit button so it
+   doesn't visually shout; the action label is enough signal that it's
+   a re-inference affordance. */
+.threads-redirect-btn {
+    background: transparent;
+    color: var(--text-muted, #888);
+    border: 1px solid var(--border, #333);
+    border-radius: 4px;
+    padding: 4px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 0;
+}
+.threads-redirect-btn:hover {
+    background: var(--bg-tertiary, #0f0f0f);
+    color: var(--accent, #6cf);
+}
+
 .threads-list {
     list-style: none;
     padding: 0;
@@ -1684,6 +1846,60 @@ def styles() -> str:
     border-left-color: #b8860b;
     opacity: 0.85;
 }
+
+/* Singular-pattern: settled action (done / rejected / failed) on a
+   parent_relationship='singular' umbrella's hoisted actions list.
+   Gray-out so the user can see at a glance which proposals on this
+   umbrella are still pending vs already dealt with. The per-action
+   action-row (Edit / Flag) is also suppressed by the renderer when
+   `a.settled === true`. See `_renderActionsSection` in this file
+   for the gating logic. */
+.threads-item.threads-action-settled {
+    opacity: 0.55;
+    /* Subtle visual cue beyond opacity — a faint strikethrough on
+       the action's main label tells the eye "this is done" even when
+       the user has the page contrast set high. */
+}
+.threads-item.threads-action-settled .threads-item-label {
+    text-decoration-line: line-through;
+    text-decoration-color: rgba(120, 120, 120, 0.45);
+    text-decoration-thickness: 1px;
+}
+
+/* Per-action status badge inline with the action label. */
+.threads-action-status-badge {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-family: var(--font-mono, monospace);
+    font-size: 10px;
+    font-weight: 500;
+    vertical-align: middle;
+    text-decoration: none !important;  /* Don't strike-through the badge */
+}
+.threads-action-status-badge.done {
+    background: rgba(50, 150, 80, 0.20);
+    color: #6dd99a;
+}
+.threads-action-status-badge.rejected {
+    background: rgba(150, 150, 150, 0.18);
+    color: #999;
+}
+.threads-action-status-badge.failed {
+    background: rgba(200, 100, 30, 0.18);
+    color: #d8884a;
+}
+.threads-action-status-badge.executing {
+    background: rgba(60, 130, 200, 0.18);
+    color: #6da8d9;
+}
+
+/* (Singular-pattern hoisted actions: the whole <li> is clickable —
+   navigates via threadsPushPath to the child Thread. The card-click
+   pattern uses .threads-item-clickable from earlier in this stylesheet
+   plus a chevron hint at the end. No separate "Open thread" link
+   needed.) */
 
 /* Per-context status pill */
 .threads-ctx {

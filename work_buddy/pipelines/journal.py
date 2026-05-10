@@ -395,10 +395,22 @@ class JournalBacklogPipeline:
         self, run_metadata: dict[str, Any],
         items: list[CapturedItem] | None = None,
     ) -> dict[str, Any]:
-        journal_date = run_metadata.get("journal_date") or "unknown"
+        # Default journal_date to today's ISO when not supplied by the
+        # caller. Pre-fix: the scheduled `journal-triage-scan` job
+        # (`sidecar_jobs/journal-triage-scan.md`) didn't pass
+        # journal_date, run_metadata was empty for that key, and
+        # `or "unknown"` made the title "Daily note: unknown" — a bug
+        # the dashboard surfaced as 17 stale umbrellas in one day.
+        # Resilient default-to-today here means any caller (cron job,
+        # ad-hoc invocation, future direct API) gets the right title
+        # without having to remember to pass the date.
+        journal_date = run_metadata.get("journal_date")
+        if not journal_date:
+            from datetime import date as _date_cls
+            journal_date = _date_cls.today().isoformat()
         scan_id = run_metadata.get("scan_id")
         item_count = run_metadata.get("item_count", 0)
-        title = f"Daily journal scan: {journal_date}"
+        title = f"Daily note: {journal_date}"
         return {
             "source": self.name,
             "title": title,

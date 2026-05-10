@@ -151,6 +151,30 @@ def _surfaces_for(rr: ResolutionRequest) -> Optional[list[str]]:
     return None
 
 
+def _is_publish_enabled() -> bool:
+    """Read ``notifications.thread_resolution_surfaces.enabled`` from
+    config. Defaults to True so the existing behavior is preserved
+    when the key is absent. Set to False in ``config.local.yaml`` to
+    silence Telegram + Obsidian pings for thread wait states without
+    losing the in-dashboard Threads-tab surface (which doesn't go
+    through ``publish``).
+
+    Lookups are cheap; we re-read each ``publish`` call so the user
+    can toggle the flag without restarting the sidecar.
+    """
+    try:
+        from work_buddy.config import load_config
+        cfg = load_config()
+        section = (cfg.get("notifications") or {}).get(
+            "thread_resolution_surfaces", {},
+        )
+        # Explicit ``enabled: false`` disables; anything else (missing,
+        # ``true``, garbage) leaves it enabled.
+        return section.get("enabled", True) is not False
+    except Exception:
+        return True
+
+
 def publish(rr: ResolutionRequest) -> Optional[str]:
     """Publish a ResolutionRequest as a workflow-view Notification.
 
@@ -164,7 +188,15 @@ def publish(rr: ResolutionRequest) -> Optional[str]:
     legitimate user-pause states (action approval, clarifications,
     post-execution review, failed cleanup) fan out everywhere; the
     intent/context confirmation states only land in the dashboard.
+
+    Bypass: when ``notifications.thread_resolution_surfaces.enabled``
+    is False in config, returns None unconditionally — no off-
+    dashboard pings fire. The Threads tab still renders the
+    canonical card; only Telegram + Obsidian go silent.
     """
+    if not _is_publish_enabled():
+        return None
+
     view_id = f"{_PUBLISHED_VIEW_PREFIX}{rr.thread_id}"
 
     surfaces = _surfaces_for(rr)

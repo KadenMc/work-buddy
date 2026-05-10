@@ -416,13 +416,13 @@ class EmailTriagePipeline:
 
         if sender_count and item_count:
             title = (
-                f"Email triage: {item_count} unread from "
+                f"Email: {item_count} unread from "
                 f"{sender_count} sender(s)"
             )
         elif item_count:
-            title = f"Email triage: {item_count} unread"
+            title = f"Email: {item_count} unread"
         else:
-            title = "Email triage: nothing pending"
+            title = "Email: nothing pending"
 
         return {
             "source": self.name,

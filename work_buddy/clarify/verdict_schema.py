@@ -228,6 +228,12 @@ _TASK_PROPOSAL_SCHEMA: dict[str, Any] = {
                 "automation/risk resolver reads this against the "
                 "user's tolerance to compute the operating tier."
             ),
+            # Anthropic strict structured-output mode rejects object-type
+            # fields without an explicit ``additionalProperties: false``,
+            # even when the field itself is nullable — surfaces as a 400
+            # once the schema is large enough that Anthropic deeply
+            # re-validates nested objects.
+            "additionalProperties": False,
             "properties": {
                 "financial_cents": {
                     "type": "integer",
@@ -346,15 +352,61 @@ _TASK_PROPOSAL_SCHEMA: dict[str, Any] = {
             ),
         },
         "required_contexts_source": {
+            # Anthropic strict structured-output rejects enums that mix
+            # null with string values when the enclosing type is a union.
+            # Express null acceptance via the type union and constrain
+            # only the string values via enum. (Pre-Slice-5a we had
+            # ``"enum": ["agent_inferred", "user_authored", None]`` —
+            # 400 from the API as of the inline_capture live test.)
             "type": ["string", "null"],
-            "enum": ["agent_inferred", "user_authored", None],
+            "enum": ["agent_inferred", "user_authored"],
             "description": (
                 "Slice 5a provenance for the two context lists. "
                 "Clarify writes ``agent_inferred``; the dashboard "
                 "flips to ``user_authored`` once the user edits the "
                 "list so future Clarify re-runs don't clobber the "
-                "edit."
+                "edit. Null when neither has been set."
             ),
+        },
+        # ---- Project picker (sub-LLM evidence + verdict's pick) -----
+        "project_tag": {
+            "type": ["string", "null"],
+            "description": (
+                "The project this task belongs to, as a slug under "
+                "``#projects/<slug>``. Null means no project — a "
+                "first-class option, not a fallback. The verdict "
+                "(THIS prompt) decides this by reasoning over "
+                "``project_candidates`` (from the project-picker "
+                "sub-LLM) plus broader context. Lean toward null "
+                "when genuinely uncertain; declining to assign a "
+                "project is preferable to a wrong assignment. The "
+                "downstream ``triage_submit``/``task_create`` path "
+                "applies ``#projects/<slug>`` iff this is non-null."
+            ),
+        },
+        "project_candidates": {
+            "type": ["array", "null"],
+            "description": (
+                "Audit field: the ranked candidate list from the "
+                "project-picker sub-LLM. Each entry has "
+                "``project_tag`` (slug or null), ``confidence`` "
+                "(0-1), and ``rationale``. The verdict pre-pass "
+                "interpolates these into the user prompt as "
+                "evidence; the verdict reasons over them and sets "
+                "``project_tag`` accordingly. Pass through verbatim "
+                "from the user message unless overriding (drop "
+                "spurious candidates allowed; never invent new ones)."
+            ),
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "project_tag": {"type": ["string", "null"]},
+                    "confidence": {"type": "number"},
+                    "rationale": {"type": "string"},
+                },
+                "required": ["project_tag", "confidence", "rationale"],
+            },
         },
     },
     "required": ["suggested_task_text"],

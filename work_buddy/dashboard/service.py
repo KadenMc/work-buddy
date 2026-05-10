@@ -2203,22 +2203,58 @@ def api_thread_events(thread_id: str):
         return jsonify({"events": [], "error": str(exc)}), 500
 
 
+_THREAD_USER_INITIATED_TRIGGERS = {
+    # User clicked Approve on a thread's action chip / confirmation
+    # card → fires the consent gate's "execute" trigger which calls
+    # the action capability synchronously via the EXECUTING side-effect
+    # handler. The click IS the consent boundary; without wrapping in
+    # ``user_initiated``, capabilities re-prompt for moderate-risk
+    # consent the user already gave by clicking Approve, dumping the
+    # thread into AWAITING_REDIRECT with a ConsentRequired error. See
+    # ``notifications/consent`` (UI-click bypass) for policy.
+    "execute",
+    # Other user-initiated triggers that may downstream-invoke
+    # @requires_consent-gated code via side effects:
+    "confirmed",
+    "review_accepted",
+    "provided",
+    "redirected",
+    "retry_cleanup",
+    "accept_cleanup_failure",
+}
+
+
 def _post_thread_action(
     thread_id: str, *, trigger: str, data_extras=None,
 ):
-    """Common POST handler — fires an FSM transition through engine."""
+    """Common POST handler — fires an FSM transition through engine.
+
+    Wraps the transition in ``consent.user_initiated`` when the trigger
+    is a user-click action (Approve, Confirm, Review-accept, etc.) so
+    capabilities invoked via state-entry side effects don't re-prompt
+    for consent the user already gave by clicking. The trigger
+    allowlist lives in ``_THREAD_USER_INITIATED_TRIGGERS``; see
+    ``notifications/consent`` (UI-click bypass) for policy.
+    """
     blocked = _reject_read_only()
     if blocked:
         return blocked
     payload = request.get_json(silent=True) or {}
     try:
         from work_buddy.threads import engine
+        from work_buddy.consent import user_initiated
         merged = dict(payload)
         if data_extras:
             merged.update(data_extras)
-        result = engine.transition(
-            thread_id, trigger, data=merged, fire_side_effects=True,
-        )
+        if trigger in _THREAD_USER_INITIATED_TRIGGERS:
+            with user_initiated(f"dashboard.thread.{trigger}"):
+                result = engine.transition(
+                    thread_id, trigger, data=merged, fire_side_effects=True,
+                )
+        else:
+            result = engine.transition(
+                thread_id, trigger, data=merged, fire_side_effects=True,
+            )
         return jsonify({
             "ok": True,
             "thread_id": thread_id,
@@ -2340,6 +2376,99 @@ def api_thread_dismiss(thread_id: str):
 def api_thread_redirect(thread_id: str):
     """Re-direct: push back to inference with feedback. UX.md §5.3."""
     return _post_thread_action(thread_id, trigger="redirected")
+
+
+@app.post("/api/threads/<thread_id>/redirect_action")
+def api_thread_redirect_action(thread_id: str):
+    """Per-action scoped redirect on a singular umbrella's hoisted action.
+
+    Body: ``{"feedback": "<user-supplied redirect feedback>"}``
+
+    Re-infers JUST the action layer for this child thread, without
+    rerunning intent / context inference. The prior ``action_inferred``
+    event stays in history; ``render._latest()`` surfaces the newest
+    one as the active proposal.
+
+    Path: AWAITING_CONFIRMATION → AWAITING_INFERENCE (TRIG_REDIRECTED,
+    data carries ``target='action'`` so the inference worker enqueues
+    only the action target). The feedback is recorded as a
+    ``KIND_ACTION_REDIRECTED`` event; the inference runner picks it up
+    when building the user message.
+    """
+    blocked = _reject_read_only()
+    if blocked:
+        return blocked
+    payload = request.get_json(silent=True) or {}
+    feedback = (payload.get("feedback") or "").strip()
+    if not feedback:
+        return jsonify({
+            "error": "feedback is required for per-action redirect",
+        }), 400
+    try:
+        from work_buddy.threads import engine, store
+        from work_buddy.threads.events import (
+            ACTOR_USER,
+            KIND_ACTION_INFERRED,
+            KIND_ACTION_REDIRECTED,
+            ThreadEvent,
+        )
+
+        thread = store.get_thread(thread_id)
+        if thread is None:
+            return jsonify({"error": "Thread not found"}), 404
+
+        # Find the action_inferred event being superseded (newest, if any)
+        events = store.list_events(thread_id, kinds=[KIND_ACTION_INFERRED])
+        superseded_event_id = events[-1].id if events else None
+
+        # Record the user redirect with feedback BEFORE the transition,
+        # so the feedback event is in the log when the inference worker
+        # builds the prompt.
+        store.append_event(ThreadEvent(
+            thread_id=thread_id,
+            kind=KIND_ACTION_REDIRECTED,
+            actor=ACTOR_USER,
+            data={
+                "feedback": feedback,
+                "superseded_event_id": superseded_event_id,
+            },
+        ))
+
+        # ``append_event`` writes the event row but does NOT bump the
+        # ``threads.parent_event_id`` cache. ``engine.transition`` reads
+        # that cache for the optimistic-lock target, so without an
+        # explicit refresh it would compare a stale ID against the
+        # newly-landed feedback event and reject with
+        # OptimisticLockConflict. Pass the fresh latest_event_id
+        # explicitly — same pattern as decompose.cascade_terminal_to_parent.
+        fresh_parent = store.latest_event_id(thread_id)
+
+        # Transition: TRIG_REDIRECTED + target='action' so the
+        # AWAITING_INFERENCE state-entry handler enqueues ONLY the
+        # action target (no walk back through intent/context).
+        result = engine.transition(
+            thread_id, "redirected",
+            data={
+                "target": "action",
+                "redirect_feedback": feedback,
+            },
+            parent_event_id=fresh_parent,
+            fire_side_effects=True,
+        )
+        return jsonify({
+            "ok": True,
+            "thread_id": thread_id,
+            "prev_state": result.prev_state.value,
+            "next_state": result.next_state.value,
+            "superseded_event_id": superseded_event_id,
+        })
+    except engine.InvalidTransition as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as exc:
+        logger.exception(
+            "redirect_action failed for %s: %s", thread_id, exc,
+        )
+        return jsonify({"error": str(exc)}), 500
 
 
 @app.post("/api/threads/<thread_id>/cleanup")

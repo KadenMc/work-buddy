@@ -125,6 +125,29 @@ def run_pipeline(
     run_metadata = dict(collect_kwargs)
     run_metadata.setdefault("source", pipeline.name)
     run_metadata["item_count"] = len(items)
+
+    # Empty-run early return: when the pipeline collected ZERO items
+    # (no fresh journal entries to triage, no Chrome tabs, etc.), the
+    # hourly cron previously spawned a bare umbrella every fire — the
+    # user accumulated dozens of empty "Daily note: <date>" threads on
+    # the dashboard. The original intent ("operator-visible signal
+    # that the pipeline ran") is served by the pipeline-run log; we
+    # don't need a dashboard thread for it. Skip the spawn entirely
+    # when there's nothing to triage.
+    if not items:
+        logger.info(
+            "pipeline.run [%s]: no items collected — skipping empty "
+            "umbrella spawn (run still recorded in logs).",
+            pipeline.name,
+        )
+        return PipelineRun(
+            pipeline_name=pipeline.name,
+            umbrella_id="",
+            child_thread_ids=(),
+            item_count=0,
+            cluster_count=0,
+        )
+
     umbrella_summary = pipeline.umbrella_summary(run_metadata, items=items)
 
     umbrella_id = _spawn_umbrella(

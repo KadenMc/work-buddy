@@ -103,6 +103,15 @@ def _default_branch_resolver(ctx: BranchContext) -> FSMState:
             return FSMState.AWAITING_REVIEW
         return FSMState.DONE
     if label == "done_when_all_subthreads_terminal":
+        # Singular umbrella special case: when every child was
+        # dismissed (no approvals, no hand-offs), the umbrella is
+        # "all rejected" — terminal as DISMISSED, not DONE. Caller
+        # (``decompose.cascade_terminal_to_parent``) sets
+        # ``all_dismissed_singular`` after inspecting the children's
+        # terminal mix; decompose / group umbrellas leave the flag
+        # unset and take the all_terminal → DONE rule below.
+        if ctx.data.get("all_dismissed_singular"):
+            return FSMState.DISMISSED
         if ctx.data.get("all_terminal"):
             return FSMState.DONE
         return FSMState.MONITORING
@@ -346,7 +355,7 @@ def transition(
 _BRANCH_REACH: dict[str, set[FSMState]] = {
     "done_or_review": {FSMState.DONE, FSMState.AWAITING_REVIEW},
     "done_when_all_subthreads_terminal": {
-        FSMState.DONE, FSMState.MONITORING,
+        FSMState.DONE, FSMState.MONITORING, FSMState.DISMISSED,
     },
     # Autonomy-gated: either advance to the next inference or
     # surface the confirmation card.

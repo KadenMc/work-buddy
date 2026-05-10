@@ -114,6 +114,60 @@ TRIAGE_DEFAULTS: dict[str, Any] = {
         ],
     },
 
+    # Text segmenter SubCall — splits a captured selection into distinct
+    # *matters*. Used by `pipelines/inline.py` to detect when a single
+    # right-click captures multiple unrelated subjects (e.g. "Email Bob
+    # about report. Renew car insurance Friday.") and route each as its
+    # own thread. The system prompt biases strongly toward "one matter"
+    # to avoid false-splits; bias-toward-cohesion mirrors the project_picker.
+    #
+    # Operational dials live here per the standard SubCall config-key
+    # pattern (see `architecture/llm-runner/decomposed-judgment`).
+    "text_segmenter": {
+        "tier_chain": [
+            "local_tool_calling",
+            "local_fast",
+            "frontier_fast",
+        ],
+        "max_tokens": 1024,
+        "temperature": 0.0,
+        # Cache disabled: same text might segment differently across
+        # contexts (e.g. with different hints) and we don't want stale
+        # boundaries on the cheap path.
+        "cache_ttl_minutes": 0,
+        # Sanity guard against runaway output. The system prompt also
+        # asks the model to produce at most 6 segments (cap merges).
+        "max_segments": 6,
+    },
+
+    # Project picker SubCall — emits a hedged ranked-candidate list so
+    # the verdict LLM can decide project assignment with broader
+    # context. The "no project" option is always required to appear in
+    # the candidates list (enforced by the SubCall's post-parse
+    # validator); numeric thresholds for which candidate to actually
+    # apply DO NOT live in Python — the verdict's reasoning over
+    # candidates + broader context decides. This is intentional:
+    # hardcoding a threshold below the smartest LLM in the chain forces
+    # a decision at the dumbest layer.
+    #
+    # ``max_candidates`` is a sanity guard against runaway output; the
+    # system prompt also asks the model to stop emitting candidates
+    # below ~0.10 confidence.
+    "project_picker": {
+        "tier_chain": [
+            "local_tool_calling",
+            "local_fast",
+            "frontier_fast",
+        ],
+        "max_tokens": 1024,
+        "temperature": 0.0,
+        # Cache disabled: active project list changes frequently
+        # enough that cached candidates would shadow newly-created
+        # projects.
+        "cache_ttl_minutes": 0,
+        "max_candidates": 5,
+    },
+
     # Adapter-specific knobs keyed by adapter_name. Individual
     # adapters may read nested settings from here.
     "adapters": {

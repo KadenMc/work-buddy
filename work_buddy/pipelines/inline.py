@@ -149,12 +149,21 @@ def inline_capture(
 ) -> dict[str, Any]:
     """Run the Clarify pipeline on one inline selection and spawn Threads.
 
+    The captured text is segmented into distinct *matters* via
+    :func:`text_segmenter.segment_into_matters` before the verdict
+    runs. Each matter is processed independently via
+    :func:`pipelines.singular.spawn_thread_for_matter`. The shape:
+
+    - **1 segment (typical case)**: one matter → one root Thread (flat
+      or singular umbrella, depending on verdict's record count).
+    - **N segments (rare; multi-matter capture)**: N independent root
+      Threads, one per matter. No conflation.
+
     Args:
         file_path: Vault-relative source path (for provenance).
         selection: The user's literal selection. Falls back to
             ``paragraph`` when empty.
-        paragraph: Surrounding paragraph (used when selection is
-            empty).
+        paragraph: Surrounding paragraph (used when selection is empty).
         cursor_line: 0-indexed cursor line in the source file.
         hint: Optional user-typed intent hint from the modal.
         enrich: Include the user-context packet (active tasks /
@@ -164,25 +173,44 @@ def inline_capture(
             ``triage.refine_clusters.tier_chain`` — local-first.
 
     Returns:
-        A dict summarising what was spawned::
+        A dict summarising what was spawned. The legacy back-compat
+        fields (``umbrella_id``, ``child_thread_ids``,
+        ``single_thread_id``) carry single-matter values and are only
+        meaningful when exactly one matter was detected. The
+        ``spawned`` field carries the per-matter results::
 
             {
               "status": "ok" | "no_records" | "refusal" | "error",
+              "matter_count": int,        # how many segments spawned
+              "spawned": [
+                  {"kind": "flat" | "singular_umbrella" | "dismissed"
+                              | "refusal" | "error",
+                   "thread_id": str | None,
+                   "child_thread_ids": [str, ...],
+                   "label": str,
+                   "deadline_hints": dict,
+                   "project_candidates": [...],
+                   "dropped_count": int,
+                   "error": str | None,
+                  }, ...
+              ],
+              # Back-compat fields (only meaningful when matter_count == 1):
               "umbrella_id": str | None,
               "child_thread_ids": [str, ...],
               "single_thread_id": str | None,
               "dropped_count": int,
               "verdict": dict | None,
               "deadline_hints": dict | None,
+              "project_candidates": [...] | None,
               "error": str | None,
             }
     """
-    from work_buddy.clarify.deadline_extract import (
-        extract_deadline_hints,
-        merge_hints_into_records,
+    from work_buddy.clarify.text_segmenter import segment_into_matters
+    from work_buddy.pipelines.singular import (
+        ThreadSpawnResult, spawn_thread_for_matter,
     )
 
-    # ---- 1. Build the TriageItem --------------------------------------
+    # ---- 1. Build the (whole-selection) TriageItem --------------------
     items, _ch = _collect_inline_selection(
         file_path=file_path,
         selection=selection,
@@ -191,26 +219,12 @@ def inline_capture(
         hint=hint,
     )
     if not items:
-        return {
-            "status": "error",
-            "error": "collect_inline_selection produced no items",
-            "umbrella_id": None,
-            "child_thread_ids": [],
-            "single_thread_id": None,
-            "dropped_count": 0,
-            "verdict": None,
-            "deadline_hints": None,
-        }
+        return _empty_error_result(
+            "collect_inline_selection produced no items",
+        )
     item = items[0]
 
-    # ---- 2. Deadline pre-pass -----------------------------------------
-    deadline_hints = extract_deadline_hints(
-        item.text or "",
-        message_date=_date_cls.today(),
-        item_id=item.id,
-    )
-
-    # ---- 3. User context ----------------------------------------------
+    # ---- 2. Triage context (built once; shared across matters) -------
     triage_context: dict[str, Any] = {}
     if enrich:
         try:
@@ -223,111 +237,167 @@ def inline_capture(
                 exc,
             )
 
-    # ---- 4. Multi-record verdict --------------------------------------
-    verdict, verdict_error = _call_multi_record_verdict(
-        item=item,
-        deadline_hints=deadline_hints,
-        triage_context=triage_context,
-        tier_chain=tier_chain,
+    # ---- 3. Segment the captured text into matters --------------------
+    matters = segment_into_matters(
+        item.text or "",
+        hint=(item.metadata or {}).get("hint", "") or "",
+        item_id=item.id,
     )
-
-    if verdict_error is not None:
-        return {
-            "status": "error",
-            "error": verdict_error,
-            "umbrella_id": None,
-            "child_thread_ids": [],
-            "single_thread_id": None,
-            "dropped_count": 0,
-            "verdict": None,
-            "deadline_hints": deadline_hints,
-        }
-
-    # Refusal: agent declined to commit; spawn one Thread in
-    # AWAITING_*_CLARIFICATION carrying the question.
-    refusal = (verdict or {}).get("refusal")
-    if isinstance(refusal, dict) and refusal.get("question"):
-        single_id = _spawn_refusal_thread(
-            item=item,
-            verdict=verdict,
-            deadline_hints=deadline_hints,
+    if not matters:
+        # Empty / whitespace-only capture (segmenter returned []). Treat
+        # as no work — same as today's "collect produced no items" case.
+        return _empty_error_result(
+            "segmenter returned no matters (empty / whitespace-only text)",
         )
-        return {
-            "status": "refusal",
-            "umbrella_id": None,
-            "child_thread_ids": [],
-            "single_thread_id": single_id,
-            "dropped_count": 0,
-            "verdict": verdict,
-            "deadline_hints": deadline_hints,
-        }
 
-    records = list(verdict.get("records") or [])
-    if records:
-        records = merge_hints_into_records(records, deadline_hints) or records
-
-    actionable = [
-        r for r in records
-        if isinstance(r, dict) and r.get("destination") != "delete"
-    ]
-    dropped = [
-        r for r in records
-        if isinstance(r, dict) and r.get("destination") == "delete"
-    ]
-
-    # ---- 5/6. Spawn Threads ------------------------------------------
-    if not actionable:
-        single_id = _spawn_dismissed_thread(
-            item=item, verdict=verdict, dropped=dropped,
+    # ---- 4. Per-matter spawn loop ------------------------------------
+    spawned_results: list[ThreadSpawnResult] = []
+    for i, matter in enumerate(matters):
+        # Per-matter item_id derived from the segment text — keeps the
+        # escalation_log trace_ids distinct across matters within one
+        # capture. Hash matches the convention `inline_<short>` used by
+        # `_collect_inline_selection`.
+        per_matter_item_id = (
+            item.id if len(matters) == 1
+            else _per_matter_id(item.id, i, matter.get("text", ""))
         )
-        return {
-            "status": "no_records" if not dropped else "ok",
-            "umbrella_id": None,
-            "child_thread_ids": [],
-            "single_thread_id": single_id,
-            "dropped_count": len(dropped),
-            "verdict": verdict,
-            "deadline_hints": deadline_hints,
-        }
-
-    if len(actionable) == 1:
-        # Skip the umbrella for a single record — degenerate case
-        # where the umbrella would just be a redirect to the one child.
-        single_id = _spawn_record_thread(
-            item=item,
-            record=actionable[0],
-            verdict=verdict,
-            parent_id=None,
+        result = spawn_thread_for_matter(
+            matter_text=matter.get("text", "") or "",
+            matter_label=matter.get("label", "") or "",
+            item_id=per_matter_item_id,
+            source="inline",
+            hint=(item.metadata or {}).get("hint", "") or "",
+            file_path=(item.metadata or {}).get("file_path", "") or "",
+            cursor_line=(item.metadata or {}).get("cursor_line", 0) or 0,
+            triage_context=triage_context,
+            tier_chain=tier_chain,
         )
-        return {
-            "status": "ok",
-            "umbrella_id": None,
-            "child_thread_ids": [],
-            "single_thread_id": single_id,
-            "dropped_count": len(dropped),
-            "verdict": verdict,
-            "deadline_hints": deadline_hints,
-        }
+        spawned_results.append(result)
 
-    # 2+ actionable records: spawn umbrella + N children.
-    umbrella_id = _spawn_inline_umbrella(item=item, verdict=verdict)
-    child_ids: list[str] = []
-    for rec in actionable:
-        cid = _spawn_record_thread(
-            item=item, record=rec, verdict=verdict, parent_id=umbrella_id,
-        )
-        if cid:
-            child_ids.append(cid)
+    # Aggregate result shape ----------------------------------------------
+    return _aggregate_spawned_results(spawned_results, matters)
 
+
+# ---------------------------------------------------------------------------
+# Result-shape helpers — aggregate per-matter spawn outcomes into the
+# single-dict caller contract
+# ---------------------------------------------------------------------------
+
+
+def _empty_error_result(error_msg: str) -> dict[str, Any]:
+    """Return-shape helper for the "couldn't even start" cases."""
     return {
-        "status": "ok",
-        "umbrella_id": umbrella_id,
-        "child_thread_ids": child_ids,
+        "status": "error",
+        "error": error_msg,
+        "matter_count": 0,
+        "spawned": [],
+        # Back-compat fields:
+        "umbrella_id": None,
+        "child_thread_ids": [],
         "single_thread_id": None,
-        "dropped_count": len(dropped),
-        "verdict": verdict,
-        "deadline_hints": deadline_hints,
+        "dropped_count": 0,
+        "verdict": None,
+        "deadline_hints": None,
+        "project_candidates": None,
     }
+
+
+def _per_matter_id(base_item_id: str, index: int, matter_text: str) -> str:
+    """Derive a per-matter item id from the base id + index + content.
+
+    The base id is already a content-hash of the whole selection
+    (``inline_<12-char hex>``); we append a short hash of the matter
+    text + its index so the per-matter id is unique within the capture
+    AND deterministic for the same matter content across reruns.
+    """
+    import hashlib
+    h = hashlib.sha1(usedforsecurity=False)
+    h.update(matter_text.encode("utf-8", errors="replace"))
+    suffix = f"{index}-{h.hexdigest()[:8]}"
+    # Keep the inline_ prefix so trace_ids and escalation_log entries
+    # remain visually consistent with single-matter captures.
+    return f"{base_item_id}_m{suffix}"
+
+
+def _aggregate_spawned_results(
+    results: list[Any],
+    matters: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Build the inline_capture return dict from the per-matter results.
+
+    Legacy single-matter callers expect ``umbrella_id`` /
+    ``child_thread_ids`` / ``single_thread_id``. Populate those for
+    the single-matter case (the typical one) for back-compat. For
+    multi-matter, those fields stay null / empty and ``spawned``
+    carries the per-matter detail.
+    """
+    spawned_payloads: list[dict[str, Any]] = []
+    for r, m in zip(results, matters):
+        spawned_payloads.append({
+            "kind": r.kind,
+            "thread_id": r.thread_id,
+            "child_thread_ids": list(r.child_thread_ids),
+            "label": m.get("label", "") or "",
+            "deadline_hints": r.deadline_hints,
+            "project_candidates": r.project_candidates,
+            "dropped_count": r.dropped_count,
+            "error": r.error,
+        })
+
+    out: dict[str, Any] = {
+        "matter_count": len(results),
+        "spawned": spawned_payloads,
+        # Back-compat (multi-matter leaves these null/empty):
+        "umbrella_id": None,
+        "child_thread_ids": [],
+        "single_thread_id": None,
+        "dropped_count": sum(r.dropped_count for r in results),
+        "verdict": None,
+        "deadline_hints": None,
+        "project_candidates": None,
+        "error": None,
+    }
+
+    if not results:
+        out["status"] = "error"
+        out["error"] = "no matters processed"
+        return out
+
+    # Status discrimination (rolled up across matters):
+    # - any "error"                          → "error" (with first error in `error`)
+    # - all "dismissed" AND zero dropped     → "no_records" (truly nothing)
+    #   (matches the old single-matter logic: "no_records" only fires
+    #    when there's nothing — even drop reasons; if we dropped something
+    #    the agent did process the input, so status is "ok".)
+    # - any "refusal" with no successful spawns → "refusal"
+    # - else                                  → "ok"
+    kinds = [r.kind for r in results]
+    if "error" in kinds:
+        first_err = next(r for r in results if r.kind == "error")
+        out["status"] = "error"
+        out["error"] = first_err.error
+    elif all(k == "dismissed" for k in kinds) and out["dropped_count"] == 0:
+        out["status"] = "no_records"
+    elif "refusal" in kinds and not any(
+        k in ("flat", "singular_umbrella") for k in kinds
+    ):
+        out["status"] = "refusal"
+    else:
+        out["status"] = "ok"
+
+    # Back-compat for the single-matter case:
+    if len(results) == 1:
+        r = results[0]
+        out["verdict"] = r.verdict
+        out["deadline_hints"] = r.deadline_hints
+        out["project_candidates"] = r.project_candidates
+        if r.kind == "singular_umbrella":
+            out["umbrella_id"] = r.thread_id
+            out["child_thread_ids"] = list(r.child_thread_ids)
+        elif r.kind in ("flat", "dismissed", "refusal"):
+            out["single_thread_id"] = r.thread_id
+
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -340,6 +410,7 @@ def _call_multi_record_verdict(
     item: Any,
     deadline_hints: dict[str, Any],
     triage_context: dict[str, Any],
+    project_candidates: list[dict[str, Any]] | None = None,
     tier_chain: list[str] | None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     """Call the multi-record verdict LLM.
@@ -352,6 +423,11 @@ def _call_multi_record_verdict(
     ``triage.refine_clusters.tier_chain``). Bypasses the legacy
     ``call_for_verdict`` wrapper because the legacy wrapper has its
     own retry semantics that don't compose with our chain walk.
+
+    ``project_candidates`` is the hedged ranked-candidate list from the
+    project-picker SubCall. The verdict reads it from the user prompt
+    and decides ``task_proposal.project_tag`` (single string or null)
+    based on its broader context.
     """
     from work_buddy.clarify.recommend import render_triage_context_block
     from work_buddy.clarify.verdict_schema import MULTI_RECORD_VERDICT_SCHEMA
@@ -361,10 +437,23 @@ def _call_multi_record_verdict(
     if not chain:
         return None, "empty tier_chain"
 
+    # Trim the user-context block before rendering so the verdict's
+    # prompt + schema fit even on local-tier 4096-token windows when
+    # possible. Drops the active-projects double-context (the picker
+    # already ranked them) and IR-filters active tasks down to the
+    # top_k most relevant to the captured text + hint.
+    trimmed_context = _trim_context_for_verdict(
+        triage_context,
+        captured_text=(item.text or ""),
+        hint=(item.metadata or {}).get("hint", "") or "",
+        has_picker_candidates=bool(project_candidates),
+    )
+
     user_prompt = _render_item_prompt(
         item=item,
-        triage_context=triage_context,
+        triage_context=trimmed_context,
         deadline_hints=deadline_hints,
+        project_candidates=project_candidates,
     )
 
     runner = LLMRunner()
@@ -483,6 +572,17 @@ A captured selection produces ZERO OR MORE records. Each record has a
   ``creation_provenance="inline-inferred"`` since the user explicitly
   sent this. When ``has_deadline`` or ``has_dependency`` are set in
   the pre-extracted hints, copy them into the task_proposal.
+
+  Set ``task_proposal.project_tag`` based on your reasoning over the
+  ``Project candidates`` block in the user message PLUS the broader
+  context (active contracts, user hint, recent commits, captured
+  text). Allowed values are slug strings from the candidate list, or
+  ``null``. Lean toward ``null`` when genuinely uncertain — declining
+  to assign a project is preferable to a wrong assignment. The
+  candidates are hedged guesses from a smaller LLM with limited
+  context; you may agree, override, or decline. You may also pass
+  through ``project_candidates`` verbatim (for the audit trail) but
+  must not invent slugs not in the candidate list.
 - ``reference`` — knowledge worth filing but not actionable. Populate
   ``reference_proposal.summary`` with a short noun-phrase description.
 - ``calendar_only`` — a date-anchored event the user wants on their
@@ -512,13 +612,97 @@ underlying intent — used as the umbrella thread title when N > 1).
 """
 
 
+def _trim_context_for_verdict(
+    triage_context: dict[str, Any],
+    *,
+    captured_text: str,
+    hint: str = "",
+    has_picker_candidates: bool,
+    task_top_k: int = 5,
+) -> dict[str, Any]:
+    """Shrink the verdict's user-context block to fit the prompt budget.
+
+    Two trims, both rooted in "the verdict already has the relevant
+    information elsewhere" or "everything else is noise":
+
+    1. **Drop ``active_projects`` when the picker emitted candidates.**
+       The picker's job IS project shortlisting; its hedged ranked list
+       (with rationales) is interpolated into the verdict's user prompt
+       via ``render_project_candidates_block``. Re-emitting the full
+       active-project registry under ``## User's Current Context`` is
+       pure double-context — the picker already considered all of them.
+       Saves ~400 tokens for a registry of 5 projects with paragraph-
+       long descriptions.
+
+    2. **IR-rank ``active_tasks`` by relevance to the captured text;
+       keep top_k.** Today's pipeline dumps every active task (capped at
+       12 by an unrelated knob) into the prompt regardless of whether
+       any of them relate to the captured thought. The embedding service
+       provides ``hybrid_search`` (BM25 + embedding); we use it to keep
+       only the top_k most relevant tasks. Falls back to the original
+       list if the embedding service is down.
+
+    Both trims fail-safe: missing fields stay missing, IR errors log a
+    warning and pass tasks through unchanged.
+    """
+    out = dict(triage_context)
+
+    if has_picker_candidates:
+        out["active_projects"] = []
+
+    tasks = out.get("active_tasks") or []
+    if tasks and len(tasks) > task_top_k:
+        # Build a query that includes both the captured text AND the
+        # user's optional hint — the hint disambiguates short captures
+        # ("draft email" + hint "to advisor about TKA paper" → IR can
+        # surface tasks tagged with that paper's project).
+        query = captured_text or ""
+        if hint:
+            query = (query + "\n" + hint).strip()
+        if query:
+            try:
+                from work_buddy.embedding.client import hybrid_search
+
+                candidates = [
+                    {
+                        "name": str(t.get("task_id") or i),
+                        "texts": [t.get("text") or ""],
+                    }
+                    for i, t in enumerate(tasks)
+                ]
+                scored = hybrid_search(query, candidates)
+                if scored:
+                    by_id = {
+                        str(t.get("task_id") or i): t
+                        for i, t in enumerate(tasks)
+                    }
+                    ordered = []
+                    for s in scored[:task_top_k]:
+                        name = s.get("name")
+                        t = by_id.get(name)
+                        if t is not None:
+                            ordered.append(t)
+                    if ordered:
+                        out["active_tasks"] = ordered
+            except Exception as exc:
+                logger.warning(
+                    "inline_capture: hybrid_search failed (%s); "
+                    "passing tasks through unfiltered",
+                    exc,
+                )
+
+    return out
+
+
 def _render_item_prompt(
     *,
     item: Any,
     triage_context: dict[str, Any],
     deadline_hints: dict[str, Any] | None = None,
+    project_candidates: list[dict[str, Any]] | None = None,
 ) -> str:
-    """Compose the verdict user prompt with file + hint + user context + hints."""
+    """Compose the verdict user prompt with file + hint + user context + hints + candidates."""
+    from work_buddy.clarify.project_picker import render_project_candidates_block
     from work_buddy.clarify.recommend import render_triage_context_block
 
     meta = item.metadata or {}
@@ -551,6 +735,11 @@ def _render_item_prompt(
         else:
             hints_block = "\nDeadline hints: none detected.\n"
 
+    project_candidates_block = render_project_candidates_block(project_candidates)
+    project_candidates_block = (
+        f"\n\n{project_candidates_block}\n" if project_candidates_block else ""
+    )
+
     return (
         f"Item id: {item.id}\n"
         f"File: {file_path}:{cursor_line}\n"
@@ -560,6 +749,7 @@ def _render_item_prompt(
         f"{(item.text or '').strip()}\n"
         f"--- End ---"
         f"{context_block}"
+        f"{project_candidates_block}"
     )
 
 
@@ -586,7 +776,12 @@ def _selection_to_context_item(item: Any):
     )
 
 
-def _spawn_inline_umbrella(*, item: Any, verdict: dict[str, Any]) -> str | None:
+def _spawn_inline_umbrella(
+    *,
+    item: Any,
+    verdict: dict[str, Any],
+    extra_context_items: tuple = (),
+) -> str | None:
     """Spawn the umbrella Thread for a multi-record inline capture.
 
     Mirrors ``runner._spawn_umbrella`` for the SourcePipeline path but
@@ -605,9 +800,10 @@ def _spawn_inline_umbrella(*, item: Any, verdict: dict[str, Any]) -> str | None:
     from work_buddy.threads.models import Thread
 
     group_intent = (verdict.get("group_intent") or "").strip() or "Inline capture"
+    title = f"Inline selection: {group_intent}"
     summary = {
         "source": "inline_capture",
-        "title": group_intent,
+        "title": title,
         "description": group_intent,
         "captured_text": (item.text or "")[:500],
         "file_path": (item.metadata or {}).get("file_path"),
@@ -618,9 +814,21 @@ def _spawn_inline_umbrella(*, item: Any, verdict: dict[str, Any]) -> str | None:
     try:
         umbrella = Thread(
             fsm_state=FSMState.MONITORING,
+            # Distinguishes this umbrella shape from `'group'` (chrome /
+            # journal cluster scrapes) and `'decompose'` (agent-driven
+            # work breakdown). 'singular' = one matter whose verdict
+            # produced multiple proposed actions; the dashboard render
+            # hoists the children's actions onto this parent's card so
+            # the user sees one thread with N actions instead of an
+            # umbrella + N child cards. See `threads/grouping`.
+            parent_relationship="singular",
             inciting_event_summary=summary,
             autonomy_policy=default_spawn_policy(),
-            context_items=(_selection_to_context_item(item),),
+            # Selection ContextItem first; sub-call audits (deadline +
+            # picker) appended after so the dashboard's context-items
+            # list shows the user's text on top and the model outputs
+            # below as inspectable evidence.
+            context_items=(_selection_to_context_item(item),) + tuple(extra_context_items),
         )
         store.insert_thread(umbrella)
 
@@ -657,6 +865,7 @@ def _spawn_record_thread(
     record: dict[str, Any],
     verdict: dict[str, Any],
     parent_id: str | None,
+    extra_context_items: tuple = (),
 ) -> str | None:
     """Spawn one Thread carrying ``record`` as its proposed action.
 
@@ -712,7 +921,10 @@ def _spawn_record_thread(
             fsm_state=FSMState.PROPOSED,  # transitions to AWAITING_CONFIRMATION below
             inciting_event_summary=summary,
             autonomy_policy=default_spawn_policy(),
-            context_items=(_selection_to_context_item(item),),
+            # Selection + sub-call audit ContextItems (deadline / picker
+            # outputs); the umbrella also carries a copy of these for
+            # hoisted-card inspection.
+            context_items=(_selection_to_context_item(item),) + tuple(extra_context_items),
         )
         store.insert_thread(thread)
 
@@ -796,7 +1008,11 @@ def _spawn_record_thread(
 
 
 def _spawn_refusal_thread(
-    *, item: Any, verdict: dict[str, Any], deadline_hints: dict[str, Any],
+    *,
+    item: Any,
+    verdict: dict[str, Any],
+    deadline_hints: dict[str, Any],
+    extra_context_items: tuple = (),
 ) -> str | None:
     """Spawn one Thread when the verdict carries a refusal.
 
@@ -838,7 +1054,9 @@ def _spawn_refusal_thread(
             fsm_state=FSMState.PROPOSED,
             inciting_event_summary=summary,
             autonomy_policy=default_spawn_policy(),
-            context_items=(_selection_to_context_item(item),),
+            # Selection + sub-call audits as inspectable evidence on the
+            # clarification thread.
+            context_items=(_selection_to_context_item(item),) + tuple(extra_context_items),
         )
         store.insert_thread(thread)
 
@@ -890,6 +1108,7 @@ def _spawn_dismissed_thread(
     item: Any,
     verdict: dict[str, Any],
     dropped: list[dict[str, Any]],
+    extra_context_items: tuple = (),
 ) -> str | None:
     """Spawn one Thread already in DISMISSED for fully-dropped captures.
 
@@ -936,7 +1155,9 @@ def _spawn_dismissed_thread(
             fsm_state=FSMState.PROPOSED,
             inciting_event_summary=summary,
             autonomy_policy=default_spawn_policy(),
-            context_items=(_selection_to_context_item(item),),
+            # Sub-call audits attached so the user can later inspect why
+            # the verdict ended up all-delete.
+            context_items=(_selection_to_context_item(item),) + tuple(extra_context_items),
         )
         store.insert_thread(thread)
 
@@ -1027,12 +1248,20 @@ def _action_payload_for_record(
         # Build parameters dict for task_create. We pass the fields
         # the capability accepts; unknown / forward-compat fields stay
         # in the payload for the audit trail but don't go into params.
+        # ``project_tag`` (decided by the verdict from the project-picker
+        # sub-LLM's candidate list) routes to ``create_task(project=...)``
+        # which applies ``#projects/<slug>`` automatically. Null means
+        # no project — leave the kwarg unset.
+        project_slug = proposal.get("project_tag")
+        if not isinstance(project_slug, str) or not project_slug.strip():
+            project_slug = None
         parameters = {
             "task_text": task_text,
             "summary": proposal.get("definition_of_done")
             or proposal.get("outcome_text")
             or None,
             "urgency": "medium",
+            "project": project_slug,
             "creation_provenance": "inline-inferred",
             "user_involvement": "high",
             "has_deadline": bool(proposal.get("has_deadline")),

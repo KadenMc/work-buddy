@@ -277,6 +277,88 @@ def _maybe_format_action_catalog(schema: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _build_redirect_feedback_block(thread) -> str:
+    """Surface unresolved per-action redirect feedback to the LLM prompt.
+
+    Reads the thread's recent events for ``KIND_ACTION_REDIRECTED``
+    that landed AFTER the most recent ``KIND_ACTION_INFERRED``. If
+    one exists, the user has asked us to re-propose this action with
+    steering feedback — return a block describing what they wanted
+    different so the LLM produces a meaningfully different proposal.
+
+    Returns "" when no fresh redirect feedback applies (the common
+    case — first-time inference, or a redirect that's already been
+    answered by a newer action_inferred event).
+    """
+    try:
+        from work_buddy.threads import store
+        from work_buddy.threads.events import (
+            KIND_ACTION_INFERRED,
+            KIND_ACTION_REDIRECTED,
+        )
+        events = store.list_events(
+            thread.thread_id,
+            kinds=[KIND_ACTION_INFERRED, KIND_ACTION_REDIRECTED],
+        )
+        if not events:
+            return ""
+
+        # Walk newest → oldest. We want the most recent ACTION_REDIRECTED
+        # only if it lands AFTER the most recent ACTION_INFERRED (i.e.,
+        # the redirect is unresolved). If a newer ACTION_INFERRED has
+        # already landed, the feedback was already incorporated — skip.
+        latest_redirect = None
+        latest_action_inferred = None
+        for e in reversed(events):
+            if e.kind == KIND_ACTION_REDIRECTED and latest_redirect is None:
+                latest_redirect = e
+            elif e.kind == KIND_ACTION_INFERRED and latest_action_inferred is None:
+                latest_action_inferred = e
+            if latest_redirect and latest_action_inferred:
+                break
+
+        if latest_redirect is None:
+            return ""
+        # Resolved? (A newer action_inferred has overwritten the redirect.)
+        if (
+            latest_action_inferred is not None
+            and latest_redirect.id is not None
+            and latest_action_inferred.id is not None
+            and latest_action_inferred.id > latest_redirect.id
+        ):
+            return ""
+
+        feedback = (latest_redirect.data or {}).get("feedback", "").strip()
+        if not feedback:
+            return ""
+
+        prior_summary = ""
+        if latest_action_inferred is not None:
+            prior_payload = (latest_action_inferred.data or {}).get("payload") or {}
+            prior_kind = prior_payload.get("kind", "?")
+            prior_name = prior_payload.get("name") or prior_payload.get("plan_summary") or "(unnamed)"
+            prior_params = prior_payload.get("parameters") or {}
+            prior_summary = (
+                f"\nPrior proposal (now superseded): kind={prior_kind}, "
+                f"name={prior_name!r}, parameters={prior_params}\n"
+            )
+
+        return (
+            "User redirect for this action — they asked for a different "
+            "proposal than the prior one.\n"
+            f"{prior_summary}"
+            f"User feedback: {feedback!r}\n"
+            "Re-propose the action accordingly. Keep the intent and "
+            "context unchanged; only the action proposal needs to "
+            "differ. If the feedback asks for a parameter tweak, "
+            "respect it; if it asks for a different action entirely, "
+            "pick one that better fits.\n\n"
+        )
+    except Exception as e:  # pragma: no cover — defensive
+        logger.debug("redirect-feedback block build failed: %s", e)
+        return ""
+
+
 def _register_real_llm_runner() -> None:
     """Bind the threads inference layer to the existing LLMRunner.
 
@@ -318,6 +400,17 @@ def _register_real_llm_runner() -> None:
             # Catalog" but never showed what was in it, so the agent
             # consistently fell back to improvised/suggestion plans.
             catalog_block = _maybe_format_action_catalog(schema)
+
+            # Per-action redirect feedback. If the user has asked us
+            # to re-infer THIS action with steering feedback (a
+            # KIND_ACTION_REDIRECTED event with no newer
+            # KIND_ACTION_INFERRED yet), surface it on the prompt so
+            # the LLM produces a different proposal instead of
+            # reproducing the same one. The prior action_inferred event
+            # stays in history (render uses _latest to pick the new one);
+            # we cite it here so the LLM understands what was rejected.
+            redirect_block = _build_redirect_feedback_block(thread)
+
             user_msg = (
                 "Thread inciting source:\n"
                 f"  source: {summary.get('source')}\n"
@@ -325,6 +418,7 @@ def _register_real_llm_runner() -> None:
                 "Context items: "
                 f"{[ci.label for ci in thread.context_items]}\n\n"
                 f"{catalog_block}"
+                f"{redirect_block}"
                 "Task:\n"
                 f"{prompt}\n\n"
                 "Reply with structured JSON matching the schema."
