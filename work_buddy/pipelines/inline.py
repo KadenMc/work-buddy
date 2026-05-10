@@ -149,12 +149,21 @@ def inline_capture(
 ) -> dict[str, Any]:
     """Run the Clarify pipeline on one inline selection and spawn Threads.
 
+    Stage 2 of the singular-pattern fix: the captured text is segmented
+    into distinct *matters* via :func:`text_segmenter.segment_into_matters`
+    BEFORE the verdict runs. Each matter is processed independently
+    via :func:`pipelines.singular.spawn_thread_for_matter`. The shape:
+
+    - **1 segment (typical case)**: one matter → one root Thread (flat
+      or singular umbrella, depending on verdict's record count).
+    - **N segments (rare; multi-matter capture)**: N independent root
+      Threads, one per matter. No conflation.
+
     Args:
         file_path: Vault-relative source path (for provenance).
         selection: The user's literal selection. Falls back to
             ``paragraph`` when empty.
-        paragraph: Surrounding paragraph (used when selection is
-            empty).
+        paragraph: Surrounding paragraph (used when selection is empty).
         cursor_line: 0-indexed cursor line in the source file.
         hint: Optional user-typed intent hint from the modal.
         enrich: Include the user-context packet (active tasks /
@@ -164,26 +173,44 @@ def inline_capture(
             ``triage.refine_clusters.tier_chain`` — local-first.
 
     Returns:
-        A dict summarising what was spawned::
+        A dict summarising what was spawned. The shape preserves the
+        Stage 1 fields for back-compat callers (``umbrella_id``,
+        ``child_thread_ids``, ``single_thread_id``) but those are only
+        meaningful when exactly one matter was detected. The new
+        ``spawned`` field carries the per-matter results::
 
             {
               "status": "ok" | "no_records" | "refusal" | "error",
+              "matter_count": int,        # how many segments spawned
+              "spawned": [
+                  {"kind": "flat" | "singular_umbrella" | "dismissed"
+                              | "refusal" | "error",
+                   "thread_id": str | None,
+                   "child_thread_ids": [str, ...],
+                   "label": str,
+                   "deadline_hints": dict,
+                   "project_candidates": [...],
+                   "dropped_count": int,
+                   "error": str | None,
+                  }, ...
+              ],
+              # Back-compat fields (only meaningful when matter_count == 1):
               "umbrella_id": str | None,
               "child_thread_ids": [str, ...],
               "single_thread_id": str | None,
               "dropped_count": int,
               "verdict": dict | None,
               "deadline_hints": dict | None,
+              "project_candidates": [...] | None,
               "error": str | None,
             }
     """
-    from work_buddy.clarify.deadline_extract import (
-        extract_deadline_hints,
-        merge_hints_into_records,
+    from work_buddy.clarify.text_segmenter import segment_into_matters
+    from work_buddy.pipelines.singular import (
+        ThreadSpawnResult, spawn_thread_for_matter,
     )
-    from work_buddy.clarify.project_picker import pick_projects
 
-    # ---- 1. Build the TriageItem --------------------------------------
+    # ---- 1. Build the (whole-selection) TriageItem --------------------
     items, _ch = _collect_inline_selection(
         file_path=file_path,
         selection=selection,
@@ -192,27 +219,12 @@ def inline_capture(
         hint=hint,
     )
     if not items:
-        return {
-            "status": "error",
-            "error": "collect_inline_selection produced no items",
-            "umbrella_id": None,
-            "child_thread_ids": [],
-            "single_thread_id": None,
-            "dropped_count": 0,
-            "verdict": None,
-            "deadline_hints": None,
-            "project_candidates": None,
-        }
+        return _empty_error_result(
+            "collect_inline_selection produced no items",
+        )
     item = items[0]
 
-    # ---- 2. Deadline pre-pass -----------------------------------------
-    deadline_hints = extract_deadline_hints(
-        item.text or "",
-        message_date=_date_cls.today(),
-        item_id=item.id,
-    )
-
-    # ---- 3. User context ----------------------------------------------
+    # ---- 2. Triage context (built once; shared across matters) -------
     triage_context: dict[str, Any] = {}
     if enrich:
         try:
@@ -225,128 +237,166 @@ def inline_capture(
                 exc,
             )
 
-    # ---- 3.5. Project picker pre-pass --------------------------------
-    # Hedged ranked-candidate scoring against the user's active project
-    # registry. The verdict reads these as evidence and decides
-    # task_proposal.project_tag with broader context.
-    project_candidates_payload = pick_projects(
+    # ---- 3. Segment the captured text into matters --------------------
+    matters = segment_into_matters(
         item.text or "",
-        active_projects=triage_context.get("active_projects") or [],
         hint=(item.metadata or {}).get("hint", "") or "",
         item_id=item.id,
     )
-
-    # ---- 4. Multi-record verdict --------------------------------------
-    verdict, verdict_error = _call_multi_record_verdict(
-        item=item,
-        deadline_hints=deadline_hints,
-        triage_context=triage_context,
-        project_candidates=project_candidates_payload.get("candidates") or [],
-        tier_chain=tier_chain,
-    )
-
-    if verdict_error is not None:
-        return {
-            "status": "error",
-            "error": verdict_error,
-            "umbrella_id": None,
-            "child_thread_ids": [],
-            "single_thread_id": None,
-            "dropped_count": 0,
-            "verdict": None,
-            "deadline_hints": deadline_hints,
-            "project_candidates": project_candidates_payload.get("candidates"),
-        }
-
-    # Refusal: agent declined to commit; spawn one Thread in
-    # AWAITING_*_CLARIFICATION carrying the question.
-    refusal = (verdict or {}).get("refusal")
-    if isinstance(refusal, dict) and refusal.get("question"):
-        single_id = _spawn_refusal_thread(
-            item=item,
-            verdict=verdict,
-            deadline_hints=deadline_hints,
+    if not matters:
+        # Empty / whitespace-only capture (segmenter returned []). Treat
+        # as no work — same as today's "collect produced no items" case.
+        return _empty_error_result(
+            "segmenter returned no matters (empty / whitespace-only text)",
         )
-        return {
-            "status": "refusal",
-            "umbrella_id": None,
-            "child_thread_ids": [],
-            "single_thread_id": single_id,
-            "dropped_count": 0,
-            "verdict": verdict,
-            "deadline_hints": deadline_hints,
-            "project_candidates": project_candidates_payload.get("candidates"),
-        }
 
-    records = list(verdict.get("records") or [])
-    if records:
-        records = merge_hints_into_records(records, deadline_hints) or records
-
-    actionable = [
-        r for r in records
-        if isinstance(r, dict) and r.get("destination") != "delete"
-    ]
-    dropped = [
-        r for r in records
-        if isinstance(r, dict) and r.get("destination") == "delete"
-    ]
-
-    # ---- 5/6. Spawn Threads ------------------------------------------
-    if not actionable:
-        single_id = _spawn_dismissed_thread(
-            item=item, verdict=verdict, dropped=dropped,
+    # ---- 4. Per-matter spawn loop ------------------------------------
+    spawned_results: list[ThreadSpawnResult] = []
+    for i, matter in enumerate(matters):
+        # Per-matter item_id derived from the segment text — keeps the
+        # escalation_log trace_ids distinct across matters within one
+        # capture. Hash matches the convention `inline_<short>` used by
+        # `_collect_inline_selection`.
+        per_matter_item_id = (
+            item.id if len(matters) == 1
+            else _per_matter_id(item.id, i, matter.get("text", ""))
         )
-        return {
-            "status": "no_records" if not dropped else "ok",
-            "umbrella_id": None,
-            "child_thread_ids": [],
-            "single_thread_id": single_id,
-            "dropped_count": len(dropped),
-            "verdict": verdict,
-            "deadline_hints": deadline_hints,
-            "project_candidates": project_candidates_payload.get("candidates"),
-        }
-
-    if len(actionable) == 1:
-        # Skip the umbrella for a single record — degenerate case
-        # where the umbrella would just be a redirect to the one child.
-        single_id = _spawn_record_thread(
-            item=item,
-            record=actionable[0],
-            verdict=verdict,
-            parent_id=None,
+        result = spawn_thread_for_matter(
+            matter_text=matter.get("text", "") or "",
+            matter_label=matter.get("label", "") or "",
+            item_id=per_matter_item_id,
+            source="inline",
+            hint=(item.metadata or {}).get("hint", "") or "",
+            file_path=(item.metadata or {}).get("file_path", "") or "",
+            cursor_line=(item.metadata or {}).get("cursor_line", 0) or 0,
+            triage_context=triage_context,
+            tier_chain=tier_chain,
         )
-        return {
-            "status": "ok",
-            "umbrella_id": None,
-            "child_thread_ids": [],
-            "single_thread_id": single_id,
-            "dropped_count": len(dropped),
-            "verdict": verdict,
-            "deadline_hints": deadline_hints,
-            "project_candidates": project_candidates_payload.get("candidates"),
-        }
+        spawned_results.append(result)
 
-    # 2+ actionable records: spawn umbrella + N children.
-    umbrella_id = _spawn_inline_umbrella(item=item, verdict=verdict)
-    child_ids: list[str] = []
-    for rec in actionable:
-        cid = _spawn_record_thread(
-            item=item, record=rec, verdict=verdict, parent_id=umbrella_id,
-        )
-        if cid:
-            child_ids.append(cid)
+    # Aggregate result shape ----------------------------------------------
+    return _aggregate_spawned_results(spawned_results, matters)
 
+
+# ---------------------------------------------------------------------------
+# Result-shape helpers (Stage 2)
+# ---------------------------------------------------------------------------
+
+
+def _empty_error_result(error_msg: str) -> dict[str, Any]:
+    """Return-shape helper for the "couldn't even start" cases."""
     return {
-        "status": "ok",
-        "umbrella_id": umbrella_id,
-        "child_thread_ids": child_ids,
+        "status": "error",
+        "error": error_msg,
+        "matter_count": 0,
+        "spawned": [],
+        # Back-compat fields:
+        "umbrella_id": None,
+        "child_thread_ids": [],
         "single_thread_id": None,
-        "dropped_count": len(dropped),
-        "verdict": verdict,
-        "deadline_hints": deadline_hints,
-        "project_candidates": project_candidates_payload.get("candidates"),
+        "dropped_count": 0,
+        "verdict": None,
+        "deadline_hints": None,
+        "project_candidates": None,
     }
+
+
+def _per_matter_id(base_item_id: str, index: int, matter_text: str) -> str:
+    """Derive a per-matter item id from the base id + index + content.
+
+    The base id is already a content-hash of the whole selection
+    (``inline_<12-char hex>``); we append a short hash of the matter
+    text + its index so the per-matter id is unique within the capture
+    AND deterministic for the same matter content across reruns.
+    """
+    import hashlib
+    h = hashlib.sha1(usedforsecurity=False)
+    h.update(matter_text.encode("utf-8", errors="replace"))
+    suffix = f"{index}-{h.hexdigest()[:8]}"
+    # Keep the inline_ prefix so trace_ids and escalation_log entries
+    # remain visually consistent with single-matter captures.
+    return f"{base_item_id}_m{suffix}"
+
+
+def _aggregate_spawned_results(
+    results: list[Any],
+    matters: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Build the inline_capture return dict from the per-matter results.
+
+    Stage 1 callers expect ``umbrella_id`` / ``child_thread_ids`` /
+    ``single_thread_id`` etc. We populate those for the single-matter
+    case (the typical one) for back-compat. For multi-matter, those
+    fields stay null/empty and the new ``spawned`` array carries the
+    per-matter detail.
+    """
+    spawned_payloads: list[dict[str, Any]] = []
+    for r, m in zip(results, matters):
+        spawned_payloads.append({
+            "kind": r.kind,
+            "thread_id": r.thread_id,
+            "child_thread_ids": list(r.child_thread_ids),
+            "label": m.get("label", "") or "",
+            "deadline_hints": r.deadline_hints,
+            "project_candidates": r.project_candidates,
+            "dropped_count": r.dropped_count,
+            "error": r.error,
+        })
+
+    out: dict[str, Any] = {
+        "matter_count": len(results),
+        "spawned": spawned_payloads,
+        # Back-compat (multi-matter leaves these null/empty):
+        "umbrella_id": None,
+        "child_thread_ids": [],
+        "single_thread_id": None,
+        "dropped_count": sum(r.dropped_count for r in results),
+        "verdict": None,
+        "deadline_hints": None,
+        "project_candidates": None,
+        "error": None,
+    }
+
+    if not results:
+        out["status"] = "error"
+        out["error"] = "no matters processed"
+        return out
+
+    # Status discrimination (rolled up across matters):
+    # - any "error"                          → "error" (with first error in `error`)
+    # - all "dismissed" AND zero dropped     → "no_records" (truly nothing)
+    #   (matches the old single-matter logic: "no_records" only fires
+    #    when there's nothing — even drop reasons; if we dropped something
+    #    the agent did process the input, so status is "ok".)
+    # - any "refusal" with no successful spawns → "refusal"
+    # - else                                  → "ok"
+    kinds = [r.kind for r in results]
+    if "error" in kinds:
+        first_err = next(r for r in results if r.kind == "error")
+        out["status"] = "error"
+        out["error"] = first_err.error
+    elif all(k == "dismissed" for k in kinds) and out["dropped_count"] == 0:
+        out["status"] = "no_records"
+    elif "refusal" in kinds and not any(
+        k in ("flat", "singular_umbrella") for k in kinds
+    ):
+        out["status"] = "refusal"
+    else:
+        out["status"] = "ok"
+
+    # Back-compat for the single-matter case:
+    if len(results) == 1:
+        r = results[0]
+        out["verdict"] = r.verdict
+        out["deadline_hints"] = r.deadline_hints
+        out["project_candidates"] = r.project_candidates
+        if r.kind == "singular_umbrella":
+            out["umbrella_id"] = r.thread_id
+            out["child_thread_ids"] = list(r.child_thread_ids)
+        elif r.kind in ("flat", "dismissed", "refusal"):
+            out["single_thread_id"] = r.thread_id
+
+    return out
 
 
 # ---------------------------------------------------------------------------
