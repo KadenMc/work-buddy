@@ -22,11 +22,45 @@ _cfg = load_config()
 
 
 def _dashboard_view_url(notification_id: str) -> str | None:
-    """Build a dashboard view URL if an external URL is configured."""
+    """Build a dashboard workflow-view URL if an external URL is configured.
+
+    Used for notifications that have a corresponding workflow-view
+    on the dashboard (consent prompts, conversation chats, etc.).
+    The dashboard's hash router (``core/workflows.handleHashRoute``)
+    fetches ``/api/workflow-views/<id>`` and creates / focuses the
+    matching tab.
+    """
     base = _cfg.get("dashboard", {}).get("external_url", "")
     if not base:
         return None
     return f"{base.rstrip('/')}/#view/{notification_id}"
+
+
+def _dashboard_url_for(notification: Notification) -> str | None:
+    """Pick the right dashboard URL pattern for ``notification``.
+
+    Most notifications have a corresponding workflow-view tab and use
+    the ``/#view/<notification_id>`` pattern. Thread Resolution
+    Requests (the cards published by ``threads.resolution_surface``)
+    deliberately do NOT create a workflow-view on the dashboard —
+    that would flood the top-bar with one tab per wait-state thread,
+    which is what the Threads tab was built to replace. Instead, the
+    deep-link routes into the Threads tab with ``tpath=<thread_id>``,
+    which the Threads tab's hash router (``_initFromHash`` →
+    ``_threadsState.path``) reads and renders the canonical card.
+    """
+    base = _cfg.get("dashboard", {}).get("external_url", "")
+    if not base:
+        return None
+    custom = notification.custom_template or {}
+    if custom.get("type") == "resolution_request":
+        thread_id = custom.get("thread_id")
+        if thread_id:
+            return (
+                f"{base.rstrip('/')}/#tab=threads"
+                f"&tpath={thread_id}"
+            )
+    return f"{base.rstrip('/')}/#view/{notification.notification_id}"
 
 
 def _notif_prefix(notification_id: str) -> str:
@@ -123,7 +157,7 @@ def render_notification(notification: Notification) -> dict:
 
     elif response_type == ResponseType.CUSTOM:
         # Dashboard-only types — link to dashboard view
-        view_url = _dashboard_view_url(notification.notification_id)
+        view_url = _dashboard_url_for(notification)
         if view_url:
             text += (
                 f"\n\n[Open in dashboard]({_escape_md(view_url)})"
@@ -137,7 +171,7 @@ def render_notification(notification: Notification) -> dict:
     # For expandable notifications (non-CUSTOM, non-consent), add a dashboard link
     is_consent = bool((notification.custom_template or {}).get("consent_meta"))
     if response_type != ResponseType.CUSTOM and not is_consent and notification.is_expandable():
-        view_url = _dashboard_view_url(notification.notification_id)
+        view_url = _dashboard_url_for(notification)
         if view_url:
             text += f"\n\n[View full details]({_escape_md(view_url)})"
 
