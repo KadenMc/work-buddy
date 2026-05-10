@@ -775,7 +775,12 @@ def _selection_to_context_item(item: Any):
     )
 
 
-def _spawn_inline_umbrella(*, item: Any, verdict: dict[str, Any]) -> str | None:
+def _spawn_inline_umbrella(
+    *,
+    item: Any,
+    verdict: dict[str, Any],
+    extra_context_items: tuple = (),
+) -> str | None:
     """Spawn the umbrella Thread for a multi-record inline capture.
 
     Mirrors ``runner._spawn_umbrella`` for the SourcePipeline path but
@@ -818,7 +823,11 @@ def _spawn_inline_umbrella(*, item: Any, verdict: dict[str, Any]) -> str | None:
             parent_relationship="singular",
             inciting_event_summary=summary,
             autonomy_policy=default_spawn_policy(),
-            context_items=(_selection_to_context_item(item),),
+            # Selection ContextItem first; sub-call audits (deadline +
+            # picker) appended after so the dashboard's context-items
+            # list shows the user's text on top and the model outputs
+            # below as inspectable evidence.
+            context_items=(_selection_to_context_item(item),) + tuple(extra_context_items),
         )
         store.insert_thread(umbrella)
 
@@ -855,6 +864,7 @@ def _spawn_record_thread(
     record: dict[str, Any],
     verdict: dict[str, Any],
     parent_id: str | None,
+    extra_context_items: tuple = (),
 ) -> str | None:
     """Spawn one Thread carrying ``record`` as its proposed action.
 
@@ -910,7 +920,10 @@ def _spawn_record_thread(
             fsm_state=FSMState.PROPOSED,  # transitions to AWAITING_CONFIRMATION below
             inciting_event_summary=summary,
             autonomy_policy=default_spawn_policy(),
-            context_items=(_selection_to_context_item(item),),
+            # Selection + sub-call audit ContextItems (deadline / picker
+            # outputs); the umbrella also carries a copy of these for
+            # hoisted-card inspection.
+            context_items=(_selection_to_context_item(item),) + tuple(extra_context_items),
         )
         store.insert_thread(thread)
 
@@ -994,7 +1007,11 @@ def _spawn_record_thread(
 
 
 def _spawn_refusal_thread(
-    *, item: Any, verdict: dict[str, Any], deadline_hints: dict[str, Any],
+    *,
+    item: Any,
+    verdict: dict[str, Any],
+    deadline_hints: dict[str, Any],
+    extra_context_items: tuple = (),
 ) -> str | None:
     """Spawn one Thread when the verdict carries a refusal.
 
@@ -1036,7 +1053,9 @@ def _spawn_refusal_thread(
             fsm_state=FSMState.PROPOSED,
             inciting_event_summary=summary,
             autonomy_policy=default_spawn_policy(),
-            context_items=(_selection_to_context_item(item),),
+            # Selection + sub-call audits as inspectable evidence on the
+            # clarification thread.
+            context_items=(_selection_to_context_item(item),) + tuple(extra_context_items),
         )
         store.insert_thread(thread)
 
@@ -1088,6 +1107,7 @@ def _spawn_dismissed_thread(
     item: Any,
     verdict: dict[str, Any],
     dropped: list[dict[str, Any]],
+    extra_context_items: tuple = (),
 ) -> str | None:
     """Spawn one Thread already in DISMISSED for fully-dropped captures.
 
@@ -1134,7 +1154,9 @@ def _spawn_dismissed_thread(
             fsm_state=FSMState.PROPOSED,
             inciting_event_summary=summary,
             autonomy_policy=default_spawn_policy(),
-            context_items=(_selection_to_context_item(item),),
+            # Sub-call audits attached so the user can later inspect why
+            # the verdict ended up all-delete.
+            context_items=(_selection_to_context_item(item),) + tuple(extra_context_items),
         )
         store.insert_thread(thread)
 

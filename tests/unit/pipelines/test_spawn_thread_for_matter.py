@@ -261,6 +261,115 @@ def test_result_carries_deadline_and_project_audit_fields(fresh_db):
 
 
 # ---------------------------------------------------------------------------
+# Phase 3: Sub-LLM outputs land as ContextItems on spawned threads
+# ---------------------------------------------------------------------------
+
+
+def test_subcall_outputs_attached_as_context_items_on_flat_thread(fresh_db):
+    """Phase 3: deadline_extract + project_picker outputs surface as
+    ContextItems on the spawned thread alongside the captured selection.
+    The dashboard's context-items section renders them as inspectable
+    audit evidence."""
+    one_record_verdict = {
+        "rationale": "Email Bob.",
+        "group_intent": "Email Bob",
+        "records": [{
+            "destination": "task",
+            "task_proposal": {"suggested_task_text": "Email Bob"},
+        }],
+    }
+    deadline_with_signal = {
+        "has_deadline": True,
+        "deadline_date": "2026-05-15",
+        "has_dependency": False,
+        "dependency_hint": None,
+    }
+    picker_with_pick = {
+        "candidates": [
+            {"project_tag": "ecg-fm", "confidence": 0.85,
+             "rationale": "Mentions TKA paper."},
+            {"project_tag": None, "confidence": 0.10,
+             "rationale": "Backup."},
+        ],
+    }
+
+    deadline_p = patch(
+        "work_buddy.clarify.deadline_extract.extract_deadline_hints",
+        return_value=deadline_with_signal,
+    )
+    picker_p = patch(
+        "work_buddy.clarify.project_picker.pick_projects",
+        return_value=picker_with_pick,
+    )
+
+    with deadline_p, picker_p, _patch_verdict(one_record_verdict):
+        result = spawn_thread_for_matter(
+            matter_text="Send the TKA paper revisions to Bo by Friday",
+            item_id="inline_test_phase3_m0",
+            source="inline",
+        )
+
+    assert result.kind == "flat"
+    spawned = store.get_thread(result.thread_id)
+    types = [ci.type for ci in spawned.context_items]
+    sources = [ci.source for ci in spawned.context_items]
+    # Selection ContextItem first, then deadline + picker.
+    assert "selection" in types
+    assert "deadline_extract" in types
+    assert "project_picker" in types
+    assert "subcall" in sources
+
+    # The picker ContextItem's payload carries the full candidates list.
+    picker_ci = next(ci for ci in spawned.context_items
+                     if ci.type == "project_picker")
+    assert picker_ci.payload["candidates"][0]["project_tag"] == "ecg-fm"
+
+    # The deadline ContextItem's label surfaces the headline.
+    deadline_ci = next(ci for ci in spawned.context_items
+                       if ci.type == "deadline_extract")
+    assert "2026-05-15" in deadline_ci.label
+
+
+def test_subcall_outputs_attached_to_singular_umbrella_and_children(fresh_db):
+    """Phase 3 carry-through for singular umbrella shape: BOTH the
+    umbrella and its children carry the same sub-call ContextItems so
+    inspecting any thread reveals the same audit evidence."""
+    two_record_verdict = {
+        "rationale": "Birthday matter.",
+        "group_intent": "Sarah's birthday",
+        "records": [
+            {"destination": "task",
+             "task_proposal": {"suggested_task_text": "Buy gift for Sarah"}},
+            {"destination": "calendar_only",
+             "calendar_proposal": {"title": "Sarah's birthday",
+                                   "datetime": "2026-05-12"}},
+        ],
+    }
+    deadline_p, picker_p = _patch_pre_passes()
+    with deadline_p, picker_p, _patch_verdict(two_record_verdict):
+        result = spawn_thread_for_matter(
+            matter_text="Buy gift for Sarah's birthday on May 12",
+            item_id="inline_test_phase3_umbrella_m0",
+            source="inline",
+        )
+
+    assert result.kind == "singular_umbrella"
+    umbrella = store.get_thread(result.thread_id)
+    umbrella_types = {ci.type for ci in umbrella.context_items}
+    # Even with the stub deadline (no signal) and stub picker (null only),
+    # the ContextItems should still be present — the user can see what
+    # the pre-passes returned.
+    assert "deadline_extract" in umbrella_types
+    assert "project_picker" in umbrella_types
+
+    for cid in result.child_thread_ids:
+        child = store.get_thread(cid)
+        child_types = {ci.type for ci in child.context_items}
+        assert "deadline_extract" in child_types
+        assert "project_picker" in child_types
+
+
+# ---------------------------------------------------------------------------
 # Multi-matter scenario — caller invokes the primitive N times
 # ---------------------------------------------------------------------------
 

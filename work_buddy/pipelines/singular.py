@@ -41,7 +41,91 @@ from dataclasses import dataclass, field
 from datetime import date as _date_cls
 from typing import Any
 
+from work_buddy.threads.models import ContextItem
+
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Sub-LLM outputs as durable thread context
+# ---------------------------------------------------------------------------
+
+
+def _build_subcall_context_items(
+    *,
+    deadline_hints: dict[str, Any] | None,
+    project_candidates: list[dict[str, Any]] | None,
+) -> tuple[ContextItem, ...]:
+    """Convert per-matter sub-LLM outputs into ContextItems.
+
+    Each spawned Thread (umbrella, child, flat, refusal, dismissed)
+    carries these alongside the captured selection so the user can
+    inspect what the deadline pre-pass extracted and what the project
+    picker hedged on. Read by the dashboard's standard context-items
+    section.
+
+    The convention:
+
+    - ``source="subcall"`` — distinguishes from selection / file /
+      task context items.
+    - ``type=<subcall_name>`` — ``deadline_extract`` /
+      ``project_picker`` etc. The frontend can badge by type.
+    - ``label`` — short human-readable summary (top deadline /
+      top-confidence project / etc.).
+    - ``payload`` — the FULL structured output for inspection.
+
+    A future extension generalises this further: any ``DecomposedResult``
+    from the framework provides ``sub_audits``, which a generic helper
+    could convert to ContextItems automatically. For now the inline
+    pipeline calls back here per known sub-call.
+    """
+    items: list[ContextItem] = []
+
+    if deadline_hints is not None:
+        # Build a terse label from whatever the pre-pass found.
+        label_parts: list[str] = []
+        if deadline_hints.get("has_deadline"):
+            d = deadline_hints.get("deadline_date") or "(date unspecified)"
+            label_parts.append(f"deadline: {d}")
+        if deadline_hints.get("has_dependency"):
+            dep = deadline_hints.get("dependency_hint") or "(unspecified)"
+            label_parts.append(f"depends: {dep}")
+        if deadline_hints.get("hint_extraction_failed"):
+            label = "Deadline extraction failed (graceful degradation)"
+        elif label_parts:
+            label = "Deadline hints — " + "; ".join(label_parts)
+        else:
+            label = "Deadline hints — none detected"
+        items.append(ContextItem(
+            id="subcall:deadline_extract",
+            source="subcall",
+            type="deadline_extract",
+            label=label,
+            payload=dict(deadline_hints),
+        ))
+
+    if project_candidates:
+        # Top-pick label so users see the headline at a glance.
+        top = project_candidates[0]
+        if top.get("project_tag") is None:
+            label = (
+                f"Project picker — top: no-project "
+                f"(conf {top.get('confidence', 0.0):.2f})"
+            )
+        else:
+            label = (
+                f"Project picker — top: {top['project_tag']} "
+                f"(conf {top.get('confidence', 0.0):.2f})"
+            )
+        items.append(ContextItem(
+            id="subcall:project_picker",
+            source="subcall",
+            type="project_picker",
+            label=label,
+            payload={"candidates": list(project_candidates)},
+        ))
+
+    return tuple(items)
 
 
 @dataclass(frozen=True)
@@ -176,6 +260,17 @@ def spawn_thread_for_matter(
     )
     project_candidates = project_candidates_payload.get("candidates") or []
 
+    # ---- Build sub-call ContextItems ---------------------------------
+    # Phase 3 of the singular work: each spawned Thread carries the
+    # deadline / project-picker outputs as durable ContextItems on top
+    # of the captured selection. Renders in the dashboard's
+    # context-items section so the user can inspect the model
+    # reasoning that produced the spawned thread.
+    subcall_items = _build_subcall_context_items(
+        deadline_hints=deadline_hints,
+        project_candidates=project_candidates,
+    )
+
     # ---- Verdict ------------------------------------------------------
     verdict, verdict_error = _call_multi_record_verdict(
         item=item,
@@ -197,6 +292,7 @@ def spawn_thread_for_matter(
     if isinstance(refusal, dict) and refusal.get("question"):
         thread_id = _spawn_refusal_thread(
             item=item, verdict=verdict, deadline_hints=deadline_hints,
+            extra_context_items=subcall_items,
         )
         return ThreadSpawnResult(
             kind="refusal",
@@ -224,6 +320,7 @@ def spawn_thread_for_matter(
     if not actionable:
         thread_id = _spawn_dismissed_thread(
             item=item, verdict=verdict, dropped=dropped,
+            extra_context_items=subcall_items,
         )
         return ThreadSpawnResult(
             kind="dismissed",
@@ -239,6 +336,7 @@ def spawn_thread_for_matter(
         thread_id = _spawn_record_thread(
             item=item, record=actionable[0],
             verdict=verdict, parent_id=None,
+            extra_context_items=subcall_items,
         )
         return ThreadSpawnResult(
             kind="flat",
@@ -250,11 +348,15 @@ def spawn_thread_for_matter(
         )
 
     # ---- Singular umbrella (2+ actionable records) --------------------
-    umbrella_id = _spawn_inline_umbrella(item=item, verdict=verdict)
+    umbrella_id = _spawn_inline_umbrella(
+        item=item, verdict=verdict,
+        extra_context_items=subcall_items,
+    )
     child_ids: list[str] = []
     for rec in actionable:
         cid = _spawn_record_thread(
             item=item, record=rec, verdict=verdict, parent_id=umbrella_id,
+            extra_context_items=subcall_items,
         )
         if cid:
             child_ids.append(cid)
