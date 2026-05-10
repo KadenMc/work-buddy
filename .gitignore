@@ -48,6 +48,10 @@ knowledge/store.local/
 .claude/settings.local.json
 .claude/settings.json
 
+# Cygwin / MSYS bash crash dumps (machine-specific noise, regenerated
+# every time bash crashes — not useful in version control)
+*.stackdump
+
 # Personal agent configuration (contains user-specific behavioral instructions)
 CLAUDE.local.md
 

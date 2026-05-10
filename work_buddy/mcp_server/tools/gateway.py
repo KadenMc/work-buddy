@@ -1131,13 +1131,50 @@ def register_tools(mcp: FastMCP) -> None:
                     # retry → silent half-finished state. Capabilities
                     # without a manifest fall back to the single-effect
                     # verifier (existing behavior preserved).
+                    #
+                    # Wrapper-aware path: ``retry`` / ``obsidian_retry``
+                    # replay an inner op by id and have no manifest of
+                    # their own. Resolve the inner capability's manifest
+                    # and walk THAT — same rationale as the sweep-side
+                    # resolution in
+                    # ``retry_sweep._resolve_inner_op_for_wrapper``.
                     declared_effects = getattr(entry, "effects", None) or []
+                    verify_params: dict[str, Any] = parsed_params
+                    if not declared_effects and capability in (
+                        "retry", "obsidian_retry",
+                    ):
+                        inner_id = parsed_params.get("operation_id")
+                        if inner_id:
+                            inner_rec = _load_operation(inner_id)
+                            if inner_rec is not None:
+                                inner_name = inner_rec.get("name", "")
+                                inner_entry = registry.get_entry(inner_name)
+                                if inner_entry is None:
+                                    # Same fall-back the sweep uses:
+                                    # consult the disabled registry — a
+                                    # capability shelved by a transient
+                                    # tool probe still has its effects
+                                    # manifest, and that's authoritative
+                                    # for the verifier.
+                                    try:
+                                        inner_entry = (
+                                            registry.get_disabled_registry()
+                                            .get(inner_name)
+                                        )
+                                    except Exception:
+                                        inner_entry = None
+                                inner_effects = list(
+                                    getattr(inner_entry, "effects", None) or []
+                                )
+                                if inner_effects:
+                                    declared_effects = inner_effects
+                                    verify_params = inner_rec.get("params") or {}
                     if declared_effects:
                         from work_buddy.obsidian.post_write_verify import (
                             verify_post_write_effects,
                         )
                         verdict = verify_post_write_effects(
-                            declared_effects, params=parsed_params,
+                            declared_effects, params=verify_params,
                         )
                         # "partial" / "absent" / "indeterminate" all
                         # mean the recovery isn't a success — fall

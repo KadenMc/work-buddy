@@ -842,6 +842,8 @@ def grant_consent(
     operation: str,
     mode: str = "always",
     ttl_minutes: int | None = None,
+    *,
+    session_id: str | None = None,
 ) -> None:
     """Grant consent for an operation.
 
@@ -850,11 +852,18 @@ def grant_consent(
         mode: "always" (permanent), "temporary" (time-limited), or "once" (single-use).
         ttl_minutes: Expiry in minutes for "temporary" mode. Required for temporary,
                      ignored for always/once.
+        session_id: When given, write the grant to THIS specific session's
+            consent DB instead of the calling process's. The sidecar uses
+            this when an out-of-band ``consent_grant`` message arrives so
+            the grant lands in the originating agent's DB, not the
+            sidecar's. Mirrors the existing ``ConsentCache.grant`` keyword.
     """
-    _cache.grant(operation, mode, ttl_minutes=ttl_minutes)
+    _cache.grant(operation, mode, ttl_minutes=ttl_minutes, session_id=session_id)
     details = f"{mode}"
     if mode == "temporary":
         details += f" | ttl={ttl_minutes}m"
+    if session_id:
+        details += f" | session={session_id[:8]}"
     _audit_log("GRANTED", operation, details)
 
 
@@ -862,14 +871,20 @@ def grant_consent_batch(
     operations: list[str],
     mode: str = "always",
     ttl_minutes: int | None = None,
+    *,
+    session_id: str | None = None,
 ) -> None:
     """Grant consent for multiple operations at once.
 
     Used by the gateway's auto-consent flow to write grants for all
     operations in a bundled consent request after a single user approval.
+
+    ``session_id`` is plumbed through the same way as ``grant_consent`` —
+    the sidecar's out-of-band consent_grant path uses it to route batched
+    bundle grants to the originating agent's DB.
     """
     for op in operations:
-        grant_consent(op, mode=mode, ttl_minutes=ttl_minutes)
+        grant_consent(op, mode=mode, ttl_minutes=ttl_minutes, session_id=session_id)
 
 
 def revoke_consent(operation: str) -> None:
@@ -1091,10 +1106,38 @@ def resolve_consent_request(
     if approved:
         # Write the consent grant
         ttl = ttl_minutes or default_ttl
+        ttl_for_grant = ttl if mode == "temporary" else None
+
+        # Route the grant to the ORIGINATING agent's session DB when this
+        # resolve runs in a different process from the agent that
+        # requested consent (e.g. the sidecar handling an out-of-band
+        # consent_grant message). The notification record carries
+        # ``callback_session_id`` set by the gateway from the agent's
+        # ``WORK_BUDDY_SESSION_ID`` at request creation.
+        # ``ConsentCache.grant`` already supports the keyword for
+        # workflow blanket grants — same plumbing.
+        target_session = notification.callback_session_id
+
         grant_consent(
-            operation, mode=mode,
-            ttl_minutes=ttl if mode == "temporary" else None,
+            operation, mode=mode, ttl_minutes=ttl_for_grant,
+            session_id=target_session,
         )
+
+        # When the operation is a bundle label (the gateway uses
+        # ``bundle:<capability>`` as a notification label for multi-op
+        # consent), also grant each individual op the decorators
+        # actually check. The bundle key alone satisfies no
+        # ``@requires_consent`` gate; the underlying ops live in
+        # ``consent_meta.context.operations``. Doing the unbundle here
+        # keeps the out-of-band approval path self-sufficient (it goes
+        # through this resolve, not through ``_auto_consent_request``).
+        operations = (consent_meta.get("context") or {}).get("operations")
+        if isinstance(operations, list) and operations:
+            grant_consent_batch(
+                operations, mode=mode, ttl_minutes=ttl_for_grant,
+                session_id=target_session,
+            )
+
         # Dispatch callback
         dispatch_status = store.dispatch_callback(notification)
 

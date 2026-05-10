@@ -108,8 +108,22 @@ class MessagePoller:
             msg_id, sender, recipient, msg_type, subject,
         )
 
-        # --- Classify: try to match subject to a known capability/workflow ---
-        result = self._classify_and_execute(subject, body)
+        # --- Special case: consent_grant from out-of-band surfaces ---
+        # The Obsidian modal posts a ``consent_grant`` message when the
+        # user clicks Allow on a notification whose gateway poll has
+        # already timed out. Routing through the generic capability
+        # dispatch would write the grant to the sidecar's own session
+        # DB; we want it in the ORIGINATING agent's DB so the
+        # ``@requires_consent`` decorators see it on the agent's next
+        # call.
+        normalized_subject = (
+            subject.strip().lower().replace(" ", "_").replace("-", "_")
+        )
+        if normalized_subject == "consent_grant":
+            result = _handle_consent_grant_message(body)
+        else:
+            # --- Classify: try to match subject to a known capability/workflow ---
+            result = self._classify_and_execute(subject, body)
 
         # --- Reply with results ---
         reply_body = _format_reply(result)
@@ -170,6 +184,110 @@ class MessagePoller:
         # Fallback: treat as freeform prompt
         prompt = body if body else subject
         return _execute_prompt("message-dispatch", prompt)
+
+
+def _handle_consent_grant_message(body: str) -> dict[str, Any]:
+    """Handle an out-of-band ``consent_grant`` message.
+
+    The Obsidian plugin's modal-click path posts this message when the
+    user approves a consent prompt that the gateway's in-window poll
+    already gave up on. The plugin includes ``notification_id`` in the
+    body so we can look up the originating agent's session and route
+    the grant to that session's DB — not the sidecar's.
+
+    Body shape (current plugin): JSON of
+        {operation, mode, ttl_minutes, notification_id}
+
+    If ``notification_id`` is missing (out-of-sync plugin), fall back
+    to an in-process ``grant_consent`` call. The grant lands in the
+    sidecar's own session DB and won't unblock the originating agent,
+    but the path doesn't crash. Logs a warning so the operator knows
+    to rebuild the plugin.
+    """
+    params = _parse_body_params(body)
+    operation = params.get("operation")
+    mode = params.get("mode")
+    ttl_minutes = params.get("ttl_minutes")
+    notification_id = params.get("notification_id")
+
+    if not operation or not mode:
+        return {
+            "status": "error",
+            "error": (
+                f"consent_grant message missing operation/mode: "
+                f"got operation={operation!r}, mode={mode!r}"
+            ),
+        }
+
+    if notification_id:
+        # Route through resolve_consent_request — it loads the
+        # notification, reads callback_session_id, writes grants to the
+        # right session DB, unbundles bundle: operations into individual
+        # ops, and dispatches any pending callback.
+        try:
+            from work_buddy.consent import resolve_consent_request
+            resolved = resolve_consent_request(
+                notification_id,
+                approved=True,
+                mode=mode,
+                ttl_minutes=ttl_minutes,
+            )
+            return {
+                "status": "ok",
+                "result": {
+                    "granted": True,
+                    "via": "resolve_consent_request",
+                    "notification_id": notification_id,
+                    "dispatch": resolved.get("dispatch"),
+                },
+            }
+        except ValueError as exc:
+            # Already-responded notifications hit this — typically
+            # benign (the gateway's in-window poll already grabbed
+            # the response). Log and report no-op.
+            logger.info(
+                "consent_grant for already-resolved notification "
+                "%s: %s",
+                notification_id, exc,
+            )
+            return {
+                "status": "ok",
+                "result": {
+                    "granted": False,
+                    "via": "resolve_consent_request",
+                    "note": "notification already resolved",
+                    "notification_id": notification_id,
+                },
+            }
+        except Exception as exc:
+            logger.error(
+                "consent_grant for notification %s failed: %s",
+                notification_id, exc,
+            )
+            return {"status": "error", "error": str(exc)}
+
+    # No notification_id — Obsidian plugin is out of sync (the current
+    # plugin always sends one). Fall back to a bare in-process grant so
+    # the path doesn't crash, but the cross-session routing is broken
+    # until the plugin is rebuilt + reloaded.
+    logger.warning(
+        "consent_grant message missing notification_id — falling back "
+        "to in-process grant. Rebuild the Obsidian plugin to enable "
+        "cross-session consent routing."
+    )
+    try:
+        from work_buddy.consent import grant_consent
+        grant_consent(operation, mode=mode, ttl_minutes=ttl_minutes)
+        return {
+            "status": "ok",
+            "result": {
+                "granted": True,
+                "via": "in_process_no_notification_id",
+                "operation": operation,
+            },
+        }
+    except Exception as exc:
+        return {"status": "error", "error": str(exc)}
 
 
 def _parse_body_params(body: str) -> dict[str, Any]:
