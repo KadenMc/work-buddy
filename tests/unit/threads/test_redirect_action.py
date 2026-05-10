@@ -1,4 +1,4 @@
-"""Phase 5 — per-action redirect with scoped re-inference.
+"""Per-action redirect with scoped re-inference.
 
 Verifies:
 - The dashboard's ``/api/threads/<id>/redirect_action`` endpoint

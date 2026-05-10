@@ -1,13 +1,14 @@
-"""Cheap structured-output deadline / dependency extraction (Clarify Slice 3).
+"""Cheap structured-output deadline / dependency extraction.
 
 Runs BEFORE the main multi-record verdict pass. Detects deadline mentions
 ("by Friday", "before May 15", "next Tuesday") and dependency mentions
 ("waiting on Bob", "after the meeting") in a single captured item's
 text, returning structured hints. The verdict pass receives these
-as inputs so the resulting ``task_proposal`` can populate Slice 2's
+as inputs so the resulting ``task_proposal`` can populate the
 ``has_deadline`` / ``deadline_date`` / ``has_dependency`` /
-``dependency_hint`` fields without burning frontier-balanced tokens
-on a structured-text-classification task.
+``dependency_hint`` fields on the verdict's task-record schema without
+burning frontier-balanced tokens on a structured-text-classification
+task.
 
 Implemented as a :class:`work_buddy.llm.SubCall` declaration on the
 decomposed-judgment framework. The tier chain — local-first, escalating

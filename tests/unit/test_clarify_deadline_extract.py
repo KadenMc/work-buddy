@@ -1,6 +1,6 @@
-"""Slice 3 tests: deadline + dependency pre-pass.
+"""Tests for the deadline + dependency pre-pass.
 
-The pre-pass now runs through the decomposed-judgment framework
+The pre-pass runs through the decomposed-judgment framework
 (:func:`work_buddy.llm.run_subcall` against
 :data:`work_buddy.clarify.deadline_extract.DEADLINE_HINTS_SUBCALL`),
 so the test pattern is:

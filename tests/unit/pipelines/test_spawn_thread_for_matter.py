@@ -222,8 +222,9 @@ def test_two_records_spawn_singular_umbrella(fresh_db):
 
     umbrella = store.get_thread(result.thread_id)
     assert umbrella.fsm_state == FSMState.MONITORING
-    # Stage 1 marker: this umbrella is recognisably "singular"
-    # (drives the dashboard render hoist).
+    # Singular-pattern marker: the dashboard render hoist branches on
+    # ``parent_relationship == 'singular'`` to lift children's actions
+    # onto the umbrella card.
     assert umbrella.parent_relationship == "singular"
 
     for cid in result.child_thread_ids:
@@ -261,15 +262,14 @@ def test_result_carries_deadline_and_project_audit_fields(fresh_db):
 
 
 # ---------------------------------------------------------------------------
-# Phase 3: Sub-LLM outputs land as ContextItems on spawned threads
+# Sub-LLM outputs land as ContextItems on spawned threads
 # ---------------------------------------------------------------------------
 
 
 def test_subcall_outputs_attached_as_context_items_on_flat_thread(fresh_db):
-    """Phase 3: deadline_extract + project_picker outputs surface as
-    ContextItems on the spawned thread alongside the captured selection.
-    The dashboard's context-items section renders them as inspectable
-    audit evidence."""
+    """deadline_extract + project_picker outputs surface as ContextItems
+    on the spawned thread alongside the captured selection. The dashboard's
+    context-items section renders them as inspectable audit evidence."""
     one_record_verdict = {
         "rationale": "Email Bob.",
         "group_intent": "Email Bob",
@@ -331,9 +331,9 @@ def test_subcall_outputs_attached_as_context_items_on_flat_thread(fresh_db):
 
 
 def test_subcall_outputs_attached_to_singular_umbrella_and_children(fresh_db):
-    """Phase 3 carry-through for singular umbrella shape: BOTH the
-    umbrella and its children carry the same sub-call ContextItems so
-    inspecting any thread reveals the same audit evidence."""
+    """Singular umbrella carry-through: BOTH the umbrella and its children
+    carry the same sub-call ContextItems so inspecting any thread reveals
+    the same audit evidence."""
     two_record_verdict = {
         "rationale": "Birthday matter.",
         "group_intent": "Sarah's birthday",

@@ -52,7 +52,7 @@ __all__ = [
     "resolve_tier",
     "ToolCall",
     "TierAttempt",
-    # Decomposed-judgment framework (phase 2)
+    # Decomposed-judgment framework (work_buddy.llm.decomposed)
     "SubCall",
     "MainCall",
     "DecomposedJudgment",

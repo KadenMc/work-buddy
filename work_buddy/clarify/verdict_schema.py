@@ -230,10 +230,9 @@ _TASK_PROPOSAL_SCHEMA: dict[str, Any] = {
             ),
             # Anthropic strict structured-output mode rejects object-type
             # fields without an explicit ``additionalProperties: false``,
-            # even when the field itself is nullable. Authored at Slice 4
-            # without this; surfaced as a 400 on the first live verdict
-            # call against Sonnet/Haiku once the schema's total size grew
-            # past the threshold where Anthropic deeply re-validates.
+            # even when the field itself is nullable — surfaces as a 400
+            # once the schema is large enough that Anthropic deeply
+            # re-validates nested objects.
             "additionalProperties": False,
             "properties": {
                 "financial_cents": {

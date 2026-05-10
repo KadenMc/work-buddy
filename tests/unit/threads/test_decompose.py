@@ -217,7 +217,7 @@ class TestCascade:
 
 
 # ---------------------------------------------------------------------------
-# Phase 4: singular-umbrella DONE/DISMISSED branch
+# Singular-umbrella DONE/DISMISSED branch (terminal-mix discrimination)
 # ---------------------------------------------------------------------------
 
 
@@ -287,9 +287,9 @@ class TestSingularCascade:
         assert store.get_thread(parent_id).fsm_state == FSMState.DONE
 
     def test_decompose_umbrella_all_dismissed_still_done(self, fresh_db):
-        """Non-singular (decompose) umbrellas keep the existing
-        all-terminal → DONE rule even when all children are dismissed.
-        Phase 4's special case is opt-in via parent_relationship."""
+        """Non-singular (decompose) umbrellas keep the all-terminal →
+        DONE rule even when all children are dismissed. The DISMISSED
+        cascade branch is opt-in via ``parent_relationship='singular'``."""
         p = Thread(
             autonomy_policy=autonomy.PLAN_THEN_REVIEW,
             fsm_state=FSMState.MONITORING,
@@ -310,8 +310,8 @@ class TestSingularCascade:
         assert store.get_thread(p.thread_id).fsm_state == FSMState.DONE
 
     def test_group_umbrella_all_dismissed_still_done(self, fresh_db):
-        """Same guard for group umbrellas — Phase 4 scope is
-        singular only."""
+        """Same guard for group umbrellas — only ``singular`` parents
+        get the DISMISSED-on-all-dismissed branch."""
         p = Thread(
             autonomy_policy=autonomy.PLAN_THEN_REVIEW,
             fsm_state=FSMState.MONITORING,
