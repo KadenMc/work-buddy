@@ -120,6 +120,46 @@ class TestRedirectActionEndpoint:
             store.get_thread(t.thread_id).fsm_state == FSMState.AWAITING_CONFIRMATION
         )
 
+    def test_no_optimistic_lock_conflict_after_feedback_event(
+        self, fresh_db, client,
+    ):
+        """The endpoint appends KIND_ACTION_REDIRECTED, then transitions
+        the FSM. ``append_event`` writes the event row but does NOT bump
+        the thread's cached ``parent_event_id``; the transition's
+        optimistic-lock target must be refreshed explicitly via
+        ``store.latest_event_id``. Without that refresh, the transition
+        compares its stale cached id against the freshly-landed feedback
+        event and raises OptimisticLockConflict — surfaced to the user
+        as a 500 with a "latest event N, expected M; re-read and retry"
+        message. Pin the working endpoint shape so a future refactor
+        can't reintroduce the conflict.
+        """
+        t = _thread_with_pending_action({
+            "kind": "standard", "name": "task_create",
+            "parameters": {"task_text": "thing"},
+        })
+        # Simulate a side effect having bumped the latest event without
+        # touching the thread's cached parent_event_id (mirrors what
+        # happens when an upstream cron / surface publish lands an event
+        # between the dashboard fetching the thread and the user clicking
+        # Redirect).
+        from work_buddy.threads.events import KIND_AUTO_ADVANCE_DECISION
+        store.append_event(ThreadEvent(
+            thread_id=t.thread_id,
+            kind=KIND_AUTO_ADVANCE_DECISION,
+            actor=ACTOR_AGENT,
+            data={"unrelated": "side effect"},
+        ))
+
+        resp = client.post(
+            f"/api/threads/{t.thread_id}/redirect_action",
+            data=json.dumps({"feedback": "do something else"}),
+            content_type="application/json",
+        )
+        body = resp.get_json()
+        assert resp.status_code == 200, body
+        assert body["next_state"] == "awaiting_inference"
+
     def test_missing_thread_404(self, fresh_db, client):
         resp = client.post(
             "/api/threads/th-nonexistent/redirect_action",

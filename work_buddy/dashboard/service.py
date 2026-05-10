@@ -2207,11 +2207,11 @@ _THREAD_USER_INITIATED_TRIGGERS = {
     # User clicked Approve on a thread's action chip / confirmation
     # card → fires the consent gate's "execute" trigger which calls
     # the action capability synchronously via the EXECUTING side-effect
-    # handler. The click IS the consent (audit unit:
-    # `architecture/consent/implied-consent`); without wrapping in
+    # handler. The click IS the consent boundary; without wrapping in
     # ``user_initiated``, capabilities re-prompt for moderate-risk
-    # consent the user already gave when they clicked Approve, dumping
-    # the thread into AWAITING_REDIRECT with a ConsentRequired error.
+    # consent the user already gave by clicking Approve, dumping the
+    # thread into AWAITING_REDIRECT with a ConsentRequired error. See
+    # ``notifications/consent`` (UI-click bypass) for policy.
     "execute",
     # Other user-initiated triggers that may downstream-invoke
     # @requires_consent-gated code via side effects:
@@ -2232,8 +2232,9 @@ def _post_thread_action(
     Wraps the transition in ``consent.user_initiated`` when the trigger
     is a user-click action (Approve, Confirm, Review-accept, etc.) so
     capabilities invoked via state-entry side effects don't re-prompt
-    for consent the user already gave by clicking. See
-    ``architecture/consent/implied-consent`` for policy.
+    for consent the user already gave by clicking. The trigger
+    allowlist lives in ``_THREAD_USER_INITIATED_TRIGGERS``; see
+    ``notifications/consent`` (UI-click bypass) for policy.
     """
     blocked = _reject_read_only()
     if blocked:
@@ -2379,7 +2380,7 @@ def api_thread_redirect(thread_id: str):
 
 @app.post("/api/threads/<thread_id>/redirect_action")
 def api_thread_redirect_action(thread_id: str):
-    """Phase 5 — per-action scoped redirect.
+    """Per-action scoped redirect on a singular umbrella's hoisted action.
 
     Body: ``{"feedback": "<user-supplied redirect feedback>"}``
 
@@ -2433,6 +2434,15 @@ def api_thread_redirect_action(thread_id: str):
             },
         ))
 
+        # ``append_event`` writes the event row but does NOT bump the
+        # ``threads.parent_event_id`` cache. ``engine.transition`` reads
+        # that cache for the optimistic-lock target, so without an
+        # explicit refresh it would compare a stale ID against the
+        # newly-landed feedback event and reject with
+        # OptimisticLockConflict. Pass the fresh latest_event_id
+        # explicitly — same pattern as decompose.cascade_terminal_to_parent.
+        fresh_parent = store.latest_event_id(thread_id)
+
         # Transition: TRIG_REDIRECTED + target='action' so the
         # AWAITING_INFERENCE state-entry handler enqueues ONLY the
         # action target (no walk back through intent/context).
@@ -2442,6 +2452,7 @@ def api_thread_redirect_action(thread_id: str):
                 "target": "action",
                 "redirect_feedback": feedback,
             },
+            parent_event_id=fresh_parent,
             fire_side_effects=True,
         )
         return jsonify({
