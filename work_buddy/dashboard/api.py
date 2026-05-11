@@ -285,136 +285,215 @@ def get_system_state() -> dict[str, Any]:
     return result
 
 
-def get_tasks_summary() -> dict[str, Any]:
-    """Task summary from Obsidian Tasks.
+# Pre-compiled task-line parser state — shared across calls so we don't
+# rebuild the same regex set on every dashboard refresh.
+_TASK_NOTE_LINK_RE = re.compile(r"\[\[([0-9a-f-]+)\|[^\]]*\]\]")
+_TASK_TAG_RE = re.compile(r"#\S+")
+# Obsidian Tasks emoji: dated (📅⏳🛫✅❌➕) and dateless (⏫🔼🔽⏬🔺)
+_TASK_EMOJI_DATED_RE = re.compile(r"([📅⏳🛫✅❌➕])\s*(\d{4}-\d{2}-\d{2})")
+_TASK_EMOJI_PLAIN_RE = re.compile(r"[⏫🔼🔽⏬🔺]")
+_TASK_PRIORITY_LABELS = {
+    "⏫": "Highest",
+    "🔼": "High",
+    "🔽": "Low",
+    "⏬": "Lowest",
+}
+_TASK_ID_RE = re.compile(r"t-[0-9a-f]+")
+_TASK_EMOJI_LABELS = {
+    "📅": "Due",
+    "⏳": "Scheduled",
+    "🛫": "Start",
+    "✅": "Done",
+    "❌": "Cancelled",
+    "➕": "Created",
+}
 
-    Reads the master task list directly — avoids bridge dependency
-    so the dashboard stays operational even when Obsidian is closed.
+
+def _parse_task_line(line: str) -> dict[str, Any] | None:
+    """Parse a single ``- [ ] ...`` / ``- [x] ...`` task line.
+
+    Returns the same dict shape ``get_tasks_summary`` emits, or ``None``
+    for non-task lines. Pure: no file IO, no SQLite enrichment. Extracted
+    so both master-task-list.md and archive.md feed the same parser.
     """
-    vault_root = _cfg.get("vault_root", "")
-    if not vault_root:
-        return []
-    tasks_file = Path(vault_root) / "tasks" / "master-task-list.md"
+    stripped = line.strip()
+    if not stripped.startswith("- ["):
+        return None
+    done = stripped[3] == "x"
+    full_text = stripped[6:].strip()  # after "- [x] " or "- [ ] "
+
+    markers = [
+        {
+            "emoji": em.group(1),
+            "label": _TASK_EMOJI_LABELS.get(em.group(1), ""),
+            "date": em.group(2),
+        }
+        for em in _TASK_EMOJI_DATED_RE.finditer(full_text)
+    ]
+    for ch in _TASK_EMOJI_PLAIN_RE.findall(full_text):
+        if ch in _TASK_PRIORITY_LABELS:
+            markers.append(
+                {"emoji": ch, "label": _TASK_PRIORITY_LABELS[ch], "date": ""}
+            )
+
+    text = full_text
+    task_id = ""
+    if "🆔 " in text:
+        parts = text.split("🆔 ")
+        id_part = parts[-1].strip()
+        m_id = _TASK_ID_RE.match(id_part)
+        task_id = m_id.group(0) if m_id else id_part
+        text = parts[0].strip()
+
+    note_id = ""
+    m = _TASK_NOTE_LINK_RE.search(text)
+    if m:
+        note_id = m.group(1)
+
+    urgency = "none"
+    for emoji, level in [("🔺", "high"), ("🔼", "medium"), ("🔽", "low")]:
+        if emoji in text:
+            urgency = level
+            break
+
+    state = "inbox"
+    for tag in ["#todo/focused", "#todo/next", "#todo/waiting", "#todo/someday", "#todo/blocked"]:
+        if tag in text:
+            state = tag.split("/")[-1]
+            break
+    if done:
+        state = "done"
+
+    display = _TASK_NOTE_LINK_RE.sub("", text)
+    display = _TASK_TAG_RE.sub("", display)
+    display = _TASK_EMOJI_DATED_RE.sub("", display)
+    display = _TASK_EMOJI_PLAIN_RE.sub("", display)
+    display = re.sub(r"\s{2,}", " ", display).strip()
+
+    return {
+        "id": task_id,
+        "text": display[:120],
+        "markers": markers,
+        "note_id": note_id,
+        "done": done,
+        "state": state,
+        "urgency": urgency,
+    }
+
+
+def _store_row_to_display(row: dict[str, Any]) -> dict[str, Any]:
+    """Convert a ``task_metadata`` row into the dashboard's display dict.
+
+    Derives the markers list from emoji-equivalent columns:
+    ``deadline_date`` → 📅, ``completed_at`` → ✅, ``urgency`` →
+    ⏫/🔼/🔽. SQLite is the canonical source — the dashboard reads
+    these directly from ``task_metadata`` rather than re-parsing them
+    out of the markdown line.
+    """
+    markers: list[dict[str, str]] = []
+    if row.get("deadline_date"):
+        markers.append({
+            "emoji": "📅", "label": "Due",
+            "date":  row["deadline_date"],
+        })
+    if row.get("completed_at"):
+        # completed_at can be a full ISO timestamp or just YYYY-MM-DD;
+        # truncate to the date for the marker display.
+        date = str(row["completed_at"])[:10]
+        markers.append({
+            "emoji": "✅", "label": "Done", "date": date,
+        })
+    urgency = row.get("urgency")
+    urgency_emoji_map = {
+        "high":   ("⏫", "Highest"),
+        "medium": ("🔼", "High"),
+        "low":    ("🔽", "Low"),
+    }
+    if urgency in urgency_emoji_map:
+        em, lbl = urgency_emoji_map[urgency]
+        markers.append({"emoji": em, "label": lbl, "date": ""})
+
+    # Archived flag sticky: row gets state="archived" if archived_at set.
+    archived = bool(row.get("archived_at"))
+    state = "archived" if archived else row.get("state", "inbox")
+
+    text = row.get("description") or ""
+
+    return {
+        "id":         row.get("task_id", ""),
+        "text":       text[:120] if text else "",
+        "markers":    markers,
+        "note_id":    row.get("note_uuid") or "",
+        "done":       state == "done",
+        "state":      state,
+        "urgency":    urgency or "none",
+        "archived":   archived,
+    }
+
+
+def get_tasks_summary() -> dict[str, Any]:
+    """Task summary, SQLite-primary.
+
+    Reads the canonical task_metadata table for tracked rows, and
+    appends ID-less legacy lines from master-task-list.md / archive.md
+    as thin entries (state derived from checkbox; ID column renders as
+    ``—`` on the frontend). The markdown files are joined in only to
+    surface legacy lines that were never written into the store.
+    """
+    from datetime import datetime, timedelta, timezone
+    from work_buddy.obsidian.tasks import store as tasks_store
+
     tasks: list[dict[str, Any]] = []
 
+    # ── Tracked tasks: canonical from SQLite ────────────────────────
     try:
-        if not tasks_file.exists():
-            return {"tasks": [], "counts": {}}
-
-        # Patterns for stripping metadata from display text
-        _note_link_re = re.compile(r"\[\[([0-9a-f-]+)\|[^\]]*\]\]")
-        _tag_re = re.compile(r"#\S+")
-        # Obsidian Tasks emoji: dated (📅⏳🛫✅❌➕) and dateless (⏫🔼🔽⏬🔺)
-        _emoji_dated_re = re.compile(r"([📅⏳🛫✅❌➕])\s*(\d{4}-\d{2}-\d{2})")
-        _emoji_plain_re = re.compile(r"[⏫🔼🔽⏬🔺]")
-        _priority_labels = {
-            "⏫": "Highest",
-            "🔼": "High",
-            "🔽": "Low",
-            "⏬": "Lowest",
-        }
-        _task_id_re = re.compile(r"t-[0-9a-f]+")
-        _emoji_labels = {
-            "📅": "Due",
-            "⏳": "Scheduled",
-            "🛫": "Start",
-            "✅": "Done",
-            "❌": "Cancelled",
-            "➕": "Created",
-        }
-
-        for line in tasks_file.read_text(encoding="utf-8").splitlines():
-            stripped = line.strip()
-            if not stripped.startswith("- ["):
-                continue
-            done = stripped[3] == "x"
-            full_text = stripped[6:].strip()  # after "- [x] " or "- [ ] "
-
-            # Extract dated emoji markers from full line BEFORE splitting
-            markers = [
-                {"emoji": em.group(1), "label": _emoji_labels.get(em.group(1), ""), "date": em.group(2)}
-                for em in _emoji_dated_re.finditer(full_text)
-            ]
-            # Extract Obsidian Tasks priority emojis (undated)
-            for ch in _emoji_plain_re.findall(full_text):
-                if ch in _priority_labels:
-                    markers.append({"emoji": ch, "label": _priority_labels[ch], "date": ""})
-
-            text = full_text
-
-            # Extract task ID if present (strip trailing emoji metadata)
-            task_id = ""
-            if "🆔 " in text:
-                parts = text.split("🆔 ")
-                id_part = parts[-1].strip()
-                m_id = _task_id_re.match(id_part)
-                task_id = m_id.group(0) if m_id else id_part
-                text = parts[0].strip()
-
-            # Extract note UUID from [[uuid|📓]] link
-            note_id = ""
-            m = _note_link_re.search(text)
-            if m:
-                note_id = m.group(1)
-
-            # Extract urgency emoji
-            urgency = "none"
-            for emoji, level in [("🔺", "high"), ("🔼", "medium"), ("🔽", "low")]:
-                if emoji in text:
-                    urgency = level
-                    break
-
-            # Provisional state from legacy inline tags. SQLite enrichment
-            # below overrides this with the real store state when available.
-            state = "inbox"
-            for tag in ["#todo/focused", "#todo/next", "#todo/waiting", "#todo/someday", "#todo/blocked"]:
-                if tag in text:
-                    state = tag.split("/")[-1]
-                    break
-            if done:
-                state = "done"
-
-            # Clean display text: strip note links, tags, emoji metadata
-            display = _note_link_re.sub("", text)
-            display = _tag_re.sub("", display)
-            display = _emoji_dated_re.sub("", display)
-            display = _emoji_plain_re.sub("", display)
-            display = re.sub(r"\s{2,}", " ", display).strip()
-
-            tasks.append({
-                "id": task_id,
-                "text": display[:120],
-                "markers": markers,
-                "note_id": note_id,
-                "done": done,
-                "state": state,
-                "urgency": urgency,
-            })
+        store_rows = tasks_store.query(include_archived=True)
     except Exception as exc:
-        logger.warning("Failed to read tasks: %s", exc)
+        logger.warning("Failed to read task_metadata: %s", exc)
         return {"tasks": [], "counts": {}, "error": str(exc)}
 
-    # Enrich with real state from the SQLite store. The markdown line only
-    # tells us done-vs-not-done; the store carries the richer lifecycle
-    # (inbox / mit / focused / snoozed / done) that the dashboard's state
-    # filter relies on. Also attach is_recent so the namespace tree can
-    # compute its relevance score client-side without a separate endpoint.
-    try:
-        from datetime import datetime, timedelta, timezone
-        from work_buddy.obsidian.tasks import store as tasks_store
+    for row in store_rows:
+        tasks.append(_store_row_to_display(row))
 
+    # ── Legacy ID-less rows: append thinly from markdown ────────────
+    # These are tasks the user authored directly in Obsidian that
+    # haven't yet been picked up by ``task_sync`` (so they have no
+    # 🆔 ID), OR that come from archive.md and pre-date the tracking
+    # era. The frontend renders an empty `id` field as "—" in the
+    # ID column.
+    vault_root = _cfg.get("vault_root", "")
+    if vault_root:
+        tasks_dir = Path(vault_root) / "tasks"
+        for path, mark_archived in [
+            (tasks_dir / "master-task-list.md", False),
+            (tasks_dir / "archive.md",          True),
+        ]:
+            if not path.exists():
+                continue
+            try:
+                for line in path.read_text(encoding="utf-8").splitlines():
+                    parsed = _parse_task_line(line)
+                    if parsed is None or parsed.get("id"):
+                        continue  # has ID → already in SQLite-derived rows
+                    if mark_archived:
+                        parsed["state"] = "archived"
+                        parsed["archived"] = True
+                    else:
+                        parsed["archived"] = False
+                    tasks.append(parsed)
+            except Exception as exc:
+                logger.debug("Legacy markdown scan skipped (%s): %s", path.name, exc)
+
+    # ── Per-row enrichment: is_recent + automation tier + last_actor ─
+    try:
         recent_days = int(
             _cfg.get("tasks", {}).get("namespace_recent_days", 14)
         )
         cutoff_iso = (
             datetime.now(timezone.utc) - timedelta(days=max(0, recent_days))
         ).isoformat()
+        store_by_id = {r["task_id"]: r for r in store_rows}
 
-        store_rows = {r["task_id"]: r for r in tasks_store.query(include_archived=False)}
-
-        # Slice 4: lazy import + per-call resolver re-use.  Loading
-        # the resolver module is cheap; the resolver itself is pure,
-        # so we can call it directly per row without memoization.
         try:
             from work_buddy.automation.risk import resolve_operating_tier
             _have_resolver = True
@@ -422,27 +501,20 @@ def get_tasks_summary() -> dict[str, Any]:
             _have_resolver = False
 
         for t in tasks:
-            row = store_rows.get(t.get("id"))
-            if row:
-                # Store state wins. Checkbox-derived done still forces "done"
-                # (covers the case where a user ticked the box but task_sync
-                # hasn't caught up — the UI shouldn't show a stale state).
-                t["state"] = "done" if t.get("done") else row["state"]
-                t["is_recent"] = bool(row.get("created_at", "") >= cutoff_iso)
-                # Slice 4: surface the operating tier + last actor + the
-                # typed pipeline-blocker kind on the same task row so the
-                # Tasks tab can render badges without a separate request.
-                t["last_actor"] = row.get("last_actor")
-                if _have_resolver and t.get("state") not in {"done", "archived"}:
-                    decision = resolve_operating_tier(row, config=_cfg)
-                    t["operating_tier"] = decision.operating
-                    t["achievable_tier"] = decision.achievable
-                    if decision.pipeline_blocker:
-                        t["pipeline_blocker"] = decision.pipeline_blocker
-            else:
+            row = store_by_id.get(t.get("id"))
+            if not row:
                 t["is_recent"] = False
+                continue
+            t["is_recent"] = bool(row.get("created_at", "") >= cutoff_iso)
+            t["last_actor"] = row.get("last_actor")
+            if _have_resolver and t.get("state") not in {"done", "archived"}:
+                decision = resolve_operating_tier(row, config=_cfg)
+                t["operating_tier"] = decision.operating
+                t["achievable_tier"] = decision.achievable
+                if decision.pipeline_blocker:
+                    t["pipeline_blocker"] = decision.pipeline_blocker
     except Exception as exc:
-        logger.debug("Task state enrichment skipped: %s", exc)
+        logger.debug("Task enrichment skipped: %s", exc)
 
     # Attach namespace tags per task (is_namespace=1 only) so the dashboard
     # tree can be built + counted client-side from the same payload that
@@ -472,7 +544,18 @@ def get_tasks_summary() -> dict[str, Any]:
         s = t["state"]
         counts[s] = counts.get(s, 0) + 1
 
-    return {"tasks": tasks, "counts": counts}
+    # Surface the most recent task_sync timestamp so the frontend's
+    # inline filter status can render "synced Xm ago".
+    synced_at: str | None = None
+    try:
+        from work_buddy.obsidian.tasks import store as _tasks_store
+        sst = _tasks_store.get_sync_status()
+        if sst:
+            synced_at = sst.get("last_full_sync_at")
+    except Exception as exc:
+        logger.debug("get_sync_status skipped: %s", exc)
+
+    return {"tasks": tasks, "counts": counts, "synced_at": synced_at}
 
 
 def list_namespaces(recent_days: int = 14) -> dict[str, Any]:

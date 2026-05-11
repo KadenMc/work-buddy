@@ -822,6 +822,7 @@ def _build_registry() -> dict[str, Capability | WorkflowDefinition]:
         ("knowledge", _knowledge_capabilities),
         ("artifacts", _artifact_capabilities),
         ("email", _email_capabilities),
+        ("backups", _backup_capabilities),
     ]:
         t = time.time()
         try:
@@ -3714,10 +3715,17 @@ def _task_capabilities() -> list[Capability]:
         ),
         Capability(
             name="task_archive",
-            description="Move completed tasks from master list to tasks/archive.md",
+            description=(
+                "Move completed tasks from the master list to tasks/archive.md. "
+                "Consent-gated; the prompt shows the exact count and a random "
+                "5-title sample so the user approves a concrete scope. Default "
+                "policy archives tasks completed >= 7 days ago so recent work "
+                "stays visible. Posts a fire-and-forget summary notification "
+                "after the move so a bulk archive doesn't happen silently."
+            ),
             category="tasks",
             parameters={
-                "older_than_days": {"type": "int", "description": "Only archive tasks done N+ days ago (default 0 = all)", "required": False},
+                "older_than_days": {"type": "int", "description": "Only archive tasks done N+ days ago (default 7 = leave the last week in master list as a 'recently done' buffer; pass 0 to archive every completed task regardless of age)", "required": False},
             },
             callable=archive_completed,
             requires=["obsidian"],
@@ -7617,6 +7625,204 @@ def _email_capabilities() -> list[Capability]:
                 "record emails into task",
                 "file emails as task context",
                 "attach emails to existing task",
+            ],
+        ),
+    ]
+
+
+def _backup_capabilities() -> list[Capability]:
+    """Data-backup capabilities: data_backup, data_restore, data_backup_list.
+
+    These wrap :mod:`work_buddy.backups` for invocation via the
+    sidecar cron AND via the user-facing slash commands
+    (``/wb-backup-now``, ``/wb-backup-restore``).
+    """
+
+    def _data_backup(manual: bool = False, push_remote: bool | None = None):
+        from work_buddy.backups.local import run_backup
+        from work_buddy.backups.remote import (
+            get_backup_repo, push_snapshot, prune_remote_snapshots,
+            write_last_run,
+        )
+        from pathlib import Path
+
+        result = run_backup(manual=manual)
+        snapshot_dir = Path(result["tarball_path"]).parent
+
+        # Decide whether to push remote:
+        # - If push_remote is explicitly True/False, honor it.
+        # - Otherwise, push iff a backup repo is configured.
+        if push_remote is None:
+            push_remote = bool(get_backup_repo())
+
+        if push_remote:
+            push_result = push_snapshot(snapshot_dir)
+            result["remote"] = push_result
+            # Mirror the local retention on the remote.
+            if push_result.get("status") == "ok":
+                prune_result = prune_remote_snapshots()
+                result["remote_pruned"] = prune_result.get("pruned", [])
+            # Write last_run.json for the health check (regardless of
+            # whether the push succeeded — failure-state visibility
+            # is exactly the point).
+            write_last_run({
+                "ts":          result["snapshot_id"].replace("snap-", "").rstrip("-manual"),
+                "snapshot_id": result["snapshot_id"],
+                "manual":      manual,
+                "status":      "ok" if push_result.get("status") == "ok" else "error",
+                "error":       push_result.get("error") if push_result.get("status") != "ok" else None,
+                "remote":      push_result,
+            })
+        else:
+            # Local-only run: still write last_run.json so the health
+            # check can show "local-only mode" rather than "no backups".
+            write_last_run({
+                "ts":          result["snapshot_id"].replace("snap-", "").rstrip("-manual"),
+                "snapshot_id": result["snapshot_id"],
+                "manual":      manual,
+                "status":      "ok",
+                "remote":      {"status": "unconfigured"},
+            })
+        return result
+
+    def _data_restore(snapshot_id: str, from_remote: bool = False, force: bool = False):
+        from work_buddy.backups.restore import restore
+        return restore(snapshot_id, from_remote=from_remote, force=force)
+
+    def _data_backup_list(include_remote: bool = False):
+        from work_buddy.backups.local import list_snapshots
+        from work_buddy.backups.remote import list_remote_snapshots
+        local = list_snapshots()
+        # Strip Manifest dataclass to a serializable form
+        local_serializable = []
+        for s in local:
+            mf = s.get("manifest")
+            local_serializable.append({
+                **{k: v for k, v in s.items() if k != "manifest"},
+                "manifest": (
+                    {
+                        "snapshot_ts": mf.snapshot_ts,
+                        "work_buddy_commit": mf.work_buddy_commit,
+                        "schema_versions": mf.schema_versions,
+                    } if mf else None
+                ),
+            })
+        out = {"local": local_serializable}
+        if include_remote:
+            out["remote"] = list_remote_snapshots()
+        return out
+
+    return [
+        Capability(
+            name="data_backup",
+            description=(
+                "Take a snapshot of work-buddy's vital SQLite DBs "
+                "(task_metadata, projects, messages, threads). Hot-backup, "
+                "tar+gzip, write manifest, optionally push to GitHub "
+                "Releases. Called by the hourly sidecar cron AND by the "
+                "user via /wb-backup-now."
+            ),
+            category="backups",
+            parameters={
+                "manual": {
+                    "type": "bool",
+                    "description": (
+                        "Tag the snapshot as user-triggered (suffix "
+                        "'-manual'; separate retention bucket; default "
+                        "False = cron-driven."
+                    ),
+                    "required": False,
+                },
+                "push_remote": {
+                    "type": "bool",
+                    "description": (
+                        "Override auto-detection of remote push. None "
+                        "(default) means push iff backups.github.repo "
+                        "is configured."
+                    ),
+                    "required": False,
+                },
+            },
+            callable=_data_backup,
+            mutates_state=True,
+            search_aliases=[
+                "backup work-buddy data",
+                "snapshot vital DBs",
+                "push backup to github",
+            ],
+        ),
+        Capability(
+            name="data_restore",
+            description=(
+                "Restore work-buddy's vital SQLite DBs from a snapshot. "
+                "Validates the manifest (refuses if the snapshot's commit "
+                "or schema is newer than the running code), unpacks to "
+                "staging, runs migrations forward, verifies integrity, "
+                "then atomically swaps into place (the old DBs are moved "
+                "to .data/db.pre_restore_<ts>/ for safety)."
+            ),
+            category="backups",
+            parameters={
+                "snapshot_id": {
+                    "type": "str",
+                    "description": (
+                        "Snapshot ID (e.g. 'snap-2026-05-11T14-23-00Z') "
+                        "or, if from_remote=True, a GitHub release tag."
+                    ),
+                    "required": True,
+                },
+                "from_remote": {
+                    "type": "bool",
+                    "description": (
+                        "If True, download the tarball from GitHub "
+                        "Releases first (via `gh release download`). "
+                        "Default False (local-only)."
+                    ),
+                    "required": False,
+                },
+                "force": {
+                    "type": "bool",
+                    "description": (
+                        "Override safety checks (newer-schema, newer-"
+                        "commit). Use sparingly — these checks exist to "
+                        "prevent silent corruption."
+                    ),
+                    "required": False,
+                },
+            },
+            callable=_data_restore,
+            mutates_state=True,
+            search_aliases=[
+                "restore work-buddy data",
+                "restore from snapshot",
+                "recover from backup",
+                "time travel",
+            ],
+        ),
+        Capability(
+            name="data_backup_list",
+            description=(
+                "List local snapshots (and optionally remote ones). Each "
+                "entry includes snapshot_id, timestamp, size, manual flag, "
+                "and the manifest summary (commit + schema versions)."
+            ),
+            category="backups",
+            parameters={
+                "include_remote": {
+                    "type": "bool",
+                    "description": (
+                        "Also list snapshots on the configured GitHub "
+                        "Releases repo. Default False (local-only)."
+                    ),
+                    "required": False,
+                },
+            },
+            callable=_data_backup_list,
+            mutates_state=False,
+            search_aliases=[
+                "list backups",
+                "available snapshots",
+                "what backups exist",
             ],
         ),
     ]

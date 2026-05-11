@@ -195,13 +195,27 @@ class TestStoreTagRoundtrip:
         by_tag = {r["tag"]: r["is_namespace"] for r in rows}
         assert by_tag == {"paper/ecg": 1, "todo": 0, "admin": 0}
 
-    def test_set_tags_replaces_existing(self, _isolated_store):
+    def test_set_tags_is_additive_with_no_delete(self, _isolated_store):
+        """``set_task_tags`` is diff-and-update: INSERT new rows,
+        UPDATE ``is_namespace`` where classification changed, NEVER
+        delete. Tags absent from the target set are preserved.
+
+        The cache truth follows from union-of-target-sets, not
+        last-target-wins. Trade-off is intentional — see the
+        function's docstring for the safety rationale (the older
+        ``DELETE FROM task_tags WHERE task_id = ?`` exposed the same
+        wide-fanout-delete vector class that motivated the broader
+        soft-delete redesign). Stale-tag accumulation is bounded by
+        tag-vocabulary churn, which is slow.
+        """
         store.create(task_id="t-abc", state="inbox")
         store.set_task_tags("t-abc", [("first", True)])
         store.set_task_tags("t-abc", [("second", True)])
 
         rows = store.get_task_tags("t-abc")
-        assert [r["tag"] for r in rows] == ["second"]
+        # Both survive — "first" was in the first target only, but
+        # diff-and-update leaves it in place.
+        assert {r["tag"] for r in rows} == {"first", "second"}
 
     def test_tasks_with_tag_prefix_match(self, _isolated_store):
         for tid in ("t-a", "t-b", "t-c"):

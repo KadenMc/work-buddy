@@ -45,11 +45,16 @@ def test_fresh_db_has_description_column(isolated_store: Path) -> None:
 def test_legacy_pre_slice_3_db_gets_description_via_migrate(
     isolated_store: Path,
 ) -> None:
-    """A pre-Slice-3 DB (Slice 2 columns but no description) must get
-    the description column via _migrate_schema on next get_connection."""
+    """A v2-schema DB must roll forward and pick up the description
+    column on next get_connection().
+
+    Stamps user_version=2 explicitly so the migration runner knows
+    where to start. Without the stamp, baseline-detect assumes
+    fully-migrated (correct for real production legacy DBs, wrong
+    for this partial-schema simulation)."""
     import sqlite3
     conn = sqlite3.connect(str(isolated_store))
-    # Hand-craft a Slice-2 table without `description`.
+    # Hand-craft a v2 table without `description`.
     conn.executescript("""
         CREATE TABLE task_metadata (
             task_id TEXT PRIMARY KEY,
@@ -76,6 +81,7 @@ def test_legacy_pre_slice_3_db_gets_description_via_migrate(
             has_dependency INTEGER NOT NULL DEFAULT 0,
             dependency_hint TEXT
         );
+        PRAGMA user_version = 2;
     """)
     conn.execute(
         """INSERT INTO task_metadata

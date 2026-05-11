@@ -818,6 +818,32 @@ def api_tasks():
     return jsonify(get_tasks_summary())
 
 
+@app.post("/api/task_sync")
+def api_task_sync():
+    """Trigger a task_sync run from the dashboard's Sync button.
+
+    The user's click is the consent boundary — wrap the underlying
+    capability invocation in ``user_initiated('dashboard.task_sync')``
+    so any nested ``@requires_consent`` gates inside ``task_sync`` /
+    its mutations pass through without re-prompting.
+    """
+    blocked = _reject_read_only()
+    if blocked:
+        return blocked
+    try:
+        from work_buddy.consent import user_initiated
+        from work_buddy.obsidian.tasks.sync import task_sync
+    except Exception as exc:
+        return jsonify({"ok": False, "error": f"import failed: {exc}"}), 500
+    try:
+        with user_initiated("dashboard.task_sync"):
+            result = task_sync()
+        return jsonify({"ok": True, "result": result})
+    except Exception as exc:
+        logger.exception("api_task_sync: task_sync failed")
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
 @app.get("/api/tasks/search")
 def api_tasks_search():
     """Search tasks by text.

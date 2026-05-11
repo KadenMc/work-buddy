@@ -30,10 +30,29 @@ from work_buddy.config import load_config
 from work_buddy.logging_config import get_logger
 from work_buddy.obsidian.tasks import store
 from work_buddy.obsidian.tasks.mutations import (
+    DONE_DATE_RE,
+    DUE_DATE_RE,
     MASTER_TASK_FILE,
     TASK_ID_RE,
+    URGENCY_EMOJI_RE,
     extract_description_from_line,
 )
+
+
+# Plugin-emoji → SQLite-column mapping.
+#
+# The Obsidian Tasks plugin owns the markdown emoji syntax; the
+# task_metadata schema has the matching columns but the parser used to
+# ignore them, leaving the bridge half-built. Mapping each glyph to a
+# canonical urgency level lets task_sync drift-reconcile in both
+# directions (📅 file → deadline_date, ⏫🔼🔽 file → urgency, ✅ file →
+# completed_at). Adding a new priority emoji means updating this map +
+# the URGENCY_EMOJI_RE in mutations.py.
+_URGENCY_EMOJI_TO_LEVEL = {
+    "⏫": "high",
+    "🔼": "medium",
+    "🔽": "low",
+}
 
 # Matches the task-note wikilink embedded in a task line, e.g. [[<uuid>|📓]].
 # The 📓 alias keeps this distinct from ordinary wikilinks on the same line.
@@ -207,6 +226,19 @@ def _parse_file_tasks(content: str) -> dict[str, dict[str, Any]]:
     """Parse task lines from the master list into {task_id: info} dict.
 
     Only includes lines that have a 🆔 identifier.
+
+    Extracted fields:
+
+    - ``is_done`` / ``note_uuid`` / ``raw_tags`` / ``description`` — the
+      pre-Slice-N basics; the reconciliation loop has always tracked these.
+    - ``deadline_date`` — ISO date from ``📅 YYYY-MM-DD`` (or ``None``).
+    - ``urgency`` — ``"high"`` / ``"medium"`` / ``"low"`` from
+      ``⏫`` / ``🔼`` / ``🔽`` (or ``None`` when no urgency emoji is present).
+    - ``completed_at`` — ISO date from ``✅ YYYY-MM-DD`` (or ``None``).
+
+    Emoji extraction here mirrors the columns the store carries for
+    deadline / urgency / completed_at. The drift loops in ``task_sync``
+    reconcile these parsed values into the canonical SQLite columns.
     """
     tasks: dict[str, dict[str, Any]] = {}
 
@@ -228,6 +260,26 @@ def _parse_file_tasks(content: str) -> dict[str, dict[str, Any]]:
         raw_tags = extract_tags_from_line(line_stripped)
         description = extract_description_from_line(line_stripped)
 
+        # Plugin-emoji extraction. Each match yields just the date or the
+        # glyph; we strip the leading emoji + whitespace so the column
+        # stores the bare ISO date or canonical urgency level.
+        due_match = DUE_DATE_RE.search(line_stripped)
+        deadline_date = (
+            due_match.group().replace("📅", "").strip() if due_match else None
+        )
+
+        done_match = DONE_DATE_RE.search(line_stripped)
+        completed_at = (
+            done_match.group().replace("✅", "").strip() if done_match else None
+        )
+
+        urgency_match = URGENCY_EMOJI_RE.search(line_stripped)
+        urgency = (
+            _URGENCY_EMOJI_TO_LEVEL.get(urgency_match.group())
+            if urgency_match
+            else None
+        )
+
         tasks[task_id] = {
             "line_number": i + 1,
             "is_done": is_done,
@@ -235,6 +287,9 @@ def _parse_file_tasks(content: str) -> dict[str, dict[str, Any]]:
             "note_uuid": note_uuid,
             "raw_tags": raw_tags,
             "description": description,
+            "deadline_date": deadline_date,
+            "urgency": urgency,
+            "completed_at": completed_at,
         }
 
     return tasks
@@ -316,36 +371,73 @@ def task_sync() -> dict[str, Any]:
     for task_id in orphan_in_file:
         info = file_tasks[task_id]
         initial_state = "done" if info["is_done"] else "inbox"
+        # Carry forward whatever emoji metadata the line already
+        # encodes. Urgency falls back to "medium" only when no priority
+        # emoji is present — previously this was hardcoded regardless
+        # of what the file said, which broke drift detection for any
+        # legacy line that already carried a 🔼/⏫/🔽.
+        initial_urgency = info.get("urgency") or "medium"
+        deadline_date = info.get("deadline_date")
         try:
             store.create(
                 task_id=task_id,
                 state=initial_state,
-                urgency="medium",
+                urgency=initial_urgency,
                 note_uuid=info.get("note_uuid"),
                 description=info.get("description") or None,
+                has_deadline=bool(deadline_date),
+                deadline_date=deadline_date,
             )
+            # ``completed_at`` is not a column on ``store.create``'s
+            # signature (it's normally stamped by state-transition
+            # logic). For lines that arrive already-done with a ✅
+            # date, we backfill it via a post-create update below so
+            # the drift loops only have to handle the existing-tasks
+            # case.
+            if initial_state == "done" and info.get("completed_at"):
+                try:
+                    store.update(
+                        task_id,
+                        completed_at=info["completed_at"],
+                        reason="task_sync: completed_at backfilled at create from ✅ date",
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "task_sync: failed to backfill completed_at for %s: %s",
+                        task_id, exc,
+                    )
             created.append(task_id)
             logger.info(
-                "task_sync: created store record for %s (state=%s, line=%d, note_uuid=%s)",
-                task_id, initial_state, info["line_number"], info.get("note_uuid"),
+                "task_sync: created store record for %s "
+                "(state=%s, urgency=%s, line=%d, note_uuid=%s)",
+                task_id, initial_state, initial_urgency,
+                info["line_number"], info.get("note_uuid"),
             )
         except Exception as exc:
             logger.warning("task_sync: failed to create store for %s: %s", task_id, exc)
 
-    # 2. In store but not in file → tombstone-delete from store
-    #    The file is the source of truth: if it's gone from the file, it's gone.
+    # 2. In store but not in file → soft-delete from store.
+    #    The file is the source of truth: if it's gone from the file,
+    #    flag the store row as deleted. This is a safe operation —
+    #    ``store.delete()`` sets ``deleted_at`` rather than removing
+    #    the row, so recovery is a single ``store.restore(task_id)``
+    #    away. Cascading FKs do not fire on this path since nothing is
+    #    actually DROPPED.
     deleted_from_store: list[str] = []
     for task_id in store_ids - file_ids:
         record = store_by_id[task_id]
         try:
-            store.delete(task_id)
-            deleted_from_store.append(task_id)
-            logger.info(
-                "task_sync: tombstone-deleted orphan %s (was state=%s)",
-                task_id, record["state"],
-            )
+            if store.delete(task_id):
+                deleted_from_store.append(task_id)
+                logger.info(
+                    "task_sync: soft-deleted orphan-in-store %s (was state=%s)",
+                    task_id, record["state"],
+                )
         except Exception as exc:
-            logger.warning("task_sync: failed to delete orphan %s: %s", task_id, exc)
+            logger.warning(
+                "task_sync: failed to soft-delete orphan %s: %s",
+                task_id, exc,
+            )
 
     # 3. Checkbox state mismatches → update store to match file
     resolved_mismatches: list[dict[str, Any]] = []
@@ -457,6 +549,126 @@ def task_sync() -> dict[str, Any]:
                     task_id, exc,
                 )
 
+    # 6. urgency drift (file emoji → store column).
+    #
+    #    The Obsidian Tasks plugin owns the markdown urgency emoji
+    #    (⏫ / 🔼 / 🔽). The store's ``urgency`` column has existed
+    #    forever but the parser used to ignore the emoji — every
+    #    auto-created row landed with the hardcoded default ``medium``.
+    #    Now we propagate the file value when present.
+    #
+    #    Same non-null discipline as ``note_uuid`` and ``description``:
+    #    a missing emoji does NOT clear the store's value. A user can
+    #    intentionally set urgency via ``task_update`` and not bother
+    #    writing the emoji on the line — clearing on missing-emoji
+    #    would silently undo that.
+    resolved_urgencies: list[dict[str, Any]] = []
+    for task_id in file_ids & store_ids:
+        file_info = file_tasks[task_id]
+        store_record = store_by_id[task_id]
+
+        file_urgency = file_info.get("urgency")
+        store_urgency = store_record.get("urgency")
+
+        if file_urgency and file_urgency != store_urgency:
+            try:
+                store.update(
+                    task_id,
+                    urgency=file_urgency,
+                    reason="task_sync: urgency drift from file",
+                )
+                resolved_urgencies.append({
+                    "task_id": task_id,
+                    "old_urgency": store_urgency,
+                    "new_urgency": file_urgency,
+                    "line_number": file_info["line_number"],
+                })
+                logger.info(
+                    "task_sync: reconciled urgency %s — store %s -> %s (line %d)",
+                    task_id, store_urgency, file_urgency,
+                    file_info["line_number"],
+                )
+            except Exception as exc:
+                logger.warning(
+                    "task_sync: failed to reconcile urgency %s: %s", task_id, exc,
+                )
+
+    # 7. deadline_date drift (📅 in file → deadline_date column).
+    #
+    #    The store's ``has_deadline`` is a bool tied to whether
+    #    ``deadline_date`` is set. We move them together: present in
+    #    file → both filled in store; absent in file → no clear (same
+    #    discipline as urgency above).
+    resolved_deadlines: list[dict[str, Any]] = []
+    for task_id in file_ids & store_ids:
+        file_info = file_tasks[task_id]
+        store_record = store_by_id[task_id]
+
+        file_deadline = file_info.get("deadline_date")
+        store_deadline = store_record.get("deadline_date")
+
+        if file_deadline and file_deadline != store_deadline:
+            try:
+                store.update(
+                    task_id,
+                    has_deadline=True,
+                    deadline_date=file_deadline,
+                    reason="task_sync: deadline_date drift from file",
+                )
+                resolved_deadlines.append({
+                    "task_id": task_id,
+                    "old_deadline_date": store_deadline,
+                    "new_deadline_date": file_deadline,
+                    "line_number": file_info["line_number"],
+                })
+                logger.info(
+                    "task_sync: reconciled deadline %s — store %s -> %s (line %d)",
+                    task_id, store_deadline, file_deadline,
+                    file_info["line_number"],
+                )
+            except Exception as exc:
+                logger.warning(
+                    "task_sync: failed to reconcile deadline %s: %s", task_id, exc,
+                )
+
+    # 8. completed_at drift (✅ <date> in file → completed_at column).
+    #
+    #    Only meaningful for done tasks — but we don't gate on state
+    #    here because the checkbox-mismatch loop (#3) already wrote
+    #    state='done' upstream this run if the file says so, and the
+    #    state→done auto-stamp uses sync time. Backfilling the actual
+    #    ✅ date corrects that to what the user wrote.
+    resolved_completed_at: list[dict[str, Any]] = []
+    for task_id in file_ids & store_ids:
+        file_info = file_tasks[task_id]
+        store_record = store_by_id[task_id]
+
+        file_completed = file_info.get("completed_at")
+        store_completed = store_record.get("completed_at")
+
+        if file_completed and file_completed != store_completed:
+            try:
+                store.update(
+                    task_id,
+                    completed_at=file_completed,
+                    reason="task_sync: completed_at drift from file ✅ date",
+                )
+                resolved_completed_at.append({
+                    "task_id": task_id,
+                    "old_completed_at": store_completed,
+                    "new_completed_at": file_completed,
+                    "line_number": file_info["line_number"],
+                })
+                logger.info(
+                    "task_sync: reconciled completed_at %s — store %s -> %s (line %d)",
+                    task_id, store_completed, file_completed,
+                    file_info["line_number"],
+                )
+            except Exception as exc:
+                logger.warning(
+                    "task_sync: failed to reconcile completed_at %s: %s", task_id, exc,
+                )
+
     # --- Tag cache rebuild ---
     # Survivors: everything in the file that also has (or now has) a store
     # record. Excludes records just tombstone-deleted.
@@ -468,13 +680,15 @@ def task_sync() -> dict[str, Any]:
         tag_rows_written = 0
 
     # --- Summary ---
-    total_actions = (
-        len(created)
-        + len(deleted_from_store)
-        + len(resolved_mismatches)
+    total_updates = (
+        len(resolved_mismatches)
         + len(resolved_note_uuids)
         + len(resolved_descriptions)
+        + len(resolved_urgencies)
+        + len(resolved_deadlines)
+        + len(resolved_completed_at)
     )
+    total_actions = len(created) + len(deleted_from_store) + total_updates
     status = "ok" if total_actions == 0 else "synced"
 
     result: dict[str, Any] = {
@@ -486,6 +700,9 @@ def task_sync() -> dict[str, Any]:
         "resolved_mismatches": len(resolved_mismatches),
         "resolved_note_uuids": len(resolved_note_uuids),
         "resolved_descriptions": len(resolved_descriptions),
+        "resolved_urgencies": len(resolved_urgencies),
+        "resolved_deadlines": len(resolved_deadlines),
+        "resolved_completed_at": len(resolved_completed_at),
         "tag_rows_written": tag_rows_written,
     }
 
@@ -500,17 +717,37 @@ def task_sync() -> dict[str, Any]:
         result["note_uuid_details"] = resolved_note_uuids
     if resolved_descriptions:
         result["description_details"] = resolved_descriptions
+    if resolved_urgencies:
+        result["urgency_details"] = resolved_urgencies
+    if resolved_deadlines:
+        result["deadline_details"] = resolved_deadlines
+    if resolved_completed_at:
+        result["completed_at_details"] = resolved_completed_at
 
     if total_actions > 0:
         logger.info(
-            "task_sync: %d actions — %d created, %d deleted, "
-            "%d mismatches resolved, %d note_uuids reconciled, "
-            "%d descriptions reconciled",
+            "task_sync: %d actions — %d created, %d deleted, %d mismatches, "
+            "%d note_uuids, %d descriptions, %d urgencies, %d deadlines, "
+            "%d completed_at",
             total_actions, len(created), len(deleted_from_store),
             len(resolved_mismatches), len(resolved_note_uuids),
-            len(resolved_descriptions),
+            len(resolved_descriptions), len(resolved_urgencies),
+            len(resolved_deadlines), len(resolved_completed_at),
         )
     else:
         logger.debug("task_sync: all clean (%d file, %d store)", len(file_ids), len(store_ids))
+
+    # Record this run's completion in the sync-status table so the
+    # dashboard can render "synced Xm ago". Best-effort: a write
+    # failure here must not undo the reconciliation that already
+    # landed above.
+    try:
+        store.set_sync_status(
+            created=len(created),
+            updated=total_updates,
+            deleted=len(deleted_from_store),
+        )
+    except Exception as exc:
+        logger.warning("task_sync: failed to record sync_status: %s", exc)
 
     return result

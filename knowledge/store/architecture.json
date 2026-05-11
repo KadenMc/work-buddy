@@ -11,6 +11,7 @@
     ],
     "children": [
       "architecture/artifact-system",
+      "architecture/backups",
       "architecture/context-pipeline",
       "architecture/contracts",
       "architecture/control-graph",
@@ -22,6 +23,7 @@
       "architecture/llm-runner",
       "architecture/llm-with-tools",
       "architecture/mcp-import-discipline",
+      "architecture/migrations",
       "architecture/repo-structure",
       "architecture/retry-queue",
       "architecture/workflows"
@@ -52,7 +54,7 @@
     ],
     "content": {
       "summary": "work_buddy/ = Python package. knowledge/store/ = workflow definitions + agent docs. agents/ = per-session (gitignored). .claude/commands/ = slash commands.",
-      "full": "work_buddy/ = Python package. Key top-level modules: agent_session.py (identity), artifacts.py (centralized store), paths.py (path resolution), tools.py (feature toggles), config.py (config.yaml + config.local.yaml overlay), consent.py (SQLite-backed), workflow.py (DAG engine).\n\nKey packages: knowledge/ (agent docs: query, index, store, editor, vault adapter), dashboard/ (Flask + frontend/ package), health/ (diagnostics engine, checks, components), collectors/ (16 sources), mcp_server/ (gateway + activity_ledger.py), sessions/ (conversation inspector), notifications/ (surfaces: obsidian, telegram, dashboard), messaging/ (inter-agent), memory/ (Hindsight), telegram/ (bot), threads/ (chat system), projects/ (registry + Hindsight observations), triage/ (Chrome tab pipeline), llm/ (API wrappers), chrome_native_host/ (extension host), obsidian/ (bridge, vault_writer, tasks, tags, smart, datacore, ktr, day_planner, vault_events, commands), calendar/, journal_backlog/, web/ (shared HTTP/Flask helpers, e.g. probe-traffic access-log filter).\n\nknowledge/store/ = workflow definitions + agent docs (JSON). contracts/ = live data. sidecar_jobs/ = system scheduled jobs (git-tracked, ship with work-buddy).\n\n<data_root>/ = all generated data (default `.data/`, gitignored; configured via `paths.data_root` in `config.yaml`): agents/ (per-session: consent.db, manifests, logs, ledgers), context/ (bundles), runtime/ (PID, state, tool status, per-service rotated logs), cache/ (LLM, chrome tabs, Claude Code usage DB), chrome/ (ledger), db/ (SQLite: messages, tasks, projects, threads), logs/ (debug logs), commit/ (90d TTL), export/, report/, scratch/ (artifact types with TTL lifecycle), user_jobs/ (user-authored scheduled jobs — personal cron tasks not shared across installs; loaded by the sidecar scheduler alongside system jobs).\n\n.claude/commands/ = 34 slash commands (thin launchers loading from knowledge store)."
+      "full": "work_buddy/ = Python package. Key top-level modules: agent_session.py (identity), artifacts.py (centralized store), paths.py (path resolution), tools.py (feature toggles), config.py (config.yaml + config.local.yaml overlay), consent.py (SQLite-backed), workflow.py (DAG engine).\n\nKey packages: knowledge/ (agent docs: query, index, store, editor, vault adapter), dashboard/ (Flask + frontend/ package), health/ (diagnostics engine, checks, components), collectors/ (16 sources), mcp_server/ (gateway + activity_ledger.py), sessions/ (conversation inspector), notifications/ (surfaces: obsidian, telegram, dashboard), messaging/ (inter-agent), memory/ (Hindsight), telegram/ (bot), threads/ (chat system), projects/ (registry + Hindsight observations), triage/ (Chrome tab pipeline), llm/ (API wrappers), chrome_native_host/ (extension host), obsidian/ (bridge, vault_writer, tasks, tags, smart, datacore, ktr, day_planner, vault_events, commands), calendar/, journal_backlog/, web/ (shared HTTP/Flask helpers), backups/ (vital-DB hot-backup, manifest, gh-CLI remote push, restore pipeline -- see architecture/backups), storage/ (cross-package storage infrastructure: MigrationRunner schema-version ladder -- see architecture/migrations), control/ (control-graph aggregator).\n\nknowledge/store/ = workflow definitions + agent docs (JSON). contracts/ = live data. sidecar_jobs/ = system scheduled jobs (git-tracked, ship with work-buddy).\n\n<data_root>/ = all generated data (default `.data/`, gitignored; configured via `paths.data_root` in `config.yaml`): agents/ (per-session: consent.db, manifests, logs, ledgers), context/ (bundles), runtime/ (PID, state, tool status, per-service rotated logs), cache/ (LLM, chrome tabs, Claude Code usage DB), chrome/ (ledger), db/ (SQLite: messages, tasks, projects, threads -- the four vital DBs backed up by architecture/backups), logs/ (debug logs), commit/ (90d TTL), export/, report/, scratch/ (artifact types with TTL lifecycle), user_jobs/ (user-authored scheduled jobs -- personal cron tasks not shared across installs), backups/ (local snapshot tarballs + last_run.json health-check sentinel).\n\n.claude/commands/ = slash commands (thin launchers loading from knowledge store)."
     }
   },
   "architecture/workflows": {
@@ -741,5 +743,126 @@
     "entry_points": [
       "work_buddy.health.fixers"
     ]
+  },
+  "architecture/backups": {
+    "kind": "concept",
+    "name": "Data Backups",
+    "description": "Off-machine snapshot + restore system for work-buddy's vital SQLite databases. Hot-backup -> tarball -> manifest -> GitHub Releases. Tiered retention, gh-CLI driven, integrates with the health Component system.",
+    "content": {
+      "full": "Off-machine snapshot + restore for work-buddy's vital SQLite databases. Built on SQLite's hot-backup API, tarballed with a structured manifest, pushed to a user-owned private GitHub Releases bucket, and recoverable on a fresh-installed machine through a schema-aware restore pipeline.\n\nLives in `work_buddy/backups/`. The system has four moving parts (local snapshot, manifest, remote push, restore) plus a health-Component for setup and observability.\n\n## Why it exists\n\nThe task store is the single source of truth for everything work-buddy knows about the user's work -- claims, archives, action items, tags, state history. A single bug that issues a wide-fanout `DELETE` against it (or a corrupted disk, or a fat-fingered `rm -rf .data/`) would be catastrophic and not recoverable from any other system surface. The backup system + the soft-delete discipline (see `tasks/task_delete`) are two halves of the same safety net: soft-delete prevents accidental destruction of *individual* rows; backups protect against *categorical* loss of the whole store.\n\nVital DBs that get backed up (declared in `work_buddy/backups/local.py` as `VITAL_DBS`):\n\n| Logical name | On-disk file | Owner |\n|---|---|---|\n| `tasks` | `.data/db/tasks/task_metadata.db` | `obsidian/tasks-plugin` |\n| `projects` | `.data/db/projects.db` | `projects/` |\n| `messages` | `.data/db/messages.db` | `messaging/` |\n| `threads` | `.data/db/threads.db` | `threads/` |\n\nThe logical name is what appears in the manifest and the snapshot tag; the on-disk filename is preserved inside the tarball so restore can reconstruct the directory layout.\n\n## Snapshot pipeline (`work_buddy/backups/local.py`)\n\n1. For each vital DB, open it and call `sqlite3.Connection.backup(dest)`. This is SQLite's hot-backup API -- a page-by-page logical copy under the lock protocol that does not block writers and is WAL-coherent. Output: `.data/backups/<snapshot_id>/<dbname>.db`.\n2. Write `MANIFEST.json` alongside.\n3. Tar+gzip the directory via Python's `tarfile` stdlib (cross-platform, no shell-out).\n4. Sweep retention (see Retention).\n5. If `backups.github.repo` is configured and `gh` is authenticated, push to GitHub Releases (see Remote push).\n6. Write `.data/backups/last_run.json` recording success/fail + duration + sizes. Health checks read this file -- they never hit GitHub on the hot path.\n\nSnapshot IDs are ISO-timestamped: `snap-<utc-isoformat>`. Manual snapshots (triggered via `/wb-backup-now` or `data_backup(manual=True)`) get a `-manual` suffix and live in their own retention bucket.\n\n## Manifest format (`work_buddy/backups/manifest.py`)\n\nKeys:\n- `snapshot_ts` -- ISO UTC timestamp of the snapshot.\n- `work_buddy_version`, `work_buddy_commit`, `work_buddy_branch`, `work_buddy_dirty` -- code provenance at snapshot time. `work_buddy_dirty=True` flags an uncommitted working tree as an audit signal; does not block restore.\n- `host` -- hostname of the snapshotting machine.\n- `schema_versions` -- map of logical DB name -> `PRAGMA user_version` at snapshot time. Restore uses this to refuse forward-time travel and to drive forward-migration.\n- `row_counts` -- map of table -> row count at snapshot time. Restore validates post-migration counts against this, with tolerance for migration-added rows.\n- `manifest_version` -- integer; future-proofs the manifest format itself. Restore checks it and refuses unknown values.\n\n## Retention (tiered, per-tier capped)\n\nSweep runs after every snapshot. Mirrors locally and remotely (the remote push uses `gh release delete` for out-of-bucket snapshots).\n\n| Tier | Cadence | Cap |\n|---|---|---|\n| Hourly | every hour | 24 |\n| Daily  | one per day | 7 |\n| Weekly | one per ISO week | 4 |\n| Monthly | one per calendar month | 12 |\n| Annual | one per calendar year | unbounded |\n| Manual | user-triggered | 20 (independent bucket) |\n\nSteady-state local footprint at ~3 MB compressed per snapshot is ~156 MB across the ~52 retained slots. Manual snapshots are deliberately a small bucket -- they are *anchor points* a user takes before something risky, not archival.\n\nConfigured in `config.local.yaml` under `backups.github.retention.*`.\n\n## Remote push (`work_buddy/backups/remote.py`)\n\nThe remote target is a *user-owned private GitHub repository*. Snapshots are uploaded as GitHub Release assets, one release per snapshot, tagged with the snapshot ID. We subprocess the `gh` CLI rather than embed PyGithub because:\n\n- The user's existing GitHub credentials are managed by `gh`; we never touch a PAT.\n- `gh release create <tag> <files>` is one-shot, idempotent on retry, and supports private repos natively.\n- The `gh release list --json` query lets the restore pipeline enumerate remote snapshots without a Python GitHub client.\n\nNo encryption layer. A private GitHub repo is the same trust model as the user's other private code repositories -- the threat model is account compromise, not in-transit interception. Adding GPG encryption would buy nothing and add a key-management failure mode.\n\nFresh-repo gotcha: the first push to an empty repo errors with `Repository is empty`. The `fix_backup_repo_configured` fixer creates the repo with `gh repo create --private --add-readme` to seed the default branch.\n\n## Restore pipeline (`work_buddy/backups/restore.py`)\n\n`data_restore(snapshot_id)` (capability) executes:\n\n1. Download `<tag>.tar.gz` from GitHub Releases into a staging directory.\n2. Read `MANIFEST.json` and validate: `manifest_version` is recognized; for each DB, snapshot's `schema_versions[db]` <= code's max migration (forward-time-travel guard).\n3. Unpack into `.data/db.staging_<ts>/`.\n4. Open each staged DB through `MigrationRunner.run()` (see `architecture/migrations`) -- the ladder rolls the staged schema forward to current.\n5. `PRAGMA integrity_check` + `PRAGMA foreign_key_check` per DB. Refuse on either failure.\n6. Verify post-migration row counts match the manifest, with tolerance for migration-added rows.\n7. Move current `.data/db/` to `.data/db.pre_restore_<ts>/` (auto-rollback safety net).\n8. Move staging into place.\n\nSteps 3-7 are reversible -- staging gets discarded on any failure and the live DB is never touched until step 8.\n\n## Health system integration\n\nRegistered as a non-core opt-in Component `github_backups` (see `architecture/health`). Three Requirements with their own Fixers:\n\n| Requirement | Fix kind | Fixer behaviour |\n|---|---|---|\n| `gh-cli-installed` | `agent_handoff` | Spawns a Claude Code session that walks the user through OS-appropriate install. |\n| `gh-authenticated` | `agent_handoff` | Walks through `gh auth login --web`. |\n| `repo-configured` | `input_required` | Form for repo name, calls `gh repo create --private --add-readme` if absent, writes `backups.github.repo` to `config.local.yaml`. |\n\nThe Component declares one custom check (`check_github_backup_freshness`) that reads `.data/backups/last_run.json` and returns success/warning/failure based on whether the last snapshot landed inside the configured cadence window. It never polls GitHub directly.\n\nA `domain:backups` entry in `work_buddy/control/graph_static.py` makes the Component surface in the Settings tab's domain list. No frontend work beyond adding `\"domain:backups\"` to `domainOrder` -- the card auto-renders from the control graph (see `architecture/control-graph`).\n\n## Cron + slash commands\n\n- `sidecar_jobs/data-backup.md` -- hourly cron, calls `data_backup` capability. Skips silently if the Component is unwanted or its Requirements are unmet.\n- `/wb-backup-now` -- manual one-off snapshot. Used as an anchor point before a risky operation.\n- `/wb-backup-restore [snapshot-id]` -- list remote snapshots or restore a specified one.\n\nThere are no `/wb-backup-setup`, `/wb-backup-status`, or `/wb-backup-config` slash commands by design -- those surface via the Settings tab's auto-rendered card. The slash-command surface is reserved for the two recurring user-initiated operations (snapshot now, restore).\n\n## Capabilities (registered in `work_buddy/mcp_server/registry.py`)\n\n- `data_backup(manual: bool = False)` -- take a snapshot, push to remote.\n- `data_backup_list()` -- list local + remote snapshots with sizes and timestamps.\n- `data_restore(snapshot_id: str, force: bool = False)` -- restore from a given snapshot.\n\n## See also\n\n- `architecture/migrations` -- the MigrationRunner schema-version ladder that restore depends on for forward-rolling a staged DB.\n- `architecture/health`, `architecture/control-graph` -- how the Component and its Requirements surface in Settings.\n- `tasks/task_delete` -- the soft-delete safety pattern that complements off-machine backups."
+    },
+    "tags": [
+      "backups",
+      "snapshot",
+      "restore",
+      "sqlite",
+      "github-releases",
+      "retention",
+      "manifest",
+      "disaster-recovery",
+      "data-safety"
+    ],
+    "aliases": [
+      "data backup",
+      "backup system",
+      "restore pipeline",
+      "github releases backup",
+      "snapshot retention",
+      "manifest format",
+      "disaster recovery",
+      "data-backup",
+      "data-restore"
+    ],
+    "parents": [
+      "architecture"
+    ],
+    "dev_notes": "Centerpiece of the backups documentation cluster. Pairs with architecture/migrations (separate concern, used beyond restore). VITAL_DBS table is the single source of truth for which DBs are backed up; if a new vital DB is added (e.g. consent.db, conversations.db) this is the unit that needs the table updated. File pointers for each subsystem live next to the code in the relevant modules; this unit deliberately does not duplicate that file map -- search `work_buddy/backups/` and `work_buddy/health/` to discover.",
+    "children": [
+      "architecture/backups/wb-backup-now-directions",
+      "architecture/backups/wb-backup-restore-directions"
+    ]
+  },
+  "architecture/migrations": {
+    "kind": "concept",
+    "name": "Schema Migration Ladder",
+    "description": "Per-DB versioned SQLite migration runner: PRAGMA user_version as authority, _migration_history for audit, hash check against edited migrations, downgrade guard, transaction-wrapped apply, baseline-stamp for adopting on legacy DBs.",
+    "content": {
+      "full": "Per-DB versioned migration framework built on `PRAGMA user_version` plus a `_migration_history` audit table. Lives in `work_buddy/storage/migrations.py`. Used by every vital DB store module and by the `data_restore` pipeline to forward-roll a staged snapshot to current schema.\n\n## Why we wrote our own\n\nThe canonical alternative was sqlite-migrate. Rejected: it provides no transaction wrapping, no race lock, no PRAGMA handling, no hash check, and no downgrade guard, and is self-described as alpha. Every safety item would have to be added on top with no advantage over a small in-tree implementation. ~250 LOC is the right size; a vendored dep would mean owning all the same code plus a third-party surface.\n\nLarger tools (Alembic, Flyway, Goose, yoyo-migrations, Liquibase) are correct in shape but oversized for SQLite-only single-process work-buddy. We adopted their *invariants* without their machinery -- the safety rules below are what survives the down-scoping.\n\n## Per-DB ladder shape\n\nEach store module declares an ordered list of migration callables and constructs a `MigrationRunner`:\n\n```python\nTASK_MIGRATIONS = MigrationRunner(\"tasks\", migrations=[\n    (1, \"initial schema\",                     _m001_initial),\n    (2, \"GTD vocabulary columns\",             _m002_gtd_vocab),\n    (3, \"description column\",                 _m003_description),\n    (4, \"risk profile + tier + actor\",        _m004_risk),\n    (5, \"agent/user required context arrays\", _m005_contexts),\n    (6, \"sync status table\",                  _m006_sync_status),\n    (7, \"action_items table\",                 _m007_action_items),\n    (8, \"soft-delete deleted_at\",             _m008_soft_delete),\n    (9, \"drop ON DELETE CASCADE\",             _m009_drop_cascade),\n])\n```\n\nThe tasks ladder lives in `work_buddy/obsidian/tasks/migrations.py`. Each migration callable takes `sqlite3.Connection`, performs idempotent DDL, returns nothing.\n\n## Project invariants\n\nEnforced by code where possible and by reviewer discipline where not:\n\n- **Never edit a shipped migration callable.** The runner hashes each callable's source and checks against `_migration_history` on every open -- a mismatch raises and refuses to proceed.\n- **One logical change per migration step.** Bundles get split.\n- **Migration + version bump are one transaction.** A mid-migration crash that leaves the DB in a state that doesn't match the stamped version is unrecoverable.\n- **Migration 1 = fresh-install schema** -- the \"fresh install = fully migrated install\" invariant. A DB created from migration 1 must arrive at the same schema as a long-lived DB walked through every migration.\n- **`PRAGMA foreign_key_check` returns 0 rows** after every table-rebuild migration. Run inside the transaction, before commit.\n- **Validate data before applying constraint.** For migrations that tighten an invariant (`NOT NULL`, `CHECK`, etc.), scan the data first.\n\n## Runner behaviour\n\nLoad-bearing details in `work_buddy/storage/migrations.py`:\n\n- **`PRAGMA foreign_keys = OFF` outside the transaction.** SQLite treats it as a no-op inside an open transaction -- a documented quirk. Always set before `BEGIN`.\n- **`BEGIN IMMEDIATE` not `BEGIN`.** Acquires a write lock immediately; without it, two concurrent openers can both read the same `user_version` and both attempt to apply.\n- **`PRAGMA user_version` is authoritative.** 32-bit integer in the SQLite header, transactional with the DDL, no table scan. `_migration_history` is for audit and hash checks only -- never queried for version.\n- **Table-rebuild migrations follow the 12-step pattern** from SQLite's ALTER TABLE docs: create new table, copy data, recreate indexes/triggers/views, `PRAGMA foreign_key_check`, drop old, rename new. Used for column drops on SQLite <3.35, renames, and FK changes (`_m009_drop_cascade` is the canonical in-tree example).\n- **Per-migration transaction** wraps the callable + the `INSERT INTO _migration_history` + the `PRAGMA user_version = N` bump. Mid-migration crash rolls back atomically.\n\n## Baseline-detect (adopting the framework on legacy DBs)\n\nWhen the runner opens a DB with `PRAGMA user_version = 0` and tables that already exist, the heuristic is: \"this is a real production DB that was running the latest informal schema before the framework existed -- adopt it as fully-migrated.\" The runner stamps `user_version = target` without re-running migrations, and writes a `_migration_history` row marked as baseline-adoption.\n\nThis is correct for production. It is *wrong* for tests that hand-craft a partial-schema DB to exercise a specific migration -- those tests must explicitly `PRAGMA user_version = N` to tell the runner where to start.\n\n## Integration with restore\n\nThe `data_restore` pipeline (see `architecture/backups`) opens each staged snapshot DB through the same `MigrationRunner.run()`. The manifest's `schema_versions[db]` becomes the source of truth for refusing forward-time travel -- restore refuses any snapshot whose recorded version exceeds the current code's max migration. Older snapshots roll forward through the ladder.\n\n## Status across vital DBs\n\nOnly the `tasks` DB has a built-out ladder. The other three vital DBs (`projects`, `messages`, `threads`) currently sit at `user_version = 0` with no migration list. They pick up the framework by writing migration 1 = fresh-install schema once their schemas need to change.\n\n## See also\n\n- `architecture/backups` -- uses this framework to forward-roll staged DBs during restore.\n- `work_buddy/storage/migrations.py` -- the `MigrationRunner` class.\n- `work_buddy/obsidian/tasks/migrations.py` -- the tasks ladder (canonical reference implementation)."
+    },
+    "tags": [
+      "migrations",
+      "schema",
+      "sqlite",
+      "version",
+      "pragma-user-version",
+      "ddl",
+      "ladder",
+      "data-safety"
+    ],
+    "aliases": [
+      "migration runner",
+      "schema versioning",
+      "user_version",
+      "_migration_history",
+      "MigrationRunner",
+      "schema ladder",
+      "migration framework"
+    ],
+    "parents": [
+      "architecture"
+    ],
+    "dev_notes": "Companion to architecture/backups. Kept separate because the migration ladder is a general-purpose framework used by every vital DB, not just by restore. Project-invariants section is load-bearing -- the rules reviewers should enforce on every new migration step. Test suites carry explicit PRAGMA user_version stamps where they simulate pre-framework legacy state -- see tests/unit/test_task_store_slice_2.py et al."
+  },
+  "architecture/backups/wb-backup-now-directions": {
+    "kind": "directions",
+    "name": "Backup Now Directions",
+    "description": "Take an immediate manual snapshot of work-buddy's vital SQLite databases as an anchor point before a risky operation.",
+    "content": {
+      "full": "Take an immediate manual snapshot of work-buddy's vital SQLite databases. Useful right before doing something risky (a destructive operation, an experimental migration, etc.) so a known-good point-in-time exists to restore to if things go sideways.\n\nManual snapshots get a `-manual` suffix on their snapshot ID and live in a separate retention bucket from the hourly rolling snapshots, so this won't be swept away by routine cron churn (cap: 20 manual snapshots; deliberately small -- anchor points, not archival).\n\nIf `backups.github.repo` is configured AND `gh` is authenticated, the snapshot also pushes to GitHub Releases. Otherwise the snapshot stays local-only and a warning surfaces in the Settings -> Backups card.\n\n## How\n\nCall the capability directly:\n\n    mcp__work-buddy__wb_run(\"data_backup\", {\"manual\": true})\n\nThe response shows the snapshot ID, tarball path, size, and whether the remote push succeeded.\n\n## When to use\n\n- About to run a `mcp_registry_reload` after editing a sensitive capability.\n- About to run `task_archive` or another high-fan-out task-mutating operation.\n- About to swap branches, run a long-running script that writes to the store, or restore an older state.\n- Just want a fresh off-machine copy because it has been a while.\n\nFor automatic protection between manual snapshots, the hourly cron (`sidecar_jobs/data-backup.md`) takes a rolling snapshot every hour. See `architecture/backups` for the full subsystem."
+    },
+    "tags": [
+      "backups",
+      "manual-snapshot",
+      "anchor-point",
+      "slash-command"
+    ],
+    "aliases": [
+      "wb-backup-now",
+      "manual backup",
+      "snapshot now",
+      "anchor snapshot"
+    ],
+    "parents": [
+      "architecture/backups"
+    ],
+    "trigger": "User wants a fresh point-in-time snapshot of the task store and the other vital SQLite databases. Typical anchor points: right before a destructive operation, before swapping branches, before running a long script that writes to the store, or just because it's been a while.",
+    "command": "wb-backup-now"
+  },
+  "architecture/backups/wb-backup-restore-directions": {
+    "kind": "directions",
+    "name": "Backup Restore Directions",
+    "description": "Restore work-buddy's vital SQLite databases from a local or remote snapshot, with manifest validation and migration forward-roll.",
+    "content": {
+      "full": "Restore work-buddy's vital SQLite databases from a snapshot. Use for:\n\n- Recovering after a data-loss incident (live DB is corrupt or empty).\n- Onboarding a fresh-installed machine (pull the latest snapshot from GitHub Releases and resume).\n- Time-travel to investigate a past state.\n\nThe pipeline is safe by default:\n\n1. **Validates the snapshot's manifest** -- refuses to restore a snapshot whose work-buddy commit or schema version is newer than the running code (forward-time-travel guard). Use `force=true` only if you understand why this guard exists.\n2. **Unpacks into a staging directory** so the live DB is untouched until step 5.\n3. **Runs the migration ladder forward** on the staging DBs -- a snapshot taken at an older schema version lands at the current code's schema transparently. See `architecture/migrations`.\n4. **Verifies integrity** via `PRAGMA integrity_check` + `PRAGMA foreign_key_check` per DB. Refuses to swap on failure.\n5. **Atomic swap.** The current `.data/db/` is moved to `.data/db.pre_restore_<ts>/` (auto-rollback path), then staging takes its place.\n\n## How\n\nList available snapshots first:\n\n    mcp__work-buddy__wb_run(\"data_backup_list\", {\"include_remote\": true})\n\nThen restore by snapshot ID:\n\n    mcp__work-buddy__wb_run(\"data_restore\", {\"snapshot_id\": \"<snapshot-id>\"})\n\nFor a remote snapshot (downloads via `gh release download` first):\n\n    mcp__work-buddy__wb_run(\"data_restore\", {\n        \"snapshot_id\": \"<snapshot-id>\",\n        \"from_remote\": true\n    })\n\n## Recovery from a wiped machine\n\n1. Clone work-buddy fresh, restore `config.local.yaml`.\n2. Make sure `gh` is installed + authenticated (the `github_backups` Requirements in Settings will guide setup).\n3. `data_backup_list({\"include_remote\": true})` to see remote snapshots.\n4. `data_restore({\"snapshot_id\": \"<latest>\", \"from_remote\": true})`.\n\nTotal downtime: a few minutes once `gh` is set up.\n\n## What gets restored\n\nThe four vital DBs declared in `work_buddy/backups/local.py` as `VITAL_DBS`: `tasks` (full task store -- history, tags, action items, sync status, soft-deleted rows), `projects`, `messages`, `threads`.\n\n**Not restored:** logs, retry queue (transient), notification store, artifacts directory. Reproducible from re-running the sidecar.\n\nSee `architecture/backups` for the full subsystem."
+    },
+    "tags": [
+      "backups",
+      "restore",
+      "disaster-recovery",
+      "fresh-install",
+      "slash-command"
+    ],
+    "aliases": [
+      "wb-backup-restore",
+      "restore backup",
+      "restore snapshot",
+      "disaster recovery",
+      "fresh install restore"
+    ],
+    "parents": [
+      "architecture/backups"
+    ],
+    "trigger": "User wants to restore the task store / projects / messages / threads DBs from a snapshot. Use for recovering after data loss, onboarding a fresh-installed machine, or time-travelling to a past state.",
+    "command": "wb-backup-restore"
   }
 }

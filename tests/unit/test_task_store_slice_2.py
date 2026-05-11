@@ -51,10 +51,16 @@ def test_fresh_db_has_all_slice_2_columns(isolated_store: Path) -> None:
 def test_legacy_db_gets_columns_via_migrate(
     isolated_store: Path, monkeypatch,
 ) -> None:
-    """A pre-Slice-2 DB (no new columns) must get them via _migrate_schema
+    """A v1-schema DB must roll forward through the migration ladder
     on the next get_connection()."""
     import sqlite3
-    # Hand-craft a legacy table with only the pre-Slice-2 columns.
+    # Hand-craft a v1 table with only the original 11 columns AND
+    # explicitly stamp user_version=1 so the migration runner knows
+    # where to start. Without the stamp, the runner's baseline-detect
+    # heuristic treats any existing-tables-with-zero-version DB as
+    # "fully migrated, just adopt the framework" — correct for real
+    # production (legacy DBs always had the latest informal schema)
+    # but wrong for this test's partial-schema simulation.
     conn = sqlite3.connect(str(isolated_store))
     conn.executescript("""
         CREATE TABLE task_metadata (
@@ -70,6 +76,7 @@ def test_legacy_db_gets_columns_via_migrate(
             completed_at TEXT,
             archived_at TEXT
         );
+        PRAGMA user_version = 1;
     """)
     conn.execute(
         """INSERT INTO task_metadata

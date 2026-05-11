@@ -543,3 +543,36 @@ _register(ComponentDef(
         ),
     ],
 ))
+
+_register(ComponentDef(
+    id="github_backups",
+    display_name="GitHub Releases Backup",
+    category="integration",
+    # Optional: users who don't want off-machine backups skip the
+    # requirements entirely via the preference toggle. Local rolling
+    # backups run unconditionally (regardless of this component's
+    # wanted state); the component gates only the remote push to
+    # GitHub Releases.
+    is_core=False,
+    # 'custom' over 'tool_probe' — the freshness check reads a local
+    # JSON file (.data/backups/last_run.json) written by the sidecar
+    # cron, never hits GitHub on the hot path. We don't want the
+    # control graph hammering the GitHub API on every refresh.
+    health_source="custom",
+    requirements=[
+        "integrations/github_backups/gh-cli-installed",
+        "integrations/github_backups/gh-authenticated",
+        "integrations/github_backups/repo-configured",
+    ],
+    check_sequence=[
+        CheckStep(
+            description="Last backup succeeded and is within cadence window",
+            check_fn="work_buddy.health.checks.check_github_backup_freshness",
+            on_fail=(
+                "The last GitHub backup either failed or is overdue. "
+                "Inspect .data/backups/last_run.json for the error detail, "
+                "or run /wb-backup-now to push a snapshot immediately."
+            ),
+        ),
+    ],
+))

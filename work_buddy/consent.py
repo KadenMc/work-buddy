@@ -694,6 +694,7 @@ def requires_consent(
     reason: str,
     risk: str = "moderate",
     default_ttl: int = 5,
+    body_extras: Callable[[], str] | None = None,
 ):
     """Decorator that gates a function on user consent.
 
@@ -716,12 +717,21 @@ def requires_consent(
         reason: Human-readable explanation shown to the user.
         risk: "low", "moderate", or "high" (validated against Risk enum).
         default_ttl: Suggested TTL in minutes for temporary grants.
+        body_extras: Optional no-arg callable returning a string that is
+            appended to the consent prompt body just under the static
+            ``reason`` line. Use to surface dynamic context (e.g. counts,
+            sample titles) that grounds an otherwise abstract approval
+            decision. The callable runs at consent-request time inside a
+            best-effort try/except in the gateway — exceptions are logged
+            and skipped, never blocking the prompt. Must be cheap (single
+            file read, no network); the user is waiting.
     """
     # Register metadata for gateway auto-request lookup
     _CONSENT_REGISTRY[operation] = {
         "reason": reason,
         "risk": risk,
         "default_ttl": default_ttl,
+        "body_extras": body_extras,
     }
 
     # Validate risk at decoration time (fail-fast on typos)

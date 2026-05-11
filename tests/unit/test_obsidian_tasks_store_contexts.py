@@ -49,14 +49,19 @@ def test_fresh_db_has_slice_5a_columns(fresh_db):
 
 
 def test_migration_adds_columns_to_existing_db(tmp_path, monkeypatch):
-    """Simulate a pre-Slice-5a DB and verify the migration adds the columns."""
+    """Simulate a pre-Slice-5a DB and verify the migration adds the columns.
+
+    The DB is stamped at user_version=4 so the migration runner knows
+    to apply m005 (Slice-5a context arrays) and onward. Without the
+    stamp, baseline-detect would assume fully-migrated (correct for
+    real production legacy DBs, wrong for this partial-schema
+    simulation)."""
     import sqlite3
     db = tmp_path / "tasks.sqlite3"
 
-    # Build a stripped-down task_metadata without the Slice-5a columns
-    # but with the columns the existing _SCHEMA's indexes need (state,
-    # contract, archived_at) — those run unconditionally on every
-    # connect via executescript.
+    # Build a stripped-down task_metadata at the v4 schema layer
+    # (post-Slice-4, pre-Slice-5a). The runner will roll forward
+    # from v4 to current.
     legacy = sqlite3.connect(str(db))
     try:
         legacy.execute(
@@ -70,6 +75,7 @@ def test_migration_adds_columns_to_existing_db(tmp_path, monkeypatch):
                 updated_at TEXT NOT NULL
             )"""
         )
+        legacy.execute("PRAGMA user_version = 4")
         legacy.commit()
     finally:
         legacy.close()

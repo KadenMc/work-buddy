@@ -2,10 +2,10 @@
 
 1. Migration creates the table on fresh AND existing DBs.
 2. Create / get / list / update / delete round-trip.
-3. ``approve`` flips user_authored=1 and sets approved_at.
+3. ``approve`` flips ``authorship`` to ``'agent_approved'``.
 4. ``set_current`` updates ``task_metadata.current_action_item_id``.
-5. ``is_executable`` enforces the user_authored OR approved_at rule
-   AND the terminal-state exclusion.
+5. ``is_executable`` enforces the ``authorship``-in-{user, agent_approved}
+   rule AND the terminal-state exclusion.
 6. ``position_in_task`` returns the 1-based step index.
 """
 
@@ -79,13 +79,23 @@ def test_get_returns_inserted_row(fresh_db):
         task_id="t-ai-3",
         description="edit code",
         agent_required_contexts='["@filesystem"]',
-        user_authored=True,
+        authorship="user",
     )
     row = action_items.get(created["id"])
     assert row is not None
     assert row["description"] == "edit code"
     assert row["agent_required_contexts"] == '["@filesystem"]'
-    assert row["user_authored"] == 1
+    assert row["authorship"] == "user"
+
+
+def test_create_invalid_authorship_rejected(fresh_db):
+    store.create(task_id="t-ai-3b")
+    with pytest.raises(ValueError):
+        action_items.create(
+            task_id="t-ai-3b",
+            description="bad",
+            authorship="garbage",
+        )
 
 
 def test_list_for_task_orders_by_sequence(fresh_db):
@@ -121,11 +131,34 @@ def test_update_invalid_state_raises(fresh_db):
         action_items.update(a["id"], state="garbage")
 
 
+def test_update_invalid_authorship_raises(fresh_db):
+    store.create(task_id="t-ai-7b")
+    a = action_items.create(task_id="t-ai-7b", description="x")
+    with pytest.raises(ValueError):
+        action_items.update(a["id"], authorship="not-a-real-value")
+
+
 def test_delete_returns_true_then_false(fresh_db):
     store.create(task_id="t-ai-8")
     a = action_items.create(task_id="t-ai-8", description="x")
     assert action_items.delete(a["id"]) is True
+    # Soft-delete idempotency: second call is a no-op (already deleted_at-set).
     assert action_items.delete(a["id"]) is False
+
+
+def test_restore_undoes_soft_delete(fresh_db):
+    store.create(task_id="t-ai-8b")
+    a = action_items.create(task_id="t-ai-8b", description="x")
+    action_items.delete(a["id"])
+    # Default get() hides soft-deleted rows
+    assert action_items.get(a["id"]) is None
+    # include_deleted=True surfaces it with deleted_at set
+    row = action_items.get(a["id"], include_deleted=True)
+    assert row is not None and row["deleted_at"] is not None
+    # Restore clears the flag
+    assert action_items.restore(a["id"]) is True
+    row = action_items.get(a["id"])
+    assert row is not None and row["deleted_at"] is None
 
 
 def test_create_invalid_state_rejected(fresh_db):
@@ -139,15 +172,16 @@ def test_create_invalid_state_rejected(fresh_db):
 # ---------------------------------------------------------------------------
 
 
-def test_approve_flips_user_authored_and_stamps_approved_at(fresh_db):
+def test_approve_flips_authorship_to_agent_approved(fresh_db):
     store.create(task_id="t-ai-10")
     a = action_items.create(
-        task_id="t-ai-10", description="agent proposed", user_authored=False,
+        task_id="t-ai-10",
+        description="agent proposed",
+        authorship="agent_unapproved",
     )
     action_items.approve(a["id"])
     row = action_items.get(a["id"])
-    assert row["user_authored"] == 1
-    assert row["approved_at"] is not None
+    assert row["authorship"] == "agent_approved"
 
 
 def test_set_current_updates_task_metadata(fresh_db):
@@ -168,35 +202,34 @@ def test_set_current_updates_task_metadata(fresh_db):
 
 
 def test_user_authored_item_is_executable():
-    item = {"user_authored": 1, "approved_at": None, "state": "pending"}
+    item = {"authorship": "user", "state": "pending"}
     assert action_items.is_executable(item) is True
 
 
-def test_agent_proposed_unapproved_is_not_executable():
-    item = {"user_authored": 0, "approved_at": None, "state": "pending"}
+def test_agent_unapproved_is_not_executable():
+    item = {"authorship": "agent_unapproved", "state": "pending"}
     assert action_items.is_executable(item) is False
 
 
-def test_agent_proposed_approved_is_executable():
-    item = {
-        "user_authored": 0,
-        "approved_at": "2026-04-30T12:00:00+00:00",
-        "state": "in_progress",
-    }
+def test_agent_approved_is_executable():
+    item = {"authorship": "agent_approved", "state": "in_progress"}
     assert action_items.is_executable(item) is True
 
 
-def test_done_item_is_not_executable_even_if_approved():
-    item = {
-        "user_authored": 1,
-        "approved_at": "2026-04-30T12:00:00+00:00",
-        "state": "done",
-    }
+def test_done_item_is_not_executable_even_if_user_authored():
+    item = {"authorship": "user", "state": "done"}
     assert action_items.is_executable(item) is False
 
 
 def test_skipped_item_is_not_executable():
-    item = {"user_authored": 1, "state": "skipped"}
+    item = {"authorship": "user", "state": "skipped"}
+    assert action_items.is_executable(item) is False
+
+
+def test_missing_authorship_is_not_executable():
+    # Defensive: a row that somehow has no authorship value (legacy
+    # row imported before the enum landed) should NOT execute.
+    item = {"state": "pending"}
     assert action_items.is_executable(item) is False
 
 

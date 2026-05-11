@@ -793,3 +793,97 @@ def check_tailscale_serve_configured() -> dict[str, Any]:
             f"Run `tailscale serve --bg {dashboard_port}` (or click Fix)."
         ),
     }
+
+
+# ---------------------------------------------------------------------------
+# github_backups
+# ---------------------------------------------------------------------------
+
+
+def check_gh_cli_installed() -> dict[str, Any]:
+    """Probe for ``gh`` on PATH via ``gh --version``."""
+    try:
+        proc = subprocess.run(
+            ["gh", "--version"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except FileNotFoundError:
+        return {"ok": False, "detail": "gh CLI not found on PATH"}
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "detail": "gh --version timed out"}
+    if proc.returncode != 0:
+        return {"ok": False, "detail": f"gh --version returned {proc.returncode}"}
+    # First line is "gh version X.Y.Z (<date>)"
+    version_line = proc.stdout.strip().splitlines()[0] if proc.stdout else "?"
+    return {"ok": True, "detail": version_line}
+
+
+def check_gh_authenticated() -> dict[str, Any]:
+    """Probe authentication state via the remote.probe_gh helper.
+
+    Imports the helper lazily — it lives in ``work_buddy.backups.remote``
+    and we don't want a circular import in this hot health-check
+    code path.
+    """
+    try:
+        from work_buddy.backups.remote import probe_gh
+    except Exception as exc:
+        return {"ok": False, "detail": f"could not import probe_gh: {exc}"}
+    probe = probe_gh()
+    if not probe.get("installed"):
+        return {"ok": False, "detail": "gh CLI not installed"}
+    if not probe.get("authenticated"):
+        return {
+            "ok": False,
+            "detail": probe.get("error") or "gh CLI not authenticated. "
+            "Run `gh auth login` to log in.",
+        }
+    return {
+        "ok": True,
+        "detail": (
+            f"authenticated as {probe.get('account', '?')} on "
+            f"{probe.get('host', '?')}"
+        ),
+    }
+
+
+def check_backup_repo_configured() -> dict[str, Any]:
+    """Verify ``backups.github.repo`` is set in config AND the repo
+    exists on GitHub (via ``gh repo view``).
+    """
+    try:
+        from work_buddy.backups.remote import get_backup_repo
+    except Exception as exc:
+        return {"ok": False, "detail": f"could not import get_backup_repo: {exc}"}
+    repo = get_backup_repo()
+    if not repo:
+        return {
+            "ok": False,
+            "detail": "backups.github.repo not set in config.local.yaml",
+        }
+    # Probe existence with `gh repo view <repo>`. Doesn't fetch anything
+    # heavy — just confirms the repo is reachable to the authenticated
+    # account.
+    try:
+        proc = subprocess.run(
+            ["gh", "repo", "view", repo, "--json", "name"],
+            capture_output=True, text=True, timeout=15,
+        )
+    except FileNotFoundError:
+        return {"ok": False,
+                "detail": f"gh not installed; can't verify repo {repo}"}
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "detail": "gh repo view timed out"}
+    if proc.returncode == 0:
+        return {"ok": True, "detail": f"repo {repo} reachable"}
+    stderr = (proc.stderr or "").strip()
+    if "could not resolve" in stderr.lower() or "not found" in stderr.lower():
+        return {
+            "ok": False,
+            "detail": (
+                f"backups.github.repo is set to {repo!r} but the repo "
+                "doesn't exist on GitHub. Click Fix to create it "
+                "(private, no extra cost)."
+            ),
+        }
+    return {"ok": False, "detail": f"gh repo view failed: {stderr}"}

@@ -412,3 +412,87 @@ def check_tailscale_self_online() -> dict[str, Any]:
         "ok": True,
         "detail": f"{self_info.get('name', 'self')} online on tailnet {status.get('tailnet', '')}".strip(),
     }
+
+
+# ---------------------------------------------------------------------------
+# github_backups
+# ---------------------------------------------------------------------------
+
+
+def check_github_backup_freshness() -> dict[str, Any]:
+    """Read ``.data/backups/last_run.json`` and assess freshness.
+
+    Never hits GitHub on the hot path — the freshness check is
+    entirely local. The sidecar cron writes a success/fail signal to
+    ``last_run.json`` after each push attempt; this check is the
+    dashboard-side observability for that signal.
+
+    Returns ``{ok, detail}``:
+
+    - No file yet → ``ok=False`` ("no backup run recorded").
+    - Last run failed → ``ok=False`` with the failure detail.
+    - Last run succeeded but is overdue (older than 2 ×
+      cadence_minutes) → ``ok=False`` ("backup is overdue").
+    - Last run succeeded and is fresh → ``ok=True``.
+    """
+    try:
+        from work_buddy.backups.remote import read_last_run
+        from work_buddy.config import load_config
+    except Exception as exc:
+        return {"ok": False, "detail": f"backups module unavailable: {exc}"}
+
+    last = read_last_run()
+    if last is None:
+        return {"ok": False,
+                "detail": ".data/backups/last_run.json not found — "
+                "no backup has run yet"}
+
+    if last.get("status") != "ok":
+        return {
+            "ok": False,
+            "detail": (
+                f"last backup status={last.get('status', '?')}: "
+                f"{last.get('error') or last.get('message') or '(no detail)'}"
+            ),
+        }
+
+    # Freshness check: compare last run timestamp against 2×cadence window.
+    cfg = load_config()
+    cadence_min = int(
+        ((cfg.get("backups") or {}).get("github") or {})
+        .get("cadence_minutes", 60)
+    )
+    deadline_seconds = max(1, cadence_min) * 60 * 2
+    ts_str = last.get("ts") or last.get("at") or last.get("snapshot_ts")
+    if not ts_str:
+        return {"ok": True, "detail": "last backup ok (timestamp missing — "
+                "freshness window not enforced)"}
+    try:
+        from datetime import datetime, timezone
+        # Accept both manifest-format (YYYY-MM-DDTHH-MM-SSZ) and
+        # ISO-with-colons formats.
+        cleaned = ts_str.replace("-", ":", 2) if "T" in ts_str else ts_str
+        cleaned = cleaned.replace("Z", "+00:00") if cleaned.endswith("Z") else cleaned
+        last_dt = datetime.fromisoformat(cleaned)
+        if last_dt.tzinfo is None:
+            last_dt = last_dt.replace(tzinfo=timezone.utc)
+        age_seconds = (datetime.now(timezone.utc) - last_dt).total_seconds()
+    except (ValueError, TypeError) as exc:
+        return {"ok": True, "detail": f"last backup ok (ts {ts_str!r} "
+                f"unparseable: {exc})"}
+
+    if age_seconds > deadline_seconds:
+        mins = int(age_seconds / 60)
+        return {
+            "ok": False,
+            "detail": f"last backup is {mins}m old (cadence is "
+            f"{cadence_min}m; threshold is 2× = {cadence_min * 2}m). "
+            "Run /wb-backup-now or check the sidecar.",
+        }
+    return {
+        "ok": True,
+        "detail": (
+            f"last backup ok ({int(age_seconds / 60)}m ago; "
+            f"snapshot {last.get('snapshot_id', '?')})"
+        ),
+    }
