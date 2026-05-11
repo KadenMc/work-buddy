@@ -34,11 +34,14 @@ base, so we'd be writing this code regardless. Better to own it.
    work-buddy code is not allowed to operate on a schema it doesn't
    understand.
 
-5. **Hash audit.** Each migration's source is hashed at apply time and
-   stored in ``_migration_history``. On subsequent runs, applied
-   migrations are verified against their stored hash — detects the
-   "someone edited a shipped migration callable" anti-pattern that
-   Flyway's checksum enforcement guards against.
+5. **Hash audit.** Each migration's compiled bytecode + referenced
+   names + non-docstring constants are hashed at apply time and stored
+   in ``_migration_history``. On subsequent runs, applied migrations
+   are verified against their stored hash — detects the "someone
+   edited a shipped migration callable" anti-pattern that Flyway's
+   checksum enforcement guards against, while ignoring cosmetic edits
+   (docstrings, comments, whitespace) that don't change runtime
+   behavior.
 
 ## Invariants the caller must hold
 
@@ -63,8 +66,8 @@ base, so we'd be writing this code regardless. Better to own it.
 
 from __future__ import annotations
 
+import dis
 import hashlib
-import inspect
 import sqlite3
 from dataclasses import dataclass
 from typing import Callable
@@ -72,6 +75,13 @@ from typing import Callable
 from work_buddy.logging_config import get_logger
 
 logger = get_logger(__name__)
+
+
+# Identifier baked into every newly-stamped hash. Bumping this string
+# is how we'd roll out a future hashing-algorithm change: legacy rows
+# at the older identifier get re-stamped on first encounter (see
+# ``_verify_history_hashes``).
+HASH_FORMAT_CURRENT = "bytecode_v1"
 
 
 # ─── Exceptions ─────────────────────────────────────────────────────
@@ -134,7 +144,8 @@ CREATE TABLE IF NOT EXISTS _migration_history (
     version     INTEGER PRIMARY KEY,
     description TEXT    NOT NULL,
     applied_at  TEXT    NOT NULL,            -- ISO UTC (datetime('now'))
-    code_hash   TEXT    NOT NULL             -- sha256 of inspect.getsource(fn)
+    code_hash   TEXT    NOT NULL,            -- sha256, format identified by hash_format
+    hash_format TEXT                         -- e.g. 'bytecode_v1'; NULL == legacy
 )
 """
 
@@ -185,6 +196,7 @@ class MigrationRunner:
         conn.execute("BEGIN IMMEDIATE")
         try:
             conn.execute(_HISTORY_DDL)
+            self._ensure_history_schema(conn)
             current = self._get_user_version(conn)
 
             # Downgrade guard: refuse to open a DB whose version we don't
@@ -254,44 +266,138 @@ class MigrationRunner:
 
     @staticmethod
     def _hash_callable(fn: Callable) -> str:
-        """SHA-256 of the migration callable's source.
+        """Hash a migration callable's *resolved* instruction stream.
 
-        Used to detect post-ship edits to migration code. Note this
-        captures whitespace/comments too — intentional, since any edit
-        to a shipped migration is a smell we want to surface.
+        We disassemble the function and serialize each instruction as
+        ``opname || argrepr`` (the argument's resolved value, not the
+        index into the constants/names pool). This is *index-invariant*
+        — rearranging ``co_consts`` or ``co_names`` doesn't change the
+        serialization as long as each instruction's resolved argument
+        is the same.
+
+        Why that matters:
+
+        - Adding a docstring shifts every constant index in ``co_consts``,
+          which would change a literal bytecode hash even though no
+          instruction's behaviour changed. With resolved argvals, the
+          shift is invisible — ``RETURN_CONST 0 (None)`` and
+          ``RETURN_CONST 2 (None)`` both serialize to ``RETURN_CONST None``.
+
+        - The docstring itself is never loaded by any instruction; it
+          goes straight to ``__doc__``. So it never appears in the
+          serialized stream. Docstring edits, additions, and removals
+          are all invisible to the hash.
+
+        - Comments, blank lines, and whitespace don't survive
+          compilation at all. They never reach the bytecode.
+
+        Real edits that the audit catches:
+
+        - Any change to a string literal that the function loads
+          (e.g. editing the DDL passed to ``execute()``).
+        - Any change to control flow, calls, or operators.
+        - Any change to which globals/builtins are referenced.
+        - Any change to argument names (changes ``co_varnames`` and
+          therefore the resolved ``LOAD_FAST`` argval).
+
+        Limitation: instructions whose ``argval`` is ``None`` (no
+        argument) serialize identically. This matches what we want
+        — those instructions are fully described by their opname
+        alone.
         """
         try:
-            src = inspect.getsource(fn)
-        except (OSError, TypeError):
-            # Defensive: lambdas or dynamically-defined callables don't
-            # have retrievable source. Fall back to a hash of the
-            # qualname so we at least detect identity changes.
-            src = f"<no-source:{fn.__qualname__}>"
-        return hashlib.sha256(src.encode("utf-8")).hexdigest()
+            code = fn.__code__
+        except AttributeError:
+            # Defensive: callables without a __code__ (e.g.
+            # functools.partial, C-defined functions, callable
+            # class instances). Fall back to a hash of the qualname
+            # so we at least detect identity changes.
+            name = getattr(
+                fn, "__qualname__", None
+            ) or getattr(type(fn), "__qualname__", repr(fn))
+            return hashlib.sha256(
+                f"<no-code:{name}>".encode("utf-8")
+            ).hexdigest()
+
+        parts: list[str] = []
+        for inst in dis.get_instructions(code):
+            # ``argval`` is the resolved value: for LOAD_CONST that's
+            # the constant itself, for LOAD_GLOBAL/STORE_NAME that's
+            # the name string, for LOAD_FAST that's the variable name.
+            # ``repr`` gives a deterministic textual form regardless
+            # of the value's identity in memory.
+            parts.append(inst.opname)
+            parts.append(repr(inst.argval))
+        blob = "||".join(parts).encode("utf-8")
+        return hashlib.sha256(blob).hexdigest()
+
+    def _ensure_history_schema(self, conn: sqlite3.Connection) -> None:
+        """Bring ``_migration_history`` up to the current shape.
+
+        The DDL in ``_HISTORY_DDL`` is for fresh installs. Legacy DBs
+        (from before we tracked ``hash_format``) need the column
+        added via ALTER TABLE. Cheap idempotent operation — checks
+        column presence before touching the table.
+        """
+        cols = {
+            r[1] for r in conn.execute("PRAGMA table_info(_migration_history)")
+        }
+        if "hash_format" not in cols:
+            conn.execute(
+                "ALTER TABLE _migration_history ADD COLUMN hash_format TEXT"
+            )
 
     def _verify_history_hashes(
         self, conn: sqlite3.Connection, current_version: int,
     ) -> None:
         """Check that every already-applied migration's recorded hash
-        matches the current hash of its callable source.
+        matches the current hash of its callable.
+
+        Auto-rehash path: any row whose ``hash_format`` is NULL or
+        anything other than the current format identifier is treated
+        as a legacy stamp. We trust the deployed source (the user is
+        already running on it), compute a fresh hash with the current
+        method, and update the row in place. After the first run with
+        new framework code, all stamps are at ``HASH_FORMAT_CURRENT``
+        and the audit runs normally.
         """
         rows = conn.execute(
-            "SELECT version, code_hash FROM _migration_history "
+            "SELECT version, code_hash, hash_format FROM _migration_history "
             "WHERE version <= ? ORDER BY version",
             (current_version,),
         ).fetchall()
-        recorded = {r[0]: r[1] for r in rows}
+        recorded = {r[0]: (r[1], r[2]) for r in rows}
         for migration in self.migrations:
             if migration.version > current_version:
                 break
-            stored_hash = recorded.get(migration.version)
-            if stored_hash is None:
+            entry = recorded.get(migration.version)
+            if entry is None:
                 # Migration was applied (user_version says so) but no
                 # history row exists. This is the baseline-stamp case
                 # we handle separately, OR a manually-mutated DB.
                 # Either way, not a hash mismatch — skip.
                 continue
+            stored_hash, stored_format = entry
             current_hash = self._hash_callable(migration.fn)
+
+            if stored_format != HASH_FORMAT_CURRENT:
+                # Legacy stamp from before this hash format existed.
+                # Trust the deployed source, re-stamp silently with
+                # the new format. Done once per migration; subsequent
+                # opens compare strictly.
+                logger.info(
+                    "%s: re-stamping v%d audit hash "
+                    "(legacy format %r -> %r)",
+                    self.name, migration.version,
+                    stored_format, HASH_FORMAT_CURRENT,
+                )
+                conn.execute(
+                    "UPDATE _migration_history "
+                    "SET code_hash = ?, hash_format = ? WHERE version = ?",
+                    (current_hash, HASH_FORMAT_CURRENT, migration.version),
+                )
+                continue
+
             if stored_hash != current_hash:
                 raise MigrationHashMismatch(
                     f"{self.name}: migration v{migration.version} "
@@ -344,12 +450,13 @@ class MigrationRunner:
                 break
             conn.execute(
                 "INSERT OR IGNORE INTO _migration_history "
-                "(version, description, applied_at, code_hash) "
-                "VALUES (?, ?, datetime('now'), ?)",
+                "(version, description, applied_at, code_hash, hash_format) "
+                "VALUES (?, ?, datetime('now'), ?, ?)",
                 (
                     migration.version,
                     f"baseline-stamp: {migration.description}",
                     self._hash_callable(migration.fn),
+                    HASH_FORMAT_CURRENT,
                 ),
             )
         self._set_user_version(conn, version)
@@ -371,12 +478,13 @@ class MigrationRunner:
             migration.fn(conn)
             conn.execute(
                 "INSERT INTO _migration_history "
-                "(version, description, applied_at, code_hash) "
-                "VALUES (?, ?, datetime('now'), ?)",
+                "(version, description, applied_at, code_hash, hash_format) "
+                "VALUES (?, ?, datetime('now'), ?, ?)",
                 (
                     migration.version,
                     migration.description,
                     self._hash_callable(migration.fn),
+                    HASH_FORMAT_CURRENT,
                 ),
             )
             self._set_user_version(conn, migration.version)
