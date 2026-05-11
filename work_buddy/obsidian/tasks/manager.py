@@ -466,8 +466,10 @@ def task_search(
 
     Returns task records (full ``task_metadata`` rows) ordered by most
     recently updated first. Each record includes ``task_id``,
-    ``state``, ``urgency``, ``description``, the Slice 2 GTD vocabulary
-    fields, plus the timestamp triplet (created/updated/completed).
+    ``state``, ``urgency``, ``description``, the GTD vocabulary fields
+    (kind / density / outcome / next-action / DoD / creation-effort /
+    user-involvement / provenance), plus the timestamp triplet
+    (created / updated / completed).
 
     Args:
         query: Substring to search for. Empty string returns nothing.

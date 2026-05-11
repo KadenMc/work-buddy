@@ -34,10 +34,10 @@ logger = get_logger(__name__)
 def _detect_last_actor() -> str:
     """Return ``'user'`` or ``'agent'`` based on the consent context.
 
-    Slice 4: when a mutation fires inside a ``consent.user_initiated()``
-    block, the user just clicked something (dashboard, CLI slash
-    command, …) and we record ``last_actor='user'``.  Outside that
-    block — sidecar cron, autonomous workflow, scheduled job — we
+    When a mutation fires inside a ``consent.user_initiated()`` block,
+    the user just clicked something (dashboard, CLI slash command, …)
+    and we record ``last_actor='user'``. Outside that block — sidecar
+    cron, autonomous workflow, scheduled job — we
     record ``last_actor='agent'``.
 
     Defensive: if the consent module fails to import for any reason
@@ -88,7 +88,7 @@ COMPLEXITY_TAG_RE = re.compile(r"\s*#tasker/complexity/\w+")
 DUE_DATE_RE = re.compile(r"📅\s*\d{4}-\d{2}-\d{2}")
 DONE_DATE_RE = re.compile(r"✅\s*\d{4}-\d{2}-\d{2}")
 CHECKBOX_RE = re.compile(r"^(- \[)([ x])(\])")
-URGENCY_EMOJI_RE = re.compile(r"[🔼⏫]")
+URGENCY_EMOJI_RE = re.compile(r"[🔽🔼⏫]")
 TASK_ID_RE = re.compile(r"🆔\s*(t-[0-9a-f]+)")
 
 # User-supplied namespace tags must match this shape (no leading '#').
@@ -98,15 +98,12 @@ NAMESPACE_TAG_RE = re.compile(r"^[a-z0-9][a-z0-9_/-]*$", re.IGNORECASE)
 
 # ── Description extraction ──────────────────────────────────────
 #
-# Slice 3: derive a clean human-readable description from a task line by
+# Derives a clean human-readable description from a task line by
 # stripping the structural noise (checkbox, hashtags, wikilinks, plugin
 # emojis, 🆔). The resulting text is what gets stored in
 # ``task_metadata.description`` and what ``task_search`` queries against.
-#
-# The same regex chain was previously inlined inside
-# ``_load_task_payload`` (line ~1046 prior to Slice 3) — moved here so
-# ``task_sync``, ``task_update_description``, and ``_load_task_payload``
-# share a single canonical extractor.
+# Shared by ``task_sync``, ``task_update_description``, and
+# ``_load_task_payload`` so all three agree on what "description" means.
 
 # Wikilinks like [[uuid|📓]] embedded in the line.
 _DESC_WIKILINK_RE = re.compile(r"\[\[[^\]]+\]\]")
@@ -123,7 +120,7 @@ _DESC_CHECKBOX_RE = re.compile(r"^\s*-\s*\[.\]\s*")
 _DESC_TASK_ID_RE = re.compile(r"🆔\s*t-[a-z0-9]+", re.IGNORECASE)
 _DESC_DUE_DATE_RE = re.compile(r"📅\s*\d{4}-\d{2}-\d{2}")
 _DESC_DONE_DATE_RE = re.compile(r"✅\s*\d{4}-\d{2}-\d{2}")
-_DESC_URGENCY_EMOJI_RE = re.compile(r"[🔼⏫]")
+_DESC_URGENCY_EMOJI_RE = re.compile(r"[🔽🔼⏫]")
 
 
 # Lookahead-only pattern for the FIRST structural boundary that ends
@@ -350,7 +347,7 @@ def _create_task_idempotency_key(
     """Stable hash of natural input parameters.
 
     Includes the user-facing fields that distinguish one create from
-    another. Excludes Slice 2 GTD vocabulary fields (kind / density /
+    another. Excludes the GTD-vocabulary fields (kind / density /
     creation_effort etc.) because they're typically derived from the
     other inputs and including them would produce gratuitous cache-key
     differences. Two calls that differ only on, say, ``creation_effort``
@@ -1151,9 +1148,9 @@ def update_task(
             store_kwargs["snooze_until"] = snooze_until
         if reason:
             store_kwargs["reason"] = reason
-        # Slice 4: any state-changing path records the actor for the
-        # Daily Log surface to attribute correctly.  Detected via the
-        # consent context — see _detect_last_actor.
+        # Any state-changing path records the actor so downstream
+        # surfaces can attribute correctly. Detected via the consent
+        # context — see _detect_last_actor.
         if state is not None:
             store_kwargs["last_actor"] = _detect_last_actor()
 
@@ -1191,15 +1188,152 @@ def _toggle_via_plugin_api(task_line: str, file_path: str) -> str | None:
         return None
 
 
+_ARCHIVE_DEFAULT_AGE_DAYS = 7
+"""Default age cutoff for ``archive_completed``.
+
+Tasks completed within the last ``_ARCHIVE_DEFAULT_AGE_DAYS`` stay in
+the master list as a "recently done" buffer. The old default was 0
+(archive everything), which made a single approval sweep up the entire
+completed-tasks history and felt indistinguishable from data loss.
+Seven days lets the user review what they finished this week before
+it leaves the active view; older completed work archives on the next
+triage pass.
+"""
+
+
+def _scan_completed_tasks(
+    older_than_days: int = _ARCHIVE_DEFAULT_AGE_DAYS,
+) -> tuple[int, list[str]] | None:
+    """Return ``(count, titles)`` for completed tasks the archive would move.
+
+    Pure read of the master task list — used by the consent body builder
+    to surface concrete scope (count + sample titles) before the user
+    approves. Mirrors the filtering logic in ``archive_completed`` so
+    the consent preview matches what would actually be archived.
+
+    Reads from the filesystem directly (not via the Obsidian bridge),
+    because the bridge may be offline when consent is fired from the
+    sidecar / Telegram path. The dashboard's ``get_tasks_summary`` uses
+    the same fs-read pattern for the same reason. The actual
+    ``archive_completed`` still goes through the bridge — this is a
+    read-only preview that must work even when Obsidian is closed.
+
+    Returns ``None`` (not ``(0, [])``) when the file can't be read at
+    all, so callers can distinguish "no tasks to archive" from "couldn't
+    pre-scan" and message the user honestly.
+    """
+    try:
+        from work_buddy.config import load_config
+        vault_root = load_config().get("vault_root")
+        if not vault_root:
+            return None
+        master_path = Path(vault_root) / MASTER_TASK_FILE
+        if not master_path.exists():
+            return None
+        content = master_path.read_text(encoding="utf-8")
+    except Exception:
+        return None
+
+    today = date.today()
+    titles: list[str] = []
+    for line in content.split("\n"):
+        if not re.match(r"^- \[x\]", line):
+            continue
+        if older_than_days > 0:
+            done_match = DONE_DATE_RE.search(line)
+            if done_match:
+                done_str = done_match.group().replace("✅", "").strip()
+                try:
+                    done_dt = date.fromisoformat(done_str)
+                    if (today - done_dt).days < older_than_days:
+                        continue
+                except ValueError:
+                    pass  # Unparseable date: include (matches archive_completed)
+        # Strip the leading "- [x] " checkbox prefix and trailing
+        # metadata (🆔, ✅ <date>, [[uuid|📓]], #tags) for a human-readable
+        # title. Keep it short enough to render in a Telegram modal.
+        title = line[6:].strip() if len(line) > 6 else line.strip()
+        title = re.sub(r"\s*🆔\s*t-[0-9a-f]+", "", title)
+        title = re.sub(r"\s*✅\s*\d{4}-\d{2}-\d{2}", "", title)
+        title = re.sub(r"\s*\[\[[0-9a-f-]+\|[^\]]*\]\]", "", title)
+        title = re.sub(r"\s+#\S+", "", title)
+        title = title.strip()
+        if len(title) > 80:
+            title = title[:77] + "..."
+        if title:
+            titles.append(title)
+    return len(titles), titles
+
+
+def _archive_consent_body_extras() -> str:
+    """Return the dynamic body lines for the ``tasks.archive`` consent prompt.
+
+    Shows the exact count of tasks the default-policy archive would
+    move and a random 5-title sample, so the user approves a concrete
+    scope rather than an abstract "move completed tasks." Random
+    sampling (vs first/last 5) surfaces outliers — a misclassified
+    task buried in the middle is more likely to show up.
+
+    Always uses the default age window. Non-default agent invocations
+    (e.g. ``older_than_days=0``) will see a count that under-reports
+    relative to what runs, which is acceptable: the user errs toward
+    approving less, not more.
+    """
+    scan = _scan_completed_tasks()
+    if scan is None:
+        # Filesystem read failed — be honest rather than say "0 tasks".
+        return (
+            "  → Could not pre-scan master task list. Exact scope unknown; "
+            f"default policy archives tasks completed ≥ "
+            f"{_ARCHIVE_DEFAULT_AGE_DAYS} days ago. Approve cautiously."
+        )
+    count, titles = scan
+    if count == 0:
+        return (
+            f"  → No tasks completed ≥ {_ARCHIVE_DEFAULT_AGE_DAYS} days ago. "
+            "Nothing will move."
+        )
+    sample_size = min(5, count)
+    # Random sample, not chronological — catches outliers anywhere in
+    # the list. Stable sort of the sample by appearance order keeps the
+    # preview readable.
+    import random as _random
+    indices = sorted(_random.sample(range(count), sample_size))
+    sample = [titles[i] for i in indices]
+    bullets = "\n".join(f"    • {t}" for t in sample)
+    suffix = ""
+    if count > sample_size:
+        suffix = f"\n    …and {count - sample_size} more"
+    return (
+        f"  → **{count} completed tasks** (done ≥ "
+        f"{_ARCHIVE_DEFAULT_AGE_DAYS} days ago) will be archived. "
+        "Random sample:\n"
+        f"{bullets}{suffix}"
+    )
+
+
 @requires_consent(
     operation="tasks.archive",
-    reason="Move completed tasks from master list to archive file.",
+    reason=(
+        "Move completed tasks from master list to archive file. "
+        "Archived tasks are still searchable but stop appearing in the "
+        "active master list. This sweep is bulk by default."
+    ),
     risk="moderate",
     default_ttl=15,
+    body_extras=_archive_consent_body_extras,
 )
 @bridge_retry()
-def archive_completed(older_than_days: int = 0) -> dict[str, Any]:
+def archive_completed(
+    older_than_days: int = _ARCHIVE_DEFAULT_AGE_DAYS,
+) -> dict[str, Any]:
     """Archive completed tasks from the master list to tasks/archive.md.
+
+    Tasks completed within the last ``older_than_days`` days stay in the
+    master list. Default is ``_ARCHIVE_DEFAULT_AGE_DAYS`` (7) so a
+    recently-finished task remains visible in the active view as a
+    "recently done" buffer; pass ``older_than_days=0`` to archive every
+    completed task regardless of age.
 
     Also marks tasks as archived in the store.
     """
@@ -1307,6 +1441,18 @@ def archive_completed(older_than_days: int = 0) -> dict[str, Any]:
             pass  # Best effort
 
     logger.info("Archived %d tasks to %s", len(archive_lines), ARCHIVE_FILE)
+
+    # Post a fire-and-forget notification so the user has a passive
+    # signal that a bulk archive just happened. Without this, the
+    # master list shrinks silently and the next dashboard view feels
+    # like data loss. Best-effort: failures here must not undo the
+    # archive (the move already succeeded above).
+    _send_archive_summary_notification(
+        count=len(archive_lines),
+        archive_header=archive_header.strip(),
+        older_than_days=older_than_days,
+    )
+
     return {
         "success": True,
         "archived_count": len(archive_lines),
@@ -1314,6 +1460,63 @@ def archive_completed(older_than_days: int = 0) -> dict[str, Any]:
         "archive_file": ARCHIVE_FILE,
         "archived_ids": archived_ids,
     }
+
+
+def _send_archive_summary_notification(
+    count: int,
+    archive_header: str,
+    older_than_days: int,
+) -> None:
+    """Fire-and-forget summary after ``archive_completed`` succeeds.
+
+    Lands on every available surface (Telegram, Obsidian, dashboard
+    toast) so a bulk archive doesn't happen silently. Mirrors the
+    delivery pattern in ``_auto_consent_request``: build a
+    ``Notification`` with ``response_type=NONE``, create it, dispatch
+    via ``SurfaceDispatcher``. All failures swallowed — the archive
+    already succeeded, this is pure observability.
+    """
+    if count <= 0:
+        return
+    try:
+        from work_buddy.notifications.models import Notification, ResponseType
+        from work_buddy.notifications.store import (
+            create_notification, get_notification, mark_delivered,
+        )
+        from work_buddy.notifications.dispatcher import SurfaceDispatcher
+
+        age_phrase = (
+            f"completed ≥ {older_than_days} days ago"
+            if older_than_days > 0
+            else "all completed (no age filter)"
+        )
+        body = (
+            f"Moved **{count} completed tasks** ({age_phrase}) from "
+            f"`{MASTER_TASK_FILE}` → `{ARCHIVE_FILE}`. "
+            f"Find them under the `{archive_header}` section. "
+            "Dashboard Tasks tab: toggle the 'archived' chip to view."
+        )
+        notif = Notification(
+            title=f"Archived {count} completed tasks",
+            body=body,
+            priority="normal",
+            source="tasks.archive_completed",
+            response_type=ResponseType.NONE.value,
+            tags=["tasks", "archive", "summary"],
+        )
+        created = create_notification(notif)
+        try:
+            dispatcher = SurfaceDispatcher.from_config()
+            dispatcher.deliver(
+                get_notification(created.notification_id) or created,
+                mark_delivered_fn=mark_delivered,
+            )
+        except Exception:
+            pass  # Notification record persisted; delivery is best-effort
+    except Exception:
+        # Notification infrastructure isn't load-bearing for the archive
+        # operation. Failing here must never propagate.
+        pass
 
 
 @requires_consent(
@@ -1332,7 +1535,7 @@ def create_task(
     summary: str | None = None,
     tags: list[str] | None = None,
     *,
-    # Slice 2 GTD vocabulary (optional; defaults match a legacy task) ---
+    # GTD vocabulary (optional; defaults match a legacy task) ---------
     task_kind: str = "task",
     density: str = "sparse",
     outcome_text: str | None = None,
@@ -1345,11 +1548,11 @@ def create_task(
     deadline_date: str | None = None,
     has_dependency: bool = False,
     dependency_hint: str | None = None,
-    # Slice 4 risk model + automation tier + last actor ----------------
+    # Risk model + automation tier + last actor -----------------------
     risk_profile_json: str | None = None,
     automation_tier_achievable: int | None = None,
     last_actor: str | None = None,
-    # Slice 5a action contexts -----------------------------------------
+    # Action contexts -------------------------------------------------
     agent_required_contexts: str | None = None,
     user_required_contexts: str | None = None,
     required_contexts_source: str | None = None,
@@ -1357,8 +1560,8 @@ def create_task(
     """Create a new task with an auto-generated ID, optionally with a linked note.
 
     If ``summary`` is provided, a note file is created and linked to the task.
-    Metadata (state, urgency, contract, plus Slice 2 GTD vocabulary) goes
-    to the SQLite store. The task line has: #todo, text, note link,
+    Metadata (state, urgency, contract, plus the GTD vocabulary fields)
+    goes to the SQLite store. The task line has: #todo, text, note link,
     #projects/*, user namespace tags, 🆔, plugin emojis.
 
     ``tags`` is a list of user-defined namespace tags (without leading '#'),
@@ -1367,12 +1570,13 @@ def create_task(
     up by the next ``task_sync`` into the ``task_tags`` cache and classified
     according to the reserved-prefix / opt-in / discovery-threshold rules.
 
-    Slice 2 args (kind / density / outcome_text / next_action_text /
-    definition_of_done / creation_effort / user_involvement /
-    creation_provenance / deadline / dependency) are optional and default
-    to "looks like a legacy manually-authored task." Agent-driven creators
-    should set ``creation_provenance`` (e.g.
-    ``agent_inferred_from_journal``) and lower ``user_involvement``.
+    The GTD-vocabulary args (kind / density / outcome_text /
+    next_action_text / definition_of_done / creation_effort /
+    user_involvement / creation_provenance / deadline / dependency)
+    are optional and default to "looks like a legacy manually-authored
+    task." Agent-driven creators should set ``creation_provenance``
+    (e.g. ``agent_inferred_from_journal``) and lower
+    ``user_involvement``.
 
     This function is idempotent on retry: it checks for existing note files
     and task lines before writing, so the retry capability can safely replay it.
@@ -1392,21 +1596,19 @@ def create_task(
         _validate_project_slug_exists(project)
     namespace_tags = _normalize_tags(tags)
 
-    # Slice 4: detect last_actor via the consent context — the
+    # Detect last_actor via the consent context — the
     # ``consent.user_initiated()`` block is the canonical signal for
-    # "the user just clicked something."  Outside it, autonomous
-    # paths record as 'agent'.  Callers can pin explicitly, e.g.
-    # the migration script wants 'agent' regardless.
+    # "the user just clicked something." Outside it, autonomous paths
+    # record as 'agent'. Callers can pin explicitly when needed.
     if last_actor is None:
         last_actor = _detect_last_actor()
 
-    # Slice 4: when no achievable tier is precomputed, derive it now
-    # from the risk profile so the cached value matches what the
-    # resolver would return on first read.  Free; pure function.
-    # Slice 5a: forward the action-context lists too so a task that
-    # needs an unset tool starts at tier 1 from the moment of capture
-    # (the dashboard's first paint matches the resolver's eventual
-    # answer, no flicker).
+    # When no achievable tier is precomputed, derive it now from the
+    # risk profile so the cached value matches what the resolver
+    # would return on first read (free; pure function). Forward the
+    # action-context lists too, so a task that needs an unset tool
+    # starts at tier 1 from the moment of capture — the dashboard's
+    # first paint matches the resolver's eventual answer, no flicker.
     if automation_tier_achievable is None:
         try:
             from work_buddy.automation.risk import resolve_achievable_tier
@@ -1535,12 +1737,12 @@ def create_task(
 
     # --- Store record ---
     if store.get(task_id) is None:
-        # Slice 3: derive the description from the just-built task line
-        # so the store's text column is populated immediately. Without
-        # this, the description would stay NULL until the next
-        # task_sync run (~30 minute window). The line we built above is
-        # authoritative for what the file now contains, so deriving from
-        # it locally is consistent with the file-source-of-truth rule.
+        # Derive the description from the just-built task line so the
+        # store's text column is populated immediately. Without this,
+        # the description would stay NULL until the next task_sync run.
+        # The line we built above is authoritative for what the file
+        # now contains, so deriving from it locally is consistent with
+        # the file-source-of-truth rule.
         derived_description = extract_description_from_line(task_line)
         store.create(
             task_id=task_id,
@@ -1746,9 +1948,9 @@ def toggle_task(
     )
 
     new_state = "done" if not is_done else "inbox"
-    # Slice 4: detect last_actor via consent context.  Toggle is a
-    # frequent path the user hits from the dashboard's checkbox + the
-    # CLI; the consent context tells us whether we're inside a
+    # Detect last_actor via consent context. Toggle is a frequent
+    # path the user hits from the dashboard's checkbox + the CLI;
+    # the consent context tells us whether we're inside a
     # ``user_initiated()`` block (dashboard click) or running
     # autonomously (sidecar reconciliation, scheduled cleanup).
     actor = _detect_last_actor()
@@ -1924,8 +2126,9 @@ def delete_task(
     else:
         removed["note"] = False
 
-    # 3. Delete store record — only if the file line was actually removed,
-    #    otherwise task_sync will re-create the store record from the file.
+    # 3. Soft-delete the store record — only if the file line was actually
+    #    removed, otherwise task_sync would resurrect the store record on
+    #    its next pass.
     if removed["task_line"]:
         removed["store"] = store.delete(task_id)
     else:

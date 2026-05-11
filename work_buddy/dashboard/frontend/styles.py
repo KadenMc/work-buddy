@@ -689,6 +689,36 @@ body {
 .task-search-input:focus { outline: none; border-color: var(--accent); }
 .task-search-input::placeholder { color: var(--text-muted); }
 
+/* Inline filter status — sits at the end of the chip row at
+   small/muted size; updates live. */
+.task-filter-status {
+    color: var(--text-muted);
+    font-size: 11px;
+    padding: 0 4px;
+    user-select: none;
+    white-space: nowrap;
+}
+
+/* Sync button — matches the chip pill styling. */
+.task-sync-btn {
+    padding: 3px 10px;
+    border-radius: 11px;
+    border: 1px solid var(--border);
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    font-size: 11px;
+    cursor: pointer;
+    transition: border-color 120ms, color 120ms, background 120ms;
+}
+.task-sync-btn:hover:not(:disabled) {
+    border-color: var(--accent);
+    color: var(--text-primary);
+}
+.task-sync-btn:disabled {
+    opacity: 0.6;
+    cursor: progress;
+}
+
 .task-list-scroll {
     max-height: 500px;
     overflow-y: auto;

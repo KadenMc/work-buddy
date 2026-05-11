@@ -123,11 +123,12 @@ def _html() -> str:
 
 <!-- TASKS -->
 <div class="tab-panel" id="panel-tasks">
-    <div class="card-grid" id="task-counts"></div>
     <div class="task-toolbar">
         <div class="section-title"><a id="master-task-link" href="#" style="color: var(--accent); text-decoration: none;" title="Open in Obsidian">Master Task List</a> <span id="task-namespace-breadcrumb" class="task-namespace-breadcrumb"></span></div>
         <div class="task-toolbar-controls">
             <div id="task-state-chips" class="task-state-chips" title="Toggle which task states to show"></div>
+            <span id="task-filter-status" class="task-filter-status" title="Filtered task count and last sync time"></span>
+            <button id="task-sync-btn" class="task-sync-btn" title="Run task_sync now (refreshes the view when done)">↻ Sync</button>
             <input type="text" id="task-search" class="task-search-input" placeholder="Filter tasks..." />
         </div>
     </div>

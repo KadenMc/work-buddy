@@ -1,23 +1,25 @@
-"""Slice 7: ``task_action_items`` CRUD layer.
+"""``task_action_items`` CRUD layer.
 
-Per-action-item rows attached to a parent task.  Each item carries
+Per-action-item rows attached to a parent task. Each item carries
 its own risk profile + required contexts so the resolver can answer
 "who can act on the *current step* now?" rather than just the parent
 task — the engage view + the Today tab consume this when the parent
 task has ``current_action_item_id`` set.
 
-Safety rule (per ROADMAP §7): items with ``user_authored = 0 AND
-approved_at IS NULL`` cannot be executed by the agent — they're
-proposals waiting on user approval.  The :func:`is_executable`
-helper enforces this; callers in the executor + Resolution Surface
-respect the check.
+Safety rule: items with ``authorship == 'agent_unapproved'`` cannot
+be executed by the agent — they're proposals waiting on user
+approval. The :func:`is_executable` helper enforces this; callers in
+the executor + Resolution Surface respect the check.
 
-Markdown is the eventual canonical surface for action items (per
-ROADMAP §8 task index footnote: "After slice 7, the markdown lists
-migrate to the structured ``task_action_items`` table; Obsidian
-markdown remains canonical, the table is a cache").  Slice 7 ships
-the table; the markdown round-trip lands in a follow-up so the table
-schema can stabilize against real usage first.
+The ``authorship`` column on ``task_action_items`` is a TEXT enum
+holding values from :class:`work_buddy.threads.enums.Authorship`
+(``user`` / ``agent_approved`` / ``agent_unapproved``).
+
+Markdown is the eventual canonical surface for action items (the
+table is a cache); the markdown round-trip lands in a follow-up so
+the table schema can stabilize against real usage first.
+
+See ``tasks/action-items`` for the agent-facing reference.
 """
 
 from __future__ import annotations
@@ -27,11 +29,19 @@ from typing import Any
 
 from work_buddy.logging_config import get_logger
 from work_buddy.obsidian.tasks import store
+from work_buddy.threads.enums import Authorship
 
 logger = get_logger(__name__)
 
 
 VALID_STATES = {"pending", "in_progress", "done", "skipped"}
+
+VALID_AUTHORSHIPS = {a.value for a in Authorship}
+# Authorship values that allow agent execution. ``agent_unapproved``
+# is intentionally absent — that's the default state for agent-
+# proposed items pending user approval, and the safety contract
+# is that such items block.
+EXECUTABLE_AUTHORSHIPS = {Authorship.USER.value, Authorship.AGENT_APPROVED.value}
 
 
 def _now_iso() -> str:
@@ -53,8 +63,7 @@ def create(
     agent_required_contexts: str | None = None,
     user_required_contexts: str | None = None,
     definition_of_done: str | None = None,
-    user_authored: bool = False,
-    approved_at: str | None = None,
+    authorship: str = Authorship.AGENT_UNAPPROVED.value,
     handoff_package_path: str | None = None,
 ) -> dict[str, Any]:
     """Insert a new action item row.
@@ -64,14 +73,20 @@ def create(
     explicit value to insert at a specific position (e.g., re-shuffling
     via the develop-at-pickup edit-each-item flow).
 
-    Per Slice 7 safety rule: agent-proposed items default to
-    ``user_authored=False, approved_at=None`` — they appear in the
-    Resolution Surface as "proposed (needs approval)" and cannot be
-    executed by the agent until the user approves.
+    Per the safety rule: agent-proposed items default to
+    ``authorship='agent_unapproved'`` — they appear in the Resolution
+    Surface as "proposed (needs approval)" and cannot be executed by
+    the agent until :func:`approve` flips them to ``agent_approved``.
+    User-written items should be created with ``authorship='user'``.
     """
     if state not in VALID_STATES:
         raise ValueError(
             f"Invalid state {state!r}: expected one of {sorted(VALID_STATES)}"
+        )
+    if authorship not in VALID_AUTHORSHIPS:
+        raise ValueError(
+            f"Invalid authorship {authorship!r}: expected one of "
+            f"{sorted(VALID_AUTHORSHIPS)}"
         )
 
     now = _now_iso()
@@ -90,15 +105,14 @@ def create(
                (task_id, sequence, description, state,
                 risk_profile_json, agent_required_contexts,
                 user_required_contexts, definition_of_done,
-                user_authored, approved_at, handoff_package_path,
+                authorship, handoff_package_path,
                 created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 task_id, sequence, description, state,
                 risk_profile_json, agent_required_contexts,
                 user_required_contexts, definition_of_done,
-                int(bool(user_authored)), approved_at,
-                handoff_package_path,
+                authorship, handoff_package_path,
                 now, now,
             ),
         )
@@ -108,32 +122,53 @@ def create(
         conn.close()
 
     logger.info(
-        "action_item created: task=%s item=%s seq=%d state=%s",
-        task_id, item_id, sequence, state,
+        "action_item created: task=%s item=%s seq=%d state=%s authorship=%s",
+        task_id, item_id, sequence, state, authorship,
     )
     return {"id": item_id, "task_id": task_id, "sequence": sequence,
-            "state": state}
+            "state": state, "authorship": authorship}
 
 
-def get(item_id: int) -> dict[str, Any] | None:
+def get(item_id: int, *, include_deleted: bool = False) -> dict[str, Any] | None:
+    """Return an action item by ID, or None.
+
+    Soft-deleted items (``deleted_at IS NOT NULL``) are invisible by
+    default. Pass ``include_deleted=True`` for recovery contexts.
+    """
     conn = store.get_connection()
     try:
-        row = conn.execute(
-            "SELECT * FROM task_action_items WHERE id = ?", (item_id,),
-        ).fetchone()
+        if include_deleted:
+            row = conn.execute(
+                "SELECT * FROM task_action_items WHERE id = ?", (item_id,),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT * FROM task_action_items "
+                "WHERE id = ? AND deleted_at IS NULL",
+                (item_id,),
+            ).fetchone()
         return dict(row) if row else None
     finally:
         conn.close()
 
 
 def list_for_task(
-    task_id: str, *, include_done: bool = True,
+    task_id: str,
+    *,
+    include_done: bool = True,
+    include_deleted: bool = False,
 ) -> list[dict[str, Any]]:
-    """Return all action items for a task, ordered by sequence ascending."""
+    """Return all action items for a task, ordered by sequence ascending.
+
+    Soft-deleted items are excluded by default; pass
+    ``include_deleted=True`` for recovery / audit contexts.
+    """
     clauses = ["task_id = ?"]
     params: list[Any] = [task_id]
     if not include_done:
         clauses.append("state != 'done'")
+    if not include_deleted:
+        clauses.append("deleted_at IS NULL")
 
     where = " AND ".join(clauses)
     conn = store.get_connection()
@@ -162,8 +197,7 @@ def update(
     agent_required_contexts: str | None | object = _SENTINEL,
     user_required_contexts: str | None | object = _SENTINEL,
     definition_of_done: str | None | object = _SENTINEL,
-    user_authored: bool | None = None,
-    approved_at: str | None | object = _SENTINEL,
+    authorship: str | None = None,
     completed_at: str | None | object = _SENTINEL,
     handoff_package_path: str | None | object = _SENTINEL,
 ) -> dict[str, Any]:
@@ -171,6 +205,11 @@ def update(
 
     ``state='done'`` auto-stamps ``completed_at`` if the caller didn't
     pass one — same convention as ``store.update``.
+
+    ``authorship`` is validated against ``VALID_AUTHORSHIPS`` (the
+    enum from ``work_buddy.threads.enums.Authorship``). Use
+    :func:`approve` rather than passing ``authorship='agent_approved'``
+    directly — it's the public approval entry point.
     """
     sets: list[str] = []
     params: list[Any] = []
@@ -208,13 +247,14 @@ def update(
         sets.append("definition_of_done = ?")
         params.append(definition_of_done)
 
-    if user_authored is not None:
-        sets.append("user_authored = ?")
-        params.append(int(bool(user_authored)))
-
-    if approved_at is not _SENTINEL:
-        sets.append("approved_at = ?")
-        params.append(approved_at)
+    if authorship is not None:
+        if authorship not in VALID_AUTHORSHIPS:
+            raise ValueError(
+                f"Invalid authorship {authorship!r}: expected one of "
+                f"{sorted(VALID_AUTHORSHIPS)}"
+            )
+        sets.append("authorship = ?")
+        params.append(authorship)
 
     if completed_at is not _SENTINEL:
         sets.append("completed_at = ?")
@@ -244,11 +284,53 @@ def update(
 
 
 def delete(item_id: int) -> bool:
-    """Delete an action item.  Returns True if the row existed."""
+    """Soft-delete an action item. Returns True if the row existed and was flipped.
+
+    Soft operation — ``deleted_at`` is set to a timestamp; the row
+    stays in ``task_action_items``. Query paths default-filter
+    ``WHERE deleted_at IS NULL``. Inverse: :func:`restore`.
+
+    Calling on an already-soft-deleted row is a no-op (returns False).
+    """
     conn = store.get_connection()
     try:
+        row = conn.execute(
+            "SELECT deleted_at FROM task_action_items WHERE id = ?",
+            (item_id,),
+        ).fetchone()
+        if not row or row["deleted_at"] is not None:
+            return False
+        now = _now_iso()
         cursor = conn.execute(
-            "DELETE FROM task_action_items WHERE id = ?", (item_id,),
+            "UPDATE task_action_items SET deleted_at = ?, updated_at = ? "
+            "WHERE id = ?",
+            (now, now, item_id),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+
+def restore(item_id: int) -> bool:
+    """Clear ``deleted_at`` on a soft-deleted action item.
+
+    Inverse of :func:`delete`. Returns True iff the row existed and
+    had ``deleted_at`` set.
+    """
+    conn = store.get_connection()
+    try:
+        row = conn.execute(
+            "SELECT deleted_at FROM task_action_items WHERE id = ?",
+            (item_id,),
+        ).fetchone()
+        if not row or row["deleted_at"] is None:
+            return False
+        now = _now_iso()
+        cursor = conn.execute(
+            "UPDATE task_action_items SET deleted_at = NULL, updated_at = ? "
+            "WHERE id = ?",
+            (now, item_id),
         )
         conn.commit()
         return cursor.rowcount > 0
@@ -259,11 +341,17 @@ def delete(item_id: int) -> bool:
 def approve(item_id: int) -> dict[str, Any]:
     """Mark an agent-proposed action item as user-approved.
 
-    Sets ``approved_at`` to now and flips ``user_authored=1`` so the
-    safety check (:func:`is_executable`) admits future executions.
+    Flips ``authorship`` from ``'agent_unapproved'`` to
+    ``'agent_approved'`` so the safety check (:func:`is_executable`)
+    admits future executions.
+
+    Idempotent: calling on an already-user-authored or
+    already-agent-approved item is a no-op (the update only changes
+    ``authorship`` when the new value differs from the current one,
+    which it won't for those cases here — we always write
+    ``'agent_approved'``).
     """
-    now = _now_iso()
-    return update(item_id, user_authored=True, approved_at=now)
+    return update(item_id, authorship=Authorship.AGENT_APPROVED.value)
 
 
 def set_current(task_id: str, item_id: int | None) -> None:
@@ -292,22 +380,16 @@ def set_current(task_id: str, item_id: int | None) -> None:
 def is_executable(item: dict[str, Any]) -> bool:
     """Per ROADMAP §7: agent may only execute approved items.
 
-    Returns True iff the item is one of:
-      - ``user_authored == 1`` (the user wrote it; no approval needed)
-      - ``user_authored == 0 AND approved_at IS NOT NULL`` (the user
-        explicitly approved an agent-proposed item)
-
-    Items in state ``done`` or ``skipped`` are also non-executable
-    (they're terminal); ``in_progress`` and ``pending`` are eligible.
+    Returns True iff the item's ``authorship`` is in
+    :data:`EXECUTABLE_AUTHORSHIPS` (``'user'`` or ``'agent_approved'``)
+    AND its ``state`` is non-terminal (``'pending'`` or
+    ``'in_progress'``). ``'agent_unapproved'`` items always block;
+    ``'done'`` and ``'skipped'`` items always block.
     """
     state = item.get("state")
     if state in {"done", "skipped"}:
         return False
-    if int(item.get("user_authored", 0) or 0) == 1:
-        return True
-    if item.get("approved_at"):
-        return True
-    return False
+    return item.get("authorship") in EXECUTABLE_AUTHORSHIPS
 
 
 def position_in_task(item: dict[str, Any]) -> tuple[int, int]:

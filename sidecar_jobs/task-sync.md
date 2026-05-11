@@ -1,5 +1,5 @@
 ---
-schedule: "*/30 * * * *"  # every 30 minutes
+schedule: "*/10 * * * *"  # every 10 minutes (F2: dropped from 30 to reduce dashboard-vs-store lag)
 recurring: true
 type: capability
 capability: task_sync

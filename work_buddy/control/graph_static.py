@@ -140,6 +140,19 @@ DOMAINS: list[_DomainDef] = [
         # chip under the Hindsight subsystem rather than a domain child.
         "children_components": ["sidecar"],
     },
+    {
+        "id": "domain:backups",
+        "label": "Backups",
+        "description": (
+            "Off-machine snapshots of work-buddy's vital SQLite databases "
+            "(task_metadata, projects, messages, threads), pushed to a "
+            "user-owned private GitHub repo on a schedule. Local rolling "
+            "snapshots run unconditionally; the GitHub push is the "
+            "opt-in piece this component gates."
+        ),
+        "grouping_parents": [],
+        "children_components": ["github_backups"],
+    },
 ]
 
 

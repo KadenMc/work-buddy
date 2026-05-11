@@ -824,6 +824,115 @@ _register(RequirementDef(
 
 
 # ---------------------------------------------------------------------------
+# github_backups requirements
+# ---------------------------------------------------------------------------
+
+_register(RequirementDef(
+    id="integrations/github_backups/gh-cli-installed",
+    component="github_backups",
+    description="GitHub CLI (gh) is installed and on PATH",
+    check_fn="work_buddy.health.requirement_checks.check_gh_cli_installed",
+    severity="required",
+    fix_hint=(
+        "Install GitHub CLI from https://cli.github.com/. On Windows: "
+        "`winget install --silent GitHub.cli`. On macOS: `brew install gh`. "
+        "After install, restart your terminal so the new PATH entry takes "
+        "effect."
+    ),
+    setup_group="backups",
+    fix_kind="agent_handoff",
+    fix_preview=(
+        "Spawns a Claude Code session that walks you through installing "
+        "the GitHub CLI on this OS, with verification afterward."
+    ),
+    fix_agent_brief=(
+        "You are helping the user install the GitHub CLI (`gh`) on this "
+        "machine. work-buddy needs `gh` to push backup snapshots to a "
+        "private GitHub repo via Releases (off-machine backup of vital "
+        "SQLite data). Without it, only local rolling backups exist.\n\n"
+        "Detect the OS and recommend the appropriate command:\n"
+        "  - Windows: `winget install --silent GitHub.cli`\n"
+        "  - macOS:   `brew install gh`\n"
+        "  - Linux:   per https://github.com/cli/cli/blob/trunk/docs/install_linux.md\n\n"
+        "After install, run `gh --version` to confirm. If the user already "
+        "had `gh` installed but it's not on PATH (common on Windows after a "
+        "winget install), suggest restarting the terminal or adding "
+        "`%LOCALAPPDATA%\\Programs\\GitHub CLI` to PATH manually.\n\n"
+        "Then run the next requirement's fix (`gh-authenticated`) to log "
+        "in. The user does NOT need a paid GitHub plan — private repos "
+        "are free for personal use."
+    ),
+))
+
+_register(RequirementDef(
+    id="integrations/github_backups/gh-authenticated",
+    component="github_backups",
+    description="GitHub CLI is authenticated against github.com",
+    check_fn="work_buddy.health.requirement_checks.check_gh_authenticated",
+    severity="required",
+    fix_hint=(
+        "Run `gh auth login` and follow the browser-based device-code "
+        "flow. Choose GitHub.com, HTTPS protocol, and 'Login with a web "
+        "browser'. After authorizing, work-buddy can push backup tarballs "
+        "as Release assets."
+    ),
+    setup_group="backups",
+    fix_kind="agent_handoff",
+    fix_preview=(
+        "Spawns a Claude Code session that drives `gh auth login --web` "
+        "and walks you through the device-code authorization."
+    ),
+    fix_agent_brief=(
+        "You are helping the user authenticate the GitHub CLI on this "
+        "machine. Run `gh auth login --web` from a shell. The CLI will "
+        "print a one-time code and a URL (https://github.com/login/device); "
+        "the user opens the URL, pastes the code, and clicks Authorize.\n\n"
+        "After authorization completes, run `gh auth status` to verify. "
+        "The output should say `Logged in to github.com account <username>`.\n\n"
+        "If the user doesn't have a GitHub account yet, send them to "
+        "https://github.com/signup first (free, no credit card needed) and "
+        "come back. Without an account, there's no destination for the "
+        "backup snapshots."
+    ),
+))
+
+_register(RequirementDef(
+    id="integrations/github_backups/repo-configured",
+    component="github_backups",
+    description="Backup repository is set in config and exists on GitHub",
+    check_fn="work_buddy.health.requirement_checks.check_backup_repo_configured",
+    severity="required",
+    fix_hint=(
+        "Set `backups.github.repo` in config.local.yaml to `<user>/<repo>` "
+        "(e.g. `KadenMc/work-buddy-data`). The repo will be created as a "
+        "PRIVATE repo if it doesn't already exist. Click Fix to apply."
+    ),
+    setup_group="backups",
+    fix_kind="input_required",
+    fix_fn="work_buddy.health.fixers.fix_backup_repo_configured",
+    fix_params={
+        "repo_name": {
+            "type": "str",
+            "label": "Backup repository name (user/repo, or bare repo name)",
+            "hint": (
+                "Defaults to 'my-work-buddy-data' (the `my-` prefix avoids "
+                "confusion with the work-buddy source repo itself; `gh` "
+                "fills in your username automatically). Accept the default "
+                "OR enter '<user>/<repo>'. Will be CREATED PRIVATE if it "
+                "doesn't already exist on github.com."
+            ),
+            "default": "my-work-buddy-data",
+            "required": True,
+        },
+    },
+    fix_preview=(
+        "Writes `backups.github.repo` to config.local.yaml, then calls "
+        "`gh repo create --private` if the repo doesn't already exist."
+    ),
+))
+
+
+# ---------------------------------------------------------------------------
 # RequirementChecker
 # ---------------------------------------------------------------------------
 

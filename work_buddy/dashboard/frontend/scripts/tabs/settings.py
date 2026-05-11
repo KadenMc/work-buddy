@@ -1102,6 +1102,7 @@ function renderSettingsTree() {
         'domain:browser',
         'domain:calendar',
         'domain:runtime',
+        'domain:backups',
         'domain:system',
     ];
     const rendered = new Set();

@@ -616,3 +616,114 @@ def fix_tailscale_serve_configured() -> dict[str, Any]:
         "detail": f"Tailscale Serve now publishes the dashboard (port {port}) over HTTPS",
         "side_effects": side_effects,
     }
+
+
+# ---------------------------------------------------------------------------
+# github_backups
+# ---------------------------------------------------------------------------
+
+def fix_backup_repo_configured(repo_name: str) -> dict[str, Any]:
+    """Set ``backups.github.repo`` in config.local.yaml; create the
+    repo via ``gh repo create --private`` if it doesn't already exist.
+
+    Idempotent: if the repo already exists on GitHub AND the config
+    already points at it, this is a no-op (still returns ok=True).
+
+    Args:
+        repo_name: ``<user>/<repo>`` or just ``<repo>`` (gh defaults
+            to the authenticated user's account in the latter case).
+
+    Returns the standard ``{ok, detail, side_effects}`` shape.
+    """
+    import subprocess
+
+    side_effects: list[str] = []
+    if not repo_name or not repo_name.strip():
+        return {"ok": False, "detail": "repo_name is empty",
+                "side_effects": side_effects}
+    repo_name = repo_name.strip()
+
+    # Step 1: write config first so a subsequent gh repo view (or any
+    # downstream caller) reads the new value.
+    ok, detail, side = _set_config_value("backups.github.repo", repo_name)
+    if not ok:
+        return {
+            "ok": False,
+            "detail": f"Could not write backups.github.repo to config: {detail}",
+            "side_effects": side,
+        }
+    side_effects.extend(side)
+
+    # Step 2: check whether the repo exists on GitHub.
+    try:
+        proc = subprocess.run(
+            ["gh", "repo", "view", repo_name, "--json", "name"],
+            capture_output=True, text=True, timeout=15,
+        )
+    except FileNotFoundError:
+        return {
+            "ok": False,
+            "detail": ("gh CLI not on PATH — install it first "
+                       "(gh-cli-installed requirement)."),
+            "side_effects": side_effects,
+        }
+    except subprocess.TimeoutExpired:
+        return {
+            "ok": False,
+            "detail": "gh repo view timed out — check connectivity to github.com",
+            "side_effects": side_effects,
+        }
+
+    if proc.returncode == 0:
+        return {
+            "ok": True,
+            "detail": f"Config set; repo {repo_name} already exists on GitHub.",
+            "side_effects": side_effects,
+        }
+
+    # Repo doesn't exist (or auth issue). Try creating it.
+    stderr = (proc.stderr or "").strip()
+    lower = stderr.lower()
+    if "could not resolve to a repository" not in lower and "not found" not in lower:
+        # Some other error (auth, rate limit, etc.) — surface it.
+        return {
+            "ok": False,
+            "detail": f"gh repo view failed before create: {stderr}",
+            "side_effects": side_effects,
+        }
+
+    # Step 3: create as PRIVATE with an auto-generated README so the
+    # repo has a default branch from the start. Without ``--add-readme``,
+    # ``gh release create`` later fails with "Repository is empty" —
+    # GitHub Releases require at least one commit / a default branch
+    # to attach the tag to.
+    try:
+        create = subprocess.run(
+            ["gh", "repo", "create", repo_name,
+             "--private",
+             "--add-readme",
+             "--description", "work-buddy data backups (auto-managed)"],
+            capture_output=True, text=True, timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        return {
+            "ok": False,
+            "detail": "gh repo create timed out",
+            "side_effects": side_effects,
+        }
+    if create.returncode != 0:
+        return {
+            "ok": False,
+            "detail": ("gh repo create failed: "
+                       f"{(create.stderr or '').strip()}"),
+            "side_effects": side_effects,
+        }
+    side_effects.append(f"gh repo create {repo_name} --private --add-readme")
+    return {
+        "ok": True,
+        "detail": (
+            f"Created private repo {repo_name} (seeded with a README so "
+            "GitHub Releases can attach) and wrote config."
+        ),
+        "side_effects": side_effects,
+    }

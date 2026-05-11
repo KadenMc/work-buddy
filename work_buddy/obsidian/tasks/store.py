@@ -22,6 +22,15 @@ from work_buddy.logging_config import get_logger
 
 logger = get_logger(__name__)
 
+# ───────────────────────────────────────────────────────────────────
+# RETIRED. The ``_SCHEMA`` string and ``_SLICE_N_COLUMNS`` lists below
+# are no longer executed at runtime — schema management has moved to
+# the versioned migration ladder in
+# ``work_buddy/obsidian/tasks/migrations.py``. These constants are
+# preserved here as documentation of the schema's historical shape;
+# delete them once the project is comfortable that the migration
+# ladder is the unambiguous source of truth.
+# ───────────────────────────────────────────────────────────────────
 _SCHEMA = """\
 CREATE TABLE IF NOT EXISTS task_metadata (
     task_id         TEXT PRIMARY KEY,   -- e.g. 't-a3f8c1e2'
@@ -35,7 +44,7 @@ CREATE TABLE IF NOT EXISTS task_metadata (
     updated_at      TEXT NOT NULL,
     completed_at    TEXT,               -- ISO timestamp when state became 'done'
     archived_at     TEXT,               -- ISO timestamp when moved to archive
-    -- Slice 2: GTD vocabulary additions ---------------------------
+    -- GTD vocabulary -----------------------------------------------
     task_kind       TEXT NOT NULL DEFAULT 'task',  -- 'task' | 'periodic' | 'habit'
     density         TEXT NOT NULL DEFAULT 'sparse',-- 'sparse' | 'developed' | 'dense'
     outcome_text    TEXT,               -- desired end-state for developed tasks
@@ -48,20 +57,20 @@ CREATE TABLE IF NOT EXISTS task_metadata (
     deadline_date   TEXT,               -- ISO date when has_deadline=1
     has_dependency  INTEGER NOT NULL DEFAULT 0,
     dependency_hint TEXT,               -- free-text hint when has_dependency=1
-    -- Slice 3: description column ---------------------------------
+    -- Description text -------------------------------------------
     -- Human-readable task text extracted from the master-list line
     -- (checkbox / tags / wikilink / plugin emojis / 🆔 stripped).
-    -- NULL on initial migration; backfilled by task_sync from the
-    -- file. Source of truth: the markdown line. Store follows file
-    -- (same precedent as the checkbox/note_uuid reconciliation paths).
+    -- NULL on legacy rows; backfilled by task_sync from the file.
+    -- Source of truth: the markdown line. Store follows file (same
+    -- precedent as the checkbox / note_uuid reconciliation paths).
     description     TEXT,
-    -- Slice 4: risk model + automation tiers + last-actor ---------
+    -- Risk model + automation tiers + last-actor ------------------
     -- ``risk_profile_json``: JSON blob with the four dimensions
     -- (financial, privacy, accuracy, compute) + three amplifiers
     -- (reversibility, regret_potential, inference_uncertainty).
     -- NULL = "not yet classified" — the resolver treats NULL as the
     -- safe-profile fallback (low across the board, low amplifiers).
-    -- Populated by Slice 3's Clarify prompt at task-proposal time.
+    -- Populated by the Clarify prompt at task-proposal time.
     risk_profile_json TEXT,
     -- ``automation_tier_achievable``: cached output of
     -- ``resolve_achievable_tier(task)``. The OPERATING tier is NOT
@@ -72,9 +81,9 @@ CREATE TABLE IF NOT EXISTS task_metadata (
     -- time via ``consent.get_consent_context_info()`` — when the
     -- mutation fires inside a ``user_initiated()`` block the actor
     -- is the user; otherwise an autonomous agent path. NULL for
-    -- legacy tasks created before Slice 4.
+    -- legacy tasks created before the risk-model columns landed.
     last_actor      TEXT,
-    -- Slice 5a: action-context resolution layer -------------------
+    -- Action-context resolution layer ----------------------------
     -- ``agent_required_contexts`` / ``user_required_contexts``: JSON
     -- arrays of context tokens (e.g. ``@filesystem``, ``@email_send``)
     -- the agent / user must each be in for this action to fire.  Read
@@ -90,7 +99,7 @@ CREATE TABLE IF NOT EXISTS task_metadata (
     -- set so future re-runs of Clarify don't clobber the user's
     -- ownership.
     required_contexts_source TEXT,
-    -- Slice 7: density + per-action-item ----------------------------
+    -- Per-action-item pointer -------------------------------------
     -- ``current_action_item_id``: foreign key to task_action_items.id
     -- naming the step the user is currently focused on.  NULL for
     -- tasks that haven't been developed (sparse tasks at capture time).
@@ -113,14 +122,16 @@ CREATE TABLE IF NOT EXISTS task_action_items (
     agent_required_contexts TEXT,   -- JSON array, mirrors task_metadata
     user_required_contexts TEXT,
     definition_of_done TEXT,
-    user_authored   INTEGER NOT NULL DEFAULT 0,
-                    -- 0 = agent proposed, 1 = user wrote/edited
-    approved_at     TEXT,            -- when user-approved an agent-proposed item
+    authorship      TEXT NOT NULL DEFAULT 'agent_unapproved',
+                    -- 'user' | 'agent_approved' | 'agent_unapproved'
     completed_at    TEXT,
     handoff_package_path TEXT,       -- vault path to the prep package
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL,
-    FOREIGN KEY (task_id) REFERENCES task_metadata(task_id) ON DELETE CASCADE,
+    deleted_at      TEXT,            -- soft-delete; NULL = live row
+    FOREIGN KEY (task_id) REFERENCES task_metadata(task_id),
+                    -- FK has NO ON DELETE action: parent soft-deletes only;
+                    -- raw DELETE on task_metadata is rejected by SQLite.
     UNIQUE(task_id, sequence)
 );
 
@@ -151,6 +162,20 @@ CREATE TABLE IF NOT EXISTS task_tags (
     FOREIGN KEY (task_id) REFERENCES task_metadata(task_id) ON DELETE CASCADE
 );
 
+-- Single-row table recording the last successful task_sync run. The
+-- dashboard reads ``last_full_sync_at`` to render the "synced Xm ago"
+-- freshness label so the user can tell at a glance how stale the
+-- SQLite-primary view is relative to the markdown source. The CHECK
+-- constraint enforces single-row semantics — every write upserts row 1.
+CREATE TABLE IF NOT EXISTS task_sync_status (
+    id                  INTEGER PRIMARY KEY CHECK (id = 1),
+    last_full_sync_at   TEXT,                                -- ISO UTC
+    last_sync_created   INTEGER NOT NULL DEFAULT 0,
+    last_sync_updated   INTEGER NOT NULL DEFAULT 0,
+    last_sync_deleted   INTEGER NOT NULL DEFAULT 0,
+    updated_at          TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_task_state
     ON task_metadata(state);
 CREATE INDEX IF NOT EXISTS idx_task_contract
@@ -175,13 +200,12 @@ VALID_STATES = {"inbox", "mit", "focused", "snoozed", "done"}
 VALID_URGENCIES = {"low", "medium", "high"}
 VALID_COMPLEXITIES = {"simple", "moderate", "complex", None}
 
-# Slice 2 enums --------------------------------------------------------------
+# GTD-vocabulary enums --------------------------------------------------
 # task_kind enum. 'periodic' and 'habit' ship as forward-compat values
-# (Slice 9 wires up the reminder system that drives them); 'task' is the
-# Slice 2 default.
+# (a future reminder system will drive them); 'task' is the default.
 VALID_TASK_KINDS = {"task", "periodic", "habit"}
 
-# density enum. 'dense' is forward-compat for Slice 7+; not used in Slice 2.
+# density enum. 'dense' is forward-compat; not used today.
 VALID_DENSITIES = {"sparse", "developed", "dense"}
 
 # creation_effort: how informed was the agent that wrote this task?
@@ -192,24 +216,26 @@ VALID_USER_INVOLVEMENTS = {"low", "medium", "high"}
 
 # creation_provenance is intentionally OPEN (no validator) — new sources
 # (telegram, calendar, smart-source, …) get to register their own
-# provenance string without a code change. The starter set is documented
-# in Slice 2's task note. Convention: 'manual' or 'agent_inferred_from_*'.
+# provenance string without a code change. Convention: 'manual' or
+# 'agent_inferred_from_*'.
 
-# Slice 4 enums --------------------------------------------------------
+# Risk-model enums ------------------------------------------------------
 # last_actor: who most recently acted on the task. NULL = legacy (no
 # actor recorded yet). The set is closed because the resolver branches
-# on it; if Slice 7+ wants per-action-item actors, add a separate column.
+# on it; per-action-item actors would need a separate column.
 VALID_LAST_ACTORS = {"agent", "user", None}
 
-# Slice 5a enums -------------------------------------------------------
+# Action-context enums --------------------------------------------------
 # required_contexts_source: provenance of the agent / user context lists.
 # NULL = legacy (no contexts classified yet). 'agent_inferred' = Clarify
 # populated; 'user_authored' = the user edited the inferred set (locks
 # future Clarify runs from clobbering it).
 VALID_CONTEXT_SOURCES = {"agent_inferred", "user_authored", None}
 
-# Slice 2 column descriptors used by the idempotent migration. Keep this
-# in sync with the Slice 2 columns in _SCHEMA above. Format:
+# Column descriptors retained for test back-compat. The MigrationRunner
+# now owns schema evolution (see ``architecture/migrations``); these
+# lists are reference material and validation surface for legacy tests
+# that import them. Format:
 #   (column_name, sqlite_type, default_sql_literal_or_None, not_null_bool)
 _SLICE_2_COLUMNS: list[tuple[str, str, str | None, bool]] = [
     ("task_kind", "TEXT", "'task'", True),
@@ -226,54 +252,46 @@ _SLICE_2_COLUMNS: list[tuple[str, str, str | None, bool]] = [
     ("dependency_hint", "TEXT", None, False),
 ]
 
-# Slice 3 column descriptors: human-readable task description text.
-# Nullable on initial migration; task_sync backfills from the master
-# task list on its next run. Adding more columns later: append a new
-# ``_SLICE_N_COLUMNS`` list and extend the tuple consumed by
-# ``_migrate_schema``.
+# Description-column descriptor. Nullable; backfilled by task_sync from
+# the markdown master task list (markdown is the source of truth).
 _SLICE_3_COLUMNS: list[tuple[str, str, str | None, bool]] = [
     ("description", "TEXT", None, False),
 ]
 
-# Slice 4 column descriptors: risk model + automation-tier cache +
-# last-actor.  All nullable.  ``risk_profile_json`` is a JSON blob of
-# the four dimensions + three amplifiers — see
-# ``work_buddy.automation.risk`` for the schema and resolver semantics.
-# ``automation_tier_achievable`` caches a pure function of the task; it
-# is rebuilt by Clarify on creation and may be left NULL until then
-# (resolver re-derives lazily).  ``last_actor`` is detected at mutation
-# time via ``consent.get_consent_context_info()`` — we DON'T migrate
-# legacy rows; NULL means "before Slice 4 wired this in".
+# Risk model + automation-tier cache + last-actor column descriptors.
+# All nullable. ``risk_profile_json`` is a JSON blob of the four
+# dimensions + three amplifiers — see ``work_buddy.automation.risk``.
+# ``automation_tier_achievable`` caches a pure function of the task;
+# rebuilt by Clarify on creation, NULL until then (resolver re-derives
+# lazily). ``last_actor`` is detected at mutation time via
+# ``consent.get_consent_context_info()`` — legacy rows leave it NULL.
 _SLICE_4_COLUMNS: list[tuple[str, str, str | None, bool]] = [
     ("risk_profile_json", "TEXT", None, False),
     ("automation_tier_achievable", "INTEGER", None, False),
     ("last_actor", "TEXT", None, False),
 ]
 
-# Slice 5a column descriptors: action-context resolution layer.
-# All nullable JSON / enum columns.  ``agent_required_contexts`` and
-# ``user_required_contexts`` are TEXT JSON arrays.  Empty / NULL means
-# "no required contexts" (legacy rows).  ``required_contexts_source``
-# carries provenance ('agent_inferred' | 'user_authored' | NULL); the
-# value flips to ``user_authored`` once a human edits the inferred set
-# so future Clarify re-runs don't clobber the edit.
+# Action-context resolution column descriptors. All nullable JSON /
+# enum columns. ``agent_required_contexts`` and ``user_required_contexts``
+# are TEXT JSON arrays. Empty / NULL means "no required contexts" (legacy
+# rows). ``required_contexts_source`` carries provenance ('agent_inferred'
+# | 'user_authored' | NULL); flips to ``user_authored`` once a human
+# edits the inferred set so future Clarify re-runs don't clobber the edit.
 _SLICE_5A_COLUMNS: list[tuple[str, str, str | None, bool]] = [
     ("agent_required_contexts", "TEXT", None, False),
     ("user_required_contexts", "TEXT", None, False),
     ("required_contexts_source", "TEXT", None, False),
 ]
 
-# Slice 7 column descriptors: per-action-item pointer.  ``current_
-# action_item_id`` is a foreign key into ``task_action_items.id`` —
-# nullable because most legacy tasks don't have action items.
+# Per-action-item pointer column descriptor. ``current_action_item_id``
+# is a foreign key into ``task_action_items.id`` — nullable because
+# most legacy tasks don't have action items.
 _SLICE_7_COLUMNS: list[tuple[str, str, str | None, bool]] = [
     ("current_action_item_id", "INTEGER", None, False),
 ]
 
-# All slice-N column lists, in migration order. Append new lists here
-# rather than modifying historical ones — the comment headers above each
-# list are reading material for future-you ("when did this column
-# appear and why").
+# All migration-added column lists, in schema-evolution order. Retained
+# for test back-compat; the live migration path is in the MigrationRunner.
 _ALL_MIGRATED_COLUMNS: list[tuple[str, str, str | None, bool]] = (
     _SLICE_2_COLUMNS + _SLICE_3_COLUMNS + _SLICE_4_COLUMNS
     + _SLICE_5A_COLUMNS + _SLICE_7_COLUMNS
@@ -297,63 +315,35 @@ def _db_path() -> Path:
 def get_connection() -> sqlite3.Connection:
     """Open (or create) the task metadata database with WAL mode.
 
-    On every open we run :func:`_migrate_schema` — the migration is
-    idempotent (PRAGMA table_info gate) so the cost is one sqlite query
-    when columns already exist. This keeps the repo's "schema is what
-    you see in _SCHEMA" promise without requiring a separate migration
-    runner.
+    Schema is brought up to date by the versioned migration ladder
+    in ``work_buddy.obsidian.tasks.migrations`` — see that module for
+    the full ladder (m001..m007 currently) and ``work_buddy.storage.migrations``
+    for the runner's safety invariants (transaction wrapping, PRAGMA
+    foreign_keys discipline, race lock, downgrade guard, hash audit).
+    The runner is cheap when already at latest (one PRAGMA read + one
+    hash-verify pass; no DDL).
     """
     path = _db_path()
     conn = sqlite3.connect(str(path), timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
-    conn.executescript(_SCHEMA)
     _migrate_schema(conn)
     return conn
 
 
 def _migrate_schema(conn: sqlite3.Connection) -> None:
-    """Idempotent ALTER TABLE migration for schema additions.
+    """Apply any pending migrations to bring the DB to current schema.
 
-    SQLite's ``CREATE TABLE IF NOT EXISTS`` doesn't add columns to an
-    existing table. For every Slice-N column we want, check
-    ``PRAGMA table_info(task_metadata)`` and ``ALTER TABLE ADD COLUMN``
-    if missing. Defaults in the ALTER clause backfill existing rows.
-
-    Slice 2 columns added: task_kind, density, outcome_text,
-    next_action_text, definition_of_done, creation_effort,
-    user_involvement, creation_provenance, has_deadline,
-    deadline_date, has_dependency, dependency_hint.
-
-    Slice 3 columns added: description.
-
-    Slice 4 columns added: risk_profile_json,
-    automation_tier_achievable, last_actor.
-
-    Slice 5a columns added: agent_required_contexts,
-    user_required_contexts, required_contexts_source.
-
-    Adding more columns later: append a new ``_SLICE_N_COLUMNS`` list
-    and extend ``_ALL_MIGRATED_COLUMNS``. They'll get migrated on the
-    next connection open.
+    Delegates to ``TASK_MIGRATIONS.run(conn)``. The schema history
+    lives in ``work_buddy/obsidian/tasks/migrations.py`` as a numbered
+    ladder of idempotent DDL callables. New schema work appends a new
+    migration step (e.g. m010) — never modifies existing ones (the
+    runner's hash audit refuses edits to shipped migrations).
     """
-    existing = {
-        row["name"]
-        for row in conn.execute("PRAGMA table_info(task_metadata)")
-    }
-    for col_name, sql_type, default_sql, not_null in _ALL_MIGRATED_COLUMNS:
-        if col_name in existing:
-            continue
-        clause = f"{col_name} {sql_type}"
-        if default_sql is not None:
-            clause += f" DEFAULT {default_sql}"
-            if not_null:
-                clause += " NOT NULL"
-        # Skipping NOT NULL when no default — SQLite allows this for
-        # nullable additions, which is what the descriptor signals.
-        conn.execute(f"ALTER TABLE task_metadata ADD COLUMN {clause}")
-        logger.info("task_metadata: added column %s", col_name)
-    conn.commit()
+    # Lazy import: keeps the module load cycle clean if migrations.py
+    # ever needs to reference store.py for legitimate reasons.
+    from work_buddy.obsidian.tasks.migrations import TASK_MIGRATIONS
+    TASK_MIGRATIONS.run(conn)
 
 
 def _now_iso() -> str:
@@ -379,7 +369,7 @@ def create(
     contract: str | None = None,
     note_uuid: str | None = None,
     *,
-    # Slice 2 additions ----------------------------------------------
+    # GTD vocabulary -------------------------------------------------
     task_kind: str = "task",
     density: str = "sparse",
     outcome_text: str | None = None,
@@ -392,13 +382,13 @@ def create(
     deadline_date: str | None = None,
     has_dependency: bool = False,
     dependency_hint: str | None = None,
-    # Slice 3 addition -----------------------------------------------
+    # Description ----------------------------------------------------
     description: str | None = None,
-    # Slice 4 additions ----------------------------------------------
+    # Risk model + automation tier + actor ---------------------------
     risk_profile_json: str | None = None,
     automation_tier_achievable: int | None = None,
     last_actor: str | None = None,
-    # Slice 5a additions ---------------------------------------------
+    # Action-context resolution --------------------------------------
     agent_required_contexts: str | None = None,
     user_required_contexts: str | None = None,
     required_contexts_source: str | None = None,
@@ -407,7 +397,7 @@ def create(
 
     Called when create_task() generates a new 🆔.
 
-    Slice 2 fields default to the "legacy task" assumption:
+    GTD-vocabulary fields default to the "legacy task" assumption:
     ``task_kind='task'``, ``density='sparse'``, ``creation_effort=
     'developed'``, ``user_involvement='high'``, ``creation_provenance=
     'manual'``. This matches the migration backfill so newly-created
@@ -484,13 +474,26 @@ def create(
     return {"task_id": task_id, "state": state, "urgency": urgency}
 
 
-def get(task_id: str) -> dict[str, Any] | None:
-    """Get metadata for a task by ID. Returns None if not found."""
+def get(task_id: str, *, include_deleted: bool = False) -> dict[str, Any] | None:
+    """Get metadata for a task by ID. Returns None if not found.
+
+    Soft-deleted rows (``deleted_at IS NOT NULL``) are invisible by
+    default. Pass ``include_deleted=True`` for recovery contexts that
+    need to inspect tombstoned rows (e.g. the snapshot-restore
+    validation path in ``architecture/backups``).
+    """
     conn = get_connection()
     try:
-        row = conn.execute(
-            "SELECT * FROM task_metadata WHERE task_id = ?", (task_id,)
-        ).fetchone()
+        if include_deleted:
+            row = conn.execute(
+                "SELECT * FROM task_metadata WHERE task_id = ?", (task_id,)
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT * FROM task_metadata "
+                "WHERE task_id = ? AND deleted_at IS NULL",
+                (task_id,),
+            ).fetchone()
         return dict(row) if row else None
     finally:
         conn.close()
@@ -519,13 +522,20 @@ def update(
     deadline_date: str | None = _SENTINEL,
     has_dependency: bool | None = None,
     dependency_hint: str | None = _SENTINEL,
-    # Slice 3 addition -----------------------------------------------
+    # Description ----------------------------------------------------
     description: str | None = _SENTINEL,
-    # Slice 4 additions ----------------------------------------------
+    # task_sync emoji-drift addition ---------------------------------
+    # Explicit completed_at writes — normally stamped automatically
+    # when ``state`` transitions to ``done``, but ``task_sync`` needs
+    # to backfill the date the user wrote next to ``✅`` in the
+    # markdown rather than the moment sync happened to run. Sentinel
+    # so callers can pass ``None`` to clear.
+    completed_at: str | None = _SENTINEL,
+    # Risk model + automation tier + actor ---------------------------
     risk_profile_json: str | None = _SENTINEL,
     automation_tier_achievable: int | None = _SENTINEL,
     last_actor: str | None = _SENTINEL,
-    # Slice 5a additions ---------------------------------------------
+    # Action-context resolution --------------------------------------
     agent_required_contexts: str | None = _SENTINEL,
     user_required_contexts: str | None = _SENTINEL,
     required_contexts_source: str | None = _SENTINEL,
@@ -573,7 +583,7 @@ def update(
         sets.append("note_uuid = ?")
         params.append(note_uuid)
 
-    # Slice 2 fields -------------------------------------------------
+    # GTD-vocabulary fields ------------------------------------------
     if task_kind is not None:
         if task_kind not in VALID_TASK_KINDS:
             raise ValueError(f"Invalid task_kind {task_kind!r}")
@@ -634,7 +644,17 @@ def update(
         sets.append("description = ?")
         params.append(description)
 
-    # Slice 4 fields -------------------------------------------------
+    if completed_at is not _SENTINEL:
+        # Explicit write wins over the state→done auto-stamp. If the
+        # caller passes both ``state="done"`` and an explicit
+        # ``completed_at``, the explicit value is what lands (later
+        # append overrides earlier in the same UPDATE — both columns
+        # end up in ``sets``, and SQLite uses the last assignment
+        # for the column).
+        sets.append("completed_at = ?")
+        params.append(completed_at)
+
+    # Risk-model fields ----------------------------------------------
     if risk_profile_json is not _SENTINEL:
         sets.append("risk_profile_json = ?")
         params.append(risk_profile_json)
@@ -651,7 +671,7 @@ def update(
         sets.append("last_actor = ?")
         params.append(last_actor)
 
-    # Slice 5a fields ------------------------------------------------
+    # Action-context fields ------------------------------------------
     if agent_required_contexts is not _SENTINEL:
         sets.append("agent_required_contexts = ?")
         params.append(agent_required_contexts)
@@ -706,19 +726,34 @@ def update(
 
 
 def delete(task_id: str) -> bool:
-    """Delete a task's metadata and state history. Returns True if found.
+    """Soft-delete a task. Returns True if the row existed and was flipped.
 
-    Writes a tombstone row to ``task_state_history`` (new_state='deleted')
-    before removing the metadata, so the deletion is visible in timelines.
+    The only way to remove a task_metadata row is to set its
+    ``deleted_at`` timestamp. Query paths default-filter
+    ``WHERE deleted_at IS NULL`` so the row becomes invisible to
+    normal reads, but the data — including referenced ``task_action_items``
+    and ``task_tags`` — is preserved forever. Use ``restore(task_id)``
+    to bring it back.
+
+    A row is added to ``task_state_history`` with ``new_state='deleted'``
+    so the timeline shows the lifecycle event. The row's prior
+    ``state`` is preserved on ``task_metadata`` itself (we don't blank
+    it) so a future ``restore()`` can return the task to its previous
+    live state.
+
+    Calling on an already-soft-deleted row is a no-op (returns False).
     """
     conn = get_connection()
     try:
         row = conn.execute(
-            "SELECT state FROM task_metadata WHERE task_id = ?", (task_id,)
+            "SELECT state, deleted_at FROM task_metadata WHERE task_id = ?",
+            (task_id,),
         ).fetchone()
         if not row:
             return False
-        # Tombstone: record deletion in history before removing data
+        if row["deleted_at"] is not None:
+            # Already soft-deleted; idempotent no-op.
+            return False
         now = _now_iso()
         conn.execute(
             """INSERT INTO task_state_history
@@ -726,10 +761,51 @@ def delete(task_id: str) -> bool:
                VALUES (?, ?, 'deleted', ?, 'deleted')""",
             (task_id, row["state"], now),
         )
-        conn.execute("DELETE FROM task_sessions WHERE task_id = ?", (task_id,))
-        conn.execute("DELETE FROM task_metadata WHERE task_id = ?", (task_id,))
+        conn.execute(
+            "UPDATE task_metadata SET deleted_at = ?, updated_at = ? "
+            "WHERE task_id = ?",
+            (now, now, task_id),
+        )
         conn.commit()
-        logger.info("Task metadata deleted (tombstone written): %s", task_id)
+        logger.info("Task metadata soft-deleted: %s", task_id)
+        return True
+    finally:
+        conn.close()
+
+
+def restore(task_id: str) -> bool:
+    """Clear the ``deleted_at`` flag on a soft-deleted task.
+
+    Returns True if a row existed and had ``deleted_at`` set. The
+    inverse of :func:`delete`. Records a ``new_state='restored'`` row
+    in ``task_state_history`` so the lifecycle is audit-visible.
+
+    Used by the snapshot-restore path (see ``architecture/backups``)
+    and by any future "undo deletion" UX (e.g. a ``task_recover``
+    capability).
+    """
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT state, deleted_at FROM task_metadata WHERE task_id = ?",
+            (task_id,),
+        ).fetchone()
+        if not row or row["deleted_at"] is None:
+            return False
+        now = _now_iso()
+        conn.execute(
+            """INSERT INTO task_state_history
+               (task_id, old_state, new_state, changed_at, reason)
+               VALUES (?, 'deleted', ?, ?, 'restored')""",
+            (task_id, row["state"], now),
+        )
+        conn.execute(
+            "UPDATE task_metadata SET deleted_at = NULL, updated_at = ? "
+            "WHERE task_id = ?",
+            (now, task_id),
+        )
+        conn.commit()
+        logger.info("Task metadata restored: %s", task_id)
         return True
     finally:
         conn.close()
@@ -740,8 +816,14 @@ def query(
     urgency: str | None = None,
     contract: str | None = None,
     include_archived: bool = False,
+    include_deleted: bool = False,
 ) -> list[dict[str, Any]]:
-    """Query task metadata with optional filters."""
+    """Query task metadata with optional filters.
+
+    Soft-deleted rows (``deleted_at IS NOT NULL``) are excluded by
+    default. Pass ``include_deleted=True`` for recovery / audit contexts
+    that need to see them.
+    """
     clauses: list[str] = []
     params: list[Any] = []
 
@@ -756,6 +838,8 @@ def query(
         params.append(contract)
     if not include_archived:
         clauses.append("archived_at IS NULL")
+    if not include_deleted:
+        clauses.append("deleted_at IS NULL")
 
     where = " AND ".join(clauses) if clauses else "1=1"
 
@@ -776,6 +860,7 @@ def search_by_description(
     limit: int = 50,
     include_archived: bool = False,
     include_done: bool = True,
+    include_deleted: bool = False,
 ) -> list[dict[str, Any]]:
     """Case-insensitive substring search over the description column.
 
@@ -818,6 +903,8 @@ def search_by_description(
         clauses.append("archived_at IS NULL")
     if not include_done:
         clauses.append("state != 'done'")
+    if not include_deleted:
+        clauses.append("deleted_at IS NULL")
 
     where = " AND ".join(clauses)
 
@@ -873,14 +960,68 @@ def get_events_in_range(since: str, until: str) -> list[dict[str, Any]]:
 
 
 def counts_by_state() -> dict[str, int]:
-    """Get task counts grouped by state (excluding archived)."""
+    """Get task counts grouped by state (excluding archived AND soft-deleted)."""
     conn = get_connection()
     try:
         rows = conn.execute(
             """SELECT state, COUNT(*) as count FROM task_metadata
-               WHERE archived_at IS NULL GROUP BY state"""
+               WHERE archived_at IS NULL AND deleted_at IS NULL
+               GROUP BY state"""
         ).fetchall()
         return {r["state"]: r["count"] for r in rows}
+    finally:
+        conn.close()
+
+
+def get_sync_status() -> dict[str, Any] | None:
+    """Return the last-recorded task_sync run metadata, or None if never run.
+
+    Used by the dashboard's "synced Xm ago" freshness label. The row
+    contains ``last_full_sync_at`` (ISO UTC), counts of created /
+    updated / deleted rows from the most recent sync, and ``updated_at``
+    (when the row itself was last written, which equals the sync
+    completion time).
+    """
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT last_full_sync_at, last_sync_created, last_sync_updated, "
+            "last_sync_deleted, updated_at FROM task_sync_status WHERE id = 1"
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def set_sync_status(
+    created: int = 0,
+    updated: int = 0,
+    deleted: int = 0,
+) -> None:
+    """Upsert the task_sync_status row with the current run's counts.
+
+    Always writes to row 1 (single-row table enforced by the CHECK
+    constraint). Called by ``task_sync`` at the end of a successful
+    reconciliation pass; the timestamp is generated server-side so the
+    caller never has to format it.
+    """
+    now = _now_iso()
+    conn = get_connection()
+    try:
+        conn.execute(
+            """INSERT INTO task_sync_status
+                 (id, last_full_sync_at, last_sync_created,
+                  last_sync_updated, last_sync_deleted, updated_at)
+               VALUES (1, ?, ?, ?, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET
+                 last_full_sync_at = excluded.last_full_sync_at,
+                 last_sync_created = excluded.last_sync_created,
+                 last_sync_updated = excluded.last_sync_updated,
+                 last_sync_deleted = excluded.last_sync_deleted,
+                 updated_at        = excluded.updated_at""",
+            (now, int(created), int(updated), int(deleted), now),
+        )
+        conn.commit()
     finally:
         conn.close()
 
@@ -960,22 +1101,61 @@ def set_task_tags(
     task_id: str,
     tags: list[tuple[str, bool]],
 ) -> None:
-    """Replace all tag rows for a task with the given list.
+    """Reconcile a task's tag set against a target via diff-and-update.
+
+    This function NEVER deletes — it computes the diff between the
+    currently-cached tag set and the target, then INSERTs rows that
+    are new and UPDATEs ``is_namespace`` where the classification has
+    changed. Rows present in the cache but absent from the target are
+    LEFT IN PLACE.
+
+    The trade-off: stale tag rows can accumulate if the user removes
+    a tag from a task line in markdown. Acceptable because (a)
+    accumulation is bounded by total tag-vocabulary churn, which is
+    slow; (b) the alternative is a hard DELETE, which is exactly the
+    wide-fanout-delete vector class the soft-delete + cascade-drop
+    discipline (see ``architecture/backups``, ``tasks/task_delete``)
+    closes off. If stale-tag accumulation becomes a real problem, a
+    future migration can add ``deleted_at`` to ``task_tags`` and move
+    this function to true soft-delete semantics.
 
     Args:
         task_id: The task this tag set applies to.
-        tags: Iterable of (tag, is_namespace) pairs. Tag strings must NOT
-              include the leading '#'.
+        tags: Iterable of (tag, is_namespace) pairs. Tag strings must
+            NOT include the leading '#'.
     """
+    target: dict[str, int] = {
+        tag: (1 if is_ns else 0) for tag, is_ns in tags
+    }
     conn = get_connection()
     try:
-        conn.execute("DELETE FROM task_tags WHERE task_id = ?", (task_id,))
-        if tags:
-            conn.executemany(
-                """INSERT OR REPLACE INTO task_tags
-                   (task_id, tag, is_namespace) VALUES (?, ?, ?)""",
-                [(task_id, tag, 1 if is_ns else 0) for tag, is_ns in tags],
+        existing: dict[str, int] = {
+            row["tag"]: row["is_namespace"]
+            for row in conn.execute(
+                "SELECT tag, is_namespace FROM task_tags WHERE task_id = ?",
+                (task_id,),
             )
+        }
+        # INSERT rows that are new (in target, not in existing).
+        new_rows = [
+            (task_id, tag, is_ns)
+            for tag, is_ns in target.items()
+            if tag not in existing
+        ]
+        if new_rows:
+            conn.executemany(
+                "INSERT INTO task_tags (task_id, tag, is_namespace) "
+                "VALUES (?, ?, ?)",
+                new_rows,
+            )
+        # UPDATE rows whose namespace classification has changed.
+        for tag, is_ns in target.items():
+            if tag in existing and existing[tag] != is_ns:
+                conn.execute(
+                    "UPDATE task_tags SET is_namespace = ? "
+                    "WHERE task_id = ? AND tag = ?",
+                    (is_ns, task_id, tag),
+                )
         conn.commit()
     finally:
         conn.close()
@@ -1004,9 +1184,10 @@ def tasks_with_tag(
 
     With ``prefix_match=True``, also matches descendant tags (e.g. a query
     for ``"paper"`` returns tasks tagged ``paper``, ``paper/ecg``, and
-    ``paper/ecg/experiments``). Only non-archived tasks are returned.
+    ``paper/ecg/experiments``). Only non-archived, non-soft-deleted tasks
+    are returned.
     """
-    clauses = ["t.archived_at IS NULL"]
+    clauses = ["t.archived_at IS NULL", "t.deleted_at IS NULL"]
     params: list[Any] = []
 
     if prefix_match:
@@ -1039,7 +1220,8 @@ def distinct_namespace_tags(recent_days: int = 14) -> list[dict[str, Any]]:
     """Return the full set of namespacey tags with open-task counts.
 
     Result: ``[{"tag": "paper/ecg-classifier", "count": 4, "recent_count": 2}, ...]``
-    ordered by tag ascending. Only counts non-archived tasks.
+    ordered by tag ascending. Only counts non-archived, non-soft-deleted
+    tasks.
 
     ``recent_count`` counts tasks whose ``created_at`` falls within the
     last ``recent_days`` days. Callers can use this to build a relevance
@@ -1058,7 +1240,9 @@ def distinct_namespace_tags(recent_days: int = 14) -> list[dict[str, Any]]:
                       SUM(CASE WHEN t.created_at >= ? THEN 1 ELSE 0 END) AS recent_count
                FROM task_tags tt
                JOIN task_metadata t ON t.task_id = tt.task_id
-               WHERE tt.is_namespace = 1 AND t.archived_at IS NULL
+               WHERE tt.is_namespace = 1
+                 AND t.archived_at IS NULL
+                 AND t.deleted_at IS NULL
                GROUP BY tt.tag
                ORDER BY tt.tag""",
             (cutoff_iso,),

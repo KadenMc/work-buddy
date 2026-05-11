@@ -1,4 +1,4 @@
-"""Density-promotion heuristic for Slice 2.
+"""Density-promotion heuristic.
 
 Detects candidates for promotion from ``density='sparse'`` to
 ``density='developed'``. Pure flagging — never auto-promotes (that

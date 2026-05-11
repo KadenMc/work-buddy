@@ -99,10 +99,11 @@ function renderTaskTable(tasks) {
 window._selectedNamespace = null;
 
 // Task state filter — a Set of state names the user wants visible.
-// Default: every non-done state. Users toggle individual chips to
-// add/remove states; "done" can be toggled on alongside any others
-// so the view can show arbitrary combinations.
-const TASK_STATES_ORDER = ["mit", "focused", "inbox", "snoozed", "done"];
+// Default: every active state (no done, no archived). Users toggle
+// individual chips to add/remove states; "done" or "archived" can be
+// toggled on to surface completed/archived tasks. "archived" reads
+// from tasks/archive.md so a bulk archive doesn't look like data loss.
+const TASK_STATES_ORDER = ["mit", "focused", "inbox", "snoozed", "done", "archived"];
 window._taskStateFilter = new Set(["mit", "focused", "inbox", "snoozed"]);
 
 function _applyTaskStateFilter(tasks, activeStates) {
@@ -152,7 +153,16 @@ async function loadTasks() {
                 )
                 : base;
             renderTaskTable(filtered);
+            // Update inline status to reflect the post-search count.
+            _renderFilterStatus(filtered.length, window._lastSyncedAt);
         });
+    }
+
+    // Bind the Sync button (idempotent: ._bound guard mirrors search-input).
+    const syncBtn = document.getElementById('task-sync-btn');
+    if (syncBtn && !syncBtn._bound) {
+        syncBtn._bound = true;
+        syncBtn.addEventListener('click', _onSyncClick);
     }
 }
 
@@ -339,26 +349,13 @@ async function _refreshTaskView() {
     const treeRoot = _buildNamespaceTree(stateFiltered);
     _renderNamespaceTree(treeRoot);
 
-    // Counts cards: baseline snapshot of state distribution (unfiltered
-    // by state, so the user can see what their chip toggles dropped).
-    const counts = {};
-    for (const t of allTasks) {
-        const s = t.state || (t.done ? 'done' : 'inbox');
-        counts[s] = (counts[s] || 0) + 1;
-    }
-    const countCards = Object.entries(counts).map(([state, n]) => `
-        <div class="card">
-            <div class="card-label">${state}</div>
-            <div class="card-value">${n}</div>
-        </div>
-    `).join('');
-    const countsEl = document.getElementById('task-counts');
-    const countsHtml = countCards || '<div class="empty-state">No tasks</div>';
-    if (typeof window._wbMorphReplace === 'function') {
-        window._wbMorphReplace(countsEl, countsHtml);
-    } else {
-        countsEl.innerHTML = countsHtml;
-    }
+    // The inline filter-status label sits at the end of the chip row.
+    // The count is computed AFTER the state filter + search-text filter
+    // run, so it reflects what the user is actually looking at — not
+    // the unfiltered total.
+    // The "synced Xm ago" half is computed client-side from the
+    // synced_at ISO timestamp in the API payload.
+    window._lastSyncedAt = data.synced_at || null;
 
     // Breadcrumb.
     const crumb = document.getElementById('task-namespace-breadcrumb');
@@ -397,6 +394,72 @@ async function _refreshTaskView() {
 
     window._allTasks = visible;
     renderTaskTable(visible);
+    _renderFilterStatus(visible.length, window._lastSyncedAt);
+}
+
+// Inline filter-status label rendered at the end of the chip row.
+// Updates on every refresh and on every search-input event.
+function _renderFilterStatus(visibleCount, syncedAtIso) {
+    const el = document.getElementById('task-filter-status');
+    if (!el) return;
+    const countText = visibleCount === 1 ? '1 task' : (visibleCount + ' tasks');
+    let syncedText = '';
+    if (syncedAtIso) {
+        try {
+            const synced = new Date(syncedAtIso);
+            const ageSec = Math.max(0, (Date.now() - synced.getTime()) / 1000);
+            syncedText = ' · synced ' + _humanizeAge(ageSec) + ' ago';
+        } catch (e) {
+            syncedText = ' · synced (?)';
+        }
+    } else {
+        syncedText = ' · never synced';
+    }
+    el.textContent = '· ' + countText + syncedText;
+}
+
+function _humanizeAge(seconds) {
+    if (seconds < 60) return Math.floor(seconds) + 's';
+    if (seconds < 3600) return Math.floor(seconds / 60) + 'm';
+    if (seconds < 86400) return Math.floor(seconds / 3600) + 'h';
+    return Math.floor(seconds / 86400) + 'd';
+}
+
+// Sync button handler. Posts to /api/task_sync which calls the
+// MCP capability inside a user_initiated() consent context so the
+// click is the consent boundary. On success, re-fetch the task list
+// so the freshness label updates.
+async function _onSyncClick() {
+    const btn = document.getElementById('task-sync-btn');
+    if (!btn || btn.disabled) return;
+    btn.disabled = true;
+    const originalText = btn.textContent;
+    btn.textContent = '⟳ Syncing...';
+    try {
+        const resp = await fetch('/api/task_sync', { method: 'POST' });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const data = await resp.json();
+        if (data && data.ok !== false) {
+            btn.textContent = '✓ Synced';
+            await _refreshTaskView();
+            setTimeout(() => {
+                btn.textContent = originalText;
+                btn.disabled = false;
+            }, 1500);
+        } else {
+            btn.textContent = '✗ ' + (data.error || 'Failed');
+            setTimeout(() => {
+                btn.textContent = originalText;
+                btn.disabled = false;
+            }, 3000);
+        }
+    } catch (e) {
+        btn.textContent = '✗ Error';
+        setTimeout(() => {
+            btn.textContent = originalText;
+            btn.disabled = false;
+        }, 3000);
+    }
 }
 
 function selectNamespace(ns) {

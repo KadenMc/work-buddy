@@ -1003,8 +1003,7 @@
         },
         "invokes": [
           "task_change_state",
-          "task_toggle",
-          "task_archive"
+          "task_toggle"
         ]
       },
       {
@@ -1029,9 +1028,10 @@
     "step_instructions": {
       "gather": "Gather task data via the gateway:\n\n```\ninbox_review = mcp__work-buddy__wb_run(\"task_review_inbox\")\nstale = mcp__work-buddy__wb_run(\"task_stale_check\")\ncounts = mcp__work-buddy__wb_run(\"task_briefing\")\nprojects = mcp__work-buddy__wb_run(\"project_list\")\n```\n\nReturn the combined results as the step output.",
       "present": "Agentic step. The agent presents tasks and collects user decisions. Behavioral instructions (batch size, presentation format, action options) are in the slash command, not here.\n\nCollect decisions as structured output:\n```json\n[\n  {\"description_match\": \"...\", \"action\": \"focus|snooze|done|skip\"},\n  ...\n]\n```",
-      "apply": "For each decision from the present step, apply mutations via the gateway:\n\n```\nfor each decision:\n    if action == \"focus\":\n        mcp__work-buddy__wb_run(\"task_change_state\", {\"task_id\": \"<id>\", \"state\": \"focused\"})\n    elif action == \"snooze\":\n        mcp__work-buddy__wb_run(\"task_change_state\", {\"task_id\": \"<id>\", \"state\": \"snoozed\"})\n    elif action == \"done\":\n        mcp__work-buddy__wb_run(\"task_toggle\", {\"task_id\": \"<id>\", \"done\": true})\n    // \"skip\" = no-op\n```\n\nAlso run `mcp__work-buddy__wb_run(\"task_archive\")` if the gather step showed >10 completed tasks.",
+      "apply": "For each decision from the present step, apply mutations via the gateway:\n\n```\nfor each decision:\n    if action == \"focus\":\n        mcp__work-buddy__wb_run(\"task_change_state\", {\"task_id\": \"<id>\", \"state\": \"focused\"})\n    elif action == \"snooze\":\n        mcp__work-buddy__wb_run(\"task_change_state\", {\"task_id\": \"<id>\", \"state\": \"snoozed\"})\n    elif action == \"done\":\n        mcp__work-buddy__wb_run(\"task_toggle\", {\"task_id\": \"<id>\", \"done\": true})\n    // \"skip\" = no-op\n```\n\nDo NOT call `task_archive` from this step. Archiving is a separate, consent-gated bulk operation invoked deliberately (e.g. via `/wb-task-triage` follow-up or `wb_run(\"task_archive\")` with explicit intent). The default policy archives only tasks completed >= 7 days ago — older completed work — so a single triage pass shouldn't rake up everything the user just finished. See `tasks/task_archive` for the consent prompt's count + sample-title preview.",
       "summary": "Agentic step. The agent reports what changed. Behavioral instructions (what to include, format) are in the slash command, not here."
-    }
+    },
+    "dev_notes": "task-triage previously auto-fired `task_archive()` (zero args) at the apply step when the gather step showed >10 completed tasks. This collapsed bulk-archive into the same consent prompt as per-task state changes, leading to the 2026-05-08 incident where 183 tasks archived against a user who thought they were approving a single-task test. The fix: archiving is now an explicit, separate operation. The capability's own consent body shows a count and a random 5-title sample (see `archive_completed._archive_consent_body_extras`)."
   },
   "daily-journal/update-journal": {
     "kind": "workflow",

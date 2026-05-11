@@ -287,6 +287,21 @@ def _auto_consent_request(
             risk = meta["risk"]
             ttl = meta["default_ttl"]
             lines.append(f"- **{op}** ({risk}) — {reason}")
+            # Best-effort dynamic body enrichment. Callable returns a
+            # multi-line string already formatted with leading indent —
+            # we append it verbatim. Failures here must never block the
+            # prompt; the user is waiting for an approval modal.
+            extras_fn = meta.get("body_extras")
+            if extras_fn is not None:
+                try:
+                    extras = extras_fn()
+                except Exception:
+                    # Best-effort enrichment; never block the prompt on a
+                    # body_extras failure. The static reason still landed
+                    # above, so the user sees something coherent.
+                    extras = ""
+                if extras:
+                    lines.append(str(extras))
             if risk_order.get(risk, 0) > risk_order.get(max_risk, 0):
                 max_risk = risk
             max_ttl = max(max_ttl, ttl)
