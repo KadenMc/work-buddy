@@ -34,14 +34,16 @@ base, so we'd be writing this code regardless. Better to own it.
    work-buddy code is not allowed to operate on a schema it doesn't
    understand.
 
-5. **Hash audit.** Each migration's compiled bytecode + referenced
-   names + non-docstring constants are hashed at apply time and stored
-   in ``_migration_history``. On subsequent runs, applied migrations
+5. **Hash audit.** Each migration's source AST (with docstrings
+   stripped) is hashed at apply time and stored in
+   ``_migration_history``. On subsequent runs, applied migrations
    are verified against their stored hash — detects the "someone
    edited a shipped migration callable" anti-pattern that Flyway's
    checksum enforcement guards against, while ignoring cosmetic edits
    (docstrings, comments, whitespace) that don't change runtime
-   behavior.
+   behavior. The AST approach is Python-version-independent: the
+   same source produces the same hash on every CPython release that
+   parses it identically.
 
 ## Invariants the caller must hold
 
@@ -66,9 +68,11 @@ base, so we'd be writing this code regardless. Better to own it.
 
 from __future__ import annotations
 
-import dis
+import ast
 import hashlib
+import inspect
 import sqlite3
+import textwrap
 from dataclasses import dataclass
 from typing import Callable
 
@@ -78,10 +82,18 @@ logger = get_logger(__name__)
 
 
 # Identifier baked into every newly-stamped hash. Bumping this string
-# is how we'd roll out a future hashing-algorithm change: legacy rows
-# at the older identifier get re-stamped on first encounter (see
-# ``_verify_history_hashes``).
-HASH_FORMAT_CURRENT = "bytecode_v1"
+# is how we roll out a hashing-algorithm change: legacy rows at the
+# older identifier get re-stamped on first encounter (see
+# ``_verify_history_hashes``). History:
+#
+# - ``bytecode_v1``: hashed ``dis.get_instructions`` argvals. Stable
+#   across cosmetic edits but tied to the CPython compiler, so the
+#   same source produced different hashes on Python 3.11 vs 3.13.
+# - ``ast_v1`` (current): hashes ``ast.unparse`` of the parsed
+#   source with docstrings stripped and the outer ``FunctionDef``
+#   name normalised. Same source → same hash on every Python
+#   release that parses it identically.
+HASH_FORMAT_CURRENT = "ast_v1"
 
 
 # ─── Exceptions ─────────────────────────────────────────────────────
@@ -111,6 +123,59 @@ class MigrationHashMismatch(MigrationError):
     on mismatch. The fix is to add a NEW migration step that corrects
     whatever the edit was trying to fix, not to patch the old step.
     """
+
+
+# ─── AST helpers ────────────────────────────────────────────────────
+
+
+def _strip_docstrings(tree: ast.AST) -> None:
+    """Remove docstring ``Expr`` nodes from every function / class / module body.
+
+    Docstrings live in the AST as the first statement of a body when
+    it's an ``Expr`` wrapping a string ``Constant``. Removing them
+    before hashing keeps docstring edits (add / remove / rewrite)
+    invisible to the audit — the same way they're invisible to runtime
+    behaviour.
+    """
+    docstring_holders = (
+        ast.Module,
+        ast.FunctionDef,
+        ast.AsyncFunctionDef,
+        ast.ClassDef,
+    )
+    for node in ast.walk(tree):
+        if not isinstance(node, docstring_holders):
+            continue
+        body = getattr(node, "body", None)
+        if not body:
+            continue
+        first = body[0]
+        if (
+            isinstance(first, ast.Expr)
+            and isinstance(first.value, ast.Constant)
+            and isinstance(first.value.value, str)
+        ):
+            body.pop(0)
+
+
+def _normalize_outer_fn_name(tree: ast.AST) -> None:
+    """Erase the top-level ``FunctionDef``'s name from the hashed AST.
+
+    The migration callable is referenced from the ``MigrationRunner``
+    constructor by Python binding, not by name string — renaming
+    ``_m001_initial`` to ``_m001_initial_schema`` doesn't change what
+    the migration *does*, only the symbol that the migrations list
+    holds a reference to. Treat that rename as cosmetic.
+
+    Inner / nested ``FunctionDef`` names are left alone — those
+    typically *are* referenced by name from the enclosing scope, so
+    renaming one would be a behavioural change.
+    """
+    if not isinstance(tree, ast.Module):
+        return
+    for stmt in tree.body:
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            stmt.name = "<fn>"
 
 
 # ─── Migration record ───────────────────────────────────────────────
@@ -266,70 +331,68 @@ class MigrationRunner:
 
     @staticmethod
     def _hash_callable(fn: Callable) -> str:
-        """Hash a migration callable's *resolved* instruction stream.
+        """Hash a migration callable from its source AST.
 
-        We disassemble the function and serialize each instruction as
-        ``opname || argrepr`` (the argument's resolved value, not the
-        index into the constants/names pool). This is *index-invariant*
-        — rearranging ``co_consts`` or ``co_names`` doesn't change the
-        serialization as long as each instruction's resolved argument
-        is the same.
+        ``inspect.getsource`` returns the function text; ``ast.parse``
+        produces a syntax tree; we strip docstrings and the outer
+        function name; ``ast.unparse`` round-trips the tree back to
+        canonical source text; SHA-256 reduces that text to a digest.
+        Comments, blank lines, and whitespace never reach the AST so
+        they're invisible by construction. Docstrings *do* reach the
+        AST (as the first ``Expr`` of a body) so we strip them
+        explicitly before unparsing.
 
-        Why that matters:
+        Real edits the audit catches:
 
-        - Adding a docstring shifts every constant index in ``co_consts``,
-          which would change a literal bytecode hash even though no
-          instruction's behaviour changed. With resolved argvals, the
-          shift is invisible — ``RETURN_CONST 0 (None)`` and
-          ``RETURN_CONST 2 (None)`` both serialize to ``RETURN_CONST None``.
-
-        - The docstring itself is never loaded by any instruction; it
-          goes straight to ``__doc__``. So it never appears in the
-          serialized stream. Docstring edits, additions, and removals
-          are all invisible to the hash.
-
-        - Comments, blank lines, and whitespace don't survive
-          compilation at all. They never reach the bytecode.
-
-        Real edits that the audit catches:
-
-        - Any change to a string literal that the function loads
-          (e.g. editing the DDL passed to ``execute()``).
+        - Any change to a string literal the function loads (e.g. the
+          DDL inside ``execute()``) — visible as a ``Constant`` node.
         - Any change to control flow, calls, or operators.
-        - Any change to which globals/builtins are referenced.
-        - Any change to argument names (changes ``co_varnames`` and
-          therefore the resolved ``LOAD_FAST`` argval).
+        - Any change to which globals or builtins are referenced.
+        - Any rename of local variables, arguments, or the function
+          itself — ``Name``, ``arg``, and ``FunctionDef.name`` all
+          carry identifiers.
 
-        Limitation: instructions whose ``argval`` is ``None`` (no
-        argument) serialize identically. This matches what we want
-        — those instructions are fully described by their opname
-        alone.
+        Why this approach, not bytecode: the previous ``bytecode_v1``
+        format hashed ``dis.get_instructions`` output, which depends
+        on the CPython compiler. The same source produced different
+        hashes on Python 3.11 vs 3.13 because the compilers emit
+        slightly different instruction streams. ``ast.unparse``
+        round-trips the syntax tree back to source text — the output
+        depends only on the tree's *shape*, not on how the compiler
+        emits bytecode, and it's stable across Python releases that
+        parse the source identically. (``ast.dump`` would have
+        worked, but its empty-field behaviour changed in 3.13 — see
+        bpo-48935 — and ``_fields`` itself shifted between minor
+        releases. ``ast.unparse`` sidesteps both.)
+
+        Fallback: callables we can't pull source for (C-defined,
+        ``functools.partial``, callable instances with no inspectable
+        ``__call__`` source) get a qualname-only fingerprint. Detects
+        identity changes, nothing finer — same posture as the prior
+        no-code fallback.
         """
         try:
-            code = fn.__code__
-        except AttributeError:
-            # Defensive: callables without a __code__ (e.g.
-            # functools.partial, C-defined functions, callable
-            # class instances). Fall back to a hash of the qualname
-            # so we at least detect identity changes.
+            source = inspect.getsource(fn)
+        except (OSError, TypeError):
             name = getattr(
                 fn, "__qualname__", None
             ) or getattr(type(fn), "__qualname__", repr(fn))
             return hashlib.sha256(
-                f"<no-code:{name}>".encode("utf-8")
+                f"<no-source:{name}>".encode("utf-8")
             ).hexdigest()
 
-        parts: list[str] = []
-        for inst in dis.get_instructions(code):
-            # ``argval`` is the resolved value: for LOAD_CONST that's
-            # the constant itself, for LOAD_GLOBAL/STORE_NAME that's
-            # the name string, for LOAD_FAST that's the variable name.
-            # ``repr`` gives a deterministic textual form regardless
-            # of the value's identity in memory.
-            parts.append(inst.opname)
-            parts.append(repr(inst.argval))
-        blob = "||".join(parts).encode("utf-8")
-        return hashlib.sha256(blob).hexdigest()
+        tree = ast.parse(textwrap.dedent(source))
+        _strip_docstrings(tree)
+        _normalize_outer_fn_name(tree)
+        # ``ast.unparse`` round-trips the tree back to canonical source
+        # text. This is the version-portable serialization: it ignores
+        # field-set changes (e.g. 3.12 adding ``type_params`` to
+        # ``FunctionDef``) and the 3.13 ``ast.dump`` empty-field
+        # behaviour change, because both modifications only affect
+        # *fields that aren't actually populated by typical migration
+        # source*. The unparsed text is the same on every Python.
+        canonical = ast.unparse(tree)
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
     def _ensure_history_schema(self, conn: sqlite3.Connection) -> None:
         """Bring ``_migration_history`` up to the current shape.
