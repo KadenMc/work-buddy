@@ -2,9 +2,9 @@
 
 Focus areas:
 
-- ``_hash_callable`` rejects only the edits we care about (bytecode /
-  literal / name changes) and ignores cosmetic ones (docstring rewrites,
-  comment changes, whitespace).
+- ``_hash_callable`` rejects only the edits we care about (string-literal,
+  control-flow, or name changes) and ignores cosmetic ones (docstring
+  rewrites, comment changes, whitespace).
 - The auto-rehash path silently re-stamps legacy ``hash_format`` rows
   on first encounter, leaves them strict thereafter.
 - ``MigrationHashMismatch`` still fires for genuine post-ship edits.
@@ -12,6 +12,7 @@ Focus areas:
 
 from __future__ import annotations
 
+import linecache
 import sqlite3
 import textwrap
 import types
@@ -30,15 +31,32 @@ from work_buddy.storage.migrations import (
 # ─── Helpers ────────────────────────────────────────────────────────
 
 
+_compile_counter = 0
+
+
 def _compile_fn(src: str) -> types.FunctionType:
     """Compile a single function from source and return it.
 
     Used to build pairs of "cosmetically different / behaviorally
     identical" migrations and "behaviorally different" migrations
-    without paying the import-roundtrip tax.
+    without paying the import-roundtrip tax. The source is registered
+    in ``linecache`` under a unique synthetic filename so
+    ``inspect.getsource`` (the basis of the AST-hashing audit) can
+    retrieve it.
     """
+    global _compile_counter
+    _compile_counter += 1
+    src = textwrap.dedent(src).lstrip("\n")
+    filename = f"<test_compile_fn:{_compile_counter}>"
+    linecache.cache[filename] = (
+        len(src),
+        None,
+        src.splitlines(keepends=True),
+        filename,
+    )
+    code = compile(src, filename, "exec")
     ns: dict[str, object] = {}
-    exec(textwrap.dedent(src), ns)
+    exec(code, ns)
     fn = next(v for v in ns.values() if isinstance(v, types.FunctionType))
     return fn
 
@@ -165,8 +183,8 @@ class TestHashCallable:
         assert MigrationRunner._hash_callable(fn_a) != MigrationRunner._hash_callable(fn_b)
 
     def test_global_rename_is_detected(self):
-        # Different globally-referenced names (sqlite3 vs sqlite) trip
-        # the audit even when bytecode shapes are otherwise similar.
+        # Different globally-referenced names (sqlite3 vs os) appear
+        # as distinct Name nodes in the AST and trip the audit.
         fn_a = _compile_fn(
             """
             def m(conn):
@@ -195,6 +213,49 @@ class TestHashCallable:
         fn = Callme()
         h = MigrationRunner._hash_callable(fn)
         assert isinstance(h, str) and len(h) == 64
+
+    def test_outer_function_rename_is_ignored(self):
+        # The migration's binding name in the migrations list doesn't
+        # change behaviour. Renaming the outer ``def`` from
+        # ``_m001_initial`` to ``_m001_initial_schema`` should leave
+        # the hash unchanged so reviewers can clean up function names
+        # without tripping the audit.
+        fn_a = _compile_fn(
+            """
+            def _m001_initial(conn):
+                conn.execute("CREATE TABLE t (id INTEGER)")
+            """
+        )
+        fn_b = _compile_fn(
+            """
+            def _m001_initial_schema(conn):
+                conn.execute("CREATE TABLE t (id INTEGER)")
+            """
+        )
+        assert MigrationRunner._hash_callable(fn_a) == MigrationRunner._hash_callable(fn_b)
+
+    def test_local_variable_rename_is_detected(self):
+        # Local renames change Name nodes in the AST and therefore the
+        # hash. This is a conservative posture — renaming `cursor` to
+        # `cur` doesn't change DDL behaviour, but the audit catches it
+        # anyway. If a future ergonomic change wants to normalize
+        # locals, that's a deliberate decision; this test locks the
+        # current contract so it can't drift silently.
+        fn_a = _compile_fn(
+            """
+            def m(conn):
+                cursor = conn.cursor()
+                cursor.execute("CREATE TABLE t (id INTEGER)")
+            """
+        )
+        fn_b = _compile_fn(
+            """
+            def m(conn):
+                cur = conn.cursor()
+                cur.execute("CREATE TABLE t (id INTEGER)")
+            """
+        )
+        assert MigrationRunner._hash_callable(fn_a) != MigrationRunner._hash_callable(fn_b)
 
 
 # ─── End-to-end: runner against a real sqlite DB ────────────────────
