@@ -209,21 +209,69 @@ class RetrySweep:
 
         # Fix-(b): effect-graph-aware verify when the capability has a
         # manifest. Otherwise fall back to single-effect.
-        declared_effects = []
+        #
+        # Wrapper-aware path: when the queued capability is a retry
+        # wrapper (``retry`` / ``obsidian_retry``) that replays an
+        # inner op by id, the wrapper itself has no manifest.
+        # Single-effect verify on the carrier path would report
+        # "verified" on a partial-state write whenever the carrier
+        # happens to point at one of the inner capability's
+        # successfully-landed effects. Resolve the inner op's manifest
+        # and walk THAT instead. Falls back to single-effect when the
+        # inner record can't be loaded.
+        declared_effects: list = []
+        verify_params = record.get("params") if record else None
         if record is not None:
             try:
-                from work_buddy.mcp_server.registry import get_registry
-                reg = get_registry()
-                entry = reg.get(record.get("name"))
+                from work_buddy.mcp_server.registry import (
+                    get_registry,
+                    get_disabled_registry,
+                )
+
+                def _lookup_entry(name: str | None):
+                    """Lookup a capability across both active and disabled
+                    registries — a capability disabled by a transient tool
+                    probe failure still has its declared ``effects`` and
+                    is the right source of truth for the verifier."""
+                    if not name:
+                        return None
+                    reg = get_registry()
+                    found = reg.get(name)
+                    if found is not None:
+                        return found
+                    try:
+                        return get_disabled_registry().get(name)
+                    except Exception:
+                        return None
+
+                entry = _lookup_entry(record.get("name"))
                 declared_effects = list(getattr(entry, "effects", None) or [])
+                if not declared_effects:
+                    inner = _resolve_inner_op_for_wrapper(record)
+                    if inner is not None:
+                        inner_entry = _lookup_entry(inner.get("name"))
+                        inner_effects = list(
+                            getattr(inner_entry, "effects", None) or []
+                        )
+                        if inner_effects:
+                            declared_effects = inner_effects
+                            verify_params = inner.get("params") or {}
+                            logger.info(
+                                "_pre_verify_pwu: wrapper %r — using inner "
+                                "capability %r's effects manifest (%d effects)",
+                                record.get("name"),
+                                inner.get("name"),
+                                len(inner_effects),
+                            )
             except Exception:
                 declared_effects = []
+                verify_params = record.get("params") if record else None
 
         try:
             if declared_effects:
                 verdict = verify_post_write_effects(
                     declared_effects,
-                    params=record.get("params") if record else None,
+                    params=verify_params,
                 )
                 # "partial", "absent", "indeterminate" → normal replay.
                 # Only "verified" (all effects landed) skips the replay.
@@ -415,6 +463,27 @@ class RetrySweep:
                         return {"success": False, "error": str(err), "transient": True}
                     else:
                         return {"success": False, "error": str(err), "transient": False}
+
+                # Inspect the inner capability's per-effect verification
+                # dict. A capability reporting via ``verified`` that one
+                # of its effects didn't land (e.g. note wrote, master-
+                # list line didn't) would otherwise pass the absence-of-
+                # ``error`` check and fire retry_success on a partial-
+                # state write. Capabilities with declared effects are
+                # required to be idempotent under retry, so re-
+                # enqueueing is safe and the next replay heals the
+                # half-state.
+                failing = _partial_verified_fields(result.get("verified"))
+                if failing:
+                    msg = (
+                        f"Capability reported partial verification: "
+                        f"{', '.join(failing)}"
+                    )
+                    return {
+                        "success": False,
+                        "error": msg,
+                        "transient": True,
+                    }
 
             # Success — update the operation record
             record["status"] = "completed"
@@ -689,6 +758,76 @@ class RetrySweep:
             )
         except Exception as exc:
             logger.warning("Failed to fail workflow step: %s", exc)
+
+
+# ---------------------------------------------------------------------------
+# Verified-dict inspection
+# ---------------------------------------------------------------------------
+
+
+def _partial_verified_fields(verified: Any) -> list[str]:
+    """Return the keys of a capability's ``verified`` dict whose value
+    is NOT a positive verification signal.
+
+    Accepts both the boolean shape (``True`` / ``False``) and the
+    string-verdict shape (``"verified" | "absent" | "indeterminate" |
+    "partial"``) so capabilities can use either vocabulary. Anything
+    other than ``True`` or ``"verified"`` is treated as a not-yet-
+    verified effect — empty return list means everything verified.
+
+    Returns an empty list when ``verified`` is missing, not a dict, or
+    every field is positive — caller should treat as success.
+    """
+    if not isinstance(verified, dict):
+        return []
+    failing: list[str] = []
+    for key, value in verified.items():
+        if value is True:
+            continue
+        if isinstance(value, str) and value == "verified":
+            continue
+        failing.append(key)
+    return failing
+
+
+# ---------------------------------------------------------------------------
+# Wrapper-aware inner-op resolution
+# ---------------------------------------------------------------------------
+
+# Capability names that wrap another operation by id, replaying it via the
+# registry. These take a single ``operation_id`` parameter that points at an
+# inner op record. The wrapper itself has no effects manifest — verify paths
+# need the inner capability's manifest to walk multi-effect state correctly.
+_WRAPPER_CAPS: frozenset[str] = frozenset({"retry", "obsidian_retry"})
+
+
+def _resolve_inner_op_for_wrapper(
+    record: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Return the inner op record a wrapper capability references, or None.
+
+    Used by ``_pre_verify_pwu`` so wrapper-style queued ops walk the inner
+    capability's effects manifest instead of single-effect-verifying just
+    the path on the PWU carrier.
+
+    Returns None when the record isn't a wrapper, doesn't carry an
+    ``operation_id`` param, or the inner op record can't be loaded.
+    """
+    if not record:
+        return None
+    if record.get("name") not in _WRAPPER_CAPS:
+        return None
+    inner_id = (record.get("params") or {}).get("operation_id")
+    if not inner_id:
+        return None
+    inner_path = _get_operations_dir() / f"{inner_id}.json"
+    if not inner_path.exists():
+        return None
+    try:
+        import json as _json
+        return _json.loads(inner_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
 
 
 # ---------------------------------------------------------------------------

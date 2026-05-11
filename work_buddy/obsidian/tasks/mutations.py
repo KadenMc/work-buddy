@@ -1608,20 +1608,54 @@ def create_task(
     return result
 
 
-def _verify_task_creation(task_id: str, note_path: str | None) -> dict[str, bool]:
-    """Quick verification that all writes landed. Returns per-target status."""
-    result: dict[str, bool] = {}
+def _verify_task_creation(task_id: str, note_path: str | None) -> dict[str, str]:
+    """Quick verification that all writes landed. Returns per-target verdict.
 
-    # Check task line in master list
+    Verdict vocabulary matches the multi-effect verifier
+    (``architecture/retry-queue``): ``"verified" | "absent" |
+    "indeterminate"``. ``"partial"`` doesn't apply here — each effect is
+    checked independently.
+
+    String verdicts (rather than a True/False collapse) preserve the
+    distinction between "definitely missing" (real partial-write —
+    re-enqueue) and "couldn't read the file" (transient bridge issue —
+    also re-enqueue but for a different reason). The retained
+    information makes partial-state failures cheaper to diagnose from
+    the response alone.
+
+    ``retry_sweep._partial_verified_fields`` treats anything other than
+    ``True`` or ``"verified"`` as a not-yet-verified effect, so
+    ``"absent"`` and ``"indeterminate"`` both signal "schedule another
+    retry" without further logic.
+    """
+    result: dict[str, str] = {}
+
+    # Check task line in master list. A failed read can't tell us
+    # whether the write landed — keep that distinct from a definitely-
+    # absent line so callers (and humans reading the response) can act
+    # on the difference.
     master_content = bridge.read_file(MASTER_TASK_FILE)
-    result["task_line"] = master_content is not None and task_id in master_content
+    if master_content is None:
+        result["task_line"] = "indeterminate"
+    elif task_id in master_content:
+        result["task_line"] = "verified"
+    else:
+        result["task_line"] = "absent"
 
-    # Check store record
-    result["store"] = store.get(task_id) is not None
+    # Check store record (local SQLite — no transient failure mode worth
+    # distinguishing).
+    result["store"] = (
+        "verified" if store.get(task_id) is not None else "absent"
+    )
 
-    # Check note file (if applicable)
+    # Check note file (if applicable). Same indeterminate-vs-absent
+    # distinction as the master-list check.
     if note_path:
-        result["note"] = bridge.read_file(note_path) is not None
+        note_content = bridge.read_file(note_path)
+        if note_content is None:
+            result["note"] = "indeterminate"
+        else:
+            result["note"] = "verified"
 
     return result
 
