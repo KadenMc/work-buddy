@@ -1757,7 +1757,12 @@ def api_projects():
 
 @app.get("/api/projects/<slug>")
 def api_project_detail(slug: str):
-    """Get a single project with Hindsight memory recall + folder existence flags."""
+    """Get a single project + folder existence flags. Fast path — no Hindsight.
+
+    Memory is loaded async from ``/api/projects/<slug>/memories`` so the
+    detail pane renders immediately while the (potentially slow) Hindsight
+    call resolves in the background.
+    """
     try:
         from pathlib import Path
         from work_buddy.projects.store import get_project
@@ -1775,22 +1780,6 @@ def api_project_detail(slug: str):
             except OSError:
                 f["exists"] = False
 
-        # Recall from Hindsight project bank as structured items, so
-        # the dashboard can render each result as a log entry rather
-        # than a raw text dump.
-        memory_items: list[dict[str, Any]] = []
-        try:
-            from work_buddy.memory.query import recall_project_context_items
-            memory_items = recall_project_context_items(
-                query=f"Current state, recent decisions, and trajectory for {slug}",
-                project_slug=slug,
-                budget="low",
-                max_tokens=2048,
-            )
-        except Exception:
-            logger.debug("Hindsight recall unavailable for %s", slug)
-
-        project["memory_items"] = memory_items
         return jsonify(project)
     except Exception as e:
         logger.exception("Failed to get project %s", slug)

@@ -526,36 +526,16 @@ async function selectProject(slug) {
     html += '<span id="proj-save-status" style="font-size:12px; color:var(--text-muted);"></span>';
     html += '</div>';
 
-    // Memory section — recall results rendered as log entries
-    const memItems = Array.isArray(data.memory_items) ? data.memory_items : [];
-    html += '<div style="border-top:1px solid var(--border); padding-top:16px; margin-top:16px;">';
-    html += '<div style="font-size:11px; text-transform:uppercase; color:var(--text-muted); margin-bottom:8px;">Project Memory (Hindsight) — ' + memItems.length + ' relevant</div>';
-    if (memItems.length === 0) {
-        html += '<div style="color:var(--text-muted); font-size:13px;">No project memories yet. Add observations below or use project_observe via MCP.</div>';
-    } else {
-        const memLogHtml = memItems.map(m => {
-            const ft = m.type || 'memory';
-            const ftClass = ft === 'observation' ? 'warn' : 'info';
-            const source = (m.tags || []).filter(t => t.startsWith('source:')).map(t => t.slice(7)).join(', ');
-            return '<div class="log-entry ' + ftClass + '">' +
-                '<span class="log-kind">' + escapeHtml(ft) + (source ? ' (' + escapeHtml(source) + ')' : '') + '</span>' +
-                '<span class="log-msg">' + escapeHtml(m.text || '') + '</span>' +
-            '</div>';
-        }).join('');
-        html += '<div class="log-container" style="max-height:340px; overflow-y:auto;">' + memLogHtml + '</div>';
-    }
-    html += '</div>';
-
     // Add observation
-    html += '<div style="margin-top:16px;">';
+    html += '<div style="border-top:1px solid var(--border); padding-top:16px; margin-top:16px;">';
     html += '<div style="font-size:11px; text-transform:uppercase; color:var(--text-muted); margin-bottom:8px;">Add Observation</div>';
     html += '<textarea id="proj-obs" rows="3" placeholder="Record a decision, pivot, blocker, or insight about this project..." style="width:100%; padding:8px; background:var(--bg-tertiary); border:1px solid var(--border); border-radius:4px; color:var(--text-primary); font-size:14px; resize:vertical; box-sizing:border-box;"></textarea>';
     html += '<button id="proj-obs-btn" class="nb-btn nb-btn-neutral" style="margin-top:8px;">Retain Observation</button>';
     html += '<span id="proj-obs-status" style="font-size:12px; color:var(--text-muted); margin-left:8px;"></span>';
     html += '</div>';
 
-    // Observations log (loaded async)
-    html += '<div style="border-top:1px solid var(--border); padding-top:16px; margin-top:24px;">';
+    // Observations log (loaded async — does not block detail-pane render)
+    html += '<div style="margin-top:20px;">';
     html += '<div style="font-size:11px; text-transform:uppercase; color:var(--text-muted); margin-bottom:8px;">Observations</div>';
     html += '<div id="proj-observations-log"><div class="loading">Loading observations...</div></div>';
     html += '</div>';
