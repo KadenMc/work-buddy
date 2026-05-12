@@ -1759,7 +1759,7 @@ def api_projects():
 def api_project_detail(slug: str):
     """Get a single project + folder existence flags. Fast path — no Hindsight.
 
-    Memory is loaded async from ``/api/projects/<slug>/memories`` so the
+    Memory is loaded async from ``/api/projects/<slug>/memory_items`` so the
     detail pane renders immediately while the (potentially slow) Hindsight
     call resolves in the background.
     """
@@ -2085,30 +2085,26 @@ def api_project_rename_alias(slug: str):
 
 
 
-@app.get("/api/projects/<slug>/memories")
-def api_project_memories(slug: str):
-    """List Hindsight memories for a project (chronological log)."""
-    limit = request.args.get("limit", 30, type=int)
+@app.get("/api/projects/<slug>/memory_items")
+def api_project_memory_items(slug: str):
+    """Semantic recall from Hindsight project bank for the detail pane.
+
+    Decoupled from ``/api/projects/<slug>`` so the (often multi-second)
+    Hindsight call doesn't block the rest of the detail pane from
+    rendering. The frontend swaps the placeholder in once this resolves.
+    """
     try:
-        from work_buddy.memory.query import list_recent_project_memories
-        items = list_recent_project_memories(limit=limit, project=slug)
-        # Normalize to plain dicts for JSON serialization
-        memories = []
-        for m in items:
-            mem = dict(m) if isinstance(m, dict) else {}
-            memories.append({
-                "id": mem.get("id", ""),
-                "text": mem.get("text", ""),
-                "fact_type": mem.get("fact_type", ""),
-                "date": mem.get("date", ""),
-                "context": mem.get("context", ""),
-                "entities": mem.get("entities", ""),
-                "tags": mem.get("tags", []),
-            })
-        return jsonify({"memories": memories, "slug": slug})
+        from work_buddy.memory.query import recall_project_context_items
+        memory_items = recall_project_context_items(
+            query=f"Current state, recent decisions, and trajectory for {slug}",
+            project_slug=slug,
+            budget="low",
+            max_tokens=2048,
+        )
+        return jsonify({"memory_items": memory_items, "slug": slug})
     except Exception as e:
-        logger.exception("Failed to list memories for project %s", slug)
-        return jsonify({"memories": [], "error": str(e)})
+        logger.exception("Failed to recall project memory for %s", slug)
+        return jsonify({"memory_items": [], "error": str(e)})
 
 
 # ---------------------------------------------------------------------------

@@ -534,10 +534,12 @@ async function selectProject(slug) {
     html += '<span id="proj-obs-status" style="font-size:12px; color:var(--text-muted); margin-left:8px;"></span>';
     html += '</div>';
 
-    // Observations log (loaded async — does not block detail-pane render)
-    html += '<div style="margin-top:20px;">';
-    html += '<div style="font-size:11px; text-transform:uppercase; color:var(--text-muted); margin-bottom:8px;">Observations</div>';
-    html += '<div id="proj-observations-log"><div class="loading">Loading observations...</div></div>';
+    // Project memory — Hindsight semantic recall, async-loaded so the
+    // (multi-second) recall call doesn't block the detail-pane render.
+    // The placeholder swaps in once /memory_items resolves.
+    html += '<div style="margin-top:24px;">';
+    html += '<div style="font-size:11px; text-transform:uppercase; color:var(--text-muted); margin-bottom:8px;">Project Memory (Hindsight)</div>';
+    html += '<div id="proj-memory-log"><div class="loading" style="color:var(--text-muted); font-size:13px;">Loading project memory…</div></div>';
     html += '</div>';
 
     html += '</div>';
@@ -565,42 +567,40 @@ async function selectProject(slug) {
         });
     }
 
-    // Load observations log asynchronously
-    loadProjectObservations(slug);
+    // Load project memory (semantic recall) asynchronously — kept off
+    // the critical path so the detail pane renders immediately.
+    loadProjectMemoryItems(slug);
 }
 
-async function loadProjectObservations(slug) {
-    const data = await fetchJSON('/api/projects/' + slug + '/memories?limit=30');
-    // Race guard: if the user navigated away, the proj-observations-log
-    // container might belong to a different project's detail pane.
+async function loadProjectMemoryItems(slug) {
+    const data = await fetchJSON('/api/projects/' + slug + '/memory_items');
+    // Race guard: user may have selected a different project while the
+    // recall was in flight.
     if (_selectedProjectSlug !== slug) return;
-    const container = document.getElementById('proj-observations-log');
+    const container = document.getElementById('proj-memory-log');
     if (!container) return;
-    if (!data || !data.memories) {
-        container.innerHTML = '<div class="empty-state">Could not load observations</div>';
+    if (!data || data.error) {
+        container.innerHTML = '<div class="empty-state">Could not load project memory</div>';
         return;
     }
 
-    const memories = data.memories;
-    if (memories.length === 0) {
-        container.innerHTML = '<div class="empty-state" style="padding:12px 0;">No observations yet</div>';
+    const items = Array.isArray(data.memory_items) ? data.memory_items : [];
+    if (items.length === 0) {
+        container.innerHTML = '<div class="empty-state" style="padding:12px 0; color:var(--text-muted); font-size:13px;">No project memories yet. Add observations above or use project_observe via MCP.</div>';
         return;
     }
 
-    const logHtml = memories.map(m => {
-        const dt = m.date ? new Date(m.date) : null;
-        const time = dt ? dt.toLocaleDateString([], {month:'short', day:'numeric'}) + ' ' + dt.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) : '';
-        const ft = m.fact_type || 'memory';
-        const ftClass = ft === 'observation' ? 'warn' : ft === 'world' ? 'info' : 'info';
-        const source = (m.tags || []).filter(t => t.startsWith('source:')).map(t => t.slice(7)).join(', ') || '';
+    const logHtml = items.map(m => {
+        const ft = m.type || 'memory';
+        const ftClass = ft === 'observation' ? 'warn' : 'info';
+        const source = (m.tags || []).filter(t => t.startsWith('source:')).map(t => t.slice(7)).join(', ');
         return '<div class="log-entry ' + ftClass + '">' +
-            '<span class="log-ts">' + time + '</span>' +
-            '<span class="log-kind">' + ft + (source ? ' (' + source + ')' : '') + '</span>' +
-            '<span class="log-msg">' + escapeHtml(m.text) + '</span>' +
+            '<span class="log-kind">' + escapeHtml(ft) + (source ? ' (' + escapeHtml(source) + ')' : '') + '</span>' +
+            '<span class="log-msg">' + escapeHtml(m.text || '') + '</span>' +
         '</div>';
     }).join('');
 
-    container.innerHTML = '<div class="log-container">' + logHtml + '</div>';
+    container.innerHTML = '<div class="log-container" style="max-height:340px; overflow-y:auto;">' + logHtml + '</div>';
 }
 
 function escapeHtml(text) {
