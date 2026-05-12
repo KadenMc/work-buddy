@@ -484,8 +484,8 @@ def _html() -> str:
 
 <!-- PROJECTS -->
 <div class="tab-panel" id="panel-projects">
-    <div style="display:flex; gap:24px; min-height:500px;">
-        <div id="projects-list" style="flex:0 0 340px; overflow-y:auto; max-height:80vh;">
+    <div style="display:flex; gap:24px; align-items:flex-start; min-height:500px;">
+        <div id="projects-list" style="flex:0 0 340px; position:sticky; top:16px; max-height:calc(100vh - 32px); overflow-y:auto;">
             <div class="loading">Loading projects...</div>
         </div>
         <div id="project-detail" style="flex:1; min-width:0;">

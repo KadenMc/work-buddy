@@ -176,6 +176,9 @@ _MUTATING_CAPABILITIES: frozenset[str] = frozenset({
     # Projects
     "project_observe", "project_update", "project_create", "project_delete",
     "project_discover",
+    "project_add_folder", "project_remove_folder", "project_set_folder_archived",
+    "project_add_alias", "project_remove_alias",
+    "project_confirm_description",
     # Journal writes
     "journal_write", "journal_sign_in", "vault_write_at_location",
     # Memory writes

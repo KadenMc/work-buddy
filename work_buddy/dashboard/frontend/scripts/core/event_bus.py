@@ -237,6 +237,13 @@ def script() -> str:
     window.eventBus.on('task.state_changed',       () => _refreshSoon('tasksSurface'));
     window.eventBus.on('task.description_changed', () => _refreshSoon('tasksSurface'));
 
+    window.eventBus.on('project.created',               () => _refreshSoon('projectsSurface'));
+    window.eventBus.on('project.updated',               () => _refreshSoon('projectsSurface'));
+    window.eventBus.on('project.deleted',               () => _refreshSoon('projectsSurface'));
+    window.eventBus.on('project.folders_changed',       () => _refreshSoon('projectsSurface'));
+    window.eventBus.on('project.aliases_changed',       () => _refreshSoon('projectsSurface'));
+    window.eventBus.on('project.description_confirmed', () => _refreshSoon('projectsSurface'));
+
     window.eventBus.on('component.health_changed',     () => _refreshSoon('settingsSurface'));
     window.eventBus.on('component.preference_changed', () => _refreshSoon('settingsSurface'));
 
@@ -255,15 +262,21 @@ def script() -> str:
 
     // Diagnostics handles for tests.
     window.eventBus._panelHandlers = () => ({
-        'task.created':                  'tasksSurface.refresh (morphdom)',
-        'task.state_changed':            'tasksSurface.refresh (morphdom)',
-        'task.description_changed':      'tasksSurface.refresh (morphdom)',
-        'component.health_changed':      'settingsSurface.refresh (morphdom)',
-        'component.preference_changed':  'settingsSurface.refresh (morphdom)',
-        'llm.call_logged':               'costsSurface.refresh (morphdom)',
-        'user_job.created':              'jobsSurface.refresh (morphdom)',
-        'user_job.deleted':              'jobsSurface.refresh (morphdom)',
-        'cron.hot_reload':                'jobsSurface.refresh (morphdom)',
+        'task.created':                    'tasksSurface.refresh (morphdom)',
+        'task.state_changed':              'tasksSurface.refresh (morphdom)',
+        'task.description_changed':        'tasksSurface.refresh (morphdom)',
+        'project.created':                 'projectsSurface.refresh (full refetch)',
+        'project.updated':                 'projectsSurface.refresh (full refetch)',
+        'project.deleted':                 'projectsSurface.refresh (full refetch)',
+        'project.folders_changed':         'projectsSurface.refresh (full refetch)',
+        'project.aliases_changed':         'projectsSurface.refresh (full refetch)',
+        'project.description_confirmed':   'projectsSurface.refresh (full refetch)',
+        'component.health_changed':        'settingsSurface.refresh (morphdom)',
+        'component.preference_changed':    'settingsSurface.refresh (morphdom)',
+        'llm.call_logged':                 'costsSurface.refresh (morphdom)',
+        'user_job.created':                'jobsSurface.refresh (morphdom)',
+        'user_job.deleted':                'jobsSurface.refresh (morphdom)',
+        'cron.hot_reload':                  'jobsSurface.refresh (morphdom)',
         'dashboard.form.field_set':      'wbFormBridge → registered fieldHandlers',
         'dashboard.form.open':           'wbFormBridge → registered openHandler',
         'dashboard.form.submit':         'wbFormBridge → registered submitHandler (rendezvous)',

@@ -755,28 +755,40 @@ def get_calendar_context(*, date: str | None = None, check_ready: bool = False) 
     return calendar_collector.collect(cfg)
 
 
-def get_projects_context() -> str:
+def get_projects_context(*, statuses: list[str] | None = None) -> str:
     """Active projects with identity, state, and trajectory.
 
     Synthesizes project inventory from vault directories, STATE.md files
     in repos, task project tags, git activity, and contracts.
     Also syncs results to the project store.
+
+    ``statuses`` filters only the rendered markdown — every project still
+    gets scanned and synced. Default is active + inferred (past + future
+    are hidden to keep bundles uncluttered). Pass an explicit list to
+    widen.
     """
     from work_buddy.projects.sync import sync_projects
 
     cfg = _cfg_with_overrides()
-    return sync_projects(cfg)
+    return sync_projects(cfg, statuses=statuses)
 
 
 # ---------------------------------------------------------------------------
 # Project CRUD (backed by projects.store)
 # ---------------------------------------------------------------------------
 
-def project_list(*, status: str | None = None) -> str:
-    """List all projects, optionally filtered by status."""
+def project_list(
+    *, status: str | None = None, include_deleted: bool = False,
+) -> str:
+    """List all projects, optionally filtered by status.
+
+    Rows with ``status='deleted'`` are filtered out by default; pass
+    ``include_deleted=True`` to see them. Pass ``status='deleted'`` to
+    see only the soft-deleted projects.
+    """
     import json
     from work_buddy.projects import store
-    projects = store.list_projects(status=status)
+    projects = store.list_projects(status=status, include_deleted=include_deleted)
     return json.dumps(projects, indent=2)
 
 
@@ -866,21 +878,28 @@ def project_update(
     name: str | None = None,
     status: str | None = None,
     description: str | None = None,
+    author: str = "user",
+    change_summary: str | None = None,
 ) -> str:
-    """Update a project's identity fields (name, status, description)."""
+    """Update a project's identity fields and append a revision.
+
+    Resolves ``slug`` via the alias table, so a prior name (e.g.
+    ``electricrag``) routes to the canonical row (``ecg-inquiry``).
+    Writes a revision row capturing the post-update state — including
+    the author (``user`` or ``agent``) and an optional one-line
+    ``change_summary``. Agents should pass ``author='agent'``;
+    user-initiated mutations should pass ``author='user'`` (default).
+    """
     import json
     from work_buddy.projects import store
 
-    kwargs = {}
+    kwargs: dict[str, Any] = {"author": author, "change_summary": change_summary}
     if name is not None:
         kwargs["name"] = name
     if status is not None:
         kwargs["status"] = status
     if description is not None:
         kwargs["description"] = description
-
-    if not kwargs:
-        return json.dumps({"error": "No fields to update"})
 
     result = store.update_project(slug, **kwargs)
     if result is None:
@@ -894,14 +913,31 @@ def project_create(
     name: str,
     status: str = "active",
     description: str | None = None,
+    origin: str = "manual",
+    folders: list[dict[str, Any]] | None = None,
+    aliases: list[str] | None = None,
+    author: str = "user",
 ) -> str:
     """Manually create a project. Consent-gated.
 
     Args:
         slug: Unique identifier (lowercase, hyphens).
         name: Human-readable project name.
-        status: One of: active, paused, past, future, inferred.
-        description: What is this project? (embeddable text).
+        status: One of: ``active``, ``paused``, ``past``, ``future``.
+            ``deleted`` is not creatable here — use ``project_delete``.
+        description: What is this project? (free-form prose; versioned
+            via the revision history).
+        origin: ``manual`` (default — user/agent registered explicitly)
+            or ``vault`` (auto-detected from a vault directory; usually
+            set by the signal-scan, not by callers).
+        folders: Optional list of ``{"path": str, "archived": bool}``
+            dicts. Each path is an absolute system path; ``archived``
+            marks a dormant location.
+        aliases: Optional list of alternative slug strings. Stored
+            with displayed casing preserved; matched case-insensitively
+            for lookup.
+        author: ``user`` (default) or ``agent``. Recorded on the
+            initial revision row.
     """
     import json
     from work_buddy.consent import ConsentRequired, _cache as consent_cache
@@ -915,7 +951,28 @@ def project_create(
             default_ttl=30,
         )
 
-    result = store.upsert_project(slug, name, status=status, description=description)
+    folder_pairs: list[tuple[str, int]] | None = None
+    if folders is not None:
+        folder_pairs = [
+            (f["path"], 1 if f.get("archived") else 0) for f in folders
+        ]
+
+    alias_pairs: list[tuple[str, str]] | None = None
+    if aliases is not None:
+        alias_pairs = [
+            (a, store._normalize_slug(a)) for a in aliases if a.strip()
+        ]
+
+    result = store.upsert_project(
+        slug, name,
+        status=status,
+        description=description,
+        origin=origin,
+        author=author,
+        folders=folder_pairs,
+        aliases=alias_pairs,
+        change_summary="created",
+    )
     return json.dumps(result, indent=2)
 
 
@@ -952,10 +1009,10 @@ def project_memory(
 def project_discover() -> str:
     """Discover project candidates from signals not yet in the registry.
 
-    Scans task tags, git repos, and chat sessions for project-shaped signals
-    that don't match any confirmed project.  Returns candidates for agent
-    review — the agent should evaluate each and use project_create to
-    promote real projects.
+    Scans task tags and git repos for project-shaped signals that don't
+    match any confirmed project (canonical slug or alias). Returns
+    candidates for agent review — the agent evaluates each and uses
+    ``project_create`` to promote real ones.
     """
     import json
     from work_buddy.projects import sync as project_sync
@@ -966,23 +1023,22 @@ def project_discover() -> str:
     repos_root = __import__("pathlib").Path(cfg.get("repos_root", vault_root / "repos"))
     git_days = cfg.get("git", {}).get("detail_days", 7)
 
-    # Gather signals
     task_counts = project_sync._scan_task_projects(vault_root)
     git_activity = project_sync._scan_git_activity(repos_root, days=git_days)
 
-    # Get confirmed slugs
-    confirmed = {p["slug"] for p in store.list_projects()}
+    # Any slug that resolves via the store (canonical or alias) is
+    # NOT a candidate. ``resolve_slug`` returns None for unknown slugs.
+    def is_known(slug: str) -> bool:
+        try:
+            return store.resolve_slug(slug) is not None
+        except Exception:
+            return False
 
-    # Also get alias targets so aliased slugs don't show as candidates
-    aliases = cfg.get("projects", {}).get("aliases", {})
-    aliased_slugs = set(aliases.keys())
-
-    candidates = []
-    seen = set()
+    candidates: list[dict[str, Any]] = []
+    seen: set[str] = set()
 
     for slug, counts in task_counts.items():
-        resolved = aliases.get(slug, slug)
-        if resolved in confirmed or slug in aliased_slugs or slug in seen:
+        if slug in seen or is_known(slug):
             continue
         seen.add(slug)
         candidates.append({
@@ -993,54 +1049,276 @@ def project_discover() -> str:
         })
 
     for slug, activity in git_activity.items():
-        resolved = aliases.get(slug, slug)
-        if resolved in confirmed or slug in aliased_slugs or slug in seen:
+        if slug in seen or is_known(slug):
             continue
         seen.add(slug)
         candidates.append({
             "slug": slug,
             "sources": ["git"],
             "recent_commits": activity.get("recent_commits", 0),
-            "last_commit": activity.get("last_commit_date", "")[:10] if activity.get("last_commit_date") else None,
+            "last_commit": (
+                activity.get("last_commit_date", "")[:10]
+                if activity.get("last_commit_date") else None
+            ),
         })
+
+    try:
+        confirmed_count = len(store.list_projects(include_deleted=False))
+    except Exception:
+        confirmed_count = 0
 
     return json.dumps({
         "candidates": candidates,
-        "confirmed_count": len(confirmed),
+        "confirmed_count": confirmed_count,
         "candidate_count": len(candidates),
     }, indent=2)
 
 
-def project_delete(*, slug: str) -> str:
-    """Delete a project from the identity registry. Consent-gated.
+def project_delete(*, slug: str, author: str = "user") -> str:
+    """Soft-delete a project (set ``status='deleted'``). Consent-gated.
 
-    This removes the project from the SQLite registry. Hindsight memories
-    tagged with this project are NOT deleted (use memory_prune for that).
+    The row, its folders, its aliases, and its full revision history
+    remain in the SQLite store. Default queries filter the row out;
+    pass ``include_deleted=True`` to ``project_list`` to see it.
+    Hindsight memories tagged with this project are preserved
+    regardless — use ``memory_prune`` to remove them if desired.
+
+    Hard-deletion is not exposed through this surface.
     """
     import json
     from work_buddy.consent import ConsentRequired, _cache as consent_cache
     from work_buddy.projects import store
 
-    # Verify project exists
     existing = store.get_project(slug)
     if not existing:
         return json.dumps({"error": f"Project '{slug}' not found"})
 
-    # Require consent
     if not consent_cache.is_granted("project_delete"):
         raise ConsentRequired(
             operation="project_delete",
-            reason=f"Permanently delete project '{slug}' ({existing.get('name', slug)}) from the identity registry.",
+            reason=(
+                f"Soft-delete project '{slug}' "
+                f"({existing.get('name', slug)}): set status='deleted'. "
+                "Row + folders + aliases + history are preserved."
+            ),
             risk="moderate",
             default_ttl=5,
         )
 
-    deleted = store.delete_project(slug)
+    deleted = store.delete_project(slug, author=author)
     return json.dumps({
         "deleted": deleted,
         "slug": slug,
-        "note": "Hindsight memories for this project are preserved. Use memory_prune to remove them if needed.",
+        "note": (
+            "Soft-deleted. Row preserved; status='deleted'. Revision "
+            "history and Hindsight memories untouched."
+        ),
     }, indent=2)
+
+
+# ---------------------------------------------------------------------------
+# Project folders / aliases / revisions
+# ---------------------------------------------------------------------------
+
+
+def _resolve_project_or_error(slug: str) -> tuple[int | None, str | None]:
+    """Resolve ``slug`` (or alias) to a project_id. Returns (pid, error_json).
+
+    On success: ``(pid, None)``. On not-found: ``(None, json_error_string)``.
+    """
+    import json
+    from work_buddy.projects import store
+
+    pid = store.resolve_slug(slug)
+    if pid is None:
+        return None, json.dumps({"error": f"Project '{slug}' not found"})
+    return pid, None
+
+
+def project_add_folder(
+    *,
+    slug: str,
+    path: str,
+    archived: bool = False,
+    author: str = "user",
+    change_summary: str | None = None,
+) -> str:
+    """Attach a folder to a project. Writes a revision.
+
+    ``path`` is an absolute system path. If it doesn't exist on disk a
+    warning is logged but the row is still stored — allows for future
+    paths, network drives, etc.
+    """
+    import json
+    from work_buddy.projects import store
+
+    pid, err = _resolve_project_or_error(slug)
+    if err:
+        return err
+    assert pid is not None
+    result = store.add_folder(
+        pid, path, archived=archived, author=author,
+        change_summary=change_summary,
+    )
+    return json.dumps(result, indent=2)
+
+
+def project_remove_folder(
+    *,
+    slug: str,
+    path: str,
+    author: str = "user",
+    change_summary: str | None = None,
+) -> str:
+    """Detach a folder from a project. Writes a revision."""
+    import json
+    from work_buddy.projects import store
+
+    pid, err = _resolve_project_or_error(slug)
+    if err:
+        return err
+    assert pid is not None
+    result = store.remove_folder(
+        pid, path, author=author, change_summary=change_summary,
+    )
+    return json.dumps(result, indent=2)
+
+
+def project_set_folder_archived(
+    *,
+    slug: str,
+    path: str,
+    archived: bool,
+    author: str = "user",
+    change_summary: str | None = None,
+) -> str:
+    """Flip the ``archived`` flag on a folder. Writes a revision."""
+    import json
+    from work_buddy.projects import store
+
+    pid, err = _resolve_project_or_error(slug)
+    if err:
+        return err
+    assert pid is not None
+    result = store.set_folder_archived(
+        pid, path, archived, author=author, change_summary=change_summary,
+    )
+    return json.dumps(result, indent=2)
+
+
+def project_add_alias(
+    *,
+    slug: str,
+    alias: str,
+    author: str = "user",
+    change_summary: str | None = None,
+) -> str:
+    """Attach an alias to a project. Writes a revision.
+
+    Raises ValueError if the alias collides with another project's
+    canonical slug or alias.
+    """
+    import json
+    from work_buddy.projects import store
+
+    pid, err = _resolve_project_or_error(slug)
+    if err:
+        return err
+    assert pid is not None
+    try:
+        result = store.add_alias(
+            pid, alias, author=author, change_summary=change_summary,
+        )
+    except ValueError as exc:
+        return json.dumps({"error": str(exc)})
+    return json.dumps(result, indent=2)
+
+
+def project_remove_alias(
+    *,
+    slug: str,
+    alias: str,
+    author: str = "user",
+    change_summary: str | None = None,
+) -> str:
+    """Detach an alias from a project. Writes a revision."""
+    import json
+    from work_buddy.projects import store
+
+    pid, err = _resolve_project_or_error(slug)
+    if err:
+        return err
+    assert pid is not None
+    result = store.remove_alias(
+        pid, alias, author=author, change_summary=change_summary,
+    )
+    return json.dumps(result, indent=2)
+
+
+def project_confirm_description(*, slug: str) -> str:
+    """Mark the latest revision as user-confirmed (records confirmation timestamp).
+
+    Use this when a human reviews an LLM-authored description (or any
+    other LLM-authored mutation) and signs off. The revision row's
+    ``user_confirmed_at`` is set to the current time. Returns the
+    revision id touched.
+    """
+    import json
+    from work_buddy.projects import store
+
+    pid, err = _resolve_project_or_error(slug)
+    if err:
+        return err
+    assert pid is not None
+    revision_id = store.confirm_description(pid)
+    if revision_id is None:
+        return json.dumps({
+            "error": f"Project '{slug}' has no revisions to confirm",
+        })
+    return json.dumps({
+        "slug": slug,
+        "project_id": pid,
+        "confirmed_revision_id": revision_id,
+    }, indent=2)
+
+
+def project_revisions_list(*, slug: str, limit: int = 20) -> str:
+    """Return revision history for a project, newest first.
+
+    Each entry includes the snapshot of project fields plus the folder
+    and alias sets as of that revision.
+    """
+    import json
+    from work_buddy.projects import store
+
+    pid, err = _resolve_project_or_error(slug)
+    if err:
+        return err
+    assert pid is not None
+    rows = store.list_revisions(pid, limit=limit)
+    return json.dumps(rows, indent=2, default=str)
+
+
+def project_state_at(*, slug: str, timestamp: str) -> str:
+    """Return the project's state as of ``timestamp`` (ISO 8601 UTC).
+
+    Reconstructs the latest revision whose ``created_at <= timestamp``,
+    with its folder and alias sets joined in. Returns an error JSON if
+    no revision predates the given moment.
+    """
+    import json
+    from work_buddy.projects import store
+
+    pid, err = _resolve_project_or_error(slug)
+    if err:
+        return err
+    assert pid is not None
+    rev = store.get_state_at(pid, timestamp)
+    if rev is None:
+        return json.dumps({
+            "error": f"No revision for '{slug}' at or before {timestamp}",
+        })
+    return json.dumps(rev, indent=2, default=str)
 
 
 # ---------------------------------------------------------------------------

@@ -400,21 +400,55 @@ def recall_project_context(
 ) -> str:
     """Recall relevant project memories for a query.
 
-    If project_slug is provided, scopes to that project.
+    If ``project_slug`` is provided, scopes to that project — and to
+    every alias attached to it via ``project_aliases``. A memory tagged
+    with any of {canonical_slug, *aliases} matches.
+
     If omitted, searches across all projects.
     """
     _ensure_project_bank_once()
-    tag_parts: list[str] = []
-    if project_slug:
-        tag_parts.append(f"project:{project_slug}")
-    tags = build_tags(*tag_parts)
 
-    # Scoped to one project = must match all tags; cross-project = match any
-    tags_match = "all_strict" if project_slug else "any_strict"
+    # Build the set of project tags to query against. If a project_slug
+    # is provided, resolve via the store and union with its aliases so
+    # memories tagged with any prior slug for the same project still
+    # surface alongside memories tagged with the current canonical slug.
+    slug_set: list[str] = []
+    if project_slug:
+        slug_set.append(project_slug)
+        try:
+            from work_buddy.projects import store
+            pid = store.resolve_slug(project_slug)
+            if pid is not None:
+                row = store.get_project_by_id(pid, include_deleted=True)
+                if row:
+                    if row["slug"] not in slug_set:
+                        slug_set.append(row["slug"])
+                    for a in row.get("aliases", []):
+                        norm = a.get("alias_norm")
+                        if norm and norm not in slug_set:
+                            slug_set.append(norm)
+        except Exception:
+            logger.debug(
+                "Could not resolve aliases for project %r; querying base slug only",
+                project_slug,
+            )
+
+    if slug_set:
+        tag_parts = [f"project:{s}" for s in slug_set]
+        tags = build_tags(*tag_parts)
+        # Any of these project tags matching is enough. ``any_strict``
+        # also unions any non-project tags that ``build_tags`` adds —
+        # acceptable because the union still scopes within the project
+        # bank.
+        tags_match = "any_strict"
+    else:
+        tags = build_tags()
+        tags_match = "any_strict"
 
     client = get_client()
     try:
-        resp = client.recall(
+        resp = _run_hindsight_recall_in_thread(
+            client,
             bank_id=get_project_bank_id(),
             query=query,
             budget=budget,
@@ -425,12 +459,167 @@ def recall_project_context(
             include_entities=True,
         )
         text = getattr(resp, "text", None) or str(resp)
-        scope = f"project:{project_slug}" if project_slug else "cross-project"
+        scope = (
+            f"project:{project_slug} (aliases: {len(slug_set) - 1})"
+            if project_slug else "cross-project"
+        )
         logger.info("Recalled %d chars for %s: %.60s…", len(text), scope, query)
         return text
     except Exception:
         logger.exception("Project recall failed for: %.60s…", query)
         return ""
+
+
+def _run_hindsight_recall_in_thread(_unused_client, **kwargs):
+    """Run a Hindsight recall in a fresh thread with its own asyncio
+    loop **and** its own Hindsight client instance.
+
+    Two things conspire to make the cached sync client unsafe for
+    recall from a Flask request worker:
+
+    1. The cached ``Hindsight`` client lazily creates an
+       ``aiohttp.ClientSession`` on first use. The session is bound
+       to whichever event loop ran that first call.
+    2. ``client.recall(...)`` calls ``loop.run_until_complete`` on
+       the calling thread's loop. If the session's loop and the
+       current loop disagree, aiohttp's timeout-context manager
+       fires ``RuntimeError: Timeout context manager should be used
+       inside a task``.
+
+    A fresh client created inside a fresh thread starts a fresh
+    aiohttp session in that thread's loop — both pieces match, no
+    cross-loop confusion. The thread is created per-call (recall
+    isn't on a hot path) so we don't pay the cost of a long-lived
+    executor or a session pool.
+
+    The first positional arg is accepted but ignored so call sites
+    that previously passed the cached client don't need to change.
+    """
+    import asyncio
+    import threading
+    from work_buddy.memory.client import _cfg
+    from hindsight_client import Hindsight
+
+    result = [None]
+    error = [None]
+
+    def _runner():
+        loop = asyncio.new_event_loop()
+        try:
+            asyncio.set_event_loop(loop)
+            cfg = _cfg()
+            local_client = Hindsight(
+                base_url=cfg.get("base_url", "http://localhost:8888"),
+            )
+            result[0] = loop.run_until_complete(local_client.arecall(**kwargs))
+        except Exception as e:
+            error[0] = e
+        finally:
+            try:
+                loop.close()
+            except Exception:
+                pass
+
+    t = threading.Thread(target=_runner, daemon=True)
+    t.start()
+    t.join()
+
+    if error[0] is not None:
+        raise error[0]
+    return result[0]
+
+
+def recall_project_context_items(
+    query: str,
+    *,
+    project_slug: str | None = None,
+    budget: str = "mid",
+    max_tokens: int = 4096,
+) -> list[dict[str, Any]]:
+    """Same recall as :func:`recall_project_context` but returns
+    structured items instead of a text dump.
+
+    Use this when a caller needs to render each result individually
+    (e.g. a UI log) rather than feed the raw text into an LLM prompt.
+    Alias resolution + tag union are identical to the text variant.
+
+    Returns a list of ``{id, type, text, tags}`` dicts in Hindsight's
+    relevance ordering. Returns ``[]`` on any failure (Hindsight
+    unavailable, project unknown, etc.).
+    """
+    _ensure_project_bank_once()
+
+    slug_set: list[str] = []
+    if project_slug:
+        slug_set.append(project_slug)
+        try:
+            from work_buddy.projects import store
+            pid = store.resolve_slug(project_slug)
+            if pid is not None:
+                row = store.get_project_by_id(pid, include_deleted=True)
+                if row:
+                    if row["slug"] not in slug_set:
+                        slug_set.append(row["slug"])
+                    for a in row.get("aliases", []):
+                        norm = a.get("alias_norm")
+                        if norm and norm not in slug_set:
+                            slug_set.append(norm)
+        except Exception:
+            logger.debug(
+                "Could not resolve aliases for project %r; querying base slug only",
+                project_slug,
+            )
+
+    if slug_set:
+        tag_parts = [f"project:{s}" for s in slug_set]
+        tags = build_tags(*tag_parts)
+        tags_match = "any_strict"
+    else:
+        tags = build_tags()
+        tags_match = "any_strict"
+
+    client = get_client()
+    try:
+        resp = _run_hindsight_recall_in_thread(
+            client,
+            bank_id=get_project_bank_id(),
+            query=query,
+            budget=budget,
+            types=["world", "experience", "observation"],
+            tags=tags,
+            tags_match=tags_match,
+            max_tokens=max_tokens,
+            include_entities=False,  # we don't render entities in the items UI
+        )
+    except Exception:
+        logger.exception("Project recall (items) failed for: %.60s…", query)
+        return []
+
+    raw_results = getattr(resp, "results", None) or []
+    items: list[dict[str, Any]] = []
+    for r in raw_results:
+        if isinstance(r, dict):
+            items.append({
+                "id": r.get("id", ""),
+                "type": r.get("type", ""),
+                "text": r.get("text", ""),
+                "tags": list(r.get("tags", [])),
+            })
+        else:
+            items.append({
+                "id": getattr(r, "id", ""),
+                "type": getattr(r, "type", ""),
+                "text": getattr(r, "text", ""),
+                "tags": list(getattr(r, "tags", []) or []),
+            })
+    logger.info(
+        "Recalled %d items for %s: %.60s…",
+        len(items),
+        f"project:{project_slug} (aliases: {max(0, len(slug_set) - 1)})"
+        if project_slug else "cross-project",
+        query,
+    )
+    return items
 
 
 def get_project_mental_model(model_id: str = "project-landscape") -> dict[str, Any] | None:
@@ -454,29 +643,88 @@ def list_recent_project_memories(
 ) -> list[Any]:
     """List recent project memories with optional project scoping.
 
-    When *project* is provided, fetches a broader set and filters
-    client-side by the ``project:<slug>`` tag (Hindsight's list_memories
-    only supports text search, not tag filtering).
+    When ``project`` is provided, the filter unions the canonical slug
+    with every alias attached to that project, so memories tagged with
+    a prior slug (e.g. ``project:electricrag`` for a row now slugged
+    ``ecg-inquiry``) still surface after a rename. Hindsight's
+    ``list_memories`` only supports a chronological dump, so we fetch
+    in pages and filter client-side until we accumulate enough matches
+    or exhaust the bank.
     """
     client = get_client()
+
+    # Build the set of tag forms to match against. Empty when caller
+    # didn't scope to a project (cross-project dump).
+    tag_forms: set[str] = set()
+    if project:
+        tag_forms.add(f"project:{project}")
+        try:
+            from work_buddy.projects import store
+            pid = store.resolve_slug(project)
+            if pid is not None:
+                row = store.get_project_by_id(pid, include_deleted=True)
+                if row:
+                    tag_forms.add(f"project:{row['slug']}")
+                    for a in row.get("aliases", []):
+                        norm = a.get("alias_norm")
+                        if norm:
+                            tag_forms.add(f"project:{norm}")
+        except Exception:
+            logger.debug(
+                "Could not resolve aliases for project %r; filtering by base slug only",
+                project,
+            )
+
+    def _matches(m: Any) -> bool:
+        if not tag_forms:
+            return True
+        tags = m.get("tags", []) if isinstance(m, dict) else getattr(m, "tags", []) or []
+        return any(t in tag_forms for t in tags)
+
     try:
-        # Fetch more than requested when filtering, to ensure we get enough matches
-        fetch_limit = limit * 3 if project else limit
+        # When scoped to a project, page through Hindsight a few times
+        # so renamed-but-active projects don't get starved by other
+        # projects' bulk recent activity. Three pages × 200 = up to 600
+        # memories scanned; cheap on the Hindsight side, returns the
+        # newest ``limit`` matches in chronological order.
+        if project:
+            page_size = 200
+            max_pages = 3
+            matched: list[Any] = []
+            for page in range(max_pages):
+                resp = client.list_memories(
+                    bank_id=get_project_bank_id(),
+                    limit=page_size,
+                    offset=page * page_size,
+                )
+                items = (
+                    getattr(resp, "items", None)
+                    or getattr(resp, "memories", [])
+                    or []
+                )
+                if not items:
+                    break
+                matched.extend(m for m in items if _matches(m))
+                if len(matched) >= limit:
+                    break
+            matched = matched[:limit]
+            logger.info(
+                "Listed %d project memories (filtered to %s across %d alias tag(s))",
+                len(matched), project, len(tag_forms),
+            )
+            return matched
+
+        # Cross-project: single page.
         resp = client.list_memories(
             bank_id=get_project_bank_id(),
-            limit=fetch_limit,
+            limit=limit,
         )
-        items = getattr(resp, "items", None) or getattr(resp, "memories", []) or []
-
-        if project:
-            tag = f"project:{project}"
-            items = [m for m in items if tag in (
-                m.get("tags", []) if isinstance(m, dict)
-                else getattr(m, "tags", [])
-            )][:limit]
-
-        logger.info("Listed %d project memories%s", len(items),
-                     f" (filtered to {project})" if project else "")
+        items = (
+            getattr(resp, "items", None)
+            or getattr(resp, "memories", [])
+            or []
+        )
+        logger.info("Listed %d project memories (cross-project)", len(items))
         return items
     except Exception:
         logger.exception("Failed to list project memories")
