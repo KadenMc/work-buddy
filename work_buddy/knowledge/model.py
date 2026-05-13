@@ -59,10 +59,30 @@ matched individually rather than swallowed into one span.
 #   without inlined foundations interfering.
 _RECURSIVE_MODES = ("default", "all", "none")
 
+# Three orthogonal safety mechanisms layer naturally:
+#
+# 1. ``_seen: set[str]`` per-unit-occurrence cap — each unit appears at
+#    most once per top-level resolution. Catches diamond graphs where a
+#    foundation unit is reachable through multiple branches. ALWAYS on.
+# 2. ``max_depth`` — bounds recursion depth. Configurable. Default
+#    ``None`` in ``"default"`` mode (unlimited; preserves historical
+#    behaviour), default 10 in ``"all"`` mode. Catches genuinely deep
+#    linear chains.
+# 3. ``_RECURSIVE_ALL_SIZE_CAP`` byte budget — ultimate backstop in
+#    ``"all"`` mode. Catches anything depth + occurrence missed.
+
 _RECURSIVE_ALL_SIZE_CAP = 100_000  # bytes of expanded output before truncation
+_DEFAULT_MAX_DEPTH_FOR_ALL_MODE = 10  # depth cap default when mode == "all"
+
 _TRUNCATION_MARKER = (
     f"<!-- wb: placeholder expansion truncated at "
     f"{_RECURSIVE_ALL_SIZE_CAP // 1000}KB cap -->"
+)
+_DEPTH_LIMIT_MARKER_TEMPLATE = (
+    "<!-- wb: placeholder expansion truncated at depth {depth} -->"
+)
+_BACK_REFERENCE_MARKER_TEMPLATE = (
+    "<!-- wb: {path} already expanded above -->"
 )
 
 
@@ -79,6 +99,35 @@ def _new_budget(recursive_mode: str) -> list[int] | None:
     if recursive_mode == "all":
         return [_RECURSIVE_ALL_SIZE_CAP]
     return None
+
+
+def _resolve_max_depth(
+    recursive_mode: str,
+    max_depth: int | None,
+) -> int | None:
+    """Pick the effective depth cap given the mode and caller override.
+
+    - Caller passes ``max_depth=-1`` (or ``None``) to mean "use the
+      mode's default."
+    - In ``"default"`` mode the mode-default is ``None`` (unlimited),
+      preserving historical behaviour.
+    - In ``"all"`` mode the mode-default is
+      ``_DEFAULT_MAX_DEPTH_FOR_ALL_MODE`` — bounds the worst case
+      without surprising callers who passed ``recursive="all"`` and
+      assumed it was already bounded.
+    - In ``"none"`` mode the resolver never recurses, so any depth
+      value is irrelevant.
+
+    Callers can pass any non-negative int to override; ``0`` means "do
+    not recurse at all" (effectively the same as ``recursive="none"``).
+    Negative values (other than the ``-1`` sentinel) are clamped to
+    ``None`` to fail open rather than silently surprise.
+    """
+    if max_depth is None or max_depth < 0:
+        if recursive_mode == "all":
+            return _DEFAULT_MAX_DEPTH_FOR_ALL_MODE
+        return None  # unlimited
+    return max_depth
 
 
 class _PlaceholderParser(argparse.ArgumentParser):
@@ -106,7 +155,10 @@ def _resolve_placeholders(
     store: dict[str, KnowledgeUnit],
     *,
     recursive_mode: str = "default",
+    max_depth: int | None = None,
     _budget: list[int] | None = None,
+    _depth: int = 0,
+    _seen: set[str] | None = None,
 ) -> str:
     """Replace ``<<wb:path>>`` / ``<<wb:path --recursive>>`` in *text*.
 
@@ -115,15 +167,22 @@ def _resolve_placeholders(
       ``content["full"]``; flagged calls ``_resolve_full_content()`` on
       the referenced unit, which transitively resolves *its* placeholders.
     - ``recursive_mode="all"``: every placeholder expands transitively,
-      regardless of per-placeholder flag. Bounded by the shared
-      ``_budget`` counter.
+      regardless of per-placeholder flag.
     - ``recursive_mode="none"``: every placeholder is left literal
       (``<<wb:...>>``) — useful for editing/inspection where embedded
       foundations would obscure the unit's own prose.
-    - Missing refs: placeholder replaced with an HTML comment (preserved
-      in all recursion modes).
-    - Cycles are prevented at load time by ``validate_dag()``, so no
-      runtime tracking is needed.
+
+    Bounded by three layered safety mechanisms (see module-level docs):
+    per-unit-occurrence cap via ``_seen`` (always on), depth cap via
+    ``max_depth`` (configurable), and a size budget via ``_budget``
+    (``"all"`` mode only). Hitting any of them returns an inline marker
+    so the reader sees what was elided.
+
+    Missing refs are surfaced as ``<!-- wb: path not found -->`` and are
+    never treated as expansion bytes.
+
+    Cycles are prevented at load time by ``validate_dag()``, so no
+    runtime cycle tracking is needed.
     """
     if "<<wb:" not in text:
         return text
@@ -131,6 +190,16 @@ def _resolve_placeholders(
     if recursive_mode == "none":
         # Leave every placeholder literal. Saves the argparse pass.
         return text
+
+    # ``max_depth=0`` is the caller's way to say "no recursion at all" —
+    # equivalent to ``recursive="none"`` but expressed through depth.
+    # We still surface missing refs and run argparse so callers using
+    # ``recursive="default", max_depth=0`` get the same shape as legacy
+    # plain-only resolution.
+    depth_exhausted = max_depth is not None and _depth >= max_depth
+
+    if _seen is None:
+        _seen = set()
 
     def _replace(match: re.Match) -> str:
         inner = match.group(1).strip()
@@ -151,17 +220,32 @@ def _resolve_placeholders(
         if ref is None:
             return f"<!-- wb: {path} not found -->"
 
-        # Budget gate (only meaningful in "all" mode where _budget is set):
-        # if the caller has already emitted ~100KB of expanded content,
-        # stop further expansions cold so the response can't balloon.
+        # Per-unit-occurrence cap (always on). The first appearance of
+        # ``path`` in this expansion tree gets the full content; every
+        # subsequent reference — through any branch — gets a
+        # back-reference marker. Catches diamond graphs cheaply.
+        if path in _seen:
+            return _BACK_REFERENCE_MARKER_TEMPLATE.format(path=path)
+
+        # Size-budget gate (``"all"`` mode only). If the running total
+        # of expanded output has already crossed the cap, stop further
+        # expansions cold.
         if _budget is not None and _budget[0] <= 0:
             return _TRUNCATION_MARKER
 
         # Decide whether to recurse on this particular ref.
-        expand_recursively = (
+        wants_recurse = (
             recursive_mode == "all"
             or (recursive_mode == "default" and args.recursive)
         )
+
+        # Depth gate. If recursion is wanted but we've already hit the
+        # depth cap, emit a depth-limit marker instead of expanding.
+        # ``max_depth=0`` falls through here as well — first
+        # placeholder pass at depth 0 sees ``_depth >= max_depth``
+        # immediately and emits the marker.
+        if wants_recurse and depth_exhausted:
+            return _DEPTH_LIMIT_MARKER_TEMPLATE.format(depth=_depth)
 
         # Pre-charge the budget against the raw body we're about to
         # inline. Doing this BEFORE descent means deeper recursive
@@ -173,11 +257,19 @@ def _resolve_placeholders(
         if _budget is not None:
             _budget[0] -= len(raw)
 
-        if expand_recursively:
+        # Mark this unit as seen BEFORE descending — so a self-cycle
+        # via deep recursion (already blocked at load time, but
+        # belt-and-suspenders) is also caught at runtime.
+        _seen.add(path)
+
+        if wants_recurse:
             content = ref._resolve_full_content(
                 store,
                 recursive_mode=recursive_mode,
+                max_depth=max_depth,
                 _budget=_budget,
+                _depth=_depth + 1,
+                _seen=_seen,
             )
         else:
             content = raw
@@ -225,6 +317,7 @@ class KnowledgeUnit:
         dev: bool = False,
         *,
         recursive_mode: str = "default",
+        max_depth: int | None = None,
     ) -> dict[str, Any]:
         """Return unit data at the requested depth.
 
@@ -243,6 +336,10 @@ class KnowledgeUnit:
                 expansion, capped), or ``"none"`` (preserve literal markup).
                 See ``_RECURSIVE_MODES`` for the contract. Ignored at
                 ``depth="index"`` / ``"summary"`` and when ``store is None``.
+            max_depth: Cap on recursion depth at ``depth="full"``. ``None``
+                / ``-1`` selects the mode default (unlimited in ``default``
+                mode, 10 in ``all`` mode). ``0`` disables recursion entirely.
+                Positive integers cap at exactly that depth.
         """
         base: dict[str, Any] = {
             "path": self.path,
@@ -272,6 +369,7 @@ class KnowledgeUnit:
             base["content"] = self._resolve_full_content(
                 store,
                 recursive_mode=recursive_mode,
+                max_depth=max_depth,
             )
             if dev and self.dev_notes:
                 base["dev_notes"] = self.dev_notes
@@ -283,7 +381,10 @@ class KnowledgeUnit:
         store: dict[str, KnowledgeUnit] | None,
         *,
         recursive_mode: str = "default",
+        max_depth: int | None = None,
         _budget: list[int] | None = None,
+        _depth: int = 0,
+        _seen: set[str] | None = None,
     ) -> str:
         """Return ``content["full"]`` with inline placeholders resolved.
 
@@ -291,11 +392,19 @@ class KnowledgeUnit:
         (used by the bare full-index path which doesn't have a store
         handle).
 
-        ``recursive_mode`` controls placeholder expansion — see
-        ``_RECURSIVE_MODES`` and ``_resolve_placeholders``. ``_budget`` is
-        a shared counter for the ``"all"`` mode size cap; the top-level
-        caller passes ``None`` and we lazily allocate one so every
-        recursive descendant debits the same budget.
+        Three safety knobs (see module-level docs):
+
+        * ``recursive_mode`` — which placeholders to follow.
+        * ``max_depth`` — depth cap. Top-level callers either pass
+          ``None`` / ``-1`` to take the mode default, or any non-negative
+          int to override.
+        * ``_budget`` — shared mutable counter for the ``"all"`` mode
+          size cap. Top-level callers pass ``None`` and we lazily
+          allocate the right value via ``_new_budget``.
+
+        ``_depth`` and ``_seen`` are internal threading helpers that
+        track recursion depth and per-unit-occurrence across the call
+        tree. Top-level callers should leave them at their defaults.
 
         Cycles are prevented at load time by ``validate_dag()`` — no
         runtime tracking is needed here.
@@ -310,17 +419,27 @@ class KnowledgeUnit:
         if store is None:
             return own
 
-        # Lazy-init the shared budget on the top-level call. Recursive
-        # descendants inherit the existing counter so the cap applies
-        # across the whole expansion tree, not per-level.
+        # Lazy-init shared state on the top-level call. Recursive
+        # descendants inherit the existing counters so each safety
+        # knob applies across the whole expansion tree, not per-level.
         if _budget is None:
             _budget = _new_budget(recursive_mode)
+        if _seen is None:
+            # The unit being resolved counts as already-emitted; if
+            # something downstream re-references it, the back-ref
+            # marker fires instead of a (cycle-blocked) loop.
+            _seen = {self.path}
+
+        effective_max_depth = _resolve_max_depth(recursive_mode, max_depth)
 
         return _resolve_placeholders(
             own,
             store,
             recursive_mode=recursive_mode,
+            max_depth=effective_max_depth,
             _budget=_budget,
+            _depth=_depth,
+            _seen=_seen,
         )
 
     def _kind_fields(self) -> dict[str, Any]:

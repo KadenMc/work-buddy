@@ -121,6 +121,7 @@ def agent_docs(
     top_n: int = 8,
     dev: bool = False,
     recursive: str = "default",
+    max_depth: int = -1,
 ) -> dict[str, Any]:
     """Unified search and navigation over all agent documentation.
 
@@ -148,6 +149,14 @@ def agent_docs(
             search relevance does not shift based on caller intent. No-op
             when ``depth`` is not ``"full"`` and on the empty-everything
             index path (which doesn't resolve placeholders at all).
+        max_depth: Cap on placeholder recursion depth at ``depth="full"``.
+            ``-1`` (default) selects the mode default: unlimited in
+            ``recursive="default"`` mode, 10 in ``recursive="all"`` mode.
+            ``0`` disables recursion entirely (output equivalent to
+            ``recursive="none"``). Positive ints set an exact cap. The
+            depth cap is one of three layered safety mechanisms — see
+            ``KnowledgeUnit._resolve_full_content`` for the full
+            contract.
     """
     from work_buddy.knowledge.search import search
 
@@ -158,6 +167,10 @@ def agent_docs(
                 "Must be 'default', 'all', or 'none'."
             )
         }
+
+    # Convert the MCP-flat ``int`` sentinel (-1) into ``None`` for the
+    # downstream call. Positive values pass through.
+    effective_max_depth: int | None = None if max_depth < 0 else max_depth
 
     # Empty everything = return full index. _full_index does not pass a
     # store to tier(), so placeholders are not resolved on that path —
@@ -174,6 +187,7 @@ def agent_docs(
         top_n=top_n,
         dev=dev,
         recursive=recursive,
+        max_depth=effective_max_depth,
     )
 
 

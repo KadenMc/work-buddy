@@ -20,6 +20,9 @@ from work_buddy.knowledge.model import (
     _extract_placeholder_refs,
     _RECURSIVE_ALL_SIZE_CAP,
     _TRUNCATION_MARKER,
+    _DEPTH_LIMIT_MARKER_TEMPLATE,
+    _BACK_REFERENCE_MARKER_TEMPLATE,
+    _DEFAULT_MAX_DEPTH_FOR_ALL_MODE,
 )
 
 
@@ -579,11 +582,17 @@ class TestRecursiveMode:
 
     def test_all_mode_truncates_at_size_cap(self):
         """A pathological chain whose ``all`` expansion exceeds the size
-        cap should terminate cleanly with the truncation marker."""
-        # Build a chain of N units each whose body is ~2KB. With cap at
-        # 100KB, we'll need ~60+ levels to definitely overshoot.
-        n_levels = 80
-        body_chunk = "x" * 2000  # 2KB per level
+        cap should terminate cleanly with the truncation marker.
+
+        Passes ``max_depth=None`` to disable the depth cap so the size
+        cap is exercised in isolation. Otherwise the depth cap (default
+        10 in ``all`` mode) would fire first.
+        """
+        # Build a chain of N units each whose body is ~20KB. With cap
+        # at 100KB and ~9 levels actually expanded under depth=None,
+        # we'd hit ~180KB without the size cap. The cap should kick in.
+        n_levels = 12
+        body_chunk = "x" * 20000  # 20KB per level
         store: dict[str, DirectionsUnit] = {}
         for i in range(n_levels):
             next_ref = f"<<wb:u{i + 1}>>" if i + 1 < n_levels else ""
@@ -592,14 +601,19 @@ class TestRecursiveMode:
                 content={"full": f"{body_chunk} {next_ref}"},
             )
 
-        result = _resolve_placeholders("<<wb:u0>>", store, recursive_mode="all")
+        # max_depth=None overrides the all-mode default to unlimited
+        # so size cap is the only constraint.
+        result = _resolve_placeholders(
+            "<<wb:u0>>", store,
+            recursive_mode="all", max_depth=None,
+        )
 
-        # Truncation marker must appear — proves the cap fired.
+        # Truncation marker must appear — proves the size cap fired.
         assert _TRUNCATION_MARKER in result, (
-            "expected truncation marker once expansion exceeds the cap"
+            "expected size-cap truncation marker once expansion exceeds the cap"
         )
         # And the output is bounded — should not be the full
-        # n_levels * 2KB = 160KB. Allow a generous safety margin since
+        # n_levels * 20KB = 240KB. Allow a generous safety margin since
         # the budget is checked between replacements, not mid-string.
         assert len(result) < _RECURSIVE_ALL_SIZE_CAP * 3, (
             f"output length {len(result)} exceeds tripled cap "
@@ -647,3 +661,215 @@ class TestRecursiveMode:
         result = agent_docs(path="nonexistent/unit", recursive="bogus")
         assert "error" in result
         assert "bogus" in result["error"].lower() or "invalid" in result["error"].lower()
+
+
+class TestMaxDepth:
+    """Configurable depth limit. ``None`` / ``-1`` = mode default
+    (unlimited in ``default`` mode, 10 in ``all`` mode). ``0`` = no
+    recursion at all. Positive ints = exact depth cap.
+    """
+
+    def _deep_chain_store(self, n: int = 15):
+        """Linear chain of n units, each plain-referencing the next."""
+        store: dict[str, DirectionsUnit] = {}
+        for i in range(n):
+            next_ref = f"<<wb:u{i + 1}>>" if i + 1 < n else ""
+            store[f"u{i}"] = DirectionsUnit(
+                path=f"u{i}", name=f"U{i}", description=f"L{i}",
+                content={"full": f"U{i}-body {next_ref}".rstrip()},
+            )
+        return store
+
+    def test_all_mode_default_depth_cap_fires_at_10(self):
+        """Without an explicit ``max_depth``, ``all`` mode caps at the
+        default of ``_DEFAULT_MAX_DEPTH_FOR_ALL_MODE``."""
+        assert _DEFAULT_MAX_DEPTH_FOR_ALL_MODE == 10
+        store = self._deep_chain_store(15)
+        result = _resolve_placeholders("<<wb:u0>>", store, recursive_mode="all")
+        marker = _DEPTH_LIMIT_MARKER_TEMPLATE.format(depth=10)
+        assert marker in result, (
+            f"expected depth-limit marker '{marker}' in result"
+        )
+        # First few levels DID expand; the deep ones did not.
+        assert "U0-body" in result
+        assert "U9-body" in result
+        assert "U14-body" not in result
+
+    def test_explicit_max_depth_overrides_mode_default(self):
+        """Caller-passed ``max_depth=3`` overrides the all-mode default."""
+        store = self._deep_chain_store(10)
+        result = _resolve_placeholders(
+            "<<wb:u0>>", store,
+            recursive_mode="all", max_depth=3,
+        )
+        marker = _DEPTH_LIMIT_MARKER_TEMPLATE.format(depth=3)
+        assert marker in result
+        assert "U0-body" in result
+        assert "U2-body" in result
+        assert "U5-body" not in result
+
+    def test_max_depth_zero_disables_recursion(self):
+        """``max_depth=0`` is the caller-side way to say 'no recursion'
+        — equivalent to ``recursive='none'`` in effect, but expressed
+        through the depth knob."""
+        store = self._deep_chain_store(5)
+        result = _resolve_placeholders(
+            "<<wb:u0>>", store,
+            recursive_mode="all", max_depth=0,
+        )
+        # The first placeholder pass fires at depth 0 — depth marker
+        # appears in place of any expansion.
+        marker = _DEPTH_LIMIT_MARKER_TEMPLATE.format(depth=0)
+        assert marker in result
+        assert "U0-body" not in result
+
+    def test_default_mode_no_depth_cap_by_default(self):
+        """``default`` mode preserves historical behaviour: no depth
+        cap unless caller passes one. A long chain of explicit
+        ``--recursive`` flags expands fully."""
+        n = 15
+        store: dict[str, DirectionsUnit] = {}
+        for i in range(n):
+            # Each level uses --recursive so default mode does cascade
+            next_ref = f"<<wb:u{i + 1} --recursive>>" if i + 1 < n else ""
+            store[f"u{i}"] = DirectionsUnit(
+                path=f"u{i}", name=f"U{i}", description=f"L{i}",
+                content={"full": f"U{i}-body {next_ref}".rstrip()},
+            )
+        result = _resolve_placeholders(
+            "<<wb:u0 --recursive>>", store, recursive_mode="default",
+        )
+        # All levels expanded — historical default mode is unbounded
+        assert "U0-body" in result
+        assert "U14-body" in result
+        depth_marker_substr = "expansion truncated at depth"
+        assert depth_marker_substr not in result
+
+    def test_default_mode_caller_can_opt_into_depth_cap(self):
+        """Default mode honours an explicit ``max_depth`` even though
+        the mode default is unlimited."""
+        n = 10
+        store: dict[str, DirectionsUnit] = {}
+        for i in range(n):
+            next_ref = f"<<wb:u{i + 1} --recursive>>" if i + 1 < n else ""
+            store[f"u{i}"] = DirectionsUnit(
+                path=f"u{i}", name=f"U{i}", description=f"L{i}",
+                content={"full": f"U{i}-body {next_ref}".rstrip()},
+            )
+        result = _resolve_placeholders(
+            "<<wb:u0 --recursive>>", store,
+            recursive_mode="default", max_depth=4,
+        )
+        assert _DEPTH_LIMIT_MARKER_TEMPLATE.format(depth=4) in result
+        assert "U0-body" in result
+        assert "U3-body" in result
+        assert "U7-body" not in result
+
+
+class TestPerUnitOccurrenceCap:
+    """Per-unit-occurrence cap (always on). The first appearance of a
+    given target in a top-level expansion gets the content; subsequent
+    references get a back-reference marker. Catches diamond graphs.
+    """
+
+    def test_diamond_graph_second_reference_is_back_ref(self):
+        """top → A → foundation, top → B → foundation. Foundation
+        should appear once; the second branch's reference should
+        produce a back-ref marker."""
+        foundation = DirectionsUnit(
+            path="foundation", name="Foundation", description="leaf",
+            content={"full": "FOUNDATION-BODY"},
+        )
+        branch_a = DirectionsUnit(
+            path="branch_a", name="BranchA", description="a",
+            content={"full": "A-body <<wb:foundation>>"},
+        )
+        branch_b = DirectionsUnit(
+            path="branch_b", name="BranchB", description="b",
+            content={"full": "B-body <<wb:foundation>>"},
+        )
+        top = DirectionsUnit(
+            path="top", name="Top", description="t",
+            content={"full": "top: <<wb:branch_a>> and <<wb:branch_b>>"},
+        )
+        store = {u.path: u for u in [foundation, branch_a, branch_b, top]}
+
+        result = _resolve_placeholders(
+            "<<wb:top>>", store, recursive_mode="all",
+        )
+
+        # Foundation content appears exactly once
+        assert result.count("FOUNDATION-BODY") == 1
+        # The other reference is a back-ref marker
+        back_ref = _BACK_REFERENCE_MARKER_TEMPLATE.format(path="foundation")
+        assert back_ref in result
+
+    def test_repeated_plain_placeholder_within_same_unit(self):
+        """Even within a single unit's content, if ``<<wb:X>>`` appears
+        twice in ``all`` mode, the second occurrence gets the back-ref
+        marker (catches authoring duplicates at runtime)."""
+        x = DirectionsUnit(
+            path="x", name="X", description="x",
+            content={"full": "X-BODY"},
+        )
+        host = DirectionsUnit(
+            path="host", name="Host", description="h",
+            content={"full": "<<wb:x>> middle <<wb:x>>"},
+        )
+        store = {"x": x, "host": host}
+        result = _resolve_placeholders(
+            "<<wb:host>>", store, recursive_mode="all",
+        )
+        assert result.count("X-BODY") == 1
+        assert _BACK_REFERENCE_MARKER_TEMPLATE.format(path="x") in result
+
+    def test_default_mode_still_dedupes_diamond(self):
+        """Per-unit-occurrence cap fires in ``default`` mode too — a
+        diamond using explicit ``--recursive`` flags should still
+        dedupe."""
+        foundation = DirectionsUnit(
+            path="foundation", name="Foundation", description="leaf",
+            content={"full": "FOUNDATION-BODY"},
+        )
+        a = DirectionsUnit(
+            path="a", name="A", description="a",
+            content={"full": "A-body <<wb:foundation --recursive>>"},
+        )
+        b = DirectionsUnit(
+            path="b", name="B", description="b",
+            content={"full": "B-body <<wb:foundation --recursive>>"},
+        )
+        top = DirectionsUnit(
+            path="top", name="Top", description="t",
+            content={"full": "<<wb:a --recursive>> <<wb:b --recursive>>"},
+        )
+        store = {u.path: u for u in [foundation, a, b, top]}
+        result = _resolve_placeholders(
+            "<<wb:top --recursive>>", store, recursive_mode="default",
+        )
+        assert result.count("FOUNDATION-BODY") == 1
+        assert _BACK_REFERENCE_MARKER_TEMPLATE.format(path="foundation") in result
+
+    def test_self_reference_via_resolve_full_content_uses_back_ref(self):
+        """When ``_resolve_full_content`` is the top-level entry, the
+        unit being resolved is pre-added to ``_seen`` — so if it
+        appears downstream, the back-ref marker fires (defence beyond
+        validate_dag's cycle check)."""
+        # A → B → A (would be a cycle, normally blocked at load time —
+        # but the runtime guard should also catch it).
+        a = DirectionsUnit(
+            path="a", name="A", description="a",
+            content={"full": "A-body <<wb:b>>"},
+        )
+        b = DirectionsUnit(
+            path="b", name="B", description="b",
+            content={"full": "B-body <<wb:a>>"},
+        )
+        store = {"a": a, "b": b}
+        # Call _resolve_full_content directly — this primes _seen with
+        # the unit being resolved.
+        result = a._resolve_full_content(store, recursive_mode="all")
+        assert "A-body" in result
+        assert "B-body" in result
+        # And the self-ref to A from B's body becomes a back-ref
+        assert _BACK_REFERENCE_MARKER_TEMPLATE.format(path="a") in result

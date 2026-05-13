@@ -136,6 +136,11 @@
         "type": "str",
         "description": "Placeholder recursion at depth='full'. 'default' (per-placeholder --recursive flag wins; historical behaviour), 'all' (force transitive expansion, capped at ~100KB), 'none' (preserve <<wb:...>> markup literally; useful for editing). Affects output only — search corpus uses 'default'.",
         "required": false
+      },
+      "max_depth": {
+        "type": "int",
+        "description": "Cap on placeholder recursion depth at depth='full'. -1 (default) = mode default (unlimited in 'default' mode, 10 in 'all' mode). 0 = no recursion (same as recursive='none' in effect). Positive ints set an exact cap. Layers with the size budget and the per-unit-occurrence cap.",
+        "required": false
       }
     },
     "tags": [

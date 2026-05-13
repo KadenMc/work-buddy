@@ -6537,6 +6537,18 @@ def _knowledge_capabilities() -> list[Capability]:
                     ),
                     "required": False,
                 },
+                "max_depth": {
+                    "type": "int",
+                    "description": (
+                        "Cap on placeholder recursion depth at depth='full'. "
+                        "-1 (default) = mode default (unlimited in 'default' "
+                        "mode, 10 in 'all' mode). 0 = no recursion (same as "
+                        "recursive='none' in effect). Positive ints set an "
+                        "exact cap. Layers with the size budget and the "
+                        "per-unit-occurrence cap."
+                    ),
+                    "required": False,
+                },
             },
             callable=agent_docs,
             search_aliases=[
