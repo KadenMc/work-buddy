@@ -132,6 +132,94 @@ check(
 del _ACTIVE_RUNS["wf_test2"]
 
 
+# ── Test 2b: Empty-result parameter-name hint ─────────────────
+#
+# When the agent forgets to pass step_result (or names the kwarg
+# incorrectly so FastMCP drops it), the conductor sees an empty dict
+# against a schema that requires keys. The generic "make sure your
+# result dict has all the fields" hint misdirects in that case — the
+# real cause is upstream of the dict's contents. The error message
+# and the hint field both surface a parameter-name nudge.
+
+print("\n=== Test 2b: Empty result triggers parameter-name hint ===")
+
+dag2b = WorkflowDAG(name="test-empty:wf_test2b", description="test")
+dag2b.add_task("step1", name="Required-keys step", metadata={
+    "step_type": "reasoning",
+    "instruction": "test",
+    "result_schema": {
+        "required_keys": ["units_read", "files_read"],
+    },
+})
+dag2b.add_task("step2", name="Next", depends_on=["step1"], metadata={
+    "step_type": "reasoning",
+    "instruction": "test",
+})
+
+_ACTIVE_RUNS["wf_test2b"] = dag2b
+dag2b.start_task("step1")
+
+# Simulate the failure mode: caller passes no step_result. The
+# gateway's _parse_params turns None into {}, so the conductor sees
+# an empty dict.
+result = advance_workflow("wf_test2b", {})
+check(
+    "Empty result rejected",
+    result.get("type") == "validation_error",
+    f"got type={result.get('type')}",
+)
+check(
+    "Error message names step_result parameter",
+    "step_result" in result.get("error", ""),
+    result.get("error", ""),
+)
+check(
+    "Error message warns about wrong-named result kwarg",
+    "result=" in result.get("error", ""),
+    result.get("error", ""),
+)
+check(
+    "Hint pivots to parameter-name framing on empty result",
+    "step_result" in result.get("hint", "")
+    and "FastMCP" in result.get("hint", ""),
+    result.get("hint", ""),
+)
+check(
+    "Hint does NOT use the generic data-structure framing on empty result",
+    "presentation dict" not in result.get("hint", ""),
+    result.get("hint", ""),
+)
+check(
+    "Step stays running after empty-result rejection",
+    dag2b._graph.nodes["step1"].get("status") == "running",
+    dag2b._graph.nodes["step1"].get("status"),
+)
+
+# Sanity: when the agent actually sends a non-empty (but still
+# missing-key) result, the hint should fall back to the generic
+# data-structure framing — the parameter-name nudge is only for the
+# empty case.
+result_partial = advance_workflow("wf_test2b", {"units_read": ["a"]})
+check(
+    "Non-empty missing-key still rejected",
+    result_partial.get("type") == "validation_error",
+    f"got type={result_partial.get('type')}",
+)
+check(
+    "Non-empty hint stays generic (no parameter-name framing)",
+    "FastMCP" not in result_partial.get("hint", "")
+    and "presentation dict" in result_partial.get("hint", ""),
+    result_partial.get("hint", ""),
+)
+check(
+    "Non-empty error message does NOT carry the empty-result nudge",
+    "FastMCP" not in result_partial.get("error", ""),
+    result_partial.get("error", ""),
+)
+
+del _ACTIVE_RUNS["wf_test2b"]
+
+
 # ── Test 3: Steps without schema skip validation ──────────────
 
 print("\n=== Test 3: No schema = no validation ===")
