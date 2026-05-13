@@ -98,11 +98,28 @@ from work_buddy.artifacts.lifecycle.actions import (  # noqa: F401
 )
 from work_buddy.artifacts.lifecycle.triggers import (  # noqa: F401
     MtimeWindow,
+    NeverExpires,
     PerRecordTtl,
     PerTypeTtl,
     TimeWindow,
 )
 from work_buddy.artifacts.provenance import SessionTagged  # noqa: F401
+
+
+# ---------------------------------------------------------------------------
+# Lifecycle conveniences
+# ---------------------------------------------------------------------------
+
+# Single canonical "this data is durable" lifecycle. Pass to
+# ``Artifact(lifecycle=INFINITE_LIFECYCLE)`` for subsystems whose data
+# must outlive every cleanup tick. The trigger's ``is_expired`` always
+# returns False, so the action — kept as :class:`Delete` for shape
+# consistency with the rest of the registry — will never fire.
+#
+# A grep for ``INFINITE_LIFECYCLE`` across the codebase enumerates every
+# artifact that opted into infinite retention, making intent auditable
+# in a way a sentinel TTL is not.
+INFINITE_LIFECYCLE = Lifecycle(trigger=NeverExpires(), action=Delete())
 
 # Eagerly register the default artifacts (filesystem, logs/global) at
 # package import time. Consumer-owned artifacts (chrome-ledger,
