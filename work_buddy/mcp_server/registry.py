@@ -7134,16 +7134,6 @@ def _knowledge_capabilities() -> list[Capability]:
                     "description": "Comma-separated tags.",
                     "required": False,
                 },
-                "context_before": {
-                    "type": "str",
-                    "description": "Comma-separated unit paths to chain before.",
-                    "required": False,
-                },
-                "context_after": {
-                    "type": "str",
-                    "description": "Comma-separated unit paths to chain after.",
-                    "required": False,
-                },
                 "evidence": {
                     "type": "str",
                     "description": "Initial evidence observation.",

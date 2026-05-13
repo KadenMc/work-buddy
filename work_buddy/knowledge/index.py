@@ -141,10 +141,12 @@ def _build_doc(
 ) -> IndexDoc:
     """Build an IndexDoc from a knowledge unit.
 
-    Includes the unit's OWN content (not chained context_before/after).
-    When *store* is provided, inline ``<<wb:...>>`` placeholders in the
-    content are resolved before indexing — so referenced content is
-    searchable from the referencing unit.
+    Includes the unit's OWN content. When *store* is provided, inline
+    ``<<wb:...>>`` placeholders in the content are resolved before
+    indexing — so referenced content is searchable from the referencing
+    unit. Placeholders are resolved with ``recursive_mode="default"`` so
+    indexing reflects each author's per-placeholder choices rather than
+    shifting with caller intent at query time.
     """
     meta_text = " ".join(unit.search_phrases())
 

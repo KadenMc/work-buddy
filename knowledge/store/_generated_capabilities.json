@@ -376,6 +376,11 @@
         "type": "bool",
         "description": "Include dev_notes in full-depth results. Auto-set when session dev mode is active.",
         "required": false
+      },
+      "recursive": {
+        "type": "str",
+        "description": "Placeholder recursion at depth='full'. 'default' (per-placeholder --recursive flag wins; historical behaviour), 'all' (force transitive expansion, capped at ~100KB), 'none' (preserve <<wb:...>> markup literally; useful for editing). Affects output only — search corpus uses 'default'.",
+        "required": false
       }
     },
     "tags": [
@@ -2300,16 +2305,6 @@
       "tags": {
         "type": "str",
         "description": "Comma-separated tags.",
-        "required": false
-      },
-      "context_before": {
-        "type": "str",
-        "description": "Comma-separated unit paths to chain before.",
-        "required": false
-      },
-      "context_after": {
-        "type": "str",
-        "description": "Comma-separated unit paths to chain after.",
         "required": false
       },
       "evidence": {

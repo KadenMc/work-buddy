@@ -16,8 +16,12 @@ The DAG structure (parents/children) enables hierarchical navigation. Multi-pare
 is supported and intended: a subsystem may live at one path for navigation and
 declare additional parent systems via ``parents``.
 
-Context chaining (context_before/context_after) enables automatic content
-inclusion without duplication — use sparingly for genuine shared foundations.
+Cross-unit content reuse goes through inline ``<<wb:path>>`` placeholders
+in ``content["full"]`` (see ``_resolve_placeholders``). The earlier
+``context_before`` / ``context_after`` chain mechanism was retired in
+favour of placeholders, which give authors per-reference control over
+recursion. Loaders silently ignore stale ``context_before`` /
+``context_after`` keys in store JSON; the resolver no longer reads them.
 """
 
 from __future__ import annotations
@@ -207,13 +211,6 @@ class KnowledgeUnit:
     parents: list[str] = field(default_factory=list)
     children: list[str] = field(default_factory=list)
 
-    # Context chaining — automatic content inclusion at depth="full".
-    # Referenced units' content is prepended (before) or appended (after).
-    # Non-recursive: chains do not transitively resolve their own chains.
-    # Use sparingly for genuine shared foundations, not loose associations.
-    context_before: list[str] = field(default_factory=list)
-    context_after: list[str] = field(default_factory=list)
-
     # Dev notes — development-facing documentation that only surfaces when
     # the agent is in dev mode or explicitly requests dev=True.
     dev_notes: str = ""
@@ -233,12 +230,13 @@ class KnowledgeUnit:
 
         - "index": name + description + kind + children (for navigation)
         - "summary": above + content["summary"] + kind-specific fields
-        - "full": above + content["full"] + all fields, with chain resolution
+        - "full": above + content["full"] + all fields, with placeholder resolution
 
         Args:
             depth: One of "index", "summary", "full".
-            store: Unit store dict for resolving context chains at depth="full".
-                   When None, chains are returned as path lists without resolution.
+            store: Unit store dict for resolving ``<<wb:path>>`` placeholders
+                   at ``depth="full"``. When None, content is returned with
+                   placeholders unresolved (used by the bare full-index path).
             dev: When True, include dev_notes in full-depth output.
             recursive_mode: Placeholder recursion control at ``depth="full"``.
                 One of ``"default"`` (per-flag), ``"all"`` (force transitive
@@ -258,20 +256,12 @@ class KnowledgeUnit:
 
         if depth == "index":
             base["tags"] = self.tags
-            if self.context_before:
-                base["context_before"] = self.context_before
-            if self.context_after:
-                base["context_after"] = self.context_after
             return base
 
         # summary and full both include kind-specific fields
         base["tags"] = self.tags
         base["aliases"] = self.aliases
         base["requires"] = self.requires
-        if self.context_before:
-            base["context_before"] = self.context_before
-        if self.context_after:
-            base["context_after"] = self.context_after
         base.update(self._kind_fields())
 
         if depth == "summary":
@@ -295,24 +285,25 @@ class KnowledgeUnit:
         recursive_mode: str = "default",
         _budget: list[int] | None = None,
     ) -> str:
-        """Build full content with context chain + placeholder resolution.
+        """Return ``content["full"]`` with inline placeholders resolved.
 
-        Resolution order:
-        1. Prepend ``context_before`` references (non-recursive).
-        2. Own content with ``<<wb:...>>`` placeholders resolved inline.
-        3. Append ``context_after`` references (non-recursive).
-
-        When *store* is None, returns the unit's own content only (chains
-        and placeholders listed as metadata in tier output, not resolved).
+        When *store* is None, returns the unit's own content unresolved
+        (used by the bare full-index path which doesn't have a store
+        handle).
 
         ``recursive_mode`` controls placeholder expansion — see
         ``_RECURSIVE_MODES`` and ``_resolve_placeholders``. ``_budget`` is
         a shared counter for the ``"all"`` mode size cap; the top-level
         caller passes ``None`` and we lazily allocate one so every
-        recursive descendent debits the same budget.
+        recursive descendant debits the same budget.
 
         Cycles are prevented at load time by ``validate_dag()`` — no
         runtime tracking is needed here.
+
+        The retired ``context_before`` / ``context_after`` mechanism
+        used to splice referenced units' content as ``--- context
+        from: X ---`` blocks before and after this body; placeholders
+        replaced it.
         """
         own = self.content.get("full", self.content.get("summary", ""))
 
@@ -320,44 +311,17 @@ class KnowledgeUnit:
             return own
 
         # Lazy-init the shared budget on the top-level call. Recursive
-        # descendents inherit the existing counter so the cap applies
+        # descendants inherit the existing counter so the cap applies
         # across the whole expansion tree, not per-level.
         if _budget is None:
             _budget = _new_budget(recursive_mode)
 
-        # Resolve inline placeholders in own content
-        own = _resolve_placeholders(
+        return _resolve_placeholders(
             own,
             store,
             recursive_mode=recursive_mode,
             _budget=_budget,
         )
-
-        if not self.context_before and not self.context_after:
-            return own
-
-        parts: list[str] = []
-
-        # Prepend context_before
-        for ref_path in self.context_before:
-            ref = store.get(ref_path)
-            if ref is not None:
-                ref_content = ref.content.get("full", ref.content.get("summary", ""))
-                if ref_content:
-                    parts.append(f"--- context from: {ref_path} ---\n{ref_content}")
-
-        # Own content (placeholders already resolved)
-        parts.append(own)
-
-        # Append context_after
-        for ref_path in self.context_after:
-            ref = store.get(ref_path)
-            if ref is not None:
-                ref_content = ref.content.get("full", ref.content.get("summary", ""))
-                if ref_content:
-                    parts.append(f"--- context from: {ref_path} ---\n{ref_content}")
-
-        return "\n\n".join(parts)
 
     def _kind_fields(self) -> dict[str, Any]:
         """Override in subclasses to add kind-specific fields to tier output."""
@@ -394,10 +358,6 @@ class KnowledgeUnit:
             d["parents"] = self.parents
         if self.children:
             d["children"] = self.children
-        if self.context_before:
-            d["context_before"] = self.context_before
-        if self.context_after:
-            d["context_after"] = self.context_after
         if self.dev_notes:
             d["dev_notes"] = self.dev_notes
         # Add kind-specific fields
@@ -738,7 +698,10 @@ def unit_from_dict(path: str, data: dict[str, Any]) -> KnowledgeUnit:
     kind = data.get("kind", "system")
     cls = _KIND_MAP.get(kind, PromptUnit)
 
-    # Extract base fields (shared by all unit types)
+    # Extract base fields (shared by all unit types).
+    # ``context_before`` / ``context_after`` were retired; the loader
+    # silently drops them if a JSON file still has the keys so we
+    # don't have to back-fill every legacy store file in one pass.
     base_kwargs: dict[str, Any] = {
         "path": path,
         "name": data.get("name", path.rsplit("/", 1)[-1]),
@@ -749,8 +712,6 @@ def unit_from_dict(path: str, data: dict[str, Any]) -> KnowledgeUnit:
         "requires": data.get("requires", []),
         "parents": data.get("parents", []),
         "children": data.get("children", []),
-        "context_before": data.get("context_before", []),
-        "context_after": data.get("context_after", []),
         "dev_notes": data.get("dev_notes", ""),
     }
 
@@ -824,7 +785,6 @@ def validate_dag(units: dict[str, KnowledgeUnit]) -> list[str]:
 
     Builds a networkx DiGraph with edges from:
     - parent → child relationships
-    - context_before / context_after references
     - ``<<wb:path>>`` inline placeholder references in content
 
     Also warns (non-fatal) about broken references.
@@ -862,19 +822,6 @@ def validate_dag(units: dict[str, KnowledgeUnit]) -> list[str]:
             if parent not in units:
                 errors.append(f"{path}: parent '{parent}' not found in store")
             # parent→child edges are already added from the parent side
-
-        # Context chain edges
-        for ref in unit.context_before:
-            if ref not in units:
-                errors.append(f"{path}: context_before '{ref}' not found (may be cross-scope)")
-            else:
-                g.add_edge(path, ref)
-
-        for ref in unit.context_after:
-            if ref not in units:
-                errors.append(f"{path}: context_after '{ref}' not found (may be cross-scope)")
-            else:
-                g.add_edge(path, ref)
 
         # Inline placeholder edges
         for ref in _extract_placeholder_refs(unit.content):

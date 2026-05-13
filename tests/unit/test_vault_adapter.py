@@ -87,7 +87,11 @@ class TestLoadVaultUnits:
         u = units["personal/no-def"]
         assert u.content["summary"] == "First paragraph of content."
 
-    def test_context_chains_loaded(self, tmp_path):
+    def test_context_chain_frontmatter_silently_ignored(self, tmp_path):
+        """The retired ``context_before`` / ``context_after`` mechanism
+        was removed in favour of inline ``<<wb:path>>`` placeholders.
+        Vault frontmatter that still has those keys should load without
+        error — the fields just don't materialize on the unit."""
         f = tmp_path / "chained.md"
         f.write_text(
             "---\n"
@@ -98,8 +102,11 @@ class TestLoadVaultUnits:
         )
         units = load_vault_units(tmp_path)
         u = units["personal/chained"]
-        assert u.context_before == ["dev/dev-mode"]
-        assert u.context_after == ["dev/extra"]
+        # Unit loaded successfully — that's the contract. The
+        # retired fields no longer exist on the dataclass.
+        assert u.name == "Chained"
+        assert not hasattr(u, "context_before")
+        assert not hasattr(u, "context_after")
 
     def test_comma_separated_tags(self, tmp_path):
         f = tmp_path / "tagged.md"
