@@ -402,10 +402,10 @@ class TestDuplicatePlaceholderRejection:
                 "parents": [],
                 "children": [],
             },
-            "seed/legacy_dup": {
+            "seed/bypass_dup": {
                 "kind": "directions",
-                "name": "Legacy",
-                "description": "legacy unit with pre-existing duplicates",
+                "name": "Bypass Dup",
+                "description": "unit whose duplicates arrived via direct-JSON bypass",
                 "trigger": "never",
                 "content": {"full": "<<wb:seed/leaf>> a <<wb:seed/leaf>>"},
                 "parents": [],
@@ -417,8 +417,8 @@ class TestDuplicatePlaceholderRejection:
         # Touching ``description`` should succeed even though content
         # has duplicates — the check only fires on content_full edits.
         result = update_unit(
-            "seed/legacy_dup",
-            {"description": "renamed legacy unit"},
+            "seed/bypass_dup",
+            {"description": "renamed via unrelated-field update"},
         )
         assert result.get("status") == "updated"
 

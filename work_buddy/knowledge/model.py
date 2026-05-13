@@ -109,8 +109,7 @@ def _resolve_max_depth(
 
     - Caller passes ``max_depth=-1`` (or ``None``) to mean "use the
       mode's default."
-    - In ``"default"`` mode the mode-default is ``None`` (unlimited),
-      preserving historical behaviour.
+    - In ``"default"`` mode the mode-default is ``None`` (unlimited).
     - In ``"all"`` mode the mode-default is
       ``_DEFAULT_MAX_DEPTH_FOR_ALL_MODE`` — bounds the worst case
       without surprising callers who passed ``recursive="all"`` and
@@ -162,8 +161,8 @@ def _resolve_placeholders(
 ) -> str:
     """Replace ``<<wb:path>>`` / ``<<wb:path --recursive>>`` in *text*.
 
-    - ``recursive_mode="default"`` (historical behaviour): each placeholder
-      honours its own ``--recursive`` flag. Plain inserts raw
+    - ``recursive_mode="default"``: each placeholder honours its own
+      ``--recursive`` flag. Plain inserts raw
       ``content["full"]``; flagged calls ``_resolve_full_content()`` on
       the referenced unit, which transitively resolves *its* placeholders.
     - ``recursive_mode="all"``: every placeholder expands transitively,

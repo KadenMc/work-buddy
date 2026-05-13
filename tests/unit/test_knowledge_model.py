@@ -724,9 +724,9 @@ class TestMaxDepth:
         assert "U0-body" not in result
 
     def test_default_mode_no_depth_cap_by_default(self):
-        """``default`` mode preserves historical behaviour: no depth
-        cap unless caller passes one. A long chain of explicit
-        ``--recursive`` flags expands fully."""
+        """``default`` mode applies no depth cap unless caller passes
+        one. A long chain of explicit ``--recursive`` flags expands
+        fully."""
         n = 15
         store: dict[str, DirectionsUnit] = {}
         for i in range(n):

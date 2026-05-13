@@ -6529,11 +6529,11 @@ def _knowledge_capabilities() -> list[Capability]:
                     "type": "str",
                     "description": (
                         "Placeholder recursion at depth='full'. "
-                        "'default' (per-placeholder --recursive flag wins; "
-                        "historical behaviour), 'all' (force transitive "
-                        "expansion, capped at ~100KB), 'none' (preserve "
-                        "<<wb:...>> markup literally; useful for editing). "
-                        "Affects output only — search corpus uses 'default'."
+                        "'default' (per-placeholder --recursive flag wins), "
+                        "'all' (force transitive expansion, capped at "
+                        "~100KB), 'none' (preserve <<wb:...>> markup "
+                        "literally; useful for editing). Affects output "
+                        "only — search corpus uses 'default'."
                     ),
                     "required": False,
                 },
@@ -6642,7 +6642,8 @@ def _knowledge_capabilities() -> list[Capability]:
             description=(
                 "Validate the knowledge store: DAG integrity, "
                 "command-to-store mappings, thinned command format, "
-                "required fields, kind-specific fields, and parent-child symmetry."
+                "required fields, kind-specific fields, placeholder "
+                "duplicates, and parent-child symmetry."
             ),
             category="context",
             parameters={
@@ -6653,7 +6654,8 @@ def _knowledge_capabilities() -> list[Capability]:
                         "Available: dag_integrity, command_mapping, "
                         "thinned_commands, store_path_validity, "
                         "required_fields, directions_fields, "
-                        "kind_specific_fields, parent_child_symmetry"
+                        "kind_specific_fields, placeholder_duplicate, "
+                        "parent_child_symmetry"
                     ),
                     "required": False,
                 },

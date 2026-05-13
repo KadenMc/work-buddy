@@ -134,7 +134,7 @@
       },
       "recursive": {
         "type": "str",
-        "description": "Placeholder recursion at depth='full'. 'default' (per-placeholder --recursive flag wins; historical behaviour), 'all' (force transitive expansion, capped at ~100KB), 'none' (preserve <<wb:...>> markup literally; useful for editing). Affects output only — search corpus uses 'default'.",
+        "description": "Placeholder recursion at depth='full'. 'default' (per-placeholder --recursive flag wins), 'all' (force transitive expansion, capped at ~100KB), 'none' (preserve <<wb:...>> markup literally; useful for editing). Affects output only — search corpus uses 'default'.",
         "required": false
       },
       "max_depth": {
@@ -2850,7 +2850,7 @@
   "context/docs_validate": {
     "kind": "capability",
     "name": "Docs Validate",
-    "description": "Validate the knowledge store: DAG integrity, command-to-store mappings, thinned command format, required fields, kind-specific fields, and parent-child symmetry.",
+    "description": "Validate the knowledge store: DAG integrity, command-to-store mappings, thinned command format, required fields, kind-specific fields, placeholder duplicates, and parent-child symmetry.",
     "capability_name": "docs_validate",
     "category": "context",
     "aliases": [
@@ -2863,7 +2863,7 @@
     "parameters": {
       "checks": {
         "type": "str",
-        "description": "Comma-separated check names to run. Empty = all. Available: dag_integrity, command_mapping, thinned_commands, store_path_validity, required_fields, directions_fields, kind_specific_fields, parent_child_symmetry",
+        "description": "Comma-separated check names to run. Empty = all. Available: dag_integrity, command_mapping, thinned_commands, store_path_validity, required_fields, directions_fields, kind_specific_fields, placeholder_duplicate, parent_child_symmetry",
         "required": false
       }
     },
