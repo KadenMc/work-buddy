@@ -874,115 +874,25 @@ def _committed_files_per_session(
     return result
 
 
-def session_uncommitted(
-    days: int = 7,
-) -> dict[str, Any]:
+def session_uncommitted(days: int = 7) -> dict[str, Any]:
     """Find the last agent session that wrote each currently-dirty file.
 
-    Cross-references Write/Edit/NotebookEdit tool calls from recent sessions
-    against ``git status --porcelain`` across all repos under ``repos_root``.
+    Cross-references Write/Edit/NotebookEdit tool calls from recent
+    sessions against ``git status --porcelain`` across every repo under
+    ``repos_root``.
 
-    For each dirty file, only the **most recent session** to write it is
-    reported — earlier sessions' edits have been overwritten and are not
-    actionable.  Sessions that wrote a file and later committed it are
-    excluded entirely.
+    For each dirty file, only the **most recent session** to write it
+    is reported — earlier sessions' edits have been overwritten and are
+    not actionable. Sessions that wrote a file and later committed it
+    are excluded entirely.
 
-    Returns structured report grouped by session: each entry lists the
-    dirty files that session is responsible for.
+    Returns the legacy ``{uncommitted_count, uncommitted, clean_sessions,
+    scanned_sessions}`` shape. Thin wrapper over
+    :func:`work_buddy.conversation_observability.writes.uncommitted_report`.
     """
-    from work_buddy.collectors.git_collector import _discover_repos, _get_status
-    from work_buddy.config import load_config
+    from work_buddy.conversation_observability.writes import uncommitted_report
 
-    cfg = load_config()
-    repos_root = Path(cfg["repos_root"])
-
-    # --- Phase 1: find the last writer of every file across all sessions ---
-    # last_writer: {abs_path: (session_id, timestamp)}
-    last_writer: dict[Path, tuple[str, str]] = {}
-    session_paths = _recent_sessions(days)
-    sessions_with_writes = set()
-
-    for path, sid in session_paths:
-        writes = _extract_writes_from_jsonl(path)
-        if not writes:
-            continue
-        sessions_with_writes.add(sid)
-        for file_path, timestamp in writes.items():
-            prev = last_writer.get(file_path)
-            if prev is None or timestamp > prev[1]:
-                last_writer[file_path] = (sid, timestamp)
-
-    if not last_writer:
-        return {
-            "uncommitted_count": 0,
-            "uncommitted": [],
-            "clean_sessions": 0,
-            "scanned_sessions": 0,
-        }
-
-    # --- Phase 1b: remove files the last-writer session already committed ---
-    committed_map = _committed_files_per_session(days, repos_root)
-    for file_path, (sid, _ts) in list(last_writer.items()):
-        committed = committed_map.get(sid, set())
-        if file_path in committed:
-            del last_writer[file_path]
-
-    # --- Phase 2: collect dirty files across all repos ---
-    dirty_files: dict[Path, tuple[str, str]] = {}  # abs_path -> (repo_name, status)
-    for repo_path in _discover_repos(repos_root):
-        raw_status = _get_status(repo_path)
-        if not raw_status:
-            continue
-        for line in raw_status.splitlines():
-            if len(line) < 4:
-                continue
-            status_code = line[:2].strip()
-            rel_path = line[3:]
-            # Handle renames: "old -> new" format
-            if " -> " in rel_path:
-                rel_path = rel_path.split(" -> ")[-1]
-            try:
-                abs_path = (repo_path / rel_path).resolve()
-                dirty_files[abs_path] = (repo_path.name, status_code)
-            except (ValueError, OSError):
-                continue
-
-    # --- Phase 3: intersect and group by session ---
-    # Only keep files that are both: last-written by a session AND currently dirty
-    by_session: dict[str, dict[str, list[dict[str, str]]]] = {}
-    blamed_sessions: set[str] = set()
-
-    for file_path, (sid, _ts) in last_writer.items():
-        if file_path not in dirty_files:
-            continue
-        repo_name, status_code = dirty_files[file_path]
-        blamed_sessions.add(sid)
-        by_session.setdefault(sid, {}).setdefault(repo_name, []).append({
-            "file": file_path.name,
-            "path": file_path.as_posix(),
-            "status": status_code,
-        })
-
-    uncommitted: list[dict[str, Any]] = []
-    for sid in sorted(by_session):
-        for repo_name, files in sorted(by_session[sid].items()):
-            files.sort(key=lambda f: f["file"])
-            uncommitted.append({
-                "session_id": sid,
-                "repo": repo_name,
-                "files": [f["file"] for f in files],
-                "paths": [f["path"] for f in files],
-                "status": [f["status"] for f in files],
-            })
-
-    clean_count = len(sessions_with_writes - blamed_sessions)
-
-    return {
-        "uncommitted_count": len(uncommitted),
-        "uncommitted": uncommitted,
-        "clean_sessions": clean_count,
-        "scanned_sessions": len(sessions_with_writes),
-    }
+    return uncommitted_report(days=days)
 
 
 def session_search(
