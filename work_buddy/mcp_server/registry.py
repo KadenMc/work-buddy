@@ -6525,6 +6525,18 @@ def _knowledge_capabilities() -> list[Capability]:
                     ),
                     "required": False,
                 },
+                "recursive": {
+                    "type": "str",
+                    "description": (
+                        "Placeholder recursion at depth='full'. "
+                        "'default' (per-placeholder --recursive flag wins; "
+                        "historical behaviour), 'all' (force transitive "
+                        "expansion, capped at ~100KB), 'none' (preserve "
+                        "<<wb:...>> markup literally; useful for editing). "
+                        "Affects output only — search corpus uses 'default'."
+                    ),
+                    "required": False,
+                },
             },
             callable=agent_docs,
             search_aliases=[

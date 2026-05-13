@@ -18,6 +18,8 @@ from work_buddy.knowledge.model import (
     validate_dag,
     _resolve_placeholders,
     _extract_placeholder_refs,
+    _RECURSIVE_ALL_SIZE_CAP,
+    _TRUNCATION_MARKER,
 )
 
 
@@ -653,3 +655,165 @@ class TestResolvePlaceholders:
         assert "Main content." in result["content"]
         assert "Bridge info." in result["content"]
         assert "--- context from: obsidian/bridge ---" in result["content"]
+
+
+class TestRecursiveMode:
+    """Caller-side override of per-placeholder ``--recursive`` flags.
+
+    See ``_RECURSIVE_MODES`` in ``model.py`` for the contract:
+    ``"default"`` honours the author's flag per placeholder; ``"all"``
+    forces every placeholder to expand transitively (bounded by a size
+    cap); ``"none"`` preserves placeholders literally.
+    """
+
+    def _chain_store(self):
+        """A → plain ``<<wb:B>>`` → plain ``<<wb:C>>``. No --recursive flags."""
+        c = DirectionsUnit(
+            path="c", name="C", description="leaf",
+            content={"full": "C-body."},
+        )
+        b = DirectionsUnit(
+            path="b", name="B", description="mid",
+            content={"full": "B-body. <<wb:c>>"},
+        )
+        a = DirectionsUnit(
+            path="a", name="A", description="top",
+            content={"full": "A-body. <<wb:b>>"},
+        )
+        return {"a": a, "b": b, "c": c}
+
+    def test_default_mode_matches_legacy(self):
+        """``recursive_mode='default'`` (and no arg at all) must produce
+        byte-identical output to the historical no-mode call."""
+        store = self._chain_store()
+        text = "<<wb:a>>"
+        legacy = _resolve_placeholders(text, store)
+        explicit = _resolve_placeholders(text, store, recursive_mode="default")
+        assert legacy == explicit
+
+    def test_default_mode_leaves_inner_unexpanded(self):
+        """Plain placeholder A→B inserts A's body RAW — B is never reached.
+
+        This is the foot-gun the editor hint exists to catch: A's content
+        contains ``<<wb:b>>`` as a literal substring, but B's body and
+        B's downstream chain never appear in the resolved output.
+        """
+        store = self._chain_store()
+        result = _resolve_placeholders("<<wb:a>>", store, recursive_mode="default")
+        # A's raw body appears
+        assert "A-body." in result
+        # B's literal placeholder survives in A's raw body
+        assert "<<wb:b>>" in result
+        # And neither B's body nor C's body appears — only one level deep
+        assert "B-body." not in result
+        assert "C-body." not in result
+
+    def test_all_mode_forces_transitive(self):
+        """``recursive_mode='all'`` cascades through plain placeholders."""
+        store = self._chain_store()
+        result = _resolve_placeholders("<<wb:a>>", store, recursive_mode="all")
+        assert "A-body." in result
+        assert "B-body." in result
+        assert "C-body." in result
+        # And the inner literal is gone — it got resolved
+        assert "<<wb:c>>" not in result
+
+    def test_none_mode_preserves_literal(self):
+        """``recursive_mode='none'`` returns placeholder markup unchanged."""
+        store = self._chain_store()
+        text = "Before <<wb:a>> and <<wb:b>> after."
+        result = _resolve_placeholders(text, store, recursive_mode="none")
+        # No expansion at all — original text returned
+        assert result == text
+
+    def test_none_mode_passthrough_with_no_store(self):
+        """``recursive_mode='none'`` does not touch the store, so the
+        early-return path is the same as 'no placeholders to resolve'."""
+        store: dict = {}
+        text = "<<wb:does-not-exist>>"
+        result = _resolve_placeholders(text, store, recursive_mode="none")
+        assert result == text
+
+    def test_tier_full_threads_recursive_mode(self):
+        """End-to-end via ``tier(depth='full')`` — the user-facing surface."""
+        store = self._chain_store()
+
+        default_out = store["a"].tier("full", store=store)["content"]
+        all_out = store["a"].tier("full", store=store, recursive_mode="all")["content"]
+        none_out = store["a"].tier("full", store=store, recursive_mode="none")["content"]
+
+        assert "C-body." not in default_out
+        assert "C-body." in all_out
+        assert "<<wb:b>>" in none_out
+        assert "B-body." not in none_out
+
+    def test_all_mode_truncates_at_size_cap(self):
+        """A pathological chain whose ``all`` expansion exceeds the size
+        cap should terminate cleanly with the truncation marker."""
+        # Build a chain of N units each whose body is ~2KB. With cap at
+        # 100KB, we'll need ~60+ levels to definitely overshoot.
+        n_levels = 80
+        body_chunk = "x" * 2000  # 2KB per level
+        store: dict[str, DirectionsUnit] = {}
+        for i in range(n_levels):
+            next_ref = f"<<wb:u{i + 1}>>" if i + 1 < n_levels else ""
+            store[f"u{i}"] = DirectionsUnit(
+                path=f"u{i}", name=f"U{i}", description=f"level {i}",
+                content={"full": f"{body_chunk} {next_ref}"},
+            )
+
+        result = _resolve_placeholders("<<wb:u0>>", store, recursive_mode="all")
+
+        # Truncation marker must appear — proves the cap fired.
+        assert _TRUNCATION_MARKER in result, (
+            "expected truncation marker once expansion exceeds the cap"
+        )
+        # And the output is bounded — should not be the full
+        # n_levels * 2KB = 160KB. Allow a generous safety margin since
+        # the budget is checked between replacements, not mid-string.
+        assert len(result) < _RECURSIVE_ALL_SIZE_CAP * 3, (
+            f"output length {len(result)} exceeds tripled cap "
+            f"{_RECURSIVE_ALL_SIZE_CAP * 3}"
+        )
+
+    def test_all_mode_under_cap_completes_normally(self):
+        """Chains that fit under the cap should NOT show the marker."""
+        # Tiny 3-level chain — way under the 100KB cap.
+        store = self._chain_store()
+        result = _resolve_placeholders("<<wb:a>>", store, recursive_mode="all")
+        assert _TRUNCATION_MARKER not in result
+
+    def test_missing_ref_comment_in_all_mode(self):
+        """Missing-ref behaviour fires when (and only when) we actually
+        descend into the unit that holds the broken reference.
+
+        In default mode we only resolve one level — the outer
+        ``<<wb:a>>`` is replaced with A's raw body, which contains the
+        literal ``<<wb:missing>>`` substring (never resolved). The
+        missing-ref comment doesn't appear because no resolver call ever
+        looks up ``missing``.
+
+        In ``all`` mode we descend into A, the resolver walks A's body,
+        and ``<<wb:missing>>`` fails the lookup with the standard
+        not-found comment.
+        """
+        a = DirectionsUnit(
+            path="a", name="A", description="a",
+            content={"full": "<<wb:missing>>"},
+        )
+        store = {"a": a}
+        out_default = _resolve_placeholders("<<wb:a>>", store, recursive_mode="default")
+        out_all = _resolve_placeholders("<<wb:a>>", store, recursive_mode="all")
+        # Default mode: A's body inserted raw, including the literal markup
+        assert "<<wb:missing>>" in out_default
+        assert "<!-- wb: missing not found -->" not in out_default
+        # All mode: descent into A triggers the lookup, comment appears
+        assert "<!-- wb: missing not found -->" in out_all
+
+    def test_invalid_mode_raises_in_agent_docs(self):
+        """The capability surface validates ``recursive`` and returns an
+        error dict (not a raise) so MCP transport stays well-typed."""
+        from work_buddy.knowledge.query import agent_docs
+        result = agent_docs(path="nonexistent/unit", recursive="bogus")
+        assert "error" in result
+        assert "bogus" in result["error"].lower() or "invalid" in result["error"].lower()

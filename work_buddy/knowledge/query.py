@@ -120,6 +120,7 @@ def agent_docs(
     depth: str = "summary",
     top_n: int = 8,
     dev: bool = False,
+    recursive: str = "default",
 ) -> dict[str, Any]:
     """Unified search and navigation over all agent documentation.
 
@@ -138,10 +139,29 @@ def agent_docs(
         depth: Content depth: "index" (navigation), "summary" (default), "full".
         top_n: Max results for search mode.
         dev: Include dev_notes in full-depth results.
+        recursive: Placeholder recursion at ``depth="full"``. ``"default"``
+            (per-placeholder ``--recursive`` flag wins — the historical
+            behaviour), ``"all"`` (force transitive expansion, capped at
+            ~100KB), or ``"none"`` (preserve ``<<wb:...>>`` markup
+            literally — useful for editing). Affects **output only**: the
+            BM25/dense search corpus is always built with ``"default"`` so
+            search relevance does not shift based on caller intent. No-op
+            when ``depth`` is not ``"full"`` and on the empty-everything
+            index path (which doesn't resolve placeholders at all).
     """
     from work_buddy.knowledge.search import search
 
-    # Empty everything = return full index
+    if recursive not in ("default", "all", "none"):
+        return {
+            "error": (
+                f"Invalid recursive mode: {recursive!r}. "
+                "Must be 'default', 'all', or 'none'."
+            )
+        }
+
+    # Empty everything = return full index. _full_index does not pass a
+    # store to tier(), so placeholders are not resolved on that path —
+    # the recursive mode is a no-op there. Documented above.
     if not query and path is None and scope is None:
         return _full_index(kind, depth, dev=dev)
 
@@ -153,6 +173,7 @@ def agent_docs(
         depth=depth,
         top_n=top_n,
         dev=dev,
+        recursive=recursive,
     )
 
 

@@ -37,6 +37,7 @@ def search(
     category: str | None = None,
     severity: str | None = None,
     dev: bool = False,
+    recursive: str = "default",
 ) -> dict[str, Any]:
     """Unified search and navigation over the knowledge store.
 
@@ -50,6 +51,8 @@ def search(
         knowledge_scope: Which store(s) to search: "system", "personal", or "all".
         category: Filter VaultUnits by category (work_pattern, self_regulation, etc.).
         severity: Filter VaultUnits by severity (HIGH, MODERATE, LOW).
+        recursive: Placeholder recursion mode passed through to ``tier()`` at
+            ``depth="full"``. See ``agent_docs`` and ``KnowledgeUnit.tier``.
 
     Returns:
         Result dict with mode, results, and metadata.
@@ -59,17 +62,29 @@ def search(
 
     # Mode 1: Exact path lookup
     if path is not None:
-        return _lookup(path, depth, knowledge_scope, dev=dev)
+        return _lookup(path, depth, knowledge_scope, dev=dev, recursive=recursive)
 
     # Mode 2: Browse subtree (no query) or filter-only (category/severity without query)
     if not query and (scope is not None or category or severity):
-        return _browse(scope or "", kind, depth, knowledge_scope, category, severity, dev=dev)
+        return _browse(
+            scope or "", kind, depth, knowledge_scope,
+            category, severity, dev=dev, recursive=recursive,
+        )
 
     # Mode 3/4: Search (optionally scoped)
-    return _search(query, scope, kind, depth, top_n, knowledge_scope, category, severity, dev=dev)
+    return _search(
+        query, scope, kind, depth, top_n, knowledge_scope,
+        category, severity, dev=dev, recursive=recursive,
+    )
 
 
-def _lookup(path: str, depth: str, knowledge_scope: str, dev: bool = False) -> dict[str, Any]:
+def _lookup(
+    path: str,
+    depth: str,
+    knowledge_scope: str,
+    dev: bool = False,
+    recursive: str = "default",
+) -> dict[str, Any]:
     """Direct lookup by exact path."""
     # For path lookup, search across all scopes if not found in requested scope
     store = load_store(scope=knowledge_scope)
@@ -88,7 +103,7 @@ def _lookup(path: str, depth: str, knowledge_scope: str, dev: bool = False) -> d
     return {
         "mode": "lookup",
         "path": path,
-        "unit": unit.tier(depth, store=full_store, dev=dev),
+        "unit": unit.tier(depth, store=full_store, dev=dev, recursive_mode=recursive),
     }
 
 
@@ -100,6 +115,7 @@ def _browse(
     category: str | None,
     severity: str | None,
     dev: bool = False,
+    recursive: str = "default",
 ) -> dict[str, Any]:
     """Browse all units under a path prefix, or all units if scope is empty."""
     store = load_store(scope=knowledge_scope)
@@ -123,7 +139,7 @@ def _browse(
     full_store = load_store(scope="all") if depth == "full" else None
 
     results = [
-        {"path": p, **u.tier(depth, store=full_store, dev=dev)}
+        {"path": p, **u.tier(depth, store=full_store, dev=dev, recursive_mode=recursive)}
         for p, u in sorted(units.items())
     ]
 
@@ -145,6 +161,7 @@ def _search(
     category: str | None,
     severity: str | None,
     dev: bool = False,
+    recursive: str = "default",
 ) -> dict[str, Any]:
     """Hybrid search over the store using the persistent knowledge index.
 
@@ -183,7 +200,11 @@ def _search(
             "mode": "search",
             "query": query,
             "count": 1,
-            "results": [{"path": exact.path, "score": 1.0, **exact.tier(depth, store=full_store, dev=dev)}],
+            "results": [{
+                "path": exact.path,
+                "score": 1.0,
+                **exact.tier(depth, store=full_store, dev=dev, recursive_mode=recursive),
+            }],
         }
 
     # Pass full store for chain resolution
@@ -208,7 +229,7 @@ def _search(
             results.append({
                 "path": unit.path,
                 "score": item["score"],
-                **unit.tier(depth, store=full_store, dev=dev),
+                **unit.tier(depth, store=full_store, dev=dev, recursive_mode=recursive),
             })
 
         return {
@@ -223,7 +244,10 @@ def _search(
     candidates_texts: dict[str, list[str]] = {
         p: u.search_phrases() for p, u in candidates_units.items()
     }
-    return _keyword_search(query, candidates_units, candidates_texts, depth, top_n, full_store, dev=dev)
+    return _keyword_search(
+        query, candidates_units, candidates_texts, depth, top_n,
+        full_store, dev=dev, recursive=recursive,
+    )
 
 
 def _keyword_search(
@@ -234,6 +258,7 @@ def _keyword_search(
     top_n: int,
     full_store: dict[str, KnowledgeUnit] | None = None,
     dev: bool = False,
+    recursive: str = "default",
 ) -> dict[str, Any]:
     """Keyword fallback when embedding service is unavailable."""
     query_lower = query.lower()
@@ -254,7 +279,7 @@ def _keyword_search(
         results.append({
             "path": path,
             "score": round(score, 4),
-            **unit.tier(depth, store=full_store, dev=dev),
+            **unit.tier(depth, store=full_store, dev=dev, recursive_mode=recursive),
         })
 
     return {

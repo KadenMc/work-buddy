@@ -43,6 +43,40 @@ matched individually rather than swallowed into one span.
 """
 
 
+# Recursion-mode contract surfaced through ``agent_docs``:
+#
+# * ``"default"`` — each placeholder honours its own ``--recursive`` flag.
+#   This is the historical, author-controlled behaviour.
+# * ``"all"`` — every placeholder expands transitively, regardless of the
+#   per-placeholder flag. Bounded by ``_RECURSIVE_ALL_SIZE_CAP`` so a
+#   pathological chain can't balloon the response.
+# * ``"none"`` — every placeholder is preserved literally (``<<wb:...>>``
+#   text). Useful when an authoring agent wants to read or edit a unit
+#   without inlined foundations interfering.
+_RECURSIVE_MODES = ("default", "all", "none")
+
+_RECURSIVE_ALL_SIZE_CAP = 100_000  # bytes of expanded output before truncation
+_TRUNCATION_MARKER = (
+    f"<!-- wb: placeholder expansion truncated at "
+    f"{_RECURSIVE_ALL_SIZE_CAP // 1000}KB cap -->"
+)
+
+
+def _new_budget(recursive_mode: str) -> list[int] | None:
+    """Return a fresh mutable budget counter for top-level expansion.
+
+    A list-of-one int is used so the same counter can be shared (and
+    decremented) across the recursive call tree without threading a
+    return value through every helper.
+
+    Only ``"all"`` mode is bounded — the historical ``"default"`` mode is
+    unchanged, and ``"none"`` never recurses so a cap is moot.
+    """
+    if recursive_mode == "all":
+        return [_RECURSIVE_ALL_SIZE_CAP]
+    return None
+
+
 class _PlaceholderParser(argparse.ArgumentParser):
     """Argparse parser that raises instead of printing/exiting on error."""
 
@@ -66,18 +100,32 @@ def _build_placeholder_parser() -> _PlaceholderParser:
 def _resolve_placeholders(
     text: str,
     store: dict[str, KnowledgeUnit],
+    *,
+    recursive_mode: str = "default",
+    _budget: list[int] | None = None,
 ) -> str:
     """Replace ``<<wb:path>>`` / ``<<wb:path --recursive>>`` in *text*.
 
-    - Default: inserts the referenced unit's raw ``content["full"]``.
-    - ``--recursive``: calls ``_resolve_full_content()`` on the referenced
-      unit, which transitively resolves its own placeholders and context
-      chains.
-    - Missing refs: placeholder replaced with an HTML comment.
+    - ``recursive_mode="default"`` (historical behaviour): each placeholder
+      honours its own ``--recursive`` flag. Plain inserts raw
+      ``content["full"]``; flagged calls ``_resolve_full_content()`` on
+      the referenced unit, which transitively resolves *its* placeholders.
+    - ``recursive_mode="all"``: every placeholder expands transitively,
+      regardless of per-placeholder flag. Bounded by the shared
+      ``_budget`` counter.
+    - ``recursive_mode="none"``: every placeholder is left literal
+      (``<<wb:...>>``) — useful for editing/inspection where embedded
+      foundations would obscure the unit's own prose.
+    - Missing refs: placeholder replaced with an HTML comment (preserved
+      in all recursion modes).
     - Cycles are prevented at load time by ``validate_dag()``, so no
       runtime tracking is needed.
     """
     if "<<wb:" not in text:
+        return text
+
+    if recursive_mode == "none":
+        # Leave every placeholder literal. Saves the argparse pass.
         return text
 
     def _replace(match: re.Match) -> str:
@@ -99,10 +147,36 @@ def _resolve_placeholders(
         if ref is None:
             return f"<!-- wb: {path} not found -->"
 
-        if args.recursive:
-            content = ref._resolve_full_content(store)
+        # Budget gate (only meaningful in "all" mode where _budget is set):
+        # if the caller has already emitted ~100KB of expanded content,
+        # stop further expansions cold so the response can't balloon.
+        if _budget is not None and _budget[0] <= 0:
+            return _TRUNCATION_MARKER
+
+        # Decide whether to recurse on this particular ref.
+        expand_recursively = (
+            recursive_mode == "all"
+            or (recursive_mode == "default" and args.recursive)
+        )
+
+        # Pre-charge the budget against the raw body we're about to
+        # inline. Doing this BEFORE descent means deeper recursive
+        # levels see the depleted budget and short-circuit cleanly.
+        # If we deferred the charge until after the recursive call,
+        # the outermost frame would always see the full budget — the
+        # cap would never fire on deep chains.
+        raw = ref.content.get("full", ref.content.get("summary", ""))
+        if _budget is not None:
+            _budget[0] -= len(raw)
+
+        if expand_recursively:
+            content = ref._resolve_full_content(
+                store,
+                recursive_mode=recursive_mode,
+                _budget=_budget,
+            )
         else:
-            content = ref.content.get("full", ref.content.get("summary", ""))
+            content = raw
 
         if not content:
             return f"<!-- wb: {path} empty -->"
@@ -152,6 +226,8 @@ class KnowledgeUnit:
         depth: str = "summary",
         store: dict[str, KnowledgeUnit] | None = None,
         dev: bool = False,
+        *,
+        recursive_mode: str = "default",
     ) -> dict[str, Any]:
         """Return unit data at the requested depth.
 
@@ -164,6 +240,11 @@ class KnowledgeUnit:
             store: Unit store dict for resolving context chains at depth="full".
                    When None, chains are returned as path lists without resolution.
             dev: When True, include dev_notes in full-depth output.
+            recursive_mode: Placeholder recursion control at ``depth="full"``.
+                One of ``"default"`` (per-flag), ``"all"`` (force transitive
+                expansion, capped), or ``"none"`` (preserve literal markup).
+                See ``_RECURSIVE_MODES`` for the contract. Ignored at
+                ``depth="index"`` / ``"summary"`` and when ``store is None``.
         """
         base: dict[str, Any] = {
             "path": self.path,
@@ -198,7 +279,10 @@ class KnowledgeUnit:
             if self.dev_notes:
                 base["has_dev_notes"] = True
         else:  # full
-            base["content"] = self._resolve_full_content(store)
+            base["content"] = self._resolve_full_content(
+                store,
+                recursive_mode=recursive_mode,
+            )
             if dev and self.dev_notes:
                 base["dev_notes"] = self.dev_notes
 
@@ -207,6 +291,9 @@ class KnowledgeUnit:
     def _resolve_full_content(
         self,
         store: dict[str, KnowledgeUnit] | None,
+        *,
+        recursive_mode: str = "default",
+        _budget: list[int] | None = None,
     ) -> str:
         """Build full content with context chain + placeholder resolution.
 
@@ -218,6 +305,12 @@ class KnowledgeUnit:
         When *store* is None, returns the unit's own content only (chains
         and placeholders listed as metadata in tier output, not resolved).
 
+        ``recursive_mode`` controls placeholder expansion — see
+        ``_RECURSIVE_MODES`` and ``_resolve_placeholders``. ``_budget`` is
+        a shared counter for the ``"all"`` mode size cap; the top-level
+        caller passes ``None`` and we lazily allocate one so every
+        recursive descendent debits the same budget.
+
         Cycles are prevented at load time by ``validate_dag()`` — no
         runtime tracking is needed here.
         """
@@ -226,8 +319,19 @@ class KnowledgeUnit:
         if store is None:
             return own
 
+        # Lazy-init the shared budget on the top-level call. Recursive
+        # descendents inherit the existing counter so the cap applies
+        # across the whole expansion tree, not per-level.
+        if _budget is None:
+            _budget = _new_budget(recursive_mode)
+
         # Resolve inline placeholders in own content
-        own = _resolve_placeholders(own, store)
+        own = _resolve_placeholders(
+            own,
+            store,
+            recursive_mode=recursive_mode,
+            _budget=_budget,
+        )
 
         if not self.context_before and not self.context_after:
             return own
