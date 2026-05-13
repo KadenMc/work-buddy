@@ -42,6 +42,16 @@ def tmp_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     Returns the patched store directory. Tests can seed it with JSON
     files before invoking editor helpers; the editor's writes also land
     here.
+
+    Cache hygiene: ``invalidate_store()`` fires *before* the test (so
+    ``load_store()`` re-reads from the temp dir) AND *after* the test
+    (so the temp-dir snapshot doesn't persist into later tests).
+    Pytest's monkeypatch restores ``_STORE_DIR`` automatically; without
+    the post-teardown invalidate the cached dict would still hold
+    temp-dir units when a later test calls ``load_store()``, and the
+    real store would only re-load on the next ``invalidate_store()``
+    elsewhere. That race-condition broke ``test_morning_routine`` and
+    friends when the full suite ran in CI.
     """
     store_dir = tmp_path / "store"
     store_dir.mkdir()
@@ -54,7 +64,11 @@ def tmp_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     # Invalidate any cached store state from prior tests.
     store_mod.invalidate_store()
 
-    return store_dir
+    yield store_dir
+
+    # Invalidate again so the next test that calls load_store() reads
+    # from the (now-restored) real _STORE_DIR.
+    store_mod.invalidate_store()
 
 
 def _write_units(store_dir: Path, file_stem: str, units: dict[str, dict[str, Any]]) -> None:
