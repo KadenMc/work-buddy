@@ -2087,23 +2087,33 @@ def api_project_rename_alias(slug: str):
 
 @app.get("/api/projects/<slug>/memory_items")
 def api_project_memory_items(slug: str):
-    """Semantic recall from Hindsight project bank for the detail pane.
+    """Chronological list of project memories for the detail pane.
 
-    Decoupled from ``/api/projects/<slug>`` so the (often multi-second)
-    Hindsight call doesn't block the rest of the detail pane from
-    rendering. The frontend swaps the placeholder in once this resolves.
+    Uses ``list_recent_project_memories`` — a plain Hindsight list
+    call with alias-union tag filtering. No embedding query, no
+    relevance scoring; we're showing "what's been recorded here,"
+    not "what's most relevant to a prompt." This costs ~0 on the
+    Hindsight side and produces a stable newest-first ordering with
+    real timestamps for the UI.
+
+    Decoupled from ``/api/projects/<slug>`` so the (still non-trivial)
+    Hindsight round-trip doesn't block detail-pane render.
     """
+    limit = request.args.get("limit", 50, type=int)
     try:
-        from work_buddy.memory.query import recall_project_context_items
-        memory_items = recall_project_context_items(
-            query=f"Current state, recent decisions, and trajectory for {slug}",
-            project_slug=slug,
-            budget="low",
-            max_tokens=2048,
+        from work_buddy.memory.query import list_recent_project_memories
+        memory_items = list_recent_project_memories(
+            project=slug, limit=limit,
+        )
+        # Hindsight returns newest first; ensure that's preserved even
+        # if a future change reorders, and tolerate missing dates by
+        # sinking blanks to the bottom.
+        memory_items.sort(
+            key=lambda m: m.get("date") or "", reverse=True,
         )
         return jsonify({"memory_items": memory_items, "slug": slug})
     except Exception as e:
-        logger.exception("Failed to recall project memory for %s", slug)
+        logger.exception("Failed to list project memories for %s", slug)
         return jsonify({"memory_items": [], "error": str(e)})
 
 

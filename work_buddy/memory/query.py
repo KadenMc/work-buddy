@@ -470,17 +470,17 @@ def recall_project_context(
         return ""
 
 
-def _run_hindsight_recall_in_thread(_unused_client, **kwargs):
-    """Run a Hindsight recall in a fresh thread with its own asyncio
-    loop **and** its own Hindsight client instance.
+def _run_hindsight_in_thread(method_name: str, **kwargs):
+    """Run a Hindsight call in a fresh thread with its own asyncio loop
+    **and** its own Hindsight client instance.
 
-    Two things conspire to make the cached sync client unsafe for
-    recall from a Flask request worker:
+    Two things conspire to make the cached sync client unsafe when
+    invoked from a Flask request worker:
 
     1. The cached ``Hindsight`` client lazily creates an
        ``aiohttp.ClientSession`` on first use. The session is bound
        to whichever event loop ran that first call.
-    2. ``client.recall(...)`` calls ``loop.run_until_complete`` on
+    2. The client's sync methods call ``loop.run_until_complete`` on
        the calling thread's loop. If the session's loop and the
        current loop disagree, aiohttp's timeout-context manager
        fires ``RuntimeError: Timeout context manager should be used
@@ -488,12 +488,12 @@ def _run_hindsight_recall_in_thread(_unused_client, **kwargs):
 
     A fresh client created inside a fresh thread starts a fresh
     aiohttp session in that thread's loop — both pieces match, no
-    cross-loop confusion. The thread is created per-call (recall
-    isn't on a hot path) so we don't pay the cost of a long-lived
-    executor or a session pool.
-
-    The first positional arg is accepted but ignored so call sites
-    that previously passed the cached client don't need to change.
+    cross-loop confusion. ``method_name`` is the attribute name on
+    the Hindsight client to invoke; for async variants (e.g.
+    ``arecall``) the coroutine is driven on the fresh loop. The
+    thread is created per-call (these endpoints aren't on hot paths)
+    so we don't pay the cost of a long-lived executor or session
+    pool.
     """
     import asyncio
     import threading
@@ -511,7 +511,11 @@ def _run_hindsight_recall_in_thread(_unused_client, **kwargs):
             local_client = Hindsight(
                 base_url=cfg.get("base_url", "http://localhost:8888"),
             )
-            result[0] = loop.run_until_complete(local_client.arecall(**kwargs))
+            method = getattr(local_client, method_name)
+            r = method(**kwargs)
+            if asyncio.iscoroutine(r):
+                r = loop.run_until_complete(r)
+            result[0] = r
         except Exception as e:
             error[0] = e
         finally:
@@ -527,6 +531,11 @@ def _run_hindsight_recall_in_thread(_unused_client, **kwargs):
     if error[0] is not None:
         raise error[0]
     return result[0]
+
+
+# Back-compat alias for the original recall-specific signature.
+def _run_hindsight_recall_in_thread(_unused_client, **kwargs):
+    return _run_hindsight_in_thread("arecall", **kwargs)
 
 
 def recall_project_context_items(
@@ -620,6 +629,113 @@ def recall_project_context_items(
         query,
     )
     return items
+
+
+def list_recent_project_memories(
+    *,
+    project: str,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    """Chronological list of Hindsight memories scoped to a project.
+
+    No embedding query — Hindsight returns memories in reverse-chrono
+    order via ``list_memories``. We page through and filter
+    client-side against the alias-union tag set so memories tagged
+    with a prior slug (e.g. ``project:electricrag`` for a row now
+    slugged ``ecg-inquiry``) still surface after a rename.
+
+    Returns ``[{id, type, text, tags, date}]`` newest first. ``type``
+    is taken from Hindsight's ``fact_type`` field. Returns ``[]`` on
+    any failure (Hindsight unavailable, project unknown, etc.).
+
+    Use this — *not* :func:`recall_project_context_items` — when the
+    caller wants a chronological log of a project's memories. Recall
+    is for relevance-ranked retrieval into an LLM prompt; listing is
+    free of embedding cost and the right primitive for UIs that just
+    show "what's been recorded here."
+    """
+    _ensure_project_bank_once()
+
+    # Alias-union tag set
+    tag_forms: set[str] = {f"project:{project}"}
+    try:
+        from work_buddy.projects import store
+        pid = store.resolve_slug(project)
+        if pid is not None:
+            row = store.get_project_by_id(pid, include_deleted=True)
+            if row:
+                tag_forms.add(f"project:{row['slug']}")
+                for a in row.get("aliases", []):
+                    norm = a.get("alias_norm")
+                    if norm:
+                        tag_forms.add(f"project:{norm}")
+    except Exception:
+        logger.debug(
+            "Could not resolve aliases for %r; filtering by base slug only",
+            project,
+        )
+
+    def _matches(m: Any) -> bool:
+        tags = (
+            m.get("tags", []) if isinstance(m, dict)
+            else getattr(m, "tags", []) or []
+        )
+        return any(t in tag_forms for t in tags)
+
+    def _to_item(m: Any) -> dict[str, Any]:
+        d = dict(m) if isinstance(m, dict) else {
+            "id": getattr(m, "id", ""),
+            "fact_type": getattr(m, "fact_type", ""),
+            "text": getattr(m, "text", ""),
+            "date": getattr(m, "date", ""),
+            "tags": getattr(m, "tags", []),
+        }
+        return {
+            "id": d.get("id", ""),
+            "type": d.get("fact_type", "") or d.get("type", ""),
+            "text": d.get("text", ""),
+            "date": d.get("date", ""),
+            "tags": list(d.get("tags", []) or []),
+        }
+
+    try:
+        # Three pages × 200 = up to 600 items scanned. Each page is
+        # one round-trip through a freshly-instantiated Hindsight
+        # client (see `_run_hindsight_in_thread`), so widening the
+        # window past this point makes the endpoint visibly slower
+        # without a corresponding payoff for the active projects.
+        # Quiet projects with no state-file ingest yet will return
+        # empty regardless of pagination — that's the correct answer.
+        page_size = 200
+        max_pages = 3
+        matched: list[Any] = []
+        for page in range(max_pages):
+            resp = _run_hindsight_in_thread(
+                "list_memories",
+                bank_id=get_project_bank_id(),
+                limit=page_size,
+                offset=page * page_size,
+            )
+            items = (
+                getattr(resp, "items", None)
+                or getattr(resp, "memories", [])
+                or []
+            )
+            if not items:
+                break
+            matched.extend(m for m in items if _matches(m))
+            if len(matched) >= limit:
+                break
+        matched = matched[:limit]
+        out = [_to_item(m) for m in matched]
+        logger.info(
+            "Listed %d project memories (project=%s, alias tags=%d)",
+            len(out), project, len(tag_forms),
+        )
+        return out
+    except Exception:
+        logger.exception("Failed to list project memories for %s", project)
+        return []
 
 
 def get_project_mental_model(model_id: str = "project-landscape") -> dict[str, Any] | None:

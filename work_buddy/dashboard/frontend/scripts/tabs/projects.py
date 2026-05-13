@@ -590,12 +590,30 @@ async function loadProjectMemoryItems(slug) {
         return;
     }
 
+    // Render rules:
+    //   - Newest first (endpoint already sorts; we just render order).
+    //   - Timestamp in the gutter when `date` is set.
+    //   - Source label only when it's something other than the default
+    //     `state-file` (the bulk-ingest path; showing it on every row
+    //     was just noise). Other sources (chat, user, etc.) keep their
+    //     breadcrumb so variety is visible.
+    const DEFAULT_SOURCES = new Set(['state-file']);
     const logHtml = items.map(m => {
         const ft = m.type || 'memory';
         const ftClass = ft === 'observation' ? 'warn' : 'info';
-        const source = (m.tags || []).filter(t => t.startsWith('source:')).map(t => t.slice(7)).join(', ');
+        const sources = (m.tags || [])
+            .filter(t => t.startsWith('source:'))
+            .map(t => t.slice(7))
+            .filter(s => !DEFAULT_SOURCES.has(s));
+        const sourceLabel = sources.length ? ' (' + sources.join(', ') + ')' : '';
+        const dt = m.date ? new Date(m.date) : null;
+        const ts = (dt && !isNaN(dt.getTime()))
+            ? dt.toLocaleDateString([], {month:'short', day:'numeric'}) +
+              ' ' + dt.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})
+            : '';
         return '<div class="log-entry ' + ftClass + '">' +
-            '<span class="log-kind">' + escapeHtml(ft) + (source ? ' (' + escapeHtml(source) + ')' : '') + '</span>' +
+            (ts ? '<span class="log-ts">' + ts + '</span>' : '') +
+            '<span class="log-kind">' + escapeHtml(ft) + escapeHtml(sourceLabel) + '</span>' +
             '<span class="log-msg">' + escapeHtml(m.text || '') + '</span>' +
         '</div>';
     }).join('');
