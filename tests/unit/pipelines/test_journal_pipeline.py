@@ -256,3 +256,32 @@ class TestUmbrellaSummary:
         assert "unknown" not in s["title"]
         assert date.today().isoformat() in s["title"]
         assert s["title"].startswith("Daily note: ")
+
+
+class TestDedupKey:
+    def test_dedup_key_uses_journal_date(self):
+        """Key shape ``journal_backlog:<journal_date>`` — date-only,
+        not content-hash. Same date across cron fires produces the
+        same key so the runner can short-circuit."""
+        p = JournalBacklogPipeline()
+        key = p.dedup_key([], {"journal_date": "2026-05-13"})
+        assert key == "journal_backlog:2026-05-13"
+
+    def test_dedup_key_defaults_to_today(self):
+        """When the caller (e.g. the hourly cron) omits journal_date,
+        ``dedup_key`` resolves to today's ISO — same fallback as
+        ``umbrella_summary`` so the key and the umbrella's recorded
+        date always agree."""
+        from datetime import date
+
+        p = JournalBacklogPipeline()
+        key = p.dedup_key([], {})
+        assert key == f"journal_backlog:{date.today().isoformat()}"
+
+    def test_umbrella_summary_carries_dedup_key(self):
+        """The umbrella's ``inciting_event_summary`` must carry the same
+        key so :func:`store.find_open_umbrella_by_dedup_key` can find
+        it on the next run."""
+        p = JournalBacklogPipeline()
+        s = p.umbrella_summary({"journal_date": "2026-05-13"})
+        assert s["dedup_key"] == "journal_backlog:2026-05-13"

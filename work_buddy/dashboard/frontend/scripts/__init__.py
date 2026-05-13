@@ -36,6 +36,7 @@ from .core import (
     helpers,
     notifications,
     page,
+    pager,
     palette,
     workflows,
 )
@@ -87,6 +88,7 @@ from .tabs.threads import main as threads
 SCRIPTS = [
     event_bus.script,
     helpers.script,
+    pager.script,
     workflows.script,
     notifications.script,
     chat_sidebar.script,

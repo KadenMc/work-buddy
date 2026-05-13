@@ -221,3 +221,93 @@ class TestSearchThreads:
             "", actionable_only=False, include_mid_process=True,
         )
         assert {t.thread_id for t in out} == {proposed.thread_id}
+
+
+# ---------------------------------------------------------------------------
+# Pagination (limit + offset) and count_threads
+# ---------------------------------------------------------------------------
+
+
+class TestPagination:
+    def _make_thread(self, description, **kwargs):
+        t = Thread(inciting_event_summary={"description": description}, **kwargs)
+        store.insert_thread(t)
+        return t
+
+    def test_offset_skips_matching_rows(self, fresh_db):
+        """``offset=N`` returns the next page; combining with ``limit``
+        produces non-overlapping page windows over the same result set."""
+        for i in range(5):
+            self._make_thread(f"t-{i}")
+        page1 = search.search_threads(
+            "", actionable_only=False, limit=2, offset=0,
+        )
+        page2 = search.search_threads(
+            "", actionable_only=False, limit=2, offset=2,
+        )
+        page3 = search.search_threads(
+            "", actionable_only=False, limit=2, offset=4,
+        )
+        ids1 = [t.thread_id for t in page1]
+        ids2 = [t.thread_id for t in page2]
+        ids3 = [t.thread_id for t in page3]
+        assert len(ids1) == 2
+        assert len(ids2) == 2
+        assert len(ids3) == 1
+        # No overlap across pages
+        assert not (set(ids1) & set(ids2))
+        assert not (set(ids2) & set(ids3))
+        # Union of all pages equals the full result set
+        assert set(ids1) | set(ids2) | set(ids3) == {
+            t.thread_id for t in search.search_threads(
+                "", actionable_only=False, limit=100,
+            )
+        }
+
+    def test_offset_beyond_total_returns_empty(self, fresh_db):
+        for i in range(3):
+            self._make_thread(f"t-{i}")
+        out = search.search_threads(
+            "", actionable_only=False, limit=10, offset=100,
+        )
+        assert out == []
+
+
+class TestCountThreads:
+    def _make_thread(self, description, **kwargs):
+        t = Thread(inciting_event_summary={"description": description}, **kwargs)
+        store.insert_thread(t)
+        return t
+
+    def test_count_matches_search_total(self, fresh_db):
+        """The count must equal the list length when no limit is hit —
+        otherwise the pager would report a wrong total."""
+        for i in range(7):
+            self._make_thread(f"t-{i}")
+        listed = search.search_threads(
+            "", actionable_only=False, limit=100,
+        )
+        counted = search.count_threads("", actionable_only=False)
+        assert counted == len(listed) == 7
+
+    def test_count_respects_filters(self, fresh_db):
+        a = self._make_thread("alpha")
+        b = self._make_thread("beta")
+        store.update_thread_state(b.thread_id, fsm_state="awaiting_review")
+        # State filter narrows to one
+        assert search.count_threads("", state="awaiting_review") == 1
+        # Actionable-only with no wait-state threads → zero
+        # (a is still PROPOSED, b is in awaiting_review which IS a wait
+        # state, so the actionable-only count includes b.)
+        assert search.count_threads("") == 1
+        # Full count (no actionable filter) → both
+        assert search.count_threads("", actionable_only=False) == 2
+
+    def test_count_query_match(self, fresh_db):
+        self._make_thread("Sarah's birthday")
+        self._make_thread("Anna's deadline")
+        self._make_thread("Sarah's anniversary")
+        # Two threads contain "sarah"
+        assert search.count_threads(
+            "sarah", actionable_only=False,
+        ) == 2

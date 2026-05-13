@@ -87,6 +87,33 @@ def run_pipeline(
         pipeline.name, len(items),
     )
 
+    # Cross-run dedup. If the pipeline declares a stable dedup_key and
+    # an open umbrella with that key already exists, skip the spawn
+    # entirely — annotate / precluster / refine all involve LLM cost
+    # the dedup is meant to avoid. The empty-items guard below still
+    # applies independently for pipelines that don't define a key.
+    run_metadata_for_dedup = dict(collect_kwargs)
+    run_metadata_for_dedup.setdefault("source", pipeline.name)
+    run_metadata_for_dedup["item_count"] = len(items)
+    dedup_fn = getattr(pipeline, "dedup_key", None)
+    dedup_key = dedup_fn(items, run_metadata_for_dedup) if callable(dedup_fn) else None
+    if dedup_key:
+        existing = store.find_open_umbrella_by_dedup_key(dedup_key)
+        if existing:
+            logger.info(
+                "pipeline.run [%s]: dedup_key=%r matches open umbrella "
+                "%s — skipping spawn (no fresh threads created)",
+                pipeline.name, dedup_key, existing,
+            )
+            return PipelineRun(
+                pipeline_name=pipeline.name,
+                umbrella_id=existing,
+                child_thread_ids=(),
+                item_count=len(items),
+                cluster_count=0,
+                skipped=True,
+            )
+
     # Stage 2: annotate.
     if items:
         items = list(pipeline.annotate_items(items))

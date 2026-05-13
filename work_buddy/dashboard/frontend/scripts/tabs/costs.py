@@ -1361,46 +1361,6 @@ function _costsSortSessions(rows) {
     });
 }
 
-// Reusable pager renderer.
-//   ariaTotal — total rows.
-//   onPage(n) — global function name (string) called with the new page number.
-function _costsRenderPager(containerId, total, currentPage, pageSize, onPageFn) {
-    const el = document.getElementById(containerId);
-    if (!el) return;
-    if (total <= pageSize) { el.innerHTML = ''; return; }
-    const totalPages = Math.max(1, Math.ceil(total / pageSize));
-    const cur = Math.min(Math.max(currentPage, 1), totalPages);
-    const startIdx = (cur - 1) * pageSize + 1;
-    const endIdx = Math.min(cur * pageSize, total);
-
-    function pageBtn(n, label, opts) {
-        opts = opts || {};
-        const classes = ['costs-pager-btn'];
-        if (opts.current) classes.push('current');
-        const disabled = opts.disabled ? ' disabled' : '';
-        const onClick = opts.disabled ? '' : ` onclick="${onPageFn}(${n})"`;
-        return `<button class="${classes.join(' ')}"${disabled}${onClick}>${costsEsc(label)}</button>`;
-    }
-
-    let html = '';
-    html += pageBtn(cur - 1, '‹', { disabled: cur === 1 });
-
-    // Show first/last and a sliding window of ±2 around current.
-    const pages = new Set([1, totalPages, cur, cur - 1, cur + 1, cur - 2, cur + 2]);
-    const visible = Array.from(pages)
-        .filter(n => n >= 1 && n <= totalPages)
-        .sort((a, b) => a - b);
-    let prev = 0;
-    for (const n of visible) {
-        if (n - prev > 1) html += '<span class="costs-pager-ellipsis">…</span>';
-        html += pageBtn(n, String(n), { current: n === cur });
-        prev = n;
-    }
-    html += pageBtn(cur + 1, '›', { disabled: cur === totalPages });
-    html += `<span class="costs-pager-info">${startIdx}–${endIdx} of ${total}</span>`;
-    el.innerHTML = html;
-}
-
 function costsSessionsGoToPage(n) {
     costsState.sessionPage = n;
     costsRenderSessionsTable(
@@ -1466,8 +1426,8 @@ function costsRenderSessionsTable(shape, data) {
     html += '</tbody></table>';
     wrap.innerHTML = html;
 
-    _costsRenderPager('costs-sessions-pager', sorted.length, page, pageSize,
-                       'costsSessionsGoToPage');
+    wbRenderPager('costs-sessions-pager', sorted.length, page, pageSize,
+                  'costsSessionsGoToPage');
 
     // Reset to page 1 if the current page is now beyond the data.
     costsState.sessionPage = page;

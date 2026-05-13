@@ -457,7 +457,7 @@ def _html() -> str:
         <span id="costs-sessions-count" class="costs-meta"></span>
     </div>
     <div id="costs-sessions-table"></div>
-    <div id="costs-sessions-pager" class="costs-pager"></div>
+    <div id="costs-sessions-pager" class="wb-pager"></div>
 
     <div class="costs-footer-note">
         Cost estimates use Anthropic published rates (April 2026). Local model

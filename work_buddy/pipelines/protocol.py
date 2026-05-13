@@ -15,7 +15,7 @@ LLM/embedding/store layers.
 
 from __future__ import annotations
 
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Optional, Protocol, runtime_checkable
 
 from work_buddy.pipelines.actions import ActionLibrary
 from work_buddy.pipelines.types import CapturedItem, ClusterSpec
@@ -99,6 +99,28 @@ class SourcePipeline(Protocol):
         Empty input → empty output is acceptable.
         """
         ...
+
+    def dedup_key(
+        self,
+        items: list[CapturedItem],
+        run_metadata: dict[str, Any],
+    ) -> Optional[str]:
+        """Optional cross-run dedup identifier.
+
+        Return a stable, source-namespaced string identifying the
+        logical scope of this run (e.g. ``"journal_backlog:2026-05-13"``).
+        The runner short-circuits the umbrella spawn when an open
+        umbrella with the same key already exists, avoiding duplicate
+        top-level threads when a scheduled job re-fires on the same
+        scope.
+
+        Returning ``None`` (the default behavior for pipelines that
+        don't override) means "no dedup — spawn unconditionally."
+
+        Keys must be source-prefixed so unrelated pipelines can't
+        collide on a coincidental value.
+        """
+        return None
 
     def umbrella_summary(
         self, run_metadata: dict[str, Any], items: list[CapturedItem] | None = None,

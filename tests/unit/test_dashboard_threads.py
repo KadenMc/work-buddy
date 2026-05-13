@@ -163,6 +163,40 @@ class TestThreadsListFilters:
         ids_mp = [t["thread_id"] for t in resp_mp.get_json()["threads"]]
         assert a.thread_id in ids_mp
 
+    def test_pagination_envelope_shape(self, client):
+        """The list endpoint returns ``{threads, total, offset, limit}``
+        — the dashboard pager depends on the envelope to size pages."""
+        from work_buddy.threads.enums import FSMState
+        for i in range(3):
+            _make_thread(
+                fsm_state=FSMState.AWAITING_INTENT_CONFIRMATION,
+                description=f"t-{i}",
+            )
+        resp = client.get("/api/threads?limit=2&offset=0")
+        body = resp.get_json()
+        assert isinstance(body.get("threads"), list)
+        assert len(body["threads"]) == 2
+        assert body["total"] == 3
+        assert body["offset"] == 0
+        assert body["limit"] == 2
+
+    def test_pagination_offset_returns_next_page(self, client):
+        from work_buddy.threads.enums import FSMState
+        for i in range(5):
+            _make_thread(
+                fsm_state=FSMState.AWAITING_INTENT_CONFIRMATION,
+                description=f"t-{i}",
+            )
+        page1 = client.get("/api/threads?limit=2&offset=0").get_json()
+        page2 = client.get("/api/threads?limit=2&offset=2").get_json()
+        page3 = client.get("/api/threads?limit=2&offset=4").get_json()
+        ids1 = {t["thread_id"] for t in page1["threads"]}
+        ids2 = {t["thread_id"] for t in page2["threads"]}
+        ids3 = {t["thread_id"] for t in page3["threads"]}
+        assert len(ids1) == 2 and len(ids2) == 2 and len(ids3) == 1
+        assert not (ids1 & ids2) and not (ids2 & ids3)
+        assert page1["total"] == page2["total"] == page3["total"] == 5
+
 
 # ---------------------------------------------------------------------------
 # /api/threads/<id>/events
