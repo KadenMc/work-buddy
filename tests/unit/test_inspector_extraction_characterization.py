@@ -39,13 +39,29 @@ from tests.unit.conversation_observability_fixtures import (
 
 @pytest.fixture
 def fake_projects(tmp_path, monkeypatch):
-    """Point inspector._CLAUDE_PROJECTS at a temp dir and clear caches."""
+    """Point inspector._CLAUDE_PROJECTS + conversation_observability DB at
+    temp paths, and clear in-process caches.
+
+    The DB redirection is needed because the inspector now delegates
+    to ``conversation_observability.commits`` which reads/writes a
+    durable SQLite store. Without isolation, fixtures from one test
+    persist into the next.
+    """
     projects = tmp_path / "projects"
     projects.mkdir()
+    co_db = tmp_path / "co.db"
 
     from work_buddy.sessions import inspector
 
     monkeypatch.setattr(inspector, "_CLAUDE_PROJECTS", projects)
+    monkeypatch.setattr(
+        "work_buddy.conversation_observability.db._default_db_path",
+        lambda: co_db,
+    )
+    monkeypatch.setattr(
+        "work_buddy.conversation_observability.db.db_path",
+        lambda cfg=None: co_db,
+    )
     # Bust the process-local commit cache between tests so prior runs
     # don't bleed in.
     inspector._commit_cache.clear()

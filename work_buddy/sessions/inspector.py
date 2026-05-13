@@ -476,13 +476,17 @@ def build_session_map(days: int = 7) -> dict[str, str]:
     ``git_collector._annotate_commits`` truncates to 8 chars — the canonical
     short form accepted by all ``session_*`` capabilities via
     :func:`resolve_session_id`.
+
+    Thin wrapper over
+    :func:`work_buddy.conversation_observability.commits.get_commit_session_map`.
+    The durable DB is the source of truth; this wrapper exists so existing
+    GitSource and other callers keep their import shape.
     """
-    result = session_commits(days=days)
-    return {
-        c["hash"][:7]: c["session_id"]
-        for c in result["commits"]
-        if c.get("hash")
-    }
+    from work_buddy.conversation_observability.commits import (
+        get_commit_session_map,
+    )
+
+    return get_commit_session_map(days=days)
 
 
 def session_commits(
@@ -493,8 +497,8 @@ def session_commits(
     """Extract git commits made during one or all recent sessions.
 
     Parses raw JSONL entries to find ``git commit`` Bash calls and their
-    results.  Uses fast file-level grep, single-pass turn-index tracking,
-    per-file mtime caching, and parallel I/O for performance.
+    results, persists them to the conversation-observability DB, and
+    returns the legacy ``{commit_count, commits: [...]}`` shape.
 
     Args:
         session_id: Scope to a single session (overrides *days*/*project*).
@@ -502,23 +506,24 @@ def session_commits(
         project: Scope to a specific project directory name under
             ``~/.claude/projects/``.  Dramatically reduces scan scope.
 
-    Each commit includes a ``message_index`` field — the turn index of the
-    assistant message that issued the ``git commit`` command.
+    Each commit dict includes ``session_id``, ``hash``, ``branch``,
+    ``message``, ``files_changed``, ``timestamp``, and ``message_index``
+    (the turn index of the assistant message that issued the
+    ``git commit`` command).
+
+    Thin wrapper over
+    :func:`work_buddy.conversation_observability.commits.refresh_session_commits`.
+    The DB-backed cache replaces the process-local mtime cache, so the
+    result persists across restarts and is queryable by other consumers
+    (journal update, context bundle, dashboard).
     """
-    if session_id:
-        paths = [resolve_session_path(session_id)]
-    else:
-        paths = _recent_sessions(days, project=project)
+    from work_buddy.conversation_observability.commits import (
+        refresh_session_commits,
+    )
 
-    all_commits = _extract_commits_parallel(paths)
-
-    # Sort newest first
-    all_commits.sort(key=lambda c: c.get("timestamp", ""), reverse=True)
-
-    return {
-        "commit_count": len(all_commits),
-        "commits": all_commits,
-    }
+    return refresh_session_commits(
+        session_id=session_id, days=days, project=project,
+    )
 
 
 # ---------------------------------------------------------------------------
