@@ -431,6 +431,54 @@ def list_threads(
             conn.close()
 
 
+def find_open_umbrella_by_dedup_key(
+    dedup_key: str,
+    *,
+    conn: Optional[sqlite3.Connection] = None,
+) -> Optional[str]:
+    """Return the id of an open top-level umbrella whose
+    ``inciting_event_summary.dedup_key`` matches.
+
+    "Open" = ``fsm_state == 'monitoring'`` (umbrellas spawned by
+    :mod:`work_buddy.pipelines.runner` rest in MONITORING). Terminal
+    umbrellas (DONE / DISMISSED) deliberately do NOT match — a
+    rescheduled run on the same scope should produce a fresh umbrella
+    the next day.
+
+    Cardinality of live umbrellas is small (one per source per day at
+    most), so the dedup key is a JSON-blob field rather than an indexed
+    column: list the candidates and filter in Python.
+
+    Returns the matching umbrella's ``thread_id``, or ``None`` if no
+    open umbrella carries the key.
+    """
+    if not dedup_key:
+        return None
+    own_conn = conn is None
+    if own_conn:
+        conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT thread_id, inciting_event_summary_json FROM threads "
+            "WHERE parent_id IS NULL AND fsm_state = ? "
+            "ORDER BY updated_at DESC",
+            ("monitoring",),
+        ).fetchall()
+        for r in rows:
+            try:
+                summary = json.loads(
+                    r["inciting_event_summary_json"] or "{}"
+                )
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if summary.get("dedup_key") == dedup_key:
+                return r["thread_id"]
+        return None
+    finally:
+        if own_conn:
+            conn.close()
+
+
 _UPDATE_SENTINEL = object()
 
 

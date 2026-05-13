@@ -48,6 +48,7 @@ class _StubPipeline:
         clusters: list[ClusterSpec] | None = None,
         action_library: ActionLibrary | None = None,
         umbrella_summary_extra: dict | None = None,
+        dedup_key_value: str | None = None,
     ):
         self.name = "test_source"
         self._items = items or []
@@ -61,6 +62,7 @@ class _StubPipeline:
             ),
         ])
         self._umbrella_extra = umbrella_summary_extra or {}
+        self._dedup_key_value = dedup_key_value
 
     @property
     def action_library(self) -> ActionLibrary:
@@ -76,12 +78,18 @@ class _StubPipeline:
     def precluster(self, items):
         return list(self._clusters)
 
+    def dedup_key(self, items, run_metadata):
+        return self._dedup_key_value
+
     def umbrella_summary(self, run_metadata, items=None):
-        return {
+        out = {
             "source": self.name,
             "title": "Test umbrella",
             **self._umbrella_extra,
         }
+        if self._dedup_key_value is not None:
+            out["dedup_key"] = self._dedup_key_value
+        return out
 
 
 def _ctx(item_id: str) -> CapturedItem:
@@ -269,3 +277,114 @@ class TestUmbrellaSummary:
             "journal_date": "2026-04-01",
             "scrape_id": "abc-123",
         }
+
+
+# ---------------------------------------------------------------------------
+# Cross-run dedup (skip spawn when open umbrella with same key exists)
+# ---------------------------------------------------------------------------
+
+
+class TestDedup:
+    def test_no_dedup_key_runs_fresh(self, fresh_db):
+        """Pipelines that return ``None`` from ``dedup_key`` keep the
+        pre-dedup behavior — every run spawns a new umbrella."""
+        items = [_ctx("i0")]
+        clusters = [ClusterSpec(label="A", item_ids=("i0",))]
+        first = run_pipeline(
+            _StubPipeline(items=items, clusters=clusters),
+            universal_actions=ActionLibrary([]),
+        )
+        second = run_pipeline(
+            _StubPipeline(items=items, clusters=clusters),
+            universal_actions=ActionLibrary([]),
+        )
+        assert first.umbrella_id != ""
+        assert second.umbrella_id != ""
+        assert first.umbrella_id != second.umbrella_id
+        assert first.skipped is False
+        assert second.skipped is False
+
+    def test_journal_backlog_dedups_within_day(self, fresh_db):
+        """Two runs with the same dedup_key produce one umbrella. The
+        second call short-circuits before annotate/precluster/refine and
+        reports the existing umbrella id with ``skipped=True``."""
+        items = [_ctx("i0")]
+        clusters = [ClusterSpec(label="A", item_ids=("i0",))]
+        key = "journal_backlog:2026-05-13"
+
+        first = run_pipeline(
+            _StubPipeline(
+                items=items, clusters=clusters, dedup_key_value=key,
+            ),
+            universal_actions=ActionLibrary([]),
+        )
+        assert first.umbrella_id != ""
+        assert first.skipped is False
+
+        # Second run with same key — count threads before and after to
+        # confirm no new umbrella + no new children were inserted.
+        from work_buddy.threads import store as _store
+        before = _store.list_threads(limit=500)
+        second = run_pipeline(
+            _StubPipeline(
+                items=items, clusters=clusters, dedup_key_value=key,
+            ),
+            universal_actions=ActionLibrary([]),
+        )
+        after = _store.list_threads(limit=500)
+        assert second.umbrella_id == first.umbrella_id
+        assert second.child_thread_ids == ()
+        assert second.cluster_count == 0
+        assert second.skipped is True
+        assert len(after) == len(before)
+
+    def test_dedup_skipped_when_existing_umbrella_terminal(self, fresh_db):
+        """A DONE/DISMISSED umbrella does not block a fresh spawn — a
+        new run on the same scope produces a new umbrella."""
+        items = [_ctx("i0")]
+        clusters = [ClusterSpec(label="A", item_ids=("i0",))]
+        key = "journal_backlog:2026-05-13"
+
+        first = run_pipeline(
+            _StubPipeline(
+                items=items, clusters=clusters, dedup_key_value=key,
+            ),
+            universal_actions=ActionLibrary([]),
+        )
+        # Terminate the first umbrella so the dedup helper ignores it.
+        store.update_thread_state(
+            first.umbrella_id, fsm_state="done",
+        )
+        second = run_pipeline(
+            _StubPipeline(
+                items=items, clusters=clusters, dedup_key_value=key,
+            ),
+            universal_actions=ActionLibrary([]),
+        )
+        assert second.umbrella_id != ""
+        assert second.umbrella_id != first.umbrella_id
+        assert second.skipped is False
+
+    def test_different_dedup_key_spawns_fresh(self, fresh_db):
+        """Different keys (e.g. different journal_date) don't collide."""
+        items = [_ctx("i0")]
+        clusters = [ClusterSpec(label="A", item_ids=("i0",))]
+        first = run_pipeline(
+            _StubPipeline(
+                items=items, clusters=clusters,
+                dedup_key_value="journal_backlog:2026-05-13",
+            ),
+            universal_actions=ActionLibrary([]),
+        )
+        second = run_pipeline(
+            _StubPipeline(
+                items=items, clusters=clusters,
+                dedup_key_value="journal_backlog:2026-05-14",
+            ),
+            universal_actions=ActionLibrary([]),
+        )
+        assert first.umbrella_id != ""
+        assert second.umbrella_id != ""
+        assert first.umbrella_id != second.umbrella_id
+        assert first.skipped is False
+        assert second.skipped is False

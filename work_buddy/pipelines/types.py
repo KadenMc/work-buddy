@@ -172,6 +172,11 @@ class PipelineRun:
     cluster_count: int
     action_proposals: dict[str, ActionProposal] = field(default_factory=dict)
     error: str | None = None
+    skipped: bool = False
+    """True when the runner short-circuited because an open umbrella
+    with the same ``dedup_key`` already exists. ``umbrella_id`` then
+    points at the pre-existing umbrella, ``child_thread_ids`` is empty,
+    and no annotate/precluster/refine work was performed."""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -185,4 +190,5 @@ class PipelineRun:
                 for child_id, prop in self.action_proposals.items()
             },
             "error": self.error,
+            "skipped": self.skipped,
         }

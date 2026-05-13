@@ -391,23 +391,40 @@ class JournalBacklogPipeline:
     # Stage 5 helper — umbrella inciting summary
     # ------------------------------------------------------------------
 
-    def umbrella_summary(
-        self, run_metadata: dict[str, Any],
-        items: list[CapturedItem] | None = None,
-    ) -> dict[str, Any]:
-        # Default journal_date to today's ISO when not supplied by the
-        # caller. Pre-fix: the scheduled `journal-triage-scan` job
-        # (`sidecar_jobs/journal-triage-scan.md`) didn't pass
-        # journal_date, run_metadata was empty for that key, and
-        # `or "unknown"` made the title "Daily note: unknown" — a bug
-        # the dashboard surfaced as 17 stale umbrellas in one day.
-        # Resilient default-to-today here means any caller (cron job,
-        # ad-hoc invocation, future direct API) gets the right title
-        # without having to remember to pass the date.
+    def _resolve_journal_date(self, run_metadata: dict[str, Any]) -> str:
+        """Return ``run_metadata['journal_date']`` if present, else today's
+        ISO date. Single resolution path used by ``dedup_key`` and
+        ``umbrella_summary`` so both agree on the date value that ends up
+        in the umbrella's inciting summary.
+        """
         journal_date = run_metadata.get("journal_date")
         if not journal_date:
             from datetime import date as _date_cls
             journal_date = _date_cls.today().isoformat()
+        return journal_date
+
+    def dedup_key(
+        self,
+        items: list[CapturedItem],
+        run_metadata: dict[str, Any],
+    ) -> str | None:
+        """One umbrella per ``journal_date``.
+
+        The hourly ``journal-triage-scan`` cron would otherwise spawn a
+        fresh umbrella on every fire even when an open one for today
+        already exists. Date-only (not content-hash) is deliberate:
+        running notes that grow during the day shouldn't fork the
+        thread; the user routes items off the single umbrella until it
+        reaches a terminal state, at which point a fresh spawn becomes
+        valid the next day.
+        """
+        return f"{self.name}:{self._resolve_journal_date(run_metadata)}"
+
+    def umbrella_summary(
+        self, run_metadata: dict[str, Any],
+        items: list[CapturedItem] | None = None,
+    ) -> dict[str, Any]:
+        journal_date = self._resolve_journal_date(run_metadata)
         scan_id = run_metadata.get("scan_id")
         item_count = run_metadata.get("item_count", 0)
         title = f"Daily note: {journal_date}"
@@ -419,4 +436,5 @@ class JournalBacklogPipeline:
             "scan_id": scan_id,
             "item_count": item_count,
             "source_pipeline": "journal_backlog",
+            "dedup_key": f"{self.name}:{journal_date}",
         }

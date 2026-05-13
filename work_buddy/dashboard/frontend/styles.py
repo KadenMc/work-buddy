@@ -3160,29 +3160,30 @@ body {
     font-size: 11px; color: var(--text-secondary);
 }
 
-/* Reusable pager component (currently scoped to .costs-pager;
-   if a second tab needs pagination, lift the class names to a generic
-   .wb-pager and restyle here.) */
-.costs-pager {
+/* Reusable pager component — rendered by ``wbRenderPager`` in
+   ``core/pager.py``. Class names are tab-agnostic; any tab can mount
+   a ``<div class="wb-pager" id="..."></div>`` container and call the
+   renderer. */
+.wb-pager {
     display: flex; align-items: center; justify-content: center; gap: 4px;
     padding: 12px 0 4px 0; flex-wrap: wrap;
 }
-.costs-pager-btn {
+.wb-pager-btn {
     background: var(--bg-secondary); border: 1px solid var(--border);
     color: var(--text-secondary); padding: 4px 10px; font-size: 12px;
     cursor: pointer; border-radius: 4px; min-width: 28px; text-align: center;
     font-family: inherit;
 }
-.costs-pager-btn:hover { background: var(--bg-tertiary); color: var(--text-primary); }
-.costs-pager-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-.costs-pager-btn.current {
+.wb-pager-btn:hover { background: var(--bg-tertiary); color: var(--text-primary); }
+.wb-pager-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.wb-pager-btn.current {
     background: var(--accent-subtle); border-color: var(--accent);
     color: var(--accent);
 }
-.costs-pager-ellipsis {
+.wb-pager-ellipsis {
     color: var(--text-muted); padding: 4px 4px;
 }
-.costs-pager-info {
+.wb-pager-info {
     color: var(--text-muted); font-size: 11px; margin: 0 8px;
 }
 .costs-toolbar-left, .costs-toolbar-right {

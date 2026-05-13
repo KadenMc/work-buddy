@@ -2333,6 +2333,7 @@ def api_threads_list():
         ?has_cleanup=1        — only Threads where the cleanup
                                 adapter is applicable (post-query).
         ?limit=N              — page size (default 100).
+        ?offset=N             — skip the first N matches (default 0).
         ?show_all=1           — include non-actionable states
                                 (PROPOSED, terminal, …). Default:
                                 actionable wait states only.
@@ -2343,10 +2344,27 @@ def api_threads_list():
                                 the user can see "what's the agent
                                 doing right now?" without dropping
                                 the actionable filter entirely.
+
+    Response shape::
+
+        {
+          "threads": [...],   # page of matches, already render-shaped
+          "total":   int,     # total matches for the same filters
+          "offset":  int,     # echo of the offset parameter
+          "limit":   int      # echo of the limit parameter
+        }
+
+    Note: when ``urgency`` or ``has_cleanup`` is set, those filters
+    are applied in Python after the SQL count, so ``total`` reflects
+    the SQL-level match count (an upper bound) rather than the
+    post-filtered list length. Both filters are post-query because
+    they derive from ``build_render_data`` output; neither has a SQL
+    column to index. The dashboard pager treats ``total`` as advisory
+    when those filters are active.
     """
     try:
         from work_buddy.threads.render import build_render_data
-        from work_buddy.threads.search import search_threads
+        from work_buddy.threads.search import count_threads, search_threads
         q = request.args.get("q") or ""
         state = request.args.get("state") or None
         subtype = request.args.get("subtype") or None
@@ -2356,16 +2374,19 @@ def api_threads_list():
         actionable_only = request.args.get("show_all") != "1"
         include_mid_process = request.args.get("include_mid_process") == "1"
         limit = int(request.args.get("limit", 100))
-        threads_models = search_threads(
-            q,
+        offset = int(request.args.get("offset", 0))
+        filter_kwargs = dict(
             parent_id=None,
             state=state,
             subtype=subtype,
             show_later=include_future,
             actionable_only=actionable_only,
             include_mid_process=include_mid_process,
-            limit=limit,
         )
+        threads_models = search_threads(
+            q, limit=limit, offset=offset, **filter_kwargs,
+        )
+        total = count_threads(q, **filter_kwargs)
         threads = []
         for t in threads_models:
             data = build_render_data(t.thread_id)
@@ -2378,10 +2399,18 @@ def api_threads_list():
             if has_cleanup_only and not data.get("can_clean_up"):
                 continue
             threads.append(data)
-        return jsonify({"threads": threads})
+        return jsonify({
+            "threads": threads,
+            "total": total,
+            "offset": offset,
+            "limit": limit,
+        })
     except Exception as exc:
         logger.exception("threads list failed: %s", exc)
-        return jsonify({"threads": [], "error": str(exc)}), 500
+        return jsonify({
+            "threads": [], "total": 0, "offset": 0, "limit": 0,
+            "error": str(exc),
+        }), 500
 
 
 # A small allowlist of dashboard-triggerable capabilities. We

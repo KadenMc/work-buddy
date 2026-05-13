@@ -157,6 +157,20 @@ def script() -> str:
         } else {
             panel.innerHTML = html;
         }
+        // Mount the pager into the slot the top-level renderer
+        // emits. The renderer can't paint the buttons itself because
+        // wbRenderPager needs the DOM element to exist first; we
+        // call it post-mount with the current cache totals.
+        if (state.path.length === 0) {
+            const env = window._topLevelCache;
+            if (env && typeof env === 'object' && !Array.isArray(env)) {
+                const page = Math.max(1, window._threadsPage || 1);
+                wbRenderPager(
+                    'threads-pager', env.total || 0,
+                    page, THREADS_PAGE_SIZE, 'threadsGoToPage',
+                );
+            }
+        }
     }
 
     function renderBreadcrumbs(path) {
@@ -217,6 +231,14 @@ def script() -> str:
             show_all: false,           // Wave F: show non-actionable states (terminal, proposed, ...)
         };
     }
+    // Page-based pagination state. Page size is a UI choice — the API
+    // accepts arbitrary limit. Filter or page-size changes always
+    // reset to page 1 so the user doesn't land on an empty page after
+    // narrowing the filter set.
+    const THREADS_PAGE_SIZE = 25;
+    if (typeof window._threadsPage !== 'number') {
+        window._threadsPage = 1;
+    }
 
     function _filterParams() {
         const f = window._topLevelFilters;
@@ -229,11 +251,15 @@ def script() -> str:
         if (f.include_mid_process) params.set('include_mid_process', '1');
         if (f.has_cleanup) params.set('has_cleanup', '1');
         if (f.show_all) params.set('show_all', '1');
+        params.set('limit', String(THREADS_PAGE_SIZE));
+        const page = Math.max(1, window._threadsPage || 1);
+        params.set('offset', String((page - 1) * THREADS_PAGE_SIZE));
         return params.toString();
     }
 
     window.threadsSetFilter = function (key, value) {
         window._topLevelFilters[key] = value;
+        window._threadsPage = 1;  // narrower filter ⇒ start at first page
         window._topLevelCache = null;  // invalidate; refetch
         renderThreads();
     };
@@ -252,6 +278,7 @@ def script() -> str:
             include_mid_process: false,
             has_cleanup: false,
         };
+        window._threadsPage = 1;
         window._topLevelCache = null;
         renderThreads();
     };
@@ -259,6 +286,15 @@ def script() -> str:
     window.threadsToggleMidProcess = function () {
         const f = window._topLevelFilters || {};
         f.include_mid_process = !f.include_mid_process;
+        window._threadsPage = 1;
+        window._topLevelCache = null;
+        renderThreads();
+    };
+
+    window.threadsGoToPage = function (n) {
+        const page = Math.max(1, parseInt(n, 10) || 1);
+        if (page === window._threadsPage) return;
+        window._threadsPage = page;
         window._topLevelCache = null;
         renderThreads();
     };
@@ -290,7 +326,6 @@ def script() -> str:
     };
 
     function renderTopLevel() {
-        // Stage 4.8: pass filter chips + search query.
         if (window._topLevelCache !== null) {
             return _renderTopLevelHtml(window._topLevelCache);
         }
@@ -299,13 +334,25 @@ def script() -> str:
         fetch(url)
             .then(r => r.ok ? r.json() : Promise.reject(r.statusText))
             .then(data => {
-                window._topLevelCache = data.threads || [];
+                // The API returns the paginated envelope shape
+                // {threads, total, offset, limit}. Cache the whole
+                // envelope so _renderTopLevelHtml can size the pager.
+                window._topLevelCache = {
+                    threads: data.threads || [],
+                    total: typeof data.total === 'number'
+                        ? data.total : (data.threads || []).length,
+                    offset: typeof data.offset === 'number' ? data.offset : 0,
+                    limit: typeof data.limit === 'number'
+                        ? data.limit : THREADS_PAGE_SIZE,
+                };
                 if (typeof window._renderActiveThread === 'function') {
                     window._renderActiveThread();
                 }
             })
             .catch(err => {
-                window._topLevelCache = [];
+                window._topLevelCache = {
+                    threads: [], total: 0, offset: 0, limit: THREADS_PAGE_SIZE,
+                };
                 console.warn('Top-level threads fetch failed:', err);
                 if (typeof window._renderActiveThread === 'function') {
                     window._renderActiveThread();
@@ -418,10 +465,21 @@ def script() -> str:
         window._topLevelCache = null;
     };
 
-    function _renderTopLevelHtml(threads) {
+    function _renderTopLevelHtml(envelope) {
+        // Backwards-compat shim: pre-pager callers passed a bare array.
+        // Newer cache shape is {threads, total, offset, limit}. Normalize.
+        let threads, total;
+        if (Array.isArray(envelope)) {
+            threads = envelope;
+            total = envelope.length;
+        } else {
+            threads = (envelope && envelope.threads) || [];
+            total = (envelope && typeof envelope.total === 'number')
+                ? envelope.total : threads.length;
+        }
         let html = '<div class="threads-top">';
         html += '<h2>Threads <span class="threads-count">('
-              + (Array.isArray(threads) ? threads.length : 0) + ')</span></h2>';
+              + total + ')</span></h2>';
         html += _renderFilterBar();
         html += '<p class="threads-kbd-hint">'
               + '<kbd>j</kbd>/<kbd>k</kbd> nav · '
@@ -429,7 +487,7 @@ def script() -> str:
               + '<kbd>/</kbd> search · '
               + '<kbd>?</kbd> help'
               + '</p>';
-        if (!Array.isArray(threads) || threads.length === 0) {
+        if (threads.length === 0) {
             const f = window._topLevelFilters || {};
             const filtered = !!(f.q || f.state || f.subtype);
             if (filtered) {
@@ -471,6 +529,7 @@ def script() -> str:
             html += _renderTopLevelCard(t);
         }
         html += '</ul>';
+        html += '<div id="threads-pager" class="wb-pager"></div>';
         html += '</div>';
         return html;
     }

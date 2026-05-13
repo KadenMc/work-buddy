@@ -124,6 +124,57 @@ def update_search_blob(thread_id: str, *, conn=None) -> Optional[str]:
 # ---------------------------------------------------------------------------
 
 
+def _build_thread_filter_clauses(
+    query: str,
+    *,
+    parent_id: Optional[str],
+    state: Optional[str],
+    subtype: Optional[str],
+    show_later: bool,
+    actionable_only: bool,
+    include_mid_process: bool,
+) -> tuple[list[str], list[Any]]:
+    """Compose the WHERE clauses + params shared by
+    :func:`search_threads` and :func:`count_threads`.
+
+    Kept private so the two callers cannot diverge on filter semantics
+    — a count that disagrees with the listed rows is worse than no
+    count at all.
+    """
+    clauses: list[str] = []
+    params: list[Any] = []
+    if state is not None:
+        clauses.append("fsm_state = ?")
+        params.append(state)
+    elif actionable_only and parent_id is None:
+        allowed = list(_ACTIONABLE_STATE_VALUES)
+        if include_mid_process:
+            allowed.extend(_MID_PROCESS_STATE_VALUES)
+        placeholders = ",".join("?" for _ in allowed)
+        clauses.append(f"fsm_state IN ({placeholders})")
+        params.extend(allowed)
+    if subtype is not None:
+        clauses.append("subtype IS ?")
+        params.append(subtype)
+    if parent_id is not None:
+        clauses.append("parent_id = ?")
+        params.append(parent_id)
+    elif parent_id is None:
+        # top-level only
+        clauses.append("parent_id IS NULL")
+    if not show_later:
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
+        clauses.append("(resurface_at IS NULL OR resurface_at <= ?)")
+        params.append(now)
+    if query:
+        # Case-insensitive substring (search_blob is stored
+        # lowercased so we lowercase the query)
+        clauses.append("search_blob LIKE ?")
+        params.append("%" + query.lower() + "%")
+    return clauses, params
+
+
 def search_threads(
     query: str,
     *,
@@ -134,6 +185,7 @@ def search_threads(
     actionable_only: bool = True,
     include_mid_process: bool = False,
     limit: int = 50,
+    offset: int = 0,
     conn=None,
 ) -> list[Thread]:
     """Substring-search top-level Threads (or sub-threads if
@@ -157,43 +209,24 @@ def search_threads(
     toggle so users can audit what's currently in flight without
     polluting the default actionable list. Has no effect when
     ``actionable_only`` is False (no filter is applied at all).
+
+    ``offset`` (default 0): skip N matching rows before returning
+    ``limit`` of them. Paired with :func:`count_threads` for paged
+    listings.
     """
     own_conn = conn is None
     if own_conn:
         conn = store.get_connection()
     try:
-        clauses: list[str] = []
-        params: list[Any] = []
-        if state is not None:
-            clauses.append("fsm_state = ?")
-            params.append(state)
-        elif actionable_only and parent_id is None:
-            allowed = list(_ACTIONABLE_STATE_VALUES)
-            if include_mid_process:
-                allowed.extend(_MID_PROCESS_STATE_VALUES)
-            placeholders = ",".join("?" for _ in allowed)
-            clauses.append(f"fsm_state IN ({placeholders})")
-            params.extend(allowed)
-        if subtype is not None:
-            clauses.append("subtype IS ?")
-            params.append(subtype)
-        if parent_id is not None:
-            clauses.append("parent_id = ?")
-            params.append(parent_id)
-        elif parent_id is None:
-            # top-level only
-            clauses.append("parent_id IS NULL")
-        if not show_later:
-            from datetime import datetime, timezone
-            now = datetime.now(timezone.utc).isoformat()
-            clauses.append("(resurface_at IS NULL OR resurface_at <= ?)")
-            params.append(now)
-        if query:
-            # Case-insensitive substring (search_blob is stored
-            # lowercased so we lowercase the query)
-            clauses.append("search_blob LIKE ?")
-            params.append("%" + query.lower() + "%")
-
+        clauses, params = _build_thread_filter_clauses(
+            query,
+            parent_id=parent_id,
+            state=state,
+            subtype=subtype,
+            show_later=show_later,
+            actionable_only=actionable_only,
+            include_mid_process=include_mid_process,
+        )
         where = "WHERE " + " AND ".join(clauses) if clauses else ""
         if parent_id is not None:
             order = "ORDER BY order_index ASC, updated_at DESC"
@@ -203,11 +236,52 @@ def search_threads(
                 "resurface_at DESC, updated_at DESC"
             )
         params.append(limit)
+        params.append(offset)
         rows = conn.execute(
-            f"SELECT * FROM threads {where} {order} LIMIT ?",
+            f"SELECT * FROM threads {where} {order} LIMIT ? OFFSET ?",
             params,
         ).fetchall()
         return [Thread.from_row(dict(r)) for r in rows]
+    finally:
+        if own_conn:
+            conn.close()
+
+
+def count_threads(
+    query: str = "",
+    *,
+    parent_id: Optional[str] = None,
+    state: Optional[str] = None,
+    subtype: Optional[str] = None,
+    show_later: bool = False,
+    actionable_only: bool = True,
+    include_mid_process: bool = False,
+    conn=None,
+) -> int:
+    """Count threads matching the same filters as :func:`search_threads`.
+
+    Used by paged listings to compute total page count without
+    materializing every matching row.
+    """
+    own_conn = conn is None
+    if own_conn:
+        conn = store.get_connection()
+    try:
+        clauses, params = _build_thread_filter_clauses(
+            query,
+            parent_id=parent_id,
+            state=state,
+            subtype=subtype,
+            show_later=show_later,
+            actionable_only=actionable_only,
+            include_mid_process=include_mid_process,
+        )
+        where = "WHERE " + " AND ".join(clauses) if clauses else ""
+        row = conn.execute(
+            f"SELECT COUNT(*) AS n FROM threads {where}",
+            params,
+        ).fetchone()
+        return int(row["n"]) if row is not None else 0
     finally:
         if own_conn:
             conn.close()
