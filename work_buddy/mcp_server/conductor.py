@@ -264,17 +264,33 @@ def advance_workflow(
                 "Schema validation failed for step '%s': %s",
                 current_id, validation_error,
             )
+            # Pivot the hint on what the agent actually sent. An empty
+            # dict almost always means the parameter never reached the
+            # conductor (omitted or misnamed); the generic "re-read the
+            # instructions and pass the full data structure" hint
+            # misdirects in that case. The error message itself already
+            # carries the parameter-name nudge — the hint here mirrors
+            # that framing so the two surfaces tell the same story.
+            if isinstance(serialized_result, dict) and not serialized_result:
+                hint = (
+                    "The conductor received an empty result. Verify the "
+                    "call shape: `wb_advance(workflow_run_id=..., "
+                    "step_result={...})`. The parameter is `step_result`, "
+                    "not `result` — FastMCP silently drops unknown kwargs."
+                )
+            else:
+                hint = (
+                    "Re-read the step instructions carefully. Your step result "
+                    "must be the complete data structure (e.g. the full "
+                    "presentation dict), not a summary or file reference. "
+                    "Call wb_advance again with the correct result."
+                )
             return {
                 "type": "validation_error",
                 "workflow_run_id": workflow_run_id,
                 "step_id": current_id,
                 "error": validation_error,
-                "hint": (
-                    "Re-read the step instructions carefully. Your step result "
-                    "must be the complete data structure (e.g. the full "
-                    "presentation dict), not a summary or file reference. "
-                    "Call wb_advance again with the correct result."
-                ),
+                "hint": hint,
                 "diagram": _dag_to_mermaid(dag),
             }
 
@@ -1331,10 +1347,28 @@ def _validate_step_result(
 
     for key in schema.get("required_keys", []):
         if key not in result:
-            return (
+            base = (
                 f"Step '{step_id}' missing required key '{key}'. "
                 f"Got keys: {list(result.keys())}"
             )
+            # When the result is an empty dict, the most likely cause is
+            # that the caller never set ``step_result`` at all — either
+            # they omitted it or named the parameter incorrectly (e.g.
+            # ``result=`` instead of ``step_result=``), which FastMCP
+            # silently drops. The keys-based "you forgot a field" framing
+            # misdirects in that case, so append a parameter-name hint
+            # inline. Safe to always append: an agent who genuinely sent
+            # ``{}`` is still in an error path here and the hint still
+            # tells them what shape the call needs.
+            if not result:
+                base += (
+                    ". The result arrived empty — call as "
+                    "`wb_advance(workflow_run_id=..., step_result={...})`. "
+                    "A common mistake is naming the parameter `result=` "
+                    "instead of `step_result=`; FastMCP silently drops "
+                    "unknown kwargs, so the conductor sees no result."
+                )
+            return base
 
     for key, expected_type_name in schema.get("key_types", {}).items():
         if key not in result:

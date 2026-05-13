@@ -11,7 +11,7 @@ work-buddy's functionality is reached through five MCP tools that appear in your
 | `wb_init(session_id)` | **REQUIRED first call.** Registers your session. Pass your `WORK_BUDDY_SESSION_ID`. |
 | `wb_search(query)` | Find a **capability to call**. Natural language → ranked capabilities/workflows. Exact name → its parameter schema. *Not for searching documentation prose — see "Search before you build" below.* |
 | `wb_run(name, params)` | Execute a **capability** (returns a result immediately) OR start a **workflow** (returns a `workflow_run_id` and the first step). |
-| `wb_advance(workflow_run_id, result)` | Advance a workflow after completing one of its steps. |
+| `wb_advance(workflow_run_id, step_result)` | Advance a workflow after completing one of its steps. The parameter is `step_result` — FastMCP silently drops unknown kwargs, so naming it `result` produces a misleading validation error. |
 | `wb_step_result(workflow_run_id, step_id, key?)` | Retrieve full step result data elided by the visibility system. |
 
 ### Capability vs workflow
