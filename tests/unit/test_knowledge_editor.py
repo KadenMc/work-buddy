@@ -306,3 +306,137 @@ class TestUpdateUnitHints:
         result = update_unit("seed/leaf", {"description": "leaf (renamed)"})
         assert "hints" in result
         assert result["hints"] == []
+
+
+# ---------------------------------------------------------------------------
+# Duplicate placeholders — HARD ERROR (not a hint)
+# ---------------------------------------------------------------------------
+
+
+class TestDuplicatePlaceholderRejection:
+    """Duplicate ``<<wb:X>>`` within a unit's ``content.full`` is a hard
+    error: the editor refuses the write, returns ``{"error": ...}``,
+    and the unit on disk stays unchanged.
+
+    Rationale: at read time the per-unit-occurrence cap renders
+    subsequent references as back-reference markers, so duplicates
+    contribute zero readable content. There's no legitimate authorial
+    case for them.
+    """
+
+    def _seed_leaf(self, tmp_store: Path) -> None:
+        _write_units(tmp_store, "seed", {
+            "seed/leaf": {
+                "kind": "directions",
+                "name": "Leaf",
+                "description": "leaf",
+                "trigger": "never",
+                "content": {"full": "leaf body"},
+                "parents": [],
+                "children": [],
+            },
+            "seed/host": {
+                "kind": "directions",
+                "name": "Host",
+                "description": "host",
+                "trigger": "never",
+                "content": {"full": "original body"},
+                "parents": [],
+                "children": [],
+            },
+        })
+        store_mod.invalidate_store()
+
+    def test_create_with_duplicate_placeholder_rejects(self, tmp_store: Path):
+        """``create_unit`` refuses to write a unit whose content has
+        duplicate placeholders. Disk file is unchanged."""
+        self._seed_leaf(tmp_store)
+        result = create_unit(
+            path="seed/dup",
+            kind="directions",
+            name="Dup",
+            description="dup",
+            content_full="<<wb:seed/leaf>> middle <<wb:seed/leaf>>",
+            trigger="never",
+        )
+        assert "error" in result
+        assert result["error"] == "placeholder_duplicate"
+        assert any(d["placeholder"] == "seed/leaf" for d in result["duplicates"])
+        # Confirm the unit was NOT written
+        from work_buddy.knowledge.store import load_store
+        store_mod.invalidate_store()
+        store = load_store()
+        assert "seed/dup" not in store
+
+    def test_update_with_duplicate_placeholder_rejects(self, tmp_store: Path):
+        """``update_unit`` rejects a content_full that introduces
+        duplicates. The original content on disk is preserved."""
+        self._seed_leaf(tmp_store)
+        result = update_unit(
+            "seed/host",
+            {"content_full": "<<wb:seed/leaf>> some <<wb:seed/leaf>>"},
+        )
+        assert "error" in result
+        assert result["error"] == "placeholder_duplicate"
+        # Original content preserved on disk
+        store_mod.invalidate_store()
+        from work_buddy.knowledge.store import load_store
+        unit = load_store()["seed/host"]
+        assert unit.content["full"] == "original body"
+
+    def test_update_unrelated_field_does_not_trigger_check(self, tmp_store: Path):
+        """The duplicate check fires ONLY when content_full is being
+        updated. Updating tags or description should not re-validate
+        existing content."""
+        # Set up a unit whose existing content has duplicates (e.g.
+        # legacy bypass via direct JSON edit). Updating an unrelated
+        # field must not block the edit — the validator surfaces it
+        # separately.
+        _write_units(tmp_store, "seed", {
+            "seed/leaf": {
+                "kind": "directions",
+                "name": "Leaf",
+                "description": "leaf",
+                "trigger": "never",
+                "content": {"full": "leaf body"},
+                "parents": [],
+                "children": [],
+            },
+            "seed/legacy_dup": {
+                "kind": "directions",
+                "name": "Legacy",
+                "description": "legacy unit with pre-existing duplicates",
+                "trigger": "never",
+                "content": {"full": "<<wb:seed/leaf>> a <<wb:seed/leaf>>"},
+                "parents": [],
+                "children": [],
+            },
+        })
+        store_mod.invalidate_store()
+
+        # Touching ``description`` should succeed even though content
+        # has duplicates — the check only fires on content_full edits.
+        result = update_unit(
+            "seed/legacy_dup",
+            {"description": "renamed legacy unit"},
+        )
+        assert result.get("status") == "updated"
+
+    def test_message_explains_the_problem_and_the_fix(self, tmp_store: Path):
+        """The error response must tell the author exactly what's
+        wrong and what to do about it — not a generic error."""
+        self._seed_leaf(tmp_store)
+        result = create_unit(
+            path="seed/dup",
+            kind="directions",
+            name="Dup",
+            description="dup",
+            content_full="<<wb:seed/leaf>><<wb:seed/leaf>><<wb:seed/leaf>>",
+            trigger="never",
+        )
+        # Mentions the placeholder by name
+        assert "seed/leaf" in result["message"]
+        # Mentions the count
+        assert "3" in result["message"]
+        # Mentions the fix
+        assert "remove" in result["message"].lower() or "extras" in result["message"].lower()

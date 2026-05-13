@@ -184,6 +184,42 @@ def _check_kind_specific_fields(store: dict[str, PromptUnit]) -> list[dict[str, 
     return errors
 
 
+def _check_placeholder_duplicates(store: dict[str, PromptUnit]) -> list[dict[str, str]]:
+    """Check 8: No placeholder target may appear more than once in a
+    single unit's ``content["full"]``.
+
+    Duplicate placeholders are a hard error, not a hint: the runtime
+    per-unit-occurrence cap renders subsequent references as
+    back-reference markers, so duplicates produce zero new content.
+    They're never the right authorial choice. The editor rejects them
+    before disk; this corpus-wide check catches any that slipped in
+    via direct JSON edits, programmatic generators, or pre-rule legacy
+    content.
+    """
+    # Imported here to avoid circular import — editor imports from this
+    # module's siblings, and check_duplicate_placeholders is the
+    # canonical implementation.
+    from work_buddy.knowledge.editor import check_duplicate_placeholders
+
+    errors: list[dict[str, str]] = []
+    for path, unit in sorted(store.items()):
+        full = unit.content.get("full", "")
+        if not isinstance(full, str) or "<<wb:" not in full:
+            continue
+        duplicates = check_duplicate_placeholders(full)
+        for dup in duplicates:
+            errors.append({
+                "check": "placeholder_duplicate",
+                "path": path,
+                "message": (
+                    f"Placeholder for {dup['placeholder']!r} appears "
+                    f"{dup['count']} times — duplicates render as "
+                    "back-reference markers at read time; remove the extras."
+                ),
+            })
+    return errors
+
+
 def _check_parent_child_symmetry(store: dict[str, PromptUnit]) -> list[dict[str, str]]:
     """Check 7: If A lists B as child, B should list A as parent (and vice versa)."""
     errors: list[dict[str, str]] = []
@@ -221,6 +257,7 @@ _CHECKS = [
     ("required_fields", _check_required_fields),
     ("directions_fields", _check_directions_fields),
     ("kind_specific_fields", _check_kind_specific_fields),
+    ("placeholder_duplicate", _check_placeholder_duplicates),
     ("parent_child_symmetry", _check_parent_child_symmetry),
 ]
 
@@ -293,7 +330,8 @@ def docs_validate(
         checks: Comma-separated check names to run. Empty = run all.
                  Available: dag_integrity, command_mapping, thinned_commands,
                  store_path_validity, required_fields, directions_fields,
-                 kind_specific_fields, parent_child_symmetry
+                 kind_specific_fields, placeholder_duplicate,
+                 parent_child_symmetry
     """
     check_list = [c.strip() for c in checks.split(",") if c.strip()] if checks else None
     return validate_store(checks=check_list)
