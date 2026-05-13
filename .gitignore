@@ -47,6 +47,11 @@ knowledge/store.local/
 # Claude Code local settings (auto-generated permission rules, machine-specific)
 .claude/settings.local.json
 .claude/settings.json
+# Claude Code runtime lock files (e.g. scheduled_tasks.lock from the
+# scheduled-tasks MCP server). Contents are a process singleton —
+# {sessionId, pid, acquiredAt} — meaningful only on the host that
+# wrote them. Pattern catches similar future per-server lock files.
+.claude/*.lock
 
 # Cygwin / MSYS bash crash dumps (machine-specific noise, regenerated
 # every time bash crashes — not useful in version control)
