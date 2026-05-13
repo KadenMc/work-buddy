@@ -43,10 +43,17 @@ def collect(cfg: dict[str, Any]) -> str:
         observed_sessions + commits + writes before rendering. Pass
         ``False`` in time-sensitive contexts where you want the DB
         snapshot as-is.
+      * ``include_tldr`` (bool, default False) — if set, surface the
+        cached LLM tldr (when available) alongside each session's
+        attribution line. The LLM is **not** invoked here; this only
+        renders existing rows. Generation is gated on the
+        ``conversation_observability.summaries.enabled`` config flag
+        and runs from the sidecar refresh job.
     """
     days = int(cfg.get("days", 7))
     project = cfg.get("project")
     refresh = bool(cfg.get("refresh", True))
+    include_tldr = bool(cfg.get("include_tldr", False))
 
     try:
         from work_buddy.conversation_observability.commits import (
@@ -56,6 +63,9 @@ def collect(cfg: dict[str, Any]) -> str:
         from work_buddy.conversation_observability.sessions import (
             list_observed_sessions,
             refresh_observed_sessions,
+        )
+        from work_buddy.conversation_observability.summaries import (
+            query_session_summary,
         )
         from work_buddy.conversation_observability.writes import (
             query_session_writes,
@@ -129,6 +139,18 @@ def collect(cfg: dict[str, Any]) -> str:
             lines.append(
                 f"- {time_range} [{short_sid}] " + ", ".join(descriptors)
             )
+
+            if include_tldr:
+                try:
+                    summary_row = query_session_summary(sid)
+                except Exception:
+                    summary_row = None
+                if (
+                    summary_row is not None
+                    and summary_row.get("status") == "ok"
+                    and summary_row.get("tldr")
+                ):
+                    lines.append(f"  tldr: {summary_row['tldr']}")
 
             if session_commits:
                 summaries = [

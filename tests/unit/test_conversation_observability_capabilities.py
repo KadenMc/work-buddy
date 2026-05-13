@@ -48,7 +48,7 @@ def co_env(tmp_path, monkeypatch):
     return {"projects": projects, "db": db_file, "repos_root": repos_root, "repo": repo}
 
 
-def test_all_four_capabilities_register() -> None:
+def test_all_capabilities_register_under_observability_category() -> None:
     from work_buddy.mcp_server.registry import (
         _conversation_observability_capabilities,
     )
@@ -60,6 +60,8 @@ def test_all_four_capabilities_register() -> None:
         "conversation_observability_uncommitted",
         "conversation_observability_get",
         "conversation_observability_list",
+        "conversation_observability_summarize",
+        "conversation_observability_summary_get",
     }
     for cap in caps:
         assert cap.category == "conversation_observability"

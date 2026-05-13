@@ -8025,6 +8025,11 @@ def _conversation_observability_capabilities() -> list[Capability]:
         query_observed_session,
         refresh_observed_sessions as _refresh_sessions,
     )
+    from work_buddy.conversation_observability.summaries import (
+        query_session_summary,
+        refresh_session_summaries as _refresh_summaries,
+        summarize_session as _summarize_session,
+    )
     from work_buddy.conversation_observability.writes import (
         refresh_session_writes as _refresh_writes,
         uncommitted_report,
@@ -8167,6 +8172,71 @@ def _conversation_observability_capabilities() -> list[Capability]:
                 "list observed sessions",
                 "recent claude sessions",
                 "session observability list",
+            ],
+        ),
+        Capability(
+            name="conversation_observability_summarize",
+            description=(
+                "Generate (or refresh) LLM topic summaries for up to "
+                "`max_sessions` stale Claude Code sessions. Each session "
+                "produces one tldr + a bounded topic list, persisted "
+                "with model + prompt-version provenance for stale "
+                "detection. Disabled by default; call deliberately."
+            ),
+            category="conversation_observability",
+            parameters={
+                "days": {
+                    "type": "int",
+                    "description": "Recency window for candidates (default 7).",
+                    "required": False,
+                },
+                "max_sessions": {
+                    "type": "int",
+                    "description": (
+                        "Cap per-call summarizations. Default 3 — keep "
+                        "small; each session is one LLM round trip."
+                    ),
+                    "required": False,
+                },
+                "force": {
+                    "type": "bool",
+                    "description": (
+                        "Re-summarize every candidate regardless of "
+                        "freshness. Use after a prompt or schema bump."
+                    ),
+                    "required": False,
+                },
+            },
+            callable=_refresh_summaries,
+            mutates_state=True,
+            search_aliases=[
+                "summarize claude sessions",
+                "generate session tldr",
+                "topic summaries refresh",
+                "session llm summary",
+            ],
+        ),
+        Capability(
+            name="conversation_observability_summary_get",
+            description=(
+                "Look up the cached tldr + topic summaries for one "
+                "session_id. Returns None when nothing has been "
+                "summarized yet."
+            ),
+            category="conversation_observability",
+            parameters={
+                "session_id": {
+                    "type": "str",
+                    "description": "Full or 8-char prefix session UUID.",
+                    "required": True,
+                },
+            },
+            callable=query_session_summary,
+            mutates_state=False,
+            search_aliases=[
+                "session summary lookup",
+                "get session tldr",
+                "topic summary for session",
             ],
         ),
     ]
