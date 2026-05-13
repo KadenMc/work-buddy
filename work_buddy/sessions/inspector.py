@@ -15,6 +15,7 @@ from typing import Any
 
 from work_buddy.collectors.chat_collector import iter_session_turns, _format_duration
 from work_buddy.config import load_config
+from work_buddy.ir.store import get_connection, load_documents
 
 
 # ---------------------------------------------------------------------------
@@ -414,40 +415,51 @@ def _check_span_compatibility(session: ConversationSession) -> str | None:
     """Compare our replayed span count against what the IR store has indexed.
 
     Returns a warning string if there's a mismatch, or None if all is well.
-    """
-    try:
-        from work_buddy.ir.store import get_connection, query_documents
 
+    Catches narrow runtime failures (missing DB file, locked DB, OS-level
+    I/O) and degrades to no-warning so a flaky IR store cannot block
+    session inspection. Programming errors (AttributeError, TypeError)
+    are intentionally *not* caught here — those surface as test failures
+    rather than being silently swallowed. The exception clause stays
+    narrow on purpose: an over-broad ``except Exception`` here would
+    mask renames or typos at the import boundary.
+    """
+    import sqlite3
+
+    try:
         conn = get_connection()
+    except (sqlite3.Error, OSError):
+        return None
+
+    try:
         try:
-            indexed = query_documents(
+            indexed = load_documents(
                 conn,
                 source="conversation",
                 doc_id_prefix=f"{session.session_id}:",
             )
-        finally:
-            conn.close()
+        except sqlite3.Error:
+            return None
+    finally:
+        conn.close()
 
-        if not indexed:
-            return (
-                "Session not in IR index. span_index mapping is based on "
-                "replayed chunking — results may be approximate if the session "
-                "was indexed with different settings."
-            )
+    if not indexed:
+        return (
+            "Session not in IR index. span_index mapping is based on "
+            "replayed chunking — results may be approximate if the session "
+            "was indexed with different settings."
+        )
 
-        indexed_span_count = len(indexed)
-        local_span_count = len(session._span_map)
-        if indexed_span_count != local_span_count:
-            return (
-                f"Chunk mismatch: IR has {indexed_span_count} spans, "
-                f"replay produced {local_span_count}. The index may be stale "
-                f"or config changed — results are approximate."
-            )
+    indexed_span_count = len(indexed)
+    local_span_count = len(session._span_map)
+    if indexed_span_count != local_span_count:
+        return (
+            f"Chunk mismatch: IR has {indexed_span_count} spans, "
+            f"replay produced {local_span_count}. The index may be stale "
+            f"or config changed — results are approximate."
+        )
 
-        return None
-    except Exception:
-        # Don't let IR store issues block session inspection
-        return None
+    return None
 
 
 # ---------------------------------------------------------------------------
