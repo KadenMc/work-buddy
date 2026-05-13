@@ -82,6 +82,8 @@ document.querySelectorAll('.tab-btn').forEach(btn =>
 //   ci   — Chats selected session (short_id with collision fallback)
 //   rs   — Review source-filter dropdown value
 //   tn   — Tasks namespace drill-down
+//   p    — Projects selected project; uses the stable integer ``id`` so
+//          the URL survives slug renames (e.g. ``aexp``→``agentic-experiments``)
 //   ntf  — workflow view ID (paired with tab=ntf); maps to wv-<id> internally
 //
 // The legacy `#view/<id>` deep-link format is still handled by the existing
@@ -114,6 +116,17 @@ function _persistHash() {
             params.set('ci', matches.length === 1 ? shortId : sid);
         } else if (tab === 'tasks' && window._selectedNamespace) {
             params.set('tn', window._selectedNamespace);
+        } else if (tab === 'projects'
+                   && typeof _selectedProjectSlug !== 'undefined'
+                   && _selectedProjectSlug) {
+            // Projects use the stable integer ``id`` (not the slug) so the
+            // URL survives slug renames. tabs/projects.py keeps
+            // _projectsCache in sync; we look up the id from the cache.
+            const cache = (typeof _projectsCache !== 'undefined') ? _projectsCache : [];
+            const proj = cache.find(p => p.slug === _selectedProjectSlug);
+            if (proj && proj.id != null) {
+                params.set('p', String(proj.id));
+            }
         } else if (tab === 'threads' && typeof window._threadsState === 'object'
                    && window._threadsState) {
             // Threads tab state encoding:

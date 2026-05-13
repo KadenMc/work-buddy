@@ -31,6 +31,7 @@ from work_buddy.memory.query import (
     recall_for_workflow,
     recall_personal_context,
     recall_project_context,
+    recall_project_context_items,
     reflect_on_query,
 )
 from work_buddy.memory.setup import ensure_bank, ensure_project_bank, refresh_mental_models, refresh_project_mental_models

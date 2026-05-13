@@ -2424,7 +2424,7 @@ def _context_capabilities() -> list[Capability]:
         # ── Projects ──────────────────────────────────────────────
         Capability(
             name="context_projects",
-            description="Active projects with identity, state, and trajectory — synthesized from vault directories, STATE.md files in repos, task tags, git activity, and contracts",
+            description="Active projects with identity, state, and trajectory — synthesized from vault directories, STATE.md files in repos, task tags, git activity, and contracts. Filters the rendered output to active + inferred by default; pass ``statuses`` to widen.",
             category="context",
             search_aliases=[
                 "projects",
@@ -2434,7 +2434,13 @@ def _context_capabilities() -> list[Capability]:
                 "project state",
                 "project list",
             ],
-            parameters={},
+            parameters={
+                "statuses": {
+                    "type": "list",
+                    "description": "Project statuses to include in the rendered bundle. Default: active + inferred. Pass [\"active\", \"inferred\", \"future\", \"past\"] to include everything. Filters only the rendered output — every project is still scanned and synced to the registry.",
+                    "required": False,
+                },
+            },
             callable=get_projects_context,
         ),
         # ── Context bundle ────────────────────────────────────────
@@ -2639,20 +2645,28 @@ def _context_drill_down(source: str, item_id: str, field: str) -> dict[str, Any]
 
 def _project_capabilities() -> list[Capability]:
     from work_buddy.mcp_server.context_wrappers import (
-        project_list,
-        project_get,
-        project_observe,
-        project_update,
+        project_add_alias,
+        project_add_folder,
+        project_confirm_description,
         project_create,
         project_delete,
         project_discover,
+        project_get,
+        project_list,
         project_memory,
+        project_observe,
+        project_remove_alias,
+        project_remove_folder,
+        project_revisions_list,
+        project_set_folder_archived,
+        project_state_at,
+        project_update,
     )
 
     return [
         Capability(
             name="project_list",
-            description="List all projects with observation counts, optionally filtered by status",
+            description="List projects with folders + aliases, ordered by lifecycle status. Soft-deleted rows are filtered by default; pass include_deleted=True to see them.",
             category="projects",
             search_aliases=[
                 "list projects",
@@ -2661,13 +2675,14 @@ def _project_capabilities() -> list[Capability]:
                 "all projects",
             ],
             parameters={
-                "status": {"type": "str", "description": "Filter by status: active, paused, past, future, inferred", "required": False},
+                "status": {"type": "str", "description": "Filter by status: active, paused, past, future, deleted", "required": False},
+                "include_deleted": {"type": "bool", "description": "Include rows with status='deleted' (default False)", "required": False},
             },
             callable=project_list,
         ),
         Capability(
             name="project_get",
-            description="Get a single project with its recent observations (identity + state + trajectory)",
+            description="Get a single project (resolved via slug or alias) with its folders, aliases, and recent Hindsight memory recall",
             category="projects",
             search_aliases=[
                 "project details",
@@ -2676,7 +2691,7 @@ def _project_capabilities() -> list[Capability]:
                 "project observations",
             ],
             parameters={
-                "slug": {"type": "str", "description": "Project slug (e.g. 'my-project')", "required": True},
+                "slug": {"type": "str", "description": "Project slug or alias (e.g. 'ecg-inquiry' or 'electricrag')", "required": True},
             },
             callable=project_get,
         ),
@@ -2692,7 +2707,7 @@ def _project_capabilities() -> list[Capability]:
                 "project pivot",
             ],
             parameters={
-                "project": {"type": "str", "description": "Project slug (e.g. 'my-project')", "required": True},
+                "project": {"type": "str", "description": "Project slug or alias", "required": True},
                 "content": {"type": "str", "description": "The observation — what happened, what it means, what changed", "required": True},
             },
             callable=project_observe,
@@ -2700,7 +2715,7 @@ def _project_capabilities() -> list[Capability]:
         ),
         Capability(
             name="project_update",
-            description="Update a project's identity: name, status, or description",
+            description="Update a project's identity: name, status, or description. Writes a revision row capturing the change (author + summary).",
             category="projects",
             search_aliases=[
                 "rename project",
@@ -2710,17 +2725,19 @@ def _project_capabilities() -> list[Capability]:
                 "archive project",
             ],
             parameters={
-                "slug": {"type": "str", "description": "Project slug", "required": True},
+                "slug": {"type": "str", "description": "Project slug or alias", "required": True},
                 "name": {"type": "str", "description": "New human-readable name", "required": False},
-                "status": {"type": "str", "description": "New status: active, paused, past, future, inferred", "required": False},
-                "description": {"type": "str", "description": "What is this project? (embeddable text)", "required": False},
+                "status": {"type": "str", "description": "New status: active, paused, past, future, deleted", "required": False},
+                "description": {"type": "str", "description": "What is this project? (versioned via revisions)", "required": False},
+                "author": {"type": "str", "description": "Author of this change: 'user' (default) or 'agent'", "required": False},
+                "change_summary": {"type": "str", "description": "Optional one-line summary of what changed", "required": False},
             },
             callable=project_update,
             mutates_state=True,
         ),
         Capability(
             name="project_create",
-            description="Manually create a project that the collector can't discover (books, businesses, admin workflows, etc.)",
+            description="Manually create a project. Accepts initial folders + aliases + provenance metadata. Consent-gated.",
             category="projects",
             search_aliases=[
                 "new project",
@@ -2736,6 +2753,10 @@ def _project_capabilities() -> list[Capability]:
                 "name": {"type": "str", "description": "Human-readable project name", "required": True},
                 "status": {"type": "str", "description": "Status: active (default), paused, past, future", "required": False},
                 "description": {"type": "str", "description": "What is this project?", "required": False},
+                "origin": {"type": "str", "description": "Origin: 'manual' (default) or 'vault' (auto-detected)", "required": False},
+                "folders": {"type": "list", "description": "List of {path, archived} dicts. Absolute system paths.", "required": False},
+                "aliases": {"type": "list", "description": "Alternative slug strings (display casing preserved).", "required": False},
+                "author": {"type": "str", "description": "Author of this create: 'user' (default) or 'agent'", "required": False},
             },
             callable=project_create,
             mutates_state=True,
@@ -2756,7 +2777,7 @@ def _project_capabilities() -> list[Capability]:
                 "query": {"type": "str", "description": "Search query for project memories", "required": False},
                 "mode": {"type": "str", "description": "search (default), model, or recent", "required": False},
                 "model_id": {"type": "str", "description": "Mental model ID for mode=model (default: project-landscape)", "required": False},
-                "project": {"type": "str", "description": "Project slug to scope search (omit for cross-project)", "required": False},
+                "project": {"type": "str", "description": "Project slug or alias to scope search (omit for cross-project)", "required": False},
                 "budget": {"type": "str", "description": "Retrieval depth: low, mid (default), high", "required": False},
             },
             callable=project_memory,
@@ -2777,22 +2798,165 @@ def _project_capabilities() -> list[Capability]:
         ),
         Capability(
             name="project_delete",
-            description="Delete a project from the identity registry (consent-gated). Hindsight memories are preserved.",
+            description="Soft-delete a project (set status='deleted'). Row + folders + aliases + revision history are preserved. Consent-gated.",
             category="projects",
             search_aliases=[
                 "delete project",
                 "remove project",
                 "drop project",
                 "unregister project",
-                "remove project from registry",
-                "delete project slug",
-                "drop project identity",
+                "soft delete project",
+                "archive project completely",
             ],
             parameters={
-                "slug": {"type": "str", "description": "Project slug to delete", "required": True},
+                "slug": {"type": "str", "description": "Project slug or alias to soft-delete", "required": True},
+                "author": {"type": "str", "description": "Author: 'user' (default) or 'agent'", "required": False},
             },
             callable=project_delete,
             mutates_state=True,
+        ),
+        Capability(
+            name="project_add_folder",
+            description="Attach a folder to a project. Writes a revision capturing the new folder set.",
+            category="projects",
+            search_aliases=[
+                "add folder to project",
+                "attach folder",
+                "register project folder",
+                "track project folder",
+            ],
+            parameters={
+                "slug": {"type": "str", "description": "Project slug or alias", "required": True},
+                "path": {"type": "str", "description": "Absolute system path to the folder", "required": True},
+                "archived": {"type": "bool", "description": "Mark folder as archived/dormant (default False)", "required": False},
+                "author": {"type": "str", "description": "'user' (default) or 'agent'", "required": False},
+                "change_summary": {"type": "str", "description": "Optional one-line summary", "required": False},
+            },
+            callable=project_add_folder,
+            mutates_state=True,
+        ),
+        Capability(
+            name="project_remove_folder",
+            description="Detach a folder from a project. Writes a revision.",
+            category="projects",
+            search_aliases=[
+                "remove folder from project",
+                "detach folder",
+                "unregister project folder",
+            ],
+            parameters={
+                "slug": {"type": "str", "description": "Project slug or alias", "required": True},
+                "path": {"type": "str", "description": "Absolute system path of the folder to remove", "required": True},
+                "author": {"type": "str", "description": "'user' (default) or 'agent'", "required": False},
+                "change_summary": {"type": "str", "description": "Optional one-line summary", "required": False},
+            },
+            callable=project_remove_folder,
+            mutates_state=True,
+        ),
+        Capability(
+            name="project_set_folder_archived",
+            description="Flip the archived flag on a project folder (mark dormant or active). Writes a revision.",
+            category="projects",
+            search_aliases=[
+                "archive project folder",
+                "unarchive project folder",
+                "mark folder dormant",
+            ],
+            parameters={
+                "slug": {"type": "str", "description": "Project slug or alias", "required": True},
+                "path": {"type": "str", "description": "Absolute system path of the folder", "required": True},
+                "archived": {"type": "bool", "description": "True to archive, False to unarchive", "required": True},
+                "author": {"type": "str", "description": "'user' (default) or 'agent'", "required": False},
+                "change_summary": {"type": "str", "description": "Optional one-line summary", "required": False},
+            },
+            callable=project_set_folder_archived,
+            mutates_state=True,
+        ),
+        Capability(
+            name="project_add_alias",
+            description="Attach an alternative slug (alias) to a project. Aliases route to the canonical row across capabilities. Writes a revision.",
+            category="projects",
+            search_aliases=[
+                "add project alias",
+                "alias project",
+                "alternate project name",
+                "register old project name",
+            ],
+            parameters={
+                "slug": {"type": "str", "description": "Canonical project slug or alias", "required": True},
+                "alias": {"type": "str", "description": "Alternative slug (display casing preserved)", "required": True},
+                "author": {"type": "str", "description": "'user' (default) or 'agent'", "required": False},
+                "change_summary": {"type": "str", "description": "Optional one-line summary", "required": False},
+            },
+            callable=project_add_alias,
+            mutates_state=True,
+        ),
+        Capability(
+            name="project_remove_alias",
+            description="Detach an alias from a project. Writes a revision.",
+            category="projects",
+            search_aliases=[
+                "remove project alias",
+                "drop alias",
+                "unregister alternative project name",
+            ],
+            parameters={
+                "slug": {"type": "str", "description": "Canonical project slug or alias", "required": True},
+                "alias": {"type": "str", "description": "Alias to remove (matched case-insensitively)", "required": True},
+                "author": {"type": "str", "description": "'user' (default) or 'agent'", "required": False},
+                "change_summary": {"type": "str", "description": "Optional one-line summary", "required": False},
+            },
+            callable=project_remove_alias,
+            mutates_state=True,
+        ),
+        Capability(
+            name="project_confirm_description",
+            description="Mark the latest revision as user-confirmed. Use this when a human reviews an LLM-authored description (or other agent edit) and signs off.",
+            category="projects",
+            search_aliases=[
+                "confirm project description",
+                "approve project edit",
+                "sign off project",
+                "user confirm project",
+            ],
+            parameters={
+                "slug": {"type": "str", "description": "Project slug or alias", "required": True},
+            },
+            callable=project_confirm_description,
+            mutates_state=True,
+        ),
+        Capability(
+            name="project_revisions_list",
+            description="Return revision history for a project, newest first. Each entry snapshots the project state plus folder + alias sets at that revision.",
+            category="projects",
+            search_aliases=[
+                "project history",
+                "project revisions",
+                "project changes",
+                "project audit",
+                "revision history",
+            ],
+            parameters={
+                "slug": {"type": "str", "description": "Project slug or alias", "required": True},
+                "limit": {"type": "int", "description": "Max revisions to return (default 20)", "required": False},
+            },
+            callable=project_revisions_list,
+        ),
+        Capability(
+            name="project_state_at",
+            description="Reconstruct a project's state as of a given timestamp (latest revision ≤ timestamp). Includes folders + aliases as they were then.",
+            category="projects",
+            search_aliases=[
+                "project at time",
+                "project state on date",
+                "historical project state",
+                "point-in-time project",
+            ],
+            parameters={
+                "slug": {"type": "str", "description": "Project slug or alias", "required": True},
+                "timestamp": {"type": "str", "description": "ISO 8601 UTC timestamp (e.g. '2026-04-14T00:00:00Z')", "required": True},
+            },
+            callable=project_state_at,
         ),
     ]
 

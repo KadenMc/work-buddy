@@ -97,7 +97,28 @@ def _get_unfiltered_registry() -> dict:
             for cap in fn():
                 registry[cap.name] = cap
         except Exception as e:
-            logger.warning("Failed to load %s capabilities: %s", label, e)
+            # Fail loud. A category that can't load silently dropped from
+            # the output file produces a corrupted ``_generated_capabilities.json``
+            # — capability entries vanish, parent units in the knowledge
+            # store end up referencing missing children, and the DAG
+            # validator surfaces dangling-ref warnings on every gateway
+            # boot. The right response is to refuse to write a partial
+            # file and force the developer to fix their environment
+            # (typically: a missing optional dependency that this
+            # category's imports require).
+            raise RuntimeError(
+                f"knowledge.build: category {label!r} failed to load "
+                f"({type(e).__name__}: {e}). The auto-generated capability "
+                f"file is the source of truth for the knowledge store; "
+                f"writing a partial file would silently drop every "
+                f"capability in this category and break parent-child "
+                f"references in the store. Fix the underlying import "
+                f"error (often a missing optional dependency reachable "
+                f"only from the gateway environment) and re-run. To "
+                f"regenerate from a Python env that has all "
+                f"dependencies present, run the build from the same "
+                f"environment that boots the MCP gateway."
+            ) from e
 
     _UNFILTERED = registry
     logger.info("Unfiltered registry: %d entries", len(registry))

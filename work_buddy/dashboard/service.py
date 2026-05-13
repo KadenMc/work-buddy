@@ -1709,12 +1709,46 @@ def api_automation_today():
 # Projects
 # ---------------------------------------------------------------------------
 
+@app.get("/api/projects/_schema")
+def api_projects_schema():
+    """Return enum metadata for the projects store.
+
+    Source of truth for the frontend's status grouping and ``<select>``
+    options. Derived from constants in ``work_buddy.projects.store`` so
+    schema additions (new lifecycle state, new origin value) propagate
+    to the dashboard without a frontend code change.
+    """
+    try:
+        from work_buddy.projects.store import (
+            STATUS_DISPLAY_ORDER,
+            VALID_ORIGINS,
+            VALID_AUTHORS,
+        )
+        return jsonify({
+            "statuses_display_order": list(STATUS_DISPLAY_ORDER),
+            "origins": sorted(VALID_ORIGINS),
+            "authors": sorted(VALID_AUTHORS),
+        })
+    except Exception as e:
+        logger.exception("Failed to read projects schema")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.get("/api/projects")
 def api_projects():
-    """List all projects with observation counts."""
+    """List all projects with activity-score-sorted active group.
+
+    Active projects are reordered by an exponentially-decayed activity
+    score (folder mtimes + git commits + project revisions, half-life
+    14 days). Non-active rows keep their canonical order from
+    ``list_projects``. The ``activity_score`` field is added to each
+    active row for downstream UI use.
+    """
     try:
         from work_buddy.projects.store import list_projects
+        from work_buddy.projects.activity import sort_active_by_activity
         projects = list_projects()
+        projects = sort_active_by_activity(projects)
         return jsonify({"projects": projects})
     except Exception as e:
         logger.exception("Failed to list projects")
@@ -1723,8 +1757,14 @@ def api_projects():
 
 @app.get("/api/projects/<slug>")
 def api_project_detail(slug: str):
-    """Get a single project with Hindsight memory recall."""
+    """Get a single project + folder existence flags. Fast path — no Hindsight.
+
+    Memory is loaded async from ``/api/projects/<slug>/memory_items`` so the
+    detail pane renders immediately while the (potentially slow) Hindsight
+    call resolves in the background.
+    """
     try:
+        from pathlib import Path
         from work_buddy.projects.store import get_project
         project = get_project(slug)
         if not project:
@@ -1733,20 +1773,13 @@ def api_project_detail(slug: str):
         # Strip SQLite observations (legacy) — memory comes from Hindsight
         project.pop("observations", None)
 
-        # Recall from Hindsight project bank (cheap embedding search)
-        memory = ""
-        try:
-            from work_buddy.memory.query import recall_project_context
-            memory = recall_project_context(
-                query=f"Current state, recent decisions, and trajectory for {slug}",
-                project_slug=slug,
-                budget="low",
-                max_tokens=2048,
-            )
-        except Exception:
-            logger.debug("Hindsight recall unavailable for %s", slug)
+        # Enrich folders with disk-existence flag for the dashboard UI.
+        for f in project.get("folders", []):
+            try:
+                f["exists"] = bool(Path(f["path"]).exists())
+            except OSError:
+                f["exists"] = False
 
-        project["memory"] = memory or None
         return jsonify(project)
     except Exception as e:
         logger.exception("Failed to get project %s", slug)
@@ -1755,14 +1788,14 @@ def api_project_detail(slug: str):
 
 @app.post("/api/projects/<slug>")
 def api_project_update(slug: str):
-    """Update project identity fields."""
+    """Update project identity fields. Writes an authored revision."""
     blocked = _reject_read_only()
     if blocked:
         return blocked
     data = request.get_json(silent=True) or {}
     try:
         from work_buddy.projects.store import update_project
-        kwargs = {}
+        kwargs: dict[str, Any] = {"author": "user", "change_summary": "dashboard edit"}
         if "name" in data:
             kwargs["name"] = data["name"]
         if "status" in data:
@@ -1770,13 +1803,17 @@ def api_project_update(slug: str):
         if "description" in data:
             kwargs["description"] = data["description"]
 
-        if not kwargs:
+        # Only the audit fields, nothing actually changing — reject early.
+        if set(kwargs) <= {"author", "change_summary"}:
             return jsonify({"error": "No fields to update"}), 400
 
         result = update_project(slug, **kwargs)
         if result is None:
             return jsonify({"error": f"Project '{slug}' not found"}), 404
         return jsonify(result)
+    except ValueError as e:
+        # CHECK-constraint or enum-validation failure from the store.
+        return jsonify({"error": str(e)}), 400
     except Exception as e:
         logger.exception("Failed to update project %s", slug)
         return jsonify({"error": str(e)}), 500
@@ -1797,9 +1834,20 @@ def api_project_observe(slug: str):
         from work_buddy.memory.ingest import retain_project_observation
         from work_buddy.projects.store import touch_project, upsert_project, get_project
 
-        # Ensure project exists in registry
+        # Ensure project exists in registry. If not, register as a
+        # dashboard-authored manual project — this is the soft-create
+        # path the dashboard has always offered. Origin is 'manual'
+        # (it's not a vault-detected canonical), status is 'active'
+        # (the user is recording an observation, so it's clearly
+        # an in-flight project).
         if not get_project(slug):
-            upsert_project(slug, slug, status="inferred")
+            upsert_project(
+                slug, slug,
+                status="active",
+                origin="manual",
+                author="user",
+                change_summary="auto-created via dashboard observation",
+            )
 
         touch_project(slug)
         result = retain_project_observation(
@@ -1813,30 +1861,260 @@ def api_project_observe(slug: str):
         return jsonify({"error": str(e)}), 500
 
 
-@app.get("/api/projects/<slug>/memories")
-def api_project_memories(slug: str):
-    """List Hindsight memories for a project (chronological log)."""
-    limit = request.args.get("limit", 30, type=int)
+# ── Folder mutations ───────────────────────────────────────────────
+
+
+def _resolve_pid_or_404(slug: str):
+    """Resolve a slug (or alias) to a project_id. Returns (pid, error_response).
+
+    On found: ``(pid, None)``. On missing: ``(None, (jsonify, 404))``.
+    """
+    from work_buddy.projects.store import resolve_slug
+    pid = resolve_slug(slug)
+    if pid is None:
+        return None, (jsonify({"error": f"Project '{slug}' not found"}), 404)
+    return pid, None
+
+
+@app.post("/api/projects/<slug>/folders")
+def api_project_add_folder(slug: str):
+    """Attach a folder to a project. Body: {path, archived?}."""
+    blocked = _reject_read_only()
+    if blocked:
+        return blocked
+    data = request.get_json(silent=True) or {}
+    path = (data.get("path") or "").strip()
+    archived = bool(data.get("archived", False))
+    if not path:
+        return jsonify({"error": "path is required"}), 400
+    pid, err = _resolve_pid_or_404(slug)
+    if err:
+        return err
+    try:
+        from work_buddy.projects.store import add_folder
+        result = add_folder(pid, path, archived=archived, author="user",
+                            change_summary="add folder (dashboard)")
+        return jsonify(result)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        logger.exception("Failed to add folder for %s", slug)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.delete("/api/projects/<slug>/folders")
+def api_project_remove_folder(slug: str):
+    """Detach a folder. Body: {path}."""
+    blocked = _reject_read_only()
+    if blocked:
+        return blocked
+    data = request.get_json(silent=True) or {}
+    path = (data.get("path") or "").strip()
+    if not path:
+        return jsonify({"error": "path is required"}), 400
+    pid, err = _resolve_pid_or_404(slug)
+    if err:
+        return err
+    try:
+        from work_buddy.projects.store import remove_folder
+        result = remove_folder(pid, path, author="user",
+                               change_summary="remove folder (dashboard)")
+        return jsonify(result)
+    except Exception as e:
+        logger.exception("Failed to remove folder for %s", slug)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.post("/api/projects/<slug>/folders/archived")
+def api_project_folder_set_archived(slug: str):
+    """Flip a folder's archived flag. Body: {path, archived}."""
+    blocked = _reject_read_only()
+    if blocked:
+        return blocked
+    data = request.get_json(silent=True) or {}
+    path = (data.get("path") or "").strip()
+    if not path:
+        return jsonify({"error": "path is required"}), 400
+    if "archived" not in data:
+        return jsonify({"error": "archived flag is required"}), 400
+    archived = bool(data["archived"])
+    pid, err = _resolve_pid_or_404(slug)
+    if err:
+        return err
+    try:
+        from work_buddy.projects.store import set_folder_archived
+        result = set_folder_archived(
+            pid, path, archived, author="user",
+            change_summary=("archive folder" if archived else "unarchive folder")
+                + " (dashboard)",
+        )
+        return jsonify(result)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 404
+    except Exception as e:
+        logger.exception("Failed to set archived flag for %s", slug)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.patch("/api/projects/<slug>/folders")
+def api_project_rename_folder(slug: str):
+    """Rename a folder path (inline edit). Body: {old_path, new_path}.
+
+    Implemented as remove-then-add inside a single audit pair so the
+    revision history records the intent as two related entries. The
+    archived flag is preserved.
+    """
+    blocked = _reject_read_only()
+    if blocked:
+        return blocked
+    data = request.get_json(silent=True) or {}
+    old_path = (data.get("old_path") or "").strip()
+    new_path = (data.get("new_path") or "").strip()
+    if not old_path or not new_path:
+        return jsonify({"error": "old_path and new_path are required"}), 400
+    if old_path == new_path:
+        return jsonify({"error": "old_path and new_path are identical"}), 400
+    pid, err = _resolve_pid_or_404(slug)
+    if err:
+        return err
+    try:
+        from work_buddy.projects.store import (
+            add_folder, list_folders, remove_folder,
+        )
+        # Preserve the archived flag on the old folder so the rename
+        # doesn't silently flip it.
+        existing = next(
+            (f for f in list_folders(pid) if f["path"] == old_path),
+            None,
+        )
+        if existing is None:
+            return jsonify({"error": f"Folder {old_path!r} not attached"}), 404
+        archived = bool(existing["archived"])
+        remove_folder(pid, old_path, author="user",
+                      change_summary="rename folder — step 1/2 (dashboard)")
+        result = add_folder(pid, new_path, archived=archived, author="user",
+                            change_summary="rename folder — step 2/2 (dashboard)")
+        return jsonify(result)
+    except Exception as e:
+        logger.exception("Failed to rename folder for %s", slug)
+        return jsonify({"error": str(e)}), 500
+
+
+# ── Alias mutations ────────────────────────────────────────────────
+
+
+@app.post("/api/projects/<slug>/aliases")
+def api_project_add_alias(slug: str):
+    """Attach an alias. Body: {alias}."""
+    blocked = _reject_read_only()
+    if blocked:
+        return blocked
+    data = request.get_json(silent=True) or {}
+    alias = (data.get("alias") or "").strip()
+    if not alias:
+        return jsonify({"error": "alias is required"}), 400
+    pid, err = _resolve_pid_or_404(slug)
+    if err:
+        return err
+    try:
+        from work_buddy.projects.store import add_alias
+        result = add_alias(pid, alias, author="user",
+                           change_summary="add alias (dashboard)")
+        return jsonify(result)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        logger.exception("Failed to add alias for %s", slug)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.delete("/api/projects/<slug>/aliases")
+def api_project_remove_alias(slug: str):
+    """Detach an alias. Body: {alias}."""
+    blocked = _reject_read_only()
+    if blocked:
+        return blocked
+    data = request.get_json(silent=True) or {}
+    alias = (data.get("alias") or "").strip()
+    if not alias:
+        return jsonify({"error": "alias is required"}), 400
+    pid, err = _resolve_pid_or_404(slug)
+    if err:
+        return err
+    try:
+        from work_buddy.projects.store import remove_alias
+        result = remove_alias(pid, alias, author="user",
+                              change_summary="remove alias (dashboard)")
+        return jsonify(result)
+    except Exception as e:
+        logger.exception("Failed to remove alias for %s", slug)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.patch("/api/projects/<slug>/aliases")
+def api_project_rename_alias(slug: str):
+    """Rename an alias (inline edit). Body: {old_alias, new_alias}.
+
+    Same remove-then-add pattern as folder rename.
+    """
+    blocked = _reject_read_only()
+    if blocked:
+        return blocked
+    data = request.get_json(silent=True) or {}
+    old_alias = (data.get("old_alias") or "").strip()
+    new_alias = (data.get("new_alias") or "").strip()
+    if not old_alias or not new_alias:
+        return jsonify({"error": "old_alias and new_alias are required"}), 400
+    if old_alias == new_alias:
+        return jsonify({"error": "old_alias and new_alias are identical"}), 400
+    pid, err = _resolve_pid_or_404(slug)
+    if err:
+        return err
+    try:
+        from work_buddy.projects.store import add_alias, remove_alias
+        remove_alias(pid, old_alias, author="user",
+                     change_summary="rename alias — step 1/2 (dashboard)")
+        result = add_alias(pid, new_alias, author="user",
+                           change_summary="rename alias — step 2/2 (dashboard)")
+        return jsonify(result)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        logger.exception("Failed to rename alias for %s", slug)
+        return jsonify({"error": str(e)}), 500
+
+
+
+@app.get("/api/projects/<slug>/memory_items")
+def api_project_memory_items(slug: str):
+    """Chronological list of project memories for the detail pane.
+
+    Uses ``list_recent_project_memories`` — a plain Hindsight list
+    call with alias-union tag filtering. No embedding query, no
+    relevance scoring; we're showing "what's been recorded here,"
+    not "what's most relevant to a prompt." This costs ~0 on the
+    Hindsight side and produces a stable newest-first ordering with
+    real timestamps for the UI.
+
+    Decoupled from ``/api/projects/<slug>`` so the (still non-trivial)
+    Hindsight round-trip doesn't block detail-pane render.
+    """
+    limit = request.args.get("limit", 50, type=int)
     try:
         from work_buddy.memory.query import list_recent_project_memories
-        items = list_recent_project_memories(limit=limit, project=slug)
-        # Normalize to plain dicts for JSON serialization
-        memories = []
-        for m in items:
-            mem = dict(m) if isinstance(m, dict) else {}
-            memories.append({
-                "id": mem.get("id", ""),
-                "text": mem.get("text", ""),
-                "fact_type": mem.get("fact_type", ""),
-                "date": mem.get("date", ""),
-                "context": mem.get("context", ""),
-                "entities": mem.get("entities", ""),
-                "tags": mem.get("tags", []),
-            })
-        return jsonify({"memories": memories, "slug": slug})
+        memory_items = list_recent_project_memories(
+            project=slug, limit=limit,
+        )
+        # Hindsight returns newest first; ensure that's preserved even
+        # if a future change reorders, and tolerate missing dates by
+        # sinking blanks to the bottom.
+        memory_items.sort(
+            key=lambda m: m.get("date") or "", reverse=True,
+        )
+        return jsonify({"memory_items": memory_items, "slug": slug})
     except Exception as e:
-        logger.exception("Failed to list memories for project %s", slug)
-        return jsonify({"memories": [], "error": str(e)})
+        logger.exception("Failed to list project memories for %s", slug)
+        return jsonify({"memory_items": [], "error": str(e)})
 
 
 # ---------------------------------------------------------------------------
