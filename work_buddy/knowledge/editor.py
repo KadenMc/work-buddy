@@ -17,6 +17,7 @@ from typing import Any
 from work_buddy.knowledge.model import (
     PromptUnit,
     _KIND_MAP,
+    _PLACEHOLDER_RE,
     unit_from_dict,
     validate_dag,
 )
@@ -128,6 +129,164 @@ def _invalidate_and_validate() -> list[str]:
     return validate_dag(store)
 
 
+def _extract_placeholder_targets(text: str) -> list[str]:
+    """Return every placeholder target path in *text*, in order.
+
+    Duplicates appear in the returned list as many times as they
+    appear in the source text. Empty / malformed placeholders are
+    dropped. Used by both the editor pre-write check and the
+    validator corpus walk.
+    """
+    targets: list[str] = []
+    if "<<wb:" not in text:
+        return targets
+    for match in _PLACEHOLDER_RE.finditer(text):
+        inner = match.group(1).strip()
+        parts = inner.split()
+        if not parts:
+            continue
+        target_path = parts[0]
+        if target_path:
+            targets.append(target_path)
+    return targets
+
+
+def check_duplicate_placeholders(content_full: str) -> list[dict[str, Any]]:
+    """Find every target path duplicated in *content_full*.
+
+    Returns a list of ``{"placeholder": <path>, "count": <int>}`` —
+    one entry per duplicated target. Empty list means no duplicates.
+
+    This is a HARD-ERROR check, not a hint. There is no legitimate
+    reason to reference the same target twice within a unit: at read
+    time the per-unit-occurrence cap turns every reference after the
+    first into a back-reference marker, so duplicates produce no
+    new content and only cost confusion.
+
+    Used by:
+      * Editor pre-write (``update_unit`` / ``create_unit``) — to
+        reject duplicate-bearing edits before they land on disk.
+      * Validator (``docs_validate``) — to surface duplicates that
+        slipped in via direct JSON edits or other bypass paths.
+
+    The function operates on a raw string so the editor can call it
+    against a *proposed* content_full (not yet written to disk) and
+    the validator can call it against each stored unit's content.
+    """
+    from collections import Counter
+    targets = _extract_placeholder_targets(content_full)
+    counts = Counter(targets)
+    return [
+        {"placeholder": path, "count": count}
+        for path, count in counts.items()
+        if count > 1
+    ]
+
+
+def _scan_placeholder_hints(
+    unit_path: str,
+    store: dict[str, PromptUnit],
+) -> list[dict[str, str]]:
+    """Authoring-time lint for the placeholder-recursion foot-gun.
+
+    Flags plain ``<<wb:Y>>`` placeholders in the just-edited unit when
+    Y's own ``content["full"]`` contains placeholder markup. In that
+    situation the resolver inserts Y's body verbatim — the nested
+    placeholders are left literal, and the reader never sees Y's
+    foundations. Adding ``--recursive`` on the outer reference is
+    usually what the author meant.
+
+    Hints are informational only: the author may have deliberately
+    chosen the shallow form, so this never blocks an edit. The result
+    rides alongside ``dag_errors`` in the editor's response so the
+    authoring agent sees it at the moment of writing, not at some
+    later validate pass.
+
+    Note: duplicate-placeholder detection is NOT a hint — it's a
+    hard error in the editor and a validator check. See
+    ``check_duplicate_placeholders``.
+
+    Mirrors the corpus-wide audit in
+    ``scripts/audit_placeholder_recursion.py``; this is the
+    single-unit, write-time version.
+    """
+    unit = store.get(unit_path)
+    if unit is None:
+        return []
+    full = unit.content.get("full", "")
+    if "<<wb:" not in full:
+        return []
+
+    hints: list[dict[str, str]] = []
+    seen_targets: set[str] = set()
+
+    for match in _PLACEHOLDER_RE.finditer(full):
+        inner = match.group(1).strip()
+        parts = inner.split()
+        if not parts:
+            continue
+        target_path = parts[0]
+        if not target_path:
+            continue
+        if "--recursive" in parts[1:]:
+            # Author already opted in to transitive resolution.
+            continue
+        if target_path in seen_targets:
+            continue
+
+        target = store.get(target_path)
+        if target is None:
+            # Broken refs aren't this lint's problem — the resolver's
+            # not-found comment surfaces them downstream.
+            continue
+        if "<<wb:" not in target.content.get("full", ""):
+            continue
+
+        seen_targets.add(target_path)
+        hints.append({
+            "hint": "placeholder_recursion",
+            "placeholder": target_path,
+            "message": (
+                f"Plain placeholder targets {target_path!r}, which itself "
+                "contains placeholders. Add --recursive if you want them "
+                "expanded; leave it plain if you only want this unit's "
+                "raw body inlined."
+            ),
+        })
+
+    return hints
+
+
+def _duplicate_error_response(
+    path: str,
+    duplicates: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Build the editor's rejection payload for duplicate placeholders.
+
+    Surfaces every duplicated target with its count so the author
+    knows exactly what to remove. Returned in place of the normal
+    success dict so the write does NOT land on disk.
+    """
+    details = "; ".join(
+        f"{d['placeholder']!r} appears {d['count']} times"
+        for d in duplicates
+    )
+    return {
+        "error": "placeholder_duplicate",
+        "path": path,
+        "duplicates": duplicates,
+        "message": (
+            f"Rejected: {details}. Each placeholder may appear at most "
+            "once per unit — at read time the per-unit-occurrence cap "
+            "renders subsequent references as back-reference markers, "
+            "so duplicates add zero content. Remove the extras and "
+            "re-submit. (When the materialization workflow lands, "
+            "the buffer file will persist on rejection so you can "
+            "fix in place without re-sending the whole payload.)"
+        ),
+    }
+
+
 # ---------------------------------------------------------------------------
 # CRUD operations
 # ---------------------------------------------------------------------------
@@ -165,6 +324,13 @@ def create_unit(
 
     if kind not in _KIND_MAP:
         return {"error": f"Invalid kind '{kind}'. Must be one of: {', '.join(_KIND_MAP)}"}
+
+    # Hard reject: duplicate placeholders are not a legitimate
+    # authorial choice. Check BEFORE writing to disk so the unit
+    # never lands in a broken state.
+    duplicates = check_duplicate_placeholders(content_full or "")
+    if duplicates:
+        return _duplicate_error_response(path, duplicates)
 
     # Build unit data
     unit_data: dict[str, Any] = {
@@ -246,12 +412,14 @@ def create_unit(
 
     # Validate
     errors = _invalidate_and_validate()
+    hints = _scan_placeholder_hints(path, load_store())
 
     return {
         "status": "created",
         "path": path,
         "file": target_file.name,
         "dag_errors": errors,
+        "hints": hints,
     }
 
 
@@ -283,6 +451,25 @@ def update_unit(
     # Capture all field names before popping shorthand keys
     all_updated_fields = list(updates.keys())
 
+    # Hard reject: duplicate placeholders are not a legitimate
+    # authorial choice. Compute the post-update content_full and
+    # check BEFORE writing to disk. Two cases:
+    #   1. Update touches content_full → check the proposed value.
+    #   2. Update doesn't touch content_full → no new duplicates
+    #      can appear from this edit; skip the check (the validator
+    #      catches any pre-existing duplicates separately).
+    proposed_full: str | None = None
+    if "content_full" in updates:
+        proposed_full = updates["content_full"]
+    elif "content" in updates and isinstance(updates["content"], dict):
+        # Deep-merge case: caller passed {"content": {"full": "..."}}.
+        if "full" in updates["content"]:
+            proposed_full = updates["content"]["full"]
+    if proposed_full is not None:
+        duplicates = check_duplicate_placeholders(proposed_full)
+        if duplicates:
+            return _duplicate_error_response(path, duplicates)
+
     # Handle shorthand keys
     if "content_full" in updates:
         unit_data.setdefault("content", {})["full"] = updates.pop("content_full")
@@ -300,6 +487,7 @@ def update_unit(
     _write_json_file(target_file, file_data)
 
     errors = _invalidate_and_validate()
+    hints = _scan_placeholder_hints(path, load_store())
 
     return {
         "status": "updated",
@@ -307,6 +495,7 @@ def update_unit(
         "file": target_file.name,
         "updated_fields": all_updated_fields,
         "dag_errors": errors,
+        "hints": hints,
     }
 
 

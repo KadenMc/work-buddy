@@ -16,8 +16,12 @@ The DAG structure (parents/children) enables hierarchical navigation. Multi-pare
 is supported and intended: a subsystem may live at one path for navigation and
 declare additional parent systems via ``parents``.
 
-Context chaining (context_before/context_after) enables automatic content
-inclusion without duplication — use sparingly for genuine shared foundations.
+Cross-unit content reuse goes through inline ``<<wb:path>>`` placeholders
+in ``content["full"]`` (see ``_resolve_placeholders``). The earlier
+``context_before`` / ``context_after`` chain mechanism was retired in
+favour of placeholders, which give authors per-reference control over
+recursion. Loaders silently ignore stale ``context_before`` /
+``context_after`` keys in store JSON; the resolver no longer reads them.
 """
 
 from __future__ import annotations
@@ -43,6 +47,88 @@ matched individually rather than swallowed into one span.
 """
 
 
+# Recursion-mode contract surfaced through ``agent_docs``:
+#
+# * ``"default"`` — each placeholder honours its own ``--recursive`` flag.
+#   This is the historical, author-controlled behaviour.
+# * ``"all"`` — every placeholder expands transitively, regardless of the
+#   per-placeholder flag. Bounded by ``_RECURSIVE_ALL_SIZE_CAP`` so a
+#   pathological chain can't balloon the response.
+# * ``"none"`` — every placeholder is preserved literally (``<<wb:...>>``
+#   text). Useful when an authoring agent wants to read or edit a unit
+#   without inlined foundations interfering.
+_RECURSIVE_MODES = ("default", "all", "none")
+
+# Three orthogonal safety mechanisms layer naturally:
+#
+# 1. ``_seen: set[str]`` per-unit-occurrence cap — each unit appears at
+#    most once per top-level resolution. Catches diamond graphs where a
+#    foundation unit is reachable through multiple branches. ALWAYS on.
+# 2. ``max_depth`` — bounds recursion depth. Configurable. Default
+#    ``None`` in ``"default"`` mode (unlimited; preserves historical
+#    behaviour), default 10 in ``"all"`` mode. Catches genuinely deep
+#    linear chains.
+# 3. ``_RECURSIVE_ALL_SIZE_CAP`` byte budget — ultimate backstop in
+#    ``"all"`` mode. Catches anything depth + occurrence missed.
+
+_RECURSIVE_ALL_SIZE_CAP = 100_000  # bytes of expanded output before truncation
+_DEFAULT_MAX_DEPTH_FOR_ALL_MODE = 10  # depth cap default when mode == "all"
+
+_TRUNCATION_MARKER = (
+    f"<!-- wb: placeholder expansion truncated at "
+    f"{_RECURSIVE_ALL_SIZE_CAP // 1000}KB cap -->"
+)
+_DEPTH_LIMIT_MARKER_TEMPLATE = (
+    "<!-- wb: placeholder expansion truncated at depth {depth} -->"
+)
+_BACK_REFERENCE_MARKER_TEMPLATE = (
+    "<!-- wb: {path} already expanded above -->"
+)
+
+
+def _new_budget(recursive_mode: str) -> list[int] | None:
+    """Return a fresh mutable budget counter for top-level expansion.
+
+    A list-of-one int is used so the same counter can be shared (and
+    decremented) across the recursive call tree without threading a
+    return value through every helper.
+
+    Only ``"all"`` mode is bounded — the historical ``"default"`` mode is
+    unchanged, and ``"none"`` never recurses so a cap is moot.
+    """
+    if recursive_mode == "all":
+        return [_RECURSIVE_ALL_SIZE_CAP]
+    return None
+
+
+def _resolve_max_depth(
+    recursive_mode: str,
+    max_depth: int | None,
+) -> int | None:
+    """Pick the effective depth cap given the mode and caller override.
+
+    - Caller passes ``max_depth=-1`` (or ``None``) to mean "use the
+      mode's default."
+    - In ``"default"`` mode the mode-default is ``None`` (unlimited).
+    - In ``"all"`` mode the mode-default is
+      ``_DEFAULT_MAX_DEPTH_FOR_ALL_MODE`` — bounds the worst case
+      without surprising callers who passed ``recursive="all"`` and
+      assumed it was already bounded.
+    - In ``"none"`` mode the resolver never recurses, so any depth
+      value is irrelevant.
+
+    Callers can pass any non-negative int to override; ``0`` means "do
+    not recurse at all" (effectively the same as ``recursive="none"``).
+    Negative values (other than the ``-1`` sentinel) are clamped to
+    ``None`` to fail open rather than silently surprise.
+    """
+    if max_depth is None or max_depth < 0:
+        if recursive_mode == "all":
+            return _DEFAULT_MAX_DEPTH_FOR_ALL_MODE
+        return None  # unlimited
+    return max_depth
+
+
 class _PlaceholderParser(argparse.ArgumentParser):
     """Argparse parser that raises instead of printing/exiting on error."""
 
@@ -66,19 +152,53 @@ def _build_placeholder_parser() -> _PlaceholderParser:
 def _resolve_placeholders(
     text: str,
     store: dict[str, KnowledgeUnit],
+    *,
+    recursive_mode: str = "default",
+    max_depth: int | None = None,
+    _budget: list[int] | None = None,
+    _depth: int = 0,
+    _seen: set[str] | None = None,
 ) -> str:
     """Replace ``<<wb:path>>`` / ``<<wb:path --recursive>>`` in *text*.
 
-    - Default: inserts the referenced unit's raw ``content["full"]``.
-    - ``--recursive``: calls ``_resolve_full_content()`` on the referenced
-      unit, which transitively resolves its own placeholders and context
-      chains.
-    - Missing refs: placeholder replaced with an HTML comment.
-    - Cycles are prevented at load time by ``validate_dag()``, so no
-      runtime tracking is needed.
+    - ``recursive_mode="default"``: each placeholder honours its own
+      ``--recursive`` flag. Plain inserts raw
+      ``content["full"]``; flagged calls ``_resolve_full_content()`` on
+      the referenced unit, which transitively resolves *its* placeholders.
+    - ``recursive_mode="all"``: every placeholder expands transitively,
+      regardless of per-placeholder flag.
+    - ``recursive_mode="none"``: every placeholder is left literal
+      (``<<wb:...>>``) — useful for editing/inspection where embedded
+      foundations would obscure the unit's own prose.
+
+    Bounded by three layered safety mechanisms (see module-level docs):
+    per-unit-occurrence cap via ``_seen`` (always on), depth cap via
+    ``max_depth`` (configurable), and a size budget via ``_budget``
+    (``"all"`` mode only). Hitting any of them returns an inline marker
+    so the reader sees what was elided.
+
+    Missing refs are surfaced as ``<!-- wb: path not found -->`` and are
+    never treated as expansion bytes.
+
+    Cycles are prevented at load time by ``validate_dag()``, so no
+    runtime cycle tracking is needed.
     """
     if "<<wb:" not in text:
         return text
+
+    if recursive_mode == "none":
+        # Leave every placeholder literal. Saves the argparse pass.
+        return text
+
+    # ``max_depth=0`` is the caller's way to say "no recursion at all" —
+    # equivalent to ``recursive="none"`` but expressed through depth.
+    # We still surface missing refs and run argparse so callers using
+    # ``recursive="default", max_depth=0`` get the same shape as legacy
+    # plain-only resolution.
+    depth_exhausted = max_depth is not None and _depth >= max_depth
+
+    if _seen is None:
+        _seen = set()
 
     def _replace(match: re.Match) -> str:
         inner = match.group(1).strip()
@@ -99,10 +219,59 @@ def _resolve_placeholders(
         if ref is None:
             return f"<!-- wb: {path} not found -->"
 
-        if args.recursive:
-            content = ref._resolve_full_content(store)
+        # Per-unit-occurrence cap (always on). The first appearance of
+        # ``path`` in this expansion tree gets the full content; every
+        # subsequent reference — through any branch — gets a
+        # back-reference marker. Catches diamond graphs cheaply.
+        if path in _seen:
+            return _BACK_REFERENCE_MARKER_TEMPLATE.format(path=path)
+
+        # Size-budget gate (``"all"`` mode only). If the running total
+        # of expanded output has already crossed the cap, stop further
+        # expansions cold.
+        if _budget is not None and _budget[0] <= 0:
+            return _TRUNCATION_MARKER
+
+        # Decide whether to recurse on this particular ref.
+        wants_recurse = (
+            recursive_mode == "all"
+            or (recursive_mode == "default" and args.recursive)
+        )
+
+        # Depth gate. If recursion is wanted but we've already hit the
+        # depth cap, emit a depth-limit marker instead of expanding.
+        # ``max_depth=0`` falls through here as well — first
+        # placeholder pass at depth 0 sees ``_depth >= max_depth``
+        # immediately and emits the marker.
+        if wants_recurse and depth_exhausted:
+            return _DEPTH_LIMIT_MARKER_TEMPLATE.format(depth=_depth)
+
+        # Pre-charge the budget against the raw body we're about to
+        # inline. Doing this BEFORE descent means deeper recursive
+        # levels see the depleted budget and short-circuit cleanly.
+        # If we deferred the charge until after the recursive call,
+        # the outermost frame would always see the full budget — the
+        # cap would never fire on deep chains.
+        raw = ref.content.get("full", ref.content.get("summary", ""))
+        if _budget is not None:
+            _budget[0] -= len(raw)
+
+        # Mark this unit as seen BEFORE descending — so a self-cycle
+        # via deep recursion (already blocked at load time, but
+        # belt-and-suspenders) is also caught at runtime.
+        _seen.add(path)
+
+        if wants_recurse:
+            content = ref._resolve_full_content(
+                store,
+                recursive_mode=recursive_mode,
+                max_depth=max_depth,
+                _budget=_budget,
+                _depth=_depth + 1,
+                _seen=_seen,
+            )
         else:
-            content = ref.content.get("full", ref.content.get("summary", ""))
+            content = raw
 
         if not content:
             return f"<!-- wb: {path} empty -->"
@@ -133,13 +302,6 @@ class KnowledgeUnit:
     parents: list[str] = field(default_factory=list)
     children: list[str] = field(default_factory=list)
 
-    # Context chaining — automatic content inclusion at depth="full".
-    # Referenced units' content is prepended (before) or appended (after).
-    # Non-recursive: chains do not transitively resolve their own chains.
-    # Use sparingly for genuine shared foundations, not loose associations.
-    context_before: list[str] = field(default_factory=list)
-    context_after: list[str] = field(default_factory=list)
-
     # Dev notes — development-facing documentation that only surfaces when
     # the agent is in dev mode or explicitly requests dev=True.
     dev_notes: str = ""
@@ -152,18 +314,31 @@ class KnowledgeUnit:
         depth: str = "summary",
         store: dict[str, KnowledgeUnit] | None = None,
         dev: bool = False,
+        *,
+        recursive_mode: str = "default",
+        max_depth: int | None = None,
     ) -> dict[str, Any]:
         """Return unit data at the requested depth.
 
         - "index": name + description + kind + children (for navigation)
         - "summary": above + content["summary"] + kind-specific fields
-        - "full": above + content["full"] + all fields, with chain resolution
+        - "full": above + content["full"] + all fields, with placeholder resolution
 
         Args:
             depth: One of "index", "summary", "full".
-            store: Unit store dict for resolving context chains at depth="full".
-                   When None, chains are returned as path lists without resolution.
+            store: Unit store dict for resolving ``<<wb:path>>`` placeholders
+                   at ``depth="full"``. When None, content is returned with
+                   placeholders unresolved (used by the bare full-index path).
             dev: When True, include dev_notes in full-depth output.
+            recursive_mode: Placeholder recursion control at ``depth="full"``.
+                One of ``"default"`` (per-flag), ``"all"`` (force transitive
+                expansion, capped), or ``"none"`` (preserve literal markup).
+                See ``_RECURSIVE_MODES`` for the contract. Ignored at
+                ``depth="index"`` / ``"summary"`` and when ``store is None``.
+            max_depth: Cap on recursion depth at ``depth="full"``. ``None``
+                / ``-1`` selects the mode default (unlimited in ``default``
+                mode, 10 in ``all`` mode). ``0`` disables recursion entirely.
+                Positive integers cap at exactly that depth.
         """
         base: dict[str, Any] = {
             "path": self.path,
@@ -177,20 +352,12 @@ class KnowledgeUnit:
 
         if depth == "index":
             base["tags"] = self.tags
-            if self.context_before:
-                base["context_before"] = self.context_before
-            if self.context_after:
-                base["context_after"] = self.context_after
             return base
 
         # summary and full both include kind-specific fields
         base["tags"] = self.tags
         base["aliases"] = self.aliases
         base["requires"] = self.requires
-        if self.context_before:
-            base["context_before"] = self.context_before
-        if self.context_after:
-            base["context_after"] = self.context_after
         base.update(self._kind_fields())
 
         if depth == "summary":
@@ -198,7 +365,11 @@ class KnowledgeUnit:
             if self.dev_notes:
                 base["has_dev_notes"] = True
         else:  # full
-            base["content"] = self._resolve_full_content(store)
+            base["content"] = self._resolve_full_content(
+                store,
+                recursive_mode=recursive_mode,
+                max_depth=max_depth,
+            )
             if dev and self.dev_notes:
                 base["dev_notes"] = self.dev_notes
 
@@ -207,53 +378,68 @@ class KnowledgeUnit:
     def _resolve_full_content(
         self,
         store: dict[str, KnowledgeUnit] | None,
+        *,
+        recursive_mode: str = "default",
+        max_depth: int | None = None,
+        _budget: list[int] | None = None,
+        _depth: int = 0,
+        _seen: set[str] | None = None,
     ) -> str:
-        """Build full content with context chain + placeholder resolution.
+        """Return ``content["full"]`` with inline placeholders resolved.
 
-        Resolution order:
-        1. Prepend ``context_before`` references (non-recursive).
-        2. Own content with ``<<wb:...>>`` placeholders resolved inline.
-        3. Append ``context_after`` references (non-recursive).
+        When *store* is None, returns the unit's own content unresolved
+        (used by the bare full-index path which doesn't have a store
+        handle).
 
-        When *store* is None, returns the unit's own content only (chains
-        and placeholders listed as metadata in tier output, not resolved).
+        Three safety knobs (see module-level docs):
+
+        * ``recursive_mode`` — which placeholders to follow.
+        * ``max_depth`` — depth cap. Top-level callers either pass
+          ``None`` / ``-1`` to take the mode default, or any non-negative
+          int to override.
+        * ``_budget`` — shared mutable counter for the ``"all"`` mode
+          size cap. Top-level callers pass ``None`` and we lazily
+          allocate the right value via ``_new_budget``.
+
+        ``_depth`` and ``_seen`` are internal threading helpers that
+        track recursion depth and per-unit-occurrence across the call
+        tree. Top-level callers should leave them at their defaults.
 
         Cycles are prevented at load time by ``validate_dag()`` — no
         runtime tracking is needed here.
+
+        The retired ``context_before`` / ``context_after`` mechanism
+        used to splice referenced units' content as ``--- context
+        from: X ---`` blocks before and after this body; placeholders
+        replaced it.
         """
         own = self.content.get("full", self.content.get("summary", ""))
 
         if store is None:
             return own
 
-        # Resolve inline placeholders in own content
-        own = _resolve_placeholders(own, store)
+        # Lazy-init shared state on the top-level call. Recursive
+        # descendants inherit the existing counters so each safety
+        # knob applies across the whole expansion tree, not per-level.
+        if _budget is None:
+            _budget = _new_budget(recursive_mode)
+        if _seen is None:
+            # The unit being resolved counts as already-emitted; if
+            # something downstream re-references it, the back-ref
+            # marker fires instead of a (cycle-blocked) loop.
+            _seen = {self.path}
 
-        if not self.context_before and not self.context_after:
-            return own
+        effective_max_depth = _resolve_max_depth(recursive_mode, max_depth)
 
-        parts: list[str] = []
-
-        # Prepend context_before
-        for ref_path in self.context_before:
-            ref = store.get(ref_path)
-            if ref is not None:
-                ref_content = ref.content.get("full", ref.content.get("summary", ""))
-                if ref_content:
-                    parts.append(f"--- context from: {ref_path} ---\n{ref_content}")
-
-        # Own content (placeholders already resolved)
-        parts.append(own)
-
-        # Append context_after
-        for ref_path in self.context_after:
-            ref = store.get(ref_path)
-            if ref is not None:
-                ref_content = ref.content.get("full", ref.content.get("summary", ""))
-                if ref_content:
-                    parts.append(f"--- context from: {ref_path} ---\n{ref_content}")
-
-        return "\n\n".join(parts)
+        return _resolve_placeholders(
+            own,
+            store,
+            recursive_mode=recursive_mode,
+            max_depth=effective_max_depth,
+            _budget=_budget,
+            _depth=_depth,
+            _seen=_seen,
+        )
 
     def _kind_fields(self) -> dict[str, Any]:
         """Override in subclasses to add kind-specific fields to tier output."""
@@ -290,10 +476,6 @@ class KnowledgeUnit:
             d["parents"] = self.parents
         if self.children:
             d["children"] = self.children
-        if self.context_before:
-            d["context_before"] = self.context_before
-        if self.context_after:
-            d["context_after"] = self.context_after
         if self.dev_notes:
             d["dev_notes"] = self.dev_notes
         # Add kind-specific fields
@@ -634,7 +816,10 @@ def unit_from_dict(path: str, data: dict[str, Any]) -> KnowledgeUnit:
     kind = data.get("kind", "system")
     cls = _KIND_MAP.get(kind, PromptUnit)
 
-    # Extract base fields (shared by all unit types)
+    # Extract base fields (shared by all unit types).
+    # ``context_before`` / ``context_after`` were retired; the loader
+    # silently drops them if a JSON file still has the keys so we
+    # don't have to back-fill every legacy store file in one pass.
     base_kwargs: dict[str, Any] = {
         "path": path,
         "name": data.get("name", path.rsplit("/", 1)[-1]),
@@ -645,8 +830,6 @@ def unit_from_dict(path: str, data: dict[str, Any]) -> KnowledgeUnit:
         "requires": data.get("requires", []),
         "parents": data.get("parents", []),
         "children": data.get("children", []),
-        "context_before": data.get("context_before", []),
-        "context_after": data.get("context_after", []),
         "dev_notes": data.get("dev_notes", ""),
     }
 
@@ -720,7 +903,6 @@ def validate_dag(units: dict[str, KnowledgeUnit]) -> list[str]:
 
     Builds a networkx DiGraph with edges from:
     - parent → child relationships
-    - context_before / context_after references
     - ``<<wb:path>>`` inline placeholder references in content
 
     Also warns (non-fatal) about broken references.
@@ -758,19 +940,6 @@ def validate_dag(units: dict[str, KnowledgeUnit]) -> list[str]:
             if parent not in units:
                 errors.append(f"{path}: parent '{parent}' not found in store")
             # parent→child edges are already added from the parent side
-
-        # Context chain edges
-        for ref in unit.context_before:
-            if ref not in units:
-                errors.append(f"{path}: context_before '{ref}' not found (may be cross-scope)")
-            else:
-                g.add_edge(path, ref)
-
-        for ref in unit.context_after:
-            if ref not in units:
-                errors.append(f"{path}: context_after '{ref}' not found (may be cross-scope)")
-            else:
-                g.add_edge(path, ref)
 
         # Inline placeholder edges
         for ref in _extract_placeholder_refs(unit.content):

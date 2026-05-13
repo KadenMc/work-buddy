@@ -1,4 +1,189 @@
 {
+  "contracts/active_contracts": {
+    "kind": "capability",
+    "name": "Active Contracts",
+    "description": "List all contracts with status=active",
+    "capability_name": "active_contracts",
+    "category": "contracts",
+    "aliases": [
+      "current commitments",
+      "what's active",
+      "active work",
+      "ongoing contracts",
+      "open deliverables",
+      "in-progress papers",
+      "live contracts"
+    ],
+    "requires": [
+      "obsidian"
+    ],
+    "tags": [
+      "contracts",
+      "active"
+    ],
+    "parents": [
+      "contracts"
+    ]
+  },
+  "journal/activity_timeline": {
+    "kind": "capability",
+    "name": "Activity Timeline",
+    "description": "Infer recent activity from journal entries and optionally deeper signals. Returns a structured timeline with events, gaps, and relative timestamps. Use for understanding what happened during a time window.",
+    "capability_name": "activity_timeline",
+    "category": "journal",
+    "aliases": [
+      "what happened recently",
+      "recent activity",
+      "activity timeline",
+      "what have I been doing",
+      "infer activity",
+      "activity digest",
+      "journal entries structured"
+    ],
+    "parameters": {
+      "since": {
+        "type": "str",
+        "description": "ISO datetime or relative shorthand (e.g. '2h', '1d', '30m')",
+        "required": true
+      },
+      "until": {
+        "type": "str",
+        "description": "ISO datetime. Default: now.",
+        "required": false
+      },
+      "deep": {
+        "type": "bool",
+        "description": "Also collect git/chat/vault signals (default: false)",
+        "required": false
+      },
+      "target_date": {
+        "type": "str",
+        "description": "Journal date YYYY-MM-DD (default: inferred from since)",
+        "required": false
+      }
+    },
+    "requires": [
+      "obsidian"
+    ],
+    "tags": [
+      "journal",
+      "activity",
+      "timeline"
+    ],
+    "parents": [
+      "journal"
+    ]
+  },
+  "context/agent_docs": {
+    "kind": "capability",
+    "name": "Agent Docs",
+    "description": "Search and navigate all agent documentation: directions, system docs, capabilities, and workflows. Supports exact path lookup, subtree browsing, and natural language search with hierarchical progressive disclosure.",
+    "capability_name": "agent_docs",
+    "category": "context",
+    "aliases": [
+      "documentation",
+      "knowledge",
+      "docs",
+      "how does",
+      "what is",
+      "help",
+      "guide",
+      "reference",
+      "manual",
+      "agent docs",
+      "self documentation",
+      "how to",
+      "find capability",
+      "what can I do"
+    ],
+    "parameters": {
+      "query": {
+        "type": "str",
+        "description": "Natural language search. Empty + no path/scope = full index.",
+        "required": false
+      },
+      "path": {
+        "type": "str",
+        "description": "Exact unit path for direct lookup (e.g. 'journal/running-notes', 'tasks/triage')",
+        "required": false
+      },
+      "scope": {
+        "type": "str",
+        "description": "Path prefix to filter to a subtree (e.g. 'tasks/', 'obsidian/')",
+        "required": false
+      },
+      "kind": {
+        "type": "str",
+        "description": "Filter by kind: directions, capability, workflow, system, service, integration, reference, concept",
+        "required": false
+      },
+      "depth": {
+        "type": "str",
+        "description": "Content depth: 'index' (navigation), 'summary' (default), 'full' (complete)",
+        "required": false
+      },
+      "top_n": {
+        "type": "int",
+        "description": "Max search results (default 8)",
+        "required": false
+      },
+      "dev": {
+        "type": "bool",
+        "description": "Include dev_notes in full-depth results. Auto-set when session dev mode is active.",
+        "required": false
+      },
+      "recursive": {
+        "type": "str",
+        "description": "Placeholder recursion at depth='full'. 'default' (per-placeholder --recursive flag wins), 'all' (force transitive expansion, capped at ~100KB), 'none' (preserve <<wb:...>> markup literally; useful for editing). Affects output only — search corpus uses 'default'.",
+        "required": false
+      },
+      "max_depth": {
+        "type": "int",
+        "description": "Cap on placeholder recursion depth at depth='full'. -1 (default) = mode default (unlimited in 'default' mode, 10 in 'all' mode). 0 = no recursion (same as recursive='none' in effect). Positive ints set an exact cap. Layers with the size budget and the per-unit-occurrence cap.",
+        "required": false
+      }
+    },
+    "tags": [
+      "context",
+      "agent",
+      "docs"
+    ],
+    "parents": [
+      "context"
+    ]
+  },
+  "context/agent_docs_rebuild": {
+    "kind": "capability",
+    "name": "Agent Docs Rebuild",
+    "description": "Reload the knowledge store from disk. Use after editing store JSON files or after registry changes.",
+    "capability_name": "agent_docs_rebuild",
+    "category": "context",
+    "aliases": [
+      "reload docs",
+      "rebuild knowledge",
+      "refresh store",
+      "reload knowledge store",
+      "pick up knowledge edits",
+      "refresh agent docs",
+      "reindex documentation"
+    ],
+    "parameters": {
+      "force": {
+        "type": "bool",
+        "description": "Force full reload (default false)",
+        "required": false
+      }
+    },
+    "tags": [
+      "context",
+      "agent",
+      "docs",
+      "rebuild"
+    ],
+    "parents": [
+      "context"
+    ]
+  },
   "artifacts/artifact_cleanup": {
     "kind": "capability",
     "name": "Artifact Cleanup",
@@ -241,182 +426,6 @@
     ],
     "parents": [
       "artifacts"
-    ]
-  },
-  "artifacts/commit_record": {
-    "kind": "capability",
-    "name": "Commit Record",
-    "description": "Record structured commit metadata (hash, files, test results, knowledge units updated) as an artifact. Called after a successful git commit to enable enriched commit cards in the dashboard.",
-    "capability_name": "commit_record",
-    "category": "artifacts",
-    "aliases": [
-      "record commit",
-      "commit metadata",
-      "save commit info",
-      "log commit",
-      "commit artifact"
-    ],
-    "parameters": {
-      "commit_hash": {
-        "type": "str",
-        "description": "Git commit hash (7+ chars)",
-        "required": true
-      },
-      "message": {
-        "type": "str",
-        "description": "Commit message",
-        "required": true
-      },
-      "branch": {
-        "type": "str",
-        "description": "Branch name",
-        "required": false
-      },
-      "files_changed": {
-        "type": "str",
-        "description": "Comma-separated file paths",
-        "required": false
-      },
-      "tests_run": {
-        "type": "str",
-        "description": "Comma-separated test file names",
-        "required": false
-      },
-      "tests_passed": {
-        "type": "int",
-        "description": "Number of tests passed",
-        "required": false
-      },
-      "tests_failed": {
-        "type": "int",
-        "description": "Number of tests failed",
-        "required": false
-      },
-      "knowledge_units_updated": {
-        "type": "str",
-        "description": "Comma-separated knowledge store paths updated",
-        "required": false
-      },
-      "summary": {
-        "type": "str",
-        "description": "1-2 sentence summary of the commit",
-        "required": false
-      },
-      "agent_session_id": {
-        "type": "str",
-        "description": "Session ID (auto-injected by gateway)",
-        "required": false
-      }
-    },
-    "mutates_state": true,
-    "retry_policy": "replay",
-    "tags": [
-      "artifacts",
-      "commit",
-      "record"
-    ],
-    "parents": [
-      "artifacts"
-    ]
-  },
-  "context/agent_docs": {
-    "kind": "capability",
-    "name": "Agent Docs",
-    "description": "Search and navigate all agent documentation: directions, system docs, capabilities, and workflows. Supports exact path lookup, subtree browsing, and natural language search with hierarchical progressive disclosure.",
-    "capability_name": "agent_docs",
-    "category": "context",
-    "aliases": [
-      "documentation",
-      "knowledge",
-      "docs",
-      "how does",
-      "what is",
-      "help",
-      "guide",
-      "reference",
-      "manual",
-      "agent docs",
-      "self documentation",
-      "how to",
-      "find capability",
-      "what can I do"
-    ],
-    "parameters": {
-      "query": {
-        "type": "str",
-        "description": "Natural language search. Empty + no path/scope = full index.",
-        "required": false
-      },
-      "path": {
-        "type": "str",
-        "description": "Exact unit path for direct lookup (e.g. 'journal/running-notes', 'tasks/triage')",
-        "required": false
-      },
-      "scope": {
-        "type": "str",
-        "description": "Path prefix to filter to a subtree (e.g. 'tasks/', 'obsidian/')",
-        "required": false
-      },
-      "kind": {
-        "type": "str",
-        "description": "Filter by kind: directions, capability, workflow, system, service, integration, reference, concept",
-        "required": false
-      },
-      "depth": {
-        "type": "str",
-        "description": "Content depth: 'index' (navigation), 'summary' (default), 'full' (complete)",
-        "required": false
-      },
-      "top_n": {
-        "type": "int",
-        "description": "Max search results (default 8)",
-        "required": false
-      },
-      "dev": {
-        "type": "bool",
-        "description": "Include dev_notes in full-depth results. Auto-set when session dev mode is active.",
-        "required": false
-      }
-    },
-    "tags": [
-      "context",
-      "agent",
-      "docs"
-    ],
-    "parents": [
-      "context"
-    ]
-  },
-  "context/agent_docs_rebuild": {
-    "kind": "capability",
-    "name": "Agent Docs Rebuild",
-    "description": "Reload the knowledge store from disk. Use after editing store JSON files or after registry changes.",
-    "capability_name": "agent_docs_rebuild",
-    "category": "context",
-    "aliases": [
-      "reload docs",
-      "rebuild knowledge",
-      "refresh store",
-      "reload knowledge store",
-      "pick up knowledge edits",
-      "refresh agent docs",
-      "reindex documentation"
-    ],
-    "parameters": {
-      "force": {
-        "type": "bool",
-        "description": "Force full reload (default false)",
-        "required": false
-      }
-    },
-    "tags": [
-      "context",
-      "agent",
-      "docs",
-      "rebuild"
-    ],
-    "parents": [
-      "context"
     ]
   },
   "context/chrome_activity": {
@@ -791,6 +800,360 @@
     ],
     "parents": [
       "context"
+    ]
+  },
+  "status/claude_code_usage_scan": {
+    "kind": "capability",
+    "name": "Claude Code Usage Scan",
+    "description": "Scan Claude Code's local transcript JSONLs into the cost cache (~/.claude/projects/**/*.jsonl). Incremental by default. Use full_rebuild=true after a pricing or schema change.",
+    "capability_name": "claude_code_usage_scan",
+    "category": "llm",
+    "aliases": [
+      "claude usage",
+      "claude code usage",
+      "transcript scan",
+      "ingest claude code activity",
+      "rescan costs"
+    ],
+    "parameters": {
+      "full_rebuild": {
+        "type": "bool",
+        "description": "Drop and rebuild the cache (default false).",
+        "required": false
+      }
+    },
+    "mutates_state": true,
+    "retry_policy": "manual",
+    "tags": [
+      "llm",
+      "claude",
+      "code",
+      "usage",
+      "scan"
+    ],
+    "parents": [
+      "status"
+    ]
+  },
+  "artifacts/commit_record": {
+    "kind": "capability",
+    "name": "Commit Record",
+    "description": "Record structured commit metadata (hash, files, test results, knowledge units updated) as an artifact. Called after a successful git commit to enable enriched commit cards in the dashboard.",
+    "capability_name": "commit_record",
+    "category": "artifacts",
+    "aliases": [
+      "record commit",
+      "commit metadata",
+      "save commit info",
+      "log commit",
+      "commit artifact"
+    ],
+    "parameters": {
+      "commit_hash": {
+        "type": "str",
+        "description": "Git commit hash (7+ chars)",
+        "required": true
+      },
+      "message": {
+        "type": "str",
+        "description": "Commit message",
+        "required": true
+      },
+      "branch": {
+        "type": "str",
+        "description": "Branch name",
+        "required": false
+      },
+      "files_changed": {
+        "type": "str",
+        "description": "Comma-separated file paths",
+        "required": false
+      },
+      "tests_run": {
+        "type": "str",
+        "description": "Comma-separated test file names",
+        "required": false
+      },
+      "tests_passed": {
+        "type": "int",
+        "description": "Number of tests passed",
+        "required": false
+      },
+      "tests_failed": {
+        "type": "int",
+        "description": "Number of tests failed",
+        "required": false
+      },
+      "knowledge_units_updated": {
+        "type": "str",
+        "description": "Comma-separated knowledge store paths updated",
+        "required": false
+      },
+      "summary": {
+        "type": "str",
+        "description": "1-2 sentence summary of the commit",
+        "required": false
+      },
+      "agent_session_id": {
+        "type": "str",
+        "description": "Session ID (auto-injected by gateway)",
+        "required": false
+      }
+    },
+    "mutates_state": true,
+    "retry_policy": "replay",
+    "tags": [
+      "artifacts",
+      "commit",
+      "record"
+    ],
+    "parents": [
+      "artifacts"
+    ]
+  },
+  "notifications/consent/consent_grant": {
+    "kind": "capability",
+    "name": "Consent Grant",
+    "description": "LOW-LEVEL: Direct consent grant for deferred resolution ONLY. Do NOT use this to bypass the consent flow — use consent_request instead, which notifies the user and waits for their approval. This capability exists for: (1) manual resolution after a consent_request timeout when the user later approves out-of-band, (2) programmatic grants from surface callbacks. All grants are session-scoped. Modes: 'always' (24h), 'temporary' (TTL-based), 'once' (single-use).",
+    "capability_name": "consent_grant",
+    "category": "consent",
+    "aliases": [
+      "consent",
+      "permission",
+      "approve",
+      "allow",
+      "grant consent",
+      "give permission"
+    ],
+    "parameters": {
+      "operation": {
+        "type": "str",
+        "description": "Operation identifier from the consent_required response",
+        "required": true
+      },
+      "mode": {
+        "type": "str",
+        "description": "Grant mode: 'always', 'temporary', or 'once'",
+        "required": true
+      },
+      "ttl_minutes": {
+        "type": "int",
+        "description": "TTL in minutes (required for 'temporary' mode)",
+        "required": false
+      }
+    },
+    "mutates_state": true,
+    "retry_policy": "manual",
+    "tags": [
+      "consent",
+      "grant"
+    ],
+    "parents": [
+      "notifications/consent"
+    ]
+  },
+  "notifications/consent/consent_list": {
+    "kind": "capability",
+    "name": "Consent List",
+    "description": "List all consent entries with their status (mode, tier, expiry for temporary grants).",
+    "capability_name": "consent_list",
+    "category": "consent",
+    "aliases": [
+      "list consents",
+      "show permissions",
+      "consent status",
+      "what have I approved",
+      "current grants",
+      "session permissions",
+      "consent grants"
+    ],
+    "tags": [
+      "consent",
+      "list"
+    ],
+    "parents": [
+      "notifications/consent"
+    ]
+  },
+  "notifications/consent/consent_request": {
+    "kind": "capability",
+    "name": "Consent Request",
+    "description": "One-call consent flow: create a consent request, deliver to all available surfaces, and optionally poll + auto-resolve. The modal shows Allow always / Allow for N min / Allow once / Deny options. Without timeout_seconds: non-blocking (returns request_id for later polling via request_poll + consent_request_resolve). With timeout_seconds: blocks until user responds, then auto-resolves (writes the grant on approval, returns denial on deny). Max recommended timeout: 110s to stay within MCP limits.",
+    "capability_name": "consent_request",
+    "category": "consent",
+    "aliases": [
+      "consent",
+      "permission",
+      "approve operation",
+      "ask consent",
+      "request consent",
+      "consent modal"
+    ],
+    "parameters": {
+      "operation": {
+        "type": "str",
+        "description": "Operation identifier (same as @requires_consent keys)",
+        "required": true
+      },
+      "reason": {
+        "type": "str",
+        "description": "Human-readable explanation",
+        "required": true
+      },
+      "risk": {
+        "type": "str",
+        "description": "low, moderate, or high",
+        "required": false
+      },
+      "default_ttl": {
+        "type": "int",
+        "description": "Default TTL in minutes for temporary grants",
+        "required": false
+      },
+      "requester": {
+        "type": "str",
+        "description": "Who is requesting (e.g., sidecar:cron_cleanup)",
+        "required": false
+      },
+      "context": {
+        "type": "dict",
+        "description": "Optional metadata shown in the modal",
+        "required": false
+      },
+      "callback": {
+        "type": "dict",
+        "description": "Dispatch on approval: {capability, params}",
+        "required": false
+      },
+      "callback_session_id": {
+        "type": "str",
+        "description": "Resume this session on approval",
+        "required": false
+      },
+      "timeout_seconds": {
+        "type": "int",
+        "description": "Poll timeout. Omit for non-blocking. Max recommended: 110s",
+        "required": false
+      },
+      "interval_seconds": {
+        "type": "int",
+        "description": "Seconds between polls (default: 3)",
+        "required": false
+      },
+      "surfaces": {
+        "type": "list[str]",
+        "description": "Target surface names (e.g., ['dashboard']). Default: all available",
+        "required": false
+      }
+    },
+    "mutates_state": true,
+    "retry_policy": "manual",
+    "tags": [
+      "consent",
+      "request"
+    ],
+    "parents": [
+      "notifications/consent"
+    ]
+  },
+  "notifications/consent/consent_request_list": {
+    "kind": "capability",
+    "name": "Consent Request List",
+    "description": "List all pending (unresolved) consent requests.",
+    "capability_name": "consent_request_list",
+    "category": "consent",
+    "aliases": [
+      "pending requests",
+      "waiting for approval",
+      "consent queue",
+      "what needs approval",
+      "unresolved consent",
+      "approval queue"
+    ],
+    "tags": [
+      "consent",
+      "request",
+      "list"
+    ],
+    "parents": [
+      "notifications/consent"
+    ]
+  },
+  "notifications/consent/consent_request_resolve": {
+    "kind": "capability",
+    "name": "Consent Request Resolve",
+    "description": "Approve or deny a pending consent request. If approved, writes the grant and dispatches the callback (session resume or messaging).",
+    "capability_name": "consent_request_resolve",
+    "category": "consent",
+    "aliases": [
+      "approve consent",
+      "deny consent",
+      "resolve request",
+      "handle pending consent",
+      "grant or deny operation",
+      "respond to consent request",
+      "decide on permission"
+    ],
+    "parameters": {
+      "request_id": {
+        "type": "str",
+        "description": "The request ID to resolve",
+        "required": true
+      },
+      "approved": {
+        "type": "bool",
+        "description": "True to approve, False to deny",
+        "required": true
+      },
+      "mode": {
+        "type": "str",
+        "description": "Grant mode if approved: 'always', 'temporary', or 'once'",
+        "required": false
+      },
+      "ttl_minutes": {
+        "type": "int",
+        "description": "TTL in minutes (for 'temporary' mode)",
+        "required": false
+      }
+    },
+    "mutates_state": true,
+    "retry_policy": "manual",
+    "tags": [
+      "consent",
+      "request",
+      "resolve"
+    ],
+    "parents": [
+      "notifications/consent"
+    ]
+  },
+  "notifications/consent/consent_revoke": {
+    "kind": "capability",
+    "name": "Consent Revoke",
+    "description": "Revoke a previously granted consent for an operation.",
+    "capability_name": "consent_revoke",
+    "category": "consent",
+    "aliases": [
+      "revoke",
+      "deny",
+      "remove consent",
+      "block"
+    ],
+    "parameters": {
+      "operation": {
+        "type": "str",
+        "description": "Operation identifier to revoke",
+        "required": true
+      }
+    },
+    "mutates_state": true,
+    "retry_policy": "manual",
+    "tags": [
+      "consent",
+      "revoke"
+    ],
+    "parents": [
+      "notifications/consent"
     ]
   },
   "context/context_block": {
@@ -1316,6 +1679,374 @@
       "context"
     ]
   },
+  "contracts/contract_constraints": {
+    "kind": "capability",
+    "name": "Contract Constraints",
+    "description": "Get active contracts with their current bottleneck constraints",
+    "capability_name": "contract_constraints",
+    "category": "contracts",
+    "aliases": [
+      "what's blocking contracts",
+      "contract bottlenecks",
+      "constraints on active work",
+      "contract blockers",
+      "where are contracts stuck",
+      "blocking issues per contract"
+    ],
+    "requires": [
+      "obsidian"
+    ],
+    "tags": [
+      "contracts",
+      "contract",
+      "constraints"
+    ],
+    "parents": [
+      "contracts"
+    ]
+  },
+  "contracts/contract_health": {
+    "kind": "capability",
+    "name": "Contract Health",
+    "description": "Health check report: status counts, overdue, stale, missing fields",
+    "capability_name": "contract_health",
+    "category": "contracts",
+    "aliases": [
+      "are my commitments on track",
+      "check contract status",
+      "contract health check",
+      "deliverable health",
+      "are contracts healthy",
+      "check commitments",
+      "paper status",
+      "commitment health",
+      "check project health"
+    ],
+    "requires": [
+      "obsidian"
+    ],
+    "tags": [
+      "contracts",
+      "contract",
+      "health"
+    ],
+    "parents": [
+      "contracts"
+    ]
+  },
+  "contracts/contract_wip_check": {
+    "kind": "capability",
+    "name": "Contract Wip Check",
+    "description": "Check if active contract count is within the WIP limit (max 3)",
+    "capability_name": "contract_wip_check",
+    "category": "contracts",
+    "aliases": [
+      "am I overcommitted",
+      "work in progress limit",
+      "WIP check",
+      "too many contracts",
+      "how many active commitments",
+      "over WIP"
+    ],
+    "requires": [
+      "obsidian"
+    ],
+    "tags": [
+      "contracts",
+      "contract",
+      "wip",
+      "check"
+    ],
+    "parents": [
+      "contracts"
+    ]
+  },
+  "contracts/contracts_summary": {
+    "kind": "capability",
+    "name": "Contracts Summary",
+    "description": "Markdown summary of all contracts with title, status, deadline, progress",
+    "capability_name": "contracts_summary",
+    "category": "contracts",
+    "aliases": [
+      "list contracts",
+      "show my commitments",
+      "all contracts overview",
+      "what am I working on",
+      "active work commitments",
+      "contract list",
+      "status of my deliverables"
+    ],
+    "requires": [
+      "obsidian"
+    ],
+    "tags": [
+      "contracts",
+      "summary"
+    ],
+    "parents": [
+      "contracts"
+    ]
+  },
+  "conversations/conversation_ask": {
+    "kind": "capability",
+    "name": "Conversation Ask",
+    "description": "Ask a question in a conversation and optionally wait for the user's response.",
+    "capability_name": "conversation_ask",
+    "category": "conversations",
+    "aliases": [
+      "chat question",
+      "ask user",
+      "conversation question",
+      "follow up question"
+    ],
+    "parameters": {
+      "conversation_id": {
+        "type": "string",
+        "description": "Conversation ID",
+        "required": true
+      },
+      "question": {
+        "type": "string",
+        "description": "Question text",
+        "required": true
+      },
+      "response_type": {
+        "type": "string",
+        "description": "freeform (default), boolean, or choice"
+      },
+      "choices": {
+        "type": "array",
+        "description": "For choice type: [{key, label}] or [str]"
+      },
+      "timeout_seconds": {
+        "type": "integer",
+        "description": "Block and wait for response (max 110s)"
+      }
+    },
+    "tags": [
+      "conversations",
+      "conversation",
+      "ask"
+    ],
+    "parents": [
+      "conversations"
+    ]
+  },
+  "conversations/conversation_close": {
+    "kind": "capability",
+    "name": "Conversation Close",
+    "description": "Close a conversation.",
+    "capability_name": "conversation_close",
+    "category": "conversations",
+    "aliases": [
+      "end conversation",
+      "close chat",
+      "finish conversation",
+      "wrap up conversation",
+      "close dashboard chat"
+    ],
+    "parameters": {
+      "conversation_id": {
+        "type": "string",
+        "description": "Conversation ID",
+        "required": true
+      }
+    },
+    "tags": [
+      "conversations",
+      "conversation",
+      "close"
+    ],
+    "parents": [
+      "conversations"
+    ]
+  },
+  "conversations/conversation_create": {
+    "kind": "capability",
+    "name": "Conversation Create",
+    "description": "Create a new conversation with the user. Opens a chat sidebar on the dashboard.",
+    "capability_name": "conversation_create",
+    "category": "conversations",
+    "aliases": [
+      "chat",
+      "conversation",
+      "follow up",
+      "multi-turn",
+      "side chat"
+    ],
+    "parameters": {
+      "title": {
+        "type": "string",
+        "description": "Conversation title",
+        "required": true
+      },
+      "message": {
+        "type": "string",
+        "description": "Optional initial agent message"
+      },
+      "source": {
+        "type": "string",
+        "description": "Source identifier (auto-detected if omitted)"
+      }
+    },
+    "tags": [
+      "conversations",
+      "conversation",
+      "create"
+    ],
+    "parents": [
+      "conversations"
+    ]
+  },
+  "conversations/conversation_list": {
+    "kind": "capability",
+    "name": "Conversation List",
+    "description": "List conversations.",
+    "capability_name": "conversation_list",
+    "category": "conversations",
+    "aliases": [
+      "list chats",
+      "active conversations",
+      "open conversations",
+      "what conversations are active",
+      "recent conversations",
+      "conversation directory"
+    ],
+    "parameters": {
+      "status": {
+        "type": "string",
+        "description": "Filter: 'open' (default), 'closed', or 'all'"
+      }
+    },
+    "tags": [
+      "conversations",
+      "conversation",
+      "list"
+    ],
+    "parents": [
+      "conversations"
+    ]
+  },
+  "conversations/conversation_poll": {
+    "kind": "capability",
+    "name": "Conversation Poll",
+    "description": "Check if the latest question in a conversation has been answered.",
+    "capability_name": "conversation_poll",
+    "category": "conversations",
+    "aliases": [
+      "check conversation",
+      "conversation response",
+      "poll chat",
+      "has user answered",
+      "conversation answered",
+      "check for reply"
+    ],
+    "parameters": {
+      "conversation_id": {
+        "type": "string",
+        "description": "Conversation ID",
+        "required": true
+      },
+      "timeout_seconds": {
+        "type": "integer",
+        "description": "Block and wait (max 110s)"
+      }
+    },
+    "tags": [
+      "conversations",
+      "conversation",
+      "poll"
+    ],
+    "parents": [
+      "conversations"
+    ]
+  },
+  "conversations/conversation_send": {
+    "kind": "capability",
+    "name": "Conversation Send",
+    "description": "Send a message in an existing conversation (fire-and-forget, no response expected).",
+    "capability_name": "conversation_send",
+    "category": "conversations",
+    "aliases": [
+      "chat message",
+      "conversation message",
+      "send chat message",
+      "post in conversation",
+      "speak in conversation"
+    ],
+    "parameters": {
+      "conversation_id": {
+        "type": "string",
+        "description": "Conversation ID",
+        "required": true
+      },
+      "message": {
+        "type": "string",
+        "description": "Message content",
+        "required": true
+      }
+    },
+    "tags": [
+      "conversations",
+      "conversation",
+      "send"
+    ],
+    "parents": [
+      "conversations"
+    ]
+  },
+  "status/dashboard_interact": {
+    "kind": "capability",
+    "name": "Dashboard Interact",
+    "description": "Drive a dashboard form on the user's behalf — fill fields, open the form, click submit, or read current state. Single typed entry point for chat-walkthrough agents; each call is validated against the form's registered FormSchema before anything reaches the frontend. See the brief's structural section for the form_id and field names you can address.",
+    "capability_name": "dashboard_interact",
+    "category": "status",
+    "aliases": [
+      "fill form",
+      "click submit",
+      "drive ui",
+      "agent ui interaction",
+      "form bridge",
+      "set form field"
+    ],
+    "parameters": {
+      "action": {
+        "type": "str",
+        "description": "One of: form_field_set, form_open, form_submit, form_get_state.",
+        "required": true
+      },
+      "form_id": {
+        "type": "str",
+        "description": "Registered form to address (e.g. 'jobs-add-job').",
+        "required": true
+      },
+      "field": {
+        "type": "str",
+        "description": "Field name (form_field_set only).",
+        "required": false
+      },
+      "value": {
+        "type": "any",
+        "description": "Field value (form_field_set only). Type-checked against the field's declared type in the schema.",
+        "required": false
+      },
+      "timeout_seconds": {
+        "type": "float",
+        "description": "Rendezvous timeout for form_submit / form_get_state in seconds. Default 10. Ignored for other actions.",
+        "required": false
+      }
+    },
+    "mutates_state": true,
+    "retry_policy": "manual",
+    "tags": [
+      "status",
+      "dashboard",
+      "interact"
+    ],
+    "parents": [
+      "status"
+    ]
+  },
   "context/datacore_compile_plan": {
     "kind": "capability",
     "name": "Datacore Compile Plan",
@@ -1647,6 +2378,60 @@
     ],
     "parents": [
       "context"
+    ]
+  },
+  "journal/day_planner": {
+    "kind": "capability",
+    "name": "Day Planner",
+    "description": "Day Planner operations: check plugin status, read current plan, generate schedule from events+tasks, or write plan to journal. Composite: replaces separate check_ready/get_plan/generate/write/resync calls.",
+    "capability_name": "day_planner",
+    "category": "journal",
+    "aliases": [
+      "day planner",
+      "time blocking",
+      "schedule",
+      "daily plan",
+      "time blocks"
+    ],
+    "parameters": {
+      "action": {
+        "type": "str",
+        "description": "'status', 'read', 'generate', 'write', or 'generate_and_write'",
+        "required": true
+      },
+      "target": {
+        "type": "str",
+        "description": "Date target for read/write. Default: today.",
+        "required": false
+      },
+      "calendar_events": {
+        "type": "str",
+        "description": "For generate: JSON list of events. Flat shape {start: 'HH:MM', end: 'HH:MM', summary/description/text: '...', past?: bool} OR Google Calendar API shape {start: {dateTime: ISO}, end: {dateTime: ISO}, summary, timeStatus}. See wrapper docstring for full spec.",
+        "required": false
+      },
+      "focused_tasks": {
+        "type": "str",
+        "description": "For generate: JSON list of task dicts. Required: 'description' or 'text'. Optional: 'duration' (int minutes, overrides config default), 'time_start' ('HH:MM' — pins task to that time; goes unscheduled on conflict).",
+        "required": false
+      },
+      "config_overrides": {
+        "type": "str",
+        "description": "JSON dict of day_planner config overrides (work_hours, default_task_duration, break_interval, clamp_to_now — default True, prevents placement in the past).",
+        "required": false
+      }
+    },
+    "requires": [
+      "obsidian"
+    ],
+    "mutates_state": true,
+    "retry_policy": "manual",
+    "tags": [
+      "journal",
+      "day",
+      "planner"
+    ],
+    "parents": [
+      "journal"
     ]
   },
   "context/dev_mode_toggle": {
@@ -2065,7 +2850,7 @@
   "context/docs_validate": {
     "kind": "capability",
     "name": "Docs Validate",
-    "description": "Validate the knowledge store: DAG integrity, command-to-store mappings, thinned command format, required fields, kind-specific fields, and parent-child symmetry.",
+    "description": "Validate the knowledge store: DAG integrity, command-to-store mappings, thinned command format, required fields, kind-specific fields, placeholder duplicates, and parent-child symmetry.",
     "capability_name": "docs_validate",
     "category": "context",
     "aliases": [
@@ -2078,7 +2863,7 @@
     "parameters": {
       "checks": {
         "type": "str",
-        "description": "Comma-separated check names to run. Empty = all. Available: dag_integrity, command_mapping, thinned_commands, store_path_validity, required_fields, directions_fields, kind_specific_fields, parent_child_symmetry",
+        "description": "Comma-separated check names to run. Empty = all. Available: dag_integrity, command_mapping, thinned_commands, store_path_validity, required_fields, directions_fields, kind_specific_fields, placeholder_duplicate, parent_child_symmetry",
         "required": false
       }
     },
@@ -2091,1402 +2876,120 @@
       "context"
     ]
   },
-  "context/ir_index": {
+  "status/escalation_recent": {
     "kind": "capability",
-    "name": "Ir Index",
-    "description": "Build or check the IR search index. Run 'build' to (re)encode dense vectors for indexed documents; 'status' returns per-source counts including dense_eligible_docs (how many docs CAN be encoded) and pending_eligible (real backlog — NOT doc_count vs vector_count, which is misleading because sources like conversation intentionally leave dense_text empty for tool-only spans).",
-    "capability_name": "ir_index",
-    "category": "context",
+    "name": "Escalation Recent",
+    "description": "Recent LLM-escalation observability records. Each record is one logical job (one LLMRunner.call OR one adapter-level escalation chain across multiple calls) with its full per-tier attempt list, final outcome, and trace correlation.",
+    "capability_name": "escalation_recent",
+    "category": "llm",
     "aliases": [
-      "build index",
-      "index conversations",
-      "conversation index",
-      "search index status",
-      "reindex"
+      "tier escalation",
+      "escalation log",
+      "what tier answered",
+      "did this escalate",
+      "fallback chain",
+      "model fallback",
+      "validation failed",
+      "tier observability"
     ],
     "parameters": {
-      "action": {
-        "type": "str",
-        "description": "'build' (default) or 'status'",
-        "required": false
-      },
-      "source": {
-        "type": "str",
-        "description": "Source to index: 'conversation' (default)",
-        "required": false
-      },
-      "days": {
-        "type": "int",
-        "description": "Index sessions from last N days (default 30)",
-        "required": false
-      },
-      "force": {
-        "type": "bool",
-        "description": "Rebuild from scratch (default False)",
-        "required": false
-      }
-    },
-    "tags": [
-      "context",
-      "ir",
-      "index"
-    ],
-    "parents": [
-      "context"
-    ]
-  },
-  "context/knowledge": {
-    "kind": "capability",
-    "name": "Knowledge",
-    "description": "Search across both system documentation and personal knowledge from the Obsidian vault. Returns results tagged with their source scope (system or personal).",
-    "capability_name": "knowledge",
-    "category": "context",
-    "aliases": [
-      "knowledge",
-      "search everything",
-      "find",
-      "personal patterns",
-      "blindspots",
-      "metacognition",
-      "system docs",
-      "unified search"
-    ],
-    "parameters": {
-      "query": {
-        "type": "str",
-        "description": "Natural language search.",
-        "required": false
-      },
-      "path": {
-        "type": "str",
-        "description": "Exact unit path for direct lookup.",
-        "required": false
-      },
-      "scope": {
-        "type": "str",
-        "description": "Path prefix to filter to a subtree.",
-        "required": false
-      },
-      "kind": {
-        "type": "str",
-        "description": "Filter by kind: directions, capability, workflow, system, service, integration, reference, concept, personal.",
-        "required": false
-      },
-      "category": {
-        "type": "str",
-        "description": "Filter personal units by category: work_pattern, self_regulation, skill_gap, feedback, preference, reference.",
-        "required": false
-      },
-      "severity": {
-        "type": "str",
-        "description": "Filter personal units by severity: HIGH, MODERATE, LOW.",
-        "required": false
-      },
-      "depth": {
-        "type": "str",
-        "description": "Content depth: 'index', 'summary' (default), 'full'.",
-        "required": false
-      },
-      "top_n": {
-        "type": "int",
-        "description": "Max search results (default 8).",
-        "required": false
-      },
-      "dev": {
-        "type": "bool",
-        "description": "Include dev_notes in full-depth results. Auto-set when session dev mode is active.",
-        "required": false
-      }
-    },
-    "tags": [
-      "context",
-      "knowledge"
-    ],
-    "parents": [
-      "context"
-    ]
-  },
-  "context/knowledge_index_rebuild": {
-    "kind": "capability",
-    "name": "Knowledge Index Rebuild",
-    "description": "Rebuild the knowledge search index. Uses the persistent on-disk cache by default — unchanged units keep their cached vectors, so typical warm rebuilds are <1s. Pass force=true to purge the cache and re-embed everything (slow — 1-3 minutes for the full store).",
-    "capability_name": "knowledge_index_rebuild",
-    "category": "context",
-    "aliases": [
-      "rebuild index",
-      "reindex knowledge",
-      "embedding index",
-      "knowledge index",
-      "rebuild search"
-    ],
-    "parameters": {
-      "force": {
-        "type": "bool",
-        "description": "Purge the dense-vector cache before rebuilding. Re-embeds every unit. Default: False.",
-        "required": false
-      }
-    },
-    "tags": [
-      "context",
-      "knowledge",
-      "index",
-      "rebuild"
-    ],
-    "parents": [
-      "context"
-    ]
-  },
-  "context/knowledge_index_status": {
-    "kind": "capability",
-    "name": "Knowledge Index Status",
-    "description": "Check the knowledge search index status: whether it's built, unit count, and whether dense vectors are available.",
-    "capability_name": "knowledge_index_status",
-    "category": "context",
-    "aliases": [
-      "index status",
-      "knowledge index status",
-      "is search index built",
-      "dense vector status",
-      "search index health",
-      "knowledge index health",
-      "cache hit rate"
-    ],
-    "tags": [
-      "context",
-      "knowledge",
-      "index",
-      "status"
-    ],
-    "parents": [
-      "context"
-    ]
-  },
-  "context/knowledge_mint": {
-    "kind": "capability",
-    "name": "Knowledge Mint",
-    "description": "Create or update a personal knowledge unit in the Obsidian vault. Generates a markdown file with YAML frontmatter. If the file already exists, appends new evidence.",
-    "capability_name": "knowledge_mint",
-    "category": "context",
-    "aliases": [
-      "mint",
-      "create personal",
-      "add pattern",
-      "create insight",
-      "new personal unit",
-      "mint knowledge",
-      "add observation"
-    ],
-    "parameters": {
-      "name": {
-        "type": "str",
-        "description": "Human-readable name (e.g., 'Branch Explosion').",
-        "required": true
-      },
-      "category": {
-        "type": "str",
-        "description": "Category: work_pattern, self_regulation, skill_gap, feedback, preference, reference.",
-        "required": true
-      },
-      "content_body": {
-        "type": "str",
-        "description": "Full markdown body. If empty, builds from structured fields.",
-        "required": false
-      },
-      "severity": {
-        "type": "str",
-        "description": "HIGH, MODERATE, or LOW (optional).",
-        "required": false
-      },
-      "tags": {
-        "type": "str",
-        "description": "Comma-separated tags.",
-        "required": false
-      },
-      "context_before": {
-        "type": "str",
-        "description": "Comma-separated unit paths to chain before.",
-        "required": false
-      },
-      "context_after": {
-        "type": "str",
-        "description": "Comma-separated unit paths to chain after.",
-        "required": false
-      },
-      "evidence": {
-        "type": "str",
-        "description": "Initial evidence observation.",
-        "required": false
-      },
-      "definition": {
-        "type": "str",
-        "description": "Pattern definition text.",
-        "required": false
-      },
-      "triggers": {
-        "type": "str",
-        "description": "What typically triggers this pattern.",
-        "required": false
-      },
-      "signals": {
-        "type": "str",
-        "description": "Observable signals.",
-        "required": false
-      },
-      "default_response": {
-        "type": "str",
-        "description": "Agent's default response.",
-        "required": false
-      }
-    },
-    "mutates_state": true,
-    "retry_policy": "manual",
-    "tags": [
-      "context",
-      "knowledge",
-      "mint"
-    ],
-    "parents": [
-      "context"
-    ]
-  },
-  "context/knowledge_personal": {
-    "kind": "capability",
-    "name": "Knowledge Personal",
-    "description": "Search personal knowledge from the Obsidian vault. Includes minted insights, patterns, feedback, preferences. Supports filtering by category and severity.",
-    "capability_name": "knowledge_personal",
-    "category": "context",
-    "aliases": [
-      "personal knowledge",
-      "my patterns",
-      "calibration",
-      "metacognition patterns",
-      "blindspot patterns",
-      "feedback",
-      "preferences",
-      "vault knowledge"
-    ],
-    "parameters": {
-      "query": {
-        "type": "str",
-        "description": "Natural language search.",
-        "required": false
-      },
-      "path": {
-        "type": "str",
-        "description": "Exact unit path for direct lookup.",
-        "required": false
-      },
-      "scope": {
-        "type": "str",
-        "description": "Path prefix (e.g. 'personal/metacognition/').",
-        "required": false
-      },
-      "category": {
-        "type": "str",
-        "description": "Filter by category: work_pattern, self_regulation, skill_gap, feedback, preference, reference.",
-        "required": false
-      },
-      "severity": {
-        "type": "str",
-        "description": "Filter by severity: HIGH, MODERATE, LOW.",
-        "required": false
-      },
-      "depth": {
-        "type": "str",
-        "description": "Content depth: 'index', 'summary' (default), 'full'.",
-        "required": false
-      },
-      "top_n": {
-        "type": "int",
-        "description": "Max search results (default 8).",
-        "required": false
-      },
-      "dev": {
-        "type": "bool",
-        "description": "Include dev_notes. Auto-set in dev mode.",
-        "required": false
-      }
-    },
-    "tags": [
-      "context",
-      "knowledge",
-      "personal"
-    ],
-    "parents": [
-      "context"
-    ]
-  },
-  "context/session_commits": {
-    "kind": "capability",
-    "name": "Session Commits",
-    "description": "Extract git commits made during Claude Code sessions. Parses raw JSONL for Bash tool calls containing 'git commit' and their results. Scope to one session or scan all recent sessions.",
-    "capability_name": "session_commits",
-    "category": "context",
-    "aliases": [
-      "commits in session",
-      "what was committed",
-      "git commits from conversation",
-      "session git history",
-      "what did the agent commit"
-    ],
-    "parameters": {
-      "session_id": {
-        "type": "str",
-        "description": "Full or partial session UUID. If omitted, scans all recent sessions.",
-        "required": false
-      },
-      "days": {
-        "type": "int",
-        "description": "Lookback window when scanning all sessions (default 7)",
-        "required": false
-      }
-    },
-    "tags": [
-      "context",
-      "session",
-      "commits"
-    ],
-    "parents": [
-      "context"
-    ]
-  },
-  "context/session_expand": {
-    "kind": "capability",
-    "name": "Session Expand",
-    "description": "Full context around a specific message in a session. Returns untruncated text for the target and surrounding messages.",
-    "capability_name": "session_expand",
-    "category": "context",
-    "aliases": [
-      "expand message",
-      "message context",
-      "surrounding messages",
-      "zoom into a message",
-      "show context window",
-      "what came before this message",
-      "conversation context around message"
-    ],
-    "parameters": {
-      "session_id": {
-        "type": "str",
-        "description": "Full or partial (8-char) session UUID",
-        "required": true
-      },
-      "message_index": {
-        "type": "int",
-        "description": "Zero-based message index",
-        "required": true
-      },
-      "context_window": {
-        "type": "int",
-        "description": "Messages before+after to include (default 5)",
-        "required": false
-      }
-    },
-    "tags": [
-      "context",
-      "session",
-      "expand"
-    ],
-    "parents": [
-      "context"
-    ]
-  },
-  "context/session_get": {
-    "kind": "capability",
-    "name": "Session Get",
-    "description": "Browse messages in a Claude Code session. Paginated with role/type filtering. Use after context_search finds a session.",
-    "capability_name": "session_get",
-    "category": "context",
-    "aliases": [
-      "inspect session",
-      "browse conversation",
-      "session messages",
-      "read session",
-      "drill into session"
-    ],
-    "parameters": {
-      "session_id": {
-        "type": "str",
-        "description": "Full or partial (8-char) session UUID",
-        "required": true
-      },
-      "offset": {
-        "type": "int",
-        "description": "Start index (default 0)",
-        "required": false
-      },
       "limit": {
         "type": "int",
-        "description": "Max messages to return (default 10)",
+        "description": "Max records to return (newest first). Default 50.",
         "required": false
       },
-      "roles": {
+      "trace_id": {
         "type": "str",
-        "description": "Comma-separated: 'user', 'assistant'",
+        "description": "Filter by exact trace_id correlation token.",
         "required": false
       },
-      "message_types": {
+      "final_outcome": {
         "type": "str",
-        "description": "Comma-separated: 'text' (has text content), 'tool_use' (has tool calls)",
+        "description": "Filter by final_outcome ('success', 'backend_error', 'validation_failed', 'empty_content', 'exhausted').",
         "required": false
-      },
-      "query": {
-        "type": "str",
-        "description": "Substring filter on message text (case-insensitive)",
-        "required": false
-      }
-    },
-    "tags": [
-      "context",
-      "session",
-      "get"
-    ],
-    "parents": [
-      "context"
-    ]
-  },
-  "context/session_locate": {
-    "kind": "capability",
-    "name": "Session Locate",
-    "description": "Jump from a context_search hit to the relevant conversation page. Takes a span_index from search result metadata and returns messages centered on that chunk.",
-    "capability_name": "session_locate",
-    "category": "context",
-    "aliases": [
-      "find chunk in session",
-      "locate search hit",
-      "span to messages",
-      "search result context"
-    ],
-    "parameters": {
-      "session_id": {
-        "type": "str",
-        "description": "Full or partial (8-char) session UUID",
-        "required": true
-      },
-      "span_index": {
-        "type": "int",
-        "description": "IR span index from context_search result metadata",
-        "required": true
-      }
-    },
-    "tags": [
-      "context",
-      "session",
-      "locate"
-    ],
-    "parents": [
-      "context"
-    ]
-  },
-  "context/session_search": {
-    "kind": "capability",
-    "name": "Session Search",
-    "description": "Hybrid search within a single session. Uses IR (keyword/semantic/substring) scoped to the session, then resolves chunk hits to message-level results via the span map.",
-    "capability_name": "session_search",
-    "category": "context",
-    "aliases": [
-      "search in session",
-      "find in conversation",
-      "session query",
-      "semantic session search"
-    ],
-    "parameters": {
-      "session_id": {
-        "type": "str",
-        "description": "Full or partial session UUID",
-        "required": true
-      },
-      "query": {
-        "type": "str",
-        "description": "Search query",
-        "required": true
-      },
-      "method": {
-        "type": "str",
-        "description": "Search method: 'substring', 'keyword', 'semantic', or 'keyword,semantic' (default)",
-        "required": false
-      },
-      "top_k": {
-        "type": "int",
-        "description": "Max chunk hits to resolve (default 5)",
-        "required": false
-      }
-    },
-    "tags": [
-      "context",
-      "session",
-      "search"
-    ],
-    "parents": [
-      "context"
-    ]
-  },
-  "context/session_uncommitted": {
-    "kind": "capability",
-    "name": "Session Uncommitted",
-    "description": "Find agent sessions that wrote files still present in dirty git state. Answers: 'which sessions wrote code that was never committed?' Cross-references Write/Edit/NotebookEdit tool calls against git status --porcelain across all repos.",
-    "capability_name": "session_uncommitted",
-    "category": "context",
-    "aliases": [
-      "who didn't commit",
-      "uncommitted agent writes",
-      "sessions with dirty files",
-      "what did the agent write but not commit",
-      "dirty files from sessions"
-    ],
-    "parameters": {
-      "days": {
-        "type": "int",
-        "description": "Lookback window for scanning sessions (default 7)",
-        "required": false
-      }
-    },
-    "tags": [
-      "context",
-      "session",
-      "uncommitted"
-    ],
-    "parents": [
-      "context"
-    ]
-  },
-  "context/session_wb_activity": {
-    "kind": "capability",
-    "name": "Session Wb Activity",
-    "description": "Summary of what a session did through work-buddy's MCP gateway — capabilities invoked, workflows run, errors, key artifacts. Reads from the per-session activity ledger.",
-    "capability_name": "session_wb_activity",
-    "category": "context",
-    "aliases": [
-      "what did the session do",
-      "session work-buddy activity",
-      "mcp activity",
-      "gateway activity"
-    ],
-    "parameters": {
-      "session_id": {
-        "type": "str",
-        "description": "Session ID to query. Default: current session.",
-        "required": false
-      }
-    },
-    "tags": [
-      "context",
-      "session",
-      "wb",
-      "activity"
-    ],
-    "parents": [
-      "context"
-    ]
-  },
-  "context/vault_recon": {
-    "kind": "capability",
-    "name": "Vault Recon",
-    "description": "Diagnostic-grade vault reconnaissance. Returns cross-tabs an agent can reason over to spot recurring conventions: frontmatter state machines (type x status), tag families (depth-3 tree), path-by-type distribution, recent activity by region, cardinality-capped frontmatter values. Single page walk with anti-noise caps.",
-    "capability_name": "vault_recon",
-    "category": "context",
-    "aliases": [
-      "vault reconnaissance",
-      "vault recon",
-      "vault structure analysis",
-      "frontmatter state machine",
-      "type by status",
-      "tag tree",
-      "vault cross-tab",
-      "vault patterns",
-      "discover vault conventions"
-    ],
-    "parameters": {
-      "path_prefix": {
-        "type": "str",
-        "description": "Optional vault-relative path prefix to scope the walk (e.g. 'repos/electricrag/'). Default: full vault.",
-        "required": false
-      },
-      "activity_days": {
-        "type": "int",
-        "description": "Lookback window in days for recent_activity_by_path. Default: 30.",
-        "required": false
-      }
-    },
-    "requires": [
-      "obsidian",
-      "datacore"
-    ],
-    "tags": [
-      "context",
-      "vault",
-      "recon"
-    ],
-    "parents": [
-      "context"
-    ]
-  },
-  "context/vault_recon_collect": {
-    "kind": "capability",
-    "name": "Vault Recon Collect",
-    "description": "Periodic vault reconnaissance entry point: snapshot the vault via vault_recon, append to a 60-day rolling ledger at .data/vault_recon/snapshots.json, compute deltas against prior snapshots, apply 5 curated significance rules, and write a one-shot type:prompt investigation job to .data/user_jobs/ on each rule firing (deduplicated per (rule, focus) over a 7-day window). Designed to be fired daily by sidecar_jobs/vault-recon.md.",
-    "capability_name": "vault_recon_collect",
-    "category": "context",
-    "aliases": [
-      "vault recon collect",
-      "vault recon collector",
-      "vault snapshot",
-      "vault delta detection",
-      "vault discovery loop",
-      "periodic vault recon"
-    ],
-    "parameters": {
-      "window_days": {
-        "type": "int",
-        "description": "Snapshot retention window (default 60).",
-        "required": false
-      },
-      "skip_escalation": {
-        "type": "bool",
-        "description": "If true, evaluate rules but do not spawn investigation jobs. Useful for dry runs.",
-        "required": false
-      }
-    },
-    "requires": [
-      "obsidian",
-      "datacore"
-    ],
-    "tags": [
-      "context",
-      "vault",
-      "recon",
-      "collect"
-    ],
-    "parents": [
-      "context"
-    ]
-  },
-  "context/workflow_create": {
-    "kind": "capability",
-    "name": "Workflow Create",
-    "description": "Create a new workflow unit (DAG + step instructions). Use this instead of docs_create for kind='workflow' units — docs_create does not accept workflow-specific fields.",
-    "capability_name": "workflow_create",
-    "category": "context",
-    "aliases": [
-      "create workflow",
-      "new workflow",
-      "author workflow DAG",
-      "register workflow",
-      "add workflow unit",
-      "define workflow"
-    ],
-    "parameters": {
-      "path": {
-        "type": "str",
-        "description": "Unique path ID (e.g. 'dev/dev-document')",
-        "required": true
-      },
-      "name": {
-        "type": "str",
-        "description": "Human-readable name",
-        "required": true
-      },
-      "description": {
-        "type": "str",
-        "description": "One-line summary",
-        "required": true
-      },
-      "workflow_name": {
-        "type": "str",
-        "description": "Registry slug used with wb_run('<workflow_name>')",
-        "required": true
-      },
-      "steps": {
-        "type": "str",
-        "description": "JSON array of step dicts. Each step requires at least id, name, step_type ('reasoning' or 'code'), and depends_on (list of prior step ids). Additional keys: auto_run, visibility, result_schema, invokes, optional.",
-        "required": true
-      },
-      "step_instructions": {
-        "type": "str",
-        "description": "JSON object mapping step_id -> instruction text. Reasoning steps generally need this; pure auto_run steps usually don't.",
-        "required": false
-      },
-      "execution": {
-        "type": "str",
-        "description": "Default execution policy: 'main' or 'subagent' (default 'main')",
-        "required": false
-      },
-      "allow_override": {
-        "type": "bool",
-        "description": "Allow per-step execution override (default false)",
-        "required": false
-      },
-      "content_full": {
-        "type": "str",
-        "description": "Workflow-level context (philosophy, what-not-to-do). Surfaces at depth='full'.",
-        "required": false
-      },
-      "content_summary": {
-        "type": "str",
-        "description": "One-paragraph summary.",
-        "required": false
-      },
-      "command": {
-        "type": "str",
-        "description": "Slash command name (e.g. 'wb-dev-document')",
-        "required": false
-      },
-      "parents": {
-        "type": "str",
-        "description": "Comma-separated parent paths (typical: domain, e.g. 'dev')",
-        "required": false
-      },
-      "children": {
-        "type": "str",
-        "description": "Comma-separated child paths",
-        "required": false
-      },
-      "tags": {
-        "type": "str",
-        "description": "Comma-separated search tags",
-        "required": false
-      },
-      "aliases": {
-        "type": "str",
-        "description": "Comma-separated search aliases",
-        "required": false
-      },
-      "dev_notes": {
-        "type": "str",
-        "description": "Dev-mode-only notes about the workflow's internals",
-        "required": false
-      },
-      "params_schema": {
-        "type": "str",
-        "description": "Optional JSON object declaring caller-provided initial params: {param_name: {type, description, required}}. Mirrors capability parameters. Workflows that omit this reject any non-empty params at start.",
-        "required": false
-      }
-    },
-    "mutates_state": true,
-    "retry_policy": "manual",
-    "tags": [
-      "context",
-      "workflow",
-      "create"
-    ],
-    "parents": [
-      "context"
-    ]
-  },
-  "context/workflow_update": {
-    "kind": "capability",
-    "name": "Workflow Update",
-    "description": "Update an existing workflow unit. Only provided fields change; omitted fields preserved. 'steps' and 'step_instructions' replace/merge rather than patch individual entries — read the current value, mutate, and pass the whole structure back.",
-    "capability_name": "workflow_update",
-    "category": "context",
-    "aliases": [
-      "update workflow",
-      "edit workflow DAG",
-      "modify workflow steps",
-      "change workflow",
-      "patch workflow",
-      "edit step instructions"
-    ],
-    "parameters": {
-      "path": {
-        "type": "str",
-        "description": "Path of workflow to update",
-        "required": true
-      },
-      "name": {
-        "type": "str",
-        "description": "New human-readable name",
-        "required": false
-      },
-      "description": {
-        "type": "str",
-        "description": "New one-line summary",
-        "required": false
-      },
-      "workflow_name": {
-        "type": "str",
-        "description": "New registry slug",
-        "required": false
-      },
-      "steps": {
-        "type": "str",
-        "description": "JSON array replacing the DAG. Callers should read the current value via agent_docs, mutate, and pass back.",
-        "required": false
-      },
-      "step_instructions": {
-        "type": "str",
-        "description": "JSON object merged into step_instructions. Keys present in the new dict overwrite; keys absent are preserved. Pass the whole dict to replace cleanly.",
-        "required": false
-      },
-      "execution": {
-        "type": "str",
-        "description": "New default execution policy",
-        "required": false
-      },
-      "allow_override": {
-        "type": "bool",
-        "description": "New allow_override flag",
-        "required": false
-      },
-      "content_full": {
-        "type": "str",
-        "description": "New workflow-level content",
-        "required": false
-      },
-      "content_summary": {
-        "type": "str",
-        "description": "New summary",
-        "required": false
-      },
-      "command": {
-        "type": "str",
-        "description": "New slash command name",
-        "required": false
-      },
-      "parents": {
-        "type": "str",
-        "description": "New comma-separated parent paths (replaces)",
-        "required": false
-      },
-      "children": {
-        "type": "str",
-        "description": "New comma-separated child paths (replaces)",
-        "required": false
-      },
-      "tags": {
-        "type": "str",
-        "description": "New comma-separated tags (replaces)",
-        "required": false
-      },
-      "aliases": {
-        "type": "str",
-        "description": "New comma-separated aliases (replaces)",
-        "required": false
-      },
-      "dev_notes": {
-        "type": "str",
-        "description": "New dev-mode-only notes. Pass an empty string to clear.",
-        "required": false
-      },
-      "params_schema": {
-        "type": "str",
-        "description": "New params schema (JSON object). Replaces existing schema entirely; pass an empty dict to clear.",
-        "required": false
-      }
-    },
-    "mutates_state": true,
-    "retry_policy": "manual",
-    "tags": [
-      "context",
-      "workflow",
-      "update"
-    ],
-    "parents": [
-      "context"
-    ]
-  },
-  "contracts/active_contracts": {
-    "kind": "capability",
-    "name": "Active Contracts",
-    "description": "List all contracts with status=active",
-    "capability_name": "active_contracts",
-    "category": "contracts",
-    "aliases": [
-      "current commitments",
-      "what's active",
-      "active work",
-      "ongoing contracts",
-      "open deliverables",
-      "in-progress papers",
-      "live contracts"
-    ],
-    "requires": [
-      "obsidian"
-    ],
-    "tags": [
-      "contracts",
-      "active"
-    ],
-    "parents": [
-      "contracts"
-    ]
-  },
-  "contracts/contract_constraints": {
-    "kind": "capability",
-    "name": "Contract Constraints",
-    "description": "Get active contracts with their current bottleneck constraints",
-    "capability_name": "contract_constraints",
-    "category": "contracts",
-    "aliases": [
-      "what's blocking contracts",
-      "contract bottlenecks",
-      "constraints on active work",
-      "contract blockers",
-      "where are contracts stuck",
-      "blocking issues per contract"
-    ],
-    "requires": [
-      "obsidian"
-    ],
-    "tags": [
-      "contracts",
-      "contract",
-      "constraints"
-    ],
-    "parents": [
-      "contracts"
-    ]
-  },
-  "contracts/contract_health": {
-    "kind": "capability",
-    "name": "Contract Health",
-    "description": "Health check report: status counts, overdue, stale, missing fields",
-    "capability_name": "contract_health",
-    "category": "contracts",
-    "aliases": [
-      "are my commitments on track",
-      "check contract status",
-      "contract health check",
-      "deliverable health",
-      "are contracts healthy",
-      "check commitments",
-      "paper status",
-      "commitment health",
-      "check project health"
-    ],
-    "requires": [
-      "obsidian"
-    ],
-    "tags": [
-      "contracts",
-      "contract",
-      "health"
-    ],
-    "parents": [
-      "contracts"
-    ]
-  },
-  "contracts/contract_wip_check": {
-    "kind": "capability",
-    "name": "Contract Wip Check",
-    "description": "Check if active contract count is within the WIP limit (max 3)",
-    "capability_name": "contract_wip_check",
-    "category": "contracts",
-    "aliases": [
-      "am I overcommitted",
-      "work in progress limit",
-      "WIP check",
-      "too many contracts",
-      "how many active commitments",
-      "over WIP"
-    ],
-    "requires": [
-      "obsidian"
-    ],
-    "tags": [
-      "contracts",
-      "contract",
-      "wip",
-      "check"
-    ],
-    "parents": [
-      "contracts"
-    ]
-  },
-  "contracts/contracts_summary": {
-    "kind": "capability",
-    "name": "Contracts Summary",
-    "description": "Markdown summary of all contracts with title, status, deadline, progress",
-    "capability_name": "contracts_summary",
-    "category": "contracts",
-    "aliases": [
-      "list contracts",
-      "show my commitments",
-      "all contracts overview",
-      "what am I working on",
-      "active work commitments",
-      "contract list",
-      "status of my deliverables"
-    ],
-    "requires": [
-      "obsidian"
-    ],
-    "tags": [
-      "contracts",
-      "summary"
-    ],
-    "parents": [
-      "contracts"
-    ]
-  },
-  "contracts/overdue_contracts": {
-    "kind": "capability",
-    "name": "Overdue Contracts",
-    "description": "List contracts past their deadline",
-    "capability_name": "overdue_contracts",
-    "category": "contracts",
-    "aliases": [
-      "late contracts",
-      "past due deliverables",
-      "missed deadlines",
-      "overdue work",
-      "what's late",
-      "past deadline",
-      "contracts over deadline"
-    ],
-    "requires": [
-      "obsidian"
-    ],
-    "tags": [
-      "contracts",
-      "overdue"
-    ],
-    "parents": [
-      "contracts"
-    ]
-  },
-  "contracts/stale_contracts": {
-    "kind": "capability",
-    "name": "Stale Contracts",
-    "description": "List contracts not reviewed in N days (default 7)",
-    "capability_name": "stale_contracts",
-    "category": "contracts",
-    "aliases": [
-      "forgotten contracts",
-      "not reviewed recently",
-      "stale commitments",
-      "unvisited contracts",
-      "dormant work",
-      "contracts needing review",
-      "neglected contracts"
-    ],
-    "parameters": {
-      "stale_days": {
-        "type": "int",
-        "description": "Days since last review (default 7)",
-        "required": false
-      }
-    },
-    "requires": [
-      "obsidian"
-    ],
-    "tags": [
-      "contracts",
-      "stale"
-    ],
-    "parents": [
-      "contracts"
-    ]
-  },
-  "conversations/conversation_ask": {
-    "kind": "capability",
-    "name": "Conversation Ask",
-    "description": "Ask a question in a conversation and optionally wait for the user's response.",
-    "capability_name": "conversation_ask",
-    "category": "conversations",
-    "aliases": [
-      "chat question",
-      "ask user",
-      "conversation question",
-      "follow up question"
-    ],
-    "parameters": {
-      "conversation_id": {
-        "type": "string",
-        "description": "Conversation ID",
-        "required": true
-      },
-      "question": {
-        "type": "string",
-        "description": "Question text",
-        "required": true
-      },
-      "response_type": {
-        "type": "string",
-        "description": "freeform (default), boolean, or choice"
-      },
-      "choices": {
-        "type": "array",
-        "description": "For choice type: [{key, label}] or [str]"
-      },
-      "timeout_seconds": {
-        "type": "integer",
-        "description": "Block and wait for response (max 110s)"
-      }
-    },
-    "tags": [
-      "conversations",
-      "conversation",
-      "ask"
-    ],
-    "parents": [
-      "conversations"
-    ]
-  },
-  "conversations/conversation_close": {
-    "kind": "capability",
-    "name": "Conversation Close",
-    "description": "Close a conversation.",
-    "capability_name": "conversation_close",
-    "category": "conversations",
-    "aliases": [
-      "end conversation",
-      "close chat",
-      "finish conversation",
-      "wrap up conversation",
-      "close dashboard chat"
-    ],
-    "parameters": {
-      "conversation_id": {
-        "type": "string",
-        "description": "Conversation ID",
-        "required": true
-      }
-    },
-    "tags": [
-      "conversations",
-      "conversation",
-      "close"
-    ],
-    "parents": [
-      "conversations"
-    ]
-  },
-  "conversations/conversation_create": {
-    "kind": "capability",
-    "name": "Conversation Create",
-    "description": "Create a new conversation with the user. Opens a chat sidebar on the dashboard.",
-    "capability_name": "conversation_create",
-    "category": "conversations",
-    "aliases": [
-      "chat",
-      "conversation",
-      "follow up",
-      "multi-turn",
-      "side chat"
-    ],
-    "parameters": {
-      "title": {
-        "type": "string",
-        "description": "Conversation title",
-        "required": true
-      },
-      "message": {
-        "type": "string",
-        "description": "Optional initial agent message"
       },
       "source": {
-        "type": "string",
-        "description": "Source identifier (auto-detected if omitted)"
-      }
-    },
-    "tags": [
-      "conversations",
-      "conversation",
-      "create"
-    ],
-    "parents": [
-      "conversations"
-    ]
-  },
-  "conversations/conversation_list": {
-    "kind": "capability",
-    "name": "Conversation List",
-    "description": "List conversations.",
-    "capability_name": "conversation_list",
-    "category": "conversations",
-    "aliases": [
-      "list chats",
-      "active conversations",
-      "open conversations",
-      "what conversations are active",
-      "recent conversations",
-      "conversation directory"
-    ],
-    "parameters": {
-      "status": {
-        "type": "string",
-        "description": "Filter: 'open' (default), 'closed', or 'all'"
-      }
-    },
-    "tags": [
-      "conversations",
-      "conversation",
-      "list"
-    ],
-    "parents": [
-      "conversations"
-    ]
-  },
-  "conversations/conversation_poll": {
-    "kind": "capability",
-    "name": "Conversation Poll",
-    "description": "Check if the latest question in a conversation has been answered.",
-    "capability_name": "conversation_poll",
-    "category": "conversations",
-    "aliases": [
-      "check conversation",
-      "conversation response",
-      "poll chat",
-      "has user answered",
-      "conversation answered",
-      "check for reply"
-    ],
-    "parameters": {
-      "conversation_id": {
-        "type": "string",
-        "description": "Conversation ID",
-        "required": true
-      },
-      "timeout_seconds": {
-        "type": "integer",
-        "description": "Block and wait (max 110s)"
-      }
-    },
-    "tags": [
-      "conversations",
-      "conversation",
-      "poll"
-    ],
-    "parents": [
-      "conversations"
-    ]
-  },
-  "conversations/conversation_send": {
-    "kind": "capability",
-    "name": "Conversation Send",
-    "description": "Send a message in an existing conversation (fire-and-forget, no response expected).",
-    "capability_name": "conversation_send",
-    "category": "conversations",
-    "aliases": [
-      "chat message",
-      "conversation message",
-      "send chat message",
-      "post in conversation",
-      "speak in conversation"
-    ],
-    "parameters": {
-      "conversation_id": {
-        "type": "string",
-        "description": "Conversation ID",
-        "required": true
-      },
-      "message": {
-        "type": "string",
-        "description": "Message content",
-        "required": true
-      }
-    },
-    "tags": [
-      "conversations",
-      "conversation",
-      "send"
-    ],
-    "parents": [
-      "conversations"
-    ]
-  },
-  "journal/activity_timeline": {
-    "kind": "capability",
-    "name": "Activity Timeline",
-    "description": "Infer recent activity from journal entries and optionally deeper signals. Returns a structured timeline with events, gaps, and relative timestamps. Use for understanding what happened during a time window.",
-    "capability_name": "activity_timeline",
-    "category": "journal",
-    "aliases": [
-      "what happened recently",
-      "recent activity",
-      "activity timeline",
-      "what have I been doing",
-      "infer activity",
-      "activity digest",
-      "journal entries structured"
-    ],
-    "parameters": {
-      "since": {
         "type": "str",
-        "description": "ISO datetime or relative shorthand (e.g. '2h', '1d', '30m')",
-        "required": true
-      },
-      "until": {
-        "type": "str",
-        "description": "ISO datetime. Default: now.",
+        "description": "Filter by source ('llm_runner', 'journal_segmenter', 'verdict_call').",
         "required": false
       },
-      "deep": {
+      "summary": {
         "type": "bool",
-        "description": "Also collect git/chat/vault signals (default: false)",
-        "required": false
-      },
-      "target_date": {
-        "type": "str",
-        "description": "Journal date YYYY-MM-DD (default: inferred from since)",
+        "description": "When true, return aggregate counts (by source / outcome / final_tier, plus 'escalated_past_first') instead of records.",
         "required": false
       }
     },
-    "requires": [
-      "obsidian"
-    ],
     "tags": [
-      "journal",
-      "activity",
-      "timeline"
+      "llm",
+      "escalation",
+      "recent"
     ],
     "parents": [
-      "journal"
+      "status"
     ]
   },
-  "journal/day_planner": {
+  "status/feature_status": {
     "kind": "capability",
-    "name": "Day Planner",
-    "description": "Day Planner operations: check plugin status, read current plan, generate schedule from events+tasks, or write plan to journal. Composite: replaces separate check_ready/get_plan/generate/write/resync calls.",
-    "capability_name": "day_planner",
-    "category": "journal",
+    "name": "Feature Status",
+    "description": "Show which tools, features, and capabilities are available or disabled, and why. Use this to diagnose missing integrations.",
+    "capability_name": "feature_status",
+    "category": "status",
     "aliases": [
-      "day planner",
-      "time blocking",
-      "schedule",
-      "daily plan",
-      "time blocks"
+      "tools",
+      "integrations",
+      "what's available",
+      "feature toggle",
+      "disabled",
+      "unavailable"
     ],
     "parameters": {
-      "action": {
-        "type": "str",
-        "description": "'status', 'read', 'generate', 'write', or 'generate_and_write'",
-        "required": true
-      },
-      "target": {
-        "type": "str",
-        "description": "Date target for read/write. Default: today.",
+      "verbose": {
+        "type": "bool",
+        "description": "Include probe timing and config details",
         "required": false
       },
-      "calendar_events": {
-        "type": "str",
-        "description": "For generate: JSON list of events. Flat shape {start: 'HH:MM', end: 'HH:MM', summary/description/text: '...', past?: bool} OR Google Calendar API shape {start: {dateTime: ISO}, end: {dateTime: ISO}, summary, timeStatus}. See wrapper docstring for full spec.",
-        "required": false
-      },
-      "focused_tasks": {
-        "type": "str",
-        "description": "For generate: JSON list of task dicts. Required: 'description' or 'text'. Optional: 'duration' (int minutes, overrides config default), 'time_start' ('HH:MM' — pins task to that time; goes unscheduled on conflict).",
-        "required": false
-      },
-      "config_overrides": {
-        "type": "str",
-        "description": "JSON dict of day_planner config overrides (work_hours, default_task_duration, break_interval, clamp_to_now — default True, prevents placement in the past).",
+      "force": {
+        "type": "bool",
+        "description": "Re-run all tool probes fresh instead of reading the cached result. Use when a previously-failed tool (e.g. Obsidian) may now be available.",
         "required": false
       }
     },
-    "requires": [
-      "obsidian"
-    ],
-    "mutates_state": true,
-    "retry_policy": "manual",
     "tags": [
-      "journal",
-      "day",
-      "planner"
+      "status",
+      "feature"
     ],
     "parents": [
-      "journal"
+      "status"
+    ]
+  },
+  "messaging/get_thread": {
+    "kind": "capability",
+    "name": "Get Thread",
+    "description": "Get all messages in a conversation thread",
+    "capability_name": "get_thread",
+    "category": "messaging",
+    "aliases": [
+      "view conversation thread",
+      "message thread history",
+      "all messages in thread",
+      "read threaded messages",
+      "conversation history",
+      "thread transcript"
+    ],
+    "parameters": {
+      "thread_id": {
+        "type": "str",
+        "description": "Thread ID",
+        "required": true
+      }
+    },
+    "tags": [
+      "messaging",
+      "get",
+      "thread"
+    ],
+    "parents": [
+      "messaging"
     ]
   },
   "journal/hot_files": {
@@ -3531,6 +3034,50 @@
     ],
     "parents": [
       "journal"
+    ]
+  },
+  "context/ir_index": {
+    "kind": "capability",
+    "name": "Ir Index",
+    "description": "Build or check the IR search index. Run 'build' to (re)encode dense vectors for indexed documents; 'status' returns per-source counts including dense_eligible_docs (how many docs CAN be encoded) and pending_eligible (real backlog — NOT doc_count vs vector_count, which is misleading because sources like conversation intentionally leave dense_text empty for tool-only spans).",
+    "capability_name": "ir_index",
+    "category": "context",
+    "aliases": [
+      "build index",
+      "index conversations",
+      "conversation index",
+      "search index status",
+      "reindex"
+    ],
+    "parameters": {
+      "action": {
+        "type": "str",
+        "description": "'build' (default) or 'status'",
+        "required": false
+      },
+      "source": {
+        "type": "str",
+        "description": "Source to index: 'conversation' (default)",
+        "required": false
+      },
+      "days": {
+        "type": "int",
+        "description": "Index sessions from last N days (default 30)",
+        "required": false
+      },
+      "force": {
+        "type": "bool",
+        "description": "Rebuild from scratch (default False)",
+        "required": false
+      }
+    },
+    "tags": [
+      "context",
+      "ir",
+      "index"
+    ],
+    "parents": [
+      "context"
     ]
   },
   "journal/journal_append_to_note": {
@@ -3838,113 +3385,705 @@
       "journal"
     ]
   },
-  "journal/running_notes": {
+  "context/knowledge": {
     "kind": "capability",
-    "name": "Running Notes",
-    "description": "Read the Running Notes section from the user's daily journal. This is the primary stream-of-consciousness capture zone where the user records ideas, observations, and notes throughout the day. Supports filtering by date range, last N days, or same-day only. Call with same_day=true for just today's entries, or days=N for recent history.",
-    "capability_name": "running_notes",
-    "category": "journal",
+    "name": "Knowledge",
+    "description": "Search across both system documentation and personal knowledge from the Obsidian vault. Returns results tagged with their source scope (system or personal).",
+    "capability_name": "knowledge",
+    "category": "context",
     "aliases": [
-      "journal notes today",
-      "read daily notes",
-      "user's recent thoughts and observations",
-      "stream of consciousness capture",
-      "journal running notes content"
+      "knowledge",
+      "search everything",
+      "find",
+      "personal patterns",
+      "blindspots",
+      "metacognition",
+      "system docs",
+      "unified search"
     ],
     "parameters": {
-      "same_day": {
-        "type": "bool",
-        "description": "Only notes from the journal's own date (no carried-over content)",
+      "query": {
+        "type": "str",
+        "description": "Natural language search.",
         "required": false
       },
-      "days": {
+      "path": {
+        "type": "str",
+        "description": "Exact unit path for direct lookup.",
+        "required": false
+      },
+      "scope": {
+        "type": "str",
+        "description": "Path prefix to filter to a subtree.",
+        "required": false
+      },
+      "kind": {
+        "type": "str",
+        "description": "Filter by kind: directions, capability, workflow, system, service, integration, reference, concept, personal.",
+        "required": false
+      },
+      "category": {
+        "type": "str",
+        "description": "Filter personal units by category: work_pattern, self_regulation, skill_gap, feedback, preference, reference.",
+        "required": false
+      },
+      "severity": {
+        "type": "str",
+        "description": "Filter personal units by severity: HIGH, MODERATE, LOW.",
+        "required": false
+      },
+      "depth": {
+        "type": "str",
+        "description": "Content depth: 'index', 'summary' (default), 'full'.",
+        "required": false
+      },
+      "top_n": {
         "type": "int",
-        "description": "Most recent N days (today=1). Cannot combine with start/stop.",
+        "description": "Max search results (default 8).",
         "required": false
       },
-      "start": {
-        "type": "str",
-        "description": "Include notes from this date onward (YYYY-MM-DD, inclusive)",
-        "required": false
-      },
-      "stop": {
-        "type": "str",
-        "description": "Include notes up to this date (YYYY-MM-DD, inclusive)",
-        "required": false
-      },
-      "journal_date": {
-        "type": "str",
-        "description": "Journal file date (YYYY-MM-DD). Default: today.",
+      "dev": {
+        "type": "bool",
+        "description": "Include dev_notes in full-depth results. Auto-set when session dev mode is active.",
         "required": false
       }
     },
-    "requires": [
-      "obsidian"
-    ],
     "tags": [
-      "journal",
-      "running",
-      "notes"
+      "context",
+      "knowledge"
     ],
     "parents": [
-      "journal"
+      "context"
     ]
   },
-  "journal/vault_write_at_location": {
+  "context/knowledge_index_rebuild": {
     "kind": "capability",
-    "name": "Vault Write At Location",
-    "description": "Insert content at a specific section in a vault note. Configurable note (path or resolver like 'latest_journal', 'today'), section (header text), and position ('top' or 'bottom' of section). Used by Telegram capture and general-purpose vault writing.",
-    "capability_name": "vault_write_at_location",
-    "category": "journal",
+    "name": "Knowledge Index Rebuild",
+    "description": "Rebuild the knowledge search index. Uses the persistent on-disk cache by default — unchanged units keep their cached vectors, so typical warm rebuilds are <1s. Pass force=true to purge the cache and re-embed everything (slow — 1-3 minutes for the full store).",
+    "capability_name": "knowledge_index_rebuild",
+    "category": "context",
     "aliases": [
-      "write at location",
-      "vault write",
-      "section write",
-      "append to section",
-      "insert into note",
-      "capture"
+      "rebuild index",
+      "reindex knowledge",
+      "embedding index",
+      "knowledge index",
+      "rebuild search"
     ],
     "parameters": {
-      "content": {
+      "force": {
+        "type": "bool",
+        "description": "Purge the dense-vector cache before rebuilding. Re-embeds every unit. Default: False.",
+        "required": false
+      }
+    },
+    "tags": [
+      "context",
+      "knowledge",
+      "index",
+      "rebuild"
+    ],
+    "parents": [
+      "context"
+    ]
+  },
+  "context/knowledge_index_status": {
+    "kind": "capability",
+    "name": "Knowledge Index Status",
+    "description": "Check the knowledge search index status: whether it's built, unit count, and whether dense vectors are available.",
+    "capability_name": "knowledge_index_status",
+    "category": "context",
+    "aliases": [
+      "index status",
+      "knowledge index status",
+      "is search index built",
+      "dense vector status",
+      "search index health",
+      "knowledge index health",
+      "cache hit rate"
+    ],
+    "tags": [
+      "context",
+      "knowledge",
+      "index",
+      "status"
+    ],
+    "parents": [
+      "context"
+    ]
+  },
+  "context/knowledge_mint": {
+    "kind": "capability",
+    "name": "Knowledge Mint",
+    "description": "Create or update a personal knowledge unit in the Obsidian vault. Generates a markdown file with YAML frontmatter. If the file already exists, appends new evidence.",
+    "capability_name": "knowledge_mint",
+    "category": "context",
+    "aliases": [
+      "mint",
+      "create personal",
+      "add pattern",
+      "create insight",
+      "new personal unit",
+      "mint knowledge",
+      "add observation"
+    ],
+    "parameters": {
+      "name": {
         "type": "str",
-        "description": "Text to insert",
+        "description": "Human-readable name (e.g., 'Branch Explosion').",
         "required": true
       },
-      "note": {
+      "category": {
         "type": "str",
-        "description": "Note path or resolver: 'latest_journal' (default), 'today', or explicit vault-relative path",
+        "description": "Category: work_pattern, self_regulation, skill_gap, feedback, preference, reference.",
+        "required": true
+      },
+      "content_body": {
+        "type": "str",
+        "description": "Full markdown body. If empty, builds from structured fields.",
         "required": false
       },
-      "section": {
+      "severity": {
         "type": "str",
-        "description": "Header text identifying target section (default: 'Running Notes')",
+        "description": "HIGH, MODERATE, or LOW (optional).",
         "required": false
       },
-      "position": {
+      "tags": {
         "type": "str",
-        "description": "'top' (default) or 'bottom' of section",
+        "description": "Comma-separated tags.",
+        "required": false
+      },
+      "evidence": {
+        "type": "str",
+        "description": "Initial evidence observation.",
+        "required": false
+      },
+      "definition": {
+        "type": "str",
+        "description": "Pattern definition text.",
+        "required": false
+      },
+      "triggers": {
+        "type": "str",
+        "description": "What typically triggers this pattern.",
+        "required": false
+      },
+      "signals": {
+        "type": "str",
+        "description": "Observable signals.",
+        "required": false
+      },
+      "default_response": {
+        "type": "str",
+        "description": "Agent's default response.",
+        "required": false
+      }
+    },
+    "mutates_state": true,
+    "retry_policy": "manual",
+    "tags": [
+      "context",
+      "knowledge",
+      "mint"
+    ],
+    "parents": [
+      "context"
+    ]
+  },
+  "context/knowledge_personal": {
+    "kind": "capability",
+    "name": "Knowledge Personal",
+    "description": "Search personal knowledge from the Obsidian vault. Includes minted insights, patterns, feedback, preferences. Supports filtering by category and severity.",
+    "capability_name": "knowledge_personal",
+    "category": "context",
+    "aliases": [
+      "personal knowledge",
+      "my patterns",
+      "calibration",
+      "metacognition patterns",
+      "blindspot patterns",
+      "feedback",
+      "preferences",
+      "vault knowledge"
+    ],
+    "parameters": {
+      "query": {
+        "type": "str",
+        "description": "Natural language search.",
+        "required": false
+      },
+      "path": {
+        "type": "str",
+        "description": "Exact unit path for direct lookup.",
+        "required": false
+      },
+      "scope": {
+        "type": "str",
+        "description": "Path prefix (e.g. 'personal/metacognition/').",
+        "required": false
+      },
+      "category": {
+        "type": "str",
+        "description": "Filter by category: work_pattern, self_regulation, skill_gap, feedback, preference, reference.",
+        "required": false
+      },
+      "severity": {
+        "type": "str",
+        "description": "Filter by severity: HIGH, MODERATE, LOW.",
+        "required": false
+      },
+      "depth": {
+        "type": "str",
+        "description": "Content depth: 'index', 'summary' (default), 'full'.",
+        "required": false
+      },
+      "top_n": {
+        "type": "int",
+        "description": "Max search results (default 8).",
+        "required": false
+      },
+      "dev": {
+        "type": "bool",
+        "description": "Include dev_notes. Auto-set in dev mode.",
+        "required": false
+      }
+    },
+    "tags": [
+      "context",
+      "knowledge",
+      "personal"
+    ],
+    "parents": [
+      "context"
+    ]
+  },
+  "status/list_sessions": {
+    "kind": "capability",
+    "name": "List Sessions",
+    "description": "List all known agent sessions with metadata",
+    "capability_name": "list_sessions",
+    "category": "status",
+    "aliases": [
+      "what sessions exist",
+      "all agent sessions",
+      "session directory",
+      "recent sessions",
+      "known agents",
+      "list agent sessions"
+    ],
+    "tags": [
+      "status",
+      "list",
+      "sessions"
+    ],
+    "parents": [
+      "status"
+    ]
+  },
+  "status/llm_call": {
+    "kind": "capability",
+    "name": "Llm Call",
+    "description": "Make a single LLM API call (Tier 2 execution). Cheaper than spawning a full agent session. Supports freeform text or structured JSON output via output_schema (inline dict or named schema from work_buddy/llm/schemas/). Routes to Claude via 'tier' or to a local/remote OpenAI-compatible server (LM Studio, vLLM, Ollama) via 'profile'. Handles caching and cost tracking automatically.",
+    "capability_name": "llm_call",
+    "category": "llm",
+    "aliases": [
+      "api call",
+      "llm call",
+      "claude api",
+      "structured output",
+      "haiku call",
+      "simple reasoning",
+      "cheap llm",
+      "classify",
+      "analyze",
+      "local llm",
+      "lm studio",
+      "qwen"
+    ],
+    "parameters": {
+      "system": {
+        "type": "str",
+        "description": "System prompt",
+        "required": true
+      },
+      "user": {
+        "type": "str",
+        "description": "User message content",
+        "required": true
+      },
+      "output_schema": {
+        "type": "dict|str",
+        "description": "JSON Schema for structured output. Pass a dict for inline schemas, or a string name to load from work_buddy/llm/schemas/<name>.json. Omit for freeform text.",
+        "required": false
+      },
+      "tier": {
+        "type": "str",
+        "description": "Cloud model tier: 'haiku' (default if no profile given), 'sonnet', or 'opus'. Mutually exclusive with 'profile'.",
+        "required": false
+      },
+      "profile": {
+        "type": "str",
+        "description": "Named local/remote profile (e.g. 'local_general') declared under llm.profiles in config. Routes through the profile's backend instead of Anthropic. Mutually exclusive with 'tier'.",
+        "required": false
+      },
+      "max_tokens": {
+        "type": "int",
+        "description": "Max response tokens (default: 1024)",
+        "required": false
+      },
+      "temperature": {
+        "type": "float",
+        "description": "Sampling temperature (default: 0.0)",
+        "required": false
+      },
+      "cache_ttl_minutes": {
+        "type": "int",
+        "description": "Cache TTL in minutes. None=config default, 0=no cache.",
+        "required": false
+      }
+    },
+    "tags": [
+      "llm",
+      "call"
+    ],
+    "parents": [
+      "status"
+    ]
+  },
+  "status/llm_costs": {
+    "kind": "capability",
+    "name": "Llm Costs",
+    "description": "Check LLM token usage, costs, and breakdown for this session. Shows per-task costs, per-model costs, cache hit rates, and top callers.",
+    "capability_name": "llm_costs",
+    "category": "status",
+    "aliases": [
+      "llm costs",
+      "token usage",
+      "api costs",
+      "how much has haiku cost",
+      "llm spending"
+    ],
+    "parameters": {
+      "breakdown": {
+        "type": "bool",
+        "description": "Show per-task and per-model breakdown (default: false)",
+        "required": false
+      }
+    },
+    "tags": [
+      "status",
+      "llm",
+      "costs"
+    ],
+    "parents": [
+      "status"
+    ]
+  },
+  "status/llm_costs_query": {
+    "kind": "capability",
+    "name": "Llm Costs Query",
+    "description": "Aggregate LLM cost / usage across one or both data sources (work-buddy's per-call internal log + Claude Code transcripts). Smart parameters: time window (named or ISO range), group_by (project, model, session, day, tool), source filter, min_cost / project / model filters, and previous-window comparison. Single capability covering most cost questions.",
+    "capability_name": "llm_costs_query",
+    "category": "llm",
+    "aliases": [
+      "llm costs",
+      "llm spend",
+      "how much have i spent",
+      "claude api costs",
+      "cost by project",
+      "cost by model",
+      "weekly spend",
+      "monthly spend",
+      "expensive sessions",
+      "burn rate",
+      "cost trend",
+      "spend comparison"
+    ],
+    "parameters": {
+      "window": {
+        "type": "str",
+        "description": "Time window. Named: 'today', 'yesterday', '7d', '30d', '90d', 'month_to_date', 'all'. ISO range: 'YYYY-MM-DD..YYYY-MM-DD'. Single day: 'YYYY-MM-DD'. Default '30d'.",
+        "required": false
+      },
+      "group_by": {
+        "type": "str",
+        "description": "Optional breakdown: 'project', 'model', 'session', 'day', 'tool'. Omit for top-line totals only.",
         "required": false
       },
       "source": {
         "type": "str",
-        "description": "Source metadata tag (e.g. 'telegram') — appended as #wb/capture/<source>",
+        "description": "'all' (default), 'internal' (work-buddy's runner calls), or 'claude_code' (Claude Code transcripts).",
+        "required": false
+      },
+      "min_cost": {
+        "type": "float",
+        "description": "Filter rows where cost_usd < this. Default 0.",
+        "required": false
+      },
+      "project": {
+        "type": "str",
+        "description": "Substring match on project name / cwd.",
+        "required": false
+      },
+      "model": {
+        "type": "str",
+        "description": "Exact-match model filter (e.g. 'claude-sonnet-4-6').",
+        "required": false
+      },
+      "top_n": {
+        "type": "int",
+        "description": "Cap on grouped rows. Default 10. Pass 0 for no cap.",
+        "required": false
+      },
+      "include_local": {
+        "type": "bool",
+        "description": "Include local-LLM rows? Default true.",
+        "required": false
+      },
+      "compare_to_previous": {
+        "type": "bool",
+        "description": "Include previous-equivalent-window comparison (delta_pct_cost, delta_pct_calls). Default true.",
         "required": false
       }
     },
-    "requires": [
-      "obsidian"
-    ],
-    "mutates_state": true,
-    "retry_policy": "verify_first",
     "tags": [
-      "journal",
-      "vault",
-      "write",
-      "at",
-      "location"
+      "llm",
+      "costs",
+      "query"
     ],
     "parents": [
-      "journal"
+      "status"
+    ]
+  },
+  "status/llm_submit": {
+    "kind": "capability",
+    "name": "Llm Submit",
+    "description": "Asynchronously submit an llm_call for background execution. Returns immediately with an operation_id; the sidecar's retry sweep invokes llm_call with your params and messages the originating session on completion. Use when local inference latency (tens of seconds) would block the caller unnecessarily. For synchronous bounded calls use llm_call. Cloud tier calls are already fast — no point submitting them; profile is therefore required.",
+    "capability_name": "llm_submit",
+    "category": "llm",
+    "aliases": [
+      "async llm",
+      "background llm",
+      "queue llm call",
+      "submit llm",
+      "defer llm",
+      "fire and forget",
+      "autodream",
+      "background inference"
+    ],
+    "parameters": {
+      "system": {
+        "type": "str",
+        "description": "System prompt",
+        "required": true
+      },
+      "user": {
+        "type": "str",
+        "description": "User message content",
+        "required": true
+      },
+      "profile": {
+        "type": "str",
+        "description": "Named local/remote profile (e.g. 'local_general'). Required — submits are for local profiles only.",
+        "required": true
+      },
+      "output_schema": {
+        "type": "dict|str",
+        "description": "JSON Schema for structured output. Pass a dict for inline schemas, or a string name to load from work_buddy/llm/schemas/<name>.json. Omit for freeform.",
+        "required": false
+      },
+      "max_tokens": {
+        "type": "int",
+        "description": "Max response tokens (default: 1024)",
+        "required": false
+      },
+      "temperature": {
+        "type": "float",
+        "description": "Sampling temperature (default: 0.0)",
+        "required": false
+      },
+      "cache_ttl_minutes": {
+        "type": "int",
+        "description": "Cache TTL in minutes. None=config default, 0=no cache.",
+        "required": false
+      }
+    },
+    "tags": [
+      "llm",
+      "submit"
+    ],
+    "parents": [
+      "status"
+    ]
+  },
+  "status/llm_with_tools": {
+    "kind": "capability",
+    "name": "Llm With Tools",
+    "description": "Invoke a local model with restricted work-buddy MCP tool access, so it can look things up (projects, tasks, journal, context) while answering. Tool access is limited to a named preset defined in work_buddy/llm/tool_presets.py (currently: 'readonly_safe', 'readonly_context'). No arbitrary tool list accepted at call time — presets are the security boundary. Requires 'profile' and 'tool_preset'.",
+    "capability_name": "llm_with_tools",
+    "category": "llm",
+    "aliases": [
+      "local llm with tools",
+      "llm tool access",
+      "mcp tools local",
+      "contextualize local",
+      "local model tools",
+      "lm studio mcp",
+      "qwen with tools",
+      "tool use local"
+    ],
+    "parameters": {
+      "system": {
+        "type": "str",
+        "description": "System prompt (becomes 'instructions' on the native chat request)",
+        "required": true
+      },
+      "user": {
+        "type": "str",
+        "description": "User query (becomes 'input')",
+        "required": true
+      },
+      "profile": {
+        "type": "str",
+        "description": "Named local profile (e.g., 'local_general') — must be LM Studio-backed",
+        "required": true
+      },
+      "tool_preset": {
+        "type": "str",
+        "description": "Named whitelist of allowed work-buddy tools. Currently: 'readonly_safe', 'readonly_context'. Presets are code, not config — defined in work_buddy/llm/tool_presets.py.",
+        "required": true
+      },
+      "required_capabilities": {
+        "type": "list[str]",
+        "description": "Optional list of capability names the model MUST be able to call (e.g. ['update-journal', 'journal_write']). Pre-flight checked against the preset; if any are missing, the call fails fast with an explicit error. Use this to catch goal-preset mismatches — e.g. running a workflow from a read-only preset that doesn't include the workflow's name.",
+        "required": false
+      },
+      "previous_response_id": {
+        "type": "str",
+        "description": "Continue a prior LM Studio stateful-chat turn",
+        "required": false
+      },
+      "max_tokens": {
+        "type": "int",
+        "description": "Output budget. Default 4096 (tool-calling eats tokens).",
+        "required": false
+      },
+      "temperature": {
+        "type": "float",
+        "description": "Sampling temperature (default 0.0)",
+        "required": false
+      },
+      "store": {
+        "type": "bool",
+        "description": "Let LM Studio retain this turn server-side (default False)",
+        "required": false
+      },
+      "persist_tool_results": {
+        "type": "bool",
+        "description": "When True, raw MCP tool outputs are saved to the artifact store and the artifact id is embedded in each tool_calls entry (output_artifact_id). Default False — responses contain only tool-call metadata, not raw output. Errors auto-escalate to persist regardless of this flag.",
+        "required": false
+      }
+    },
+    "invokes": [
+      "active_contracts",
+      "activity_timeline",
+      "agent_docs",
+      "artifact_get",
+      "artifact_list",
+      "chrome_activity",
+      "chrome_content",
+      "chrome_infer",
+      "context_bundle",
+      "context_calendar",
+      "context_chat",
+      "context_chrome",
+      "context_git",
+      "context_messages",
+      "context_obsidian",
+      "context_projects",
+      "context_search",
+      "context_smart",
+      "context_tasks",
+      "context_wellness",
+      "contract_constraints",
+      "contract_health",
+      "contract_wip_check",
+      "contracts_summary",
+      "conversation_list",
+      "datacore_compile_plan",
+      "datacore_evaluate",
+      "datacore_fullquery",
+      "datacore_get_page",
+      "datacore_query",
+      "datacore_run_plan",
+      "datacore_schema",
+      "datacore_status",
+      "datacore_validate",
+      "day_planner",
+      "feature_status",
+      "get_thread",
+      "hot_files",
+      "ir_index",
+      "journal_state",
+      "knowledge",
+      "knowledge_personal",
+      "list_sessions",
+      "overdue_contracts",
+      "project_get",
+      "project_list",
+      "query_messages",
+      "read_message",
+      "running_notes",
+      "service_health",
+      "session_activity",
+      "session_commits",
+      "session_expand",
+      "session_get",
+      "session_locate",
+      "session_search",
+      "session_summary",
+      "session_uncommitted",
+      "sidecar_jobs",
+      "sidecar_status",
+      "stale_contracts",
+      "tailscale_status",
+      "task_briefing",
+      "task_review_inbox",
+      "task_scattered",
+      "task_stale_check",
+      "weekly_review_data"
+    ],
+    "tags": [
+      "llm",
+      "with",
+      "tools"
+    ],
+    "parents": [
+      "status"
+    ]
+  },
+  "status/mcp_registry_reload": {
+    "kind": "capability",
+    "name": "Mcp Registry Reload",
+    "description": "HEAVY: invalidate and rebuild the capability registry. Re-probes every tool, purges work_buddy.* from sys.modules, rebuilds every capability (~6-8s). Use ONLY after code changes to existing capability callables. For transient tool-probe failures (capability stuck in disabled state), use work_buddy.recovery.recheck_disabled_capability(name) instead — it re-probes only the relevant tools with a 30s cool-down. See architecture/capability-registry.",
+    "capability_name": "mcp_registry_reload",
+    "category": "status",
+    "aliases": [
+      "reload capabilities",
+      "refresh tools",
+      "pick up new capabilities",
+      "reload registry",
+      "register new functions",
+      "hot reload MCP",
+      "rebuild capability registry"
+    ],
+    "tags": [
+      "status",
+      "mcp",
+      "registry",
+      "reload"
+    ],
+    "parents": [
+      "status"
     ]
   },
   "memory/memory_prune": {
@@ -3987,7 +4126,7 @@
   "memory/memory_read": {
     "kind": "capability",
     "name": "Memory Read",
-    "description": "Read from personal memory (Hindsight). No LLM cost. Modes: 'search' (default) â€” semantic + keyword recall, use descriptive topic phrases with specific entity names for best results; 'model' â€” fetch a mental model by ID; 'recent' â€” list latest memories.",
+    "description": "Read from personal memory (Hindsight). No LLM cost. Modes: 'search' (default) — semantic + keyword recall, use descriptive topic phrases with specific entity names for best results; 'model' — fetch a mental model by ID; 'recent' — list latest memories.",
     "capability_name": "memory_read",
     "category": "memory",
     "aliases": [
@@ -4008,7 +4147,7 @@
       },
       "mode": {
         "type": "str",
-        "description": "search (default) â€” semantic + keyword recall. model â€” fetch a mental model (self-profile, work-patterns, blindspots, preferences, current-constraints). recent â€” list N most recent memories.",
+        "description": "search (default) — semantic + keyword recall. model — fetch a mental model (self-profile, work-patterns, blindspots, preferences, current-constraints). recent — list N most recent memories.",
         "required": false
       },
       "model_id": {
@@ -4118,503 +4257,37 @@
       "memory"
     ]
   },
-  "messaging/get_thread": {
+  "tasks/namespace_lookup": {
     "kind": "capability",
-    "name": "Get Thread",
-    "description": "Get all messages in a conversation thread",
-    "capability_name": "get_thread",
-    "category": "messaging",
+    "name": "Namespace Lookup",
+    "description": "Return the closest existing namespace tags to a single query. Designed for the 'did you mean?' check before minting a brand-new namespace — the agent calls this to confirm a proposed namespace isn't a near-duplicate of something that already exists.",
+    "capability_name": "namespace_lookup",
+    "category": "tasks",
     "aliases": [
-      "view conversation thread",
-      "message thread history",
-      "all messages in thread",
-      "read threaded messages",
-      "conversation history",
-      "thread transcript"
+      "did you mean namespace",
+      "nearest namespace",
+      "check namespace exists",
+      "namespace duplicate check"
     ],
     "parameters": {
-      "thread_id": {
+      "query": {
         "type": "str",
-        "description": "Thread ID",
+        "description": "Candidate namespace path or label (with or without leading '#')",
         "required": true
-      }
-    },
-    "tags": [
-      "messaging",
-      "get",
-      "thread"
-    ],
-    "parents": [
-      "messaging"
-    ]
-  },
-  "messaging/query_messages": {
-    "kind": "capability",
-    "name": "Query Messages",
-    "description": "Query messages by recipient, sender, status, or limit",
-    "capability_name": "query_messages",
-    "category": "messaging",
-    "aliases": [
-      "list messages",
-      "find messages",
-      "show inter-agent messages",
-      "recent messages",
-      "what messages have arrived",
-      "search messaging log",
-      "filter messages"
-    ],
-    "parameters": {
-      "recipient": {
-        "type": "str",
-        "description": "Filter by recipient",
-        "required": false
-      },
-      "sender": {
-        "type": "str",
-        "description": "Filter by sender",
-        "required": false
-      },
-      "status": {
-        "type": "str",
-        "description": "Filter by status (e.g., pending)",
-        "required": false
       },
       "limit": {
         "type": "int",
-        "description": "Max messages to return (default 50)",
+        "description": "Max results (default 5)",
         "required": false
       }
     },
     "tags": [
-      "messaging",
-      "query",
-      "messages"
+      "tasks",
+      "namespace",
+      "lookup"
     ],
     "parents": [
-      "messaging"
-    ]
-  },
-  "messaging/read_message": {
-    "kind": "capability",
-    "name": "Read Message",
-    "description": "Fetch a single message with full body content",
-    "capability_name": "read_message",
-    "category": "messaging",
-    "aliases": [
-      "open a message",
-      "read message contents",
-      "full message body",
-      "view specific message",
-      "fetch one message",
-      "show message body"
-    ],
-    "parameters": {
-      "msg_id": {
-        "type": "str",
-        "description": "Message ID",
-        "required": true
-      },
-      "session": {
-        "type": "str",
-        "description": "Session ID for read-tracking",
-        "required": false
-      }
-    },
-    "tags": [
-      "messaging",
-      "read",
-      "message"
-    ],
-    "parents": [
-      "messaging"
-    ]
-  },
-  "messaging/reply_to_message": {
-    "kind": "capability",
-    "name": "Reply To Message",
-    "description": "Reply to an existing message",
-    "capability_name": "reply_to_message",
-    "category": "messaging",
-    "aliases": [
-      "respond to message",
-      "answer a message",
-      "reply to another agent",
-      "continue conversation",
-      "message reply",
-      "acknowledge message"
-    ],
-    "parameters": {
-      "msg_id": {
-        "type": "str",
-        "description": "ID of message to reply to",
-        "required": true
-      },
-      "sender": {
-        "type": "str",
-        "description": "Sender project name",
-        "required": true
-      },
-      "body": {
-        "type": "str",
-        "description": "Reply body text",
-        "required": true
-      },
-      "type": {
-        "type": "str",
-        "description": "Reply type (default: ack)",
-        "required": false
-      }
-    },
-    "tags": [
-      "messaging",
-      "reply",
-      "to",
-      "message"
-    ],
-    "parents": [
-      "messaging"
-    ]
-  },
-  "messaging/send_message": {
-    "kind": "capability",
-    "name": "Send Message",
-    "description": "Send a message to another agent or project",
-    "capability_name": "send_message",
-    "category": "messaging",
-    "aliases": [
-      "send a message",
-      "message another agent",
-      "contact another session",
-      "ping another claude",
-      "notify another project",
-      "write to another session",
-      "inter-agent message"
-    ],
-    "parameters": {
-      "sender": {
-        "type": "str",
-        "description": "Sender project name",
-        "required": true
-      },
-      "recipient": {
-        "type": "str",
-        "description": "Recipient project name",
-        "required": true
-      },
-      "type": {
-        "type": "str",
-        "description": "Message type: status-update, question, result, escalation",
-        "required": true
-      },
-      "subject": {
-        "type": "str",
-        "description": "Message subject",
-        "required": true
-      },
-      "body": {
-        "type": "str",
-        "description": "Message body text",
-        "required": false
-      },
-      "thread_id": {
-        "type": "str",
-        "description": "Thread ID to continue a conversation",
-        "required": false
-      },
-      "priority": {
-        "type": "str",
-        "description": "Priority: low, normal, high, urgent",
-        "required": false
-      }
-    },
-    "tags": [
-      "messaging",
-      "send",
-      "message"
-    ],
-    "parents": [
-      "messaging"
-    ]
-  },
-  "messaging/update_message_status": {
-    "kind": "capability",
-    "name": "Update Message Status",
-    "description": "Update a message's status (e.g., pending → resolved)",
-    "capability_name": "update_message_status",
-    "category": "messaging",
-    "aliases": [
-      "mark message read",
-      "change message status",
-      "resolve a message",
-      "update message state",
-      "close out a message",
-      "message status change"
-    ],
-    "parameters": {
-      "msg_id": {
-        "type": "str",
-        "description": "Message ID",
-        "required": true
-      },
-      "new_status": {
-        "type": "str",
-        "description": "New status value",
-        "required": true
-      }
-    },
-    "tags": [
-      "messaging",
-      "update",
-      "message",
-      "status"
-    ],
-    "parents": [
-      "messaging"
-    ]
-  },
-  "notifications/consent/consent_grant": {
-    "kind": "capability",
-    "name": "Consent Grant",
-    "description": "LOW-LEVEL: Direct consent grant for deferred resolution ONLY. Do NOT use this to bypass the consent flow — use consent_request instead, which notifies the user and waits for their approval. This capability exists for: (1) manual resolution after a consent_request timeout when the user later approves out-of-band, (2) programmatic grants from surface callbacks. All grants are session-scoped. Modes: 'always' (24h), 'temporary' (TTL-based), 'once' (single-use).",
-    "capability_name": "consent_grant",
-    "category": "consent",
-    "aliases": [
-      "consent",
-      "permission",
-      "approve",
-      "allow",
-      "grant consent",
-      "give permission"
-    ],
-    "parameters": {
-      "operation": {
-        "type": "str",
-        "description": "Operation identifier from the consent_required response",
-        "required": true
-      },
-      "mode": {
-        "type": "str",
-        "description": "Grant mode: 'always', 'temporary', or 'once'",
-        "required": true
-      },
-      "ttl_minutes": {
-        "type": "int",
-        "description": "TTL in minutes (required for 'temporary' mode)",
-        "required": false
-      }
-    },
-    "mutates_state": true,
-    "retry_policy": "manual",
-    "tags": [
-      "consent",
-      "grant"
-    ],
-    "parents": [
-      "notifications/consent"
-    ]
-  },
-  "notifications/consent/consent_list": {
-    "kind": "capability",
-    "name": "Consent List",
-    "description": "List all consent entries with their status (mode, tier, expiry for temporary grants).",
-    "capability_name": "consent_list",
-    "category": "consent",
-    "aliases": [
-      "list consents",
-      "show permissions",
-      "consent status",
-      "what have I approved",
-      "current grants",
-      "session permissions",
-      "consent grants"
-    ],
-    "tags": [
-      "consent",
-      "list"
-    ],
-    "parents": [
-      "notifications/consent"
-    ]
-  },
-  "notifications/consent/consent_request": {
-    "kind": "capability",
-    "name": "Consent Request",
-    "description": "One-call consent flow: create a consent request, deliver to all available surfaces, and optionally poll + auto-resolve. The modal shows Allow always / Allow for N min / Allow once / Deny options. Without timeout_seconds: non-blocking (returns request_id for later polling via request_poll + consent_request_resolve). With timeout_seconds: blocks until user responds, then auto-resolves (writes the grant on approval, returns denial on deny). Max recommended timeout: 110s to stay within MCP limits.",
-    "capability_name": "consent_request",
-    "category": "consent",
-    "aliases": [
-      "consent",
-      "permission",
-      "approve operation",
-      "ask consent",
-      "request consent",
-      "consent modal"
-    ],
-    "parameters": {
-      "operation": {
-        "type": "str",
-        "description": "Operation identifier (same as @requires_consent keys)",
-        "required": true
-      },
-      "reason": {
-        "type": "str",
-        "description": "Human-readable explanation",
-        "required": true
-      },
-      "risk": {
-        "type": "str",
-        "description": "low, moderate, or high",
-        "required": false
-      },
-      "default_ttl": {
-        "type": "int",
-        "description": "Default TTL in minutes for temporary grants",
-        "required": false
-      },
-      "requester": {
-        "type": "str",
-        "description": "Who is requesting (e.g., sidecar:cron_cleanup)",
-        "required": false
-      },
-      "context": {
-        "type": "dict",
-        "description": "Optional metadata shown in the modal",
-        "required": false
-      },
-      "callback": {
-        "type": "dict",
-        "description": "Dispatch on approval: {capability, params}",
-        "required": false
-      },
-      "callback_session_id": {
-        "type": "str",
-        "description": "Resume this session on approval",
-        "required": false
-      },
-      "timeout_seconds": {
-        "type": "int",
-        "description": "Poll timeout. Omit for non-blocking. Max recommended: 110s",
-        "required": false
-      },
-      "interval_seconds": {
-        "type": "int",
-        "description": "Seconds between polls (default: 3)",
-        "required": false
-      },
-      "surfaces": {
-        "type": "list[str]",
-        "description": "Target surface names (e.g., ['dashboard']). Default: all available",
-        "required": false
-      }
-    },
-    "mutates_state": true,
-    "retry_policy": "manual",
-    "tags": [
-      "consent",
-      "request"
-    ],
-    "parents": [
-      "notifications/consent"
-    ]
-  },
-  "notifications/consent/consent_request_list": {
-    "kind": "capability",
-    "name": "Consent Request List",
-    "description": "List all pending (unresolved) consent requests.",
-    "capability_name": "consent_request_list",
-    "category": "consent",
-    "aliases": [
-      "pending requests",
-      "waiting for approval",
-      "consent queue",
-      "what needs approval",
-      "unresolved consent",
-      "approval queue"
-    ],
-    "tags": [
-      "consent",
-      "request",
-      "list"
-    ],
-    "parents": [
-      "notifications/consent"
-    ]
-  },
-  "notifications/consent/consent_request_resolve": {
-    "kind": "capability",
-    "name": "Consent Request Resolve",
-    "description": "Approve or deny a pending consent request. If approved, writes the grant and dispatches the callback (session resume or messaging).",
-    "capability_name": "consent_request_resolve",
-    "category": "consent",
-    "aliases": [
-      "approve consent",
-      "deny consent",
-      "resolve request",
-      "handle pending consent",
-      "grant or deny operation",
-      "respond to consent request",
-      "decide on permission"
-    ],
-    "parameters": {
-      "request_id": {
-        "type": "str",
-        "description": "The request ID to resolve",
-        "required": true
-      },
-      "approved": {
-        "type": "bool",
-        "description": "True to approve, False to deny",
-        "required": true
-      },
-      "mode": {
-        "type": "str",
-        "description": "Grant mode if approved: 'always', 'temporary', or 'once'",
-        "required": false
-      },
-      "ttl_minutes": {
-        "type": "int",
-        "description": "TTL in minutes (for 'temporary' mode)",
-        "required": false
-      }
-    },
-    "mutates_state": true,
-    "retry_policy": "manual",
-    "tags": [
-      "consent",
-      "request",
-      "resolve"
-    ],
-    "parents": [
-      "notifications/consent"
-    ]
-  },
-  "notifications/consent/consent_revoke": {
-    "kind": "capability",
-    "name": "Consent Revoke",
-    "description": "Revoke a previously granted consent for an operation.",
-    "capability_name": "consent_revoke",
-    "category": "consent",
-    "aliases": [
-      "revoke",
-      "deny",
-      "remove consent",
-      "block"
-    ],
-    "parameters": {
-      "operation": {
-        "type": "str",
-        "description": "Operation identifier to revoke",
-        "required": true
-      }
-    },
-    "mutates_state": true,
-    "retry_policy": "manual",
-    "tags": [
-      "consent",
-      "revoke"
-    ],
-    "parents": [
-      "notifications/consent"
+      "tasks"
     ]
   },
   "notifications/notification_list_pending": {
@@ -4702,150 +4375,6 @@
       "notifications"
     ]
   },
-  "notifications/request_poll": {
-    "kind": "capability",
-    "name": "Request Poll",
-    "description": "Check/wait for a response to a previously delivered request. Without timeout_seconds: single immediate check. With timeout_seconds: blocks until response or timeout (max recommended: 110s). Response is cleared from Obsidian after reading (one-shot).",
-    "capability_name": "request_poll",
-    "category": "notifications",
-    "aliases": [
-      "check response",
-      "poll modal",
-      "check obsidian",
-      "wait for response"
-    ],
-    "parameters": {
-      "notification_id": {
-        "type": "str",
-        "description": "The request ID to poll",
-        "required": true
-      },
-      "timeout_seconds": {
-        "type": "int",
-        "description": "Poll timeout. Omit for immediate check. Max recommended: 110s",
-        "required": false
-      },
-      "interval_seconds": {
-        "type": "int",
-        "description": "Seconds between polls (default: 3)",
-        "required": false
-      }
-    },
-    "tags": [
-      "notifications",
-      "request",
-      "poll"
-    ],
-    "parents": [
-      "notifications"
-    ]
-  },
-  "notifications/request_send": {
-    "kind": "capability",
-    "name": "Request Send",
-    "description": "Create a request, deliver to all available surfaces, and optionally poll for the user's response. Supports choice, boolean, freeform, and range response types. Without timeout_seconds: non-blocking (returns immediately, use request_poll later). With timeout_seconds: blocks until response or timeout (max recommended: 110s to stay within MCP call limits).",
-    "capability_name": "request_send",
-    "category": "notifications",
-    "aliases": [
-      "ask user",
-      "prompt user",
-      "request response",
-      "user input",
-      "show modal"
-    ],
-    "parameters": {
-      "title": {
-        "type": "str",
-        "description": "Request title",
-        "required": true
-      },
-      "body": {
-        "type": "str",
-        "description": "Request body/explanation",
-        "required": false
-      },
-      "response_type": {
-        "type": "str",
-        "description": "choice, boolean, freeform, range, custom",
-        "required": false
-      },
-      "choices": {
-        "type": "list",
-        "description": "For choice type: [{key, label, description}]",
-        "required": false
-      },
-      "number_range": {
-        "type": "dict",
-        "description": "For range type: {min, max, step}",
-        "required": false
-      },
-      "custom_template": {
-        "type": "dict",
-        "description": "For custom type: surface-specific rendering data (e.g., {type: 'triage_clarify', presentation: ...})",
-        "required": false
-      },
-      "source": {
-        "type": "str",
-        "description": "Who is sending",
-        "required": false
-      },
-      "source_type": {
-        "type": "str",
-        "description": "agent or programmatic",
-        "required": false
-      },
-      "priority": {
-        "type": "str",
-        "description": "low, normal, high, urgent",
-        "required": false
-      },
-      "callback": {
-        "type": "dict",
-        "description": "Dispatch on response: {capability, params}",
-        "required": false
-      },
-      "callback_session_id": {
-        "type": "str",
-        "description": "Resume this session on response",
-        "required": false
-      },
-      "tags": {
-        "type": "list",
-        "description": "Tags for filtering",
-        "required": false
-      },
-      "surfaces": {
-        "type": "list",
-        "description": "Target surfaces (e.g. ['telegram']). Default: all available.",
-        "required": false
-      },
-      "timeout_seconds": {
-        "type": "int",
-        "description": "Poll timeout. Omit for non-blocking. Max recommended: 110s",
-        "required": false
-      },
-      "interval_seconds": {
-        "type": "int",
-        "description": "Seconds between polls (default: 3)",
-        "required": false
-      },
-      "expandable": {
-        "type": "bool",
-        "description": "None=auto-detect, True=rich dashboard view, False=toast-only.",
-        "required": false
-      }
-    },
-    "mutates_state": true,
-    "retry_policy": "manual",
-    "tags": [
-      "notifications",
-      "request",
-      "send"
-    ],
-    "parents": [
-      "notifications"
-    ]
-  },
   "obsidian/obsidian_retry": {
     "kind": "capability",
     "name": "Obsidian Retry",
@@ -4885,33 +4414,30 @@
       "obsidian"
     ]
   },
-  "operations/retry": {
+  "contracts/overdue_contracts": {
     "kind": "capability",
-    "name": "Retry",
-    "description": "Retry a previously recorded operation by its ID. Use wb_status() to discover recent/pending operations after a timeout. Operations with retry_policy='manual' cannot be auto-retried. Operations with an active execution lease will be refused to prevent double-dispatch.",
-    "capability_name": "retry",
-    "category": "operations",
+    "name": "Overdue Contracts",
+    "description": "List contracts past their deadline",
+    "capability_name": "overdue_contracts",
+    "category": "contracts",
     "aliases": [
-      "retry",
-      "replay",
-      "re-run",
-      "retry operation"
+      "late contracts",
+      "past due deliverables",
+      "missed deadlines",
+      "overdue work",
+      "what's late",
+      "past deadline",
+      "contracts over deadline"
     ],
-    "parameters": {
-      "operation_id": {
-        "type": "str",
-        "required": true,
-        "description": "The operation ID from a wb_run response or wb_status output"
-      }
-    },
-    "mutates_state": true,
-    "retry_policy": "manual",
+    "requires": [
+      "obsidian"
+    ],
     "tags": [
-      "operations",
-      "retry"
+      "contracts",
+      "overdue"
     ],
     "parents": [
-      "operations"
+      "contracts"
     ]
   },
   "projects/project_add_alias": {
@@ -5584,605 +5110,85 @@
       "projects"
     ]
   },
-  "status/claude_code_usage_scan": {
+  "messaging/query_messages": {
     "kind": "capability",
-    "name": "Claude Code Usage Scan",
-    "description": "Scan Claude Code's local transcript JSONLs into the cost cache (~/.claude/projects/**/*.jsonl). Incremental by default. Use full_rebuild=true after a pricing or schema change.",
-    "capability_name": "claude_code_usage_scan",
-    "category": "llm",
+    "name": "Query Messages",
+    "description": "Query messages by recipient, sender, status, or limit",
+    "capability_name": "query_messages",
+    "category": "messaging",
     "aliases": [
-      "claude usage",
-      "claude code usage",
-      "transcript scan",
-      "ingest claude code activity",
-      "rescan costs"
+      "list messages",
+      "find messages",
+      "show inter-agent messages",
+      "recent messages",
+      "what messages have arrived",
+      "search messaging log",
+      "filter messages"
     ],
     "parameters": {
-      "full_rebuild": {
-        "type": "bool",
-        "description": "Drop and rebuild the cache (default false).",
-        "required": false
-      }
-    },
-    "mutates_state": true,
-    "retry_policy": "manual",
-    "tags": [
-      "llm",
-      "claude",
-      "code",
-      "usage",
-      "scan"
-    ],
-    "parents": [
-      "status"
-    ]
-  },
-  "status/dashboard_interact": {
-    "kind": "capability",
-    "name": "Dashboard Interact",
-    "description": "Drive a dashboard form on the user's behalf — fill fields, open the form, click submit, or read current state. Single typed entry point for chat-walkthrough agents; each call is validated against the form's registered FormSchema before anything reaches the frontend. See the brief's structural section for the form_id and field names you can address.",
-    "capability_name": "dashboard_interact",
-    "category": "status",
-    "aliases": [
-      "fill form",
-      "click submit",
-      "drive ui",
-      "agent ui interaction",
-      "form bridge",
-      "set form field"
-    ],
-    "parameters": {
-      "action": {
+      "recipient": {
         "type": "str",
-        "description": "One of: form_field_set, form_open, form_submit, form_get_state.",
-        "required": true
+        "description": "Filter by recipient",
+        "required": false
       },
-      "form_id": {
+      "sender": {
         "type": "str",
-        "description": "Registered form to address (e.g. 'jobs-add-job').",
-        "required": true
+        "description": "Filter by sender",
+        "required": false
       },
-      "field": {
+      "status": {
         "type": "str",
-        "description": "Field name (form_field_set only).",
+        "description": "Filter by status (e.g., pending)",
         "required": false
       },
-      "value": {
-        "type": "any",
-        "description": "Field value (form_field_set only). Type-checked against the field's declared type in the schema.",
-        "required": false
-      },
-      "timeout_seconds": {
-        "type": "float",
-        "description": "Rendezvous timeout for form_submit / form_get_state in seconds. Default 10. Ignored for other actions.",
-        "required": false
-      }
-    },
-    "mutates_state": true,
-    "retry_policy": "manual",
-    "tags": [
-      "status",
-      "dashboard",
-      "interact"
-    ],
-    "parents": [
-      "status"
-    ]
-  },
-  "status/escalation_recent": {
-    "kind": "capability",
-    "name": "Escalation Recent",
-    "description": "Recent LLM-escalation observability records. Each record is one logical job (one LLMRunner.call OR one adapter-level escalation chain across multiple calls) with its full per-tier attempt list, final outcome, and trace correlation.",
-    "capability_name": "escalation_recent",
-    "category": "llm",
-    "aliases": [
-      "tier escalation",
-      "escalation log",
-      "what tier answered",
-      "did this escalate",
-      "fallback chain",
-      "model fallback",
-      "validation failed",
-      "tier observability"
-    ],
-    "parameters": {
       "limit": {
         "type": "int",
-        "description": "Max records to return (newest first). Default 50.",
-        "required": false
-      },
-      "trace_id": {
-        "type": "str",
-        "description": "Filter by exact trace_id correlation token.",
-        "required": false
-      },
-      "final_outcome": {
-        "type": "str",
-        "description": "Filter by final_outcome ('success', 'backend_error', 'validation_failed', 'empty_content', 'exhausted').",
-        "required": false
-      },
-      "source": {
-        "type": "str",
-        "description": "Filter by source ('llm_runner', 'journal_segmenter', 'verdict_call').",
-        "required": false
-      },
-      "summary": {
-        "type": "bool",
-        "description": "When true, return aggregate counts (by source / outcome / final_tier, plus 'escalated_past_first') instead of records.",
+        "description": "Max messages to return (default 50)",
         "required": false
       }
     },
     "tags": [
-      "llm",
-      "escalation",
-      "recent"
+      "messaging",
+      "query",
+      "messages"
     ],
     "parents": [
-      "status"
+      "messaging"
     ]
   },
-  "status/feature_status": {
+  "messaging/read_message": {
     "kind": "capability",
-    "name": "Feature Status",
-    "description": "Show which tools, features, and capabilities are available or disabled, and why. Use this to diagnose missing integrations.",
-    "capability_name": "feature_status",
-    "category": "status",
+    "name": "Read Message",
+    "description": "Fetch a single message with full body content",
+    "capability_name": "read_message",
+    "category": "messaging",
     "aliases": [
-      "tools",
-      "integrations",
-      "what's available",
-      "feature toggle",
-      "disabled",
-      "unavailable"
+      "open a message",
+      "read message contents",
+      "full message body",
+      "view specific message",
+      "fetch one message",
+      "show message body"
     ],
     "parameters": {
-      "verbose": {
-        "type": "bool",
-        "description": "Include probe timing and config details",
-        "required": false
+      "msg_id": {
+        "type": "str",
+        "description": "Message ID",
+        "required": true
       },
-      "force": {
-        "type": "bool",
-        "description": "Re-run all tool probes fresh instead of reading the cached result. Use when a previously-failed tool (e.g. Obsidian) may now be available.",
+      "session": {
+        "type": "str",
+        "description": "Session ID for read-tracking",
         "required": false
       }
     },
     "tags": [
-      "status",
-      "feature"
+      "messaging",
+      "read",
+      "message"
     ],
     "parents": [
-      "status"
-    ]
-  },
-  "status/list_sessions": {
-    "kind": "capability",
-    "name": "List Sessions",
-    "description": "List all known agent sessions with metadata",
-    "capability_name": "list_sessions",
-    "category": "status",
-    "aliases": [
-      "what sessions exist",
-      "all agent sessions",
-      "session directory",
-      "recent sessions",
-      "known agents",
-      "list agent sessions"
-    ],
-    "tags": [
-      "status",
-      "list",
-      "sessions"
-    ],
-    "parents": [
-      "status"
-    ]
-  },
-  "status/llm_call": {
-    "kind": "capability",
-    "name": "Llm Call",
-    "description": "Make a single LLM API call (Tier 2 execution). Cheaper than spawning a full agent session. Supports freeform text or structured JSON output via output_schema (inline dict or named schema from work_buddy/llm/schemas/). Routes to Claude via 'tier' or to a local/remote OpenAI-compatible server (LM Studio, vLLM, Ollama) via 'profile'. Handles caching and cost tracking automatically.",
-    "capability_name": "llm_call",
-    "category": "llm",
-    "aliases": [
-      "api call",
-      "llm call",
-      "claude api",
-      "structured output",
-      "haiku call",
-      "simple reasoning",
-      "cheap llm",
-      "classify",
-      "analyze",
-      "local llm",
-      "lm studio",
-      "qwen"
-    ],
-    "parameters": {
-      "system": {
-        "type": "str",
-        "description": "System prompt",
-        "required": true
-      },
-      "user": {
-        "type": "str",
-        "description": "User message content",
-        "required": true
-      },
-      "output_schema": {
-        "type": "dict|str",
-        "description": "JSON Schema for structured output. Pass a dict for inline schemas, or a string name to load from work_buddy/llm/schemas/<name>.json. Omit for freeform text.",
-        "required": false
-      },
-      "tier": {
-        "type": "str",
-        "description": "Cloud model tier: 'haiku' (default if no profile given), 'sonnet', or 'opus'. Mutually exclusive with 'profile'.",
-        "required": false
-      },
-      "profile": {
-        "type": "str",
-        "description": "Named local/remote profile (e.g. 'local_general') declared under llm.profiles in config. Routes through the profile's backend instead of Anthropic. Mutually exclusive with 'tier'.",
-        "required": false
-      },
-      "max_tokens": {
-        "type": "int",
-        "description": "Max response tokens (default: 1024)",
-        "required": false
-      },
-      "temperature": {
-        "type": "float",
-        "description": "Sampling temperature (default: 0.0)",
-        "required": false
-      },
-      "cache_ttl_minutes": {
-        "type": "int",
-        "description": "Cache TTL in minutes. None=config default, 0=no cache.",
-        "required": false
-      }
-    },
-    "tags": [
-      "llm",
-      "call"
-    ],
-    "parents": [
-      "status"
-    ]
-  },
-  "status/llm_costs": {
-    "kind": "capability",
-    "name": "Llm Costs",
-    "description": "Check LLM token usage, costs, and breakdown for this session. Shows per-task costs, per-model costs, cache hit rates, and top callers.",
-    "capability_name": "llm_costs",
-    "category": "status",
-    "aliases": [
-      "llm costs",
-      "token usage",
-      "api costs",
-      "how much has haiku cost",
-      "llm spending"
-    ],
-    "parameters": {
-      "breakdown": {
-        "type": "bool",
-        "description": "Show per-task and per-model breakdown (default: false)",
-        "required": false
-      }
-    },
-    "tags": [
-      "status",
-      "llm",
-      "costs"
-    ],
-    "parents": [
-      "status"
-    ]
-  },
-  "status/llm_costs_query": {
-    "kind": "capability",
-    "name": "Llm Costs Query",
-    "description": "Aggregate LLM cost / usage across one or both data sources (work-buddy's per-call internal log + Claude Code transcripts). Smart parameters: time window (named or ISO range), group_by (project, model, session, day, tool), source filter, min_cost / project / model filters, and previous-window comparison. Single capability covering most cost questions.",
-    "capability_name": "llm_costs_query",
-    "category": "llm",
-    "aliases": [
-      "llm costs",
-      "llm spend",
-      "how much have i spent",
-      "claude api costs",
-      "cost by project",
-      "cost by model",
-      "weekly spend",
-      "monthly spend",
-      "expensive sessions",
-      "burn rate",
-      "cost trend",
-      "spend comparison"
-    ],
-    "parameters": {
-      "window": {
-        "type": "str",
-        "description": "Time window. Named: 'today', 'yesterday', '7d', '30d', '90d', 'month_to_date', 'all'. ISO range: 'YYYY-MM-DD..YYYY-MM-DD'. Single day: 'YYYY-MM-DD'. Default '30d'.",
-        "required": false
-      },
-      "group_by": {
-        "type": "str",
-        "description": "Optional breakdown: 'project', 'model', 'session', 'day', 'tool'. Omit for top-line totals only.",
-        "required": false
-      },
-      "source": {
-        "type": "str",
-        "description": "'all' (default), 'internal' (work-buddy's runner calls), or 'claude_code' (Claude Code transcripts).",
-        "required": false
-      },
-      "min_cost": {
-        "type": "float",
-        "description": "Filter rows where cost_usd < this. Default 0.",
-        "required": false
-      },
-      "project": {
-        "type": "str",
-        "description": "Substring match on project name / cwd.",
-        "required": false
-      },
-      "model": {
-        "type": "str",
-        "description": "Exact-match model filter (e.g. 'claude-sonnet-4-6').",
-        "required": false
-      },
-      "top_n": {
-        "type": "int",
-        "description": "Cap on grouped rows. Default 10. Pass 0 for no cap.",
-        "required": false
-      },
-      "include_local": {
-        "type": "bool",
-        "description": "Include local-LLM rows? Default true.",
-        "required": false
-      },
-      "compare_to_previous": {
-        "type": "bool",
-        "description": "Include previous-equivalent-window comparison (delta_pct_cost, delta_pct_calls). Default true.",
-        "required": false
-      }
-    },
-    "tags": [
-      "llm",
-      "costs",
-      "query"
-    ],
-    "parents": [
-      "status"
-    ]
-  },
-  "status/llm_submit": {
-    "kind": "capability",
-    "name": "Llm Submit",
-    "description": "Asynchronously submit an llm_call for background execution. Returns immediately with an operation_id; the sidecar's retry sweep invokes llm_call with your params and messages the originating session on completion. Use when local inference latency (tens of seconds) would block the caller unnecessarily. For synchronous bounded calls use llm_call. Cloud tier calls are already fast — no point submitting them; profile is therefore required.",
-    "capability_name": "llm_submit",
-    "category": "llm",
-    "aliases": [
-      "async llm",
-      "background llm",
-      "queue llm call",
-      "submit llm",
-      "defer llm",
-      "fire and forget",
-      "autodream",
-      "background inference"
-    ],
-    "parameters": {
-      "system": {
-        "type": "str",
-        "description": "System prompt",
-        "required": true
-      },
-      "user": {
-        "type": "str",
-        "description": "User message content",
-        "required": true
-      },
-      "profile": {
-        "type": "str",
-        "description": "Named local/remote profile (e.g. 'local_general'). Required — submits are for local profiles only.",
-        "required": true
-      },
-      "output_schema": {
-        "type": "dict|str",
-        "description": "JSON Schema for structured output. Pass a dict for inline schemas, or a string name to load from work_buddy/llm/schemas/<name>.json. Omit for freeform.",
-        "required": false
-      },
-      "max_tokens": {
-        "type": "int",
-        "description": "Max response tokens (default: 1024)",
-        "required": false
-      },
-      "temperature": {
-        "type": "float",
-        "description": "Sampling temperature (default: 0.0)",
-        "required": false
-      },
-      "cache_ttl_minutes": {
-        "type": "int",
-        "description": "Cache TTL in minutes. None=config default, 0=no cache.",
-        "required": false
-      }
-    },
-    "tags": [
-      "llm",
-      "submit"
-    ],
-    "parents": [
-      "status"
-    ]
-  },
-  "status/llm_with_tools": {
-    "kind": "capability",
-    "name": "Llm With Tools",
-    "description": "Invoke a local model with restricted work-buddy MCP tool access, so it can look things up (projects, tasks, journal, context) while answering. Tool access is limited to a named preset defined in work_buddy/llm/tool_presets.py (currently: 'readonly_safe', 'readonly_context'). No arbitrary tool list accepted at call time — presets are the security boundary. Requires 'profile' and 'tool_preset'.",
-    "capability_name": "llm_with_tools",
-    "category": "llm",
-    "aliases": [
-      "local llm with tools",
-      "llm tool access",
-      "mcp tools local",
-      "contextualize local",
-      "local model tools",
-      "lm studio mcp",
-      "qwen with tools",
-      "tool use local"
-    ],
-    "parameters": {
-      "system": {
-        "type": "str",
-        "description": "System prompt (becomes 'instructions' on the native chat request)",
-        "required": true
-      },
-      "user": {
-        "type": "str",
-        "description": "User query (becomes 'input')",
-        "required": true
-      },
-      "profile": {
-        "type": "str",
-        "description": "Named local profile (e.g., 'local_general') — must be LM Studio-backed",
-        "required": true
-      },
-      "tool_preset": {
-        "type": "str",
-        "description": "Named whitelist of allowed work-buddy tools. Currently: 'readonly_safe', 'readonly_context'. Presets are code, not config — defined in work_buddy/llm/tool_presets.py.",
-        "required": true
-      },
-      "required_capabilities": {
-        "type": "list[str]",
-        "description": "Optional list of capability names the model MUST be able to call (e.g. ['update-journal', 'journal_write']). Pre-flight checked against the preset; if any are missing, the call fails fast with an explicit error. Use this to catch goal-preset mismatches — e.g. running a workflow from a read-only preset that doesn't include the workflow's name.",
-        "required": false
-      },
-      "previous_response_id": {
-        "type": "str",
-        "description": "Continue a prior LM Studio stateful-chat turn",
-        "required": false
-      },
-      "max_tokens": {
-        "type": "int",
-        "description": "Output budget. Default 4096 (tool-calling eats tokens).",
-        "required": false
-      },
-      "temperature": {
-        "type": "float",
-        "description": "Sampling temperature (default 0.0)",
-        "required": false
-      },
-      "store": {
-        "type": "bool",
-        "description": "Let LM Studio retain this turn server-side (default False)",
-        "required": false
-      },
-      "persist_tool_results": {
-        "type": "bool",
-        "description": "When True, raw MCP tool outputs are saved to the artifact store and the artifact id is embedded in each tool_calls entry (output_artifact_id). Default False — responses contain only tool-call metadata, not raw output. Errors auto-escalate to persist regardless of this flag.",
-        "required": false
-      }
-    },
-    "invokes": [
-      "active_contracts",
-      "activity_timeline",
-      "agent_docs",
-      "artifact_get",
-      "artifact_list",
-      "chrome_activity",
-      "chrome_content",
-      "chrome_infer",
-      "context_bundle",
-      "context_calendar",
-      "context_chat",
-      "context_chrome",
-      "context_git",
-      "context_messages",
-      "context_obsidian",
-      "context_projects",
-      "context_search",
-      "context_smart",
-      "context_tasks",
-      "context_wellness",
-      "contract_constraints",
-      "contract_health",
-      "contract_wip_check",
-      "contracts_summary",
-      "conversation_list",
-      "datacore_compile_plan",
-      "datacore_evaluate",
-      "datacore_fullquery",
-      "datacore_get_page",
-      "datacore_query",
-      "datacore_run_plan",
-      "datacore_schema",
-      "datacore_status",
-      "datacore_validate",
-      "day_planner",
-      "feature_status",
-      "get_thread",
-      "hot_files",
-      "ir_index",
-      "journal_state",
-      "knowledge",
-      "knowledge_personal",
-      "list_sessions",
-      "overdue_contracts",
-      "project_get",
-      "project_list",
-      "query_messages",
-      "read_message",
-      "running_notes",
-      "service_health",
-      "session_activity",
-      "session_commits",
-      "session_expand",
-      "session_get",
-      "session_locate",
-      "session_search",
-      "session_summary",
-      "session_uncommitted",
-      "sidecar_jobs",
-      "sidecar_status",
-      "stale_contracts",
-      "tailscale_status",
-      "task_briefing",
-      "task_review_inbox",
-      "task_scattered",
-      "task_stale_check",
-      "weekly_review_data"
-    ],
-    "tags": [
-      "llm",
-      "with",
-      "tools"
-    ],
-    "parents": [
-      "status"
-    ]
-  },
-  "status/mcp_registry_reload": {
-    "kind": "capability",
-    "name": "Mcp Registry Reload",
-    "description": "HEAVY: invalidate and rebuild the capability registry. Re-probes every tool, purges work_buddy.* from sys.modules, rebuilds every capability (~6-8s). Use ONLY after code changes to existing capability callables. For transient tool-probe failures (capability stuck in disabled state), use work_buddy.recovery.recheck_disabled_capability(name) instead — it re-probes only the relevant tools with a 30s cool-down. See architecture/capability-registry.",
-    "capability_name": "mcp_registry_reload",
-    "category": "status",
-    "aliases": [
-      "reload capabilities",
-      "refresh tools",
-      "pick up new capabilities",
-      "reload registry",
-      "register new functions",
-      "hot reload MCP",
-      "rebuild capability registry"
-    ],
-    "tags": [
-      "status",
-      "mcp",
-      "registry",
-      "reload"
-    ],
-    "parents": [
-      "status"
+      "messaging"
     ]
   },
   "status/remote_session_begin": {
@@ -6273,6 +5279,338 @@
       "status"
     ]
   },
+  "messaging/reply_to_message": {
+    "kind": "capability",
+    "name": "Reply To Message",
+    "description": "Reply to an existing message",
+    "capability_name": "reply_to_message",
+    "category": "messaging",
+    "aliases": [
+      "respond to message",
+      "answer a message",
+      "reply to another agent",
+      "continue conversation",
+      "message reply",
+      "acknowledge message"
+    ],
+    "parameters": {
+      "msg_id": {
+        "type": "str",
+        "description": "ID of message to reply to",
+        "required": true
+      },
+      "sender": {
+        "type": "str",
+        "description": "Sender project name",
+        "required": true
+      },
+      "body": {
+        "type": "str",
+        "description": "Reply body text",
+        "required": true
+      },
+      "type": {
+        "type": "str",
+        "description": "Reply type (default: ack)",
+        "required": false
+      }
+    },
+    "tags": [
+      "messaging",
+      "reply",
+      "to",
+      "message"
+    ],
+    "parents": [
+      "messaging"
+    ]
+  },
+  "notifications/request_poll": {
+    "kind": "capability",
+    "name": "Request Poll",
+    "description": "Check/wait for a response to a previously delivered request. Without timeout_seconds: single immediate check. With timeout_seconds: blocks until response or timeout (max recommended: 110s). Response is cleared from Obsidian after reading (one-shot).",
+    "capability_name": "request_poll",
+    "category": "notifications",
+    "aliases": [
+      "check response",
+      "poll modal",
+      "check obsidian",
+      "wait for response"
+    ],
+    "parameters": {
+      "notification_id": {
+        "type": "str",
+        "description": "The request ID to poll",
+        "required": true
+      },
+      "timeout_seconds": {
+        "type": "int",
+        "description": "Poll timeout. Omit for immediate check. Max recommended: 110s",
+        "required": false
+      },
+      "interval_seconds": {
+        "type": "int",
+        "description": "Seconds between polls (default: 3)",
+        "required": false
+      }
+    },
+    "tags": [
+      "notifications",
+      "request",
+      "poll"
+    ],
+    "parents": [
+      "notifications"
+    ]
+  },
+  "notifications/request_send": {
+    "kind": "capability",
+    "name": "Request Send",
+    "description": "Create a request, deliver to all available surfaces, and optionally poll for the user's response. Supports choice, boolean, freeform, and range response types. Without timeout_seconds: non-blocking (returns immediately, use request_poll later). With timeout_seconds: blocks until response or timeout (max recommended: 110s to stay within MCP call limits).",
+    "capability_name": "request_send",
+    "category": "notifications",
+    "aliases": [
+      "ask user",
+      "prompt user",
+      "request response",
+      "user input",
+      "show modal"
+    ],
+    "parameters": {
+      "title": {
+        "type": "str",
+        "description": "Request title",
+        "required": true
+      },
+      "body": {
+        "type": "str",
+        "description": "Request body/explanation",
+        "required": false
+      },
+      "response_type": {
+        "type": "str",
+        "description": "choice, boolean, freeform, range, custom",
+        "required": false
+      },
+      "choices": {
+        "type": "list",
+        "description": "For choice type: [{key, label, description}]",
+        "required": false
+      },
+      "number_range": {
+        "type": "dict",
+        "description": "For range type: {min, max, step}",
+        "required": false
+      },
+      "custom_template": {
+        "type": "dict",
+        "description": "For custom type: surface-specific rendering data (e.g., {type: 'triage_clarify', presentation: ...})",
+        "required": false
+      },
+      "source": {
+        "type": "str",
+        "description": "Who is sending",
+        "required": false
+      },
+      "source_type": {
+        "type": "str",
+        "description": "agent or programmatic",
+        "required": false
+      },
+      "priority": {
+        "type": "str",
+        "description": "low, normal, high, urgent",
+        "required": false
+      },
+      "callback": {
+        "type": "dict",
+        "description": "Dispatch on response: {capability, params}",
+        "required": false
+      },
+      "callback_session_id": {
+        "type": "str",
+        "description": "Resume this session on response",
+        "required": false
+      },
+      "tags": {
+        "type": "list",
+        "description": "Tags for filtering",
+        "required": false
+      },
+      "surfaces": {
+        "type": "list",
+        "description": "Target surfaces (e.g. ['telegram']). Default: all available.",
+        "required": false
+      },
+      "timeout_seconds": {
+        "type": "int",
+        "description": "Poll timeout. Omit for non-blocking. Max recommended: 110s",
+        "required": false
+      },
+      "interval_seconds": {
+        "type": "int",
+        "description": "Seconds between polls (default: 3)",
+        "required": false
+      },
+      "expandable": {
+        "type": "bool",
+        "description": "None=auto-detect, True=rich dashboard view, False=toast-only.",
+        "required": false
+      }
+    },
+    "mutates_state": true,
+    "retry_policy": "manual",
+    "tags": [
+      "notifications",
+      "request",
+      "send"
+    ],
+    "parents": [
+      "notifications"
+    ]
+  },
+  "operations/retry": {
+    "kind": "capability",
+    "name": "Retry",
+    "description": "Retry a previously recorded operation by its ID. Use wb_status() to discover recent/pending operations after a timeout. Operations with retry_policy='manual' cannot be auto-retried. Operations with an active execution lease will be refused to prevent double-dispatch.",
+    "capability_name": "retry",
+    "category": "operations",
+    "aliases": [
+      "retry",
+      "replay",
+      "re-run",
+      "retry operation"
+    ],
+    "parameters": {
+      "operation_id": {
+        "type": "str",
+        "required": true,
+        "description": "The operation ID from a wb_run response or wb_status output"
+      }
+    },
+    "mutates_state": true,
+    "retry_policy": "manual",
+    "tags": [
+      "operations",
+      "retry"
+    ],
+    "parents": [
+      "operations"
+    ]
+  },
+  "journal/running_notes": {
+    "kind": "capability",
+    "name": "Running Notes",
+    "description": "Read the Running Notes section from the user's daily journal. This is the primary stream-of-consciousness capture zone where the user records ideas, observations, and notes throughout the day. Supports filtering by date range, last N days, or same-day only. Call with same_day=true for just today's entries, or days=N for recent history.",
+    "capability_name": "running_notes",
+    "category": "journal",
+    "aliases": [
+      "journal notes today",
+      "read daily notes",
+      "user's recent thoughts and observations",
+      "stream of consciousness capture",
+      "journal running notes content"
+    ],
+    "parameters": {
+      "same_day": {
+        "type": "bool",
+        "description": "Only notes from the journal's own date (no carried-over content)",
+        "required": false
+      },
+      "days": {
+        "type": "int",
+        "description": "Most recent N days (today=1). Cannot combine with start/stop.",
+        "required": false
+      },
+      "start": {
+        "type": "str",
+        "description": "Include notes from this date onward (YYYY-MM-DD, inclusive)",
+        "required": false
+      },
+      "stop": {
+        "type": "str",
+        "description": "Include notes up to this date (YYYY-MM-DD, inclusive)",
+        "required": false
+      },
+      "journal_date": {
+        "type": "str",
+        "description": "Journal file date (YYYY-MM-DD). Default: today.",
+        "required": false
+      }
+    },
+    "requires": [
+      "obsidian"
+    ],
+    "tags": [
+      "journal",
+      "running",
+      "notes"
+    ],
+    "parents": [
+      "journal"
+    ]
+  },
+  "messaging/send_message": {
+    "kind": "capability",
+    "name": "Send Message",
+    "description": "Send a message to another agent or project",
+    "capability_name": "send_message",
+    "category": "messaging",
+    "aliases": [
+      "send a message",
+      "message another agent",
+      "contact another session",
+      "ping another claude",
+      "notify another project",
+      "write to another session",
+      "inter-agent message"
+    ],
+    "parameters": {
+      "sender": {
+        "type": "str",
+        "description": "Sender project name",
+        "required": true
+      },
+      "recipient": {
+        "type": "str",
+        "description": "Recipient project name",
+        "required": true
+      },
+      "type": {
+        "type": "str",
+        "description": "Message type: status-update, question, result, escalation",
+        "required": true
+      },
+      "subject": {
+        "type": "str",
+        "description": "Message subject",
+        "required": true
+      },
+      "body": {
+        "type": "str",
+        "description": "Message body text",
+        "required": false
+      },
+      "thread_id": {
+        "type": "str",
+        "description": "Thread ID to continue a conversation",
+        "required": false
+      },
+      "priority": {
+        "type": "str",
+        "description": "Priority: low, normal, high, urgent",
+        "required": false
+      }
+    },
+    "tags": [
+      "messaging",
+      "send",
+      "message"
+    ],
+    "parents": [
+      "messaging"
+    ]
+  },
   "status/service_health": {
     "kind": "capability",
     "name": "Service Health",
@@ -6351,6 +5689,168 @@
       "status"
     ]
   },
+  "context/session_commits": {
+    "kind": "capability",
+    "name": "Session Commits",
+    "description": "Extract git commits made during Claude Code sessions. Parses raw JSONL for Bash tool calls containing 'git commit' and their results. Scope to one session or scan all recent sessions.",
+    "capability_name": "session_commits",
+    "category": "context",
+    "aliases": [
+      "commits in session",
+      "what was committed",
+      "git commits from conversation",
+      "session git history",
+      "what did the agent commit"
+    ],
+    "parameters": {
+      "session_id": {
+        "type": "str",
+        "description": "Full or partial session UUID. If omitted, scans all recent sessions.",
+        "required": false
+      },
+      "days": {
+        "type": "int",
+        "description": "Lookback window when scanning all sessions (default 7)",
+        "required": false
+      }
+    },
+    "tags": [
+      "context",
+      "session",
+      "commits"
+    ],
+    "parents": [
+      "context"
+    ]
+  },
+  "context/session_expand": {
+    "kind": "capability",
+    "name": "Session Expand",
+    "description": "Full context around a specific message in a session. Returns untruncated text for the target and surrounding messages.",
+    "capability_name": "session_expand",
+    "category": "context",
+    "aliases": [
+      "expand message",
+      "message context",
+      "surrounding messages",
+      "zoom into a message",
+      "show context window",
+      "what came before this message",
+      "conversation context around message"
+    ],
+    "parameters": {
+      "session_id": {
+        "type": "str",
+        "description": "Full or partial (8-char) session UUID",
+        "required": true
+      },
+      "message_index": {
+        "type": "int",
+        "description": "Zero-based message index",
+        "required": true
+      },
+      "context_window": {
+        "type": "int",
+        "description": "Messages before+after to include (default 5)",
+        "required": false
+      }
+    },
+    "tags": [
+      "context",
+      "session",
+      "expand"
+    ],
+    "parents": [
+      "context"
+    ]
+  },
+  "context/session_get": {
+    "kind": "capability",
+    "name": "Session Get",
+    "description": "Browse messages in a Claude Code session. Paginated with role/type filtering. Use after context_search finds a session.",
+    "capability_name": "session_get",
+    "category": "context",
+    "aliases": [
+      "inspect session",
+      "browse conversation",
+      "session messages",
+      "read session",
+      "drill into session"
+    ],
+    "parameters": {
+      "session_id": {
+        "type": "str",
+        "description": "Full or partial (8-char) session UUID",
+        "required": true
+      },
+      "offset": {
+        "type": "int",
+        "description": "Start index (default 0)",
+        "required": false
+      },
+      "limit": {
+        "type": "int",
+        "description": "Max messages to return (default 10)",
+        "required": false
+      },
+      "roles": {
+        "type": "str",
+        "description": "Comma-separated: 'user', 'assistant'",
+        "required": false
+      },
+      "message_types": {
+        "type": "str",
+        "description": "Comma-separated: 'text' (has text content), 'tool_use' (has tool calls)",
+        "required": false
+      },
+      "query": {
+        "type": "str",
+        "description": "Substring filter on message text (case-insensitive)",
+        "required": false
+      }
+    },
+    "tags": [
+      "context",
+      "session",
+      "get"
+    ],
+    "parents": [
+      "context"
+    ]
+  },
+  "context/session_locate": {
+    "kind": "capability",
+    "name": "Session Locate",
+    "description": "Jump from a context_search hit to the relevant conversation page. Takes a span_index from search result metadata and returns messages centered on that chunk.",
+    "capability_name": "session_locate",
+    "category": "context",
+    "aliases": [
+      "find chunk in session",
+      "locate search hit",
+      "span to messages",
+      "search result context"
+    ],
+    "parameters": {
+      "session_id": {
+        "type": "str",
+        "description": "Full or partial (8-char) session UUID",
+        "required": true
+      },
+      "span_index": {
+        "type": "int",
+        "description": "IR span index from context_search result metadata",
+        "required": true
+      }
+    },
+    "tags": [
+      "context",
+      "session",
+      "locate"
+    ],
+    "parents": [
+      "context"
+    ]
+  },
   "status/session_resume": {
     "kind": "capability",
     "name": "Session Resume",
@@ -6394,6 +5894,49 @@
       "status"
     ]
   },
+  "context/session_search": {
+    "kind": "capability",
+    "name": "Session Search",
+    "description": "Hybrid search within a single session. Uses IR (keyword/semantic/substring) scoped to the session, then resolves chunk hits to message-level results via the span map.",
+    "capability_name": "session_search",
+    "category": "context",
+    "aliases": [
+      "search in session",
+      "find in conversation",
+      "session query",
+      "semantic session search"
+    ],
+    "parameters": {
+      "session_id": {
+        "type": "str",
+        "description": "Full or partial session UUID",
+        "required": true
+      },
+      "query": {
+        "type": "str",
+        "description": "Search query",
+        "required": true
+      },
+      "method": {
+        "type": "str",
+        "description": "Search method: 'substring', 'keyword', 'semantic', or 'keyword,semantic' (default)",
+        "required": false
+      },
+      "top_k": {
+        "type": "int",
+        "description": "Max chunk hits to resolve (default 5)",
+        "required": false
+      }
+    },
+    "tags": [
+      "context",
+      "session",
+      "search"
+    ],
+    "parents": [
+      "context"
+    ]
+  },
   "status/session_summary": {
     "kind": "capability",
     "name": "Session Summary",
@@ -6414,6 +5957,64 @@
     ],
     "parents": [
       "status"
+    ]
+  },
+  "context/session_uncommitted": {
+    "kind": "capability",
+    "name": "Session Uncommitted",
+    "description": "Find agent sessions that wrote files still present in dirty git state. Answers: 'which sessions wrote code that was never committed?' Cross-references Write/Edit/NotebookEdit tool calls against git status --porcelain across all repos.",
+    "capability_name": "session_uncommitted",
+    "category": "context",
+    "aliases": [
+      "who didn't commit",
+      "uncommitted agent writes",
+      "sessions with dirty files",
+      "what did the agent write but not commit",
+      "dirty files from sessions"
+    ],
+    "parameters": {
+      "days": {
+        "type": "int",
+        "description": "Lookback window for scanning sessions (default 7)",
+        "required": false
+      }
+    },
+    "tags": [
+      "context",
+      "session",
+      "uncommitted"
+    ],
+    "parents": [
+      "context"
+    ]
+  },
+  "context/session_wb_activity": {
+    "kind": "capability",
+    "name": "Session Wb Activity",
+    "description": "Summary of what a session did through work-buddy's MCP gateway — capabilities invoked, workflows run, errors, key artifacts. Reads from the per-session activity ledger.",
+    "capability_name": "session_wb_activity",
+    "category": "context",
+    "aliases": [
+      "what did the session do",
+      "session work-buddy activity",
+      "mcp activity",
+      "gateway activity"
+    ],
+    "parameters": {
+      "session_id": {
+        "type": "str",
+        "description": "Session ID to query. Default: current session.",
+        "required": false
+      }
+    },
+    "tags": [
+      "context",
+      "session",
+      "wb",
+      "activity"
+    ],
+    "parents": [
+      "context"
     ]
   },
   "status/setup_help": {
@@ -6534,6 +6135,39 @@
       "status"
     ]
   },
+  "contracts/stale_contracts": {
+    "kind": "capability",
+    "name": "Stale Contracts",
+    "description": "List contracts not reviewed in N days (default 7)",
+    "capability_name": "stale_contracts",
+    "category": "contracts",
+    "aliases": [
+      "forgotten contracts",
+      "not reviewed recently",
+      "stale commitments",
+      "unvisited contracts",
+      "dormant work",
+      "contracts needing review",
+      "neglected contracts"
+    ],
+    "parameters": {
+      "stale_days": {
+        "type": "int",
+        "description": "Days since last review (default 7)",
+        "required": false
+      }
+    },
+    "requires": [
+      "obsidian"
+    ],
+    "tags": [
+      "contracts",
+      "stale"
+    ],
+    "parents": [
+      "contracts"
+    ]
+  },
   "status/tailscale_status": {
     "kind": "capability",
     "name": "Tailscale Status",
@@ -6553,122 +6187,6 @@
     ],
     "parents": [
       "status"
-    ]
-  },
-  "status/user_job_create": {
-    "kind": "capability",
-    "name": "User Job Create",
-    "description": "Author a personal scheduled cron job by writing a .md file under <data_root>/user_jobs/. Validates the cron expression and refuses to overwrite an existing job. The scheduler hot-reloads (~30s) and starts firing the job. See features/user-jobs for the schema.",
-    "capability_name": "user_job_create",
-    "category": "status",
-    "aliases": [
-      "create user job",
-      "add user job",
-      "schedule cron task",
-      "personal job",
-      "new scheduled job",
-      "wb-job-new"
-    ],
-    "parameters": {
-      "name": {
-        "type": "str",
-        "description": "Job name (becomes the filename stem); 1-64 chars, alphanumeric + - + _.",
-        "required": true
-      },
-      "schedule": {
-        "type": "str",
-        "description": "5-field cron expression (MIN HOUR DOM MON DOW).",
-        "required": true
-      },
-      "job_type": {
-        "type": "str",
-        "description": "One of: capability, workflow, prompt.",
-        "required": false
-      },
-      "capability": {
-        "type": "str",
-        "description": "(type=capability) Registered capability name to invoke.",
-        "required": false
-      },
-      "params": {
-        "type": "dict",
-        "description": "(type=capability) Parameters dict for the capability.",
-        "required": false
-      },
-      "workflow": {
-        "type": "str",
-        "description": "(type=workflow) Registered workflow name to start.",
-        "required": false
-      },
-      "prompt": {
-        "type": "str",
-        "description": "(type=prompt) Body text used as the agent prompt.",
-        "required": false
-      },
-      "enabled": {
-        "type": "bool",
-        "description": "Whether the job is enabled at create time. Default true.",
-        "required": false
-      },
-      "recurring": {
-        "type": "bool",
-        "description": "False = one-shot (schedule cleared after first fire). Default true.",
-        "required": false
-      },
-      "overwrite": {
-        "type": "bool",
-        "description": "If true, replace an existing job file with the same name. Default false (refuses to overwrite). Used by the Edit-job flow in the dashboard.",
-        "required": false
-      },
-      "jitter_seconds": {
-        "type": "int",
-        "description": "Optional stable jitter applied on top of cron eligibility. Non-negative integer; jobs fire at scheduled_at + a deterministic offset in [0, jitter_seconds]. Default 0 (no jitter — fire inline on cron match). Tick cadence quantizes values < ~30s away in practice; recommended floor is 60. See features/user-jobs.",
-        "required": false
-      }
-    },
-    "mutates_state": true,
-    "retry_policy": "manual",
-    "tags": [
-      "status",
-      "user",
-      "job",
-      "create"
-    ],
-    "parents": [
-      "status"
-    ]
-  },
-  "tasks/namespace_lookup": {
-    "kind": "capability",
-    "name": "Namespace Lookup",
-    "description": "Return the closest existing namespace tags to a single query. Designed for the 'did you mean?' check before minting a brand-new namespace — the agent calls this to confirm a proposed namespace isn't a near-duplicate of something that already exists.",
-    "capability_name": "namespace_lookup",
-    "category": "tasks",
-    "aliases": [
-      "did you mean namespace",
-      "nearest namespace",
-      "check namespace exists",
-      "namespace duplicate check"
-    ],
-    "parameters": {
-      "query": {
-        "type": "str",
-        "description": "Candidate namespace path or label (with or without leading '#')",
-        "required": true
-      },
-      "limit": {
-        "type": "int",
-        "description": "Max results (default 5)",
-        "required": false
-      }
-    },
-    "tags": [
-      "tasks",
-      "namespace",
-      "lookup"
-    ],
-    "parents": [
-      "tasks"
     ]
   },
   "tasks/task_archive": {
@@ -7345,6 +6863,264 @@
       "tasks"
     ]
   },
+  "messaging/update_message_status": {
+    "kind": "capability",
+    "name": "Update Message Status",
+    "description": "Update a message's status (e.g., pending → resolved)",
+    "capability_name": "update_message_status",
+    "category": "messaging",
+    "aliases": [
+      "mark message read",
+      "change message status",
+      "resolve a message",
+      "update message state",
+      "close out a message",
+      "message status change"
+    ],
+    "parameters": {
+      "msg_id": {
+        "type": "str",
+        "description": "Message ID",
+        "required": true
+      },
+      "new_status": {
+        "type": "str",
+        "description": "New status value",
+        "required": true
+      }
+    },
+    "tags": [
+      "messaging",
+      "update",
+      "message",
+      "status"
+    ],
+    "parents": [
+      "messaging"
+    ]
+  },
+  "status/user_job_create": {
+    "kind": "capability",
+    "name": "User Job Create",
+    "description": "Author a personal scheduled cron job by writing a .md file under <data_root>/user_jobs/. Validates the cron expression and refuses to overwrite an existing job. The scheduler hot-reloads (~30s) and starts firing the job. See features/user-jobs for the schema.",
+    "capability_name": "user_job_create",
+    "category": "status",
+    "aliases": [
+      "create user job",
+      "add user job",
+      "schedule cron task",
+      "personal job",
+      "new scheduled job",
+      "wb-job-new"
+    ],
+    "parameters": {
+      "name": {
+        "type": "str",
+        "description": "Job name (becomes the filename stem); 1-64 chars, alphanumeric + - + _.",
+        "required": true
+      },
+      "schedule": {
+        "type": "str",
+        "description": "5-field cron expression (MIN HOUR DOM MON DOW).",
+        "required": true
+      },
+      "job_type": {
+        "type": "str",
+        "description": "One of: capability, workflow, prompt.",
+        "required": false
+      },
+      "capability": {
+        "type": "str",
+        "description": "(type=capability) Registered capability name to invoke.",
+        "required": false
+      },
+      "params": {
+        "type": "dict",
+        "description": "(type=capability) Parameters dict for the capability.",
+        "required": false
+      },
+      "workflow": {
+        "type": "str",
+        "description": "(type=workflow) Registered workflow name to start.",
+        "required": false
+      },
+      "prompt": {
+        "type": "str",
+        "description": "(type=prompt) Body text used as the agent prompt.",
+        "required": false
+      },
+      "enabled": {
+        "type": "bool",
+        "description": "Whether the job is enabled at create time. Default true.",
+        "required": false
+      },
+      "recurring": {
+        "type": "bool",
+        "description": "False = one-shot (schedule cleared after first fire). Default true.",
+        "required": false
+      },
+      "overwrite": {
+        "type": "bool",
+        "description": "If true, replace an existing job file with the same name. Default false (refuses to overwrite). Used by the Edit-job flow in the dashboard.",
+        "required": false
+      },
+      "jitter_seconds": {
+        "type": "int",
+        "description": "Optional stable jitter applied on top of cron eligibility. Non-negative integer; jobs fire at scheduled_at + a deterministic offset in [0, jitter_seconds]. Default 0 (no jitter — fire inline on cron match). Tick cadence quantizes values < ~30s away in practice; recommended floor is 60. See features/user-jobs.",
+        "required": false
+      }
+    },
+    "mutates_state": true,
+    "retry_policy": "manual",
+    "tags": [
+      "status",
+      "user",
+      "job",
+      "create"
+    ],
+    "parents": [
+      "status"
+    ]
+  },
+  "context/vault_recon": {
+    "kind": "capability",
+    "name": "Vault Recon",
+    "description": "Diagnostic-grade vault reconnaissance. Returns cross-tabs an agent can reason over to spot recurring conventions: frontmatter state machines (type x status), tag families (depth-3 tree), path-by-type distribution, recent activity by region, cardinality-capped frontmatter values. Single page walk with anti-noise caps.",
+    "capability_name": "vault_recon",
+    "category": "context",
+    "aliases": [
+      "vault reconnaissance",
+      "vault recon",
+      "vault structure analysis",
+      "frontmatter state machine",
+      "type by status",
+      "tag tree",
+      "vault cross-tab",
+      "vault patterns",
+      "discover vault conventions"
+    ],
+    "parameters": {
+      "path_prefix": {
+        "type": "str",
+        "description": "Optional vault-relative path prefix to scope the walk (e.g. 'repos/electricrag/'). Default: full vault.",
+        "required": false
+      },
+      "activity_days": {
+        "type": "int",
+        "description": "Lookback window in days for recent_activity_by_path. Default: 30.",
+        "required": false
+      }
+    },
+    "requires": [
+      "obsidian",
+      "datacore"
+    ],
+    "tags": [
+      "context",
+      "vault",
+      "recon"
+    ],
+    "parents": [
+      "context"
+    ]
+  },
+  "context/vault_recon_collect": {
+    "kind": "capability",
+    "name": "Vault Recon Collect",
+    "description": "Periodic vault reconnaissance entry point: snapshot the vault via vault_recon, append to a 60-day rolling ledger at .data/vault_recon/snapshots.json, compute deltas against prior snapshots, apply 5 curated significance rules, and write a one-shot type:prompt investigation job to .data/user_jobs/ on each rule firing (deduplicated per (rule, focus) over a 7-day window). Designed to be fired daily by sidecar_jobs/vault-recon.md.",
+    "capability_name": "vault_recon_collect",
+    "category": "context",
+    "aliases": [
+      "vault recon collect",
+      "vault recon collector",
+      "vault snapshot",
+      "vault delta detection",
+      "vault discovery loop",
+      "periodic vault recon"
+    ],
+    "parameters": {
+      "window_days": {
+        "type": "int",
+        "description": "Snapshot retention window (default 60).",
+        "required": false
+      },
+      "skip_escalation": {
+        "type": "bool",
+        "description": "If true, evaluate rules but do not spawn investigation jobs. Useful for dry runs.",
+        "required": false
+      }
+    },
+    "requires": [
+      "obsidian",
+      "datacore"
+    ],
+    "tags": [
+      "context",
+      "vault",
+      "recon",
+      "collect"
+    ],
+    "parents": [
+      "context"
+    ]
+  },
+  "journal/vault_write_at_location": {
+    "kind": "capability",
+    "name": "Vault Write At Location",
+    "description": "Insert content at a specific section in a vault note. Configurable note (path or resolver like 'latest_journal', 'today'), section (header text), and position ('top' or 'bottom' of section). Used by Telegram capture and general-purpose vault writing.",
+    "capability_name": "vault_write_at_location",
+    "category": "journal",
+    "aliases": [
+      "write at location",
+      "vault write",
+      "section write",
+      "append to section",
+      "insert into note",
+      "capture"
+    ],
+    "parameters": {
+      "content": {
+        "type": "str",
+        "description": "Text to insert",
+        "required": true
+      },
+      "note": {
+        "type": "str",
+        "description": "Note path or resolver: 'latest_journal' (default), 'today', or explicit vault-relative path",
+        "required": false
+      },
+      "section": {
+        "type": "str",
+        "description": "Header text identifying target section (default: 'Running Notes')",
+        "required": false
+      },
+      "position": {
+        "type": "str",
+        "description": "'top' (default) or 'bottom' of section",
+        "required": false
+      },
+      "source": {
+        "type": "str",
+        "description": "Source metadata tag (e.g. 'telegram') — appended as #wb/capture/<source>",
+        "required": false
+      }
+    },
+    "requires": [
+      "obsidian"
+    ],
+    "mutates_state": true,
+    "retry_policy": "verify_first",
+    "tags": [
+      "journal",
+      "vault",
+      "write",
+      "at",
+      "location"
+    ],
+    "parents": [
+      "journal"
+    ]
+  },
   "tasks/weekly_review_data": {
     "kind": "capability",
     "name": "Weekly Review Data",
@@ -7370,6 +7146,230 @@
     ],
     "parents": [
       "tasks"
+    ]
+  },
+  "context/workflow_create": {
+    "kind": "capability",
+    "name": "Workflow Create",
+    "description": "Create a new workflow unit (DAG + step instructions). Use this instead of docs_create for kind='workflow' units — docs_create does not accept workflow-specific fields.",
+    "capability_name": "workflow_create",
+    "category": "context",
+    "aliases": [
+      "create workflow",
+      "new workflow",
+      "author workflow DAG",
+      "register workflow",
+      "add workflow unit",
+      "define workflow"
+    ],
+    "parameters": {
+      "path": {
+        "type": "str",
+        "description": "Unique path ID (e.g. 'dev/dev-document')",
+        "required": true
+      },
+      "name": {
+        "type": "str",
+        "description": "Human-readable name",
+        "required": true
+      },
+      "description": {
+        "type": "str",
+        "description": "One-line summary",
+        "required": true
+      },
+      "workflow_name": {
+        "type": "str",
+        "description": "Registry slug used with wb_run('<workflow_name>')",
+        "required": true
+      },
+      "steps": {
+        "type": "str",
+        "description": "JSON array of step dicts. Each step requires at least id, name, step_type ('reasoning' or 'code'), and depends_on (list of prior step ids). Additional keys: auto_run, visibility, result_schema, invokes, optional.",
+        "required": true
+      },
+      "step_instructions": {
+        "type": "str",
+        "description": "JSON object mapping step_id -> instruction text. Reasoning steps generally need this; pure auto_run steps usually don't.",
+        "required": false
+      },
+      "execution": {
+        "type": "str",
+        "description": "Default execution policy: 'main' or 'subagent' (default 'main')",
+        "required": false
+      },
+      "allow_override": {
+        "type": "bool",
+        "description": "Allow per-step execution override (default false)",
+        "required": false
+      },
+      "content_full": {
+        "type": "str",
+        "description": "Workflow-level context (philosophy, what-not-to-do). Surfaces at depth='full'.",
+        "required": false
+      },
+      "content_summary": {
+        "type": "str",
+        "description": "One-paragraph summary.",
+        "required": false
+      },
+      "command": {
+        "type": "str",
+        "description": "Slash command name (e.g. 'wb-dev-document')",
+        "required": false
+      },
+      "parents": {
+        "type": "str",
+        "description": "Comma-separated parent paths (typical: domain, e.g. 'dev')",
+        "required": false
+      },
+      "children": {
+        "type": "str",
+        "description": "Comma-separated child paths",
+        "required": false
+      },
+      "tags": {
+        "type": "str",
+        "description": "Comma-separated search tags",
+        "required": false
+      },
+      "aliases": {
+        "type": "str",
+        "description": "Comma-separated search aliases",
+        "required": false
+      },
+      "dev_notes": {
+        "type": "str",
+        "description": "Dev-mode-only notes about the workflow's internals",
+        "required": false
+      },
+      "params_schema": {
+        "type": "str",
+        "description": "Optional JSON object declaring caller-provided initial params: {param_name: {type, description, required}}. Mirrors capability parameters. Workflows that omit this reject any non-empty params at start.",
+        "required": false
+      }
+    },
+    "mutates_state": true,
+    "retry_policy": "manual",
+    "tags": [
+      "context",
+      "workflow",
+      "create"
+    ],
+    "parents": [
+      "context"
+    ]
+  },
+  "context/workflow_update": {
+    "kind": "capability",
+    "name": "Workflow Update",
+    "description": "Update an existing workflow unit. Only provided fields change; omitted fields preserved. 'steps' and 'step_instructions' replace/merge rather than patch individual entries — read the current value, mutate, and pass the whole structure back.",
+    "capability_name": "workflow_update",
+    "category": "context",
+    "aliases": [
+      "update workflow",
+      "edit workflow DAG",
+      "modify workflow steps",
+      "change workflow",
+      "patch workflow",
+      "edit step instructions"
+    ],
+    "parameters": {
+      "path": {
+        "type": "str",
+        "description": "Path of workflow to update",
+        "required": true
+      },
+      "name": {
+        "type": "str",
+        "description": "New human-readable name",
+        "required": false
+      },
+      "description": {
+        "type": "str",
+        "description": "New one-line summary",
+        "required": false
+      },
+      "workflow_name": {
+        "type": "str",
+        "description": "New registry slug",
+        "required": false
+      },
+      "steps": {
+        "type": "str",
+        "description": "JSON array replacing the DAG. Callers should read the current value via agent_docs, mutate, and pass back.",
+        "required": false
+      },
+      "step_instructions": {
+        "type": "str",
+        "description": "JSON object merged into step_instructions. Keys present in the new dict overwrite; keys absent are preserved. Pass the whole dict to replace cleanly.",
+        "required": false
+      },
+      "execution": {
+        "type": "str",
+        "description": "New default execution policy",
+        "required": false
+      },
+      "allow_override": {
+        "type": "bool",
+        "description": "New allow_override flag",
+        "required": false
+      },
+      "content_full": {
+        "type": "str",
+        "description": "New workflow-level content",
+        "required": false
+      },
+      "content_summary": {
+        "type": "str",
+        "description": "New summary",
+        "required": false
+      },
+      "command": {
+        "type": "str",
+        "description": "New slash command name",
+        "required": false
+      },
+      "parents": {
+        "type": "str",
+        "description": "New comma-separated parent paths (replaces)",
+        "required": false
+      },
+      "children": {
+        "type": "str",
+        "description": "New comma-separated child paths (replaces)",
+        "required": false
+      },
+      "tags": {
+        "type": "str",
+        "description": "New comma-separated tags (replaces)",
+        "required": false
+      },
+      "aliases": {
+        "type": "str",
+        "description": "New comma-separated aliases (replaces)",
+        "required": false
+      },
+      "dev_notes": {
+        "type": "str",
+        "description": "New dev-mode-only notes. Pass an empty string to clear.",
+        "required": false
+      },
+      "params_schema": {
+        "type": "str",
+        "description": "New params schema (JSON object). Replaces existing schema entirely; pass an empty dict to clear.",
+        "required": false
+      }
+    },
+    "mutates_state": true,
+    "retry_policy": "manual",
+    "tags": [
+      "context",
+      "workflow",
+      "update"
+    ],
+    "parents": [
+      "context"
     ]
   }
 }

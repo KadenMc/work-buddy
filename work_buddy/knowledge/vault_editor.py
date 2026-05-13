@@ -54,8 +54,6 @@ def mint_personal_unit(
     content_body: str = "",
     severity: str = "",
     tags: str = "",
-    context_before: str = "",
-    context_after: str = "",
     evidence: str = "",
     definition: str = "",
     triggers: str = "",
@@ -71,8 +69,6 @@ def mint_personal_unit(
         content_body: Full markdown body. If empty, builds from structured fields.
         severity: HIGH, MODERATE, or LOW (optional).
         tags: Comma-separated tags (e.g., "wb/metacognition, wb/work-pattern").
-        context_before: Comma-separated unit paths to chain before.
-        context_after: Comma-separated unit paths to chain after.
         evidence: Initial evidence entry (appended with timestamp).
         definition: Pattern definition text.
         triggers: What typically triggers this pattern.
@@ -81,6 +77,10 @@ def mint_personal_unit(
 
     Returns:
         Dict with status, path, vault_file, and created/updated flag.
+
+    The retired ``context_before`` / ``context_after`` parameters were
+    removed when their underlying mechanism was retired in favour of
+    inline ``<<wb:path>>`` placeholders.
     """
     vdir = _vault_knowledge_dir()
     if vdir is None:
@@ -114,9 +114,6 @@ def mint_personal_unit(
     if not tag_list:
         tag_list = [f"wb/metacognition/{category}"] if category else ["wb/metacognition"]
 
-    before_list = [p.strip() for p in context_before.split(",") if p.strip()] if context_before else []
-    after_list = [p.strip() for p in context_after.split(",") if p.strip()] if context_after else []
-
     now = datetime.now(USER_TZ).strftime("%Y-%m-%d")
 
     fm_lines = [
@@ -127,10 +124,6 @@ def mint_personal_unit(
     if severity:
         fm_lines.append(f"severity: {severity}")
     fm_lines.append(f"tags: [{', '.join(tag_list)}]")
-    if before_list:
-        fm_lines.append(f"context_before: [{', '.join(before_list)}]")
-    if after_list:
-        fm_lines.append(f"context_after: [{', '.join(after_list)}]")
     fm_lines.append(f"last_observed: \"{now}\"")
     fm_lines.append(f"observation_count: {1 if evidence else 0}")
     fm_lines.append("---")

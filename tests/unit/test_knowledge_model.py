@@ -18,6 +18,11 @@ from work_buddy.knowledge.model import (
     validate_dag,
     _resolve_placeholders,
     _extract_placeholder_refs,
+    _RECURSIVE_ALL_SIZE_CAP,
+    _TRUNCATION_MARKER,
+    _DEPTH_LIMIT_MARKER_TEMPLATE,
+    _BACK_REFERENCE_MARKER_TEMPLATE,
+    _DEFAULT_MAX_DEPTH_FOR_ALL_MODE,
 )
 
 
@@ -31,8 +36,9 @@ class TestKnowledgeUnitBase:
         )
         assert u.path == "test/unit"
         assert u.scope == "system"
-        assert u.context_before == []
-        assert u.context_after == []
+        # Empty defaults for the structural list fields
+        assert u.parents == []
+        assert u.children == []
 
     def test_scope_field(self):
         u = KnowledgeUnit(
@@ -44,142 +50,15 @@ class TestKnowledgeUnitBase:
     def test_tier_index_includes_scope(self):
         u = KnowledgeUnit(
             path="x", kind="system", name="X", description="x",
-            context_before=["a/b"],
         )
         t = u.tier("index")
         assert t["scope"] == "system"
-        assert t["context_before"] == ["a/b"]
+        assert t["path"] == "x"
 
-    def test_tier_summary_includes_chains(self):
-        u = KnowledgeUnit(
-            path="x", kind="system", name="X", description="x",
-            context_after=["c/d"],
-            content={"summary": "Short text"},
-        )
-        t = u.tier("summary")
-        assert t["context_after"] == ["c/d"]
-        assert t["content"] == "Short text"
-
-    def test_to_dict_includes_chains_when_nonempty(self):
-        u = KnowledgeUnit(
-            path="x", kind="system", name="X", description="x",
-            context_before=["a"],
-        )
-        d = u.to_dict()
-        assert d["context_before"] == ["a"]
-        assert "context_after" not in d  # empty, should be omitted
-
-    def test_to_dict_omits_empty_chains(self):
-        u = KnowledgeUnit(
-            path="x", kind="system", name="X", description="x",
-        )
-        d = u.to_dict()
-        assert "context_before" not in d
-        assert "context_after" not in d
-
-
-class TestContextChaining:
-    def _make_store(self):
-        a = DirectionsUnit(
-            path="dev/dev-mode",
-            name="Dev Mode",
-            description="Enter dev mode",
-            content={"full": "You are a developmental agent."},
-        )
-        b = DirectionsUnit(
-            path="dev/retro",
-            name="Session Retro",
-            description="Critique this session",
-            content={"full": "Do the retro steps."},
-            context_before=["dev/dev-mode"],
-        )
-        c = DirectionsUnit(
-            path="dev/extra",
-            name="Extra",
-            description="Extra context",
-            content={"full": "Bonus info."},
-        )
-        d = DirectionsUnit(
-            path="dev/both",
-            name="Both",
-            description="Has before and after",
-            content={"full": "Main content."},
-            context_before=["dev/dev-mode"],
-            context_after=["dev/extra"],
-        )
-        return {u.path: u for u in [a, b, c, d]}
-
-    def test_full_without_store_no_resolution(self):
-        store = self._make_store()
-        retro = store["dev/retro"]
-        result = retro.tier("full")
-        assert "context from:" not in result["content"]
-        assert result["content"] == "Do the retro steps."
-
-    def test_full_with_store_prepends_before(self):
-        store = self._make_store()
-        retro = store["dev/retro"]
-        result = retro.tier("full", store=store)
-        assert "--- context from: dev/dev-mode ---" in result["content"]
-        assert "You are a developmental agent." in result["content"]
-        assert "Do the retro steps." in result["content"]
-        # Before content should come BEFORE own content
-        idx_before = result["content"].index("developmental agent")
-        idx_own = result["content"].index("retro steps")
-        assert idx_before < idx_own
-
-    def test_full_with_store_appends_after(self):
-        store = self._make_store()
-        both = store["dev/both"]
-        result = both.tier("full", store=store)
-        assert "--- context from: dev/extra ---" in result["content"]
-        # After content should come AFTER own content
-        idx_own = result["content"].index("Main content")
-        idx_after = result["content"].index("Bonus info")
-        assert idx_own < idx_after
-
-    def test_full_with_store_both_before_and_after(self):
-        store = self._make_store()
-        both = store["dev/both"]
-        result = both.tier("full", store=store)
-        assert "developmental agent" in result["content"]
-        assert "Main content" in result["content"]
-        assert "Bonus info" in result["content"]
-
-    def test_missing_chain_ref_gracefully_skipped(self):
-        unit = DirectionsUnit(
-            path="test",
-            name="Test",
-            description="test",
-            content={"full": "Own content."},
-            context_before=["nonexistent/path"],
-        )
-        store = {"test": unit}
-        result = unit.tier("full", store=store)
-        # Should just have own content, no crash
-        assert result["content"] == "Own content."
-
-    def test_chain_is_not_recursive(self):
-        """A→B and B→C: loading A should include B but NOT C."""
-        c = DirectionsUnit(
-            path="c", name="C", description="c",
-            content={"full": "C content."},
-        )
-        b = DirectionsUnit(
-            path="b", name="B", description="b",
-            content={"full": "B content."},
-            context_before=["c"],
-        )
-        a = DirectionsUnit(
-            path="a", name="A", description="a",
-            content={"full": "A content."},
-            context_before=["b"],
-        )
-        store = {"a": a, "b": b, "c": c}
-        result = a.tier("full", store=store)
-        # Should include B's raw content, NOT B's resolved chain (C)
-        assert "B content." in result["content"]
-        assert "C content." not in result["content"]
+    # Context-chain serialization tests removed when ``context_before``
+    # / ``context_after`` fields were retired. Inline placeholders are
+    # the surviving cross-unit content-reuse mechanism — see
+    # TestResolvePlaceholders and TestRecursiveMode for coverage.
 
 
 class TestPromptUnitHierarchy:
@@ -346,28 +225,23 @@ class TestDeserialization:
         assert u.category == "feedback"
         assert u.observation_count == 5
 
-    def test_unit_from_dict_with_chains(self):
+    def test_unit_from_dict_silently_drops_retired_chain_keys(self):
+        """Stale ``context_before`` / ``context_after`` keys in legacy
+        store JSON should be ignored, not raise — the loader tolerates
+        them so we don't have to back-fill every file at once."""
         data = {
             "kind": "directions",
             "name": "Retro",
             "description": "Retro directions",
             "context_before": ["dev/dev-mode"],
+            "context_after": ["dev/extra"],
         }
         u = unit_from_dict("dev/retro", data)
         assert isinstance(u, DirectionsUnit)
-        assert u.context_before == ["dev/dev-mode"]
-        assert u.context_after == []
-
-    def test_unit_from_dict_backward_compat(self):
-        """Existing JSON without context chains should work fine."""
-        data = {
-            "kind": "system",
-            "name": "Old Unit",
-            "description": "No chains",
-        }
-        u = unit_from_dict("old/unit", data)
-        assert u.context_before == []
-        assert u.context_after == []
+        # Fields no longer exist on the dataclass; presence as JSON keys
+        # is silently ignored.
+        assert not hasattr(u, "context_before")
+        assert not hasattr(u, "context_after")
 
     def test_unit_from_dict_service(self):
         data = {
@@ -453,25 +327,10 @@ class TestDeserialization:
 
 
 class TestValidateDag:
-    def test_warns_on_broken_chain_refs(self):
-        u = DirectionsUnit(
-            path="a",
-            name="A",
-            description="a",
-            context_before=["nonexistent"],
-        )
-        errors = validate_dag({"a": u})
-        assert any("context_before" in e and "nonexistent" in e for e in errors)
-
-    def test_no_error_on_valid_chains(self):
-        a = DirectionsUnit(path="a", name="A", description="a")
-        b = DirectionsUnit(
-            path="b", name="B", description="b",
-            context_before=["a"],
-        )
-        errors = validate_dag({"a": a, "b": b})
-        chain_errors = [e for e in errors if "context_before" in e or "context_after" in e]
-        assert chain_errors == []
+    # Chain-validation tests removed when ``context_before`` /
+    # ``context_after`` were retired. The DAG validator still tracks
+    # parent/child edges and inline ``<<wb:>>`` placeholder edges; the
+    # below tests cover both.
 
     def test_cycle_via_children_detected(self):
         a = DirectionsUnit(
@@ -481,18 +340,6 @@ class TestValidateDag:
         b = DirectionsUnit(
             path="b", name="B", description="b",
             children=["a"],
-        )
-        errors = validate_dag({"a": a, "b": b})
-        assert any("Cycle" in e for e in errors)
-
-    def test_cycle_via_context_after_detected(self):
-        a = DirectionsUnit(
-            path="a", name="A", description="a",
-            context_after=["b"],
-        )
-        b = DirectionsUnit(
-            path="b", name="B", description="b",
-            context_after=["a"],
         )
         errors = validate_dag({"a": a, "b": b})
         assert any("Cycle" in e for e in errors)
@@ -551,7 +398,6 @@ class TestResolvePlaceholders:
         task_new = DirectionsUnit(
             path="tasks/task-new", name="Task New", description="new task",
             content={"full": "Create a task.\n\n<<wb:obsidian/bridge>>"},
-            context_after=["obsidian/bridge"],
         )
         handoff = DirectionsUnit(
             path="tasks/handoff", name="Handoff", description="handoff",
@@ -584,8 +430,8 @@ class TestResolvePlaceholders:
         assert "<!-- wb: nonexistent/path not found -->" in result
 
     def test_recursive_resolves_chains(self):
-        """<<wb:task-new --recursive>> should resolve task-new's own content
-        including its inline <<wb:obsidian/bridge>> AND its context_after."""
+        """``<<wb:task-new --recursive>>`` should resolve task-new's own
+        content including its inline ``<<wb:obsidian/bridge>>`` placeholder."""
         store = self._make_store()
         text = "<<wb:tasks/task-new --recursive>>"
         result = _resolve_placeholders(text, store)
@@ -637,19 +483,393 @@ class TestResolvePlaceholders:
         result = _resolve_placeholders(text, store)
         assert "<<wb:>>" in result
 
-    def test_backward_compat_context_after_still_works(self):
-        """Units with only context_after (no placeholders) should work unchanged."""
-        bridge = DirectionsUnit(
-            path="obsidian/bridge", name="Bridge", description="bridge",
-            content={"full": "Bridge info."},
+    # ``test_backward_compat_context_after_still_works`` removed when
+    # the chain mechanism was retired. The chain assertion in
+    # ``test_full_chain_handoff_to_bridge`` (via task-new's
+    # context_after) also went away — placeholder cascade still
+    # delivers the bridge content through the --recursive path.
+
+
+class TestRecursiveMode:
+    """Caller-side override of per-placeholder ``--recursive`` flags.
+
+    See ``_RECURSIVE_MODES`` in ``model.py`` for the contract:
+    ``"default"`` honours the author's flag per placeholder; ``"all"``
+    forces every placeholder to expand transitively (bounded by a size
+    cap); ``"none"`` preserves placeholders literally.
+    """
+
+    def _chain_store(self):
+        """A → plain ``<<wb:B>>`` → plain ``<<wb:C>>``. No --recursive flags."""
+        c = DirectionsUnit(
+            path="c", name="C", description="leaf",
+            content={"full": "C-body."},
         )
-        unit = DirectionsUnit(
+        b = DirectionsUnit(
+            path="b", name="B", description="mid",
+            content={"full": "B-body. <<wb:c>>"},
+        )
+        a = DirectionsUnit(
+            path="a", name="A", description="top",
+            content={"full": "A-body. <<wb:b>>"},
+        )
+        return {"a": a, "b": b, "c": c}
+
+    def test_default_mode_matches_legacy(self):
+        """``recursive_mode='default'`` (and no arg at all) must produce
+        byte-identical output to the historical no-mode call."""
+        store = self._chain_store()
+        text = "<<wb:a>>"
+        legacy = _resolve_placeholders(text, store)
+        explicit = _resolve_placeholders(text, store, recursive_mode="default")
+        assert legacy == explicit
+
+    def test_default_mode_leaves_inner_unexpanded(self):
+        """Plain placeholder A→B inserts A's body RAW — B is never reached.
+
+        This is the foot-gun the editor hint exists to catch: A's content
+        contains ``<<wb:b>>`` as a literal substring, but B's body and
+        B's downstream chain never appear in the resolved output.
+        """
+        store = self._chain_store()
+        result = _resolve_placeholders("<<wb:a>>", store, recursive_mode="default")
+        # A's raw body appears
+        assert "A-body." in result
+        # B's literal placeholder survives in A's raw body
+        assert "<<wb:b>>" in result
+        # And neither B's body nor C's body appears — only one level deep
+        assert "B-body." not in result
+        assert "C-body." not in result
+
+    def test_all_mode_forces_transitive(self):
+        """``recursive_mode='all'`` cascades through plain placeholders."""
+        store = self._chain_store()
+        result = _resolve_placeholders("<<wb:a>>", store, recursive_mode="all")
+        assert "A-body." in result
+        assert "B-body." in result
+        assert "C-body." in result
+        # And the inner literal is gone — it got resolved
+        assert "<<wb:c>>" not in result
+
+    def test_none_mode_preserves_literal(self):
+        """``recursive_mode='none'`` returns placeholder markup unchanged."""
+        store = self._chain_store()
+        text = "Before <<wb:a>> and <<wb:b>> after."
+        result = _resolve_placeholders(text, store, recursive_mode="none")
+        # No expansion at all — original text returned
+        assert result == text
+
+    def test_none_mode_passthrough_with_no_store(self):
+        """``recursive_mode='none'`` does not touch the store, so the
+        early-return path is the same as 'no placeholders to resolve'."""
+        store: dict = {}
+        text = "<<wb:does-not-exist>>"
+        result = _resolve_placeholders(text, store, recursive_mode="none")
+        assert result == text
+
+    def test_tier_full_threads_recursive_mode(self):
+        """End-to-end via ``tier(depth='full')`` — the user-facing surface."""
+        store = self._chain_store()
+
+        default_out = store["a"].tier("full", store=store)["content"]
+        all_out = store["a"].tier("full", store=store, recursive_mode="all")["content"]
+        none_out = store["a"].tier("full", store=store, recursive_mode="none")["content"]
+
+        assert "C-body." not in default_out
+        assert "C-body." in all_out
+        assert "<<wb:b>>" in none_out
+        assert "B-body." not in none_out
+
+    def test_all_mode_truncates_at_size_cap(self):
+        """A pathological chain whose ``all`` expansion exceeds the size
+        cap should terminate cleanly with the truncation marker.
+
+        Passes ``max_depth=None`` to disable the depth cap so the size
+        cap is exercised in isolation. Otherwise the depth cap (default
+        10 in ``all`` mode) would fire first.
+        """
+        # Build a chain of N units each whose body is ~20KB. With cap
+        # at 100KB and ~9 levels actually expanded under depth=None,
+        # we'd hit ~180KB without the size cap. The cap should kick in.
+        n_levels = 12
+        body_chunk = "x" * 20000  # 20KB per level
+        store: dict[str, DirectionsUnit] = {}
+        for i in range(n_levels):
+            next_ref = f"<<wb:u{i + 1}>>" if i + 1 < n_levels else ""
+            store[f"u{i}"] = DirectionsUnit(
+                path=f"u{i}", name=f"U{i}", description=f"level {i}",
+                content={"full": f"{body_chunk} {next_ref}"},
+            )
+
+        # max_depth=None overrides the all-mode default to unlimited
+        # so size cap is the only constraint.
+        result = _resolve_placeholders(
+            "<<wb:u0>>", store,
+            recursive_mode="all", max_depth=None,
+        )
+
+        # Truncation marker must appear — proves the size cap fired.
+        assert _TRUNCATION_MARKER in result, (
+            "expected size-cap truncation marker once expansion exceeds the cap"
+        )
+        # And the output is bounded — should not be the full
+        # n_levels * 20KB = 240KB. Allow a generous safety margin since
+        # the budget is checked between replacements, not mid-string.
+        assert len(result) < _RECURSIVE_ALL_SIZE_CAP * 3, (
+            f"output length {len(result)} exceeds tripled cap "
+            f"{_RECURSIVE_ALL_SIZE_CAP * 3}"
+        )
+
+    def test_all_mode_under_cap_completes_normally(self):
+        """Chains that fit under the cap should NOT show the marker."""
+        # Tiny 3-level chain — way under the 100KB cap.
+        store = self._chain_store()
+        result = _resolve_placeholders("<<wb:a>>", store, recursive_mode="all")
+        assert _TRUNCATION_MARKER not in result
+
+    def test_missing_ref_comment_in_all_mode(self):
+        """Missing-ref behaviour fires when (and only when) we actually
+        descend into the unit that holds the broken reference.
+
+        In default mode we only resolve one level — the outer
+        ``<<wb:a>>`` is replaced with A's raw body, which contains the
+        literal ``<<wb:missing>>`` substring (never resolved). The
+        missing-ref comment doesn't appear because no resolver call ever
+        looks up ``missing``.
+
+        In ``all`` mode we descend into A, the resolver walks A's body,
+        and ``<<wb:missing>>`` fails the lookup with the standard
+        not-found comment.
+        """
+        a = DirectionsUnit(
+            path="a", name="A", description="a",
+            content={"full": "<<wb:missing>>"},
+        )
+        store = {"a": a}
+        out_default = _resolve_placeholders("<<wb:a>>", store, recursive_mode="default")
+        out_all = _resolve_placeholders("<<wb:a>>", store, recursive_mode="all")
+        # Default mode: A's body inserted raw, including the literal markup
+        assert "<<wb:missing>>" in out_default
+        assert "<!-- wb: missing not found -->" not in out_default
+        # All mode: descent into A triggers the lookup, comment appears
+        assert "<!-- wb: missing not found -->" in out_all
+
+    def test_invalid_mode_raises_in_agent_docs(self):
+        """The capability surface validates ``recursive`` and returns an
+        error dict (not a raise) so MCP transport stays well-typed."""
+        from work_buddy.knowledge.query import agent_docs
+        result = agent_docs(path="nonexistent/unit", recursive="bogus")
+        assert "error" in result
+        assert "bogus" in result["error"].lower() or "invalid" in result["error"].lower()
+
+
+class TestMaxDepth:
+    """Configurable depth limit. ``None`` / ``-1`` = mode default
+    (unlimited in ``default`` mode, 10 in ``all`` mode). ``0`` = no
+    recursion at all. Positive ints = exact depth cap.
+    """
+
+    def _deep_chain_store(self, n: int = 15):
+        """Linear chain of n units, each plain-referencing the next."""
+        store: dict[str, DirectionsUnit] = {}
+        for i in range(n):
+            next_ref = f"<<wb:u{i + 1}>>" if i + 1 < n else ""
+            store[f"u{i}"] = DirectionsUnit(
+                path=f"u{i}", name=f"U{i}", description=f"L{i}",
+                content={"full": f"U{i}-body {next_ref}".rstrip()},
+            )
+        return store
+
+    def test_all_mode_default_depth_cap_fires_at_10(self):
+        """Without an explicit ``max_depth``, ``all`` mode caps at the
+        default of ``_DEFAULT_MAX_DEPTH_FOR_ALL_MODE``."""
+        assert _DEFAULT_MAX_DEPTH_FOR_ALL_MODE == 10
+        store = self._deep_chain_store(15)
+        result = _resolve_placeholders("<<wb:u0>>", store, recursive_mode="all")
+        marker = _DEPTH_LIMIT_MARKER_TEMPLATE.format(depth=10)
+        assert marker in result, (
+            f"expected depth-limit marker '{marker}' in result"
+        )
+        # First few levels DID expand; the deep ones did not.
+        assert "U0-body" in result
+        assert "U9-body" in result
+        assert "U14-body" not in result
+
+    def test_explicit_max_depth_overrides_mode_default(self):
+        """Caller-passed ``max_depth=3`` overrides the all-mode default."""
+        store = self._deep_chain_store(10)
+        result = _resolve_placeholders(
+            "<<wb:u0>>", store,
+            recursive_mode="all", max_depth=3,
+        )
+        marker = _DEPTH_LIMIT_MARKER_TEMPLATE.format(depth=3)
+        assert marker in result
+        assert "U0-body" in result
+        assert "U2-body" in result
+        assert "U5-body" not in result
+
+    def test_max_depth_zero_disables_recursion(self):
+        """``max_depth=0`` is the caller-side way to say 'no recursion'
+        — equivalent to ``recursive='none'`` in effect, but expressed
+        through the depth knob."""
+        store = self._deep_chain_store(5)
+        result = _resolve_placeholders(
+            "<<wb:u0>>", store,
+            recursive_mode="all", max_depth=0,
+        )
+        # The first placeholder pass fires at depth 0 — depth marker
+        # appears in place of any expansion.
+        marker = _DEPTH_LIMIT_MARKER_TEMPLATE.format(depth=0)
+        assert marker in result
+        assert "U0-body" not in result
+
+    def test_default_mode_no_depth_cap_by_default(self):
+        """``default`` mode applies no depth cap unless caller passes
+        one. A long chain of explicit ``--recursive`` flags expands
+        fully."""
+        n = 15
+        store: dict[str, DirectionsUnit] = {}
+        for i in range(n):
+            # Each level uses --recursive so default mode does cascade
+            next_ref = f"<<wb:u{i + 1} --recursive>>" if i + 1 < n else ""
+            store[f"u{i}"] = DirectionsUnit(
+                path=f"u{i}", name=f"U{i}", description=f"L{i}",
+                content={"full": f"U{i}-body {next_ref}".rstrip()},
+            )
+        result = _resolve_placeholders(
+            "<<wb:u0 --recursive>>", store, recursive_mode="default",
+        )
+        # All levels expanded — historical default mode is unbounded
+        assert "U0-body" in result
+        assert "U14-body" in result
+        depth_marker_substr = "expansion truncated at depth"
+        assert depth_marker_substr not in result
+
+    def test_default_mode_caller_can_opt_into_depth_cap(self):
+        """Default mode honours an explicit ``max_depth`` even though
+        the mode default is unlimited."""
+        n = 10
+        store: dict[str, DirectionsUnit] = {}
+        for i in range(n):
+            next_ref = f"<<wb:u{i + 1} --recursive>>" if i + 1 < n else ""
+            store[f"u{i}"] = DirectionsUnit(
+                path=f"u{i}", name=f"U{i}", description=f"L{i}",
+                content={"full": f"U{i}-body {next_ref}".rstrip()},
+            )
+        result = _resolve_placeholders(
+            "<<wb:u0 --recursive>>", store,
+            recursive_mode="default", max_depth=4,
+        )
+        assert _DEPTH_LIMIT_MARKER_TEMPLATE.format(depth=4) in result
+        assert "U0-body" in result
+        assert "U3-body" in result
+        assert "U7-body" not in result
+
+
+class TestPerUnitOccurrenceCap:
+    """Per-unit-occurrence cap (always on). The first appearance of a
+    given target in a top-level expansion gets the content; subsequent
+    references get a back-reference marker. Catches diamond graphs.
+    """
+
+    def test_diamond_graph_second_reference_is_back_ref(self):
+        """top → A → foundation, top → B → foundation. Foundation
+        should appear once; the second branch's reference should
+        produce a back-ref marker."""
+        foundation = DirectionsUnit(
+            path="foundation", name="Foundation", description="leaf",
+            content={"full": "FOUNDATION-BODY"},
+        )
+        branch_a = DirectionsUnit(
+            path="branch_a", name="BranchA", description="a",
+            content={"full": "A-body <<wb:foundation>>"},
+        )
+        branch_b = DirectionsUnit(
+            path="branch_b", name="BranchB", description="b",
+            content={"full": "B-body <<wb:foundation>>"},
+        )
+        top = DirectionsUnit(
+            path="top", name="Top", description="t",
+            content={"full": "top: <<wb:branch_a>> and <<wb:branch_b>>"},
+        )
+        store = {u.path: u for u in [foundation, branch_a, branch_b, top]}
+
+        result = _resolve_placeholders(
+            "<<wb:top>>", store, recursive_mode="all",
+        )
+
+        # Foundation content appears exactly once
+        assert result.count("FOUNDATION-BODY") == 1
+        # The other reference is a back-ref marker
+        back_ref = _BACK_REFERENCE_MARKER_TEMPLATE.format(path="foundation")
+        assert back_ref in result
+
+    def test_repeated_plain_placeholder_within_same_unit(self):
+        """Even within a single unit's content, if ``<<wb:X>>`` appears
+        twice in ``all`` mode, the second occurrence gets the back-ref
+        marker (catches authoring duplicates at runtime)."""
+        x = DirectionsUnit(
             path="x", name="X", description="x",
-            content={"full": "Main content."},
-            context_after=["obsidian/bridge"],
+            content={"full": "X-BODY"},
         )
-        store = {"obsidian/bridge": bridge, "x": unit}
-        result = unit.tier("full", store=store)
-        assert "Main content." in result["content"]
-        assert "Bridge info." in result["content"]
-        assert "--- context from: obsidian/bridge ---" in result["content"]
+        host = DirectionsUnit(
+            path="host", name="Host", description="h",
+            content={"full": "<<wb:x>> middle <<wb:x>>"},
+        )
+        store = {"x": x, "host": host}
+        result = _resolve_placeholders(
+            "<<wb:host>>", store, recursive_mode="all",
+        )
+        assert result.count("X-BODY") == 1
+        assert _BACK_REFERENCE_MARKER_TEMPLATE.format(path="x") in result
+
+    def test_default_mode_still_dedupes_diamond(self):
+        """Per-unit-occurrence cap fires in ``default`` mode too — a
+        diamond using explicit ``--recursive`` flags should still
+        dedupe."""
+        foundation = DirectionsUnit(
+            path="foundation", name="Foundation", description="leaf",
+            content={"full": "FOUNDATION-BODY"},
+        )
+        a = DirectionsUnit(
+            path="a", name="A", description="a",
+            content={"full": "A-body <<wb:foundation --recursive>>"},
+        )
+        b = DirectionsUnit(
+            path="b", name="B", description="b",
+            content={"full": "B-body <<wb:foundation --recursive>>"},
+        )
+        top = DirectionsUnit(
+            path="top", name="Top", description="t",
+            content={"full": "<<wb:a --recursive>> <<wb:b --recursive>>"},
+        )
+        store = {u.path: u for u in [foundation, a, b, top]}
+        result = _resolve_placeholders(
+            "<<wb:top --recursive>>", store, recursive_mode="default",
+        )
+        assert result.count("FOUNDATION-BODY") == 1
+        assert _BACK_REFERENCE_MARKER_TEMPLATE.format(path="foundation") in result
+
+    def test_self_reference_via_resolve_full_content_uses_back_ref(self):
+        """When ``_resolve_full_content`` is the top-level entry, the
+        unit being resolved is pre-added to ``_seen`` — so if it
+        appears downstream, the back-ref marker fires (defence beyond
+        validate_dag's cycle check)."""
+        # A → B → A (would be a cycle, normally blocked at load time —
+        # but the runtime guard should also catch it).
+        a = DirectionsUnit(
+            path="a", name="A", description="a",
+            content={"full": "A-body <<wb:b>>"},
+        )
+        b = DirectionsUnit(
+            path="b", name="B", description="b",
+            content={"full": "B-body <<wb:a>>"},
+        )
+        store = {"a": a, "b": b}
+        # Call _resolve_full_content directly — this primes _seen with
+        # the unit being resolved.
+        result = a._resolve_full_content(store, recursive_mode="all")
+        assert "A-body" in result
+        assert "B-body" in result
+        # And the self-ref to A from B's body becomes a back-ref
+        assert _BACK_REFERENCE_MARKER_TEMPLATE.format(path="a") in result

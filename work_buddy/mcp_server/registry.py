@@ -6525,6 +6525,30 @@ def _knowledge_capabilities() -> list[Capability]:
                     ),
                     "required": False,
                 },
+                "recursive": {
+                    "type": "str",
+                    "description": (
+                        "Placeholder recursion at depth='full'. "
+                        "'default' (per-placeholder --recursive flag wins), "
+                        "'all' (force transitive expansion, capped at "
+                        "~100KB), 'none' (preserve <<wb:...>> markup "
+                        "literally; useful for editing). Affects output "
+                        "only — search corpus uses 'default'."
+                    ),
+                    "required": False,
+                },
+                "max_depth": {
+                    "type": "int",
+                    "description": (
+                        "Cap on placeholder recursion depth at depth='full'. "
+                        "-1 (default) = mode default (unlimited in 'default' "
+                        "mode, 10 in 'all' mode). 0 = no recursion (same as "
+                        "recursive='none' in effect). Positive ints set an "
+                        "exact cap. Layers with the size budget and the "
+                        "per-unit-occurrence cap."
+                    ),
+                    "required": False,
+                },
             },
             callable=agent_docs,
             search_aliases=[
@@ -6618,7 +6642,8 @@ def _knowledge_capabilities() -> list[Capability]:
             description=(
                 "Validate the knowledge store: DAG integrity, "
                 "command-to-store mappings, thinned command format, "
-                "required fields, kind-specific fields, and parent-child symmetry."
+                "required fields, kind-specific fields, placeholder "
+                "duplicates, and parent-child symmetry."
             ),
             category="context",
             parameters={
@@ -6629,7 +6654,8 @@ def _knowledge_capabilities() -> list[Capability]:
                         "Available: dag_integrity, command_mapping, "
                         "thinned_commands, store_path_validity, "
                         "required_fields, directions_fields, "
-                        "kind_specific_fields, parent_child_symmetry"
+                        "kind_specific_fields, placeholder_duplicate, "
+                        "parent_child_symmetry"
                     ),
                     "required": False,
                 },
@@ -7120,16 +7146,6 @@ def _knowledge_capabilities() -> list[Capability]:
                 "tags": {
                     "type": "str",
                     "description": "Comma-separated tags.",
-                    "required": False,
-                },
-                "context_before": {
-                    "type": "str",
-                    "description": "Comma-separated unit paths to chain before.",
-                    "required": False,
-                },
-                "context_after": {
-                    "type": "str",
-                    "description": "Comma-separated unit paths to chain after.",
                     "required": False,
                 },
                 "evidence": {

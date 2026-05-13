@@ -56,7 +56,7 @@ Each unit responds at three depth levels. Start broad, narrow as needed — `ind
 
 ### Cross-references
 
-Units can embed other units' content via `<<wb:path>>` inline placeholders. At `depth="full"`, placeholders resolve to the referenced unit's complete content, so loading any one unit at `full` gives you all its declared foundations automatically. This is how behavioral directions (e.g., task-handoff rules) include shared foundations (e.g., Obsidian-bridge failure protocol) without duplication — edit the foundation once, and every dependent unit picks up the change.
+Units can embed other units' content via `<<wb:path>>` inline placeholders. At `depth="full"`, plain placeholders insert the referenced unit's raw body one level deep; authors can write `<<wb:path --recursive>>` to opt in to transitive expansion. This is how behavioral directions (e.g., task-handoff rules) include shared foundations (e.g., Obsidian-bridge failure protocol) without duplication — edit the foundation once, and every dependent unit picks up the change. Callers can override at query time via `agent_docs(recursive=...)`: `"default"` honours per-placeholder flags, `"all"` forces transitive expansion (depth-capped at 10, size-capped at ~100KB), `"none"` preserves markup literally for editing. See `architecture/knowledge-system` for the full mechanics.
 
 ### Personal knowledge
 

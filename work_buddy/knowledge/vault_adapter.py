@@ -12,13 +12,15 @@ Expected frontmatter schema (all optional except ``name``)::
     severity: HIGH
     tags: [wb/metacognition, wb/metacognition/work-pattern]
     aliases: [branching too much, too many directions]
-    context_before: [metacognition/blindspot-directions]
-    context_after: []
     parents: [personal/metacognition]
     children: []
     last_observed: "2026-04-03"
     observation_count: 12
     ---
+
+The retired ``context_before`` / ``context_after`` keys are silently
+ignored if present in an older file's frontmatter; the resolver no
+longer reads them.
 
 The markdown body becomes ``content["full"]``.  The first paragraph (or
 ``## Definition`` section if present) becomes ``content["summary"]``.
@@ -95,8 +97,6 @@ def load_vault_units(vault_dir: Path) -> dict[str, VaultUnit]:
                 requires=_as_list(fm.get("requires", [])),
                 parents=_as_list(fm.get("parents", [])),
                 children=_as_list(fm.get("children", [])),
-                context_before=_as_list(fm.get("context_before", [])),
-                context_after=_as_list(fm.get("context_after", [])),
                 category=fm.get("category", ""),
                 severity=fm.get("severity", ""),
                 last_observed=str(fm.get("last_observed", "")),
