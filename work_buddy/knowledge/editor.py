@@ -17,6 +17,7 @@ from typing import Any
 from work_buddy.knowledge.model import (
     PromptUnit,
     _KIND_MAP,
+    _PLACEHOLDER_RE,
     unit_from_dict,
     validate_dag,
 )
@@ -126,6 +127,81 @@ def _invalidate_and_validate() -> list[str]:
     invalidate_store()
     store = load_store(force=True)
     return validate_dag(store)
+
+
+def _scan_placeholder_hints(
+    unit_path: str,
+    store: dict[str, PromptUnit],
+) -> list[dict[str, str]]:
+    """Authoring-time lint for the placeholder-recursion foot-gun.
+
+    Flags plain ``<<wb:Y>>`` placeholders in the just-edited unit when
+    Y's own ``content["full"]`` contains placeholder markup. In that
+    situation the resolver inserts Y's body verbatim — the nested
+    placeholders are left literal, and the reader never sees Y's
+    foundations. Adding ``--recursive`` on the outer reference is
+    usually what the author meant.
+
+    Hints are informational only: the author may have deliberately
+    chosen the shallow form, so this never blocks an edit. The result
+    rides alongside ``dag_errors`` in the editor's response so the
+    authoring agent sees it at the moment of writing, not at some
+    later validate pass.
+
+    Mirrors the corpus-wide audit in
+    ``scripts/audit_placeholder_recursion.py``; this is the
+    single-unit, write-time version.
+
+    Targets that resolve to a unit not in the store are skipped (the
+    resolver already surfaces them as ``<!-- wb: X not found -->``
+    comments at read time). Duplicate references to the same target
+    yield a single hint to keep the output compact.
+    """
+    unit = store.get(unit_path)
+    if unit is None:
+        return []
+    full = unit.content.get("full", "")
+    if "<<wb:" not in full:
+        return []
+
+    hints: list[dict[str, str]] = []
+    seen_targets: set[str] = set()
+
+    for match in _PLACEHOLDER_RE.finditer(full):
+        inner = match.group(1).strip()
+        parts = inner.split()
+        if not parts:
+            continue
+        target_path = parts[0]
+        if not target_path:
+            continue
+        if "--recursive" in parts[1:]:
+            # Author already opted in to transitive resolution.
+            continue
+        if target_path in seen_targets:
+            continue
+
+        target = store.get(target_path)
+        if target is None:
+            # Broken refs aren't this lint's problem — the resolver's
+            # not-found comment surfaces them downstream.
+            continue
+        if "<<wb:" not in target.content.get("full", ""):
+            continue
+
+        seen_targets.add(target_path)
+        hints.append({
+            "hint": "placeholder_recursion",
+            "placeholder": target_path,
+            "message": (
+                f"Plain placeholder targets {target_path!r}, which itself "
+                "contains placeholders. Add --recursive if you want them "
+                "expanded; leave it plain if you only want this unit's "
+                "raw body inlined."
+            ),
+        })
+
+    return hints
 
 
 # ---------------------------------------------------------------------------
@@ -246,12 +322,14 @@ def create_unit(
 
     # Validate
     errors = _invalidate_and_validate()
+    hints = _scan_placeholder_hints(path, load_store())
 
     return {
         "status": "created",
         "path": path,
         "file": target_file.name,
         "dag_errors": errors,
+        "hints": hints,
     }
 
 
@@ -300,6 +378,7 @@ def update_unit(
     _write_json_file(target_file, file_data)
 
     errors = _invalidate_and_validate()
+    hints = _scan_placeholder_hints(path, load_store())
 
     return {
         "status": "updated",
@@ -307,6 +386,7 @@ def update_unit(
         "file": target_file.name,
         "updated_fields": all_updated_fields,
         "dag_errors": errors,
+        "hints": hints,
     }
 
 
