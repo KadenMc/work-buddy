@@ -823,6 +823,7 @@ def _build_registry() -> dict[str, Capability | WorkflowDefinition]:
         ("artifacts", _artifact_capabilities),
         ("email", _email_capabilities),
         ("backups", _backup_capabilities),
+        ("conversation_observability", _conversation_observability_capabilities),
     ]:
         t = time.time()
         try:
@@ -8003,6 +8004,169 @@ def _backup_capabilities() -> list[Capability]:
                 "list backups",
                 "available snapshots",
                 "what backups exist",
+            ],
+        ),
+    ]
+
+
+def _conversation_observability_capabilities() -> list[Capability]:
+    """Refresh + query surface for the conversation_observability DB."""
+    # !! IMPORT DEADLOCK RISK — READ BEFORE EDITING !!
+    # Callables registered here run via asyncio.to_thread() in the
+    # MCP server. Importing C-extension-backed modules at first call
+    # can deadlock the event loop. The targets here all use sqlite3
+    # (already loaded by other subsystems) and json — safe by the
+    # time the first call lands.
+    from work_buddy.conversation_observability.commits import (
+        refresh_session_commits as _refresh_commits,
+    )
+    from work_buddy.conversation_observability.sessions import (
+        list_observed_sessions,
+        query_observed_session,
+        refresh_observed_sessions as _refresh_sessions,
+    )
+    from work_buddy.conversation_observability.writes import (
+        refresh_session_writes as _refresh_writes,
+        uncommitted_report,
+    )
+
+    def _refresh_all(
+        days: int = 7,
+        max_sessions: int | None = None,
+        stale_only: bool = True,
+    ) -> dict[str, Any]:
+        """Single-call refresh of all three derived tables."""
+        observed = _refresh_sessions(
+            days=days, stale_only=stale_only, max_sessions=max_sessions,
+        )
+        commits = _refresh_commits(days=days)
+        writes = _refresh_writes(days=days)
+        return {
+            "observed_sessions": observed,
+            "session_commits": {
+                "commit_count": commits.get("commit_count", 0),
+            },
+            "session_writes": writes,
+        }
+
+    return [
+        Capability(
+            name="conversation_observability_refresh",
+            description=(
+                "Refresh the conversation_observability DB: observed "
+                "sessions metadata, session-attributed commits, and "
+                "session-attributed file writes (with dirty-state "
+                "snapshot). Stale-only by default; pass stale_only="
+                "false to force every recent session to re-load."
+            ),
+            category="conversation_observability",
+            parameters={
+                "days": {
+                    "type": "int",
+                    "description": "How far back to scan (default 7).",
+                    "required": False,
+                },
+                "max_sessions": {
+                    "type": "int",
+                    "description": (
+                        "Cap per-call work — observed_sessions refresh "
+                        "stops after N. Useful for time-sensitive callers."
+                    ),
+                    "required": False,
+                },
+                "stale_only": {
+                    "type": "bool",
+                    "description": (
+                        "Skip files whose per-concern mtime ledger "
+                        "matches the on-disk mtime. Default True."
+                    ),
+                    "required": False,
+                },
+            },
+            callable=_refresh_all,
+            mutates_state=True,
+            search_aliases=[
+                "refresh conversation observability",
+                "rebuild claude session attribution",
+                "update session commits cache",
+                "scan recent claude code sessions",
+            ],
+        ),
+        Capability(
+            name="conversation_observability_uncommitted",
+            description=(
+                "Return the legacy session_uncommitted report from the "
+                "DB-backed attribution layer. Refreshes first; see also "
+                "context/session_uncommitted (the thin compat wrapper)."
+            ),
+            category="conversation_observability",
+            parameters={
+                "days": {
+                    "type": "int",
+                    "description": "Recency window (default 7).",
+                    "required": False,
+                },
+            },
+            callable=uncommitted_report,
+            mutates_state=True,
+            search_aliases=[
+                "uncommitted sessions report",
+                "which sessions left dirty files",
+                "claude code uncommitted work",
+            ],
+        ),
+        Capability(
+            name="conversation_observability_get",
+            description=(
+                "Look up a single observed-session row by session_id, "
+                "including its metadata (start/end, message_count, span "
+                "count, tool usage counts). Returns None when the "
+                "session has not been observed yet."
+            ),
+            category="conversation_observability",
+            parameters={
+                "session_id": {
+                    "type": "str",
+                    "description": "Full or 8-char prefix session UUID.",
+                    "required": True,
+                },
+            },
+            callable=query_observed_session,
+            mutates_state=False,
+            search_aliases=[
+                "session observability lookup",
+                "session metadata get",
+                "claude session details",
+            ],
+        ),
+        Capability(
+            name="conversation_observability_list",
+            description=(
+                "List observed Claude Code sessions, sorted by recency. "
+                "Optional filters: days (recency window), project (one "
+                "project's sessions only)."
+            ),
+            category="conversation_observability",
+            parameters={
+                "days": {
+                    "type": "int",
+                    "description": (
+                        "Filter to sessions observed in the last N days."
+                    ),
+                    "required": False,
+                },
+                "project": {
+                    "type": "str",
+                    "description": "Filter by project_name.",
+                    "required": False,
+                },
+            },
+            callable=list_observed_sessions,
+            mutates_state=False,
+            search_aliases=[
+                "list observed sessions",
+                "recent claude sessions",
+                "session observability list",
             ],
         ),
     ]
