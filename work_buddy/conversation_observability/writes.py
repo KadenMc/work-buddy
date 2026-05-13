@@ -75,32 +75,58 @@ def refresh_session_writes(
     refresh_session_commits(days=days)
 
     # 2. Scan recent sessions and gather (sid, path) → (timestamp, tool).
-    session_paths = _recent_sessions(days)
-    sessions_scanned: set[str] = set()
-    # {(sid, resolved_path): (timestamp, tool_name)}
-    writes_by_key: dict[tuple[str, str], tuple[str, str]] = {}
-    for jsonl_path, sid in session_paths:
-        per_file = _extract_writes_from_jsonl(jsonl_path)
-        if per_file:
-            sessions_scanned.add(sid)
-        # _extract_writes_from_jsonl strips the tool name; re-scan the
-        # raw entries to recover the tool used for each write. We could
-        # bake this into the inspector helper, but doing it here keeps
-        # that helper's existing contract stable for now.
-        tool_by_path = _scan_tool_names(jsonl_path)
-        for path, ts in per_file.items():
-            tool = tool_by_path.get(path, "Write")
-            writes_by_key[(sid, path.as_posix())] = (ts, tool)
-
-    # 3. Upsert into the DB. Drop rows for sessions we re-scanned to
-    #    avoid stale records from a previous run.
+    #    Stale-only: skip files whose ``writes_scanned_mtime`` ledger
+    #    column matches the on-disk mtime.
     now_iso = datetime.now(timezone.utc).isoformat()
     conn = get_connection()
     try:
-        for sid in sessions_scanned:
+        session_paths = _recent_sessions(days)
+        sessions_scanned: set[str] = set()
+        # {(sid, resolved_path): (timestamp, tool_name)}
+        writes_by_key: dict[tuple[str, str], tuple[str, str]] = {}
+        for jsonl_path, sid in session_paths:
+            try:
+                file_mtime = jsonl_path.stat().st_mtime
+            except OSError:
+                continue
+            row = conn.execute(
+                "SELECT writes_scanned_mtime FROM observed_sessions "
+                "WHERE session_id = ?",
+                (sid,),
+            ).fetchone()
+            if (
+                row is not None
+                and row["writes_scanned_mtime"] is not None
+                and abs(row["writes_scanned_mtime"] - file_mtime) < 1e-6
+            ):
+                # Already scanned at this mtime — leave existing rows
+                # in place; dirty-state recompute below will still run.
+                sessions_scanned.add(sid)
+                continue
+
+            per_file = _extract_writes_from_jsonl(jsonl_path)
+            tool_by_path = _scan_tool_names(jsonl_path)
+            sessions_scanned.add(sid)
+            for path, ts in per_file.items():
+                tool = tool_by_path.get(path, "Write")
+                writes_by_key[(sid, path.as_posix())] = (ts, tool)
+
+            # Drop stale rows for sessions we re-scanned.
             conn.execute(
                 "DELETE FROM session_file_writes WHERE session_id = ?", (sid,)
             )
+            # Stamp the per-concern ledger column.
+            conn.execute(
+                "INSERT INTO observed_sessions "
+                "(session_id, source_path, source_mtime, observed_at, "
+                " writes_scanned_mtime) "
+                "VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(session_id) DO UPDATE SET "
+                " source_path=excluded.source_path, "
+                " writes_scanned_mtime=excluded.writes_scanned_mtime",
+                (sid, str(jsonl_path), file_mtime, now_iso, file_mtime),
+            )
+
         for (sid, fpath), (ts, tool) in writes_by_key.items():
             conn.execute(
                 "INSERT INTO session_file_writes "

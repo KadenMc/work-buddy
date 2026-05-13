@@ -85,15 +85,20 @@ def refresh_session_commits(
             except OSError:
                 continue
 
-            # Stale-only: skip if we have a fresh row for this file.
+            # Stale-only: skip if our per-concern scan ledger matches
+            # the on-disk mtime. ``commits_scanned_mtime`` is owned by
+            # this refresher; ``source_mtime`` is owned by the
+            # observed-sessions refresher and must not be conflated.
             row = conn.execute(
-                "SELECT source_mtime FROM observed_sessions WHERE session_id = ?",
+                "SELECT commits_scanned_mtime FROM observed_sessions "
+                "WHERE session_id = ?",
                 (sid,),
             ).fetchone()
             if (
                 row is not None
+                and row["commits_scanned_mtime"] is not None
                 and not force_rescan
-                and abs(row["source_mtime"] - mtime) < 1e-6
+                and abs(row["commits_scanned_mtime"] - mtime) < 1e-6
             ):
                 cached = conn.execute(
                     "SELECT * FROM session_commits WHERE session_id = ?",
@@ -125,17 +130,18 @@ def refresh_session_commits(
                         now_iso,
                     ),
                 )
-            # Upsert the per-file ledger row so the next scan can skip
-            # this file when nothing has changed.
+            # Stamp the commits scan ledger column. The row may have
+            # been created earlier by a metadata or writes refresh —
+            # we INSERT-or-UPDATE without touching their columns.
             conn.execute(
                 "INSERT INTO observed_sessions "
-                "(session_id, source_path, source_mtime, observed_at) "
-                "VALUES (?, ?, ?, ?) "
+                "(session_id, source_path, source_mtime, observed_at, "
+                " commits_scanned_mtime) "
+                "VALUES (?, ?, ?, ?, ?) "
                 "ON CONFLICT(session_id) DO UPDATE SET "
-                " source_mtime=excluded.source_mtime, "
-                " observed_at=excluded.observed_at, "
-                " source_path=excluded.source_path",
-                (sid, str(path), mtime, now_iso),
+                " source_path=excluded.source_path, "
+                " commits_scanned_mtime=excluded.commits_scanned_mtime",
+                (sid, str(path), mtime, now_iso, mtime),
             )
             all_commits.extend(commits)
 

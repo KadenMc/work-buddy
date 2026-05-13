@@ -23,20 +23,26 @@ artifact registration is the single source of truth for cleanup.
 from __future__ import annotations
 
 SCHEMA = """\
+-- ``source_mtime`` records the file mtime at the last *metadata* load
+-- (``refresh_observed_sessions``). Separate per-concern columns track
+-- when commits / writes were last extracted, so the three refreshers
+-- don't clobber each other's staleness state.
 CREATE TABLE IF NOT EXISTS observed_sessions (
-    session_id      TEXT PRIMARY KEY,
-    project_name    TEXT,
-    project_slug    TEXT,
-    source_path     TEXT NOT NULL,
-    source_mtime    REAL NOT NULL,
-    observed_at     TEXT NOT NULL,
-    start_time      TEXT,
-    end_time        TEXT,
-    message_count   INTEGER,
-    span_count      INTEGER,
-    tool_names_json TEXT NOT NULL DEFAULT '{}',
-    status          TEXT NOT NULL DEFAULT 'ok',
-    error           TEXT
+    session_id              TEXT PRIMARY KEY,
+    project_name            TEXT,
+    project_slug            TEXT,
+    source_path             TEXT NOT NULL,
+    source_mtime            REAL NOT NULL,
+    observed_at             TEXT NOT NULL,
+    start_time              TEXT,
+    end_time                TEXT,
+    message_count           INTEGER,
+    span_count              INTEGER,
+    tool_names_json         TEXT NOT NULL DEFAULT '{}',
+    status                  TEXT NOT NULL DEFAULT 'ok',
+    error                   TEXT,
+    commits_scanned_mtime   REAL,
+    writes_scanned_mtime    REAL
 );
 
 CREATE INDEX IF NOT EXISTS idx_observed_sessions_project

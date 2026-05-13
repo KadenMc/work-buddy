@@ -40,7 +40,8 @@ def get_connection(cfg: dict | None = None) -> sqlite3.Connection:
     Idempotent: schema is re-run on every connect via
     ``CREATE TABLE IF NOT EXISTS`` so a missing file becomes a populated
     one transparently. ``Row`` factory is set so callers can use column
-    access by name.
+    access by name. Forward-only ALTER migrations run on every connect
+    so existing DBs pick up new columns without intervention.
     """
     path = db_path(cfg)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -48,4 +49,29 @@ def get_connection(cfg: dict | None = None) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(SCHEMA)
+    _migrate_schema(conn)
     return conn
+
+
+def _migrate_schema(conn: sqlite3.Connection) -> None:
+    """Forward-only column additions on ``observed_sessions``.
+
+    ``CREATE TABLE IF NOT EXISTS`` cannot add columns to a pre-existing
+    table. Each new column gets its own ``ALTER TABLE`` here; the
+    list-of-strings shape keeps additions cheap to declare without
+    spawning a versioned migration framework for what's still a small
+    schema.
+    """
+    cols = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(observed_sessions)")
+    }
+    for col_name, col_decl in (
+        ("commits_scanned_mtime", "REAL"),
+        ("writes_scanned_mtime", "REAL"),
+    ):
+        if col_name not in cols:
+            conn.execute(
+                f"ALTER TABLE observed_sessions ADD COLUMN {col_name} {col_decl}"
+            )
+    conn.commit()
