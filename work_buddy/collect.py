@@ -23,6 +23,7 @@ File-name mapping from source → bundle file:
     calendar                   → calendar_summary.md
     day_planner                → day_planner_summary.md
     session_activity           → session_activity_summary.md
+    claude_session_summary     → claude_session_summary.md
     datacore                   → datacore_summary.md
 """
 
@@ -69,6 +70,7 @@ _BUNDLE_MAP: dict[str, str] = {
     "calendar":          "calendar_summary.md",
     "day_planner":       "day_planner_summary.md",
     "session_activity":  "session_activity_summary.md",
+    "claude_session_summary": "claude_session_summary.md",
     "datacore":          "datacore_summary.md",
     "projects":          "projects_summary.md",
 }
@@ -89,8 +91,8 @@ _LEGACY_ONLY_ALIAS: dict[str, list[str]] = {
 COLLECTORS = {
     "git", "obsidian", "chat", "chrome", "message",
     "smart", "calendar", "day_planner", "projects",
-    "session_activity", "obsidian_tasks", "obsidian_wellness",
-    "datacore",
+    "session_activity", "claude_session_summary",
+    "obsidian_tasks", "obsidian_wellness", "datacore",
 }
 
 # Optional collectors — included in bundles but not in default set.

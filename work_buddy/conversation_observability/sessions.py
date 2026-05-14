@@ -33,6 +33,7 @@ def refresh_observed_sessions(
     days: int = 30,
     stale_only: bool = True,
     max_sessions: int | None = None,
+    prune_orphans: bool = True,
 ) -> dict[str, Any]:
     """Walk recent JSONL session files and refresh ``observed_sessions``.
 
@@ -43,7 +44,15 @@ def refresh_observed_sessions(
     ``max_sessions`` caps the per-call work so the refresh stays
     bounded inside time-sensitive contexts (e.g. an IR-index hook).
 
-    Returns a summary: ``{observed, skipped, errored, total_scanned}``.
+    ``prune_orphans`` (default True) drops rows whose ``source_path``
+    no longer exists on disk. The artifact's ``post_delete_sql`` hook
+    cascades the cleanup to ``session_commits``, ``session_file_writes``,
+    ``topic_summaries``, and ``session_summaries`` in the same
+    transaction, so a deleted JSONL file fully disappears from the
+    durable store.
+
+    Returns a summary:
+    ``{observed, skipped, errored, total_scanned, orphaned}``.
     """
     from work_buddy.sessions.inspector import (
         ConversationSession,
@@ -149,6 +158,53 @@ def refresh_observed_sessions(
                     ),
                 )
 
+        orphaned = 0
+        if prune_orphans:
+            from pathlib import Path as _Path
+
+            stale_rows = conn.execute(
+                "SELECT session_id, source_path FROM observed_sessions"
+            ).fetchall()
+            doomed_sids: list[str] = []
+            for r in stale_rows:
+                src = r["source_path"]
+                if not src or not _Path(src).exists():
+                    doomed_sids.append(r["session_id"])
+            for sid in doomed_sids:
+                # Cascade through the artifact's post_delete_sql so the
+                # four child tables stay consistent. Falling through to
+                # a direct DELETE if the artifact API isn't reachable.
+                try:
+                    from work_buddy.artifacts import get_artifact
+
+                    artifact = get_artifact("conversation-observability")
+                    if artifact is not None:
+                        ref = artifact.storage.ref_for({"session_id": sid})
+                        artifact.storage.delete_record(ref)
+                        orphaned += 1
+                        continue
+                except Exception:  # pragma: no cover — defensive
+                    pass
+                conn.execute(
+                    "DELETE FROM observed_sessions WHERE session_id = ?",
+                    (sid,),
+                )
+                conn.execute(
+                    "DELETE FROM session_commits WHERE session_id = ?", (sid,)
+                )
+                conn.execute(
+                    "DELETE FROM session_file_writes WHERE session_id = ?",
+                    (sid,),
+                )
+                conn.execute(
+                    "DELETE FROM topic_summaries WHERE session_id = ?", (sid,)
+                )
+                conn.execute(
+                    "DELETE FROM session_summaries WHERE session_id = ?",
+                    (sid,),
+                )
+                orphaned += 1
+
         conn.commit()
     finally:
         conn.close()
@@ -158,6 +214,7 @@ def refresh_observed_sessions(
         "skipped": skipped,
         "errored": errored,
         "total_scanned": total,
+        "orphaned": orphaned,
     }
 
 

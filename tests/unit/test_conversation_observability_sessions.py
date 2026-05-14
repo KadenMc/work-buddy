@@ -125,6 +125,50 @@ def test_refresh_re_observes_when_file_changes(co_env) -> None:
     assert summary["observed"] == 1
 
 
+def test_refresh_prunes_orphan_rows_when_source_file_deleted(co_env) -> None:
+    """When a session JSONL is removed, its row + all child rows go too."""
+    from work_buddy.conversation_observability.sessions import (
+        query_observed_session,
+        refresh_observed_sessions,
+    )
+
+    sid = "11111111-2222-3333-4444-555555555555"
+    path = write_session(
+        co_env["projects"] / "alpha",
+        session_id=sid,
+        entries=_basic_session_entries(),
+    )
+    summary = refresh_observed_sessions(days=30)
+    assert summary["observed"] == 1
+    assert query_observed_session(sid) is not None
+
+    # Delete the JSONL file from disk. Next refresh should prune.
+    path.unlink()
+    summary = refresh_observed_sessions(days=30, prune_orphans=True)
+    assert summary["orphaned"] >= 1
+    assert query_observed_session(sid) is None
+
+
+def test_refresh_prune_orphans_flag_disables_pruning(co_env) -> None:
+    """``prune_orphans=False`` keeps rows even when source is gone."""
+    from work_buddy.conversation_observability.sessions import (
+        query_observed_session,
+        refresh_observed_sessions,
+    )
+
+    sid = "22222222-3333-4444-5555-666666666666"
+    path = write_session(
+        co_env["projects"] / "alpha",
+        session_id=sid,
+        entries=_basic_session_entries(),
+    )
+    refresh_observed_sessions(days=30)
+    path.unlink()
+    summary = refresh_observed_sessions(days=30, prune_orphans=False)
+    assert summary["orphaned"] == 0
+    assert query_observed_session(sid) is not None
+
+
 def test_refresh_max_sessions_caps_work(co_env) -> None:
     from work_buddy.conversation_observability.sessions import (
         refresh_observed_sessions,
