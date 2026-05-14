@@ -74,48 +74,65 @@ def refresh_session_writes(
     #    from session_commits rows.
     refresh_session_commits(days=days)
 
-    # 2. Scan recent sessions and gather (sid, path) → (timestamp, tool).
-    #    Stale-only: skip files whose ``writes_scanned_mtime`` ledger
-    #    column matches the on-disk mtime.
+    # 2. Pre-pass: pull the scan ledger so the JSONL loop doesn't hold
+    #    a DB connection open. Stale-only skip uses the
+    #    ``writes_scanned_mtime`` column owned by this refresher.
     now_iso = datetime.now(timezone.utc).isoformat()
+    session_paths = _recent_sessions(days)
     conn = get_connection()
     try:
-        session_paths = _recent_sessions(days)
-        sessions_scanned: set[str] = set()
-        # {(sid, resolved_path): (timestamp, tool_name)}
-        writes_by_key: dict[tuple[str, str], tuple[str, str]] = {}
-        for jsonl_path, sid in session_paths:
-            try:
-                file_mtime = jsonl_path.stat().st_mtime
-            except OSError:
-                continue
-            row = conn.execute(
-                "SELECT writes_scanned_mtime FROM observed_sessions "
-                "WHERE session_id = ?",
-                (sid,),
-            ).fetchone()
-            if (
-                row is not None
-                and row["writes_scanned_mtime"] is not None
-                and abs(row["writes_scanned_mtime"] - file_mtime) < 1e-6
-            ):
-                # Already scanned at this mtime — leave existing rows
-                # in place; dirty-state recompute below will still run.
-                sessions_scanned.add(sid)
-                continue
+        ledger_rows = conn.execute(
+            "SELECT session_id, writes_scanned_mtime FROM observed_sessions"
+        ).fetchall()
+    finally:
+        conn.close()
+    writes_scanned_at = {
+        r["session_id"]: r["writes_scanned_mtime"] for r in ledger_rows
+    }
 
-            per_file = _extract_writes_from_jsonl(jsonl_path)
-            tool_by_path = _scan_tool_names(jsonl_path)
+    # 3. JSONL scan loop — parse OUTSIDE the connection, then write the
+    #    per-session row batch + ledger stamp in a short transaction.
+    sessions_scanned: set[str] = set()
+    rows_written = 0
+    for jsonl_path, sid in session_paths:
+        try:
+            file_mtime = jsonl_path.stat().st_mtime
+        except OSError:
+            continue
+
+        cached = writes_scanned_at.get(sid)
+        if cached is not None and abs(cached - file_mtime) < 1e-6:
             sessions_scanned.add(sid)
-            for path, ts in per_file.items():
-                tool = tool_by_path.get(path, "Write")
-                writes_by_key[(sid, path.as_posix())] = (ts, tool)
+            continue
 
-            # Drop stale rows for sessions we re-scanned.
+        per_file = _extract_writes_from_jsonl(jsonl_path)
+        tool_by_path = _scan_tool_names(jsonl_path)
+        sessions_scanned.add(sid)
+        session_writes: list[tuple[str, str]] = []  # [(path_str, tool)]
+        for fp, ts in per_file.items():
+            tool = tool_by_path.get(fp, "Write")
+            session_writes.append((fp.as_posix(), ts, tool))
+
+        conn = get_connection()
+        try:
             conn.execute(
                 "DELETE FROM session_file_writes WHERE session_id = ?", (sid,)
             )
-            # Stamp the per-concern ledger column.
+            for fpath, ts, tool in session_writes:
+                conn.execute(
+                    "INSERT INTO session_file_writes "
+                    "(id, session_id, file_path, tool_name, write_timestamp, "
+                    " currently_dirty, observed_at) "
+                    "VALUES (?, ?, ?, ?, ?, 0, ?)",
+                    (
+                        f"{sid}:{fpath}",
+                        sid,
+                        fpath,
+                        tool,
+                        ts,
+                        now_iso,
+                    ),
+                )
             conn.execute(
                 "INSERT INTO observed_sessions "
                 "(session_id, source_path, source_mtime, observed_at, "
@@ -126,65 +143,71 @@ def refresh_session_writes(
                 " writes_scanned_mtime=excluded.writes_scanned_mtime",
                 (sid, str(jsonl_path), file_mtime, now_iso, file_mtime),
             )
+            conn.commit()
+        finally:
+            conn.close()
+        rows_written += len(session_writes)
 
-        for (sid, fpath), (ts, tool) in writes_by_key.items():
-            conn.execute(
-                "INSERT INTO session_file_writes "
-                "(id, session_id, file_path, tool_name, write_timestamp, "
-                " currently_dirty, observed_at) "
-                "VALUES (?, ?, ?, ?, ?, 0, ?)",
-                (
-                    f"{sid}:{fpath}",
-                    sid,
-                    fpath,
-                    tool,
-                    ts,
-                    now_iso,
-                ),
-            )
-        conn.commit()
-
-        # 4. Get dirty files from all repos.
-        dirty: set[str] = set()
-        for repo_path in _discover_repos(repos_root):
-            raw = _get_status(repo_path)
-            if not raw:
+    # 4. Get dirty files from all repos. Pure subprocess work, no DB.
+    dirty: set[str] = set()
+    for repo_path in _discover_repos(repos_root):
+        raw = _get_status(repo_path)
+        if not raw:
+            continue
+        for line in raw.splitlines():
+            if len(line) < 4:
                 continue
-            for line in raw.splitlines():
-                if len(line) < 4:
-                    continue
-                rel_path = line[3:]
-                if " -> " in rel_path:
-                    rel_path = rel_path.split(" -> ")[-1]
-                try:
-                    dirty.add((repo_path / rel_path).resolve().as_posix())
-                except (ValueError, OSError):
-                    continue
+            rel_path = line[3:]
+            if " -> " in rel_path:
+                rel_path = rel_path.split(" -> ")[-1]
+            try:
+                dirty.add((repo_path / rel_path).resolve().as_posix())
+            except (ValueError, OSError):
+                continue
 
-        # 5. Update currently_dirty + committed_sha.
-        rows = conn.execute(
+    # 5. Recompute currently_dirty + committed_sha per row. Read row
+    #    list with one connection, then update one row per short
+    #    transaction. The git-show subprocess in _resolve_committed_sha
+    #    is slow; doing it inside a long-held transaction would block
+    #    every other writer for the duration. Doing it between
+    #    transactions costs nothing.
+    conn = get_connection()
+    try:
+        all_rows = conn.execute(
             "SELECT id, session_id, file_path FROM session_file_writes"
         ).fetchall()
-        dirty_count = 0
-        for r in rows:
-            is_dirty = 1 if r["file_path"] in dirty else 0
+    finally:
+        conn.close()
+
+    dirty_count = 0
+    for r in all_rows:
+        is_dirty = 1 if r["file_path"] in dirty else 0
+        # _resolve_committed_sha is shaped to accept a conn; pass one
+        # we open just for the SELECTs it does, then close.
+        conn = get_connection()
+        try:
             committed_sha = _resolve_committed_sha(
                 conn, r["session_id"], r["file_path"], repos_root,
             )
+        finally:
+            conn.close()
+
+        conn = get_connection()
+        try:
             conn.execute(
                 "UPDATE session_file_writes "
                 "SET currently_dirty = ?, committed_sha = ? "
                 "WHERE id = ?",
                 (is_dirty, committed_sha, r["id"]),
             )
-            if is_dirty:
-                dirty_count += 1
-        conn.commit()
-    finally:
-        conn.close()
+            conn.commit()
+        finally:
+            conn.close()
+        if is_dirty:
+            dirty_count += 1
 
     return {
-        "rows_written": len(writes_by_key),
+        "rows_written": rows_written,
         "dirty_rows": dirty_count,
         "scanned_sessions": len(sessions_scanned),
     }

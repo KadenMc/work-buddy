@@ -77,38 +77,54 @@ def refresh_session_commits(
     now_iso = datetime.now(timezone.utc).isoformat()
     all_commits: list[dict[str, Any]] = []
 
+    # Pre-pass: pull the scan ledger with one short read connection so
+    # the per-session loop doesn't have to keep one open while parsing
+    # large JSONL files. ``commits_scanned_mtime`` is owned by this
+    # refresher; ``source_mtime`` (owned by ``refresh_observed_sessions``)
+    # must not be conflated.
     conn = get_connection()
     try:
-        for path, sid in paths:
-            try:
-                mtime = path.stat().st_mtime
-            except OSError:
-                continue
+        ledger_rows = conn.execute(
+            "SELECT session_id, commits_scanned_mtime FROM observed_sessions"
+        ).fetchall()
+    finally:
+        conn.close()
+    scanned_at = {
+        r["session_id"]: r["commits_scanned_mtime"] for r in ledger_rows
+    }
 
-            # Stale-only: skip if our per-concern scan ledger matches
-            # the on-disk mtime. ``commits_scanned_mtime`` is owned by
-            # this refresher; ``source_mtime`` is owned by the
-            # observed-sessions refresher and must not be conflated.
-            row = conn.execute(
-                "SELECT commits_scanned_mtime FROM observed_sessions "
-                "WHERE session_id = ?",
-                (sid,),
-            ).fetchone()
-            if (
-                row is not None
-                and row["commits_scanned_mtime"] is not None
-                and not force_rescan
-                and abs(row["commits_scanned_mtime"] - mtime) < 1e-6
-            ):
+    for path, sid in paths:
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+
+        cached_mtime = scanned_at.get(sid)
+        if (
+            cached_mtime is not None
+            and not force_rescan
+            and abs(cached_mtime - mtime) < 1e-6
+        ):
+            # Cache hit — read existing rows in one short transaction
+            # and move on.
+            conn = get_connection()
+            try:
                 cached = conn.execute(
                     "SELECT * FROM session_commits WHERE session_id = ?",
                     (sid,),
                 ).fetchall()
-                all_commits.extend(_row_to_commit(r) for r in cached)
-                continue
+            finally:
+                conn.close()
+            all_commits.extend(_row_to_commit(r) for r in cached)
+            continue
 
-            # Re-parse this file and replace its rows.
-            commits = _extract_commits_single_pass(path, sid)
+        # Cache miss: parse OUTSIDE the connection, then write in a
+        # short transaction. Per-session commit boundary keeps the
+        # write lock from being held across the whole loop.
+        commits = _extract_commits_single_pass(path, sid)
+
+        conn = get_connection()
+        try:
             conn.execute(
                 "DELETE FROM session_commits WHERE session_id = ?", (sid,)
             )
@@ -130,9 +146,6 @@ def refresh_session_commits(
                         now_iso,
                     ),
                 )
-            # Stamp the commits scan ledger column. The row may have
-            # been created earlier by a metadata or writes refresh —
-            # we INSERT-or-UPDATE without touching their columns.
             conn.execute(
                 "INSERT INTO observed_sessions "
                 "(session_id, source_path, source_mtime, observed_at, "
@@ -143,11 +156,10 @@ def refresh_session_commits(
                 " commits_scanned_mtime=excluded.commits_scanned_mtime",
                 (sid, str(path), mtime, now_iso, mtime),
             )
-            all_commits.extend(commits)
-
-        conn.commit()
-    finally:
-        conn.close()
+            conn.commit()
+        finally:
+            conn.close()
+        all_commits.extend(commits)
 
     # Match the legacy sort order: newest first by timestamp.
     all_commits.sort(key=lambda c: c.get("timestamp", "") or "", reverse=True)

@@ -45,7 +45,15 @@ def get_connection(cfg: dict | None = None) -> sqlite3.Connection:
     """
     path = db_path(cfg)
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(path), timeout=10)
+    # 30s busy-timeout: WAL mode allows concurrent readers + a single
+    # writer, but writers compete for the write lock. The sidecar
+    # refresh cron and inline collector refreshes can fire close
+    # together; 30s gives the slow side enough headroom to complete a
+    # batch before the next caller times out. The refresh functions
+    # themselves keep transactions short (one commit per session) so
+    # the worst-case wait is bounded by single-session work, not by
+    # entire scans.
+    conn = sqlite3.connect(str(path), timeout=30)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(SCHEMA)

@@ -66,81 +66,85 @@ def refresh_observed_sessions(
     errored = 0
     total = 0
 
-    conn = get_connection()
-    try:
+    # Pre-pass: collect the stale-only skip set with one short read-only
+    # connection so the per-session loop below does not need to keep a
+    # connection open while loading JSONL.
+    skip_sids: set[str] = set()
+    if stale_only:
+        conn = get_connection()
+        try:
+            rows = conn.execute(
+                "SELECT session_id, source_mtime, message_count "
+                "FROM observed_sessions"
+            ).fetchall()
+        finally:
+            conn.close()
+        existing = {r["session_id"]: r for r in rows}
         for path, sid in paths:
-            total += 1
-            if max_sessions is not None and observed >= max_sessions:
-                break
             try:
                 mtime = path.stat().st_mtime
             except OSError:
-                errored += 1
                 continue
+            row = existing.get(sid)
+            if (
+                row is not None
+                and abs(row["source_mtime"] - mtime) < 1e-6
+                and row["message_count"] is not None
+            ):
+                skip_sids.add(sid)
 
-            if stale_only:
-                row = conn.execute(
-                    "SELECT source_mtime, message_count FROM observed_sessions "
-                    "WHERE session_id = ?",
-                    (sid,),
-                ).fetchone()
-                # message_count NULL = ledger row exists from commit
-                # refresh but never received metadata. Treat as stale
-                # so we backfill it.
-                if (
-                    row is not None
-                    and abs(row["source_mtime"] - mtime) < 1e-6
-                    and row["message_count"] is not None
-                ):
-                    skipped += 1
-                    continue
+    # Main pass: load JSONL (slow, no DB connection held), then open a
+    # short-lived connection per session for the upsert + commit. This
+    # bounds the write-lock hold time to a single INSERT and keeps the
+    # sidecar cron from blocking concurrent writers for the duration of
+    # a full scan.
+    for path, sid in paths:
+        total += 1
+        if max_sessions is not None and observed >= max_sessions:
+            break
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            errored += 1
+            continue
+        if sid in skip_sids:
+            skipped += 1
+            continue
 
+        # JSONL load happens OUTSIDE any DB connection.
+        try:
+            session = ConversationSession(sid)
+            session._ensure_loaded()
+            meta = session.metadata()
+            tool_counts: dict[str, int] = {}
+            for t in session.turns:
+                for tool in t.get("tools", []) or []:
+                    name = tool if isinstance(tool, str) else tool.get("name", "")
+                    if name:
+                        tool_counts[name] = tool_counts.get(name, 0) + 1
+            ok_record = (
+                sid,
+                path.parent.name,
+                path.parent.name,
+                str(path),
+                mtime,
+                now_iso,
+                meta.get("start_time"),
+                meta.get("end_time"),
+                meta.get("message_count"),
+                len(session._span_map or {}),
+                json.dumps(tool_counts, ensure_ascii=False),
+            )
+        except Exception as exc:
+            err_record = (
+                sid,
+                str(path),
+                mtime,
+                now_iso,
+                f"{type(exc).__name__}: {exc}",
+            )
+            conn = get_connection()
             try:
-                session = ConversationSession(sid)
-                session._ensure_loaded()
-                meta = session.metadata()
-                tool_counts: dict[str, int] = {}
-                for t in session.turns:
-                    for tool in t.get("tools", []) or []:
-                        name = tool if isinstance(tool, str) else tool.get("name", "")
-                        if name:
-                            tool_counts[name] = tool_counts.get(name, 0) + 1
-
-                conn.execute(
-                    "INSERT INTO observed_sessions "
-                    "(session_id, project_name, project_slug, source_path, "
-                    " source_mtime, observed_at, start_time, end_time, "
-                    " message_count, span_count, tool_names_json, status, error) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ok', NULL) "
-                    "ON CONFLICT(session_id) DO UPDATE SET "
-                    "  project_name=excluded.project_name, "
-                    "  project_slug=excluded.project_slug, "
-                    "  source_path=excluded.source_path, "
-                    "  source_mtime=excluded.source_mtime, "
-                    "  observed_at=excluded.observed_at, "
-                    "  start_time=excluded.start_time, "
-                    "  end_time=excluded.end_time, "
-                    "  message_count=excluded.message_count, "
-                    "  span_count=excluded.span_count, "
-                    "  tool_names_json=excluded.tool_names_json, "
-                    "  status='ok', error=NULL",
-                    (
-                        sid,
-                        path.parent.name,  # raw slug; resolved below if helper present
-                        path.parent.name,
-                        str(path),
-                        mtime,
-                        now_iso,
-                        meta.get("start_time"),
-                        meta.get("end_time"),
-                        meta.get("message_count"),
-                        len(session._span_map or {}),
-                        json.dumps(tool_counts, ensure_ascii=False),
-                    ),
-                )
-                observed += 1
-            except Exception as exc:  # pragma: no cover — defensive
-                errored += 1
                 conn.execute(
                     "INSERT INTO observed_sessions "
                     "(session_id, source_path, source_mtime, observed_at, "
@@ -149,42 +153,66 @@ def refresh_observed_sessions(
                     "ON CONFLICT(session_id) DO UPDATE SET "
                     "  status='error', error=excluded.error, "
                     "  observed_at=excluded.observed_at",
-                    (
-                        sid,
-                        str(path),
-                        mtime,
-                        now_iso,
-                        f"{type(exc).__name__}: {exc}",
-                    ),
+                    err_record,
                 )
+                conn.commit()
+            finally:
+                conn.close()
+            errored += 1
+            continue
 
-        orphaned = 0
-        if prune_orphans:
-            from pathlib import Path as _Path
+        conn = get_connection()
+        try:
+            conn.execute(
+                "INSERT INTO observed_sessions "
+                "(session_id, project_name, project_slug, source_path, "
+                " source_mtime, observed_at, start_time, end_time, "
+                " message_count, span_count, tool_names_json, status, error) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ok', NULL) "
+                "ON CONFLICT(session_id) DO UPDATE SET "
+                "  project_name=excluded.project_name, "
+                "  project_slug=excluded.project_slug, "
+                "  source_path=excluded.source_path, "
+                "  source_mtime=excluded.source_mtime, "
+                "  observed_at=excluded.observed_at, "
+                "  start_time=excluded.start_time, "
+                "  end_time=excluded.end_time, "
+                "  message_count=excluded.message_count, "
+                "  span_count=excluded.span_count, "
+                "  tool_names_json=excluded.tool_names_json, "
+                "  status='ok', error=NULL",
+                ok_record,
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        observed += 1
 
+    # Orphan prune: stat() the source_path for each row, then delete
+    # the entire row tree with one short transaction per orphan. We do
+    # NOT call the artifact API here — its delete_record opens its own
+    # connection and would compete with the outer one for the write
+    # lock. The direct DELETE list below replicates the artifact's
+    # post_delete_sql behavior inline.
+    orphaned = 0
+    if prune_orphans:
+        from pathlib import Path as _Path
+
+        conn = get_connection()
+        try:
             stale_rows = conn.execute(
                 "SELECT session_id, source_path FROM observed_sessions"
             ).fetchall()
-            doomed_sids: list[str] = []
-            for r in stale_rows:
-                src = r["source_path"]
-                if not src or not _Path(src).exists():
-                    doomed_sids.append(r["session_id"])
-            for sid in doomed_sids:
-                # Cascade through the artifact's post_delete_sql so the
-                # four child tables stay consistent. Falling through to
-                # a direct DELETE if the artifact API isn't reachable.
-                try:
-                    from work_buddy.artifacts import get_artifact
-
-                    artifact = get_artifact("conversation-observability")
-                    if artifact is not None:
-                        ref = artifact.storage.ref_for({"session_id": sid})
-                        artifact.storage.delete_record(ref)
-                        orphaned += 1
-                        continue
-                except Exception:  # pragma: no cover — defensive
-                    pass
+        finally:
+            conn.close()
+        doomed_sids = [
+            r["session_id"]
+            for r in stale_rows
+            if not r["source_path"] or not _Path(r["source_path"]).exists()
+        ]
+        for sid in doomed_sids:
+            conn = get_connection()
+            try:
                 conn.execute(
                     "DELETE FROM observed_sessions WHERE session_id = ?",
                     (sid,),
@@ -203,11 +231,10 @@ def refresh_observed_sessions(
                     "DELETE FROM session_summaries WHERE session_id = ?",
                     (sid,),
                 )
-                orphaned += 1
-
-        conn.commit()
-    finally:
-        conn.close()
+                conn.commit()
+            finally:
+                conn.close()
+            orphaned += 1
 
     return {
         "observed": observed,
