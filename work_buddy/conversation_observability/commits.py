@@ -40,6 +40,7 @@ def refresh_session_commits(
     session_id: str | None = None,
     days: int = 7,
     project: str | None = None,
+    max_sessions: int | None = None,
 ) -> dict[str, Any]:
     """Scan recent sessions and persist their commits to the DB.
 
@@ -55,7 +56,10 @@ def refresh_session_commits(
 
     Stale-only by default: a session file whose mtime matches the row
     in ``observed_sessions`` is skipped. Pass an explicit ``session_id``
-    to force a re-scan of one session.
+    to force a re-scan of one session. ``max_sessions`` caps the
+    number of cache MISSES per call so a cold-start scan doesn't run
+    indefinitely; cache hits are unbounded since each is a single
+    short read.
     """
     # Import here so the conversation_observability package can be
     # imported (and its artifact registered) without pulling in the
@@ -93,6 +97,7 @@ def refresh_session_commits(
         r["session_id"]: r["commits_scanned_mtime"] for r in ledger_rows
     }
 
+    misses = 0
     for path, sid in paths:
         try:
             mtime = path.stat().st_mtime
@@ -118,9 +123,16 @@ def refresh_session_commits(
             all_commits.extend(_row_to_commit(r) for r in cached)
             continue
 
-        # Cache miss: parse OUTSIDE the connection, then write in a
-        # short transaction. Per-session commit boundary keeps the
-        # write lock from being held across the whole loop.
+        # Cache MISS: bounded by ``max_sessions`` so a cold scan can
+        # split across multiple cron firings instead of running for
+        # minutes inside a single call.
+        if max_sessions is not None and misses >= max_sessions:
+            continue
+        misses += 1
+
+        # Parse OUTSIDE the connection, then write in a short
+        # transaction. Per-session commit boundary keeps the write
+        # lock from being held across the whole loop.
         commits = _extract_commits_single_pass(path, sid)
 
         conn = get_connection()

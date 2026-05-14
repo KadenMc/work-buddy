@@ -8040,12 +8040,18 @@ def _conversation_observability_capabilities() -> list[Capability]:
         max_sessions: int | None = None,
         stale_only: bool = True,
     ) -> dict[str, Any]:
-        """Single-call refresh of all three derived tables."""
+        """Single-call refresh of all three derived tables.
+
+        ``max_sessions`` is forwarded to every refresher so a cold scan
+        can split across multiple cron firings rather than running for
+        many minutes inside a single call. Cache hits are unbounded;
+        only the MISS path is capped.
+        """
         observed = _refresh_sessions(
             days=days, stale_only=stale_only, max_sessions=max_sessions,
         )
-        commits = _refresh_commits(days=days)
-        writes = _refresh_writes(days=days)
+        commits = _refresh_commits(days=days, max_sessions=max_sessions)
+        writes = _refresh_writes(days=days, max_sessions=max_sessions)
         return {
             "observed_sessions": observed,
             "session_commits": {

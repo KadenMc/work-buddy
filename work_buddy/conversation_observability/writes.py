@@ -43,21 +43,29 @@ from work_buddy.conversation_observability.db import get_connection
 def refresh_session_writes(
     days: int = 7,
     repos_root: Path | None = None,
+    max_sessions: int | None = None,
 ) -> dict[str, Any]:
     """Scan recent JSONL sessions and update the write-attribution table.
 
     Workflow:
-      1. Refresh commits first so ``committed_sha`` lookups are accurate.
+      1. Refresh commits first so the report side can join against fresh
+         session_commits rows. (No committed_sha resolution here —
+         that runs lazily in :func:`uncommitted_report`, deduped per
+         SHA, scoped to dirty rows only.)
       2. Scan recent JSONL files for Write/Edit/NotebookEdit tool calls.
       3. For each (session_id, file_path) write, upsert one row carrying
          the latest write timestamp and the originating tool name.
       4. Collect dirty files from all repos under ``repos_root``.
-      5. Recompute ``currently_dirty`` and ``committed_sha`` for every
-         row.
+      5. Recompute ``currently_dirty`` for every row.
 
     Returns a summary dict (``{rows_written, dirty_rows, scanned_sessions}``)
     for observability — callers wanting the legacy "by session" report
     should use :func:`uncommitted_report`.
+
+    ``max_sessions`` caps the number of cache MISSES per call so a
+    cold-start scan splits across multiple cron firings instead of
+    running for many minutes. Cache hits and the dirty-state recompute
+    pass are unbounded since both are cheap.
     """
     from work_buddy.collectors.git_collector import _discover_repos, _get_status
     from work_buddy.config import load_config
@@ -70,9 +78,10 @@ def refresh_session_writes(
     if repos_root is None:
         repos_root = Path(load_config()["repos_root"])
 
-    # 1. Make sure commit attribution is fresh — committed_sha derives
-    #    from session_commits rows.
-    refresh_session_commits(days=days)
+    # 1. Make sure commit attribution is fresh — uncommitted_report
+    #    joins against session_commits rows when filtering out files
+    #    a session also committed.
+    refresh_session_commits(days=days, max_sessions=max_sessions)
 
     # 2. Pre-pass: pull the scan ledger so the JSONL loop doesn't hold
     #    a DB connection open. Stale-only skip uses the
@@ -94,6 +103,7 @@ def refresh_session_writes(
     #    per-session row batch + ledger stamp in a short transaction.
     sessions_scanned: set[str] = set()
     rows_written = 0
+    misses = 0
     for jsonl_path, sid in session_paths:
         try:
             file_mtime = jsonl_path.stat().st_mtime
@@ -104,6 +114,11 @@ def refresh_session_writes(
         if cached is not None and abs(cached - file_mtime) < 1e-6:
             sessions_scanned.add(sid)
             continue
+
+        # Cache MISS: bounded by ``max_sessions``.
+        if max_sessions is not None and misses >= max_sessions:
+            continue
+        misses += 1
 
         per_file = _extract_writes_from_jsonl(jsonl_path)
         tool_by_path = _scan_tool_names(jsonl_path)
@@ -149,11 +164,20 @@ def refresh_session_writes(
         rows_written += len(session_writes)
 
     # 4. Get dirty files from all repos. Pure subprocess work, no DB.
+    #    Parallelize: ``git status`` on every repo serially scales as
+    #    O(repos × per-repo-cost) — a 20-repo vault is ~60s sequential
+    #    but ~8s with a small thread pool, and the calls are pure I/O
+    #    so the GIL is irrelevant.
+    from concurrent.futures import ThreadPoolExecutor
+
+    repo_list = list(_discover_repos(repos_root))
     dirty: set[str] = set()
-    for repo_path in _discover_repos(repos_root):
+
+    def _scan_repo(repo_path: Path) -> list[str]:
         raw = _get_status(repo_path)
+        out: list[str] = []
         if not raw:
-            continue
+            return out
         for line in raw.splitlines():
             if len(line) < 4:
                 continue
@@ -161,50 +185,45 @@ def refresh_session_writes(
             if " -> " in rel_path:
                 rel_path = rel_path.split(" -> ")[-1]
             try:
-                dirty.add((repo_path / rel_path).resolve().as_posix())
+                out.append((repo_path / rel_path).resolve().as_posix())
             except (ValueError, OSError):
                 continue
+        return out
 
-    # 5. Recompute currently_dirty + committed_sha per row. Read row
-    #    list with one connection, then update one row per short
-    #    transaction. The git-show subprocess in _resolve_committed_sha
-    #    is slow; doing it inside a long-held transaction would block
-    #    every other writer for the duration. Doing it between
-    #    transactions costs nothing.
+    if repo_list:
+        with ThreadPoolExecutor(max_workers=min(8, len(repo_list))) as pool:
+            for paths_in_repo in pool.map(_scan_repo, repo_list):
+                dirty.update(paths_in_repo)
+
+    # 5. Recompute currently_dirty for every row. ``committed_sha`` is
+    #    intentionally NOT resolved here — running ``git show
+    #    --name-only`` for every (row, repo, session-sha) combination
+    #    can fan out into thousands of subprocess calls on a large vault
+    #    and hang the cron for minutes. ``uncommitted_report`` resolves
+    #    it lazily, deduped per SHA, scoped to dirty rows only.
+    #
+    #    All UPDATEs run in one short transaction. The previous
+    #    open-per-row pattern was paying the ``_migrate_schema`` PRAGMA
+    #    cost on every iteration; batching makes a 32-row pass go from
+    #    seconds to milliseconds. The transaction is still short
+    #    because UPDATEs against an indexed column are fast.
     conn = get_connection()
     try:
         all_rows = conn.execute(
-            "SELECT id, session_id, file_path FROM session_file_writes"
+            "SELECT id, file_path FROM session_file_writes"
         ).fetchall()
+        updates = [
+            (1 if r["file_path"] in dirty else 0, r["id"])
+            for r in all_rows
+        ]
+        dirty_count = sum(u[0] for u in updates)
+        conn.executemany(
+            "UPDATE session_file_writes SET currently_dirty = ? WHERE id = ?",
+            updates,
+        )
+        conn.commit()
     finally:
         conn.close()
-
-    dirty_count = 0
-    for r in all_rows:
-        is_dirty = 1 if r["file_path"] in dirty else 0
-        # _resolve_committed_sha is shaped to accept a conn; pass one
-        # we open just for the SELECTs it does, then close.
-        conn = get_connection()
-        try:
-            committed_sha = _resolve_committed_sha(
-                conn, r["session_id"], r["file_path"], repos_root,
-            )
-        finally:
-            conn.close()
-
-        conn = get_connection()
-        try:
-            conn.execute(
-                "UPDATE session_file_writes "
-                "SET currently_dirty = ?, committed_sha = ? "
-                "WHERE id = ?",
-                (is_dirty, committed_sha, r["id"]),
-            )
-            conn.commit()
-        finally:
-            conn.close()
-        if is_dirty:
-            dirty_count += 1
 
     return {
         "rows_written": rows_written,
@@ -261,12 +280,23 @@ def uncommitted_report(
 
     summary = refresh_session_writes(days=days, repos_root=repos_root)
 
-    # Re-collect porcelain status with codes for the report.
-    dirty_with_status: dict[str, tuple[str, str]] = {}  # path -> (repo, code)
-    for repo_path in _discover_repos(repos_root):
+    # Re-collect porcelain status with codes for the report. Parallel
+    # because the refresh already paid the cost once but git state is
+    # mutable; running fresh status here gives the report the most
+    # up-to-date status code (and a slightly newer set of dirty
+    # files, which uncommitted_report tolerates by dropping rows
+    # whose path no longer appears).
+    from concurrent.futures import ThreadPoolExecutor
+
+    repo_list = list(_discover_repos(repos_root))
+
+    def _scan_with_status(
+        repo_path: Path,
+    ) -> list[tuple[str, str, str]]:
         raw = _get_status(repo_path)
+        out: list[tuple[str, str, str]] = []
         if not raw:
-            continue
+            return out
         for line in raw.splitlines():
             if len(line) < 4:
                 continue
@@ -278,13 +308,21 @@ def uncommitted_report(
                 abs_path = (repo_path / rel_path).resolve().as_posix()
             except (ValueError, OSError):
                 continue
-            dirty_with_status[abs_path] = (repo_path.name, status_code)
+            out.append((abs_path, repo_path.name, status_code))
+        return out
+
+    dirty_with_status: dict[str, tuple[str, str]] = {}
+    if repo_list:
+        with ThreadPoolExecutor(max_workers=min(8, len(repo_list))) as pool:
+            for batch in pool.map(_scan_with_status, repo_list):
+                for abs_path, repo_name, status_code in batch:
+                    dirty_with_status[abs_path] = (repo_name, status_code)
 
     conn = get_connection()
     try:
         rows = conn.execute(
             "SELECT * FROM session_file_writes "
-            "WHERE currently_dirty = 1 AND committed_sha IS NULL "
+            "WHERE currently_dirty = 1 "
             "ORDER BY write_timestamp DESC"
         ).fetchall()
     finally:
@@ -298,6 +336,17 @@ def uncommitted_report(
             continue
         seen_files[path] = dict(r)
 
+    # Resolve committed_sha lazily, deduped per SHA. Only fire
+    # ``git show --name-only`` for SHAs that actually appear in the
+    # dirty-row session set, and only once each. A dirty row whose
+    # session committed the same file path is dropped from the
+    # report — the work isn't actually uncommitted, it just hasn't
+    # been pulled or the user has additional later edits.
+    committed_files_by_session = _committed_files_for_sessions(
+        {r["session_id"] for r in seen_files.values()},
+        repos_root,
+    )
+
     # Group by session, then by repo.
     by_session: dict[str, dict[str, list[dict[str, str]]]] = {}
     blamed: set[str] = set()
@@ -308,8 +357,11 @@ def uncommitted_report(
             # File was dirty at refresh time but isn't anymore — drop it
             # rather than make up a status code.
             continue
-        repo_name, status_code = info
         sid = r["session_id"]
+        # Drop if this session also committed the same file.
+        if path_obj.as_posix() in committed_files_by_session.get(sid, set()):
+            continue
+        repo_name, status_code = info
         blamed.add(sid)
         by_session.setdefault(sid, {}).setdefault(repo_name, []).append({
             "file": path_obj.name,
@@ -389,39 +441,49 @@ def _scan_tool_names(path: Path) -> dict[Path, str]:
     return result
 
 
-def _resolve_committed_sha(
-    conn: Any,
-    session_id: str,
-    file_path: str,
+def _committed_files_for_sessions(
+    session_ids: set[str],
     repos_root: Path,
-) -> str | None:
-    """Return the sha of a commit by ``session_id`` that touched ``file_path``.
+) -> dict[str, set[str]]:
+    """Return ``{session_id: set_of_committed_file_posix_paths}``.
 
-    Uses the cached session_commits rows plus ``git show --name-only``.
-    Returns None when no matching commit is found.
+    Deduped per SHA: one ``git show --name-only`` per unique commit
+    across all repos, not per (session, file) row. For an
+    ``uncommitted_report`` over 32 dirty rows referencing 5 unique
+    sessions with ~7 commits each, this is ~35 subprocess calls
+    instead of ~4500.
+
+    Empty ``session_ids`` short-circuits to an empty result without
+    touching git.
     """
     import subprocess
 
     from work_buddy.collectors.git_collector import _discover_repos
 
-    shas = [
-        r["sha"]
-        for r in conn.execute(
-            "SELECT sha FROM session_commits WHERE session_id = ?",
-            (session_id,),
-        ).fetchall()
-    ]
-    if not shas:
-        return None
+    if not session_ids:
+        return {}
 
-    # Cheap pre-check: file path must contain a repo under repos_root.
-    fp = Path(file_path)
-    for repo_path in _discover_repos(repos_root):
-        try:
-            rel = fp.relative_to(repo_path)
-        except ValueError:
-            continue
-        for sha in shas:
+    # Pull the relevant commit SHAs in one DB read.
+    placeholders = ",".join(["?"] * len(session_ids))
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            f"SELECT sha, session_id FROM session_commits "
+            f"WHERE session_id IN ({placeholders})",
+            tuple(session_ids),
+        ).fetchall()
+    finally:
+        conn.close()
+    sha_to_sid: dict[str, str] = {r["sha"]: r["session_id"] for r in rows}
+    if not sha_to_sid:
+        return {sid: set() for sid in session_ids}
+
+    # One git-show per unique SHA per repo. We probe each repo because
+    # the SHA might exist in only one of them; failures are silent.
+    result: dict[str, set[str]] = {sid: set() for sid in session_ids}
+    repos = list(_discover_repos(repos_root))
+    for sha, sid in sha_to_sid.items():
+        for repo_path in repos:
             try:
                 proc = subprocess.run(
                     ["git", "show", "--name-only", "--format=", sha],
@@ -435,10 +497,16 @@ def _resolve_committed_sha(
             if proc.returncode != 0:
                 continue
             for fname in proc.stdout.strip().splitlines():
-                if fname and Path(fname) == rel:
-                    return sha
-        break
-    return None
+                if not fname:
+                    continue
+                try:
+                    abs_path = (repo_path / fname).resolve().as_posix()
+                except (ValueError, OSError):
+                    continue
+                result[sid].add(abs_path)
+            # SHA found in this repo — stop probing other repos.
+            break
+    return result
 
 
 def _infer_repo_name(path: Path) -> str:
