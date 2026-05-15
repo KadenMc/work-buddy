@@ -1777,10 +1777,14 @@ document.addEventListener('keydown', function(ev) {
     var viewer = document.getElementById('chats-viewer');
     if (viewer && viewer.style.display !== 'none') return;
 
-    if (ev.key === 'j' || ev.key === 'ArrowDown') {
+    // Inverted-vim binding per the user's preference recorded in
+    // CLAUDE.local.md (`feedback_keyboard_inverted_jk`): j moves UP,
+    // k moves DOWN. The arrow keys keep their literal direction so
+    // muscle-memory still works for users who prefer them.
+    if (ev.key === 'k' || ev.key === 'ArrowDown') {
         ev.preventDefault();
         _chatsSetFocus(chatsState.focusIndex + 1);
-    } else if (ev.key === 'k' || ev.key === 'ArrowUp') {
+    } else if (ev.key === 'j' || ev.key === 'ArrowUp') {
         ev.preventDefault();
         _chatsSetFocus(Math.max(0, chatsState.focusIndex - 1));
     } else if (ev.key === 'Enter' && chatsState.focusIndex >= 0) {

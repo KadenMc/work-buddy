@@ -294,7 +294,12 @@ def test_slash_key_focuses_search(chats_js: str) -> None:
 
 
 def test_jk_arrow_keyboard_navigation_through_cards(chats_js: str) -> None:
-    """j/k/ArrowDown/ArrowUp move focus; Enter opens the focused card."""
+    """j/k/ArrowDown/ArrowUp move focus; Enter opens the focused card.
+
+    Direction is INVERTED-vim per the user's preference recorded in
+    CLAUDE.local.md: j moves UP (decrements focusIndex), k moves DOWN
+    (increments). The arrow keys keep their literal direction.
+    """
     assert "_chatsSetFocus" in chats_js
     assert "chatsState.focusIndex" in chats_js
     # Each binding must be present.
@@ -305,6 +310,28 @@ def test_jk_arrow_keyboard_navigation_through_cards(chats_js: str) -> None:
     assert "ev.key === 'Enter'" in chats_js
     # Enter must open via selectChat.
     assert "selectChat(card.dataset.sid)" in chats_js
+
+    # Inverted-vim direction lock-in: k is paired with ArrowDown
+    # (increments), j is paired with ArrowUp (decrements).
+    down_branch = re.search(
+        r"if \(ev\.key === '([jk])' \|\| ev\.key === 'ArrowDown'\)\s*\{(.*?)\}",
+        chats_js,
+        re.DOTALL,
+    )
+    up_branch = re.search(
+        r"if \(ev\.key === '([jk])' \|\| ev\.key === 'ArrowUp'\)\s*\{(.*?)\}",
+        chats_js,
+        re.DOTALL,
+    )
+    assert down_branch is not None and down_branch.group(1) == 'k', (
+        "k must be paired with ArrowDown (inverted-vim: k goes down)"
+    )
+    assert up_branch is not None and up_branch.group(1) == 'j', (
+        "j must be paired with ArrowUp (inverted-vim: j goes up)"
+    )
+    # Direction confirms: down increments, up decrements.
+    assert "focusIndex + 1" in down_branch.group(2)
+    assert "focusIndex - 1" in up_branch.group(2)
 
 
 def test_chat_card_focused_class_has_distinct_style(styles_text: str) -> None:
