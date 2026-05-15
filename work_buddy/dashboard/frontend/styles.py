@@ -2121,13 +2121,12 @@ body {
     .cp-modal { width: 95vw; }
     .thread-split-layout { flex-direction: column; }
     .thread-split-layout > .thread-chat-pane { width: 100%; border-left: none; border-top: 1px solid var(--border); }
-    .chats-layout { flex-direction: column; }
-    .chats-list-panel { flex: none !important; max-height: 250px; }
+    .chats-toolbar { flex-direction: column; align-items: stretch; }
+    .chats-toolbar-spacer { display: none; }
 }
 
 /* -- Chats tab --------------------------------------------------------- */
 
-.chats-search-bar { display: flex; gap: 8px; margin-bottom: 16px; }
 .chats-search-input {
     flex: 1; padding: 10px 14px;
     background: var(--bg-secondary); border: 1px solid var(--border);
@@ -2167,31 +2166,81 @@ body {
     display: -webkit-box; -webkit-line-clamp: 3;
     -webkit-box-orient: vertical; overflow: hidden;
 }
-.chats-layout { display: flex; gap: 16px; min-height: 600px; }
-.chats-list-panel { flex: 0 0 340px; overflow-y: auto; max-height: 80vh; }
-.chats-viewer-panel { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-.chats-list-toolbar { display: flex; gap: 8px; margin-bottom: 12px; }
+/* Single-pane Chats layout. The toolbar stays put across both views;
+   the content area swaps between list and viewer with a short
+   cross-fade. */
+.chats-toolbar {
+    display: flex; gap: 8px; align-items: center;
+    margin-bottom: 12px; flex-wrap: wrap;
+}
+.chats-toolbar-spacer { flex: 1; }
+.chats-content {
+    position: relative;
+    min-height: 600px;
+    display: flex;
+    flex-direction: column;
+}
+.chats-list-fullwidth {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    width: 100%;
+    transition: opacity 180ms ease;
+}
+.chats-viewer-fullwidth {
+    display: none;        /* JS toggles between flex and none */
+    flex-direction: column;
+    flex: 1;
+    width: 100%;
+    position: relative;   /* anchor for the close-X button */
+    transition: opacity 180ms ease;
+}
+.chats-close-btn {
+    position: absolute; top: 8px; right: 8px; z-index: 5;
+    width: 32px; height: 32px; border-radius: 50%;
+    background: var(--bg-tertiary); border: 1px solid var(--border);
+    color: var(--text-secondary); font-size: 18px; line-height: 1;
+    cursor: pointer; display: flex; align-items: center; justify-content: center;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.chats-close-btn:hover {
+    background: var(--bg-secondary); color: var(--text-primary);
+    border-color: var(--accent);
+}
 .chat-card {
-    padding: 12px; margin-bottom: 4px; border-radius: 6px;
+    padding: 16px; border-radius: 8px;
     cursor: pointer; border: 1px solid var(--border);
     background: var(--bg-secondary);
     transition: background 0.15s, border-color 0.15s;
+    display: flex; flex-direction: column; gap: 8px;
+    width: 100%;
 }
 .chat-card:hover { background: var(--bg-tertiary); }
 .chat-card.active { background: var(--bg-tertiary); border-color: var(--accent); }
 .chat-card-title {
-    font-size: 13px; font-weight: 500; color: var(--text-primary);
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-size: 15px; font-weight: 500; color: var(--text-primary);
+    line-height: 1.4;
+    /* Allow up to 3 lines of tldr (or first-message fallback). */
+    display: -webkit-box; -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical; overflow: hidden;
 }
 .chat-card-meta {
     display: flex; gap: 12px; font-size: 11px;
-    color: var(--text-muted); margin-top: 4px;
+    color: var(--text-muted);
 }
 .chat-card-project {
     font-size: 10px; color: var(--accent); font-weight: 600;
-    text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 2px;
+    text-transform: uppercase; letter-spacing: 0.5px;
 }
-.chat-card-tools { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+.chat-card-badges {
+    display: flex; gap: 12px; font-size: 12px;
+    color: var(--text-muted); align-items: center;
+}
+.chat-card-badge { display: inline-flex; align-items: center; gap: 4px; }
+.chat-card-badge.unfinished { color: var(--accent); }
+/* Legacy: kept as a defensive no-op selector in case any cached HTML
+   references it; the renderer no longer emits .chat-card-tools. */
+.chat-card-tools { display: none; }
 .chats-viewer-header {
     padding: 12px 16px; background: var(--bg-secondary);
     border: 1px solid var(--border); border-radius: 8px 8px 0 0;

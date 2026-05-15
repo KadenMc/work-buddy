@@ -290,8 +290,9 @@ def _html() -> str:
 
 <!-- CHATS -->
 <div class="tab-panel" id="panel-chats">
-    <!-- Global search bar -->
-    <div class="chats-search-bar">
+    <!-- Toolbar: search + sort + window. Always visible whether the
+         list or the viewer is showing. -->
+    <div class="chats-toolbar">
         <input type="text" id="chats-global-search" class="chats-search-input"
                placeholder="Search across all chats..." />
         <select id="chats-project-filter" class="chats-select chats-project-select"
@@ -305,56 +306,52 @@ def _html() -> str:
             <option value="substring">Exact match</option>
         </select>
         <button class="chats-accent-btn" onclick="chatsGlobalSearch()">Search</button>
+        <span class="chats-toolbar-spacer"></span>
+        <select id="chats-sort" class="chats-select">
+            <option value="recent">Most Recent</option>
+            <option value="longest">Longest Duration</option>
+            <option value="most-messages">Most Messages</option>
+        </select>
+        <select id="chats-days" class="chats-select">
+            <option value="7">7 days</option>
+            <option value="14" selected>14 days</option>
+            <option value="30">30 days</option>
+            <option value="60">60 days</option>
+        </select>
     </div>
 
-    <!-- Search results (hidden by default) -->
+    <!-- Search-results pane (separate from listing; shown only while a
+         global-search query is active). -->
     <div id="chats-search-results" class="chats-search-results" style="display:none;"></div>
 
-    <!-- Two-panel layout -->
-    <div class="chats-layout">
-        <!-- Left panel: chat list -->
-        <div class="chats-list-panel">
-            <div class="chats-list-toolbar">
-                <select id="chats-sort" class="chats-select">
-                    <option value="recent">Most Recent</option>
-                    <option value="longest">Longest Duration</option>
-                    <option value="most-messages">Most Messages</option>
-                </select>
-                <select id="chats-days" class="chats-select">
-                    <option value="7">7 days</option>
-                    <option value="14" selected>14 days</option>
-                    <option value="30">30 days</option>
-                    <option value="60">60 days</option>
-                </select>
-            </div>
-            <div id="chats-list"><div class="loading">Loading chats...</div></div>
+    <!-- Single-pane content area. Exactly one of #chats-list or
+         #chats-viewer is visible at a time; selecting a chat replaces
+         the list, the close button restores it. -->
+    <div class="chats-content">
+        <div id="chats-list" class="chats-list-fullwidth">
+            <div class="loading">Loading chats...</div>
         </div>
 
-        <!-- Right panel: chat viewer -->
-        <div class="chats-viewer-panel">
-            <div class="chats-viewer-empty" id="chats-viewer-empty">
-                <div class="empty-state" style="margin-top:80px;">Select a chat to view the conversation</div>
+        <div id="chats-viewer" class="chats-viewer-fullwidth" style="display:none;">
+            <button class="chats-close-btn" onclick="closeChat()" title="Back to list (Esc)">×</button>
+            <div class="chats-viewer-header" id="chats-viewer-header"></div>
+            <!-- In-chat search (toggleable) -->
+            <div class="chats-in-search" id="chats-in-search" style="display:none;">
+                <input type="text" id="chats-in-search-input" placeholder="Search in this chat..." />
+                <button onclick="chatsInSessionSearch()">Find</button>
+                <button onclick="chatsCloseInSearch()">Close</button>
+                <div id="chats-in-search-hits" style="display:flex;gap:4px;flex-wrap:wrap;"></div>
             </div>
-            <div id="chats-viewer" style="display:none;">
-                <div class="chats-viewer-header" id="chats-viewer-header"></div>
-                <!-- In-chat search (toggleable) -->
-                <div class="chats-in-search" id="chats-in-search" style="display:none;">
-                    <input type="text" id="chats-in-search-input" placeholder="Search in this chat..." />
-                    <button onclick="chatsInSessionSearch()">Find</button>
-                    <button onclick="chatsCloseInSearch()">Close</button>
-                    <div id="chats-in-search-hits" style="display:flex;gap:4px;flex-wrap:wrap;"></div>
+            <!-- Commits bar -->
+            <div id="chats-commits-bar" style="display:none;"></div>
+            <!-- Message list -->
+            <div class="chats-messages" id="chats-messages">
+                <div id="chats-load-earlier" style="display:none;">
+                    <button class="chats-load-more-btn" onclick="chatsLoadEarlier()">Load earlier messages</button>
                 </div>
-                <!-- Commits bar -->
-                <div id="chats-commits-bar" style="display:none;"></div>
-                <!-- Message list -->
-                <div class="chats-messages" id="chats-messages">
-                    <div id="chats-load-earlier" style="display:none;">
-                        <button class="chats-load-more-btn" onclick="chatsLoadEarlier()">Load earlier messages</button>
-                    </div>
-                    <div id="chats-message-list"></div>
-                    <div id="chats-load-later" style="display:none;">
-                        <button class="chats-load-more-btn" onclick="chatsLoadLater()">Load more messages</button>
-                    </div>
+                <div id="chats-message-list"></div>
+                <div id="chats-load-later" style="display:none;">
+                    <button class="chats-load-more-btn" onclick="chatsLoadLater()">Load more messages</button>
                 </div>
             </div>
         </div>

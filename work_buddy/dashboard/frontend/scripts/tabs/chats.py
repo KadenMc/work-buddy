@@ -94,9 +94,11 @@ function renderChatList() {
     const ACTIVE_WINDOW_MS = 60 * 60 * 1000;
 
     container.innerHTML = chats.map(c => {
-        const title = c.first_message
-            ? escapeHtml(cleanMsgText(c.first_message).split('\\n')[0].substring(0, 100))
-            : 'Untitled chat';
+        // Title prefers the cached LLM tldr (when summaries are
+        // enabled and the row exists); falls back to the first user
+        // message so chat-only sessions still get a meaningful title.
+        const titleSrc = c.tldr || c.first_message || 'Untitled chat';
+        const title = escapeHtml(cleanMsgText(titleSrc).trim());
         const lastTs = c.end_time || c.start_time || '';
         const lastMs = lastTs ? new Date(lastTs).getTime() : NaN;
         const isActive = isFinite(lastMs) && (Date.now() - lastMs) < ACTIVE_WINDOW_MS;
@@ -112,15 +114,36 @@ function renderChatList() {
             + '<span>' + (c.duration || '--') + '</span>'
             + '<span>' + c.message_count + ' msgs</span>'
             + '</div>'
-            + (c.top_tools && c.top_tools.length
-                ? '<div class="chat-card-tools">' + c.top_tools.join(', ') + '</div>'
-                : '')
+            + renderChatBadges(c)
             + '</div>';
     }).join('');
 
     container.querySelectorAll('.chat-card').forEach(function(card) {
         card.addEventListener('click', function() { selectChat(card.dataset.sid); });
     });
+}
+
+/**
+ * Render the commit + unfinished-work badge row for a chat card.
+ * Only renders when the session demonstrably engages with git
+ * (committed something OR wrote files via Write/Edit/NotebookEdit) —
+ * keeps cards slim for chat-only sessions where git noise is moot.
+ */
+function renderChatBadges(c) {
+    if (!c.engages_git) return '';
+    var parts = [];
+    if (c.commit_count > 0) {
+        var repoCount = c.commits_by_repo ? Object.keys(c.commits_by_repo).length : 0;
+        var commitsLabel = '🌿 ' + c.commit_count + ' commit' + (c.commit_count === 1 ? '' : 's');
+        if (repoCount > 1) commitsLabel += ' across ' + repoCount + ' repos';
+        parts.push('<span class="chat-card-badge">' + commitsLabel + '</span>');
+    }
+    if (c.unfinished_count > 0) {
+        var unfinishedLabel = '⚠ ' + c.unfinished_count + ' left uncommitted';
+        parts.push('<span class="chat-card-badge unfinished" title="Files this session wrote that this session did not commit itself.">' + unfinishedLabel + '</span>');
+    }
+    if (parts.length === 0) return '';
+    return '<div class="chat-card-badges">' + parts.join('') + '</div>';
 }
 
 async function selectChat(sessionId) {
@@ -138,7 +161,11 @@ async function selectChat(sessionId) {
         c.classList.toggle('active', c.dataset.sid === sessionId);
     });
 
-    document.getElementById('chats-viewer-empty').style.display = 'none';
+    // Single-pane swap: hide the listing, show the viewer at full
+    // width. The close button (X) is wired to closeChat() to swap
+    // back. URL hash already tracks selectedId so reload restores
+    // the same view.
+    document.getElementById('chats-list').style.display = 'none';
     document.getElementById('chats-viewer').style.display = 'flex';
     document.getElementById('chats-viewer').style.flexDirection = 'column';
     document.getElementById('chats-viewer').style.flex = '1';
@@ -166,6 +193,35 @@ async function selectChat(sessionId) {
 
     renderMessages();
 }
+
+/**
+ * Swap back from the chat-detail view to the listing. Clears the
+ * selected-chat URL state so a reload lands on the listing rather
+ * than re-opening the same session.
+ */
+function closeChat() {
+    chatsState.selectedId = null;
+    _persistHash();
+    document.getElementById('chats-viewer').style.display = 'none';
+    document.getElementById('chats-list').style.display = 'flex';
+    document.querySelectorAll('.chat-card.active').forEach(function(c) {
+        c.classList.remove('active');
+    });
+}
+
+// Esc closes the chat-detail view when the panel is active and the
+// user isn't typing into an input. Mirrors the Esc behavior on
+// modal-style panels elsewhere in the dashboard.
+document.addEventListener('keydown', function(ev) {
+    if (ev.key !== 'Escape') return;
+    var tag = (ev.target && ev.target.tagName) || '';
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+    var viewer = document.getElementById('chats-viewer');
+    if (!viewer || viewer.style.display === 'none') return;
+    var panel = document.getElementById('panel-chats');
+    if (!panel || !panel.classList.contains('active')) return;
+    closeChat();
+});
 
 function renderChatHeader(meta) {
     if (!meta) return;
@@ -631,7 +687,7 @@ async function chatsJumpToCommitSearch(sessionId, messageIndex) {
         c.classList.toggle('active', c.dataset.sid === sessionId);
     });
 
-    document.getElementById('chats-viewer-empty').style.display = 'none';
+    document.getElementById('chats-list').style.display = 'none';
     document.getElementById('chats-viewer').style.display = 'flex';
     document.getElementById('chats-viewer').style.flexDirection = 'column';
     document.getElementById('chats-viewer').style.flex = '1';
@@ -706,7 +762,7 @@ async function chatsJumpToHit(sessionId, spanIndex) {
         c.classList.toggle('active', c.dataset.sid === sessionId);
     });
 
-    document.getElementById('chats-viewer-empty').style.display = 'none';
+    document.getElementById('chats-list').style.display = 'none';
     document.getElementById('chats-viewer').style.display = 'flex';
     document.getElementById('chats-viewer').style.flexDirection = 'column';
     document.getElementById('chats-viewer').style.flex = '1';
