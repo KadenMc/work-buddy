@@ -2462,6 +2462,21 @@ body {
 }
 .chat-card-sid:hover {
     color: var(--text-primary); border-color: var(--accent);
+    cursor: pointer;
+}
+/* "Copied!" flash on the SID chip — click flips the textContent to
+   "Copied!" for ~1.1s. The chip dons the accent color so the flash
+   is unmistakable even if it's brief. */
+.chat-card-sid.chat-card-sid--copied {
+    color: var(--accent); border-color: var(--accent);
+    background: var(--accent-subtle);
+}
+/* Disabled "Most Relevant" lock on the sort dropdown — looks
+   non-interactive but still readable; the hint comes from the
+   muted opacity. */
+.chats-select.chats-sort--locked {
+    opacity: 0.7; cursor: not-allowed;
+    border-color: var(--accent); color: var(--accent);
 }
 .chat-card-badges {
     display: flex; gap: 12px; font-size: 12px;

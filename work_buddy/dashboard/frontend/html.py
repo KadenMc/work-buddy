@@ -338,12 +338,18 @@ def _html() -> str:
             </select>
         </div>
         <div class="chats-toolbar-group chats-toolbar-filter-group">
+            <!-- Sort dropdown. "Most Relevant" only appears + auto-selects
+                 while a search is active (renderChatList overrides sort
+                 with doc_score in that mode). The dropdown is disabled
+                 in that state and restored to the user's prior choice
+                 when the search clears. -->
             <select id="chats-sort" class="chats-select" onchange="applyChatsFiltersAndSort()">
                 <option value="recent">Most Recent</option>
                 <option value="longest">Longest Duration</option>
                 <option value="most-messages">Most Messages</option>
                 <option value="most-commits">Most Commits</option>
                 <option value="most-recent-commit">Most Recent Commit</option>
+                <option value="relevance" hidden>Most Relevant</option>
             </select>
             <select id="chats-days" class="chats-select">
                 <option value="7">7 days</option>

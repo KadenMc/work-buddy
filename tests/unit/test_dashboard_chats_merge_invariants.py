@@ -610,6 +610,147 @@ def test_toolbar_groups_widgets_for_responsive_collapse(
         assert "chats-toolbar-spacer" not in panel_html
 
 
+def test_sid_chip_click_copies_to_clipboard(
+    chats_js: str, styles_text: str,
+) -> None:
+    """Clicking a session-id chip copies the full UUID to the
+    clipboard with a brief "Copied!" flash on the chip.
+
+    The chip is `<code class="chat-card-sid">` and the listener
+    wiring must:
+      * stop event propagation so the card itself doesn't open
+      * call into a helper that uses navigator.clipboard.writeText
+      * flash a CSS class on the chip for visual feedback
+    """
+    # Helper exists and uses the async clipboard API + legacy fallback.
+    m = re.search(
+        r"function _chatsCopySid\(el\)\s*\{(.*?)^\}",
+        chats_js,
+        re.DOTALL | re.MULTILINE,
+    )
+    assert m is not None, "_chatsCopySid helper missing"
+    body = m.group(1)
+    assert "navigator.clipboard" in body
+    assert "writeText" in body
+    assert "chat-card-sid--copied" in body, (
+        "must flash a class on the chip so the user gets visual "
+        "feedback that the copy succeeded"
+    )
+
+    # Legacy fallback for older browsers / non-secure origins.
+    assert "_chatsLegacyCopy" in chats_js
+    assert "execCommand" in chats_js
+
+    # The renderer wires the listener on every .chat-card-sid in
+    # the container.
+    assert "querySelectorAll('.chat-card-sid')" in chats_js
+    # ev.stopPropagation must guard the chip click so it doesn't
+    # ALSO open the chat-detail viewer.
+    m2 = re.search(
+        r"querySelectorAll\('\.chat-card-sid'\).*?addEventListener.*?function\(ev\)\s*\{(.*?)\}\);",
+        chats_js,
+        re.DOTALL,
+    )
+    assert m2 is not None
+    assert "stopPropagation" in m2.group(1)
+
+    # CSS: the flash class is styled.
+    if styles_text:
+        assert ".chat-card-sid--copied" in styles_text
+
+
+def test_sort_dropdown_locks_to_relevance_when_searching(
+    panel_html: str, chats_js: str, styles_text: str,
+) -> None:
+    """When a search activates, the sort dropdown auto-selects
+    "Most Relevant", disables interaction, and stashes the user's
+    prior choice. When the search clears, the prior choice is
+    restored.
+
+    Previously: sort was silently overridden by doc_score and the
+    dropdown gave the user no feedback for changing it. Confusing.
+    """
+    # The hidden "Most Relevant" option is present in the dropdown.
+    m = re.search(
+        r'<option value="relevance"[^>]*hidden[^>]*>Most Relevant</option>',
+        panel_html,
+    )
+    assert m is not None, (
+        "The 'Most Relevant' option must be declared with hidden so "
+        "it doesn't appear in the menu when no search is active. JS "
+        "unhides it during lock and re-hides on unlock."
+    )
+
+    # Lock helper exists and does the four things it must:
+    m_lock = re.search(
+        r"function _chatsLockSortToRelevance\(\)\s*\{(.*?)^\}",
+        chats_js,
+        re.DOTALL | re.MULTILINE,
+    )
+    assert m_lock is not None
+    lb = m_lock.group(1)
+    assert "_priorSort" in lb, "must stash the prior sort value"
+    assert "value = 'relevance'" in lb, "must set the dropdown value"
+    assert "disabled = true" in lb, "must disable the dropdown"
+    assert "chats-sort--locked" in lb, "must add the locked class"
+
+    # Unlock helper exists and restores:
+    m_unlock = re.search(
+        r"function _chatsUnlockSort\(\)\s*\{(.*?)^\}",
+        chats_js,
+        re.DOTALL | re.MULTILINE,
+    )
+    assert m_unlock is not None
+    ub = m_unlock.group(1)
+    assert "disabled = false" in ub
+    assert "_priorSort" in ub
+    assert "chats-sort--locked" in ub
+
+    # chatsGlobalSearch calls Lock; chatsClearSearch calls Unlock.
+    m_search = re.search(
+        r"async function chatsGlobalSearch\(\)\s*\{(.*?)^\}",
+        chats_js,
+        re.DOTALL | re.MULTILINE,
+    )
+    assert m_search is not None
+    assert "_chatsLockSortToRelevance" in m_search.group(1)
+
+    m_clear = re.search(
+        r"function chatsClearSearch\(\)\s*\{(.*?)^\}",
+        chats_js,
+        re.DOTALL | re.MULTILINE,
+    )
+    assert m_clear is not None
+    assert "_chatsUnlockSort" in m_clear.group(1)
+
+    # CSS gives a visual signal for the locked state.
+    if styles_text:
+        assert ".chats-sort--locked" in styles_text
+
+
+def test_search_method_change_refires_active_search(
+    chats_js: str,
+) -> None:
+    """Changing the search method (Hybrid / Keyword / Semantic) while
+    a search is active should re-fire the query under the new method.
+    Was silently no-op — the user had to retype to actually see the
+    method swap take effect.
+    """
+    m = re.search(
+        r"function chatsSearchMethodChanged\(method\)\s*\{(.*?)^\}",
+        chats_js,
+        re.DOTALL | re.MULTILINE,
+    )
+    assert m is not None
+    body = m.group(1)
+    # Must re-fire chatsGlobalSearch when searchActive + query are set.
+    assert "chatsState.searchActive" in body
+    assert "chatsGlobalSearch" in body, (
+        "method change must trigger a search re-fire so the user sees "
+        "an immediate update"
+    )
+
+
 def test_card_shows_full_session_id_in_monospace(
     chats_js: str, styles_text: str,
 ) -> None:

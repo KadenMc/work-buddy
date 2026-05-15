@@ -37,6 +37,10 @@ const chatsState = {
     searchActive: false,
     searchQuery: '',
     searchSessionsByScore: [],
+    // Stash of the user's sort dropdown value before a search took it
+    // over. Restored to the dropdown on chatsClearSearch so users get
+    // back to whatever they were sorting by before they searched.
+    _priorSort: 'recent',
     // Pagination — numbered, single-page-at-a-time (matches the
     // costs > sessions UI via the shared wbRenderPager component).
     // 1-indexed; reset to 1 on any filter/search/sort change so the
@@ -291,6 +295,60 @@ function renderChatList() {
             chatsProjectFilterChanged(el.dataset.project);
         });
     });
+    // Clicking the session-id chip copies the full UUID to the
+    // clipboard. Stop propagation so we don't ALSO open the chat
+    // (and skip the default text-selection so the brief "Copied!"
+    // flash on the chip is visible).
+    container.querySelectorAll('.chat-card-sid').forEach(function(el) {
+        el.addEventListener('click', function(ev) {
+            ev.stopPropagation();
+            _chatsCopySid(el);
+        });
+    });
+}
+
+/** Copy a session-id chip's text to the clipboard and flash a brief
+ *  "Copied!" affordance on the chip itself. Uses navigator.clipboard
+ *  when available with a deprecated execCommand fallback for older
+ *  browsers / non-secure contexts. */
+function _chatsCopySid(el) {
+    var sid = el.textContent.trim();
+    if (!sid) return;
+    var done = function(ok) {
+        if (!ok) return;
+        var prior = el.textContent;
+        el.classList.add('chat-card-sid--copied');
+        el.textContent = 'Copied!';
+        setTimeout(function() {
+            el.classList.remove('chat-card-sid--copied');
+            el.textContent = prior;
+        }, 1100);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(sid).then(function() { done(true); })
+            .catch(function() {
+                // Permission denied or insecure context — fall through.
+                done(_chatsLegacyCopy(sid));
+            });
+    } else {
+        done(_chatsLegacyCopy(sid));
+    }
+}
+
+/** Fallback clipboard copy for environments without the async API
+ *  (older browsers, HTTP origins). Uses a hidden textarea +
+ *  document.execCommand('copy'). Returns true on success. */
+function _chatsLegacyCopy(text) {
+    try {
+        var ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed'; ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        var ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+        return ok;
+    } catch (e) { return false; }
 }
 
 /** Card render — extracted so search-active mode can attach chunks. */
@@ -1059,25 +1117,29 @@ function chatsProjectFilterChanged(project) {
         _commitsPreparedProject = '';
     }
 
-    // Project change resets page and re-renders. If a search is active,
-    // re-run it so the project pre-filter ALSO restricts the search
-    // corpus on the backend (project param goes alongside eligible_sids).
-    chatsResetPage();
-    if (chatsState.searchActive) {
-        chatsGlobalSearch();
-    } else {
-        renderChatList();
-    }
-
-    // If Commit method is selected but now hidden, fall back to Hybrid
+    // If Commit method is selected but the project just got cleared,
+    // fall back to Hybrid (commit search needs a project). Do this
+    // BEFORE the search/render so the method swap is reflected in
+    // whatever re-fire happens next.
     var methodSelect = document.getElementById('chats-search-method');
     if (methodSelect.value === 'commit' && !project) {
         methodSelect.value = 'keyword,semantic';
         chatsSearchMethodChanged('keyword,semantic');
     }
 
-    // Re-render chat list with project filter applied
-    renderChatList();
+    // Project change resets pagination + re-renders. If a search is
+    // active, re-fire it so the project pre-filter narrows the
+    // search corpus on the backend (project goes alongside the
+    // eligible_sids set). Either branch fully owns the re-render;
+    // there used to be a third unconditional renderChatList() here
+    // which raced with chatsGlobalSearch's loading state and
+    // double-painted the list.
+    chatsResetPage();
+    if (chatsState.searchActive) {
+        chatsGlobalSearch();
+    } else {
+        renderChatList();
+    }
 }
 
 function chatsUpdateCommitOption() {
@@ -1122,6 +1184,13 @@ function chatsSearchMethodChanged(method) {
         input.placeholder = project
             ? 'Search in ' + project + '...'
             : 'Search across all chats...';
+    }
+
+    // If a search is currently active, re-fire it under the new
+    // method so the user sees an immediate update instead of having
+    // to retype the query. Used to be silently no-op — confusing.
+    if (chatsState.searchActive && chatsState.searchQuery) {
+        chatsGlobalSearch();
     }
 }
 
@@ -1198,10 +1267,52 @@ async function chatsGlobalSearch() {
     chatsState.searchQuery = q;
     chatsState.searchSessionsByScore = data.sessions || [];
     chatsResetPage();
+    // Lock the sort dropdown to "Most Relevant" so the user can see
+    // (instead of having to remember) that doc_score is what's
+    // actually ordering the cards. Restored on chatsClearSearch.
+    _chatsLockSortToRelevance();
     renderChatList();
     // Persist q to URL hash so the search survives reload + is
     // shareable. _persistHash handles the encoding.
     if (typeof _persistHash === 'function') _persistHash();
+}
+
+/** Lock the sort dropdown to "Most Relevant" while a search is
+ *  active. Stashes the user's prior selection so chatsClearSearch
+ *  can restore it. Idempotent — safe to call repeatedly (the
+ *  prior-sort stash only updates when the dropdown isn't already
+ *  on "relevance"). */
+function _chatsLockSortToRelevance() {
+    var sel = document.getElementById('chats-sort');
+    if (!sel) return;
+    if (sel.value !== 'relevance') {
+        chatsState._priorSort = sel.value;
+    }
+    // Unhide the option (it's `hidden` by default in the HTML so it
+    // doesn't appear in the user's everyday menu) so the dropdown
+    // can actually display it as the selected value.
+    var opt = sel.querySelector('option[value="relevance"]');
+    if (opt) opt.hidden = false;
+    sel.value = 'relevance';
+    sel.disabled = true;
+    sel.classList.add('chats-sort--locked');
+}
+
+/** Restore the dropdown to the user's prior sort and unlock it.
+ *  Called when the search clears. */
+function _chatsUnlockSort() {
+    var sel = document.getElementById('chats-sort');
+    if (!sel) return;
+    sel.disabled = false;
+    sel.classList.remove('chats-sort--locked');
+    if (sel.value === 'relevance') {
+        sel.value = chatsState._priorSort || 'recent';
+    }
+    // Re-hide the "Most Relevant" option so it doesn't appear in
+    // the dropdown menu while the user is browsing in non-search
+    // mode.
+    var opt = sel.querySelector('option[value="relevance"]');
+    if (opt) opt.hidden = true;
 }
 
 /** Abort any in-flight search fetch. Idempotent — safe to call
@@ -1228,6 +1339,9 @@ function chatsClearSearch() {
     chatsState.searchQuery = '';
     chatsState.searchSessionsByScore = [];
     chatsResetPage();
+    // Restore the sort dropdown to whatever the user had selected
+    // before the search took it over.
+    _chatsUnlockSort();
     var input = document.getElementById('chats-global-search');
     if (input) input.value = '';
     renderChatList();
