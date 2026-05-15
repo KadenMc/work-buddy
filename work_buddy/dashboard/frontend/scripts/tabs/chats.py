@@ -1586,4 +1586,57 @@ document.addEventListener('keydown', function(ev) {
         input.select();
     }
 });
+
+// j / k / ArrowDown / ArrowUp / Enter — keyboard navigation through
+// the visible chat cards. Active only on the Chats tab when no card
+// is open and the user isn't typing in a form field. Enter opens the
+// focused card.
+chatsState.focusIndex = -1;
+
+function _chatsVisibleCards() {
+    return Array.from(document.querySelectorAll('#chats-list .chat-card'));
+}
+
+function _chatsSetFocus(idx) {
+    var cards = _chatsVisibleCards();
+    if (cards.length === 0) { chatsState.focusIndex = -1; return; }
+    if (idx < 0) idx = 0;
+    if (idx >= cards.length) idx = cards.length - 1;
+    chatsState.focusIndex = idx;
+    cards.forEach(function(c, i) { c.classList.toggle('focused', i === idx); });
+    // Keep focus visible without yanking the page if the user just
+    // clicked something else.
+    var el = cards[idx];
+    var rect = el.getBoundingClientRect();
+    if (rect.top < 80 || rect.bottom > window.innerHeight) {
+        el.scrollIntoView({block: 'nearest', behavior: 'smooth'});
+    }
+}
+
+document.addEventListener('keydown', function(ev) {
+    var panel = document.getElementById('panel-chats');
+    if (!panel || !panel.classList.contains('active')) return;
+    var tag = (ev.target && ev.target.tagName) || '';
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+    // Suppressed when chat-detail viewer is open (the viewer owns its
+    // own scroll/key behavior; nav between cards while reading a chat
+    // would be jarring).
+    var viewer = document.getElementById('chats-viewer');
+    if (viewer && viewer.style.display !== 'none') return;
+
+    if (ev.key === 'j' || ev.key === 'ArrowDown') {
+        ev.preventDefault();
+        _chatsSetFocus(chatsState.focusIndex + 1);
+    } else if (ev.key === 'k' || ev.key === 'ArrowUp') {
+        ev.preventDefault();
+        _chatsSetFocus(Math.max(0, chatsState.focusIndex - 1));
+    } else if (ev.key === 'Enter' && chatsState.focusIndex >= 0) {
+        var cards = _chatsVisibleCards();
+        var card = cards[chatsState.focusIndex];
+        if (card && card.dataset.sid) {
+            ev.preventDefault();
+            selectChat(card.dataset.sid);
+        }
+    }
+});
 """

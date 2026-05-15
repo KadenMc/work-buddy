@@ -2274,6 +2274,12 @@ body {
 }
 .chat-card:hover { background: var(--bg-tertiary); }
 .chat-card.active { background: var(--bg-tertiary); border-color: var(--accent); }
+/* Keyboard focus (j/k/arrows). Distinct from .active (selected) — a
+   focused card is just the cursor's current position, while active
+   means "this chat is currently open in the viewer". */
+.chat-card.focused {
+    box-shadow: inset 3px 0 0 var(--accent);
+}
 .chat-card-title {
     font-size: 15px; font-weight: 500; color: var(--text-primary);
     line-height: 1.4;
