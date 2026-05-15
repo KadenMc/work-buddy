@@ -324,8 +324,12 @@ function _chatsRenderSnippet(rawText) {
 
     var WIDTH = 200;
     var query = (chatsState.searchQuery || '').trim().replace(/\s*\(commit\)$/, '');
+    // Tokenize the way the IR engine does: split on whitespace AND
+    // common identifier separators (_, -, .). Otherwise a query like
+    // "workflow_id" would never match the inline "workflow" inside a
+    // chunk's text because there is no literal "workflow_id" token.
     var tokens = query
-        ? query.split(/\s+/).filter(function(t) { return t.length >= 2; })
+        ? query.split(/[\s_\-\.]+/).filter(function(t) { return t.length >= 2; })
         : [];
 
     if (tokens.length === 0) {
