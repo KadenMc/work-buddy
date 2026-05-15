@@ -8046,18 +8046,52 @@ def _conversation_observability_capabilities() -> list[Capability]:
         can split across multiple cron firings rather than running for
         many minutes inside a single call. Cache hits are unbounded;
         only the MISS path is capped.
+
+        Also pre-warms the per-SHA git-show cache used by the
+        dashboard's ``/api/chats`` enrichment. This shifts the
+        ``git show --name-only`` cost into the background cron run
+        instead of blocking the user's first dashboard load on a cold
+        system. Best-effort — failures don't block the refresh.
         """
         observed = _refresh_sessions(
             days=days, stale_only=stale_only, max_sessions=max_sessions,
         )
         commits = _refresh_commits(days=days, max_sessions=max_sessions)
         writes = _refresh_writes(days=days, max_sessions=max_sessions)
+
+        prewarm_count = 0
+        try:
+            from work_buddy.conversation_observability.db import get_connection
+            from work_buddy.conversation_observability.writes import (
+                _committed_files_for_sessions,
+            )
+            from work_buddy.config import load_config
+            from pathlib import Path as _Path
+
+            conn = get_connection()
+            try:
+                rows = conn.execute(
+                    "SELECT DISTINCT session_id FROM session_commits"
+                ).fetchall()
+            finally:
+                conn.close()
+            sids = {r["session_id"] for r in rows}
+            if sids:
+                cfg = load_config()
+                resolved = _committed_files_for_sessions(
+                    sids, _Path(cfg["repos_root"]),
+                )
+                prewarm_count = len(resolved)
+        except Exception:  # pragma: no cover — defensive
+            pass
+
         return {
             "observed_sessions": observed,
             "session_commits": {
                 "commit_count": commits.get("commit_count", 0),
             },
             "session_writes": writes,
+            "sha_cache": {"prewarmed_sessions": prewarm_count},
         }
 
     return [
