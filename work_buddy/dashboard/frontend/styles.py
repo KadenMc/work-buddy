@@ -2423,6 +2423,17 @@ body {
 .chats-search-summary strong {
     color: var(--text-primary);
 }
+.chats-search-hint {
+    color: var(--text-muted);
+    font-style: italic;
+}
+.chats-search-hint a {
+    color: var(--accent);
+    text-decoration: none;
+}
+.chats-search-hint a:hover {
+    text-decoration: underline;
+}
 .chats-clear-search-btn {
     padding: 4px 12px;
     background: var(--bg-tertiary);

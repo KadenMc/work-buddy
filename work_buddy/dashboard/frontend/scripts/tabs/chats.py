@@ -175,11 +175,27 @@ function renderChatList() {
 
     var searchSummary = '';
     if (chatsState.searchActive) {
+        var irHitCount = chatsState.searchSessionsByScore.length;
+        // IR returns hits across the FULL conversation index; the
+        // listing is bounded by the current days window. When the IR
+        // hit count exceeds what's visible, hint the user toward
+        // widening the window so they don't think the engine missed
+        // older matches.
+        var hiddenByWindow = Math.max(0, irHitCount - filteredTotal);
+        var hint = '';
+        if (hiddenByWindow > 0) {
+            hint = ' &middot; <span class="chats-search-hint">'
+                + hiddenByWindow + ' more outside the current days window — '
+                + '<a href="#" onclick="chatsExpandToAllTime();return false;">show All time</a>'
+                + '</span>';
+        }
         searchSummary = '<div class="chats-search-summary">'
             + '<span><strong>' + filteredTotal + '</strong> chat'
             + (filteredTotal === 1 ? '' : 's') + ' matching '
             + '<em>"' + escapeHtml(chatsState.searchQuery) + '"</em>'
-            + ' &middot; sorted by relevance</span>'
+            + ' &middot; sorted by relevance'
+            + hint
+            + '</span>'
             + '<button class="chats-clear-search-btn" onclick="chatsClearSearch()">Clear search</button>'
             + '</div>';
     }
@@ -398,6 +414,23 @@ function renderEmptyChatListState() {
 function chatsLoadMoreList() {
     chatsState.page = (chatsState.page || 0) + 1;
     renderChatList();
+}
+
+/**
+ * Switch the listing's days window to "All time" so IR hits outside
+ * the current window become visible. Triggered by the "more outside
+ * the current days window" link in the search summary. Re-runs the
+ * search after the data refresh so the same query rebuilds against
+ * the full corpus.
+ */
+function chatsExpandToAllTime() {
+    var sel = document.getElementById('chats-days');
+    if (sel) sel.value = '0';
+    // Preserve the active search so chatsState.searchActive +
+    // searchQuery survive the loadChats. (loadChats will re-fire
+    // the search automatically since searchActive is true.)
+    loadChats();
+    if (typeof _persistHash === 'function') _persistHash();
 }
 
 /** Reset listing position to first page. Call on any state change
