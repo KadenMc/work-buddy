@@ -116,32 +116,42 @@ def test_commit_search_uses_same_render_path(chats_js: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Pagination: page-size cap + Load more button + reset on state changes
+# Pagination: numbered pages (shared wbRenderPager) + reset on state changes
 # ---------------------------------------------------------------------------
 
 
 def test_listing_has_pagination_state(chats_js: str) -> None:
     assert "chatsState.page" in chats_js
     assert "chatsState.pageSize" in chats_js
-    assert "chatsLoadMoreList" in chats_js
+    # 1-indexed numbered pager (matches costs > sessions). The
+    # cumulative "Load more" handler is gone.
+    assert "chatsGoToPage" in chats_js
     assert "chatsResetPage" in chats_js
+    assert "chatsLoadMoreList" not in chats_js, (
+        "Numbered pagination supersedes the cumulative 'Load more' button"
+    )
 
 
-def test_load_more_button_renders_when_there_are_more_cards(chats_js: str) -> None:
-    """The renderer should append a Load-more affordance and pass the
-    remaining count for the user.
+def test_listing_renders_via_shared_pager(chats_js: str, panel_html: str) -> None:
+    """The listing must mount the shared wbRenderPager component (used
+    by costs > sessions and threads) into a sibling #chats-pager div,
+    instead of appending an inline 'Show more' button at the end of
+    the list.
     """
-    assert "renderLoadMore" in chats_js
-    # The label format we render — "Show more (N remaining)" — locks
-    # in the affordance shape so future edits don't accidentally hide
-    # the count.
-    assert "remaining" in chats_js
+    assert "wbRenderPager(" in chats_js
+    # The mount-point lives in the HTML scaffold so the listing
+    # renderer doesn't have to construct it dynamically.
+    assert 'id="chats-pager"' in panel_html
+    # The old in-list 'Show more' affordance must be gone — both the
+    # renderer and the CSS class.
+    assert "Show more" not in chats_js
+    assert "chats-load-more-listing" not in chats_js
 
 
 def test_filter_changes_reset_pagination(chats_js: str) -> None:
     """Toggling a pill, a project, a sort, or the days window must
-    reset chatsState.page to 0. Otherwise users on page 5 would see
-    a confusing partial slice after re-filtering.
+    reset chatsState.page to the first page. Otherwise users on page 5
+    would see a confusing partial slice after re-filtering.
     """
     # Direct calls to chatsResetPage in the relevant handlers.
     for handler in (
@@ -351,3 +361,167 @@ def test_snippet_renderer_centers_on_first_match(chats_js: str) -> None:
     assert "firstMatch" in body
     # Centering math: start = max(0, firstMatch - WIDTH/2).
     assert "WIDTH / 2" in body or "WIDTH/2" in body
+
+
+# ---------------------------------------------------------------------------
+# Two-view discipline: viewer mode hides the cross-session toolbar
+# ---------------------------------------------------------------------------
+
+
+def test_viewer_mode_class_toggles_on_select_and_close(chats_js: str) -> None:
+    """selectChat must add `.chats-tab--viewer` to #panel-chats; closeChat
+    must remove it. That class is the CSS hook that hides the toolbar
+    so the chat-detail view doesn't get a stale "find a different chat"
+    bar sitting on top of it.
+    """
+    # selectChat side.
+    m_sel = re.search(
+        r"async function selectChat\(sessionId\)\s*\{(.*?)^\}",
+        chats_js,
+        re.DOTALL | re.MULTILINE,
+    )
+    assert m_sel is not None
+    assert "chats-tab--viewer" in m_sel.group(1)
+    assert "classList.add('chats-tab--viewer')" in m_sel.group(1)
+
+    # closeChat side.
+    m_close = re.search(
+        r"function closeChat\(\)\s*\{(.*?)^\}",
+        chats_js,
+        re.DOTALL | re.MULTILINE,
+    )
+    assert m_close is not None
+    assert "classList.remove('chats-tab--viewer')" in m_close.group(1)
+
+
+def test_viewer_mode_css_hides_toolbar_and_pager(styles_text: str) -> None:
+    """The `.chats-tab--viewer` class on #panel-chats must hide the
+    cross-session toolbar (search/filters/sort/days/Advanced) AND the
+    listing pager. Otherwise opening a chat leaves stale "find another
+    chat" UI on top of the detail view.
+    """
+    if not styles_text:
+        pytest.skip("styles module didn't expose its text")
+    # Find the rule that targets `.chats-tab--viewer .chats-toolbar`.
+    assert ".chats-tab--viewer .chats-toolbar" in styles_text
+    assert ".chats-tab--viewer .chats-advanced-panel" in styles_text
+    assert "#chats-pager" in styles_text  # the pager mount-point is styled
+
+
+def test_back_to_list_button_replaces_floating_close_x(
+    panel_html: str, styles_text: str,
+) -> None:
+    """The old floating X close button overlapped the role-filter pills
+    (User / Assistant / All) on the viewer header's right edge. Its
+    replacement is a clear "Back to all chats" button ABOVE the header.
+    """
+    # Old floating-X class is gone — both the element and its CSS rule.
+    assert "chats-close-btn" not in panel_html
+    if styles_text:
+        assert ".chats-close-btn" not in styles_text
+
+    # New back-bar element is present and wired to closeChat().
+    assert "chats-viewer-backbar" in panel_html
+    assert "chats-back-btn" in panel_html
+    assert "Back to all chats" in panel_html
+    # Backbar precedes the viewer header in source order.
+    backbar_idx = panel_html.find("chats-viewer-backbar")
+    header_idx = panel_html.find('id="chats-viewer-header"')
+    assert 0 < backbar_idx < header_idx, (
+        "back-bar must appear BEFORE the viewer header so the affordance "
+        "lives above the header, not floating over its buttons"
+    )
+
+
+# ---------------------------------------------------------------------------
+# In-chat search: hits row BELOW the input bar, not to the right of it
+# ---------------------------------------------------------------------------
+
+
+def test_in_chat_search_hits_render_below_search_bar(
+    panel_html: str, styles_text: str,
+) -> None:
+    """The in-chat (within-conversation) match list must sit on its OWN
+    row below the input + Find + Close buttons, not flex-wrap to the
+    right of them. The structural fix is the bar/hits split inside
+    `.chats-in-search` and the corresponding column layout on the
+    parent.
+    """
+    # HTML scaffold: input lives inside .chats-in-search-bar, hits in
+    # a sibling .chats-in-search-hits div (NOT inside the bar).
+    assert "chats-in-search-bar" in panel_html
+    bar_idx = panel_html.find('class="chats-in-search-bar"')
+    hits_idx = panel_html.find('id="chats-in-search-hits"')
+    assert 0 < bar_idx < hits_idx, (
+        "in-chat search HITS div must appear AFTER the input bar in "
+        "source order so it renders on its own row below"
+    )
+
+    # CSS: parent flex-direction is column so children stack vertically.
+    if styles_text:
+        m = re.search(r"\.chats-in-search\s*\{([^}]+)\}", styles_text)
+        assert m is not None
+        body = m.group(1)
+        assert "flex-direction: column" in body, (
+            "chats-in-search must lay out its children in a column so "
+            "the hits row stacks below the input bar"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Sort by most-recent ACTIVITY (end_time), not chat-creation (start_time)
+# ---------------------------------------------------------------------------
+
+
+def test_recent_sort_uses_end_time(chats_js: str) -> None:
+    """The 'Most Recent' sort key must be end_time (last message
+    timestamp), not start_time. Users expect 'most recent' to mean
+    'most recently active' — including chats that were started days
+    ago but had a new turn this morning.
+    """
+    # Locate the renderChatList sort block.
+    m = re.search(
+        r"if \(sort === 'recent'\)\s*\{(.*?)\}",
+        chats_js,
+        re.DOTALL,
+    )
+    assert m is not None, "'recent' sort branch missing"
+    body = m.group(1)
+    assert "end_time" in body, "'recent' sort must use end_time"
+
+
+def test_card_renders_both_start_and_end_timestamps(chats_js: str) -> None:
+    """Every card must surface both timestamps — when the chat was
+    created (start_time) AND when it was last active (end_time) — so
+    the user can disambiguate at-a-glance which is which.
+    """
+    m = re.search(
+        r"function renderChatCard\(c, searchHit\)\s*\{(.*?)^\}",
+        chats_js,
+        re.DOTALL | re.MULTILINE,
+    )
+    assert m is not None
+    body = m.group(1)
+    # Both timestamps are passed through formatTimestamp().
+    assert "c.end_time" in body
+    assert "c.start_time" in body
+    # Each timestamp is labeled (Active / Started) so the user doesn't
+    # have to guess which is which.
+    assert "Active" in body
+    assert "Started" in body
+    # CSS hook for the labels is present.
+    assert "chat-card-time-label" in body
+
+
+def test_date_buckets_key_on_end_time(chats_js: str) -> None:
+    """The day-group headers must bucket cards by end_time (last
+    activity) so the headers actually correspond to the sort key.
+    Bucketing by start_time would place "Today" cards under "3 days
+    ago" if they were started 3 days back but used this morning.
+    """
+    m = re.search(
+        r"if \(groupByDate\)\s*\{(.*?)\}", chats_js, re.DOTALL,
+    )
+    assert m is not None
+    body = m.group(1)
+    assert "_chatsBucketLabel(c.end_time" in body

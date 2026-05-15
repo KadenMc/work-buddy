@@ -355,16 +355,32 @@ def _html() -> str:
         <div id="chats-list" class="chats-list-fullwidth">
             <div class="loading">Loading chats...</div>
         </div>
+        <!-- Numbered pager for the listing. Rendered by wbRenderPager
+             from core/pager.py — same component costs > sessions uses. -->
+        <div id="chats-pager" class="wb-pager"></div>
 
         <div id="chats-viewer" class="chats-viewer-fullwidth" style="display:none;">
-            <button class="chats-close-btn" onclick="closeChat()" title="Back to list (Esc)">×</button>
+            <!-- Back-to-list bar. Lives ABOVE the viewer header so the
+                 "x close" affordance doesn't overlap the role-filter
+                 buttons (User / Assistant / All) on the header's right
+                 edge. Click anywhere on the bar or hit Esc to return. -->
+            <div class="chats-viewer-backbar">
+                <button class="chats-back-btn" onclick="closeChat()"
+                        title="Back to chat list (Esc)">
+                    <span class="chats-back-icon">‹</span> Back to all chats
+                </button>
+            </div>
             <div class="chats-viewer-header" id="chats-viewer-header"></div>
-            <!-- In-chat search (toggleable) -->
+            <!-- In-chat search (toggleable). The hits row sits BELOW
+                 the input + buttons (see styles.py: chats-in-search-hits
+                 has flex-basis:100% so it wraps to its own line). -->
             <div class="chats-in-search" id="chats-in-search" style="display:none;">
-                <input type="text" id="chats-in-search-input" placeholder="Search in this chat..." />
-                <button onclick="chatsInSessionSearch()">Find</button>
-                <button onclick="chatsCloseInSearch()">Close</button>
-                <div id="chats-in-search-hits" style="display:flex;gap:4px;flex-wrap:wrap;"></div>
+                <div class="chats-in-search-bar">
+                    <input type="text" id="chats-in-search-input" placeholder="Search in this chat..." />
+                    <button onclick="chatsInSessionSearch()">Find</button>
+                    <button onclick="chatsCloseInSearch()">Close</button>
+                </div>
+                <div id="chats-in-search-hits" class="chats-in-search-hits"></div>
             </div>
             <!-- Commits bar -->
             <div id="chats-commits-bar" style="display:none;"></div>

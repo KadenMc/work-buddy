@@ -37,10 +37,11 @@ const chatsState = {
     searchActive: false,
     searchQuery: '',
     searchSessionsByScore: [],
-    // Pagination. The visible window is `(page+1) * pageSize` cards
-    // from the head of the filtered+sorted list. Reset to 0 on any
-    // filter / search / sort change so the user lands at the top.
-    page: 0,
+    // Pagination — numbered, single-page-at-a-time (matches the
+    // costs > sessions UI via the shared wbRenderPager component).
+    // 1-indexed; reset to 1 on any filter/search/sort change so the
+    // user always lands at page 1.
+    page: 1,
     pageSize: 25,
 };
 
@@ -146,14 +147,24 @@ function renderChatList() {
         searchHitsBySid = hitMap;
     } else {
         var sort = document.getElementById('chats-sort')?.value || 'recent';
-        if (sort === 'longest') chats.sort(function(a, b) { return (b.message_count - a.message_count); });
+        // "Most Recent" = most recent ACTIVITY (last message timestamp,
+        // i.e. end_time) — not chat-creation time. Falls back to
+        // start_time when end_time is missing.
+        if (sort === 'recent') {
+            chats.sort(function(a, b) {
+                var at = a.end_time || a.start_time || '';
+                var bt = b.end_time || b.start_time || '';
+                return bt.localeCompare(at);
+            });
+        }
+        else if (sort === 'longest') chats.sort(function(a, b) { return (b.message_count - a.message_count); });
         else if (sort === 'most-messages') chats.sort(function(a, b) { return (b.tool_count - a.tool_count); });
         else if (sort === 'most-commits') {
             chats.sort(function(a, b) {
                 var ac = a.commit_count || 0;
                 var bc = b.commit_count || 0;
                 if (bc !== ac) return bc - ac;
-                return (b.start_time || '').localeCompare(a.start_time || '');
+                return (b.end_time || b.start_time || '').localeCompare(a.end_time || a.start_time || '');
             });
         }
         else if (sort === 'most-recent-commit') {
@@ -163,15 +174,21 @@ function renderChatList() {
                 if (at && !bt) return -1;
                 if (bt && !at) return 1;
                 if (at !== bt) return bt.localeCompare(at);
-                return (b.start_time || '').localeCompare(a.start_time || '');
+                return (b.end_time || b.start_time || '').localeCompare(a.end_time || a.start_time || '');
             });
         }
     }
 
+    // Numbered pagination — single page slice (NOT cumulative). Clamp
+    // the current page in case filters dropped it past the new last
+    // page.
     var filteredTotal = chats.length;
-    var endIdx = Math.min(filteredTotal, (chatsState.page + 1) * chatsState.pageSize);
-    var visible = chats.slice(0, endIdx);
-    var hasMore = endIdx < filteredTotal;
+    var totalPages = Math.max(1, Math.ceil(filteredTotal / chatsState.pageSize));
+    var page = Math.min(Math.max(chatsState.page || 1, 1), totalPages);
+    chatsState.page = page;
+    var startIdx = (page - 1) * chatsState.pageSize;
+    var endIdx = Math.min(filteredTotal, page * chatsState.pageSize);
+    var visible = chats.slice(startIdx, endIdx);
 
     var searchSummary = '';
     if (chatsState.searchActive) {
@@ -208,7 +225,8 @@ function renderChatList() {
     // Date-grouped headers when sort=recent and not searching.
     // For all other sort modes (most-commits, longest, etc.) and for
     // search-active mode, group headers don't make sense — the cards
-    // are ordered by something other than time.
+    // are ordered by something other than time. Buckets are keyed off
+    // end_time (last activity) to match the sort key.
     var sortValue = document.getElementById('chats-sort')?.value || 'recent';
     var groupByDate = !chatsState.searchActive && sortValue === 'recent';
 
@@ -216,7 +234,7 @@ function renderChatList() {
     if (groupByDate) {
         var lastBucket = null;
         listHTML = visible.map(function(c) {
-            var bucket = _chatsBucketLabel(c.start_time);
+            var bucket = _chatsBucketLabel(c.end_time || c.start_time);
             var headerHTML = '';
             if (bucket !== lastBucket) {
                 headerHTML = '<div class="chats-day-header">' + escapeHtml(bucket) + '</div>';
@@ -228,9 +246,15 @@ function renderChatList() {
         listHTML = visible.map(function(c) { return renderChatCard(c, searchHitsBySid ? searchHitsBySid[c.session_id] : null); }).join('');
     }
 
-    container.innerHTML = searchSummary
-        + listHTML
-        + (hasMore ? renderLoadMore(filteredTotal - endIdx) : '');
+    container.innerHTML = searchSummary + listHTML;
+
+    // Numbered pager rendered into the #chats-pager div (sibling of
+    // #chats-list under .chats-content). wbRenderPager auto-hides when
+    // total <= pageSize, so single-page results stay clean.
+    if (typeof wbRenderPager === 'function') {
+        wbRenderPager('chats-pager', filteredTotal, page, chatsState.pageSize,
+                      'chatsGoToPage');
+    }
 
     container.querySelectorAll('.chat-card').forEach(function(card) {
         card.addEventListener('click', function() { selectChat(card.dataset.sid); });
@@ -266,18 +290,40 @@ function renderChatCard(c, searchHit) {
     const titleSrc = c.tldr || c.first_message || 'Untitled chat';
     const title = escapeHtml(cleanMsgText(titleSrc).trim());
     const lastTs = c.end_time || c.start_time || '';
+    const startTs = c.start_time || '';
     const lastMs = lastTs ? new Date(lastTs).getTime() : NaN;
     const isActive = isFinite(lastMs) && (Date.now() - lastMs) < ACTIVE_WINDOW_MS;
     const activeDot = isActive
         ? '<span class="wb-active-dot" title="Active in the last hour"></span>'
         : '';
+
+    // Both timestamps on every card. "Active" = most recent message
+    // (end_time, also the sort key for Most Recent). "Started" = first
+    // message (when the chat was created). When the chat has only one
+    // turn end_time === start_time so we omit the duplicate.
+    var sameTs = lastTs && startTs && lastTs === startTs;
+    var timeMetaHTML = '';
+    if (lastTs) {
+        timeMetaHTML += '<span class="chat-card-time" title="Most recent message in this chat">'
+            + activeDot
+            + '<span class="chat-card-time-label">Active</span> '
+            + escapeHtml(formatTimestamp(lastTs))
+            + '</span>';
+    }
+    if (startTs && !sameTs) {
+        timeMetaHTML += '<span class="chat-card-time" title="First message (when this chat was created)">'
+            + '<span class="chat-card-time-label">Started</span> '
+            + escapeHtml(formatTimestamp(startTs))
+            + '</span>';
+    }
+
     return '<div class="chat-card' + (c.session_id === chatsState.selectedId ? ' active' : '') + '"'
         + ' data-sid="' + c.session_id + '">'
         + (c.project_name ? '<div class="chat-card-project" data-project="' + escapeHtml(c.project_name) + '"'
             + ' title="Filter listing to this project">' + escapeHtml(c.project_name) + '</div>' : '')
         + '<div class="chat-card-title">' + title + '</div>'
         + '<div class="chat-card-meta">'
-        + '<span>' + activeDot + formatTimestamp(c.start_time) + '</span>'
+        + timeMetaHTML
         + '<span>' + (c.duration || '--') + '</span>'
         + '<span>' + c.message_count + ' msgs</span>'
         + '</div>'
@@ -393,12 +439,6 @@ function _chatsBucketLabel(startTimeIso) {
     return 'Earlier';
 }
 
-function renderLoadMore(remaining) {
-    return '<button class="chats-load-more-listing" onclick="chatsLoadMoreList()">'
-        + 'Show more (' + remaining + ' remaining)'
-        + '</button>';
-}
-
 function renderEmptyChatListState() {
     if (chatsState.searchActive) {
         return '<div class="empty-state">No matches for <em>"'
@@ -415,9 +455,16 @@ function renderEmptyChatListState() {
     return '<div class="empty-state">No chats found</div>';
 }
 
-function chatsLoadMoreList() {
-    chatsState.page = (chatsState.page || 0) + 1;
+/** Pager onClick handler — jumps to the given 1-indexed page and
+ *  re-renders. Scrolls to the top of the listing so the user lands
+ *  at the new page's first card. */
+function chatsGoToPage(n) {
+    chatsState.page = Math.max(1, n);
     renderChatList();
+    var list = document.getElementById('chats-list');
+    if (list && list.scrollIntoView) {
+        list.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
 }
 
 /**
@@ -438,8 +485,8 @@ function chatsExpandToAllTime() {
 }
 
 /** Reset listing position to first page. Call on any state change
- *  that affects what's visible. */
-function chatsResetPage() { chatsState.page = 0; }
+ *  that affects what's visible. 1-indexed; "first page" is page 1. */
+function chatsResetPage() { chatsState.page = 1; }
 
 /** Hard reset: clear pills, project filter, search, page. Used by the
  *  empty-state Reset link when filters narrowed everything away. */
@@ -490,10 +537,14 @@ async function selectChat(sessionId) {
         c.classList.toggle('active', c.dataset.sid === sessionId);
     });
 
-    // Single-pane swap: hide the listing, show the viewer at full
-    // width. The close button (X) is wired to closeChat() to swap
-    // back. URL hash already tracks selectedId so reload restores
+    // Single-pane swap: hide the listing + the cross-session toolbar
+    // (search / filters / sort / Advanced), show the viewer at full
+    // width. The .chats-tab--viewer class on the panel triggers CSS
+    // that hides those toolbar pieces so the two views stay cleanly
+    // separated. URL hash already tracks selectedId so reload restores
     // the same view.
+    var panel = document.getElementById('panel-chats');
+    if (panel) panel.classList.add('chats-tab--viewer');
     document.getElementById('chats-list').style.display = 'none';
     document.getElementById('chats-viewer').style.display = 'flex';
     document.getElementById('chats-viewer').style.flexDirection = 'column';
@@ -675,6 +726,11 @@ function renderUncommittedBanner(uncommittedData) {
 function closeChat() {
     chatsState.selectedId = null;
     _persistHash();
+    // Swap views back: hide the chat detail, show the listing, and
+    // remove the viewer-mode class so the cross-session toolbar
+    // (search/filters/sort/Advanced) becomes visible again.
+    var panel = document.getElementById('panel-chats');
+    if (panel) panel.classList.remove('chats-tab--viewer');
     document.getElementById('chats-viewer').style.display = 'none';
     document.getElementById('chats-list').style.display = 'flex';
     document.querySelectorAll('.chat-card.active').forEach(function(c) {

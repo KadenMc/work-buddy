@@ -2266,20 +2266,36 @@ body {
     flex-direction: column;
     flex: 1;
     width: 100%;
-    position: relative;   /* anchor for the close-X button */
     transition: opacity 180ms ease;
 }
-.chats-close-btn {
-    position: absolute; top: 8px; right: 8px; z-index: 5;
-    width: 32px; height: 32px; border-radius: 50%;
-    background: var(--bg-tertiary); border: 1px solid var(--border);
-    color: var(--text-secondary); font-size: 18px; line-height: 1;
-    cursor: pointer; display: flex; align-items: center; justify-content: center;
+/* Back-to-list bar — replaces the old floating-X close button. Sits
+   above the viewer header so the "back" affordance never overlaps the
+   role-filter buttons on the right edge of the header. */
+.chats-viewer-backbar {
+    display: flex; align-items: center; padding: 0 0 8px 0;
+}
+.chats-back-btn {
+    background: var(--bg-secondary); border: 1px solid var(--border);
+    color: var(--text-secondary); padding: 6px 14px; font-size: 12px;
+    border-radius: 6px; cursor: pointer; font-family: inherit;
+    display: inline-flex; align-items: center; gap: 6px;
     transition: background 0.15s, color 0.15s, border-color 0.15s;
 }
-.chats-close-btn:hover {
-    background: var(--bg-secondary); color: var(--text-primary);
+.chats-back-btn:hover {
+    background: var(--bg-tertiary); color: var(--text-primary);
     border-color: var(--accent);
+}
+.chats-back-icon {
+    font-size: 16px; line-height: 1; color: var(--accent);
+}
+/* Two-view discipline: when the chat-detail viewer is open, hide the
+   cross-session toolbar (search box + filters + sort + days + Advanced)
+   AND the Advanced panel. The two views serve different jobs and the
+   tools for "find a chat" do not belong on top of "read this chat". */
+.chats-tab--viewer .chats-toolbar,
+.chats-tab--viewer .chats-advanced-panel,
+.chats-tab--viewer #chats-pager {
+    display: none !important;
 }
 .chat-card {
     padding: 16px; border-radius: 8px;
@@ -2306,7 +2322,20 @@ body {
 }
 .chat-card-meta {
     display: flex; gap: 12px; font-size: 11px;
-    color: var(--text-muted);
+    color: var(--text-muted); align-items: center; flex-wrap: wrap;
+}
+/* Each timestamp on the card carries a tiny label ("Active" /
+   "Started") so a glance distinguishes "last activity" from "chat
+   creation" without making the user hover for a tooltip. */
+.chat-card-time {
+    display: inline-flex; align-items: center; gap: 5px;
+}
+.chat-card-time-label {
+    font-size: 9px; text-transform: uppercase; letter-spacing: 0.5px;
+    color: var(--text-muted); opacity: 0.7;
+    padding: 1px 5px; border-radius: 3px;
+    background: var(--bg-tertiary);
+    font-weight: 600;
 }
 .chat-card-project {
     font-size: 10px;
@@ -2449,23 +2478,6 @@ body {
     border-color: var(--accent);
 }
 
-/* Listing-level "Load more" button (separate from the message-list one). */
-.chats-load-more-listing {
-    width: 100%;
-    padding: 12px;
-    margin-top: 8px;
-    background: var(--bg-secondary);
-    border: 1px dashed var(--border);
-    border-radius: 6px;
-    color: var(--text-secondary);
-    font-size: 13px;
-    cursor: pointer;
-    transition: background 0.12s, color 0.12s;
-}
-.chats-load-more-listing:hover {
-    background: var(--bg-tertiary);
-    color: var(--text-primary);
-}
 /* Legacy: kept as a defensive no-op selector in case any cached HTML
    references it; the renderer no longer emits .chat-card-tools. */
 .chat-card-tools { display: none; }
@@ -2611,21 +2623,35 @@ body {
 .chats-in-search {
     padding: 8px 12px; background: var(--bg-secondary);
     border: 1px solid var(--border); border-top: none;
+    display: flex; flex-direction: column; gap: 8px;
+}
+/* Top row: input + Find + Close. Spans full width. */
+.chats-in-search-bar {
     display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
 }
-.chats-in-search input {
+.chats-in-search-bar input {
     flex: 1; min-width: 150px; padding: 6px 10px;
     background: var(--bg-tertiary); border: 1px solid var(--border);
     border-radius: 4px; color: var(--text-primary); font-size: 13px;
     font-family: inherit;
 }
-.chats-in-search input:focus { outline: none; border-color: var(--accent); }
-.chats-in-search button {
+.chats-in-search-bar input:focus { outline: none; border-color: var(--accent); }
+.chats-in-search-bar button {
     padding: 4px 12px; background: var(--bg-tertiary);
     border: 1px solid var(--border); border-radius: 4px;
     color: var(--text-secondary); font-size: 12px; cursor: pointer;
 }
-.chats-in-search button:hover { color: var(--text-primary); }
+.chats-in-search-bar button:hover { color: var(--text-primary); }
+/* Hits row: BELOW the input bar (not to the right of it). Wraps and
+   scrolls when there are many hits. */
+.chats-in-search-hits {
+    display: flex; flex-wrap: wrap; gap: 4px;
+    padding-top: 4px; border-top: 1px solid var(--border);
+    max-height: 120px; overflow-y: auto;
+}
+.chats-in-search-hits:empty {
+    display: none;   /* don't show the divider line when empty */
+}
 .chats-messages {
     border: 1px solid var(--border); border-top: none;
     border-radius: 0 0 8px 8px; padding: 16px;

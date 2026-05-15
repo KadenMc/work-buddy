@@ -938,8 +938,13 @@ def get_chats_summary(days: int = 14) -> dict[str, Any]:
             "engages_git": obs.get("engages_git", False),
         })
 
-    # Sort by start_time descending (most recent first)
-    chats.sort(key=lambda x: x.get("start_time") or "", reverse=True)
+    # Sort by most-recent ACTIVITY (end_time = last message timestamp).
+    # The frontend's "Most Recent" sort applies the same key. Falls
+    # back to start_time when end_time is missing.
+    chats.sort(
+        key=lambda x: x.get("end_time") or x.get("start_time") or "",
+        reverse=True,
+    )
 
     return {"chats": chats, "total": len(chats)}
 
