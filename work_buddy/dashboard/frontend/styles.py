@@ -2127,27 +2127,58 @@ body {
 
 /* -- Chats tab --------------------------------------------------------- */
 
+/* Search-input + inline send-button wrapper. The wrapper flexes
+   like the bare input did (`flex: 1`), and the input fills it;
+   the send button absolute-positions to the right edge inside the
+   input's frame so it reads as part of the input, not a separate
+   toolbar widget. */
+.chats-search-input-wrap {
+    position: relative; flex: 1; display: flex;
+}
 .chats-search-input {
-    flex: 1; padding: 10px 14px;
+    flex: 1; padding: 10px 40px 10px 14px;  /* right-pad for the send btn */
     background: var(--bg-secondary); border: 1px solid var(--border);
     border-radius: 6px; color: var(--text-primary);
     font-size: 14px; font-family: inherit;
 }
 .chats-search-input:focus { outline: none; border-color: var(--accent); }
+/* Inline send affordance. Subtle in default state; muted-text on
+   the input background. Hovers brighter + accent border. The
+   tooltip uses a CSS-only data-tooltip pattern so we don't pull
+   any tooltip lib. */
+.chats-search-send {
+    position: absolute; top: 50%; right: 4px;
+    transform: translateY(-50%);
+    width: 28px; height: 28px;
+    display: inline-flex; align-items: center; justify-content: center;
+    background: transparent; border: 1px solid transparent;
+    border-radius: 4px;
+    color: var(--text-muted); font-size: 14px; line-height: 1;
+    cursor: pointer; font-family: inherit;
+    transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.chats-search-send:hover {
+    background: var(--bg-tertiary); color: var(--accent);
+    border-color: var(--border);
+}
+/* Hover tooltip — appears above the button. Single-line, dark
+   background, small. */
+.chats-search-send[data-tooltip]::after {
+    content: attr(data-tooltip);
+    position: absolute; bottom: calc(100% + 6px); right: 0;
+    background: var(--bg-tertiary); color: var(--text-primary);
+    border: 1px solid var(--border); border-radius: 4px;
+    padding: 4px 8px; font-size: 11px; white-space: nowrap;
+    opacity: 0; pointer-events: none;
+    transition: opacity 0.15s 0.3s;  /* small delay so hover doesn't flash */
+}
+.chats-search-send[data-tooltip]:hover::after {
+    opacity: 1;
+}
 .chats-select {
     padding: 8px 10px; background: var(--bg-secondary);
     border: 1px solid var(--border); border-radius: 6px;
     color: var(--text-secondary); font-size: 12px;
-}
-/* Explicit Search button — same chrome as the dropdowns so the
-   toolbar reads as one row, with a subtle accent on hover. */
-.chats-search-btn {
-    cursor: pointer; font-family: inherit;
-    transition: background 0.12s, color 0.12s, border-color 0.12s;
-}
-.chats-search-btn:hover {
-    background: var(--bg-tertiary); color: var(--text-primary);
-    border-color: var(--accent);
 }
 .chats-project-select.active {
     border-color: var(--accent); color: var(--accent);

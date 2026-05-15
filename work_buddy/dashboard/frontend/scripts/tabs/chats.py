@@ -1111,6 +1111,8 @@ function chatsSearchMethodChanged(method) {
 async function chatsGlobalSearch() {
     var q = document.getElementById('chats-global-search').value.trim();
     if (!q) {
+        // Empty input: abort any pending request and clear search state.
+        _chatsAbortInflight();
         chatsClearSearch();
         return;
     }
@@ -1134,7 +1136,36 @@ async function chatsGlobalSearch() {
     var url = '/api/chats/search?q=' + encodeURIComponent(q) + '&method=' + method
         + (project ? '&project=' + encodeURIComponent(project) : '')
         + (eligibleSids ? '&eligible_sids=' + encodeURIComponent(eligibleSids.join(',')) : '');
-    var data = await fetchJSON(url);
+
+    // Cancel any in-flight prior request, then start a new one with
+    // its own AbortController. The "stale completion" guard below
+    // (`_chatsInflightAbort !== controller`) is the belt to abort's
+    // suspenders — if abort raced and our awaited promise still
+    // resolved, we still won't trample state for a query the user
+    // already superseded.
+    _chatsAbortInflight();
+    var controller = new AbortController();
+    _chatsInflightAbort = controller;
+
+    var data;
+    try {
+        var resp = await fetch(url, { signal: controller.signal });
+        data = await resp.json();
+    } catch (err) {
+        if (err && err.name === 'AbortError') {
+            // Deliberately cancelled by a follow-on keystroke; don't
+            // touch the listing — the caller that aborted us will
+            // render whatever it wants.
+            return;
+        }
+        data = null;
+    }
+
+    // Stale-completion guard: if a newer query has taken over the
+    // controller slot, bail without rendering. Saves us from races
+    // where the network finished before AbortController could.
+    if (_chatsInflightAbort !== controller) return;
+    _chatsInflightAbort = null;
 
     if (!data || data.error) {
         container.innerHTML = '<div class="empty-state">'
@@ -1156,11 +1187,26 @@ async function chatsGlobalSearch() {
     if (typeof _persistHash === 'function') _persistHash();
 }
 
+/** Abort any in-flight search fetch. Idempotent — safe to call
+ *  even when there's nothing in flight. Called from: every new
+ *  search dispatch, empty-input clears, explicit search clears,
+ *  and the debounce scheduler when it sees an empty value. */
+function _chatsAbortInflight() {
+    if (_chatsInflightAbort) {
+        try { _chatsInflightAbort.abort(); } catch (e) { /* ignore */ }
+        _chatsInflightAbort = null;
+    }
+}
+
 /**
  * Clear the search state and re-render the listing as the unfiltered
  * (well, pill-and-project filtered) view it was before search.
  */
 function chatsClearSearch() {
+    // Cancel any pending in-flight search before we drop state; a
+    // resolution arriving after this point would otherwise try to
+    // re-activate searchActive against a now-cleared query.
+    _chatsAbortInflight();
     chatsState.searchActive = false;
     chatsState.searchQuery = '';
     chatsState.searchSessionsByScore = [];
@@ -1731,6 +1777,12 @@ const CHATS_SEARCH_DEBOUNCE_MS = 1500;
 
 function _chatsScheduleSearch() {
     if (_chatsSearchDebounce) clearTimeout(_chatsSearchDebounce);
+    // Every keystroke kills any in-flight search. This is the key
+    // resource-protection invariant the user asked for: if the
+    // debounce fired and a request was already on the wire when the
+    // user resumed typing, the request gets cancelled before its
+    // (now-stale) results can come back and overwrite the listing.
+    _chatsAbortInflight();
     var input = document.getElementById('chats-global-search');
     var q = input ? input.value.trim() : '';
     if (!q) {

@@ -296,14 +296,22 @@ def _html() -> str:
          Pure pills (has_commits, has_unfinished) live under Advanced
          since they're rarely-used power-user filters. -->
     <div class="chats-toolbar">
-        <input type="text" id="chats-global-search" class="chats-search-input"
-               placeholder="Search or filter the chats below..." />
-        <!-- Explicit Search button. Users who want immediate firing don't
-             have to wait for the as-you-type debounce; users who keep
-             typing get the debounce window. Both paths route through
-             chatsGlobalSearch(). -->
-        <button class="chats-select chats-search-btn" id="chats-search-btn"
-                onclick="chatsGlobalSearch()">Search</button>
+        <!-- Search input with a subtle inline send affordance pinned
+             to the right edge. The button shares a parent so it
+             absolute-positions inside the input's frame; it's
+             tooltip-only labeled on hover ("Send · Enter") to avoid
+             cluttering the toolbar with another full-size widget.
+             The 1500ms as-you-type debounce + Enter still fire the
+             same chatsGlobalSearch() — the send button is a third
+             redundant path that exists purely as a discoverability
+             affordance for the live-search behavior. -->
+        <div class="chats-search-input-wrap">
+            <input type="text" id="chats-global-search" class="chats-search-input"
+                   placeholder="Search or filter the chats below..." />
+            <button class="chats-search-send" id="chats-search-send"
+                    onclick="chatsGlobalSearch()" aria-label="Search"
+                    data-tooltip="Send · Enter">↵</button>
+        </div>
         <select id="chats-search-method" class="chats-select" onchange="chatsSearchMethodChanged(this.value)">
             <option value="keyword,semantic">Hybrid</option>
             <option value="keyword">Keyword</option>

@@ -566,29 +566,67 @@ def test_date_buckets_key_on_end_time(chats_js: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_search_button_renders_in_toolbar(panel_html: str) -> None:
-    """Explicit Search button MUST sit in the cross-session toolbar
-    next to the global-search input. The user wants it back — pure
-    debounce-only was too implicit.
+def test_search_send_button_is_inline_inside_input_wrap(
+    panel_html: str, styles_text: str,
+) -> None:
+    """Subtle inline send affordance pinned to the right edge of the
+    search input — not a separate full-size toolbar widget.
+
+    Structure: a `.chats-search-input-wrap` div wraps the input AND a
+    `.chats-search-send` button. CSS absolute-positions the button
+    inside the input's frame so it reads as part of the input rather
+    than a sibling toolbar widget.
     """
-    assert 'id="chats-search-btn"' in panel_html
-    assert "onclick=\"chatsGlobalSearch()\"" in panel_html
-    # Source-order proximity: the Search button appears immediately
-    # after the global search input (within ~300 chars), so they
-    # render adjacent in the toolbar.
+    # The wrap exists, holds both the input and the send button.
+    assert "chats-search-input-wrap" in panel_html
+    assert 'id="chats-search-send"' in panel_html
+    # The OLD external Search button is gone — we replaced it with
+    # the inline affordance.
+    assert 'id="chats-search-btn"' not in panel_html
+    assert 'class="chats-select chats-search-btn"' not in panel_html
+
+    # Source-order: send button appears inside the wrap, AFTER the
+    # input. Otherwise it would render to the left of the input.
+    wrap_idx = panel_html.find("chats-search-input-wrap")
     input_idx = panel_html.find('id="chats-global-search"')
-    btn_idx = panel_html.find('id="chats-search-btn"')
-    assert input_idx > 0 and btn_idx > input_idx, (
-        "Search button must follow the global-search input in the toolbar"
+    send_idx = panel_html.find('id="chats-search-send"')
+    assert wrap_idx > 0 < input_idx < send_idx, (
+        "send button must sit AFTER the input inside the wrap"
     )
-    # Distance bound is loose — the inline comment between input and
-    # button consumes a few hundred chars. 800 keeps the assertion
-    # honest (button MUST be inside the toolbar, not in #chats-advanced
-    # ~5000 chars later) without being brittle.
-    assert (btn_idx - input_idx) < 800, (
-        "Search button should be adjacent to the search input, not "
-        "across the toolbar"
+
+    # Hover tooltip is set via data-tooltip="Send · Enter". CSS-only
+    # tooltip pattern; no JS lib required.
+    assert 'data-tooltip="Send' in panel_html
+
+    # CSS: the wrap is position-relative so absolute children anchor
+    # inside it; the send button is position-absolute on the right.
+    if styles_text:
+        m = re.search(
+            r"\.chats-search-input-wrap\s*\{([^}]+)\}", styles_text,
+        )
+        assert m is not None
+        assert "position: relative" in m.group(1)
+        m2 = re.search(
+            r"\.chats-search-send\s*\{([^}]+)\}", styles_text,
+        )
+        assert m2 is not None
+        body2 = m2.group(1)
+        assert "position: absolute" in body2
+        assert "right:" in body2
+
+
+def test_search_send_button_calls_global_search(panel_html: str) -> None:
+    """The inline send button must fire chatsGlobalSearch() — the same
+    function Enter and the debounce both route through. Otherwise it
+    becomes a fourth code path that can drift out of sync.
+    """
+    # Locate the send button tag and check its onclick.
+    m = re.search(
+        r'<button[^>]*id="chats-search-send"[^>]*>', panel_html,
     )
+    assert m is not None
+    tag = m.group(0)
+    assert 'onclick="chatsGlobalSearch()"' in tag
 
 
 def test_search_debounce_relaxed(chats_js: str) -> None:
@@ -678,6 +716,91 @@ def test_shared_viewer_mode_helper_exists(chats_js: str) -> None:
             ".chats-tab--viewer class isn't applied and the toolbar + "
             "pager stay visible on top of the chat-detail view)"
         )
+
+
+# ---------------------------------------------------------------------------
+# In-flight search cancellation: keystrokes abort the running fetch
+# ---------------------------------------------------------------------------
+
+
+def test_inflight_search_can_be_aborted(chats_js: str) -> None:
+    """An AbortController must be used so that mid-typing keystrokes
+    actually cancel an in-flight IR request — not just drop its
+    result on arrival. Otherwise the user racks up backend work for
+    queries they're already abandoning.
+    """
+    # The cancel helper exists and tries to abort the stored controller.
+    m = re.search(
+        r"function _chatsAbortInflight\(\)\s*\{(.*?)^\}",
+        chats_js,
+        re.DOTALL | re.MULTILINE,
+    )
+    assert m is not None, "_chatsAbortInflight helper missing"
+    body = m.group(1)
+    assert "_chatsInflightAbort" in body
+    assert ".abort()" in body
+
+    # chatsGlobalSearch creates a NEW AbortController per call and
+    # stores it on the module-level slot so subsequent calls can abort it.
+    m_search = re.search(
+        r"async function chatsGlobalSearch\(\)\s*\{(.*?)^\}",
+        chats_js,
+        re.DOTALL | re.MULTILINE,
+    )
+    assert m_search is not None
+    sb = m_search.group(1)
+    assert "new AbortController()" in sb, (
+        "chatsGlobalSearch must construct an AbortController for its fetch"
+    )
+    assert "_chatsInflightAbort = controller" in sb
+    assert "signal: controller.signal" in sb, (
+        "the fetch must pass the AbortController's signal so the request "
+        "is actually cancellable"
+    )
+
+    # Stale-completion guard — even if abort races and our await still
+    # resolves, the result must NOT be allowed to overwrite state from
+    # a newer query.
+    assert "_chatsInflightAbort !== controller" in sb, (
+        "stale-completion guard missing: a late-arriving response from "
+        "a superseded query could overwrite the listing"
+    )
+
+    # AbortError branch returns early — don't render an error.
+    assert "AbortError" in sb
+
+
+def test_keystroke_aborts_inflight_search(chats_js: str) -> None:
+    """The debounce scheduler must abort any in-flight request on
+    every new keystroke — that's the resource-protection invariant
+    the user asked for. Without this, a request whose 1500ms
+    debounce window passed is still on the wire when the user
+    resumes typing.
+    """
+    m = re.search(
+        r"function _chatsScheduleSearch\(\)\s*\{(.*?)^\}",
+        chats_js,
+        re.DOTALL | re.MULTILINE,
+    )
+    assert m is not None
+    body = m.group(1)
+    assert "_chatsAbortInflight()" in body, (
+        "scheduler must call _chatsAbortInflight on every keystroke"
+    )
+
+
+def test_clear_search_also_aborts(chats_js: str) -> None:
+    """Clearing the search (Esc, clear-button, empty-input) must
+    abort any in-flight fetch — otherwise a late resolution could
+    re-flip searchActive against a query the user explicitly cleared.
+    """
+    m = re.search(
+        r"function chatsClearSearch\(\)\s*\{(.*?)^\}",
+        chats_js,
+        re.DOTALL | re.MULTILINE,
+    )
+    assert m is not None
+    assert "_chatsAbortInflight()" in m.group(1)
 
 
 def test_viewer_entry_paths_do_not_manually_toggle_panel_class(
