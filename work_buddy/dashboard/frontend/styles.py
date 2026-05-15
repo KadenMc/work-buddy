@@ -2351,6 +2351,13 @@ body {
     font-family: var(--font-mono);
     font-size: 11px;
 }
+.chat-card-chunk .chunk-snippet mark {
+    background: var(--accent-subtle);
+    color: var(--accent);
+    padding: 0 2px;
+    border-radius: 2px;
+    font-weight: 600;
+}
 .chat-card-chunks-more {
     font-size: 11px;
     color: var(--text-muted);

@@ -51,19 +51,39 @@ function cleanMsgText(text) {
 }
 
 async function loadChats() {
+    // Honor `?days=N` from the URL hash if present (one-shot restore).
+    // The hash machinery stashes hash params on window._urlState; we
+    // consume `days` once and then defer to the dropdown's value for
+    // subsequent loads.
+    if (window._urlState && window._urlState.days) {
+        const daysSel = document.getElementById('chats-days');
+        if (daysSel) daysSel.value = window._urlState.days;
+        delete window._urlState.days;
+    }
     const days = document.getElementById('chats-days')?.value ?? 30;
     const data = await fetchJSON('/api/chats?days=' + days);
     if (!data) return;
     chatsState.chats = data.chats || [];
     chatsResetPage();
-    // If a search was active before the data refresh, re-run it so the
-    // new corpus is searched. Otherwise just render the listing.
-    if (chatsState.searchActive && chatsState.searchQuery) {
+    chatsPopulateProjectFilter();
+
+    // Honor `?q=...` one-shot. Triggers a search after data lands so
+    // the search corpus is the freshly-loaded chats. Cleared from
+    // _urlState so subsequent loadChats() (e.g. days dropdown change)
+    // don't re-fire the original query.
+    if (window._urlState && window._urlState.q) {
+        const q = window._urlState.q;
+        delete window._urlState.q;
+        const input = document.getElementById('chats-global-search');
+        if (input) input.value = q;
+        chatsGlobalSearch();
+    } else if (chatsState.searchActive && chatsState.searchQuery) {
+        // A previously-active search is being re-run after a data
+        // refresh (e.g. user changed the days dropdown).
         chatsGlobalSearch();
     } else {
         renderChatList();
     }
-    chatsPopulateProjectFilter();
 
     // One-shot restore: if a `ci` URL key was stashed by _initFromHash,
     // resolve it (short_id → full session_id) and select that chat. The
@@ -224,7 +244,7 @@ function renderChatChunks(sid, chunks) {
     return '<div class="chat-card-chunks">'
         + '<div class="chat-card-chunks-label">' + label + '</div>'
         + top.map(function(ch) {
-            var snippet = escapeHtml(cleanMsgText(ch.display_text || '').trim()).substring(0, 200);
+            var snippet = _chatsRenderSnippet(ch.display_text || '');
             return '<div class="chat-card-chunk" data-sid="' + sid + '" data-span="' + ch.span_index + '"'
                 + ' title="Jump to span ' + ch.span_index + ' in this conversation">'
                 + '<span class="chunk-marker">›</span> '
@@ -233,6 +253,64 @@ function renderChatChunks(sid, chunks) {
         }).join('')
         + (rest > 0 ? '<div class="chat-card-chunks-more">+' + rest + ' more match' + (rest === 1 ? '' : 'es') + '</div>' : '')
         + '</div>';
+}
+
+/**
+ * Render a chunk snippet with the search query highlighted. Centers
+ * the snippet around the FIRST query-token match so the user sees
+ * useful context, not the always-truncated start of the span.
+ *
+ * Matching is per-token, case-insensitive, on word boundaries when
+ * the token is alphanumeric (so "obs" matches "observability" but
+ * doesn't try to match every "obs" inside punctuation noise).
+ *
+ * Returns escaped HTML with <mark> wrapping each match.
+ */
+function _chatsRenderSnippet(rawText) {
+    var clean = cleanMsgText(rawText || '').trim();
+    if (!clean) return '';
+
+    var WIDTH = 200;
+    var query = (chatsState.searchQuery || '').trim().replace(/\s*\(commit\)$/, '');
+    var tokens = query
+        ? query.split(/\s+/).filter(function(t) { return t.length >= 2; })
+        : [];
+
+    if (tokens.length === 0) {
+        return escapeHtml(clean.substring(0, WIDTH))
+            + (clean.length > WIDTH ? '…' : '');
+    }
+
+    // Find the earliest match position across all tokens.
+    var lower = clean.toLowerCase();
+    var firstMatch = -1;
+    for (var i = 0; i < tokens.length; i++) {
+        var idx = lower.indexOf(tokens[i].toLowerCase());
+        if (idx >= 0 && (firstMatch === -1 || idx < firstMatch)) firstMatch = idx;
+    }
+
+    // Center the snippet window around the first match. If no match
+    // (semantic-only hit), fall through to the head of the text.
+    var start = 0;
+    if (firstMatch > WIDTH / 2) {
+        start = Math.max(0, firstMatch - Math.floor(WIDTH / 2));
+    }
+    var end = Math.min(clean.length, start + WIDTH);
+    var window = clean.substring(start, end);
+    var prefix = start > 0 ? '…' : '';
+    var suffix = end < clean.length ? '…' : '';
+
+    // Build a single regex from tokens for one-pass replace; escape
+    // user input so a stray ( or [ doesn't break the regex.
+    var escTokens = tokens.map(function(t) {
+        return t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    });
+    var pattern = new RegExp('(' + escTokens.join('|') + ')', 'gi');
+    // escapeHtml first, THEN add <mark> tags. Otherwise the tags get
+    // entity-encoded into &lt;mark&gt;.
+    var escaped = escapeHtml(window);
+    var highlighted = escaped.replace(pattern, '<mark>$1</mark>');
+    return prefix + highlighted + suffix;
 }
 
 function renderLoadMore(remaining) {
@@ -892,6 +970,9 @@ async function chatsGlobalSearch() {
     chatsState.searchSessionsByScore = data.sessions || [];
     chatsResetPage();
     renderChatList();
+    // Persist q to URL hash so the search survives reload + is
+    // shareable. _persistHash handles the encoding.
+    if (typeof _persistHash === 'function') _persistHash();
 }
 
 /**
@@ -906,6 +987,7 @@ function chatsClearSearch() {
     var input = document.getElementById('chats-global-search');
     if (input) input.value = '';
     renderChatList();
+    if (typeof _persistHash === 'function') _persistHash();
 }
 
 // Backward-compat shim: a few old call sites still call
@@ -1443,11 +1525,65 @@ function applyChatsFiltersAndSort() {
 // ---- Chats: Event listeners ----
 
 document.getElementById('chats-sort')?.addEventListener('change', renderChatList);
-document.getElementById('chats-days')?.addEventListener('change', function() { loadChats(); });
-document.getElementById('chats-global-search')?.addEventListener('keydown', function(e) {
-    if (e.key === 'Enter') chatsGlobalSearch();
+document.getElementById('chats-days')?.addEventListener('change', function() {
+    loadChats();
+    if (typeof _persistHash === 'function') _persistHash();
 });
+
+// Debounced as-you-type search. Pressing Enter still fires immediately
+// (Enter handler runs first). Empty-string keystrokes clear the active
+// search instantly so the listing comes back without waiting for the
+// debounce window. AbortController cancels in-flight IR requests when a
+// new keystroke fires.
+var _chatsSearchDebounce = null;
+var _chatsInflightAbort = null;
+const CHATS_SEARCH_DEBOUNCE_MS = 600;
+
+function _chatsScheduleSearch() {
+    if (_chatsSearchDebounce) clearTimeout(_chatsSearchDebounce);
+    var input = document.getElementById('chats-global-search');
+    var q = input ? input.value.trim() : '';
+    if (!q) {
+        // Empty input: clear immediately, no debounce. The listing
+        // should snap back the moment the user blanks the field.
+        if (chatsState.searchActive) chatsClearSearch();
+        return;
+    }
+    _chatsSearchDebounce = setTimeout(function() {
+        _chatsSearchDebounce = null;
+        chatsGlobalSearch();
+    }, CHATS_SEARCH_DEBOUNCE_MS);
+}
+
+document.getElementById('chats-global-search')?.addEventListener('input', _chatsScheduleSearch);
+
+document.getElementById('chats-global-search')?.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') {
+        if (_chatsSearchDebounce) {
+            clearTimeout(_chatsSearchDebounce);
+            _chatsSearchDebounce = null;
+        }
+        chatsGlobalSearch();
+    }
+});
+
 document.getElementById('chats-in-search-input')?.addEventListener('keydown', function(e) {
     if (e.key === 'Enter') chatsInSessionSearch();
+});
+
+// Tab-wide keyboard shortcuts. Mimics the GitHub / Slack pattern:
+// pressing "/" anywhere on the Chats tab focuses the search box.
+document.addEventListener('keydown', function(ev) {
+    if (ev.key !== '/') return;
+    var panel = document.getElementById('panel-chats');
+    if (!panel || !panel.classList.contains('active')) return;
+    var tag = (ev.target && ev.target.tagName) || '';
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+    var input = document.getElementById('chats-global-search');
+    if (input) {
+        ev.preventDefault();
+        input.focus();
+        input.select();
+    }
 });
 """
