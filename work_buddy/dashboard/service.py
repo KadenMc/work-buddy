@@ -1207,12 +1207,19 @@ def api_chat_uncommitted_files(session_id: str):
             if fp in committed_set:
                 continue
             repo = ""
+            rel_path = fp  # fallback: full path when not under repos_root
             if fp.startswith(root_str):
                 rel = fp[len(root_str):]
-                repo = rel.split("/", 1)[0] if rel else ""
+                parts = rel.split("/", 1)
+                if parts:
+                    repo = parts[0]
+                    # Path relative to the REPO root (drops both the
+                    # repos_root prefix and the repo name itself).
+                    rel_path = parts[1] if len(parts) > 1 else ""
             files.append({
                 "path": fp,
                 "basename": Path(fp).name,
+                "rel_path": rel_path,
                 "repo": repo,
             })
         return jsonify({"files": files, "count": len(files)})

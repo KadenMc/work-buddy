@@ -350,7 +350,11 @@ function renderUncommittedBanner(uncommittedData) {
     banner.className = 'chats-uncommitted-banner';
     var fileList = uncommittedData.files.slice(0, 8).map(function(f) {
         var repoTag = f.repo ? '<span class="banner-repo">' + escapeHtml(f.repo) + '</span> ' : '';
-        return '<li>' + repoTag + '<code>' + escapeHtml(f.path) + '</code></li>';
+        // Prefer repo-relative path for readability; full absolute
+        // path goes into title (hover) for users who need it.
+        var display = f.rel_path || f.path;
+        return '<li title="' + escapeHtml(f.path) + '">' + repoTag
+            + '<code>' + escapeHtml(display) + '</code></li>';
     }).join('');
     var more = uncommittedData.files.length > 8
         ? '<li style="color:var(--text-muted);">…and ' + (uncommittedData.files.length - 8) + ' more</li>'
