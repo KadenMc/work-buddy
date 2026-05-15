@@ -459,7 +459,16 @@ def _get_claude_code_conversations(
     if not claude_dir.is_dir():
         return []
 
-    cutoff = datetime.fromisoformat(since).astimezone(timezone.utc) if since else (datetime.now(timezone.utc) - timedelta(days=days))
+    if since:
+        cutoff = datetime.fromisoformat(since).astimezone(timezone.utc)
+    elif days <= 0:
+        # ``days=0`` (or negative) is the dashboard's "All time" sentinel.
+        # The frontend exposes this as the last entry in the days dropdown
+        # for users who want unbounded history. We use epoch-zero so the
+        # mtime check below trivially passes for every JSONL file.
+        cutoff = datetime.fromtimestamp(0, tz=timezone.utc)
+    else:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     upper = datetime.fromisoformat(until).astimezone(timezone.utc) if until else datetime.now(timezone.utc)
     cache = _load_cache()
     cache_dirty = False
