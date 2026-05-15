@@ -995,10 +995,26 @@ def api_chats_search():
     top_k = request.args.get("top_k", 20, type=int)
     project = request.args.get("project", "").strip() or None
 
-    # Build metadata filter for project scoping — applied at the SQLite
-    # level in load_documents via json_extract, so BM25 only scores
-    # matching docs and results aren't starved by other-project dominance.
-    meta_filter = {"project_name": project} if project else None
+    # eligible_sids carries the dashboard's pill-filter outcome:
+    # "after applying my listing-mode filters, here are the session_ids
+    # I want the search to score within." Comma-separated. When
+    # present, the IR engine restricts its scoring corpus before
+    # applying top-K — filter-then-rank, the correct semantics for
+    # composing filters with relevance.
+    eligible_sids_raw = request.args.get("eligible_sids", "").strip()
+    eligible_sids: list[str] | None = None
+    if eligible_sids_raw:
+        eligible_sids = [s for s in eligible_sids_raw.split(",") if s]
+
+    # Build metadata filter. Project pre-filter applies in SQLite via
+    # json_extract; the eligible_sids pre-filter uses the new
+    # list-valued metadata_filter (one IN clause). Both compose with AND.
+    meta_filter: dict[str, Any] = {}
+    if project:
+        meta_filter["project_name"] = project
+    if eligible_sids is not None:
+        meta_filter["session_id"] = eligible_sids
+    meta_filter = meta_filter or None
 
     try:
         hits = ir_search(q, source="conversation", method=method, top_k=top_k,

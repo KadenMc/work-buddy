@@ -290,15 +290,13 @@ def _html() -> str:
 
 <!-- CHATS -->
 <div class="tab-panel" id="panel-chats">
-    <!-- Toolbar: search + sort + window. Always visible whether the
-         list or the viewer is showing. -->
+    <!-- Toolbar: search + sort + window + Advanced toggle. Always
+         visible whether the list or the viewer is showing. The
+         Advanced expander hides project + filter pills until needed
+         so the default toolbar stays minimal. -->
     <div class="chats-toolbar">
         <input type="text" id="chats-global-search" class="chats-search-input"
                placeholder="Search across all chats..." />
-        <select id="chats-project-filter" class="chats-select chats-project-select"
-                onchange="chatsProjectFilterChanged(this.value)">
-            <option value="">All repos</option>
-        </select>
         <select id="chats-search-method" class="chats-select" onchange="chatsSearchMethodChanged(this.value)">
             <option value="keyword,semantic">Hybrid</option>
             <option value="keyword">Keyword</option>
@@ -307,10 +305,12 @@ def _html() -> str:
         </select>
         <button class="chats-accent-btn" onclick="chatsGlobalSearch()">Search</button>
         <span class="chats-toolbar-spacer"></span>
-        <select id="chats-sort" class="chats-select">
+        <select id="chats-sort" class="chats-select" onchange="applyChatsFiltersAndSort()">
             <option value="recent">Most Recent</option>
             <option value="longest">Longest Duration</option>
             <option value="most-messages">Most Messages</option>
+            <option value="most-commits">Most Commits</option>
+            <option value="most-recent-commit">Most Recent Commit</option>
         </select>
         <select id="chats-days" class="chats-select">
             <option value="7">7 days</option>
@@ -318,6 +318,31 @@ def _html() -> str:
             <option value="30">30 days</option>
             <option value="60">60 days</option>
         </select>
+        <button class="chats-select chats-advanced-toggle" id="chats-advanced-toggle"
+                onclick="chatsToggleAdvanced()">Advanced ▾</button>
+    </div>
+
+    <!-- Advanced filters expander (collapsed by default). The pills
+         here narrow BOTH the listing (client-side filter on
+         chatsState.chats) AND the search corpus (sent to the search
+         endpoint as eligible_sids so it pre-filters before top-K). -->
+    <div id="chats-advanced" class="chats-advanced-panel" style="display:none;">
+        <div class="chats-filter-row">
+            <span class="chats-filter-label">Project:</span>
+            <select id="chats-project-filter" class="chats-select chats-project-select"
+                    onchange="chatsProjectFilterChanged(this.value)">
+                <option value="">All repos</option>
+            </select>
+            <span class="chats-filter-divider"></span>
+            <span class="chats-filter-label">Filter:</span>
+            <button class="chats-filter-pill" id="chats-pill-has-commits"
+                    onclick="chatsToggleFilter('has_commits')">Has commits</button>
+            <button class="chats-filter-pill" id="chats-pill-has-unfinished"
+                    onclick="chatsToggleFilter('has_unfinished')">Has unfinished work</button>
+            <span class="chats-filter-spacer"></span>
+            <button class="chats-filter-pill chats-filter-reset" id="chats-pill-reset"
+                    onclick="chatsResetFilters()" style="display:none;">Reset</button>
+        </div>
     </div>
 
     <!-- Search-results pane (separate from listing; shown only while a

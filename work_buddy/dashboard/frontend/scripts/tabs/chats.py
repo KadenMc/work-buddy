@@ -26,6 +26,9 @@ const chatsState = {
     commits: [],
     searchHits: [],
     roleFilter: null,
+    // Advanced filter pills. Each value is a boolean; True means
+    // "session must satisfy this predicate to be shown." Compose AND.
+    filters: { has_commits: false, has_unfinished: false },
 };
 
 /** Strip XML-like tags from message text (e.g. <command-name>...</command-name>) */
@@ -72,15 +75,46 @@ function renderChatList() {
     const container = document.getElementById('chats-list');
     let chats = [...chatsState.chats];
 
-    // Filter by selected project
+    // Project filter (Advanced expander). Empty string → all repos.
     var projectFilter = document.getElementById('chats-project-filter')?.value;
     if (projectFilter) {
         chats = chats.filter(function(c) { return c.project_name === projectFilter; });
     }
 
+    // Advanced pills. Each predicate filters in only sessions that
+    // pass; OFF pills are no-ops.
+    if (chatsState.filters.has_commits) {
+        chats = chats.filter(function(c) { return (c.commit_count || 0) > 0; });
+    }
+    if (chatsState.filters.has_unfinished) {
+        chats = chats.filter(function(c) { return (c.unfinished_count || 0) > 0; });
+    }
+
     const sort = document.getElementById('chats-sort')?.value || 'recent';
     if (sort === 'longest') chats.sort((a, b) => (b.message_count - a.message_count));
     else if (sort === 'most-messages') chats.sort((a, b) => (b.tool_count - a.tool_count));
+    else if (sort === 'most-commits') {
+        // Stable: sessions with zero commits sink to the bottom, ties
+        // broken by recency.
+        chats.sort(function(a, b) {
+            var ac = a.commit_count || 0;
+            var bc = b.commit_count || 0;
+            if (bc !== ac) return bc - ac;
+            return (b.start_time || '').localeCompare(a.start_time || '');
+        });
+    }
+    else if (sort === 'most-recent-commit') {
+        // Sessions that have ever committed sort by their latest commit
+        // time; sessions with no commits sort to the bottom by start.
+        chats.sort(function(a, b) {
+            var at = a.latest_committed_at || '';
+            var bt = b.latest_committed_at || '';
+            if (at && !bt) return -1;
+            if (bt && !at) return 1;
+            if (at !== bt) return bt.localeCompare(at);
+            return (b.start_time || '').localeCompare(a.start_time || '');
+        });
+    }
 
     if (chats.length === 0) {
         container.innerHTML = '<div class="empty-state">No chats found</div>';
@@ -520,10 +554,16 @@ async function chatsGlobalSearch() {
     resultsDiv.innerHTML = '<div class="loading">Searching...</div>';
 
     var project = document.getElementById('chats-project-filter').value;
-    var data = await fetchJSON(
-        '/api/chats/search?q=' + encodeURIComponent(q) + '&method=' + method
+    // eligible_sids carries the filter-pill outcome. If any pill is
+    // active, send the session_ids the listing would currently show
+    // so the IR engine pre-filters its scoring corpus instead of
+    // ranking-then-filtering. Empty array means "no pills active";
+    // skip the param entirely so the search ranges over everything.
+    var eligibleSids = chatsComputeEligibleSids();
+    var url = '/api/chats/search?q=' + encodeURIComponent(q) + '&method=' + method
         + (project ? '&project=' + encodeURIComponent(project) : '')
-    );
+        + (eligibleSids ? '&eligible_sids=' + encodeURIComponent(eligibleSids.join(',')) : '');
+    var data = await fetchJSON(url);
 
     if (!data || data.error) {
         resultsDiv.innerHTML = '<div class="empty-state">'
@@ -1046,6 +1086,72 @@ async function chatsJumpToCommit(messageIndex) {
         }
     }, 150);
 }
+
+// ---- Chats: Advanced expander, filter pills, eligible-sids ----
+
+function chatsToggleAdvanced() {
+    var panel = document.getElementById('chats-advanced');
+    var btn = document.getElementById('chats-advanced-toggle');
+    if (!panel || !btn) return;
+    var isHidden = panel.style.display === 'none' || !panel.style.display;
+    panel.style.display = isHidden ? 'block' : 'none';
+    btn.classList.toggle('expanded', isHidden);
+    btn.textContent = (isHidden ? 'Advanced ▴' : 'Advanced ▾');
+}
+
+function chatsToggleFilter(key) {
+    if (!(key in chatsState.filters)) return;
+    chatsState.filters[key] = !chatsState.filters[key];
+    chatsUpdatePillVisuals();
+    renderChatList();
+    // If a global-search query is active, re-run it so the
+    // eligible_sids set updates in lockstep.
+    var q = document.getElementById('chats-global-search')?.value.trim();
+    var resultsVisible = document.getElementById('chats-search-results')?.style.display === 'block';
+    if (q && resultsVisible) chatsGlobalSearch();
+}
+
+function chatsResetFilters() {
+    chatsState.filters.has_commits = false;
+    chatsState.filters.has_unfinished = false;
+    chatsUpdatePillVisuals();
+    renderChatList();
+    var q = document.getElementById('chats-global-search')?.value.trim();
+    var resultsVisible = document.getElementById('chats-search-results')?.style.display === 'block';
+    if (q && resultsVisible) chatsGlobalSearch();
+}
+
+function chatsUpdatePillVisuals() {
+    var any = false;
+    Object.keys(chatsState.filters).forEach(function(k) {
+        var pill = document.getElementById('chats-pill-' + k.replace(/_/g, '-'));
+        if (pill) pill.classList.toggle('active', !!chatsState.filters[k]);
+        if (chatsState.filters[k]) any = true;
+    });
+    var reset = document.getElementById('chats-pill-reset');
+    if (reset) reset.style.display = any ? '' : 'none';
+}
+
+/**
+ * Compute the eligible session_ids list for search pre-filtering.
+ * Returns null when no filter pills are active (caller should skip
+ * the URL param so search ranges over everything).
+ */
+function chatsComputeEligibleSids() {
+    var anyActive = Object.keys(chatsState.filters).some(function(k) { return chatsState.filters[k]; });
+    if (!anyActive) return null;
+    var chats = chatsState.chats || [];
+    if (chatsState.filters.has_commits) {
+        chats = chats.filter(function(c) { return (c.commit_count || 0) > 0; });
+    }
+    if (chatsState.filters.has_unfinished) {
+        chats = chats.filter(function(c) { return (c.unfinished_count || 0) > 0; });
+    }
+    return chats.map(function(c) { return c.session_id; }).filter(Boolean);
+}
+
+/** Public alias for code that wants a single "redraw the list" call. */
+function applyChatsFiltersAndSort() { renderChatList(); }
 
 // ---- Chats: Event listeners ----
 
