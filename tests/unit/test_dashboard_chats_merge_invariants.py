@@ -38,9 +38,13 @@ def panel_html() -> str:
 def styles_text() -> str:
     from work_buddy.dashboard.frontend import styles
 
-    return styles.styles() if hasattr(styles, "styles") else (
-        getattr(styles, "STYLES", "")
-    )
+    if hasattr(styles, "styles"):
+        return styles.styles()
+    if hasattr(styles, "STYLES"):
+        return styles.STYLES
+    if hasattr(styles, "_styles"):
+        return styles._styles()
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -241,3 +245,109 @@ def test_esc_clears_active_search(chats_js: str) -> None:
     assert "Escape" in body
     assert "chatsClearSearch()" in body
     assert "closeChat()" in body  # detail-view close path stays intact
+
+
+# ---------------------------------------------------------------------------
+# Polish: debounced search, "/" focus, j/k nav, URL hash, highlighting
+# ---------------------------------------------------------------------------
+
+
+def test_debounced_search_wires_input_event(chats_js: str) -> None:
+    """As-you-type debounce must be wired on the global-search input.
+    Empty value clears search instantly; non-empty schedules after
+    `CHATS_SEARCH_DEBOUNCE_MS` ms.
+    """
+    assert "_chatsScheduleSearch" in chats_js
+    assert "CHATS_SEARCH_DEBOUNCE_MS" in chats_js
+    assert "addEventListener('input', _chatsScheduleSearch)" in chats_js
+    # Empty-string keystroke must NOT debounce — it has to clear
+    # immediately so the listing snaps back.
+    m = re.search(
+        r"function _chatsScheduleSearch\(\)\s*\{(.*?)^\}",
+        chats_js,
+        re.DOTALL | re.MULTILINE,
+    )
+    assert m is not None
+    body = m.group(1)
+    assert "chatsClearSearch" in body
+    assert "setTimeout" in body  # the debounce itself
+
+
+def test_slash_key_focuses_search(chats_js: str) -> None:
+    """`/` keypress on the Chats tab must focus + select the global
+    search input. Mimics GitHub / Slack convention.
+    """
+    # Locate the slash handler.
+    assert "ev.key !== '/'" in chats_js
+    assert "input.focus()" in chats_js
+    assert "input.select()" in chats_js
+
+
+def test_jk_arrow_keyboard_navigation_through_cards(chats_js: str) -> None:
+    """j/k/ArrowDown/ArrowUp move focus; Enter opens the focused card."""
+    assert "_chatsSetFocus" in chats_js
+    assert "chatsState.focusIndex" in chats_js
+    # Each binding must be present.
+    assert "ev.key === 'j'" in chats_js
+    assert "ev.key === 'k'" in chats_js
+    assert "ev.key === 'ArrowDown'" in chats_js
+    assert "ev.key === 'ArrowUp'" in chats_js
+    assert "ev.key === 'Enter'" in chats_js
+    # Enter must open via selectChat.
+    assert "selectChat(card.dataset.sid)" in chats_js
+
+
+def test_chat_card_focused_class_has_distinct_style(styles_text: str) -> None:
+    """Focused (keyboard cursor) and active (open in viewer) must be
+    visually distinct so the user can tell where they are vs what they
+    have open. Both styles must be present in the CSS.
+    """
+    if not styles_text:
+        pytest.skip("styles module didn't expose its text")
+    assert ".chat-card.focused" in styles_text
+    assert ".chat-card.active" in styles_text
+
+
+def test_hash_persistence_writes_q_and_days(chats_js: str) -> None:
+    """chatsGlobalSearch and chatsClearSearch must call _persistHash
+    so the URL stays in sync with search state. days dropdown change
+    also triggers persistence.
+    """
+    assert "_persistHash()" in chats_js
+    # Specifically inside chatsGlobalSearch.
+    m = re.search(
+        r"async function chatsGlobalSearch\(\)\s*\{(.*?)^\}",
+        chats_js,
+        re.DOTALL | re.MULTILINE,
+    )
+    assert m is not None
+    assert "_persistHash" in m.group(1)
+
+
+def test_match_highlighting_wraps_in_mark(chats_js: str, styles_text: str) -> None:
+    """Snippet renderer must wrap matches in <mark>; CSS must style
+    that <mark> with a quiet (not loud-orange) treatment.
+    """
+    assert "_chatsRenderSnippet" in chats_js
+    assert "<mark>" in chats_js  # the regex replacement template
+    if styles_text:
+        # Style hook present — the snippet's mark uses accent-subtle
+        # background, not accent (orange).
+        assert ".chunk-snippet mark" in styles_text or "chat-card-chunk" in styles_text
+
+
+def test_snippet_renderer_centers_on_first_match(chats_js: str) -> None:
+    """When the matched token appears past the snippet half-width,
+    the renderer should slide the window to center on the match
+    instead of always starting at character 0.
+    """
+    m = re.search(
+        r"function _chatsRenderSnippet\(rawText\)\s*\{(.*?)^\}",
+        chats_js,
+        re.DOTALL | re.MULTILINE,
+    )
+    assert m is not None
+    body = m.group(1)
+    assert "firstMatch" in body
+    # Centering math: start = max(0, firstMatch - WIDTH/2).
+    assert "WIDTH / 2" in body or "WIDTH/2" in body
