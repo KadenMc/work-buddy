@@ -2292,8 +2292,20 @@ body {
     color: var(--text-muted);
 }
 .chat-card-project {
-    font-size: 10px; color: var(--accent); font-weight: 600;
-    text-transform: uppercase; letter-spacing: 0.5px;
+    font-size: 10px;
+    color: var(--accent);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    display: inline-block;
+    padding: 2px 6px;
+    margin-left: -6px;  /* visual alignment with title left-edge */
+    border-radius: 3px;
+    cursor: pointer;
+    transition: background 0.12s;
+}
+.chat-card-project[data-project]:hover {
+    background: var(--accent-subtle);
 }
 .chat-card-badges {
     display: flex; gap: 12px; font-size: 12px;

@@ -207,6 +207,18 @@ function renderChatList() {
             if (sid && !isNaN(span)) chatsJumpToHit(sid, span);
         });
     });
+    // Clicking the project tag on a card sets the project filter to
+    // that project — one-click "show me only this project". Stop
+    // propagation so we don't ALSO open the chat.
+    container.querySelectorAll('.chat-card-project[data-project]').forEach(function(el) {
+        el.addEventListener('click', function(ev) {
+            ev.stopPropagation();
+            var sel = document.getElementById('chats-project-filter');
+            if (!sel) return;
+            sel.value = el.dataset.project;
+            chatsProjectFilterChanged(el.dataset.project);
+        });
+    });
 }
 
 /** Card render — extracted so search-active mode can attach chunks. */
@@ -222,7 +234,8 @@ function renderChatCard(c, searchHit) {
         : '';
     return '<div class="chat-card' + (c.session_id === chatsState.selectedId ? ' active' : '') + '"'
         + ' data-sid="' + c.session_id + '">'
-        + (c.project_name ? '<div class="chat-card-project">' + escapeHtml(c.project_name) + '</div>' : '')
+        + (c.project_name ? '<div class="chat-card-project" data-project="' + escapeHtml(c.project_name) + '"'
+            + ' title="Filter listing to this project">' + escapeHtml(c.project_name) + '</div>' : '')
         + '<div class="chat-card-title">' + title + '</div>'
         + '<div class="chat-card-meta">'
         + '<span>' + activeDot + formatTimestamp(c.start_time) + '</span>'
