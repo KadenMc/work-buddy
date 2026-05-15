@@ -448,6 +448,64 @@ def _scan_tool_names(path: Path) -> dict[Path, str]:
 # Keyed by SHA alone since file paths are absolute and `repos_root`
 # is stable across calls within a process.
 _SHA_FILES_CACHE: dict[str, frozenset[str]] = {}
+_SHA_FILES_CACHE_LOADED = False
+
+
+def _sha_cache_path() -> Path:
+    """Disk-persisted location for the SHA→files map.
+
+    Lives alongside the main conversation_observability DB so the
+    same `paths.data_root` override applies. Persisting across
+    restarts means a sidecar restart doesn't repay the ~30s cold-
+    start cost on the dashboard's first listing.
+    """
+    from work_buddy.conversation_observability.db import db_path
+
+    return db_path().parent / "sha_files_cache.json"
+
+
+def _load_sha_cache() -> None:
+    """Best-effort load of the persisted cache. Runs once per process."""
+    global _SHA_FILES_CACHE_LOADED
+    if _SHA_FILES_CACHE_LOADED:
+        return
+    _SHA_FILES_CACHE_LOADED = True
+    path = _sha_cache_path()
+    if not path.exists():
+        return
+    try:
+        import json as _json
+
+        with open(path, encoding="utf-8") as f:
+            raw = _json.load(f)
+        if not isinstance(raw, dict):
+            return
+        for sha, files in raw.items():
+            if isinstance(sha, str) and isinstance(files, list):
+                _SHA_FILES_CACHE[sha] = frozenset(
+                    f for f in files if isinstance(f, str)
+                )
+    except Exception:
+        # Corrupt cache file shouldn't break the dashboard; just skip
+        # and let the in-memory map fill on demand.
+        pass
+
+
+def _persist_sha_cache() -> None:
+    """Write the in-memory cache to disk. Best-effort; failures are silent."""
+    path = _sha_cache_path()
+    try:
+        import json as _json
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # Serialize frozensets as sorted lists for deterministic diffs.
+        payload = {sha: sorted(files) for sha, files in _SHA_FILES_CACHE.items()}
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            _json.dump(payload, f, ensure_ascii=False)
+        tmp.replace(path)
+    except Exception:
+        pass
 
 
 def _committed_files_for_sessions(
@@ -476,6 +534,11 @@ def _committed_files_for_sessions(
 
     if not session_ids:
         return {}
+
+    # Load the persisted SHA cache once per process. Survives sidecar
+    # restarts so the dashboard's first listing call doesn't pay the
+    # full git-show cost on every cold start.
+    _load_sha_cache()
 
     # Pull the relevant commit SHAs in one DB read.
     placeholders = ",".join(["?"] * len(session_ids))
@@ -544,6 +607,9 @@ def _committed_files_for_sessions(
             for sha, sid, files in pool.map(_resolve_sha, uncached):
                 _SHA_FILES_CACHE[sha] = frozenset(files)
                 result[sid].update(files)
+        # Best-effort persistence so a sidecar restart doesn't lose
+        # the work. Single fsync per call (not per SHA).
+        _persist_sha_cache()
     return result
 
 
