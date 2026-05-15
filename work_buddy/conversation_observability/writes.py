@@ -441,6 +441,15 @@ def _scan_tool_names(path: Path) -> dict[Path, str]:
     return result
 
 
+# Process-local cache: a commit's file list is immutable in normal git
+# history (rebase + force-push could change it, but that's rare and the
+# user's own `session_commits` rows would already need a refresh). One
+# subprocess per SHA per process lifetime, not per dashboard call.
+# Keyed by SHA alone since file paths are absolute and `repos_root`
+# is stable across calls within a process.
+_SHA_FILES_CACHE: dict[str, frozenset[str]] = {}
+
+
 def _committed_files_for_sessions(
     session_ids: set[str],
     repos_root: Path,
@@ -452,6 +461,11 @@ def _committed_files_for_sessions(
     ``uncommitted_report`` over 32 dirty rows referencing 5 unique
     sessions with ~7 commits each, this is ~35 subprocess calls
     instead of ~4500.
+
+    Results memoized per SHA in :data:`_SHA_FILES_CACHE` for the
+    process lifetime — a commit's file list is immutable under normal
+    git operations, so re-running the dashboard listing is fast after
+    the cache warms.
 
     Empty ``session_ids`` short-circuits to an empty result without
     touching git.
@@ -478,16 +492,27 @@ def _committed_files_for_sessions(
     if not sha_to_sid:
         return {sid: set() for sid in session_ids}
 
-    # One git-show per unique SHA per repo. We probe each repo because
-    # the SHA might exist in only one of them; failures are silent.
-    # Parallelized: with ~200 unique SHAs across 20 repos, serial
-    # execution is 30s+; an 8-worker pool drops it to ~4s. Each worker
-    # short-circuits on first-found repo.
+    # Partition SHAs into cached vs uncached. Uncached set goes through
+    # the parallel git-show pool; cached SHAs go straight from the
+    # process-local map. With a warm cache, a 300-SHA listing pays
+    # essentially zero subprocess cost.
+    result: dict[str, set[str]] = {sid: set() for sid in session_ids}
+    uncached: list[tuple[str, str]] = []
+    for sha, sid in sha_to_sid.items():
+        cached = _SHA_FILES_CACHE.get(sha)
+        if cached is not None:
+            result[sid].update(cached)
+        else:
+            uncached.append((sha, sid))
+
+    if not uncached:
+        return result
+
     from concurrent.futures import ThreadPoolExecutor
 
     repos = list(_discover_repos(repos_root))
 
-    def _resolve_sha(sha_sid_pair: tuple[str, str]) -> tuple[str, list[str]]:
+    def _resolve_sha(sha_sid_pair: tuple[str, str]) -> tuple[str, str, list[str]]:
         sha, sid = sha_sid_pair
         files: list[str] = []
         for repo_path in repos:
@@ -512,13 +537,12 @@ def _committed_files_for_sessions(
                     continue
             # SHA found in this repo — stop probing other repos.
             break
-        return sid, files
+        return sha, sid, files
 
-    result: dict[str, set[str]] = {sid: set() for sid in session_ids}
-    sha_pairs = list(sha_to_sid.items())
-    if sha_pairs:
-        with ThreadPoolExecutor(max_workers=min(8, len(sha_pairs))) as pool:
-            for sid, files in pool.map(_resolve_sha, sha_pairs):
+    if uncached:
+        with ThreadPoolExecutor(max_workers=min(8, len(uncached))) as pool:
+            for sha, sid, files in pool.map(_resolve_sha, uncached):
+                _SHA_FILES_CACHE[sha] = frozenset(files)
                 result[sid].update(files)
     return result
 
