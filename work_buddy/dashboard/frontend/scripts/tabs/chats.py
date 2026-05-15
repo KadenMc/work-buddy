@@ -29,6 +29,19 @@ const chatsState = {
     // Advanced filter pills. Each value is a boolean; True means
     // "session must satisfy this predicate to be shown." Compose AND.
     filters: { has_commits: false, has_unfinished: false },
+    // Search state. When `searchActive`, `renderChatList` filters the
+    // listing to only sessions returned by the IR engine, sorts them
+    // by `doc_score`, and appends matched-chunk snippets to each card.
+    // No separate search-results pane — the listing IS the search
+    // result view.
+    searchActive: false,
+    searchQuery: '',
+    searchSessionsByScore: [],
+    // Pagination. The visible window is `(page+1) * pageSize` cards
+    // from the head of the filtered+sorted list. Reset to 0 on any
+    // filter / search / sort change so the user lands at the top.
+    page: 0,
+    pageSize: 25,
 };
 
 /** Strip XML-like tags from message text (e.g. <command-name>...</command-name>) */
@@ -38,11 +51,18 @@ function cleanMsgText(text) {
 }
 
 async function loadChats() {
-    const days = document.getElementById('chats-days')?.value || 14;
+    const days = document.getElementById('chats-days')?.value ?? 30;
     const data = await fetchJSON('/api/chats?days=' + days);
     if (!data) return;
     chatsState.chats = data.chats || [];
-    renderChatList();
+    chatsResetPage();
+    // If a search was active before the data refresh, re-run it so the
+    // new corpus is searched. Otherwise just render the listing.
+    if (chatsState.searchActive && chatsState.searchQuery) {
+        chatsGlobalSearch();
+    } else {
+        renderChatList();
+    }
     chatsPopulateProjectFilter();
 
     // One-shot restore: if a `ci` URL key was stashed by _initFromHash,
@@ -75,14 +95,14 @@ function renderChatList() {
     const container = document.getElementById('chats-list');
     let chats = [...chatsState.chats];
 
-    // Project filter (Advanced expander). Empty string → all repos.
+    // -- Pre-filters: project + Advanced pills -----------------------
+    // These narrow the corpus BEFORE sort or search overlays. The same
+    // filters apply in search-active mode (so a query operates only
+    // on the user's chosen project / pill subset).
     var projectFilter = document.getElementById('chats-project-filter')?.value;
     if (projectFilter) {
         chats = chats.filter(function(c) { return c.project_name === projectFilter; });
     }
-
-    // Advanced pills. Each predicate filters in only sessions that
-    // pass; OFF pills are no-ops.
     if (chatsState.filters.has_commits) {
         chats = chats.filter(function(c) { return (c.commit_count || 0) > 0; });
     }
@@ -90,71 +110,171 @@ function renderChatList() {
         chats = chats.filter(function(c) { return (c.unfinished_count || 0) > 0; });
     }
 
-    const sort = document.getElementById('chats-sort')?.value || 'recent';
-    if (sort === 'longest') chats.sort((a, b) => (b.message_count - a.message_count));
-    else if (sort === 'most-messages') chats.sort((a, b) => (b.tool_count - a.tool_count));
-    else if (sort === 'most-commits') {
-        // Stable: sessions with zero commits sink to the bottom, ties
-        // broken by recency.
+    // -- Search overlay ---------------------------------------------
+    // When the search box has been submitted, intersect with the
+    // IR-returned session set and replace the user's sort with
+    // doc_score. The matched chunks-per-session map is consumed by
+    // renderChatCard to render the in-card "Matches" footer.
+    var searchHitsBySid = null;
+    if (chatsState.searchActive) {
+        var hitMap = {};
+        chatsState.searchSessionsByScore.forEach(function(s) { hitMap[s.session_id] = s; });
+        chats = chats.filter(function(c) { return hitMap[c.session_id] !== undefined; });
         chats.sort(function(a, b) {
-            var ac = a.commit_count || 0;
-            var bc = b.commit_count || 0;
-            if (bc !== ac) return bc - ac;
-            return (b.start_time || '').localeCompare(a.start_time || '');
+            return (hitMap[b.session_id].doc_score || 0) - (hitMap[a.session_id].doc_score || 0);
         });
-    }
-    else if (sort === 'most-recent-commit') {
-        // Sessions that have ever committed sort by their latest commit
-        // time; sessions with no commits sort to the bottom by start.
-        chats.sort(function(a, b) {
-            var at = a.latest_committed_at || '';
-            var bt = b.latest_committed_at || '';
-            if (at && !bt) return -1;
-            if (bt && !at) return 1;
-            if (at !== bt) return bt.localeCompare(at);
-            return (b.start_time || '').localeCompare(a.start_time || '');
-        });
+        searchHitsBySid = hitMap;
+    } else {
+        var sort = document.getElementById('chats-sort')?.value || 'recent';
+        if (sort === 'longest') chats.sort(function(a, b) { return (b.message_count - a.message_count); });
+        else if (sort === 'most-messages') chats.sort(function(a, b) { return (b.tool_count - a.tool_count); });
+        else if (sort === 'most-commits') {
+            chats.sort(function(a, b) {
+                var ac = a.commit_count || 0;
+                var bc = b.commit_count || 0;
+                if (bc !== ac) return bc - ac;
+                return (b.start_time || '').localeCompare(a.start_time || '');
+            });
+        }
+        else if (sort === 'most-recent-commit') {
+            chats.sort(function(a, b) {
+                var at = a.latest_committed_at || '';
+                var bt = b.latest_committed_at || '';
+                if (at && !bt) return -1;
+                if (bt && !at) return 1;
+                if (at !== bt) return bt.localeCompare(at);
+                return (b.start_time || '').localeCompare(a.start_time || '');
+            });
+        }
     }
 
-    if (chats.length === 0) {
-        container.innerHTML = '<div class="empty-state">No chats found</div>';
+    var filteredTotal = chats.length;
+    var endIdx = Math.min(filteredTotal, (chatsState.page + 1) * chatsState.pageSize);
+    var visible = chats.slice(0, endIdx);
+    var hasMore = endIdx < filteredTotal;
+
+    var searchSummary = '';
+    if (chatsState.searchActive) {
+        searchSummary = '<div class="chats-search-summary">'
+            + '<span><strong>' + filteredTotal + '</strong> chat'
+            + (filteredTotal === 1 ? '' : 's') + ' matching '
+            + '<em>"' + escapeHtml(chatsState.searchQuery) + '"</em>'
+            + ' &middot; sorted by relevance</span>'
+            + '<button class="chats-clear-search-btn" onclick="chatsClearSearch()">Clear search</button>'
+            + '</div>';
+    }
+
+    if (filteredTotal === 0) {
+        container.innerHTML = searchSummary + renderEmptyChatListState();
         return;
     }
 
-    // 60-minute window: a chat whose latest activity is within the
-    // last hour gets the same green pulse dot the Costs view uses for
-    // "active session." Prefer end_time; fall back to start_time when
-    // the data lacks an end_time.
-    const ACTIVE_WINDOW_MS = 60 * 60 * 1000;
-
-    container.innerHTML = chats.map(c => {
-        // Title prefers the cached LLM tldr (when summaries are
-        // enabled and the row exists); falls back to the first user
-        // message so chat-only sessions still get a meaningful title.
-        const titleSrc = c.tldr || c.first_message || 'Untitled chat';
-        const title = escapeHtml(cleanMsgText(titleSrc).trim());
-        const lastTs = c.end_time || c.start_time || '';
-        const lastMs = lastTs ? new Date(lastTs).getTime() : NaN;
-        const isActive = isFinite(lastMs) && (Date.now() - lastMs) < ACTIVE_WINDOW_MS;
-        const activeDot = isActive
-            ? '<span class="wb-active-dot" title="Active in the last hour"></span>'
-            : '';
-        return '<div class="chat-card' + (c.session_id === chatsState.selectedId ? ' active' : '') + '"'
-            + ' data-sid="' + c.session_id + '">'
-            + (c.project_name ? '<div class="chat-card-project">' + escapeHtml(c.project_name) + '</div>' : '')
-            + '<div class="chat-card-title">' + title + '</div>'
-            + '<div class="chat-card-meta">'
-            + '<span>' + activeDot + formatTimestamp(c.start_time) + '</span>'
-            + '<span>' + (c.duration || '--') + '</span>'
-            + '<span>' + c.message_count + ' msgs</span>'
-            + '</div>'
-            + renderChatBadges(c)
-            + '</div>';
-    }).join('');
+    container.innerHTML = searchSummary
+        + visible.map(function(c) { return renderChatCard(c, searchHitsBySid ? searchHitsBySid[c.session_id] : null); }).join('')
+        + (hasMore ? renderLoadMore(filteredTotal - endIdx) : '');
 
     container.querySelectorAll('.chat-card').forEach(function(card) {
         card.addEventListener('click', function() { selectChat(card.dataset.sid); });
     });
+    // Inner chunk rows are nested inside the card. Stop click
+    // propagation so clicking a snippet jumps to that span instead of
+    // selecting the whole chat at offset 0.
+    container.querySelectorAll('.chat-card-chunk').forEach(function(el) {
+        el.addEventListener('click', function(ev) {
+            ev.stopPropagation();
+            var sid = el.dataset.sid;
+            var span = parseInt(el.dataset.span, 10);
+            if (sid && !isNaN(span)) chatsJumpToHit(sid, span);
+        });
+    });
+}
+
+/** Card render — extracted so search-active mode can attach chunks. */
+function renderChatCard(c, searchHit) {
+    const ACTIVE_WINDOW_MS = 60 * 60 * 1000;
+    const titleSrc = c.tldr || c.first_message || 'Untitled chat';
+    const title = escapeHtml(cleanMsgText(titleSrc).trim());
+    const lastTs = c.end_time || c.start_time || '';
+    const lastMs = lastTs ? new Date(lastTs).getTime() : NaN;
+    const isActive = isFinite(lastMs) && (Date.now() - lastMs) < ACTIVE_WINDOW_MS;
+    const activeDot = isActive
+        ? '<span class="wb-active-dot" title="Active in the last hour"></span>'
+        : '';
+    return '<div class="chat-card' + (c.session_id === chatsState.selectedId ? ' active' : '') + '"'
+        + ' data-sid="' + c.session_id + '">'
+        + (c.project_name ? '<div class="chat-card-project">' + escapeHtml(c.project_name) + '</div>' : '')
+        + '<div class="chat-card-title">' + title + '</div>'
+        + '<div class="chat-card-meta">'
+        + '<span>' + activeDot + formatTimestamp(c.start_time) + '</span>'
+        + '<span>' + (c.duration || '--') + '</span>'
+        + '<span>' + c.message_count + ' msgs</span>'
+        + '</div>'
+        + renderChatBadges(c)
+        + (searchHit ? renderChatChunks(c.session_id, searchHit.chunks || []) : '')
+        + '</div>';
+}
+
+function renderChatChunks(sid, chunks) {
+    if (!chunks || chunks.length === 0) return '';
+    var top = chunks.slice(0, 3);
+    var rest = chunks.length - top.length;
+    var label = chunks.length === 1
+        ? 'Match in 1 span:'
+        : 'Matches in ' + chunks.length + ' spans:';
+    return '<div class="chat-card-chunks">'
+        + '<div class="chat-card-chunks-label">' + label + '</div>'
+        + top.map(function(ch) {
+            var snippet = escapeHtml(cleanMsgText(ch.display_text || '').trim()).substring(0, 200);
+            return '<div class="chat-card-chunk" data-sid="' + sid + '" data-span="' + ch.span_index + '"'
+                + ' title="Jump to span ' + ch.span_index + ' in this conversation">'
+                + '<span class="chunk-marker">›</span> '
+                + '<span class="chunk-snippet">' + snippet + '</span>'
+                + '</div>';
+        }).join('')
+        + (rest > 0 ? '<div class="chat-card-chunks-more">+' + rest + ' more match' + (rest === 1 ? '' : 'es') + '</div>' : '')
+        + '</div>';
+}
+
+function renderLoadMore(remaining) {
+    return '<button class="chats-load-more-listing" onclick="chatsLoadMoreList()">'
+        + 'Show more (' + remaining + ' remaining)'
+        + '</button>';
+}
+
+function renderEmptyChatListState() {
+    if (chatsState.searchActive) {
+        return '<div class="empty-state">No matches for <em>"'
+            + escapeHtml(chatsState.searchQuery) + '"</em> '
+            + '<button class="chats-clear-search-btn" onclick="chatsClearSearch()">Clear search</button>'
+            + '</div>';
+    }
+    if (chatsState.filters.has_commits || chatsState.filters.has_unfinished
+        || document.getElementById('chats-project-filter')?.value) {
+        return '<div class="empty-state">No chats match the current filters. '
+            + '<button class="chats-clear-search-btn" onclick="chatsResetFiltersAll()">Reset filters</button>'
+            + '</div>';
+    }
+    return '<div class="empty-state">No chats found</div>';
+}
+
+function chatsLoadMoreList() {
+    chatsState.page = (chatsState.page || 0) + 1;
+    renderChatList();
+}
+
+/** Reset listing position to first page. Call on any state change
+ *  that affects what's visible. */
+function chatsResetPage() { chatsState.page = 0; }
+
+/** Hard reset: clear pills, project filter, search, page. Used by the
+ *  empty-state Reset link when filters narrowed everything away. */
+function chatsResetFiltersAll() {
+    chatsState.filters.has_commits = false;
+    chatsState.filters.has_unfinished = false;
+    chatsUpdatePillVisuals();
+    var projSel = document.getElementById('chats-project-filter');
+    if (projSel) { projSel.value = ''; projSel.classList.remove('active'); }
+    chatsClearSearch();  // also resets page + re-renders
 }
 
 /**
@@ -168,12 +288,12 @@ function renderChatBadges(c) {
     var parts = [];
     if (c.commit_count > 0) {
         var repoCount = c.commits_by_repo ? Object.keys(c.commits_by_repo).length : 0;
-        var commitsLabel = '🌿 ' + c.commit_count + ' commit' + (c.commit_count === 1 ? '' : 's');
+        var commitsLabel = c.commit_count + ' commit' + (c.commit_count === 1 ? '' : 's');
         if (repoCount > 1) commitsLabel += ' across ' + repoCount + ' repos';
         parts.push('<span class="chat-card-badge">' + commitsLabel + '</span>');
     }
     if (c.unfinished_count > 0) {
-        var unfinishedLabel = '⚠ ' + c.unfinished_count + ' left uncommitted';
+        var unfinishedLabel = c.unfinished_count + ' left uncommitted';
         parts.push('<span class="chat-card-badge unfinished" title="Files this session wrote that this session did not commit itself.">' + unfinishedLabel + '</span>');
     }
     if (parts.length === 0) return '';
@@ -387,18 +507,32 @@ function closeChat() {
     });
 }
 
-// Esc closes the chat-detail view when the panel is active and the
-// user isn't typing into an input. Mirrors the Esc behavior on
-// modal-style panels elsewhere in the dashboard.
+// Esc handler for the Chats tab.
+// Priority order:
+//   1. If the chat-detail viewer is open → close it.
+//   2. Else if a search is active → clear it.
+//   3. Otherwise no-op.
+// Allowed inside the global-search input so users can abandon a query
+// with one keypress; other inputs (in-chat search, etc.) keep their
+// default Esc behavior so we don't fight focus-based UX.
 document.addEventListener('keydown', function(ev) {
     if (ev.key !== 'Escape') return;
-    var tag = (ev.target && ev.target.tagName) || '';
-    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
-    var viewer = document.getElementById('chats-viewer');
-    if (!viewer || viewer.style.display === 'none') return;
     var panel = document.getElementById('panel-chats');
     if (!panel || !panel.classList.contains('active')) return;
-    closeChat();
+
+    var tag = (ev.target && ev.target.tagName) || '';
+    var isInGlobalSearch = ev.target && ev.target.id === 'chats-global-search';
+    if ((tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') && !isInGlobalSearch) return;
+
+    var viewer = document.getElementById('chats-viewer');
+    if (viewer && viewer.style.display !== 'none') {
+        closeChat();
+        return;
+    }
+    if (chatsState.searchActive) {
+        chatsClearSearch();
+        if (isInGlobalSearch) ev.target.blur();
+    }
 });
 
 function renderChatHeader(meta) {
@@ -420,11 +554,14 @@ function renderChatHeader(meta) {
     if (meta.start_time) leftPieces.push(formatTimestamp(meta.start_time));
     if (listEntry.engages_git && (listEntry.commit_count || 0) > 0) {
         var repos = listEntry.commits_by_repo ? Object.keys(listEntry.commits_by_repo).length : 0;
-        var commitLabel = '🌿 ' + listEntry.commit_count + ' commits' + (repos > 1 ? ' / ' + repos + ' repos' : '');
+        var commitLabel = listEntry.commit_count + ' commits' + (repos > 1 ? ' / ' + repos + ' repos' : '');
         leftPieces.push(commitLabel);
     }
     if (listEntry.engages_git && (listEntry.unfinished_count || 0) > 0) {
-        leftPieces.push('<span style="color:var(--accent);">⚠ ' + listEntry.unfinished_count + ' left uncommitted</span>');
+        // Plain text, inherits the muted header color — same restraint
+        // as the card badge. The warning glyph is intentionally absent
+        // here too; the count itself is the signal.
+        leftPieces.push(listEntry.unfinished_count + ' left uncommitted');
     }
 
     header.innerHTML = '<div class="chats-hdr-left">'
@@ -646,6 +783,16 @@ function chatsProjectFilterChanged(project) {
         _commitsPreparedProject = '';
     }
 
+    // Project change resets page and re-renders. If a search is active,
+    // re-run it so the project pre-filter ALSO restricts the search
+    // corpus on the backend (project param goes alongside eligible_sids).
+    chatsResetPage();
+    if (chatsState.searchActive) {
+        chatsGlobalSearch();
+    } else {
+        renderChatList();
+    }
+
     // If Commit method is selected but now hidden, fall back to Hybrid
     var methodSelect = document.getElementById('chats-search-method');
     if (methodSelect.value === 'commit' && !project) {
@@ -705,7 +852,7 @@ function chatsSearchMethodChanged(method) {
 async function chatsGlobalSearch() {
     var q = document.getElementById('chats-global-search').value.trim();
     if (!q) {
-        document.getElementById('chats-search-results').style.display = 'none';
+        chatsClearSearch();
         return;
     }
     _lastGlobalQuery = q;
@@ -713,16 +860,17 @@ async function chatsGlobalSearch() {
     var method = document.getElementById('chats-search-method').value;
     if (method === 'commit') return chatsCommitSearch(q);
 
-    var resultsDiv = document.getElementById('chats-search-results');
-    resultsDiv.style.display = 'block';
-    resultsDiv.innerHTML = '<div class="loading">Searching...</div>';
+    // Show a transient loading affordance in the listing while the IR
+    // round-trip is in flight. Replaces the now-removed search-results
+    // pane's loading message.
+    var container = document.getElementById('chats-list');
+    container.innerHTML = '<div class="loading">Searching for "' + escapeHtml(q) + '"...</div>';
 
     var project = document.getElementById('chats-project-filter').value;
     // eligible_sids carries the filter-pill outcome. If any pill is
     // active, send the session_ids the listing would currently show
     // so the IR engine pre-filters its scoring corpus instead of
-    // ranking-then-filtering. Empty array means "no pills active";
-    // skip the param entirely so the search ranges over everything.
+    // ranking-then-filtering.
     var eligibleSids = chatsComputeEligibleSids();
     var url = '/api/chats/search?q=' + encodeURIComponent(q) + '&method=' + method
         + (project ? '&project=' + encodeURIComponent(project) : '')
@@ -730,78 +878,44 @@ async function chatsGlobalSearch() {
     var data = await fetchJSON(url);
 
     if (!data || data.error) {
-        resultsDiv.innerHTML = '<div class="empty-state">'
-            + (data && data.error ? escapeHtml(data.error) : 'Search failed') + '</div>';
-        return;
-    }
-
-    // Server returns {sessions: [...], total_chunks: N} — already grouped and scored
-    var sessions = data.sessions || [];
-    if (sessions.length === 0) {
-        resultsDiv.innerHTML = '<div class="empty-state">No results found</div>';
-        return;
-    }
-
-    // Enrich with data from the chat list (first_message, duration, msg count)
-    var chatLookup = {};
-    chatsState.chats.forEach(function(c) { chatLookup[c.session_id] = c; });
-
-    var html = '<div style="display:flex;justify-content:space-between;margin-bottom:8px;">'
-        + '<span style="font-size:12px;color:var(--text-muted);">'
-        + sessions.length + ' chat' + (sessions.length !== 1 ? 's' : '')
-        + ' (' + (data.total_chunks || 0) + ' chunks) for "' + escapeHtml(q) + '"</span>'
-        + '<button class="chats-hdr-btn" onclick="chatsCloseGlobalSearch()">Close</button>'
-        + '</div>';
-
-    sessions.forEach(function(sess, gi) {
-        var chatInfo = chatLookup[sess.session_id];
-        var title = chatInfo
-            ? escapeHtml(cleanMsgText(chatInfo.first_message || '').split('\\n')[0].substring(0, 80))
-            : '';
-        var duration = chatInfo ? (chatInfo.duration || '') : '';
-        var msgCount = chatInfo ? (chatInfo.message_count || '') : '';
-        var timeStr = sess.start_time ? formatTimestamp(sess.start_time) : '';
-
-        // Session header — clicking opens the chat at the top
-        html += '<div class="chats-search-session-group">'
-            + '<div class="chats-search-session-hdr" onclick="chatsOpenFromSearch(&#39;' + sess.session_id + '&#39;)">'
-            + '<div style="display:flex;justify-content:space-between;align-items:center;">'
-            + '<span>'
-            + '<span class="chats-hit-score" style="margin-right:6px;">#' + (gi + 1) + '</span>'
-            + '<code style="color:var(--text-primary);font-size:11px;">' + sess.short_id + '</code>'
-            + (sess.project_name ? ' <span style="color:var(--accent);font-size:10px;font-weight:600;text-transform:uppercase;margin-left:6px;">' + escapeHtml(sess.project_name) + '</span>' : '')
-            + '</span>'
-            + '<span style="font-size:11px;color:var(--text-muted);">'
-            + sess.chunks.length + ' hit' + (sess.chunks.length !== 1 ? 's' : '')
-            + (duration ? ' &middot; ' + duration : '')
-            + (msgCount ? ' &middot; ' + msgCount + ' msgs' : '')
-            + (timeStr ? ' &middot; ' + timeStr : '')
-            + '</span></div>'
-            + (title ? '<div style="font-size:12px;color:var(--text-secondary);margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + title + '</div>' : '')
+        container.innerHTML = '<div class="empty-state">'
+            + (data && data.error ? escapeHtml(data.error) : 'Search failed')
+            + ' <button class="chats-clear-search-btn" onclick="chatsClearSearch()">Clear search</button>'
             + '</div>';
+        return;
+    }
 
-        // Individual chunk hits — clicking jumps to that exact location
-        (sess.chunks || []).forEach(function(chunk) {
-            html += '<div class="chats-search-chunk" onclick="chatsJumpToHit(&#39;' + sess.session_id + '&#39;,' + chunk.span_index + ')">'
-                + '<div style="font-size:12px;color:var(--text-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'
-                + escapeHtml(cleanMsgText(chunk.display_text)) + '</div>'
-                + '</div>';
-        });
-
-        html += '</div>';
-    });
-
-    resultsDiv.innerHTML = html;
+    // Populate search state. renderChatList consumes this to filter +
+    // sort + attach chunks. No separate pane.
+    chatsState.searchActive = true;
+    chatsState.searchQuery = q;
+    chatsState.searchSessionsByScore = data.sessions || [];
+    chatsResetPage();
+    renderChatList();
 }
 
-function chatsCloseGlobalSearch() {
-    document.getElementById('chats-search-results').style.display = 'none';
+/**
+ * Clear the search state and re-render the listing as the unfiltered
+ * (well, pill-and-project filtered) view it was before search.
+ */
+function chatsClearSearch() {
+    chatsState.searchActive = false;
+    chatsState.searchQuery = '';
+    chatsState.searchSessionsByScore = [];
+    chatsResetPage();
+    var input = document.getElementById('chats-global-search');
+    if (input) input.value = '';
+    renderChatList();
 }
+
+// Backward-compat shim: a few old call sites still call
+// chatsCloseGlobalSearch when jumping into a chat from a hit. They
+// should now just clear the search overlay before navigating.
+function chatsCloseGlobalSearch() { chatsClearSearch(); }
 
 async function chatsCommitSearch(q) {
-    var resultsDiv = document.getElementById('chats-search-results');
-    resultsDiv.style.display = 'block';
-    resultsDiv.innerHTML = '<div class="loading">Searching commits...</div>';
+    var container = document.getElementById('chats-list');
+    container.innerHTML = '<div class="loading">Searching commits for "' + escapeHtml(q) + '"...</div>';
 
     var project = document.getElementById('chats-project-filter').value;
     var url = '/api/chats/search/commits?q=' + encodeURIComponent(q)
@@ -809,72 +923,38 @@ async function chatsCommitSearch(q) {
     var data = await fetchJSON(url);
 
     if (!data || data.error) {
-        resultsDiv.innerHTML = '<div class="empty-state">'
-            + (data && data.error ? escapeHtml(data.error) : 'Commit search failed') + '</div>';
-        return;
-    }
-
-    var sessions = data.sessions || [];
-    if (sessions.length === 0) {
-        resultsDiv.innerHTML = '<div class="empty-state">No matching commits found</div>';
-        return;
-    }
-
-    var chatLookup = {};
-    chatsState.chats.forEach(function(c) { chatLookup[c.session_id] = c; });
-
-    var totalCommits = data.total_commits || 0;
-    var html = '<div style="display:flex;justify-content:space-between;margin-bottom:8px;">'
-        + '<span style="font-size:12px;color:var(--text-muted);">'
-        + totalCommits + ' commit' + (totalCommits !== 1 ? 's' : '')
-        + ' in ' + sessions.length + ' chat' + (sessions.length !== 1 ? 's' : '')
-        + ' for "' + escapeHtml(q) + '"</span>'
-        + '<button class="chats-hdr-btn" onclick="chatsCloseGlobalSearch()">Close</button>'
-        + '</div>';
-
-    sessions.forEach(function(sess, gi) {
-        var chatInfo = chatLookup[sess.session_id];
-        var title = chatInfo
-            ? escapeHtml(cleanMsgText(chatInfo.first_message || '').split('\\n')[0].substring(0, 80))
-            : '';
-        var duration = chatInfo ? (chatInfo.duration || '') : '';
-        var msgCount = chatInfo ? (chatInfo.message_count || '') : '';
-
-        html += '<div class="chats-search-session-group">'
-            + '<div class="chats-search-session-hdr" onclick="chatsOpenFromSearch(&#39;' + sess.session_id + '&#39;)">'
-            + '<div style="display:flex;justify-content:space-between;align-items:center;">'
-            + '<span>'
-            + '<span class="chats-hit-score" style="margin-right:6px;">#' + (gi + 1) + '</span>'
-            + '<code style="color:var(--text-primary);font-size:11px;">' + sess.short_id + '</code>'
-            + '</span>'
-            + '<span style="font-size:11px;color:var(--text-muted);">'
-            + sess.commits.length + ' commit' + (sess.commits.length !== 1 ? 's' : '')
-            + (duration ? ' &middot; ' + duration : '')
-            + (msgCount ? ' &middot; ' + msgCount + ' msgs' : '')
-            + '</span></div>'
-            + (title ? '<div style="font-size:12px;color:var(--text-secondary);margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + title + '</div>' : '')
+        container.innerHTML = '<div class="empty-state">'
+            + (data && data.error ? escapeHtml(data.error) : 'Commit search failed')
+            + ' <button class="chats-clear-search-btn" onclick="chatsClearSearch()">Clear search</button>'
             + '</div>';
+        return;
+    }
 
-        (sess.commits || []).forEach(function(commit) {
-            var hasIdx = commit.message_index != null;
-            var clickFn = hasIdx
-                ? 'chatsJumpToCommitSearch(&#39;' + sess.session_id + '&#39;,' + commit.message_index + ')'
-                : 'chatsOpenFromSearch(&#39;' + sess.session_id + '&#39;)';
-            html += '<div class="chats-search-chunk" onclick="' + clickFn + '">'
-                + '<div class="chat-commit-marker" style="margin:0;">'
-                + '<code>' + (commit.hash || '') + '</code> '
-                + '<span class="commit-msg">' + escapeHtml(commit.message || '') + '</span>'
-                + '<span class="commit-meta">'
-                + '<span>' + (commit.branch || '') + '</span>'
-                + (commit.files_changed ? '<span>' + commit.files_changed + ' files</span>' : '')
-                + '<span>' + formatTimestamp(commit.timestamp) + '</span>'
-                + '</span></div></div>';
-        });
-
-        html += '</div>';
+    // Map commit-search results into the same {session_id, doc_score,
+    // chunks} shape that keyword/semantic search uses, so renderChatList
+    // can render both with one code path. Each commit becomes a "chunk"
+    // whose snippet is "<hash> <message>" and whose span_index is the
+    // turn at which the commit was issued (so click-to-jump works).
+    var sessions = (data.sessions || []).map(function(sess) {
+        return {
+            session_id: sess.session_id,
+            doc_score: sess.commits ? sess.commits.length : 0,
+            chunks: (sess.commits || []).map(function(commit) {
+                var snippet = (commit.hash || '') + '  ' + (commit.message || '');
+                return {
+                    span_index: commit.message_index != null ? commit.message_index : 0,
+                    display_text: snippet,
+                    score: 1,
+                };
+            }),
+        };
     });
 
-    resultsDiv.innerHTML = html;
+    chatsState.searchActive = true;
+    chatsState.searchQuery = q + ' (commit)';
+    chatsState.searchSessionsByScore = sessions;
+    chatsResetPage();
+    renderChatList();
 }
 
 async function chatsJumpToCommitSearch(sessionId, messageIndex) {
@@ -1300,22 +1380,27 @@ function chatsToggleFilter(key) {
     if (!(key in chatsState.filters)) return;
     chatsState.filters[key] = !chatsState.filters[key];
     chatsUpdatePillVisuals();
-    renderChatList();
+    chatsResetPage();
     // If a global-search query is active, re-run it so the
-    // eligible_sids set updates in lockstep.
-    var q = document.getElementById('chats-global-search')?.value.trim();
-    var resultsVisible = document.getElementById('chats-search-results')?.style.display === 'block';
-    if (q && resultsVisible) chatsGlobalSearch();
+    // eligible_sids set updates in lockstep. Otherwise just re-render
+    // the listing-mode view.
+    if (chatsState.searchActive) {
+        chatsGlobalSearch();
+    } else {
+        renderChatList();
+    }
 }
 
 function chatsResetFilters() {
     chatsState.filters.has_commits = false;
     chatsState.filters.has_unfinished = false;
     chatsUpdatePillVisuals();
-    renderChatList();
-    var q = document.getElementById('chats-global-search')?.value.trim();
-    var resultsVisible = document.getElementById('chats-search-results')?.style.display === 'block';
-    if (q && resultsVisible) chatsGlobalSearch();
+    chatsResetPage();
+    if (chatsState.searchActive) {
+        chatsGlobalSearch();
+    } else {
+        renderChatList();
+    }
 }
 
 function chatsUpdatePillVisuals() {
@@ -1347,8 +1432,13 @@ function chatsComputeEligibleSids() {
     return chats.map(function(c) { return c.session_id; }).filter(Boolean);
 }
 
-/** Public alias for code that wants a single "redraw the list" call. */
-function applyChatsFiltersAndSort() { renderChatList(); }
+/** Public alias for code that wants a single "redraw the list" call.
+ *  Sort/project dropdown onchange handlers call this. Resets pagination
+ *  to first page so a re-sort lands the user at the top. */
+function applyChatsFiltersAndSort() {
+    chatsResetPage();
+    renderChatList();
+}
 
 // ---- Chats: Event listeners ----
 

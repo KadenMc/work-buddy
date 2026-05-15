@@ -290,20 +290,24 @@ def _html() -> str:
 
 <!-- CHATS -->
 <div class="tab-panel" id="panel-chats">
-    <!-- Toolbar: search + sort + window + Advanced toggle. Always
-         visible whether the list or the viewer is showing. The
-         Advanced expander hides project + filter pills until needed
-         so the default toolbar stays minimal. -->
+    <!-- Toolbar: search + project + sort + window + Advanced toggle.
+         Project lives in the main toolbar because it's the most-used
+         filter (multi-repo users scan their work by repo constantly).
+         Pure pills (has_commits, has_unfinished) live under Advanced
+         since they're rarely-used power-user filters. -->
     <div class="chats-toolbar">
         <input type="text" id="chats-global-search" class="chats-search-input"
-               placeholder="Search across all chats..." />
+               placeholder="Search or filter the chats below..." />
         <select id="chats-search-method" class="chats-select" onchange="chatsSearchMethodChanged(this.value)">
             <option value="keyword,semantic">Hybrid</option>
             <option value="keyword">Keyword</option>
             <option value="semantic">Semantic</option>
             <option value="substring">Exact match</option>
         </select>
-        <button class="chats-accent-btn" onclick="chatsGlobalSearch()">Search</button>
+        <select id="chats-project-filter" class="chats-select chats-project-select"
+                onchange="chatsProjectFilterChanged(this.value)">
+            <option value="">All repos</option>
+        </select>
         <span class="chats-toolbar-spacer"></span>
         <select id="chats-sort" class="chats-select" onchange="applyChatsFiltersAndSort()">
             <option value="recent">Most Recent</option>
@@ -314,26 +318,20 @@ def _html() -> str:
         </select>
         <select id="chats-days" class="chats-select">
             <option value="7">7 days</option>
-            <option value="14" selected>14 days</option>
-            <option value="30">30 days</option>
+            <option value="14">14 days</option>
+            <option value="30" selected>30 days</option>
             <option value="60">60 days</option>
+            <option value="0">All time</option>
         </select>
         <button class="chats-select chats-advanced-toggle" id="chats-advanced-toggle"
                 onclick="chatsToggleAdvanced()">Advanced ▾</button>
     </div>
 
-    <!-- Advanced filters expander (collapsed by default). The pills
-         here narrow BOTH the listing (client-side filter on
-         chatsState.chats) AND the search corpus (sent to the search
-         endpoint as eligible_sids so it pre-filters before top-K). -->
+    <!-- Advanced filters expander (collapsed by default). Holds only
+         the rarely-used pure-predicate pills. Project + sort + window
+         are common enough to stay in the main toolbar. -->
     <div id="chats-advanced" class="chats-advanced-panel" style="display:none;">
         <div class="chats-filter-row">
-            <span class="chats-filter-label">Project:</span>
-            <select id="chats-project-filter" class="chats-select chats-project-select"
-                    onchange="chatsProjectFilterChanged(this.value)">
-                <option value="">All repos</option>
-            </select>
-            <span class="chats-filter-divider"></span>
             <span class="chats-filter-label">Filter:</span>
             <button class="chats-filter-pill" id="chats-pill-has-commits"
                     onclick="chatsToggleFilter('has_commits')">Has commits</button>
@@ -345,13 +343,14 @@ def _html() -> str:
         </div>
     </div>
 
-    <!-- Search-results pane (separate from listing; shown only while a
-         global-search query is active). -->
-    <div id="chats-search-results" class="chats-search-results" style="display:none;"></div>
-
     <!-- Single-pane content area. Exactly one of #chats-list or
          #chats-viewer is visible at a time; selecting a chat replaces
-         the list, the close button restores it. -->
+         the list, the close button restores it.
+
+         Search results render INTO #chats-list (re-ranked + chunk
+         snippets per matching card) — there is no separate
+         search-results pane. -->
+
     <div class="chats-content">
         <div id="chats-list" class="chats-list-fullwidth">
             <div class="loading">Loading chats...</div>

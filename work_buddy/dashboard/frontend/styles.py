@@ -2293,8 +2293,126 @@ body {
     display: flex; gap: 12px; font-size: 12px;
     color: var(--text-muted); align-items: center;
 }
-.chat-card-badge { display: inline-flex; align-items: center; gap: 4px; }
-.chat-card-badge.unfinished { color: var(--accent); }
+.chat-card-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    color: var(--text-muted);
+}
+/* Subtler than the banner — the warning glyph already signals
+   attention; loud color on every card was distracting. */
+.chat-card-badge.unfinished {
+    color: var(--text-muted);
+}
+
+/* In-card search-match snippets (search-active mode). Renders below
+   the badges as a compact list; each row is clickable to jump to that
+   span in the conversation. */
+.chat-card-chunks {
+    margin-top: 4px;
+    padding-top: 8px;
+    border-top: 1px dashed var(--border);
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+.chat-card-chunks-label {
+    font-size: 10px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 2px;
+}
+.chat-card-chunk {
+    padding: 6px 8px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+    color: var(--text-secondary);
+    line-height: 1.4;
+    transition: background 0.12s, border-color 0.12s;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.chat-card-chunk:hover {
+    background: var(--bg-secondary);
+    border-color: var(--accent);
+    color: var(--text-primary);
+}
+.chat-card-chunk .chunk-marker {
+    color: var(--accent);
+    font-weight: 600;
+    margin-right: 4px;
+}
+.chat-card-chunk .chunk-snippet {
+    font-family: var(--font-mono);
+    font-size: 11px;
+}
+.chat-card-chunks-more {
+    font-size: 11px;
+    color: var(--text-muted);
+    padding: 2px 8px;
+    font-style: italic;
+}
+
+/* Search-summary banner shown above the listing when search is active. */
+.chats-search-summary {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 14px;
+    margin-bottom: 8px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    border-radius: 6px;
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+.chats-search-summary em {
+    font-style: normal;
+    font-family: var(--font-mono);
+    color: var(--text-primary);
+}
+.chats-search-summary strong {
+    color: var(--text-primary);
+}
+.chats-clear-search-btn {
+    padding: 4px 12px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-secondary);
+    font-size: 12px;
+    cursor: pointer;
+    transition: color 0.12s, border-color 0.12s;
+}
+.chats-clear-search-btn:hover {
+    color: var(--accent);
+    border-color: var(--accent);
+}
+
+/* Listing-level "Load more" button (separate from the message-list one). */
+.chats-load-more-listing {
+    width: 100%;
+    padding: 12px;
+    margin-top: 8px;
+    background: var(--bg-secondary);
+    border: 1px dashed var(--border);
+    border-radius: 6px;
+    color: var(--text-secondary);
+    font-size: 13px;
+    cursor: pointer;
+    transition: background 0.12s, color 0.12s;
+}
+.chats-load-more-listing:hover {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+}
 /* Legacy: kept as a defensive no-op selector in case any cached HTML
    references it; the renderer no longer emits .chat-card-tools. */
 .chat-card-tools { display: none; }
