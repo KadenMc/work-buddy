@@ -189,8 +189,31 @@ function renderChatList() {
         return;
     }
 
+    // Date-grouped headers when sort=recent and not searching.
+    // For all other sort modes (most-commits, longest, etc.) and for
+    // search-active mode, group headers don't make sense — the cards
+    // are ordered by something other than time.
+    var sortValue = document.getElementById('chats-sort')?.value || 'recent';
+    var groupByDate = !chatsState.searchActive && sortValue === 'recent';
+
+    var listHTML;
+    if (groupByDate) {
+        var lastBucket = null;
+        listHTML = visible.map(function(c) {
+            var bucket = _chatsBucketLabel(c.start_time);
+            var headerHTML = '';
+            if (bucket !== lastBucket) {
+                headerHTML = '<div class="chats-day-header">' + escapeHtml(bucket) + '</div>';
+                lastBucket = bucket;
+            }
+            return headerHTML + renderChatCard(c, searchHitsBySid ? searchHitsBySid[c.session_id] : null);
+        }).join('');
+    } else {
+        listHTML = visible.map(function(c) { return renderChatCard(c, searchHitsBySid ? searchHitsBySid[c.session_id] : null); }).join('');
+    }
+
     container.innerHTML = searchSummary
-        + visible.map(function(c) { return renderChatCard(c, searchHitsBySid ? searchHitsBySid[c.session_id] : null); }).join('')
+        + listHTML
         + (hasMore ? renderLoadMore(filteredTotal - endIdx) : '');
 
     container.querySelectorAll('.chat-card').forEach(function(card) {
@@ -324,6 +347,30 @@ function _chatsRenderSnippet(rawText) {
     var escaped = escapeHtml(window);
     var highlighted = escaped.replace(pattern, '<mark>$1</mark>');
     return prefix + highlighted + suffix;
+}
+
+/**
+ * Day-bucket label for the listing's section headers. Only used when
+ * sort=recent (the default), so adjacent cards' buckets monotonically
+ * decrease in recency.
+ */
+function _chatsBucketLabel(startTimeIso) {
+    if (!startTimeIso) return 'Unknown';
+    var t = new Date(startTimeIso);
+    if (isNaN(t.getTime())) return 'Unknown';
+    var now = new Date();
+    var startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    var msPerDay = 86400000;
+    var diffDays = Math.floor((startOfToday.getTime() - t.getTime()) / msPerDay);
+    if (diffDays < 0) return 'Today';                 // future timestamps
+    if (diffDays === 0) return 'Today';
+    if (diffDays === 1) return 'Yesterday';
+    if (diffDays <= 6) return diffDays + ' days ago';
+    if (diffDays <= 13) return 'Last week';
+    if (diffDays <= 29) return Math.floor(diffDays / 7) + ' weeks ago';
+    if (diffDays <= 60) return 'Last month';
+    if (diffDays <= 365) return Math.floor(diffDays / 30) + ' months ago';
+    return 'Earlier';
 }
 
 function renderLoadMore(remaining) {

@@ -2244,6 +2244,23 @@ body {
     width: 100%;
     transition: opacity 180ms ease;
 }
+/* Sticky-ish day-bucket header inside the listing — small,
+   uppercase, muted. Renders only when sort=recent so adjacent cards
+   genuinely cluster by time. */
+.chats-day-header {
+    font-size: 11px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding: 12px 4px 4px 4px;
+    margin-top: 4px;
+    border-bottom: 1px solid var(--border);
+    font-weight: 600;
+}
+.chats-day-header:first-child {
+    margin-top: 0;
+    padding-top: 0;
+}
 .chats-viewer-fullwidth {
     display: none;        /* JS toggles between flex and none */
     flex-direction: column;
