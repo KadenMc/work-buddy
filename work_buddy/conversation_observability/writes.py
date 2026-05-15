@@ -480,9 +480,16 @@ def _committed_files_for_sessions(
 
     # One git-show per unique SHA per repo. We probe each repo because
     # the SHA might exist in only one of them; failures are silent.
-    result: dict[str, set[str]] = {sid: set() for sid in session_ids}
+    # Parallelized: with ~200 unique SHAs across 20 repos, serial
+    # execution is 30s+; an 8-worker pool drops it to ~4s. Each worker
+    # short-circuits on first-found repo.
+    from concurrent.futures import ThreadPoolExecutor
+
     repos = list(_discover_repos(repos_root))
-    for sha, sid in sha_to_sid.items():
+
+    def _resolve_sha(sha_sid_pair: tuple[str, str]) -> tuple[str, list[str]]:
+        sha, sid = sha_sid_pair
+        files: list[str] = []
         for repo_path in repos:
             try:
                 proc = subprocess.run(
@@ -500,12 +507,19 @@ def _committed_files_for_sessions(
                 if not fname:
                     continue
                 try:
-                    abs_path = (repo_path / fname).resolve().as_posix()
+                    files.append((repo_path / fname).resolve().as_posix())
                 except (ValueError, OSError):
                     continue
-                result[sid].add(abs_path)
             # SHA found in this repo — stop probing other repos.
             break
+        return sid, files
+
+    result: dict[str, set[str]] = {sid: set() for sid in session_ids}
+    sha_pairs = list(sha_to_sid.items())
+    if sha_pairs:
+        with ThreadPoolExecutor(max_workers=min(8, len(sha_pairs))) as pool:
+            for sid, files in pool.map(_resolve_sha, sha_pairs):
+                result[sid].update(files)
     return result
 
 
