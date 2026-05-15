@@ -547,6 +547,69 @@ def test_card_renders_both_start_and_end_timestamps(chats_js: str) -> None:
     assert "chat-card-time-label" in body
 
 
+def test_toolbar_groups_widgets_for_responsive_collapse(
+    panel_html: str, styles_text: str,
+) -> None:
+    """The toolbar must split its widgets into two semantic groups
+    (search group + filter group) so the responsive breakpoints can
+    stack ROWS instead of every-widget-on-its-own-line.
+
+    Group 1 (.chats-toolbar-search-group): scopes what to find —
+        global search input, search-method picker, project filter.
+    Group 2 (.chats-toolbar-filter-group): scopes the rendering —
+        sort, days, Advanced.
+    """
+    # Both group elements exist.
+    assert "chats-toolbar-search-group" in panel_html
+    assert "chats-toolbar-filter-group" in panel_html
+
+    # Each widget lives inside the right group. Cheap source-order
+    # test: each group div opens, then encloses the widget IDs we
+    # expect, before the next group opens.
+    search_start = panel_html.find("chats-toolbar-search-group")
+    filter_start = panel_html.find("chats-toolbar-filter-group")
+    assert 0 < search_start < filter_start, (
+        "search group must precede filter group in source order"
+    )
+
+    # Widgets that BELONG to the search group:
+    for el in ("chats-global-search", "chats-search-method",
+               "chats-project-filter"):
+        idx = panel_html.find('id="' + el + '"')
+        assert search_start < idx < filter_start, (
+            f"#{el} must live inside .chats-toolbar-search-group"
+        )
+
+    # Widgets that BELONG to the filter group:
+    for el in ("chats-sort", "chats-days", "chats-advanced-toggle"):
+        idx = panel_html.find('id="' + el + '"')
+        assert idx > filter_start, (
+            f"#{el} must live inside .chats-toolbar-filter-group"
+        )
+
+    # CSS: tiered breakpoints actually exist.
+    if styles_text:
+        # The 768px column-collapse (which caused the every-widget-
+        # on-its-own-line bug) MUST be gone.
+        assert re.search(
+            r"@media \(max-width: 768px\) \{[^}]*\.chats-toolbar \{",
+            styles_text,
+        ) is None, (
+            "the 768px column-collapse rule was the bug — must be "
+            "replaced by tiered group-stacking breakpoints"
+        )
+        # Tier 1 (medium, ~900px): stack the two groups.
+        assert re.search(
+            r"@media \(max-width: 900px\)", styles_text,
+        ) is not None
+        # Tier 2 (narrow, ~500px): break the input out of its group.
+        assert re.search(
+            r"@media \(max-width: 500px\)", styles_text,
+        ) is not None
+        # The legacy spacer must be removed from the HTML.
+        assert "chats-toolbar-spacer" not in panel_html
+
+
 def test_card_shows_full_session_id_in_monospace(
     chats_js: str, styles_text: str,
 ) -> None:

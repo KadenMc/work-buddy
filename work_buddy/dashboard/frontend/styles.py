@@ -2121,8 +2121,10 @@ body {
     .cp-modal { width: 95vw; }
     .thread-split-layout { flex-direction: column; }
     .thread-split-layout > .thread-chat-pane { width: 100%; border-left: none; border-top: 1px solid var(--border); }
-    .chats-toolbar { flex-direction: column; align-items: stretch; }
-    .chats-toolbar-spacer { display: none; }
+    /* Mobile-side chats-toolbar adjustments live alongside the
+       graceful breakpoints defined below (~900px / ~500px); the
+       768px column-collapse that used to live here made every widget
+       take its own line and was the bug the user flagged. */
 }
 
 /* -- Chats tab --------------------------------------------------------- */
@@ -2209,12 +2211,50 @@ body {
 }
 /* Single-pane Chats layout. The toolbar stays put across both views;
    the content area swaps between list and viewer with a short
-   cross-fade. */
+   cross-fade.
+
+   Responsive collapse tiers:
+     - wide   (>= 901px):  one row.  Search group flex-grows to fill;
+                           filter group anchors right.
+     - medium (501-900px): two rows. Groups stack vertically, each
+                           still a single horizontal row of widgets.
+     - narrow (<= 500px):  three rows. The search INPUT (which is
+                           the widest single widget) breaks to its
+                           own row above the search-method + repo. */
 .chats-toolbar {
     display: flex; gap: 8px; align-items: center;
     margin-bottom: 12px; flex-wrap: wrap;
 }
-.chats-toolbar-spacer { flex: 1; }
+.chats-toolbar-group {
+    display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+}
+/* Search group is the load-bearing one — takes the remaining
+   horizontal space on wide layouts; on medium it spans the full
+   toolbar width and the filter group wraps below. */
+.chats-toolbar-search-group {
+    flex: 1 1 auto; min-width: 0;
+}
+.chats-toolbar-filter-group {
+    flex: 0 0 auto;
+}
+/* Medium: stack the two groups vertically. Each group keeps its own
+   horizontal row so we get two clean rows instead of every-widget-
+   on-its-own-line. The 900px ceiling is roughly where a single row
+   of all six widgets actually starts overflowing in practice. */
+@media (max-width: 900px) {
+    .chats-toolbar { flex-direction: column; align-items: stretch; }
+    .chats-toolbar-group { width: 100%; }
+}
+/* Narrow: the search INPUT alone is wide enough that pairing it
+   with [method] + [repo] on a single row is still cramped. Let it
+   span the full row, then [method] + [repo] sit on the row below.
+   Filter group (sort/days/Advanced) keeps wrapping naturally as its
+   own row(s). */
+@media (max-width: 500px) {
+    .chats-toolbar-search-group .chats-search-input-wrap {
+        flex-basis: 100%;
+    }
+}
 .chats-advanced-toggle {
     cursor: pointer;
 }

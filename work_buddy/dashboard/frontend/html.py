@@ -295,50 +295,66 @@ def _html() -> str:
          filter (multi-repo users scan their work by repo constantly).
          Pure pills (has_commits, has_unfinished) live under Advanced
          since they're rarely-used power-user filters. -->
+    <!-- Toolbar split into two semantic groups so the responsive
+         collapse is graceful instead of every-widget-on-its-own-line.
+         The "search" group is everything that scopes WHAT to find;
+         the "filter" group is everything that scopes the rendering.
+
+         Wide (>= 901px):   both groups on one row, search group
+                            takes the available space, filter group
+                            anchors right.
+         Medium (~500-900): groups stack vertically — search group
+                            on row 1, filter group on row 2.
+         Narrow (< 500px):  the search input itself breaks to its
+                            own row above the search-method + repo,
+                            so we get three rows total. -->
     <div class="chats-toolbar">
-        <!-- Search input with a subtle inline send affordance pinned
-             to the right edge. The button shares a parent so it
-             absolute-positions inside the input's frame; it's
-             tooltip-only labeled on hover ("Send · Enter") to avoid
-             cluttering the toolbar with another full-size widget.
-             The 1500ms as-you-type debounce + Enter still fire the
-             same chatsGlobalSearch() — the send button is a third
-             redundant path that exists purely as a discoverability
-             affordance for the live-search behavior. -->
-        <div class="chats-search-input-wrap">
-            <input type="text" id="chats-global-search" class="chats-search-input"
-                   placeholder="Search or filter the chats below..." />
-            <button class="chats-search-send" id="chats-search-send"
-                    onclick="chatsGlobalSearch()" aria-label="Search"
-                    data-tooltip="Send · Enter">↵</button>
+        <div class="chats-toolbar-group chats-toolbar-search-group">
+            <!-- Search input with a subtle inline send affordance pinned
+                 to the right edge. The button shares a parent so it
+                 absolute-positions inside the input's frame; it's
+                 tooltip-only labeled on hover ("Send · Enter") to avoid
+                 cluttering the toolbar with another full-size widget.
+                 The 1500ms as-you-type debounce + Enter still fire the
+                 same chatsGlobalSearch() — the send button is a third
+                 redundant path that exists purely as a discoverability
+                 affordance for the live-search behavior. -->
+            <div class="chats-search-input-wrap">
+                <input type="text" id="chats-global-search" class="chats-search-input"
+                       placeholder="Search or filter the chats below..." />
+                <button class="chats-search-send" id="chats-search-send"
+                        onclick="chatsGlobalSearch()" aria-label="Search"
+                        data-tooltip="Send · Enter">↵</button>
+            </div>
+            <select id="chats-search-method" class="chats-select" onchange="chatsSearchMethodChanged(this.value)">
+                <option value="keyword,semantic">Hybrid</option>
+                <option value="keyword">Keyword</option>
+                <option value="semantic">Semantic</option>
+                <option value="substring">Exact match</option>
+            </select>
+            <select id="chats-project-filter" class="chats-select chats-project-select"
+                    onchange="chatsProjectFilterChanged(this.value)">
+                <option value="">All repos</option>
+            </select>
         </div>
-        <select id="chats-search-method" class="chats-select" onchange="chatsSearchMethodChanged(this.value)">
-            <option value="keyword,semantic">Hybrid</option>
-            <option value="keyword">Keyword</option>
-            <option value="semantic">Semantic</option>
-            <option value="substring">Exact match</option>
-        </select>
-        <select id="chats-project-filter" class="chats-select chats-project-select"
-                onchange="chatsProjectFilterChanged(this.value)">
-            <option value="">All repos</option>
-        </select>
-        <span class="chats-toolbar-spacer"></span>
-        <select id="chats-sort" class="chats-select" onchange="applyChatsFiltersAndSort()">
-            <option value="recent">Most Recent</option>
-            <option value="longest">Longest Duration</option>
-            <option value="most-messages">Most Messages</option>
-            <option value="most-commits">Most Commits</option>
-            <option value="most-recent-commit">Most Recent Commit</option>
-        </select>
-        <select id="chats-days" class="chats-select">
-            <option value="7">7 days</option>
-            <option value="14">14 days</option>
-            <option value="30" selected>30 days</option>
-            <option value="60">60 days</option>
-            <option value="0">All time</option>
-        </select>
-        <button class="chats-select chats-advanced-toggle" id="chats-advanced-toggle"
-                onclick="chatsToggleAdvanced()">Advanced ▾</button>
+        <div class="chats-toolbar-group chats-toolbar-filter-group">
+            <select id="chats-sort" class="chats-select" onchange="applyChatsFiltersAndSort()">
+                <option value="recent">Most Recent</option>
+                <option value="longest">Longest Duration</option>
+                <option value="most-messages">Most Messages</option>
+                <option value="most-commits">Most Commits</option>
+                <option value="most-recent-commit">Most Recent Commit</option>
+            </select>
+            <select id="chats-days" class="chats-select">
+                <option value="7">7 days</option>
+                <option value="14">14 days</option>
+                <option value="30" selected>30 days</option>
+                <option value="60">60 days</option>
+                <option value="0">All time</option>
+            </select>
+            <button class="chats-select chats-advanced-toggle" id="chats-advanced-toggle"
+                    onclick="chatsToggleAdvanced()">Advanced ▾</button>
+        </div>
     </div>
 
     <!-- Advanced filters expander (collapsed by default). Holds only
