@@ -396,22 +396,22 @@ def test_snippet_renderer_centers_on_first_match(chats_js: str) -> None:
 
 
 def test_viewer_mode_class_toggles_on_select_and_close(chats_js: str) -> None:
-    """selectChat must add `.chats-tab--viewer` to #panel-chats; closeChat
-    must remove it. That class is the CSS hook that hides the toolbar
-    so the chat-detail view doesn't get a stale "find a different chat"
-    bar sitting on top of it.
+    """selectChat must enter viewer mode via the shared helper (which
+    adds `.chats-tab--viewer`); closeChat must remove it. That class
+    is the CSS hook that hides the toolbar so the chat-detail view
+    doesn't get a stale "find a different chat" bar sitting on top of
+    it.
     """
-    # selectChat side.
+    # selectChat side — funnels through the shared helper.
     m_sel = re.search(
         r"async function selectChat\(sessionId\)\s*\{(.*?)^\}",
         chats_js,
         re.DOTALL | re.MULTILINE,
     )
     assert m_sel is not None
-    assert "chats-tab--viewer" in m_sel.group(1)
-    assert "classList.add('chats-tab--viewer')" in m_sel.group(1)
+    assert "_chatsEnterViewerMode" in m_sel.group(1)
 
-    # closeChat side.
+    # closeChat side: removes the class directly (one place).
     m_close = re.search(
         r"function closeChat\(\)\s*\{(.*?)^\}",
         chats_js,
@@ -521,6 +521,10 @@ def test_card_renders_both_start_and_end_timestamps(chats_js: str) -> None:
     """Every card must surface both timestamps — when the chat was
     created (start_time) AND when it was last active (end_time) — so
     the user can disambiguate at-a-glance which is which.
+
+    Labels: "Last" (end_time) + "Started" (start_time). "Last" was
+    chosen over "Active" after the user noted "Last" reads more
+    clearly for a datetime — "Active" implied a status/state.
     """
     m = re.search(
         r"function renderChatCard\(c, searchHit\)\s*\{(.*?)^\}",
@@ -532,10 +536,13 @@ def test_card_renders_both_start_and_end_timestamps(chats_js: str) -> None:
     # Both timestamps are passed through formatTimestamp().
     assert "c.end_time" in body
     assert "c.start_time" in body
-    # Each timestamp is labeled (Active / Started) so the user doesn't
+    # Each timestamp is labeled (Last / Started) so the user doesn't
     # have to guess which is which.
-    assert "Active" in body
-    assert "Started" in body
+    assert ">Last</span>" in body, (
+        "card timestamp label must read 'Last' (not 'Active' — that "
+        "was reverted per user feedback)"
+    )
+    assert ">Started</span>" in body
     # CSS hook for the labels is present.
     assert "chat-card-time-label" in body
 
@@ -552,3 +559,143 @@ def test_date_buckets_key_on_end_time(chats_js: str) -> None:
     assert m is not None
     body = m.group(1)
     assert "_chatsBucketLabel(c.end_time" in body
+
+
+# ---------------------------------------------------------------------------
+# Explicit Search button + extended debounce
+# ---------------------------------------------------------------------------
+
+
+def test_search_button_renders_in_toolbar(panel_html: str) -> None:
+    """Explicit Search button MUST sit in the cross-session toolbar
+    next to the global-search input. The user wants it back — pure
+    debounce-only was too implicit.
+    """
+    assert 'id="chats-search-btn"' in panel_html
+    assert "onclick=\"chatsGlobalSearch()\"" in panel_html
+    # Source-order proximity: the Search button appears immediately
+    # after the global search input (within ~300 chars), so they
+    # render adjacent in the toolbar.
+    input_idx = panel_html.find('id="chats-global-search"')
+    btn_idx = panel_html.find('id="chats-search-btn"')
+    assert input_idx > 0 and btn_idx > input_idx, (
+        "Search button must follow the global-search input in the toolbar"
+    )
+    # Distance bound is loose — the inline comment between input and
+    # button consumes a few hundred chars. 800 keeps the assertion
+    # honest (button MUST be inside the toolbar, not in #chats-advanced
+    # ~5000 chars later) without being brittle.
+    assert (btn_idx - input_idx) < 800, (
+        "Search button should be adjacent to the search input, not "
+        "across the toolbar"
+    )
+
+
+def test_search_debounce_relaxed(chats_js: str) -> None:
+    """600ms felt too eager (fired mid-typing). 1500ms is the new
+    floor — long enough that a natural typing pause doesn't trigger
+    a stale-prefix search.
+    """
+    m = re.search(
+        r"const CHATS_SEARCH_DEBOUNCE_MS = (\d+);", chats_js,
+    )
+    assert m is not None, "CHATS_SEARCH_DEBOUNCE_MS constant missing"
+    delay = int(m.group(1))
+    assert delay >= 1000, (
+        f"as-you-type debounce ({delay}ms) must be >= 1000ms — anything "
+        "shorter fires on natural typing pauses and confuses the user"
+    )
+
+
+# ---------------------------------------------------------------------------
+# "Outside days window" hint must NOT show when user is on All time
+# ---------------------------------------------------------------------------
+
+
+def test_outside_window_hint_suppressed_on_all_time(chats_js: str) -> None:
+    """The "show All time" hint is meaningless when the user is
+    already on All time (days=0). Show it ONLY when days > 0.
+
+    Otherwise the user sees "8 more outside the current days window"
+    while already at the widest window — confusing and looks like a
+    bug.
+    """
+    # Locate the renderChatList body so we can scope the assertion.
+    m = re.search(
+        r"function renderChatList\(\)\s*\{(.*?)^\}",
+        chats_js,
+        re.DOTALL | re.MULTILINE,
+    )
+    assert m is not None
+    body = m.group(1)
+    # The hint is gated on an "onAllTime" check that's only true when
+    # the days dropdown is 0.
+    assert "onAllTime" in body
+    assert "daysVal === 0" in body or "daysVal == 0" in body
+    # Concretely: the conditional must reference onAllTime.
+    cond = re.search(
+        r"if \(hiddenByWindow > 0 && !onAllTime\)", body,
+    )
+    assert cond is not None, (
+        "the 'outside days window' hint must be guarded with !onAllTime"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Every viewer-entry path must apply .chats-tab--viewer (toolbar-hide)
+# ---------------------------------------------------------------------------
+
+
+def test_shared_viewer_mode_helper_exists(chats_js: str) -> None:
+    """Every code path that opens the chat-detail view MUST route
+    through one shared helper that applies the .chats-tab--viewer
+    class. Bypassing the helper (as chatsJumpToHit did) leaves the
+    cross-session toolbar + pager visible on top of the viewer.
+    """
+    # Helper exists and adds the class.
+    m = re.search(
+        r"function _chatsEnterViewerMode\(opts\)\s*\{(.*?)^\}",
+        chats_js,
+        re.DOTALL | re.MULTILINE,
+    )
+    assert m is not None, "_chatsEnterViewerMode helper not found"
+    body = m.group(1)
+    assert "classList.add('chats-tab--viewer')" in body, (
+        "the shared helper is the one place that adds the viewer-mode "
+        "class"
+    )
+
+    # All three viewer-entry paths must call the helper.
+    for fn in ("selectChat", "chatsJumpToHit", "chatsJumpToCommitSearch"):
+        m = re.search(
+            r"async function " + re.escape(fn) + r"\([^)]*\)\s*\{(.*?)^\}",
+            chats_js,
+            re.DOTALL | re.MULTILINE,
+        )
+        assert m is not None, f"{fn} not found"
+        assert "_chatsEnterViewerMode" in m.group(1), (
+            f"{fn} must call _chatsEnterViewerMode (otherwise the "
+            ".chats-tab--viewer class isn't applied and the toolbar + "
+            "pager stay visible on top of the chat-detail view)"
+        )
+
+
+def test_viewer_entry_paths_do_not_manually_toggle_panel_class(
+    chats_js: str,
+) -> None:
+    """Belt-and-suspenders: only the shared helper should add the
+    .chats-tab--viewer class. If any other function adds it directly,
+    that's a sign someone bypassed the helper and is duplicating its
+    job (the original bug).
+    """
+    occurrences = re.findall(
+        r"classList\.add\('chats-tab--viewer'\)", chats_js,
+    )
+    # Exactly one — inside _chatsEnterViewerMode. closeChat does the
+    # opposite (.remove), which is counted separately.
+    assert len(occurrences) == 1, (
+        f"classList.add('chats-tab--viewer') appears {len(occurrences)}× "
+        "in chats.py; should be exactly once (inside "
+        "_chatsEnterViewerMode). Multiple call sites means the shared "
+        "helper is being bypassed."
+    )

@@ -298,6 +298,12 @@ def _html() -> str:
     <div class="chats-toolbar">
         <input type="text" id="chats-global-search" class="chats-search-input"
                placeholder="Search or filter the chats below..." />
+        <!-- Explicit Search button. Users who want immediate firing don't
+             have to wait for the as-you-type debounce; users who keep
+             typing get the debounce window. Both paths route through
+             chatsGlobalSearch(). -->
+        <button class="chats-select chats-search-btn" id="chats-search-btn"
+                onclick="chatsGlobalSearch()">Search</button>
         <select id="chats-search-method" class="chats-select" onchange="chatsSearchMethodChanged(this.value)">
             <option value="keyword,semantic">Hybrid</option>
             <option value="keyword">Keyword</option>

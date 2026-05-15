@@ -194,13 +194,22 @@ function renderChatList() {
     if (chatsState.searchActive) {
         var irHitCount = chatsState.searchSessionsByScore.length;
         // IR returns hits across the FULL conversation index; the
-        // listing is bounded by the current days window. When the IR
-        // hit count exceeds what's visible, hint the user toward
-        // widening the window so they don't think the engine missed
-        // older matches.
+        // listing is bounded by (a) the current days window AND (b)
+        // any active filter pills + project filter. When the IR hit
+        // count exceeds what's visible, surface the gap so the user
+        // doesn't think the engine missed matches.
+        //
+        // We can ONLY recommend "show All time" when the user isn't
+        // already there. If days=0 the hidden hits are unreachable via
+        // the days lever (they're filtered out by project / pill, or
+        // they reference sessions that aren't surfaced by /api/chats at
+        // all) — so we silently swallow the count rather than offering
+        // a misleading "show All time" link that won't help.
+        var daysVal = parseInt(document.getElementById('chats-days')?.value, 10);
+        var onAllTime = (daysVal === 0);
         var hiddenByWindow = Math.max(0, irHitCount - filteredTotal);
         var hint = '';
-        if (hiddenByWindow > 0) {
+        if (hiddenByWindow > 0 && !onAllTime) {
             hint = ' &middot; <span class="chats-search-hint">'
                 + hiddenByWindow + ' more outside the current days window — '
                 + '<a href="#" onclick="chatsExpandToAllTime();return false;">show All time</a>'
@@ -297,7 +306,7 @@ function renderChatCard(c, searchHit) {
         ? '<span class="wb-active-dot" title="Active in the last hour"></span>'
         : '';
 
-    // Both timestamps on every card. "Active" = most recent message
+    // Both timestamps on every card. "Last" = most recent message
     // (end_time, also the sort key for Most Recent). "Started" = first
     // message (when the chat was created). When the chat has only one
     // turn end_time === start_time so we omit the duplicate.
@@ -306,7 +315,7 @@ function renderChatCard(c, searchHit) {
     if (lastTs) {
         timeMetaHTML += '<span class="chat-card-time" title="Most recent message in this chat">'
             + activeDot
-            + '<span class="chat-card-time-label">Active</span> '
+            + '<span class="chat-card-time-label">Last</span> '
             + escapeHtml(formatTimestamp(lastTs))
             + '</span>';
     }
@@ -522,6 +531,33 @@ function renderChatBadges(c) {
     return '<div class="chat-card-badges">' + parts.join('') + '</div>';
 }
 
+/**
+ * Shared "enter viewer mode" helper. Every code path that opens the
+ * chat-detail view MUST funnel through here so the toolbar-hiding
+ * .chats-tab--viewer class is applied uniformly.
+ *
+ * Was a per-call-site duplication, which let the chunk-click and
+ * commit-search jump paths silently bypass the class — they hid the
+ * list element but left the toolbar + pager visible above the viewer.
+ *
+ * Pass opts.skipInSearchHide=true to preserve the in-chat search bar
+ * (the jump paths immediately re-show it with the carried query).
+ */
+function _chatsEnterViewerMode(opts) {
+    opts = opts || {};
+    var panel = document.getElementById('panel-chats');
+    if (panel) panel.classList.add('chats-tab--viewer');
+    document.getElementById('chats-list').style.display = 'none';
+    var viewer = document.getElementById('chats-viewer');
+    viewer.style.display = 'flex';
+    viewer.style.flexDirection = 'column';
+    viewer.style.flex = '1';
+    if (!opts.skipInSearchHide) {
+        document.getElementById('chats-in-search').style.display = 'none';
+    }
+    document.getElementById('chats-commits-bar').style.display = 'none';
+}
+
 async function selectChat(sessionId) {
     chatsState.selectedId = sessionId;
     _persistHash();
@@ -539,18 +575,10 @@ async function selectChat(sessionId) {
 
     // Single-pane swap: hide the listing + the cross-session toolbar
     // (search / filters / sort / Advanced), show the viewer at full
-    // width. The .chats-tab--viewer class on the panel triggers CSS
-    // that hides those toolbar pieces so the two views stay cleanly
-    // separated. URL hash already tracks selectedId so reload restores
-    // the same view.
-    var panel = document.getElementById('panel-chats');
-    if (panel) panel.classList.add('chats-tab--viewer');
-    document.getElementById('chats-list').style.display = 'none';
-    document.getElementById('chats-viewer').style.display = 'flex';
-    document.getElementById('chats-viewer').style.flexDirection = 'column';
-    document.getElementById('chats-viewer').style.flex = '1';
-    document.getElementById('chats-in-search').style.display = 'none';
-    document.getElementById('chats-commits-bar').style.display = 'none';
+    // width. _chatsEnterViewerMode owns the class + display toggles
+    // so jump-from-hit and jump-to-commit-search inherit the same
+    // hide-toolbar behavior.
+    _chatsEnterViewerMode();
     document.getElementById('chats-message-list').innerHTML = '<div class="loading">Loading messages...</div>';
 
     const [msgData, commitData, topicData, uncommittedData] = await Promise.all([
@@ -1206,10 +1234,9 @@ async function chatsJumpToCommitSearch(sessionId, messageIndex) {
         c.classList.toggle('active', c.dataset.sid === sessionId);
     });
 
-    document.getElementById('chats-list').style.display = 'none';
-    document.getElementById('chats-viewer').style.display = 'flex';
-    document.getElementById('chats-viewer').style.flexDirection = 'column';
-    document.getElementById('chats-viewer').style.flex = '1';
+    // Route through the shared helper so the .chats-tab--viewer class
+    // is applied — see _chatsEnterViewerMode for the rationale.
+    _chatsEnterViewerMode();
     document.getElementById('chats-message-list').innerHTML = '<div class="loading">Jumping to commit...</div>';
 
     var contextWindow = Math.floor(chatsState.limit / 2);
@@ -1281,10 +1308,12 @@ async function chatsJumpToHit(sessionId, spanIndex) {
         c.classList.toggle('active', c.dataset.sid === sessionId);
     });
 
-    document.getElementById('chats-list').style.display = 'none';
-    document.getElementById('chats-viewer').style.display = 'flex';
-    document.getElementById('chats-viewer').style.flexDirection = 'column';
-    document.getElementById('chats-viewer').style.flex = '1';
+    // Route through the shared helper so the .chats-tab--viewer class
+    // is applied — without it the cross-session toolbar + pager would
+    // stay visible on top of the chat-detail view. Pass
+    // skipInSearchHide because we're about to re-open the in-chat
+    // search bar with the carried query a few lines below.
+    _chatsEnterViewerMode({ skipInSearchHide: true });
     document.getElementById('chats-message-list').innerHTML = '<div class="loading">Jumping to result...</div>';
 
     // Carry the search query into the in-chat search bar
@@ -1683,14 +1712,22 @@ document.getElementById('chats-days')?.addEventListener('change', function() {
     if (typeof _persistHash === 'function') _persistHash();
 });
 
-// Debounced as-you-type search. Pressing Enter still fires immediately
-// (Enter handler runs first). Empty-string keystrokes clear the active
-// search instantly so the listing comes back without waiting for the
-// debounce window. AbortController cancels in-flight IR requests when a
-// new keystroke fires.
+// Debounced as-you-type search. Pressing Enter or clicking the
+// explicit "Search" button still fires immediately (Enter handler /
+// button onclick runs first and cancels the pending debounce).
+// Empty-string keystrokes clear the active search instantly so the
+// listing comes back without waiting for the debounce window.
+// AbortController cancels in-flight IR requests when a new keystroke
+// fires.
+//
+// 1500ms was chosen after the user noted 600ms felt too eager — long
+// enough that finger-pause-during-typing doesn't fire a stale prefix,
+// short enough that a deliberate pause does still trigger auto-search.
+// Power users who want immediate firing have the Enter key and the
+// Search button.
 var _chatsSearchDebounce = null;
 var _chatsInflightAbort = null;
-const CHATS_SEARCH_DEBOUNCE_MS = 600;
+const CHATS_SEARCH_DEBOUNCE_MS = 1500;
 
 function _chatsScheduleSearch() {
     if (_chatsSearchDebounce) clearTimeout(_chatsSearchDebounce);

@@ -2139,6 +2139,16 @@ body {
     border: 1px solid var(--border); border-radius: 6px;
     color: var(--text-secondary); font-size: 12px;
 }
+/* Explicit Search button — same chrome as the dropdowns so the
+   toolbar reads as one row, with a subtle accent on hover. */
+.chats-search-btn {
+    cursor: pointer; font-family: inherit;
+    transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.chats-search-btn:hover {
+    background: var(--bg-tertiary); color: var(--text-primary);
+    border-color: var(--accent);
+}
 .chats-project-select.active {
     border-color: var(--accent); color: var(--accent);
 }
