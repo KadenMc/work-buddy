@@ -326,10 +326,27 @@ function renderChatCard(c, searchHit) {
             + '</span>';
     }
 
+    // Top-row header: project tag (left) + full session UUID (right).
+    // Claude Code's --resume produces forked sessions with identical
+    // first messages and start_times — without the session_id chip,
+    // forks look like duplicates on the listing. The chip uses a
+    // monospace ("mechanical") font so the UUID reads as a literal
+    // identifier rather than prose.
+    var projectHTML = c.project_name
+        ? '<div class="chat-card-project" data-project="' + escapeHtml(c.project_name) + '"'
+            + ' title="Filter listing to this project">' + escapeHtml(c.project_name) + '</div>'
+        : '<div class="chat-card-project-placeholder"></div>';
+    var sidHTML = c.session_id
+        ? '<code class="chat-card-sid" title="Full Claude Code session ID — useful for distinguishing forks of the same conversation (--resume).">'
+            + escapeHtml(c.session_id) + '</code>'
+        : '';
+
     return '<div class="chat-card' + (c.session_id === chatsState.selectedId ? ' active' : '') + '"'
         + ' data-sid="' + c.session_id + '">'
-        + (c.project_name ? '<div class="chat-card-project" data-project="' + escapeHtml(c.project_name) + '"'
-            + ' title="Filter listing to this project">' + escapeHtml(c.project_name) + '</div>' : '')
+        + '<div class="chat-card-header-row">'
+        + projectHTML
+        + sidHTML
+        + '</div>'
         + '<div class="chat-card-title">' + title + '</div>'
         + '<div class="chat-card-meta">'
         + timeMetaHTML

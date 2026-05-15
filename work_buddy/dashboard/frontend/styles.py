@@ -2378,6 +2378,13 @@ body {
     background: var(--bg-tertiary);
     font-weight: 600;
 }
+/* Top-row header: project tag anchors left, session UUID anchors
+   right. Forked Claude Code sessions share first-message + start_time
+   so the UUID is the only at-a-glance differentiator. */
+.chat-card-header-row {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px; min-height: 18px;
+}
 .chat-card-project {
     font-size: 10px;
     color: var(--accent);
@@ -2390,9 +2397,31 @@ body {
     border-radius: 3px;
     cursor: pointer;
     transition: background 0.12s;
+    flex-shrink: 0;
 }
 .chat-card-project[data-project]:hover {
     background: var(--accent-subtle);
+}
+/* Holds the right-anchor space for the session-id when a card has
+   no project_name. Without it the session-id would slide to the
+   left edge on those cards. */
+.chat-card-project-placeholder { flex: 0 0 auto; }
+
+/* Monospace ("mechanical") session-id chip. Full UUID renders here
+   so forks of the same conversation are visually distinguishable.
+   Hover reveals the same string with a tooltip explainer. */
+.chat-card-sid {
+    font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo,
+                 Consolas, "Liberation Mono", monospace;
+    font-size: 10.5px; font-weight: 500;
+    color: var(--text-muted); letter-spacing: 0;
+    background: var(--bg-tertiary); border: 1px solid var(--border);
+    border-radius: 3px; padding: 2px 8px;
+    white-space: nowrap; user-select: all;  /* one-click copy */
+    transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.chat-card-sid:hover {
+    color: var(--text-primary); border-color: var(--accent);
 }
 .chat-card-badges {
     display: flex; gap: 12px; font-size: 12px;

@@ -547,6 +547,66 @@ def test_card_renders_both_start_and_end_timestamps(chats_js: str) -> None:
     assert "chat-card-time-label" in body
 
 
+def test_card_shows_full_session_id_in_monospace(
+    chats_js: str, styles_text: str,
+) -> None:
+    """Each card renders the full session UUID at the top-right in
+    a monospace ("mechanical") font. This is the at-a-glance
+    differentiator for forked Claude Code sessions, which share the
+    first-message + start_time but differ in session_id.
+
+    Without this, forks look like card duplicates (same project,
+    same title, same `Started`) and the user can't tell them apart
+    short of opening each one.
+    """
+    # Renderer emits a header row holding both project + sid chip.
+    m = re.search(
+        r"function renderChatCard\(c, searchHit\)\s*\{(.*?)^\}",
+        chats_js,
+        re.DOTALL | re.MULTILINE,
+    )
+    assert m is not None
+    body = m.group(1)
+    assert "chat-card-header-row" in body, (
+        "header-row container missing — project tag + session-id "
+        "anchor live on the same flex row"
+    )
+    assert "chat-card-sid" in body
+    # The chip wraps the FULL session_id (not the truncated short_id).
+    assert "c.session_id" in body and "<code" in body
+    # Not the short_id — that's a different field on the response.
+    sid_chunk = re.search(
+        r'class="chat-card-sid"[^>]*>[^<]*\+\s*escapeHtml\((c\.\w+)\)',
+        body,
+    )
+    assert sid_chunk is not None and sid_chunk.group(1) == "c.session_id", (
+        "session-id chip must render the FULL session_id (not short_id)"
+    )
+
+    # CSS: monospace font + the chip styling exist.
+    if styles_text:
+        m_css = re.search(
+            r"\.chat-card-sid\s*\{([^}]+)\}", styles_text,
+        )
+        assert m_css is not None
+        css_body = m_css.group(1)
+        assert "font-family" in css_body
+        assert "monospace" in css_body, (
+            "session-id chip MUST use a monospace font so the UUID "
+            "reads as a literal identifier"
+        )
+
+        # Header row uses flex with space-between so project anchors
+        # left and the sid chip anchors right.
+        m_row = re.search(
+            r"\.chat-card-header-row\s*\{([^}]+)\}", styles_text,
+        )
+        assert m_row is not None
+        row_body = m_row.group(1)
+        assert "display: flex" in row_body
+        assert "space-between" in row_body
+
+
 def test_date_buckets_key_on_end_time(chats_js: str) -> None:
     """The day-group headers must bucket cards by end_time (last
     activity) so the headers actually correspond to the sort key.
