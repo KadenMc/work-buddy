@@ -2121,20 +2121,62 @@ body {
     .cp-modal { width: 95vw; }
     .thread-split-layout { flex-direction: column; }
     .thread-split-layout > .thread-chat-pane { width: 100%; border-left: none; border-top: 1px solid var(--border); }
-    .chats-layout { flex-direction: column; }
-    .chats-list-panel { flex: none !important; max-height: 250px; }
+    /* Mobile-side chats-toolbar adjustments live alongside the
+       graceful breakpoints defined below (~900px / ~500px); the
+       768px column-collapse that used to live here made every widget
+       take its own line and was the bug the user flagged. */
 }
 
 /* -- Chats tab --------------------------------------------------------- */
 
-.chats-search-bar { display: flex; gap: 8px; margin-bottom: 16px; }
+/* Search-input + inline send-button wrapper. The wrapper flexes
+   like the bare input did (`flex: 1`), and the input fills it;
+   the send button absolute-positions to the right edge inside the
+   input's frame so it reads as part of the input, not a separate
+   toolbar widget. */
+.chats-search-input-wrap {
+    position: relative; flex: 1; display: flex;
+}
 .chats-search-input {
-    flex: 1; padding: 10px 14px;
+    flex: 1; padding: 10px 40px 10px 14px;  /* right-pad for the send btn */
     background: var(--bg-secondary); border: 1px solid var(--border);
     border-radius: 6px; color: var(--text-primary);
     font-size: 14px; font-family: inherit;
 }
 .chats-search-input:focus { outline: none; border-color: var(--accent); }
+/* Inline send affordance. Subtle in default state; muted-text on
+   the input background. Hovers brighter + accent border. The
+   tooltip uses a CSS-only data-tooltip pattern so we don't pull
+   any tooltip lib. */
+.chats-search-send {
+    position: absolute; top: 50%; right: 4px;
+    transform: translateY(-50%);
+    width: 28px; height: 28px;
+    display: inline-flex; align-items: center; justify-content: center;
+    background: transparent; border: 1px solid transparent;
+    border-radius: 4px;
+    color: var(--text-muted); font-size: 14px; line-height: 1;
+    cursor: pointer; font-family: inherit;
+    transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.chats-search-send:hover {
+    background: var(--bg-tertiary); color: var(--accent);
+    border-color: var(--border);
+}
+/* Hover tooltip — appears above the button. Single-line, dark
+   background, small. */
+.chats-search-send[data-tooltip]::after {
+    content: attr(data-tooltip);
+    position: absolute; bottom: calc(100% + 6px); right: 0;
+    background: var(--bg-tertiary); color: var(--text-primary);
+    border: 1px solid var(--border); border-radius: 4px;
+    padding: 4px 8px; font-size: 11px; white-space: nowrap;
+    opacity: 0; pointer-events: none;
+    transition: opacity 0.15s 0.3s;  /* small delay so hover doesn't flash */
+}
+.chats-search-send[data-tooltip]:hover::after {
+    opacity: 1;
+}
 .chats-select {
     padding: 8px 10px; background: var(--bg-secondary);
     border: 1px solid var(--border); border-radius: 6px;
@@ -2167,31 +2209,522 @@ body {
     display: -webkit-box; -webkit-line-clamp: 3;
     -webkit-box-orient: vertical; overflow: hidden;
 }
-.chats-layout { display: flex; gap: 16px; min-height: 600px; }
-.chats-list-panel { flex: 0 0 340px; overflow-y: auto; max-height: 80vh; }
-.chats-viewer-panel { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-.chats-list-toolbar { display: flex; gap: 8px; margin-bottom: 12px; }
+/* Single-pane Chats layout. The toolbar stays put across both views;
+   the content area swaps between list and viewer with a short
+   cross-fade.
+
+   Responsive collapse tiers:
+     - wide   (>= 901px):  one row.  Search group flex-grows to fill;
+                           filter group anchors right.
+     - medium (501-900px): two rows. Groups stack vertically, each
+                           still a single horizontal row of widgets.
+     - narrow (<= 500px):  three rows. The search INPUT (which is
+                           the widest single widget) breaks to its
+                           own row above the search-method + repo. */
+.chats-toolbar {
+    display: flex; gap: 8px; align-items: center;
+    margin-bottom: 12px; flex-wrap: wrap;
+}
+.chats-toolbar-group {
+    display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+}
+/* Search group is the load-bearing one — takes the remaining
+   horizontal space on wide layouts; on medium it spans the full
+   toolbar width and the filter group wraps below. */
+.chats-toolbar-search-group {
+    flex: 1 1 auto; min-width: 0;
+}
+.chats-toolbar-filter-group {
+    flex: 0 0 auto;
+}
+/* Medium: stack the two groups vertically. Each group keeps its own
+   horizontal row so we get two clean rows instead of every-widget-
+   on-its-own-line. The 900px ceiling is roughly where a single row
+   of all six widgets actually starts overflowing in practice. */
+@media (max-width: 900px) {
+    .chats-toolbar { flex-direction: column; align-items: stretch; }
+    .chats-toolbar-group { width: 100%; }
+}
+/* Narrow: the search INPUT alone is wide enough that pairing it
+   with [method] + [repo] on a single row is still cramped. Let it
+   span the full row, then [method] + [repo] sit on the row below.
+   Filter group (sort/days/Advanced) keeps wrapping naturally as its
+   own row(s). */
+@media (max-width: 500px) {
+    .chats-toolbar-search-group .chats-search-input-wrap {
+        flex-basis: 100%;
+    }
+}
+.chats-advanced-toggle {
+    cursor: pointer;
+}
+.chats-advanced-toggle.expanded {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+.chats-advanced-panel {
+    margin-bottom: 12px;
+    padding: 10px 12px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+}
+.chats-filter-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+.chats-filter-label {
+    font-size: 11px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+.chats-filter-divider {
+    width: 1px;
+    height: 20px;
+    background: var(--border);
+    margin: 0 4px;
+}
+.chats-filter-spacer { flex: 1; }
+.chats-filter-pill {
+    padding: 4px 12px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    color: var(--text-secondary);
+    font-size: 12px;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.chats-filter-pill:hover {
+    color: var(--text-primary);
+    border-color: var(--accent);
+}
+.chats-filter-pill.active {
+    background: var(--accent-subtle);
+    border-color: var(--accent);
+    color: var(--accent);
+}
+.chats-filter-reset {
+    margin-left: auto;
+    color: var(--text-muted);
+    font-style: italic;
+}
+.chats-content {
+    position: relative;
+    min-height: 600px;
+    display: flex;
+    flex-direction: column;
+}
+.chats-list-fullwidth {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    width: 100%;
+    transition: opacity 180ms ease;
+}
+/* Sticky-ish day-bucket header inside the listing — small,
+   uppercase, muted. Renders only when sort=recent so adjacent cards
+   genuinely cluster by time. */
+.chats-day-header {
+    font-size: 11px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding: 12px 4px 4px 4px;
+    margin-top: 4px;
+    border-bottom: 1px solid var(--border);
+    font-weight: 600;
+}
+.chats-day-header:first-child {
+    margin-top: 0;
+    padding-top: 0;
+}
+.chats-viewer-fullwidth {
+    display: none;        /* JS toggles between flex and none */
+    flex-direction: column;
+    flex: 1;
+    width: 100%;
+    transition: opacity 180ms ease;
+}
+/* Back-to-list bar — replaces the old floating-X close button. Sits
+   above the viewer header so the "back" affordance never overlaps the
+   role-filter buttons on the right edge of the header. */
+.chats-viewer-backbar {
+    display: flex; align-items: center; padding: 0 0 8px 0;
+}
+.chats-back-btn {
+    background: var(--bg-secondary); border: 1px solid var(--border);
+    color: var(--text-secondary); padding: 6px 14px; font-size: 12px;
+    border-radius: 6px; cursor: pointer; font-family: inherit;
+    display: inline-flex; align-items: center; gap: 6px;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.chats-back-btn:hover {
+    background: var(--bg-tertiary); color: var(--text-primary);
+    border-color: var(--accent);
+}
+.chats-back-icon {
+    font-size: 16px; line-height: 1; color: var(--accent);
+}
+/* Two-view discipline: when the chat-detail viewer is open, hide the
+   cross-session toolbar (search box + filters + sort + days + Advanced)
+   AND the Advanced panel. The two views serve different jobs and the
+   tools for "find a chat" do not belong on top of "read this chat". */
+.chats-tab--viewer .chats-toolbar,
+.chats-tab--viewer .chats-advanced-panel,
+.chats-tab--viewer #chats-pager {
+    display: none !important;
+}
 .chat-card {
-    padding: 12px; margin-bottom: 4px; border-radius: 6px;
+    padding: 16px; border-radius: 8px;
     cursor: pointer; border: 1px solid var(--border);
     background: var(--bg-secondary);
     transition: background 0.15s, border-color 0.15s;
+    display: flex; flex-direction: column; gap: 8px;
+    width: 100%;
 }
 .chat-card:hover { background: var(--bg-tertiary); }
 .chat-card.active { background: var(--bg-tertiary); border-color: var(--accent); }
+/* Keyboard focus (j/k/arrows). Distinct from .active (selected) — a
+   focused card is just the cursor's current position, while active
+   means "this chat is currently open in the viewer". */
+.chat-card.focused {
+    box-shadow: inset 3px 0 0 var(--accent);
+}
 .chat-card-title {
-    font-size: 13px; font-weight: 500; color: var(--text-primary);
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-size: 15px; font-weight: 500; color: var(--text-primary);
+    line-height: 1.4;
+    /* Allow up to 3 lines of tldr (or first-message fallback). */
+    display: -webkit-box; -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical; overflow: hidden;
 }
 .chat-card-meta {
     display: flex; gap: 12px; font-size: 11px;
-    color: var(--text-muted); margin-top: 4px;
+    color: var(--text-muted); align-items: center; flex-wrap: wrap;
+}
+/* Each timestamp on the card carries a tiny label ("Active" /
+   "Started") so a glance distinguishes "last activity" from "chat
+   creation" without making the user hover for a tooltip. */
+.chat-card-time {
+    display: inline-flex; align-items: center; gap: 5px;
+}
+.chat-card-time-label {
+    font-size: 9px; text-transform: uppercase; letter-spacing: 0.5px;
+    color: var(--text-muted); opacity: 0.7;
+    padding: 1px 5px; border-radius: 3px;
+    background: var(--bg-tertiary);
+    font-weight: 600;
+}
+/* Top-row header: project tag anchors left, session UUID anchors
+   right. Forked Claude Code sessions share first-message + start_time
+   so the UUID is the only at-a-glance differentiator. */
+.chat-card-header-row {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px; min-height: 18px;
 }
 .chat-card-project {
-    font-size: 10px; color: var(--accent); font-weight: 600;
-    text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 2px;
+    font-size: 10px;
+    color: var(--accent);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    display: inline-block;
+    padding: 2px 6px;
+    margin-left: -6px;  /* visual alignment with title left-edge */
+    border-radius: 3px;
+    cursor: pointer;
+    transition: background 0.12s;
+    flex-shrink: 0;
 }
-.chat-card-tools { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+.chat-card-project[data-project]:hover {
+    background: var(--accent-subtle);
+}
+/* Holds the right-anchor space for the session-id when a card has
+   no project_name. Without it the session-id would slide to the
+   left edge on those cards. */
+.chat-card-project-placeholder { flex: 0 0 auto; }
+
+/* Monospace ("mechanical") session-id chip. Full UUID renders here
+   so forks of the same conversation are visually distinguishable.
+   Hover reveals the same string with a tooltip explainer. */
+.chat-card-sid {
+    font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo,
+                 Consolas, "Liberation Mono", monospace;
+    font-size: 10.5px; font-weight: 500;
+    color: var(--text-muted); letter-spacing: 0;
+    background: var(--bg-tertiary); border: 1px solid var(--border);
+    border-radius: 3px; padding: 2px 8px;
+    white-space: nowrap; user-select: all;  /* one-click copy */
+    transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.chat-card-sid:hover {
+    color: var(--text-primary); border-color: var(--accent);
+    cursor: pointer;
+}
+/* "Copied!" flash on the SID chip — click flips the textContent to
+   "Copied!" for ~1.1s. The chip dons the accent color so the flash
+   is unmistakable even if it's brief. */
+.chat-card-sid.chat-card-sid--copied {
+    color: var(--accent); border-color: var(--accent);
+    background: var(--accent-subtle);
+}
+/* Disabled "Most Relevant" lock on the sort dropdown — looks
+   non-interactive but still readable; the hint comes from the
+   muted opacity. */
+.chats-select.chats-sort--locked {
+    opacity: 0.7; cursor: not-allowed;
+    border-color: var(--accent); color: var(--accent);
+}
+.chat-card-badges {
+    display: flex; gap: 12px; font-size: 12px;
+    color: var(--text-muted); align-items: center;
+}
+.chat-card-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    color: var(--text-muted);
+}
+/* Subtler than the banner — the warning glyph already signals
+   attention; loud color on every card was distracting. */
+.chat-card-badge.unfinished {
+    color: var(--text-muted);
+}
+
+/* In-card search-match snippets (search-active mode). Renders below
+   the badges as a compact list; each row is clickable to jump to that
+   span in the conversation. */
+.chat-card-chunks {
+    margin-top: 4px;
+    padding-top: 8px;
+    border-top: 1px dashed var(--border);
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+.chat-card-chunks-label {
+    font-size: 10px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 2px;
+}
+.chat-card-chunk {
+    padding: 6px 8px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+    color: var(--text-secondary);
+    line-height: 1.4;
+    transition: background 0.12s, border-color 0.12s;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.chat-card-chunk:hover {
+    background: var(--bg-secondary);
+    border-color: var(--accent);
+    color: var(--text-primary);
+}
+.chat-card-chunk .chunk-marker {
+    color: var(--accent);
+    font-weight: 600;
+    margin-right: 4px;
+}
+.chat-card-chunk .chunk-snippet {
+    font-family: var(--font-mono);
+    font-size: 11px;
+}
+.chat-card-chunk .chunk-snippet mark {
+    background: var(--accent-subtle);
+    color: var(--accent);
+    padding: 0 2px;
+    border-radius: 2px;
+    font-weight: 600;
+}
+.chat-card-chunks-more {
+    font-size: 11px;
+    color: var(--text-muted);
+    padding: 2px 8px;
+    font-style: italic;
+}
+
+/* Search-summary banner shown above the listing when search is active. */
+.chats-search-summary {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 14px;
+    margin-bottom: 8px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    border-radius: 6px;
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+.chats-search-summary em {
+    font-style: normal;
+    font-family: var(--font-mono);
+    color: var(--text-primary);
+}
+.chats-search-summary strong {
+    color: var(--text-primary);
+}
+.chats-search-hint {
+    color: var(--text-muted);
+    font-style: italic;
+}
+.chats-search-hint a {
+    color: var(--accent);
+    text-decoration: none;
+}
+.chats-search-hint a:hover {
+    text-decoration: underline;
+}
+.chats-clear-search-btn {
+    padding: 4px 12px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-secondary);
+    font-size: 12px;
+    cursor: pointer;
+    transition: color 0.12s, border-color 0.12s;
+}
+.chats-clear-search-btn:hover {
+    color: var(--accent);
+    border-color: var(--accent);
+}
+
+/* Legacy: kept as a defensive no-op selector in case any cached HTML
+   references it; the renderer no longer emits .chat-card-tools. */
+.chat-card-tools { display: none; }
+
+/* Chat-detail enrichments (PR 5 of the chats-dashboard plan). */
+.chats-tldr-line {
+    padding: 10px 16px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-top: none;
+    color: var(--text-secondary);
+    font-size: 13px;
+    line-height: 1.5;
+    font-style: italic;
+}
+.chats-uncommitted-banner {
+    background: var(--accent-subtle);
+    border: 1px solid var(--accent);
+    border-radius: 6px;
+    padding: 10px 14px;
+    margin: 8px 0;
+    color: var(--text-primary);
+    font-size: 13px;
+}
+.chats-uncommitted-banner .banner-header {
+    font-weight: 600;
+    color: var(--accent);
+    margin-bottom: 6px;
+}
+.chats-uncommitted-banner .banner-list {
+    margin: 0;
+    padding-left: 18px;
+    line-height: 1.7;
+}
+.chats-uncommitted-banner .banner-list code {
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+.chats-uncommitted-banner .banner-repo {
+    display: inline-block;
+    padding: 0 6px;
+    margin-right: 6px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    font-size: 11px;
+    color: var(--text-muted);
+}
+.chats-stream-wrapper {
+    display: flex;
+    gap: 12px;
+    flex: 1;
+    min-height: 0;
+}
+.chats-stream-wrapper .chats-messages {
+    flex: 1;
+    min-width: 0;
+}
+.chats-topic-rail {
+    flex: 0 0 220px;
+    overflow-y: auto;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-secondary);
+    padding: 8px;
+    max-height: 65vh;
+}
+.chats-topic-rail-title {
+    font-size: 10px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding: 4px 8px;
+    margin-bottom: 4px;
+    border-bottom: 1px solid var(--border);
+}
+.chats-topic-item {
+    padding: 6px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+    color: var(--text-secondary);
+    line-height: 1.4;
+    transition: background 0.12s;
+}
+.chats-topic-item:hover {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+}
+.chats-topic-item .topic-index {
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    font-size: 11px;
+}
+.chats-topic-item .topic-range {
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    float: right;
+}
+.chats-span-warning {
+    padding: 6px 12px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-left: 3px solid #B8860B;
+    border-radius: 4px;
+    color: var(--text-secondary);
+    font-size: 12px;
+    margin: 6px 0;
+}
+.commit-repo-tag {
+    display: inline-block;
+    padding: 0 6px;
+    margin-right: 4px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    font-size: 10px;
+    color: var(--text-muted);
+    text-transform: lowercase;
+    letter-spacing: 0.3px;
+}
 .chats-viewer-header {
     padding: 12px 16px; background: var(--bg-secondary);
     border: 1px solid var(--border); border-radius: 8px 8px 0 0;
@@ -2215,21 +2748,35 @@ body {
 .chats-in-search {
     padding: 8px 12px; background: var(--bg-secondary);
     border: 1px solid var(--border); border-top: none;
+    display: flex; flex-direction: column; gap: 8px;
+}
+/* Top row: input + Find + Close. Spans full width. */
+.chats-in-search-bar {
     display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
 }
-.chats-in-search input {
+.chats-in-search-bar input {
     flex: 1; min-width: 150px; padding: 6px 10px;
     background: var(--bg-tertiary); border: 1px solid var(--border);
     border-radius: 4px; color: var(--text-primary); font-size: 13px;
     font-family: inherit;
 }
-.chats-in-search input:focus { outline: none; border-color: var(--accent); }
-.chats-in-search button {
+.chats-in-search-bar input:focus { outline: none; border-color: var(--accent); }
+.chats-in-search-bar button {
     padding: 4px 12px; background: var(--bg-tertiary);
     border: 1px solid var(--border); border-radius: 4px;
     color: var(--text-secondary); font-size: 12px; cursor: pointer;
 }
-.chats-in-search button:hover { color: var(--text-primary); }
+.chats-in-search-bar button:hover { color: var(--text-primary); }
+/* Hits row: BELOW the input bar (not to the right of it). Wraps and
+   scrolls when there are many hits. */
+.chats-in-search-hits {
+    display: flex; flex-wrap: wrap; gap: 4px;
+    padding-top: 4px; border-top: 1px solid var(--border);
+    max-height: 120px; overflow-y: auto;
+}
+.chats-in-search-hits:empty {
+    display: none;   /* don't show the divider line when empty */
+}
 .chats-messages {
     border: 1px solid var(--border); border-top: none;
     border-radius: 0 0 8px 8px; padding: 16px;

@@ -995,10 +995,26 @@ def api_chats_search():
     top_k = request.args.get("top_k", 20, type=int)
     project = request.args.get("project", "").strip() or None
 
-    # Build metadata filter for project scoping — applied at the SQLite
-    # level in load_documents via json_extract, so BM25 only scores
-    # matching docs and results aren't starved by other-project dominance.
-    meta_filter = {"project_name": project} if project else None
+    # eligible_sids carries the dashboard's pill-filter outcome:
+    # "after applying my listing-mode filters, here are the session_ids
+    # I want the search to score within." Comma-separated. When
+    # present, the IR engine restricts its scoring corpus before
+    # applying top-K — filter-then-rank, the correct semantics for
+    # composing filters with relevance.
+    eligible_sids_raw = request.args.get("eligible_sids", "").strip()
+    eligible_sids: list[str] | None = None
+    if eligible_sids_raw:
+        eligible_sids = [s for s in eligible_sids_raw.split(",") if s]
+
+    # Build metadata filter. Project pre-filter applies in SQLite via
+    # json_extract; the eligible_sids pre-filter uses the new
+    # list-valued metadata_filter (one IN clause). Both compose with AND.
+    meta_filter: dict[str, Any] = {}
+    if project:
+        meta_filter["project_name"] = project
+    if eligible_sids is not None:
+        meta_filter["session_id"] = eligible_sids
+    meta_filter = meta_filter or None
 
     try:
         hits = ir_search(q, source="conversation", method=method, top_k=top_k,
@@ -1109,6 +1125,106 @@ def api_chat_commits(session_id: str):
         return jsonify({"error": str(exc)}), 404
     except Exception as exc:
         logger.exception("chat commits error")
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.get("/api/chats/<session_id>/topics")
+def api_chat_topics(session_id: str):
+    """Cached LLM topic summaries for a session.
+
+    Returns ``{topics: [...], tldr: str | None}``. Empty topics list +
+    ``tldr=None`` when the session hasn't been summarized (the LLM
+    summary feature is gated off by default). The dashboard hides its
+    topic-timeline rail entirely when topics is empty.
+    """
+    try:
+        from work_buddy.conversation_observability.summaries import (
+            query_session_summary,
+            query_topic_summaries,
+        )
+    except ImportError:
+        return jsonify({"topics": [], "tldr": None})
+
+    try:
+        topics = query_topic_summaries(session_id)
+        summary = query_session_summary(session_id)
+        tldr = None
+        if summary and summary.get("status") == "ok":
+            tldr = summary.get("tldr") or None
+        return jsonify({"topics": topics, "tldr": tldr})
+    except Exception as exc:
+        logger.exception("chat topics error")
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.get("/api/chats/<session_id>/uncommitted-files")
+def api_chat_uncommitted_files(session_id: str):
+    """Files this session wrote that are still dirty in git RIGHT NOW.
+
+    Distinct from the chat-card's ``unfinished_count`` badge (which
+    uses the stable historical signal). This endpoint answers the
+    actionable question — "what work from this session can I still
+    pick up?". Returns ``{files: [{path, basename, repo}], count: N}``.
+    Empty list when the session has no current-dirty files attached.
+    """
+    try:
+        from work_buddy.conversation_observability.db import get_connection
+        from work_buddy.conversation_observability.writes import (
+            _committed_files_for_sessions,
+        )
+        from work_buddy.config import load_config
+    except ImportError:
+        return jsonify({"files": [], "count": 0})
+
+    try:
+        cfg = load_config()
+        repos_root = Path(cfg["repos_root"]).resolve()
+    except Exception as exc:
+        return jsonify({"files": [], "count": 0, "error": str(exc)}), 200
+
+    try:
+        conn = get_connection()
+        try:
+            rows = conn.execute(
+                "SELECT file_path FROM session_file_writes "
+                "WHERE session_id = ? AND currently_dirty = 1 "
+                "ORDER BY write_timestamp DESC",
+                (session_id,),
+            ).fetchall()
+        finally:
+            conn.close()
+
+        # Drop files this session also committed itself — those aren't
+        # actually uncommitted, just dirty-again-after-commit due to
+        # later edits.
+        committed = _committed_files_for_sessions({session_id}, repos_root)
+        committed_set = committed.get(session_id, set())
+
+        root_str = repos_root.as_posix().rstrip("/") + "/"
+        files: list[dict[str, str]] = []
+        for r in rows:
+            fp = r["file_path"]
+            if fp in committed_set:
+                continue
+            repo = ""
+            rel_path = fp  # fallback: full path when not under repos_root
+            if fp.startswith(root_str):
+                rel = fp[len(root_str):]
+                parts = rel.split("/", 1)
+                if parts:
+                    repo = parts[0]
+                    # Path relative to the REPO root (drops both the
+                    # repos_root prefix and the repo name itself).
+                    rel_path = parts[1] if len(parts) > 1 else ""
+            files.append({
+                "path": fp,
+                "basename": Path(fp).name,
+                "rel_path": rel_path,
+                "repo": repo,
+            })
+        return jsonify({"files": files, "count": len(files)})
+    except Exception as exc:
+        logger.exception("chat uncommitted-files error")
         return jsonify({"error": str(exc)}), 500
 
 

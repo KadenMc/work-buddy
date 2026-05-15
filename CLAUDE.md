@@ -113,6 +113,7 @@ Every scope below is browsable with `mcp__work-buddy__wb_run("agent_docs", {"sco
 | `projects/` | Registry, observations, memory bank |
 | `journal/` | Daily note, sign-in, running notes, day planner |
 | `context/` | Collectors (git, chrome, calendar, obsidian, smart, datacore…), bundles, conversation search, session inspection, knowledge-store editing |
+| `conversation_observability/` | Durable session-attributed commits / writes / uncommitted-work / topic summaries derived from Claude Code JSONL sessions |
 | `obsidian/` | Bridge, vault writer, tasks plugin, datacore, smart ecosystem |
 | `vault/` | Vault-recon collector, investigation-agent directions, accept-loop |
 | `email/` | Thunderbird bridge, provider abstraction, email triage adapter |
@@ -149,6 +150,7 @@ work_buddy/                            # Python package
   knowledge/                           # Store, search index, query
   embedding/                           # Embedding service (localhost:5124)
   collectors/                          # Context collectors (git, obsidian, chrome, …)
+  conversation_observability/          # Durable session-derived activity DB (commits, writes, summaries)
   obsidian/                            # Bridge + plugin integrations
   email/                               # Email provider abstraction + Thunderbird bridge client
   notifications/                       # Human-in-the-loop surfaces

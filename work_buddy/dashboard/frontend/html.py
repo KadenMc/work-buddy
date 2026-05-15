@@ -290,71 +290,144 @@ def _html() -> str:
 
 <!-- CHATS -->
 <div class="tab-panel" id="panel-chats">
-    <!-- Global search bar -->
-    <div class="chats-search-bar">
-        <input type="text" id="chats-global-search" class="chats-search-input"
-               placeholder="Search across all chats..." />
-        <select id="chats-project-filter" class="chats-select chats-project-select"
-                onchange="chatsProjectFilterChanged(this.value)">
-            <option value="">All repos</option>
-        </select>
-        <select id="chats-search-method" class="chats-select" onchange="chatsSearchMethodChanged(this.value)">
-            <option value="keyword,semantic">Hybrid</option>
-            <option value="keyword">Keyword</option>
-            <option value="semantic">Semantic</option>
-            <option value="substring">Exact match</option>
-        </select>
-        <button class="chats-accent-btn" onclick="chatsGlobalSearch()">Search</button>
+    <!-- Toolbar: search + project + sort + window + Advanced toggle.
+         Project lives in the main toolbar because it's the most-used
+         filter (multi-repo users scan their work by repo constantly).
+         Pure pills (has_commits, has_unfinished) live under Advanced
+         since they're rarely-used power-user filters. -->
+    <!-- Toolbar split into two semantic groups so the responsive
+         collapse is graceful instead of every-widget-on-its-own-line.
+         The "search" group is everything that scopes WHAT to find;
+         the "filter" group is everything that scopes the rendering.
+
+         Wide (>= 901px):   both groups on one row, search group
+                            takes the available space, filter group
+                            anchors right.
+         Medium (~500-900): groups stack vertically — search group
+                            on row 1, filter group on row 2.
+         Narrow (< 500px):  the search input itself breaks to its
+                            own row above the search-method + repo,
+                            so we get three rows total. -->
+    <div class="chats-toolbar">
+        <div class="chats-toolbar-group chats-toolbar-search-group">
+            <!-- Search input with a subtle inline send affordance pinned
+                 to the right edge. The button shares a parent so it
+                 absolute-positions inside the input's frame; it's
+                 tooltip-only labeled on hover ("Send · Enter") to avoid
+                 cluttering the toolbar with another full-size widget.
+                 The 1500ms as-you-type debounce + Enter still fire the
+                 same chatsGlobalSearch() — the send button is a third
+                 redundant path that exists purely as a discoverability
+                 affordance for the live-search behavior. -->
+            <div class="chats-search-input-wrap">
+                <input type="text" id="chats-global-search" class="chats-search-input"
+                       placeholder="Search or filter the chats below..." />
+                <button class="chats-search-send" id="chats-search-send"
+                        onclick="chatsGlobalSearch()" aria-label="Search"
+                        data-tooltip="Send · Enter">↵</button>
+            </div>
+            <select id="chats-search-method" class="chats-select" onchange="chatsSearchMethodChanged(this.value)">
+                <option value="keyword,semantic">Hybrid</option>
+                <option value="keyword">Keyword</option>
+                <option value="semantic">Semantic</option>
+                <option value="substring">Exact match</option>
+            </select>
+            <select id="chats-project-filter" class="chats-select chats-project-select"
+                    onchange="chatsProjectFilterChanged(this.value)">
+                <option value="">All repos</option>
+            </select>
+        </div>
+        <div class="chats-toolbar-group chats-toolbar-filter-group">
+            <!-- Sort dropdown. "Most Relevant" only appears + auto-selects
+                 while a search is active (renderChatList overrides sort
+                 with doc_score in that mode). The dropdown is disabled
+                 in that state and restored to the user's prior choice
+                 when the search clears. -->
+            <select id="chats-sort" class="chats-select" onchange="applyChatsFiltersAndSort()">
+                <option value="recent">Most Recent</option>
+                <option value="longest">Longest Duration</option>
+                <option value="most-messages">Most Messages</option>
+                <option value="most-commits">Most Commits</option>
+                <option value="most-recent-commit">Most Recent Commit</option>
+                <option value="relevance" hidden>Most Relevant</option>
+            </select>
+            <select id="chats-days" class="chats-select">
+                <option value="7">7 days</option>
+                <option value="14">14 days</option>
+                <option value="30" selected>30 days</option>
+                <option value="60">60 days</option>
+                <option value="0">All time</option>
+            </select>
+            <button class="chats-select chats-advanced-toggle" id="chats-advanced-toggle"
+                    onclick="chatsToggleAdvanced()">Advanced ▾</button>
+        </div>
     </div>
 
-    <!-- Search results (hidden by default) -->
-    <div id="chats-search-results" class="chats-search-results" style="display:none;"></div>
-
-    <!-- Two-panel layout -->
-    <div class="chats-layout">
-        <!-- Left panel: chat list -->
-        <div class="chats-list-panel">
-            <div class="chats-list-toolbar">
-                <select id="chats-sort" class="chats-select">
-                    <option value="recent">Most Recent</option>
-                    <option value="longest">Longest Duration</option>
-                    <option value="most-messages">Most Messages</option>
-                </select>
-                <select id="chats-days" class="chats-select">
-                    <option value="7">7 days</option>
-                    <option value="14" selected>14 days</option>
-                    <option value="30">30 days</option>
-                    <option value="60">60 days</option>
-                </select>
-            </div>
-            <div id="chats-list"><div class="loading">Loading chats...</div></div>
+    <!-- Advanced filters expander (collapsed by default). Holds only
+         the rarely-used pure-predicate pills. Project + sort + window
+         are common enough to stay in the main toolbar. -->
+    <div id="chats-advanced" class="chats-advanced-panel" style="display:none;">
+        <div class="chats-filter-row">
+            <span class="chats-filter-label">Filter:</span>
+            <button class="chats-filter-pill" id="chats-pill-has-commits"
+                    onclick="chatsToggleFilter('has_commits')">Has commits</button>
+            <button class="chats-filter-pill" id="chats-pill-has-unfinished"
+                    onclick="chatsToggleFilter('has_unfinished')">Has unfinished work</button>
+            <span class="chats-filter-spacer"></span>
+            <button class="chats-filter-pill chats-filter-reset" id="chats-pill-reset"
+                    onclick="chatsResetFilters()" style="display:none;">Reset</button>
         </div>
+    </div>
 
-        <!-- Right panel: chat viewer -->
-        <div class="chats-viewer-panel">
-            <div class="chats-viewer-empty" id="chats-viewer-empty">
-                <div class="empty-state" style="margin-top:80px;">Select a chat to view the conversation</div>
+    <!-- Single-pane content area. Exactly one of #chats-list or
+         #chats-viewer is visible at a time; selecting a chat replaces
+         the list, the close button restores it.
+
+         Search results render INTO #chats-list (re-ranked + chunk
+         snippets per matching card) — there is no separate
+         search-results pane. -->
+
+    <div class="chats-content">
+        <div id="chats-list" class="chats-list-fullwidth">
+            <div class="loading">Loading chats...</div>
+        </div>
+        <!-- Numbered pager for the listing. Rendered by wbRenderPager
+             from core/pager.py — same component costs > sessions uses. -->
+        <div id="chats-pager" class="wb-pager"></div>
+
+        <div id="chats-viewer" class="chats-viewer-fullwidth" style="display:none;">
+            <!-- Back-to-list bar. Lives ABOVE the viewer header so the
+                 "x close" affordance doesn't overlap the role-filter
+                 buttons (User / Assistant / All) on the header's right
+                 edge. Click anywhere on the bar or hit Esc to return. -->
+            <div class="chats-viewer-backbar">
+                <button class="chats-back-btn" onclick="closeChat()"
+                        title="Back to chat list (Esc)">
+                    <span class="chats-back-icon">‹</span> Back to all chats
+                </button>
             </div>
-            <div id="chats-viewer" style="display:none;">
-                <div class="chats-viewer-header" id="chats-viewer-header"></div>
-                <!-- In-chat search (toggleable) -->
-                <div class="chats-in-search" id="chats-in-search" style="display:none;">
+            <div class="chats-viewer-header" id="chats-viewer-header"></div>
+            <!-- In-chat search (toggleable). The hits row sits BELOW
+                 the input + buttons (see styles.py: chats-in-search-hits
+                 has flex-basis:100% so it wraps to its own line). -->
+            <div class="chats-in-search" id="chats-in-search" style="display:none;">
+                <div class="chats-in-search-bar">
                     <input type="text" id="chats-in-search-input" placeholder="Search in this chat..." />
                     <button onclick="chatsInSessionSearch()">Find</button>
                     <button onclick="chatsCloseInSearch()">Close</button>
-                    <div id="chats-in-search-hits" style="display:flex;gap:4px;flex-wrap:wrap;"></div>
                 </div>
-                <!-- Commits bar -->
-                <div id="chats-commits-bar" style="display:none;"></div>
-                <!-- Message list -->
-                <div class="chats-messages" id="chats-messages">
-                    <div id="chats-load-earlier" style="display:none;">
-                        <button class="chats-load-more-btn" onclick="chatsLoadEarlier()">Load earlier messages</button>
-                    </div>
-                    <div id="chats-message-list"></div>
-                    <div id="chats-load-later" style="display:none;">
-                        <button class="chats-load-more-btn" onclick="chatsLoadLater()">Load more messages</button>
-                    </div>
+                <div id="chats-in-search-hits" class="chats-in-search-hits"></div>
+            </div>
+            <!-- Commits bar -->
+            <div id="chats-commits-bar" style="display:none;"></div>
+            <!-- Message list -->
+            <div class="chats-messages" id="chats-messages">
+                <div id="chats-load-earlier" style="display:none;">
+                    <button class="chats-load-more-btn" onclick="chatsLoadEarlier()">Load earlier messages</button>
+                </div>
+                <div id="chats-message-list"></div>
+                <div id="chats-load-later" style="display:none;">
+                    <button class="chats-load-more-btn" onclick="chatsLoadLater()">Load more messages</button>
                 </div>
             </div>
         </div>

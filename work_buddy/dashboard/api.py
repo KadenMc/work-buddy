@@ -718,11 +718,173 @@ def _resolve_repo_name(project_slug: str, fallback_name: str) -> str:
         return fallback_name
 
 
+def _load_observability_for_sessions(
+    session_ids: set[str],
+) -> dict[str, dict[str, Any]]:
+    """Batch-load observability fields for a set of session_ids.
+
+    Returns ``{session_id: {commit_count, unfinished_count,
+    commits_by_repo, latest_committed_at, tldr, has_writes}}``. Empty
+    dict for sessions with no rows in the conversation_observability
+    DB. Reads each backing table once (no per-session round trip),
+    then derives ``unfinished_count`` from the deduped commit-files
+    map (one ``git show --name-only`` per unique SHA, parallelized).
+
+    Falls back gracefully (returns ``{}``) if the
+    ``conversation_observability`` package is unavailable or the DB
+    isn't reachable; the caller can still render the legacy chat
+    fields.
+    """
+    if not session_ids:
+        return {}
+    try:
+        from work_buddy.conversation_observability.db import get_connection
+        from work_buddy.conversation_observability.writes import (
+            _committed_files_for_sessions,
+        )
+        from work_buddy.config import load_config
+    except Exception as exc:
+        logger.debug("conversation_observability unavailable: %s", exc)
+        return {}
+
+    sids = list(session_ids)
+    placeholders = ",".join(["?"] * len(sids))
+
+    try:
+        conn = get_connection()
+    except Exception as exc:
+        logger.debug("conversation_observability DB unreachable: %s", exc)
+        return {}
+
+    try:
+        commit_rows = conn.execute(
+            f"SELECT session_id, sha, repo_name, committed_at "
+            f"FROM session_commits WHERE session_id IN ({placeholders})",
+            sids,
+        ).fetchall()
+        write_rows = conn.execute(
+            f"SELECT session_id, file_path "
+            f"FROM session_file_writes WHERE session_id IN ({placeholders})",
+            sids,
+        ).fetchall()
+        summary_rows = conn.execute(
+            f"SELECT session_id, tldr FROM session_summaries "
+            f"WHERE session_id IN ({placeholders}) AND status = 'ok'",
+            sids,
+        ).fetchall()
+    finally:
+        conn.close()
+
+    # Aggregate commits per session.
+    commits_by_sid: dict[str, list[dict[str, Any]]] = {sid: [] for sid in sids}
+    for r in commit_rows:
+        commits_by_sid[r["session_id"]].append(dict(r))
+
+    # Aggregate writes per session.
+    writes_by_sid: dict[str, set[str]] = {sid: set() for sid in sids}
+    for r in write_rows:
+        writes_by_sid[r["session_id"]].add(r["file_path"])
+
+    # Resolve committed-files-per-session in one parallel pass.
+    # We also need ``repos_root`` later to infer per-session repo
+    # membership from the committed-file paths.
+    repos_root: Path | None = None
+    try:
+        cfg = load_config()
+        repos_root = Path(cfg["repos_root"])
+    except Exception as exc:
+        logger.debug("repos_root unavailable: %s", exc)
+
+    sids_with_writes = {sid for sid, paths in writes_by_sid.items() if paths}
+    if sids_with_writes and repos_root is not None:
+        try:
+            committed_by_sid = _committed_files_for_sessions(
+                sids_with_writes, repos_root,
+            )
+        except Exception as exc:
+            logger.debug("committed-files resolution failed: %s", exc)
+            committed_by_sid = {sid: set() for sid in sids_with_writes}
+    else:
+        committed_by_sid = {}
+
+    # Closure over the resolved repos_root for repo-name inference.
+    def _infer_repos_from_paths(paths: set[str]) -> set[str]:
+        if not paths or repos_root is None:
+            return set()
+        try:
+            root_str = repos_root.resolve().as_posix().rstrip("/") + "/"
+        except Exception:
+            return set()
+        repos: set[str] = set()
+        for p in paths:
+            if p.startswith(root_str):
+                rel = p[len(root_str):]
+                first = rel.split("/", 1)[0] if rel else ""
+                if first:
+                    repos.add(first)
+        return repos
+
+    # tldr lookup.
+    tldr_by_sid: dict[str, str] = {
+        r["session_id"]: r["tldr"] for r in summary_rows if r["tldr"]
+    }
+
+    # Build per-session result.
+    result: dict[str, dict[str, Any]] = {}
+    for sid in sids:
+        commits = commits_by_sid[sid]
+        writes = writes_by_sid[sid]
+        committed_paths = committed_by_sid.get(sid, set())
+
+        # Historical "unfinished" signal: files this session wrote that
+        # this session didn't itself commit. Stable forever; doesn't
+        # care about other agents' or the user's later git activity.
+        unfinished = {p for p in writes if p not in committed_paths}
+
+        commits_by_repo: dict[str, int] = {}
+        latest_committed_at: str | None = None
+        for c in commits:
+            repo = c.get("repo_name") or "(unknown)"
+            commits_by_repo[repo] = commits_by_repo.get(repo, 0) + 1
+            ts = c.get("committed_at")
+            if ts and (latest_committed_at is None or ts > latest_committed_at):
+                latest_committed_at = ts
+
+        # `session_commits.repo_name` is currently NULL for all rows
+        # (the parser doesn't infer per-commit repo from a Bash tool
+        # call's cwd). Infer the SET of repos this session committed
+        # to from the file paths in ``committed_paths`` — uses already
+        # -resolved data so no extra subprocesses. Used to drive the
+        # "across N repos" suffix on the chat-card commit badge.
+        inferred_repos = _infer_repos_from_paths(committed_paths)
+        if inferred_repos and commits_by_repo == {"(unknown)": len(commits)}:
+            # Replace the placeholder bucket with the inferred set,
+            # losing per-repo counts but recovering the repo
+            # cardinality the badge needs.
+            commits_by_repo = {repo: 0 for repo in inferred_repos}
+
+        result[sid] = {
+            "commit_count": len(commits),
+            "unfinished_count": len(unfinished),
+            "commits_by_repo": commits_by_repo,
+            "latest_committed_at": latest_committed_at,
+            "tldr": tldr_by_sid.get(sid),
+            # "Engages git" iff the session committed OR wrote any
+            # files via Write/Edit/NotebookEdit. Used by the dashboard
+            # to gate badge rendering — chat-only sessions stay slim.
+            "engages_git": bool(commits) or bool(writes),
+        }
+    return result
+
+
 def get_chats_summary(days: int = 14) -> dict[str, Any]:
     """Rich chat list from Claude Code JSONL sessions.
 
     Calls the chat_collector parser which caches per-file to avoid
-    re-parsing unchanged JSONL files.
+    re-parsing unchanged JSONL files. Enriches each chat with
+    conversation-observability fields (commit_count, unfinished_count,
+    commits_by_repo, latest_committed_at, tldr, engages_git) when the
+    DB is available — safe no-op when it isn't.
     """
     try:
         from work_buddy.collectors.chat_collector import _get_claude_code_conversations
@@ -736,6 +898,14 @@ def get_chats_summary(days: int = 14) -> dict[str, Any]:
         logger.warning("Failed to load chats: %s", exc)
         return {"chats": [], "total": 0, "error": str(exc)}
 
+    # Batch-load observability data for every session in scope.
+    session_ids = {
+        c.get("full_session_id", c.get("session_id", ""))
+        for c in raw
+        if c.get("full_session_id") or c.get("session_id")
+    }
+    obs_by_sid = _load_observability_for_sessions(session_ids)
+
     chats: list[dict[str, Any]] = []
     for c in raw:
         tool_names = c.get("tool_names", {})
@@ -743,8 +913,10 @@ def get_chats_summary(days: int = 14) -> dict[str, Any]:
             name for name, _ in sorted(tool_names.items(), key=lambda x: x[1], reverse=True)[:3]
         ]
         msg_count = c.get("user_msg_count", 0) + c.get("assistant_text_count", 0)
+        sid = c.get("full_session_id", c.get("session_id", ""))
+        obs = obs_by_sid.get(sid, {})
         chats.append({
-            "session_id": c.get("full_session_id", c.get("session_id", "")),
+            "session_id": sid,
             "short_id": c.get("session_id", "")[:8],
             "first_message": (c.get("first_user_message") or "")[:120],
             "message_count": msg_count,
@@ -756,10 +928,23 @@ def get_chats_summary(days: int = 14) -> dict[str, Any]:
             "project_name": _resolve_repo_name(
                 c.get("project_slug", ""), c.get("project_name", "")
             ),
+            # Conversation-observability enrichment. All optional; the
+            # frontend renders badges only when ``engages_git`` is true.
+            "commit_count": obs.get("commit_count", 0),
+            "unfinished_count": obs.get("unfinished_count", 0),
+            "commits_by_repo": obs.get("commits_by_repo", {}),
+            "latest_committed_at": obs.get("latest_committed_at"),
+            "tldr": obs.get("tldr"),
+            "engages_git": obs.get("engages_git", False),
         })
 
-    # Sort by start_time descending (most recent first)
-    chats.sort(key=lambda x: x.get("start_time") or "", reverse=True)
+    # Sort by most-recent ACTIVITY (end_time = last message timestamp).
+    # The frontend's "Most Recent" sort applies the same key. Falls
+    # back to start_time when end_time is missing.
+    chats.sort(
+        key=lambda x: x.get("end_time") or x.get("start_time") or "",
+        reverse=True,
+    )
 
     return {"chats": chats, "total": len(chats)}
 

@@ -42,6 +42,7 @@ _CONSUMER_MODULES: tuple[str, ...] = (
     "work_buddy.llm.claude_code_usage.rollup",
     "work_buddy.notifications.store",
     "work_buddy.llm.queue",
+    "work_buddy.conversation_observability",
 )
 
 _consumers_loaded = False

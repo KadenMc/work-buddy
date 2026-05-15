@@ -169,7 +169,7 @@ def load_documents(
     source: str | None = None,
     item_id: str | None = None,
     doc_id_prefix: str | None = None,
-    metadata_filter: dict[str, str] | None = None,
+    metadata_filter: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Load documents from the store with optional filters.
 
@@ -179,7 +179,21 @@ def load_documents(
         doc_id_prefix: Filter by doc_id prefix (e.g. "session_uuid:" to get
             all spans from one session, or "tab_id:" for one tab).
         metadata_filter: Filter by metadata JSON fields. Dict of
-            {key: value} matched via SQLite json_extract (case-insensitive).
+            ``{key: value}`` where ``value`` is either:
+
+            * A scalar (string) — exact match via SQLite json_extract
+              (case-insensitive).
+            * A list / tuple / set of scalars — set membership via a
+              SQL ``IN`` clause (case-insensitive). Empty collection
+              short-circuits to "matches nothing" so a caller passing
+              an empty eligible-session set gets zero rows back rather
+              than the unfiltered result.
+
+            Each key is ANDed. The set form lets callers pre-filter the
+            IR engine's scoring corpus by the union of arbitrarily many
+            session_ids — used by the dashboard chats view to compose
+            filter pills with search queries (filter-then-rank instead
+            of rank-then-filter).
 
     Returns dicts with fields/metadata already parsed from JSON.
     """
@@ -197,8 +211,22 @@ def load_documents(
         params.append(f"{doc_id_prefix}%")
     if metadata_filter:
         for key, value in metadata_filter.items():
-            clauses.append("LOWER(json_extract(metadata, ?)) = LOWER(?)")
-            params.extend([f"$.{key}", value])
+            if isinstance(value, (list, tuple, set)):
+                if not value:
+                    # Empty IN clause is invalid SQL; short-circuit to
+                    # "matches nothing." Prevents an empty eligible-set
+                    # from silently producing the unfiltered result.
+                    clauses.append("0")
+                    continue
+                placeholders = ",".join(["?"] * len(value))
+                clauses.append(
+                    f"LOWER(json_extract(metadata, ?)) IN ({placeholders})"
+                )
+                params.append(f"$.{key}")
+                params.extend(str(v).lower() for v in value)
+            else:
+                clauses.append("LOWER(json_extract(metadata, ?)) = LOWER(?)")
+                params.extend([f"$.{key}", value])
 
     where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
     rows = conn.execute(

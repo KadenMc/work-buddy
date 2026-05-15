@@ -109,11 +109,26 @@ function _persistHash() {
             if (isWB && costsState.activity && costsState.activity !== 'all') {
                 params.set('ca', costsState.activity);
             }
-        } else if (tab === 'chats' && typeof chatsState !== 'undefined' && chatsState.selectedId) {
-            const sid = chatsState.selectedId;
-            const shortId = sid.slice(0, 8);
-            const matches = (chatsState.chats || []).filter(c => c.short_id === shortId);
-            params.set('ci', matches.length === 1 ? shortId : sid);
+        } else if (tab === 'chats' && typeof chatsState !== 'undefined') {
+            // Selected chat ID (existing).
+            if (chatsState.selectedId) {
+                const sid = chatsState.selectedId;
+                const shortId = sid.slice(0, 8);
+                const matches = (chatsState.chats || []).filter(c => c.short_id === shortId);
+                params.set('ci', matches.length === 1 ? shortId : sid);
+            }
+            // Active search query — survives reloads + is shareable.
+            // Strip the `(commit)` suffix that chatsCommitSearch adds
+            // for display; the URL form is just the raw query string.
+            if (chatsState.searchActive && chatsState.searchQuery) {
+                const q = chatsState.searchQuery.replace(/\s*\(commit\)$/, '');
+                if (q) params.set('q', q);
+            }
+            // Days window — only encode when non-default so the
+            // typical view leaves the hash clean.
+            const daysSel = document.getElementById('chats-days');
+            const days = daysSel ? daysSel.value : '30';
+            if (days && days !== '30') params.set('days', days);
         } else if (tab === 'tasks' && window._selectedNamespace) {
             params.set('tn', window._selectedNamespace);
         } else if (tab === 'projects'
