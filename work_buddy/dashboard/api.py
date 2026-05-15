@@ -786,11 +786,18 @@ def _load_observability_for_sessions(
         writes_by_sid[r["session_id"]].add(r["file_path"])
 
     # Resolve committed-files-per-session in one parallel pass.
+    # We also need ``repos_root`` later to infer per-session repo
+    # membership from the committed-file paths.
+    repos_root: Path | None = None
+    try:
+        cfg = load_config()
+        repos_root = Path(cfg["repos_root"])
+    except Exception as exc:
+        logger.debug("repos_root unavailable: %s", exc)
+
     sids_with_writes = {sid for sid, paths in writes_by_sid.items() if paths}
-    if sids_with_writes:
+    if sids_with_writes and repos_root is not None:
         try:
-            cfg = load_config()
-            repos_root = Path(cfg["repos_root"])
             committed_by_sid = _committed_files_for_sessions(
                 sids_with_writes, repos_root,
             )
@@ -799,6 +806,23 @@ def _load_observability_for_sessions(
             committed_by_sid = {sid: set() for sid in sids_with_writes}
     else:
         committed_by_sid = {}
+
+    # Closure over the resolved repos_root for repo-name inference.
+    def _infer_repos_from_paths(paths: set[str]) -> set[str]:
+        if not paths or repos_root is None:
+            return set()
+        try:
+            root_str = repos_root.resolve().as_posix().rstrip("/") + "/"
+        except Exception:
+            return set()
+        repos: set[str] = set()
+        for p in paths:
+            if p.startswith(root_str):
+                rel = p[len(root_str):]
+                first = rel.split("/", 1)[0] if rel else ""
+                if first:
+                    repos.add(first)
+        return repos
 
     # tldr lookup.
     tldr_by_sid: dict[str, str] = {
@@ -825,6 +849,19 @@ def _load_observability_for_sessions(
             ts = c.get("committed_at")
             if ts and (latest_committed_at is None or ts > latest_committed_at):
                 latest_committed_at = ts
+
+        # `session_commits.repo_name` is currently NULL for all rows
+        # (the parser doesn't infer per-commit repo from a Bash tool
+        # call's cwd). Infer the SET of repos this session committed
+        # to from the file paths in ``committed_paths`` — uses already
+        # -resolved data so no extra subprocesses. Used to drive the
+        # "across N repos" suffix on the chat-card commit badge.
+        inferred_repos = _infer_repos_from_paths(committed_paths)
+        if inferred_repos and commits_by_repo == {"(unknown)": len(commits)}:
+            # Replace the placeholder bucket with the inferred set,
+            # losing per-repo counts but recovering the repo
+            # cardinality the badge needs.
+            commits_by_repo = {repo: 0 for repo in inferred_repos}
 
         result[sid] = {
             "commit_count": len(commits),

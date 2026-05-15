@@ -207,9 +207,11 @@ async function selectChat(sessionId) {
     document.getElementById('chats-commits-bar').style.display = 'none';
     document.getElementById('chats-message-list').innerHTML = '<div class="loading">Loading messages...</div>';
 
-    const [msgData, commitData] = await Promise.all([
+    const [msgData, commitData, topicData, uncommittedData] = await Promise.all([
         fetchJSON('/api/chats/' + sessionId + '/messages?offset=0&limit=' + chatsState.limit),
         fetchJSON('/api/chats/' + sessionId + '/commits'),
+        fetchJSON('/api/chats/' + sessionId + '/topics'),
+        fetchJSON('/api/chats/' + sessionId + '/uncommitted-files'),
     ]);
 
     if (msgData) {
@@ -225,7 +227,145 @@ async function selectChat(sessionId) {
         renderCommitsBar(commitData.commits);
     }
 
+    // tldr line below the header chips. Hidden when no summary.
+    renderChatTldr(topicData);
+
+    // Topic-timeline rail to the left of the message stream. Hidden
+    // when the session has no topic_summaries (LLM feature off, or
+    // session not yet summarized).
+    renderTopicRail(topicData);
+
+    // Uncommitted-files banner above the message stream. Shows files
+    // this session wrote that are STILL dirty in git RIGHT NOW —
+    // distinct from the card badge (historical signal).
+    renderUncommittedBanner(uncommittedData);
+
     renderMessages();
+}
+
+function renderChatTldr(topicData) {
+    var existing = document.getElementById('chats-tldr');
+    if (existing) existing.remove();
+    if (!topicData || !topicData.tldr) return;
+    var node = document.createElement('div');
+    node.id = 'chats-tldr';
+    node.className = 'chats-tldr-line';
+    node.textContent = topicData.tldr;
+    // Insert after the header.
+    var header = document.getElementById('chats-viewer-header');
+    if (header && header.parentNode) {
+        header.parentNode.insertBefore(node, header.nextSibling);
+    }
+}
+
+function renderTopicRail(topicData) {
+    var existing = document.getElementById('chats-topic-rail');
+    if (existing) existing.remove();
+    if (!topicData || !topicData.topics || topicData.topics.length === 0) return;
+    // Wrap the message stream and rail in a flex container so the
+    // rail sits to the left and the messages flex-grow into the rest.
+    var messagesEl = document.getElementById('chats-messages');
+    if (!messagesEl || !messagesEl.parentNode) return;
+
+    var rail = document.createElement('div');
+    rail.id = 'chats-topic-rail';
+    rail.className = 'chats-topic-rail';
+    rail.innerHTML = '<div class="chats-topic-rail-title">Topics</div>'
+        + topicData.topics.map(function(t, i) {
+            var range = (t.turn_start != null && t.turn_end != null)
+                ? ' <span class="topic-range">' + t.turn_start + '–' + t.turn_end + '</span>'
+                : '';
+            return '<div class="chats-topic-item" data-turn="' + (t.turn_start != null ? t.turn_start : '') + '"'
+                + ' onclick="chatsJumpToTopic(' + (t.turn_start != null ? t.turn_start : 'null') + ')"'
+                + ' title="' + escapeHtml(t.summary || '') + '">'
+                + '<span class="topic-index">' + (i + 1) + '.</span> '
+                + escapeHtml(t.title || '(untitled)')
+                + range
+                + '</div>';
+        }).join('');
+
+    // Re-wrap messages with the rail beside it. Look for an existing
+    // wrapper to avoid double-nesting on subsequent selectChat calls.
+    var wrapper = document.getElementById('chats-stream-wrapper');
+    if (!wrapper) {
+        wrapper = document.createElement('div');
+        wrapper.id = 'chats-stream-wrapper';
+        wrapper.className = 'chats-stream-wrapper';
+        messagesEl.parentNode.insertBefore(wrapper, messagesEl);
+        wrapper.appendChild(messagesEl);
+    }
+    wrapper.insertBefore(rail, messagesEl);
+}
+
+function chatsJumpToTopic(turnStart) {
+    if (turnStart == null) return;
+    // Re-load the message window centered on the topic's first turn,
+    // mirroring chatsJumpToCommit's offset math.
+    var contextWindow = Math.floor(chatsState.limit / 2);
+    var offset = Math.max(0, turnStart - contextWindow);
+    var sid = chatsState.selectedId;
+    if (!sid) return;
+    var url = '/api/chats/' + sid + '/messages?offset=' + offset + '&limit=' + chatsState.limit;
+    document.getElementById('chats-message-list').innerHTML = '<div class="loading">Jumping to topic...</div>';
+    fetchJSON(url).then(function(msgData) {
+        if (msgData) {
+            chatsState.messages = msgData.messages || [];
+            chatsState.filteredCount = msgData.filtered_count || 0;
+            chatsState.hasMore = msgData.has_more || false;
+            chatsState.offset = chatsState.messages.length;
+            chatsState._earliestLoaded = offset;
+            renderMessages();
+        }
+    });
+}
+
+/**
+ * Render the IR span-compatibility warning above the in-session
+ * search hits. Inserts a brief notice when the inspector's
+ * _check_span_compatibility surfaces drift between the cached span
+ * map and the live IR document set (so the agent knows search results
+ * may be approximate). No-op when the warning field is empty.
+ */
+function renderSpanCompatWarning(warning) {
+    var existing = document.getElementById('chats-span-warning');
+    if (existing) existing.remove();
+    if (!warning) return;
+    var node = document.createElement('div');
+    node.id = 'chats-span-warning';
+    node.className = 'chats-span-warning';
+    node.textContent = '⚠ ' + warning;
+    var hitsDiv = document.getElementById('chats-in-search-hits');
+    if (hitsDiv && hitsDiv.parentNode) {
+        hitsDiv.parentNode.insertBefore(node, hitsDiv);
+    }
+}
+
+function renderUncommittedBanner(uncommittedData) {
+    var existing = document.getElementById('chats-uncommitted-banner');
+    if (existing) existing.remove();
+    if (!uncommittedData || !uncommittedData.files || uncommittedData.files.length === 0) return;
+
+    var banner = document.createElement('div');
+    banner.id = 'chats-uncommitted-banner';
+    banner.className = 'chats-uncommitted-banner';
+    var fileList = uncommittedData.files.slice(0, 8).map(function(f) {
+        var repoTag = f.repo ? '<span class="banner-repo">' + escapeHtml(f.repo) + '</span> ' : '';
+        return '<li>' + repoTag + '<code>' + escapeHtml(f.path) + '</code></li>';
+    }).join('');
+    var more = uncommittedData.files.length > 8
+        ? '<li style="color:var(--text-muted);">…and ' + (uncommittedData.files.length - 8) + ' more</li>'
+        : '';
+    banner.innerHTML = '<div class="banner-header">'
+        + '⚠ ' + uncommittedData.count + ' file' + (uncommittedData.count === 1 ? '' : 's')
+        + ' this session wrote are dirty in git right now'
+        + '</div>'
+        + '<ul class="banner-list">' + fileList + more + '</ul>';
+
+    // Insert above the messages container.
+    var anchor = document.getElementById('chats-messages');
+    if (anchor && anchor.parentNode) {
+        anchor.parentNode.insertBefore(banner, anchor);
+    }
 }
 
 /**
@@ -260,11 +400,31 @@ document.addEventListener('keydown', function(ev) {
 function renderChatHeader(meta) {
     if (!meta) return;
     var header = document.getElementById('chats-viewer-header');
+    // Look up the cached listing-side entry for this session so the
+    // header can carry commit_count / unfinished_count / tldr without
+    // a second backend call. Falls back gracefully when the listing
+    // hasn't loaded yet (e.g. deep-link straight to a chat).
+    var listEntry = (chatsState.chats || []).find(function(c) {
+        return c.session_id === meta.session_id;
+    }) || {};
+
+    var leftPieces = [
+        '<code>' + (meta.session_id ? meta.session_id.substring(0, 8) : '--') + '</code>',
+        (meta.message_count || 0) + ' msgs',
+        meta.duration || '--',
+    ];
+    if (meta.start_time) leftPieces.push(formatTimestamp(meta.start_time));
+    if (listEntry.engages_git && (listEntry.commit_count || 0) > 0) {
+        var repos = listEntry.commits_by_repo ? Object.keys(listEntry.commits_by_repo).length : 0;
+        var commitLabel = '🌿 ' + listEntry.commit_count + ' commits' + (repos > 1 ? ' / ' + repos + ' repos' : '');
+        leftPieces.push(commitLabel);
+    }
+    if (listEntry.engages_git && (listEntry.unfinished_count || 0) > 0) {
+        leftPieces.push('<span style="color:var(--accent);">⚠ ' + listEntry.unfinished_count + ' left uncommitted</span>');
+    }
+
     header.innerHTML = '<div class="chats-hdr-left">'
-        + '<code>' + (meta.session_id ? meta.session_id.substring(0, 8) : '--') + '</code>'
-        + ' &middot; ' + (meta.message_count || 0) + ' messages'
-        + ' &middot; ' + (meta.duration || '--')
-        + (meta.start_time ? ' &middot; ' + formatTimestamp(meta.start_time) : '')
+        + leftPieces.join(' &middot; ')
         + '</div>'
         + '<div class="chats-hdr-right">'
         + '<button class="chats-hdr-btn" id="chats-hdr-resume" onclick="chatsResumeSession()" title="Open a new local terminal and resume this session (claude --resume). No prompt sent.">Resume</button>'
@@ -897,6 +1057,12 @@ async function chatsInSessionSearch() {
     var hits = data.hits || [];
     chatsState.searchHits = hits;
 
+    // Surface the span-compat warning if the IR engine flagged it
+    // (PR #108 fix: the inspector now correctly reports
+    // "Chunk mismatch" / "Session not in IR index" when the cached
+    // span map drifts from the live IR document set).
+    renderSpanCompatWarning(data.warning);
+
     if (hits.length === 0) {
         hitsDiv.innerHTML = '<span style="font-size:12px;color:var(--text-muted);">No results</span>';
         renderMessages();
@@ -1024,13 +1190,40 @@ function renderCommitsBar(commits) {
         + (commits.length !== groups.length ? ' (' + commits.length + ' total incl. retries)' : '')
         + ' during this session</div>';
 
+    // Determine the session's primary repo so cross-repo commits get
+    // a "(<repo>) " prefix. The primary is the most-frequent repo in
+    // the listing-side `commits_by_repo` for this session — same data
+    // already cached in chatsState.chats. Falls back to no prefix
+    // when repo info is unavailable.
+    var listEntry = (chatsState.chats || []).find(function(c) {
+        return c.session_id === chatsState.selectedId;
+    }) || {};
+    var primaryRepo = null;
+    var byRepo = listEntry.commits_by_repo || {};
+    Object.keys(byRepo).forEach(function(repo) {
+        if (primaryRepo === null || byRepo[repo] > byRepo[primaryRepo]) {
+            primaryRepo = repo;
+        }
+    });
+
     groups.forEach(function(g) {
         var clickable = g.message_index != null;
         var clickAttr = clickable
             ? ' onclick="chatsJumpToCommit(' + g.message_index + ')" title="Jump to this commit in the conversation"'
             : '';
+        // Per-commit repo only ever set when session_commits.repo_name
+        // is populated (currently NULL for all rows; reserved for a
+        // follow-up that infers per-commit repo from the cwd or
+        // ``git show``). When set and different from the session
+        // primary, prefix the message with the repo name.
+        var commitRepo = g.repo_name || '';
+        var repoPrefix = '';
+        if (commitRepo && commitRepo !== primaryRepo) {
+            repoPrefix = '<span class="commit-repo-tag">' + escapeHtml(commitRepo) + '</span> ';
+        }
         html += '<div class="chat-commit-marker' + (clickable ? ' clickable' : '') + '"' + clickAttr + '>'
             + '<code>' + g.hashes[0] + '</code> '
+            + repoPrefix
             + '<span class="commit-msg">' + escapeHtml(g.message) + '</span>'
             + '<span class="commit-meta">'
             + (g.count > 1 ? '<span>(' + g.count + 'x)</span>' : '')

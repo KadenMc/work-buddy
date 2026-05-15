@@ -2298,6 +2298,125 @@ body {
 /* Legacy: kept as a defensive no-op selector in case any cached HTML
    references it; the renderer no longer emits .chat-card-tools. */
 .chat-card-tools { display: none; }
+
+/* Chat-detail enrichments (PR 5 of the chats-dashboard plan). */
+.chats-tldr-line {
+    padding: 10px 16px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-top: none;
+    color: var(--text-secondary);
+    font-size: 13px;
+    line-height: 1.5;
+    font-style: italic;
+}
+.chats-uncommitted-banner {
+    background: var(--accent-subtle);
+    border: 1px solid var(--accent);
+    border-radius: 6px;
+    padding: 10px 14px;
+    margin: 8px 0;
+    color: var(--text-primary);
+    font-size: 13px;
+}
+.chats-uncommitted-banner .banner-header {
+    font-weight: 600;
+    color: var(--accent);
+    margin-bottom: 6px;
+}
+.chats-uncommitted-banner .banner-list {
+    margin: 0;
+    padding-left: 18px;
+    line-height: 1.7;
+}
+.chats-uncommitted-banner .banner-list code {
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+.chats-uncommitted-banner .banner-repo {
+    display: inline-block;
+    padding: 0 6px;
+    margin-right: 6px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    font-size: 11px;
+    color: var(--text-muted);
+}
+.chats-stream-wrapper {
+    display: flex;
+    gap: 12px;
+    flex: 1;
+    min-height: 0;
+}
+.chats-stream-wrapper .chats-messages {
+    flex: 1;
+    min-width: 0;
+}
+.chats-topic-rail {
+    flex: 0 0 220px;
+    overflow-y: auto;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-secondary);
+    padding: 8px;
+    max-height: 65vh;
+}
+.chats-topic-rail-title {
+    font-size: 10px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding: 4px 8px;
+    margin-bottom: 4px;
+    border-bottom: 1px solid var(--border);
+}
+.chats-topic-item {
+    padding: 6px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+    color: var(--text-secondary);
+    line-height: 1.4;
+    transition: background 0.12s;
+}
+.chats-topic-item:hover {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+}
+.chats-topic-item .topic-index {
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    font-size: 11px;
+}
+.chats-topic-item .topic-range {
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    float: right;
+}
+.chats-span-warning {
+    padding: 6px 12px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-left: 3px solid #B8860B;
+    border-radius: 4px;
+    color: var(--text-secondary);
+    font-size: 12px;
+    margin: 6px 0;
+}
+.commit-repo-tag {
+    display: inline-block;
+    padding: 0 6px;
+    margin-right: 4px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    font-size: 10px;
+    color: var(--text-muted);
+    text-transform: lowercase;
+    letter-spacing: 0.3px;
+}
 .chats-viewer-header {
     padding: 12px 16px; background: var(--bg-secondary);
     border: 1px solid var(--border); border-radius: 8px 8px 0 0;
