@@ -140,9 +140,9 @@ function removeWorkflowTab(viewId) {
     const toast = document.querySelector(`.toast[data-view-id="${viewId}"]`);
     if (toast) toast.remove();
 
-    // Switch to overview if this was active
+    // Fall back to the Today tab if nothing is active
     const active = document.querySelector('.tab-btn.active');
-    if (!active) switchTab('overview');
+    if (!active) switchTab('today');
 }
 
 // Keep the tab in place but mark it as dismissed. Called instead of
@@ -322,7 +322,7 @@ async function submitGenericResponse(viewId, value) {
                     const p = document.getElementById('panel-wv-' + viewId);
                     btn.remove();
                     if (p) p.remove();
-                    switchTab('overview');
+                    switchTab('today');
                 } else {
                     // User moved on — don't yank. Mark dismissed so the
                     // user can close it on their own terms.

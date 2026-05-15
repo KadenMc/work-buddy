@@ -54,6 +54,36 @@ function switchSettingsSubtab(st) {
     }
 }
 
+// At-a-glance system cards (uptime / services healthy / jobs / last
+// tick) pinned to the top of the Status sub-view. Sourced from the
+// cached /api/state snapshot that loadSettings already fetches.
+function renderStatusCards() {
+    const el = document.getElementById('settings-status-cards');
+    if (!el) return;
+    const data = window._WB_LAST_STATE;
+    if (!data) { el.innerHTML = ''; return; }
+    const services = Object.values(data.services || {});
+    const healthy = services.filter(s => s.status === 'healthy').length;
+    el.innerHTML = `
+        <div class="card">
+            <div class="card-label">Uptime</div>
+            <div class="card-value">${formatUptime(data.uptime_seconds || 0)}</div>
+        </div>
+        <div class="card">
+            <div class="card-label">Services</div>
+            <div class="card-value">${healthy}<span class="unit"> / ${services.length} healthy</span></div>
+        </div>
+        <div class="card">
+            <div class="card-label">Jobs</div>
+            <div class="card-value">${(data.jobs || []).length}</div>
+        </div>
+        <div class="card">
+            <div class="card-label">Last Tick</div>
+            <div class="card-value small">${timeAgo(data.last_tick_at)}</div>
+        </div>
+    `;
+}
+
 async function loadSettings(force) {
     const tree = document.getElementById('settings-tree');
     const summary = document.getElementById('settings-summary');
@@ -63,8 +93,9 @@ async function loadSettings(force) {
     try {
         const url = '/api/control/graph' + (force ? '?force=1' : '');
         // Fetch the control graph and /api/state in parallel. The latter
-        // feeds the per-component event chips (Status sub-view). A failed
-        // state fetch must not block the graph render — hence the catch.
+        // feeds the per-component event chips and the at-a-glance status
+        // cards (both Status sub-view). A failed state fetch must not
+        // block the graph render — hence the catch.
         const [resp, stateResp] = await Promise.all([
             fetch(url),
             fetch('/api/state').catch(() => null),
@@ -83,6 +114,7 @@ async function loadSettings(force) {
             } catch (e) { /* event chips are optional decoration */ }
         }
         _rebuildComponentEventIndex();
+        renderStatusCards();
         WB_MATCHED_SET = _computeMatchedSet();
         renderSettingsTree();
         renderSettingsSummary();

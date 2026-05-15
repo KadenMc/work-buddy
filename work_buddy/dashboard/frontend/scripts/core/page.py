@@ -23,7 +23,6 @@ def script() -> str:
     return r"""
 // ---- Tab switching ----
 const staticLoaders = {
-    overview: () => loadOverview(),
     threads: () => loadThreads(),
     today: () => loadToday(),
     tasks: () => loadTasks(),
@@ -93,7 +92,7 @@ function _persistHash() {
     if (window._wbHashInitInProgress) return;
     const params = new URLSearchParams();
     const active = document.querySelector('.tab-btn.active');
-    let tab = active ? active.dataset.tab : 'overview';
+    let tab = active ? active.dataset.tab : 'today';
     if (tab.startsWith('wv-')) {
         params.set('tab', 'ntf');
         params.set('ntf', tab.slice(3));
@@ -171,10 +170,10 @@ async function _initFromHash() {
 
     const params = new URLSearchParams(hash.slice(1));
     if (!params.has('tab')) {
-        // No hash (or unknown hash) → default to overview, then write the
-        // canonical hash back so subsequent reloads have something to honor
-        // (Decision Q3: write #tab=overview eagerly).
-        switchTab('overview');
+        // No hash (or unknown hash) → default to the Today tab, then write
+        // the canonical hash back so subsequent reloads have something to
+        // honor (write #tab=today eagerly).
+        switchTab('today');
         return;
     }
 
@@ -232,10 +231,10 @@ async function _initFromHash() {
                         createWorkflowTab(view);
                         switchTab(tabName);
                     } else {
-                        switchTab('overview');
+                        switchTab('today');
                     }
                 } catch (e) {
-                    switchTab('overview');
+                    switchTab('today');
                 }
             }
         } else {
@@ -260,6 +259,25 @@ updateClock();
 
 // ---- Global state ----
 let _readOnly = false;
+
+// ---- Header state (sidecar status + read-only flag) ----
+// The #sidecar-status header indicator and the global _readOnly flag
+// are tab-independent. The page shell owns refreshing them: once on
+// init and again whenever the browser tab returns to the foreground.
+async function refreshHeaderState() {
+    const data = await fetchJSON('/api/state');
+    if (!data) return;
+    _readOnly = !!data.read_only;
+    const el = document.getElementById('sidecar-status');
+    if (el) {
+        const roTag = _readOnly
+            ? ' <span style="color:var(--warn);font-size:0.85em;opacity:0.8">(read-only)</span>'
+            : '';
+        const running = data.status === 'running';
+        el.innerHTML = '<span class="status-dot ' + (running ? 'healthy' : 'stopped')
+            + '"></span> sidecar ' + (running ? 'running' : 'stopped') + roTag;
+    }
+}
 
 // ---- Refresh model ----
 //
@@ -290,6 +308,7 @@ let _readOnly = false;
 // EventSource buffered events while hidden.
 document.addEventListener('visibilitychange', () => {
     if (document.visibilityState !== 'visible') return;
+    refreshHeaderState();
     const activeTab = document.querySelector('.tab-btn.active');
     if (!activeTab) return;
     const tab = activeTab.dataset.tab;
@@ -305,11 +324,15 @@ if (WB_VAULT_NAME) {
     if (mtl) mtl.href = `obsidian://open?vault=${encodeURIComponent(WB_VAULT_NAME)}&file=tasks%2Fmaster-task-list.md`;
 }
 // _initFromHash decides which tab/state to load based on the URL hash;
-// falls back to overview when no hash is present.
+// falls back to the Today tab when no hash is present.
 if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', _initFromHash);
+    document.addEventListener('DOMContentLoaded', () => {
+        _initFromHash();
+        refreshHeaderState();
+    });
 } else {
     _initFromHash();
+    refreshHeaderState();
 }
 // Pre-warm the Add-job picker's registry list so it's ready by the time
 // the user clicks "Add job". The first call to /api/registry/list builds

@@ -49,10 +49,9 @@ def _html() -> str:
 
 <nav class="tab-bar">
     <div class="tab-bar-left">
-        <button class="tab-btn active" data-tab="overview">Overview</button>
         <button class="tab-btn" data-tab="threads"
                 title="Threads — unified resolution surface">Threads</button>
-        <button class="tab-btn" data-tab="today"
+        <button class="tab-btn active" data-tab="today"
                 title="What should I do right now? /wb-task-me view.">Today</button>
         <button class="tab-btn" data-tab="tasks">Tasks</button>
         <button class="tab-btn" data-tab="jobs"
@@ -74,13 +73,6 @@ def _html() -> str:
 <!-- TAB PANELS — add new tabs by duplicating this pattern         -->
 <!-- ============================================================ -->
 
-<!-- OVERVIEW -->
-<div class="tab-panel active" id="panel-overview">
-    <div class="card-grid" id="overview-cards">
-        <div class="loading">Loading system state...</div>
-    </div>
-</div>
-
 <!-- THREADS — Unified resolution surface. The panel is rendered
      by window.loadThreads (in the threads frontend module). -->
 <div class="tab-panel" id="panel-threads">
@@ -92,7 +84,7 @@ def _html() -> str:
      clamp-to-now plan + a top-1-2 recommendation card. Re-run by
      clicking refresh; persistent context preset shared with the
      Engage tab via localStorage. -->
-<div class="tab-panel" id="panel-today">
+<div class="tab-panel active" id="panel-today">
     <div class="review-toolbar">
         <div class="section-title">Today
             <span class="section-subtitle"
@@ -541,6 +533,7 @@ def _html() -> str:
          requirements). Default sub-tab. The toolbar lives inside this
          panel so it hides automatically when Activity is active. -->
     <div class="settings-subtab-panel active" id="ssp-status">
+        <div class="card-grid" id="settings-status-cards"></div>
         <div class="settings-toolbar">
             <div class="settings-toolbar-controls">
                 <input type="text" id="settings-filter" class="task-search-input" placeholder="Filter by label or id (matches cascade up through parents)" />
