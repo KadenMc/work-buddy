@@ -51,7 +51,6 @@ from .tabs import (
     overview,
     projects,
     settings,
-    status,
     tasks,
     today,
 )
@@ -102,7 +101,6 @@ SCRIPTS = [
     conversations.script,
     jobs.script,
     tasks.script,
-    status.script,
     chats.script,
     overview.script,
     contracts.script,

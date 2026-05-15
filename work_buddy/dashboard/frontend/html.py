@@ -55,7 +55,6 @@ def _html() -> str:
         <button class="tab-btn" data-tab="today"
                 title="What should I do right now? /wb-task-me view.">Today</button>
         <button class="tab-btn" data-tab="tasks">Tasks</button>
-        <button class="tab-btn" data-tab="status">Status</button>
         <button class="tab-btn" data-tab="jobs"
                 title="Scheduled jobs — user jobs above, system jobs collapsed.">Jobs</button>
         <button class="tab-btn" data-tab="chats">Chats</button>
@@ -159,19 +158,8 @@ def _html() -> str:
     <div class="wb-chat-body" id="wb-chat-body"></div>
 </aside>
 
-<!-- STATUS -->
-<div class="tab-panel" id="panel-status">
-    <div id="status-bridge"><div class="loading">Loading bridge status...</div></div>
-    <div class="section-title" style="margin-top: 24px;">Components</div>
-    <div id="status-services"><div class="loading">Loading health...</div></div>
-    <div class="log-toolbar" style="margin-top: 24px;">
-        <span class="section-title">Event Log</span>
-        <button class="log-toolbar-btn" onclick="copyLog()" title="Copy log to clipboard">Copy Log</button>
-    </div>
-    <div id="status-log"><div class="loading">Loading events...</div></div>
-    <div class="section-title" style="margin-top: 24px;">Recent Notifications</div>
-    <div id="status-notif-log"><div class="empty-state">No notifications yet</div></div>
-</div>
+<!-- The bridge chart, event log and notification log live under
+     #panel-settings as its Activity sub-tab. -->
 
 <!-- JOBS — scheduled cron jobs split by source. User-authored jobs are
      primary; system jobs (shipping with work-buddy) are tucked under a
@@ -543,16 +531,39 @@ def _html() -> str:
      requirements + affected capabilities. Read-only in Phase E;
      preference toggles land in Phase F. -->
 <div class="tab-panel" id="panel-settings">
-    <div class="settings-toolbar">
-        <div class="section-title">Control Graph</div>
-        <div class="settings-toolbar-controls">
-            <input type="text" id="settings-filter" class="task-search-input" placeholder="Filter by label or id (matches cascade up through parents)" />
-            <button class="chats-accent-btn" onclick="reprobeAll(this)"
-                    title="Re-run every tool probe from scratch, then rebuild the graph. Takes up to ~10s if Obsidian or another service is slow. Use when the tree shows 'unknown' badges and you want definitive state right now.">Reprobe all</button>
-        </div>
+    <div class="settings-subtab-bar">
+        <button class="settings-subtab-btn active" data-st="status"
+                onclick="switchSettingsSubtab('status')">Status</button>
+        <button class="settings-subtab-btn" data-st="activity"
+                onclick="switchSettingsSubtab('activity')">Activity</button>
     </div>
-    <div id="settings-summary" class="settings-summary"></div>
-    <div id="settings-tree"><div class="loading">Loading control graph...</div></div>
+    <!-- Status sub-view: the control graph (component state, preferences,
+         requirements). Default sub-tab. The toolbar lives inside this
+         panel so it hides automatically when Activity is active. -->
+    <div class="settings-subtab-panel active" id="ssp-status">
+        <div class="settings-toolbar">
+            <div class="settings-toolbar-controls">
+                <input type="text" id="settings-filter" class="task-search-input" placeholder="Filter by label or id (matches cascade up through parents)" />
+                <button class="chats-accent-btn" onclick="reprobeAll(this)"
+                        title="Re-run every tool probe from scratch, then rebuild the graph. Takes up to ~10s if Obsidian or another service is slow. Use when the tree shows 'unknown' badges and you want definitive state right now.">Reprobe all</button>
+            </div>
+        </div>
+        <div id="settings-summary" class="settings-summary"></div>
+        <div id="settings-tree"><div class="loading">Loading control graph...</div></div>
+    </div>
+    <!-- Activity sub-view: bridge latency + sidecar event log + recent
+         notifications. Lazy-loaded on first switch (see
+         switchSettingsSubtab). -->
+    <div class="settings-subtab-panel" id="ssp-activity">
+        <div id="activity-bridge"><div class="loading">Loading bridge status...</div></div>
+        <div class="log-toolbar" style="margin-top: 24px;">
+            <span class="section-title">Event Log</span>
+            <button class="log-toolbar-btn" onclick="copyActivityLog()" title="Copy log to clipboard">Copy Log</button>
+        </div>
+        <div id="activity-log"><div class="loading">Loading events...</div></div>
+        <div class="section-title" style="margin-top: 24px;">Recent Notifications</div>
+        <div id="activity-notif-log"><div class="empty-state">No notifications yet</div></div>
+    </div>
 </div>
 
 <!-- PROJECTS -->

@@ -213,6 +213,7 @@ def _assemble() -> dict[str, ControlNode]:
             preference=preference,
             effective_state="unknown",  # filled in step 5
             component_id=comp_id,
+            sidecar_service=comp.sidecar_service,
             requirement_ids=requirement_ids_for_comp,
             status_reason=_health_reason(health),
         )

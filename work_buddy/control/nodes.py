@@ -117,6 +117,12 @@ class ControlNode:
     effective_state: EffectiveState = "unknown"
 
     component_id: str | None = None
+    # For component-kind nodes: the managed sidecar service name
+    # (``svc.name``), when the component maps to one. Lets the dashboard
+    # join sidecar event-log entries (``event.source``) to this component
+    # for the per-component event chip. ``None`` when the component has no
+    # sidecar service (most components — only ~4 do).
+    sidecar_service: str | None = None
     requirement_ids: list[str] = field(default_factory=list)
     affects_capabilities: list[str] = field(default_factory=list)
 
@@ -153,6 +159,7 @@ class ControlNode:
             "preference": self.preference,
             "effective_state": self.effective_state,
             "component_id": self.component_id,
+            "sidecar_service": self.sidecar_service,
             "requirement_ids": list(self.requirement_ids),
             "affects_capabilities": list(self.affects_capabilities),
             "status_reason": self.status_reason,

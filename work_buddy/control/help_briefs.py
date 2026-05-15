@@ -55,6 +55,89 @@ def build_help_brief(node_id: str) -> str:
     return _generic_brief(node)
 
 
+def build_help_brief_for_event(
+    event: dict[str, Any],
+    component_id: str | None = None,
+) -> str:
+    """Return the prompt for a session spawned to investigate a sidecar event.
+
+    Peer of :func:`build_help_brief`, but keyed on a sidecar event rather
+    than a control-graph node. Always includes the event metadata and the
+    resolved sidecar log-file path. When ``component_id`` is given, also
+    embeds the full component diagnostic section (the same content the
+    component "?" help-brief produces) so the spawned agent starts with
+    control-graph context for whatever emitted the event.
+
+    Powers ``POST /api/investigate``: the Activity event log passes just
+    the event; a per-component event chip passes the event + component_id.
+    """
+    from datetime import datetime, timezone
+
+    ts = event.get("ts", 0)
+    try:
+        time_str = (
+            datetime.fromtimestamp(ts, tz=timezone.utc)
+            .astimezone()
+            .strftime("%Y-%m-%d %H:%M:%S")
+            if ts
+            else "unknown"
+        )
+    except Exception:
+        time_str = "unknown"
+
+    parts = [
+        "You are helping the user investigate a work-buddy sidecar event.",
+        "",
+        "## Event",
+        f"**Time:** {time_str}",
+        f"**Kind:** `{event.get('kind', '?')}`",
+        f"**Source:** `{event.get('source', '?')}`",
+        f"**Level:** `{event.get('level', '?')}`",
+        f"**Summary:** {event.get('summary', '?')}",
+        "",
+        "## Sidecar log",
+    ]
+    log_path = resolve_sidecar_log_path()
+    if log_path:
+        parts.append(f"The sidecar log file is at: `{log_path}`")
+        parts.append(
+            "Search for the source name and timestamp to find the full "
+            "context around this event."
+        )
+    else:
+        parts.append(
+            "No sidecar log file was found. Check the sidecar console "
+            "output instead."
+        )
+    parts.append("")
+
+    if component_id:
+        from work_buddy.control.graph import build_graph
+        nodes = build_graph()
+        comp_node = nodes.get(f"component:{component_id}")
+        if comp_node is not None:
+            parts.append(f"## Linked component: `component:{component_id}`")
+            parts.append(
+                "This event's source maps to a control-graph component. "
+                "Its current diagnostic context:"
+            )
+            parts.append("")
+            parts += _component_context_lines(comp_node)
+            parts.append("")
+        else:
+            parts.append(f"## Linked component: `{component_id}`")
+            parts.append("(not found in the current control graph)")
+            parts.append("")
+
+    parts.append("## What you can do")
+    parts.append(
+        "Diagnose the root cause and fix the issue if possible. Use the "
+        "Bash, Read, and Grep tools to inspect the log file, configuration, "
+        "and relevant source. Lead with the fix, not the architecture."
+    )
+    return "\n".join(parts)
+
+
 # ---------------------------------------------------------------------------
 # Per-kind brief builders
 # ---------------------------------------------------------------------------
@@ -109,8 +192,16 @@ def _requirement_brief(node) -> str:
     return "\n".join(parts)
 
 
-def _component_brief(node) -> str:
-    """Brief for a component — bundles DiagnosticRunner output."""
+def _component_context_lines(node) -> list[str]:
+    """State + diagnostic + linked-requirements + affected-capabilities
+    lines for a component node.
+
+    Shared by ``_component_brief`` (the ? help button) and
+    ``build_help_brief_for_event`` (the Investigate button when the event
+    links to a component) so both surfaces describe a component the same
+    way. Does NOT include the intro line or the "what you can do" footer —
+    callers add those.
+    """
     from work_buddy.health.diagnostics import DiagnosticRunner
     diag_summary = ""
     try:
@@ -121,9 +212,6 @@ def _component_brief(node) -> str:
         diag_summary = f"(DiagnosticRunner unavailable: {exc})"
 
     parts = [
-        "You are helping the user diagnose and fix a work-buddy component.",
-        "",
-        f"## Component: `{node.id}`",
         f"**Display name:** {node.label}",
         f"**Current state:** `{node.effective_state}`",
         f"**Preference:** `{node.preference}`",
@@ -154,6 +242,17 @@ def _component_brief(node) -> str:
             parts.append(f"  …and {len(node.affects_capabilities) - 8} more.")
     else:
         parts.append("  (none — no capabilities currently list this as a `requires`)")
+    return parts
+
+
+def _component_brief(node) -> str:
+    """Brief for a component — bundles DiagnosticRunner output."""
+    parts = [
+        "You are helping the user diagnose and fix a work-buddy component.",
+        "",
+        f"## Component: `{node.id}`",
+    ]
+    parts += _component_context_lines(node)
     parts.append("")
     parts.append("## What you can do")
     parts.append(
@@ -274,6 +373,29 @@ def _unknown_node_brief(node_id: str) -> str:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def resolve_sidecar_log_path() -> str | None:
+    """Return the most recent agent session's sidecar ``work_buddy.log``.
+
+    Scans ``data/agents/*sidecar*/logs/work_buddy.log`` newest-first.
+    Returns ``None`` when no such file exists. Extracted from the old
+    inline logic in ``service.api_investigate`` so the event-brief
+    builder can reuse it.
+    """
+    try:
+        from work_buddy.paths import data_dir
+        agents_dir = data_dir("agents")
+        if not agents_dir.exists():
+            return None
+        for d in sorted(agents_dir.iterdir(), reverse=True):
+            if "sidecar" in d.name:
+                candidate = d / "logs" / "work_buddy.log"
+                if candidate.exists():
+                    return str(candidate)
+    except Exception as exc:
+        log.warning("Could not resolve sidecar log path: %s", exc)
+    return None
+
 
 def _fix_kind_explanation(kind: str) -> str:
     return {

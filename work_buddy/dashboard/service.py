@@ -566,17 +566,9 @@ def api_dashboard_interact_result(request_id: str):
     return jsonify({"ok": True})
 
 
-@app.get("/api/diagnose/<component_id>")
-def api_diagnose(component_id: str):
-    """Run diagnostic checks on a component and return root cause + fix."""
-    try:
-        from work_buddy.health.diagnostics import DiagnosticRunner
-        runner = DiagnosticRunner()
-        result = runner.diagnose(component_id)
-        return jsonify(result.to_dict())
-    except Exception as exc:
-        return jsonify({"component_id": component_id, "status": "error",
-                        "root_cause": str(exc)}), 500
+# DiagnosticRunner has no standalone HTTP endpoint — it is invoked
+# in-process by control.help_briefs (the Settings "?" help button and
+# the /api/investigate event brief).
 
 
 @app.post("/api/reprobe/<component_id>")
@@ -3983,7 +3975,14 @@ def _launch_workflow_session(name: str, entry, user_prompt: str = "") -> dict:
 
 @app.post("/api/investigate")
 def api_investigate():
-    """Spawn a persistent interactive agent session to investigate an issue."""
+    """Spawn a persistent interactive agent session to investigate an event.
+
+    The launch brief is built by
+    ``control.help_briefs.build_help_brief_for_event``: event metadata +
+    the resolved sidecar log path, plus — when the request carries a
+    ``component_id`` (sent by the per-component event chip) — the full
+    control-graph diagnostic context for that component.
+    """
     blocked = _reject_read_only()
     if blocked:
         return blocked
@@ -3991,40 +3990,10 @@ def api_investigate():
     event = data.get("event", {})
     if not event:
         return jsonify({"success": False, "error": "No event provided."}), 400
+    component_id = data.get("component_id") or None
 
-    # Resolve the actual sidecar log path
-    from work_buddy.paths import data_dir
-    agents_dir = data_dir("agents")
-    log_path = None
-    if agents_dir.exists():
-        for d in sorted(agents_dir.iterdir(), reverse=True):
-            if "sidecar" in d.name:
-                candidate = d / "logs" / "work_buddy.log"
-                if candidate.exists():
-                    log_path = str(candidate)
-                    break
-
-    from datetime import datetime, timezone
-    ts = event.get("ts", 0)
-    time_str = datetime.fromtimestamp(ts, tz=timezone.utc).astimezone().strftime("%H:%M:%S") if ts else "unknown"
-
-    lines = [
-        "Please investigate this issue from the sidecar event log:",
-        "",
-        f"  Time:    {time_str}",
-        f"  Event:   {event.get('kind', '?')}",
-        f"  Source:  {event.get('source', '?')}",
-        f"  Level:   {event.get('level', '?')}",
-        f"  Summary: {event.get('summary', '?')}",
-        "",
-    ]
-    if log_path:
-        lines.append(f"The sidecar log file is at: {log_path}")
-        lines.append("Search for the source name and timestamp to find the full context.")
-    else:
-        lines.append("No sidecar log file was found. Check the sidecar console output instead.")
-    lines += ["", "Diagnose the root cause and fix the issue if possible."]
-    prompt = "\n".join(lines)
+    from work_buddy.control.help_briefs import build_help_brief_for_event
+    prompt = build_help_brief_for_event(event, component_id)
 
     try:
         from work_buddy.session_launcher import begin_session

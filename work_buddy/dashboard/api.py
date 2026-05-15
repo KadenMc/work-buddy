@@ -244,6 +244,20 @@ def get_system_state() -> dict[str, Any]:
         "chrome": get_chrome_status(),
     }
 
+    # Per-source warn/error event tally. The dashboard's Settings control
+    # graph joins this to each component via its ``sidecar_service`` to
+    # render a per-component event chip. Naturally bounded by the sidecar
+    # event ring buffer, so no explicit time window is needed.
+    from collections import Counter
+    _evt_counts = Counter(
+        e["source"]
+        for e in result["events"]
+        if isinstance(e, dict)
+        and e.get("source")
+        and e.get("level") in ("error", "warn")
+    )
+    result["event_counts_by_source"] = dict(_evt_counts)
+
     # Refresh tool probes periodically (60s TTL) so the health view
     # stays current even though the MCP server only probes at startup.
     _maybe_refresh_probes()

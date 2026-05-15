@@ -27,7 +27,6 @@ const staticLoaders = {
     threads: () => loadThreads(),
     today: () => loadToday(),
     tasks: () => loadTasks(),
-    status: () => loadStatus(),
     jobs: () => loadJobs(),
     chats: () => loadChats(),
     contracts: () => loadContracts(),
@@ -153,6 +152,13 @@ function _persistHash() {
             }
             const insp = window._threadsState.inspect;
             if (insp) params.set('inspect', insp);
+        } else if (tab === 'settings' && typeof WB_SETTINGS_SUBTAB !== 'undefined') {
+            // Settings sub-tab: 'status' (control graph, default) or
+            // 'activity' (bridge + logs). Only encode the non-default
+            // value so the typical view leaves the hash clean.
+            if (WB_SETTINGS_SUBTAB && WB_SETTINGS_SUBTAB !== 'status') {
+                params.set('st', WB_SETTINGS_SUBTAB);
+            }
         }
     }
     history.replaceState(null, '', '#' + params.toString());
@@ -202,7 +208,15 @@ async function _initFromHash() {
         window._urlState = Object.fromEntries(params);
 
         let tab = params.get('tab');
-        if (tab === 'ntf' && params.get('ntf')) {
+        if (tab === 'status') {
+            // There is no Status tab. The bridge chart, event log and
+            // notification log live under Settings → Activity; route
+            // bookmarked #tab=status links there.
+            switchTab('settings');
+            if (typeof switchSettingsSubtab === 'function') {
+                switchSettingsSubtab('activity');
+            }
+        } else if (tab === 'ntf' && params.get('ntf')) {
             const viewId = params.get('ntf');
             const tabName = 'wv-' + viewId;
             if (document.querySelector('.tab-btn[data-tab="' + tabName + '"]')) {
