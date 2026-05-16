@@ -28,6 +28,11 @@ from work_buddy.markdown_db.resolver import (
     lww_markdown_wins,
     make_default_resolver,
 )
+from work_buddy.markdown_db.sqlite_lww import (
+    LWW_META_DDL,
+    SqliteLwwLog,
+    ensure_lww_meta,
+)
 from work_buddy.markdown_db.storage_helpers import (
     atomic_write_text,
     file_lock,
@@ -68,6 +73,9 @@ __all__ = [
     "LwwEntry",
     "NullLwwLog",
     "InMemoryLwwLog",
+    "SqliteLwwLog",
+    "ensure_lww_meta",
+    "LWW_META_DDL",
     # Resolver
     "Resolver",
     "lww_markdown_wins",

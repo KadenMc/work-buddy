@@ -45,6 +45,8 @@ DBs that pre-date this framework are baseline-stamped to the current
 - v9 — drop ``ON DELETE CASCADE`` from ``task_action_items`` and
   ``task_tags`` FK constraints (forces soft-delete discipline at the
   schema level).
+- v10 — ``lww_meta`` append-only write-provenance sidecar backing the
+  MarkdownDB last-write-wins log (see ``architecture/markdown-db``).
 """
 
 from __future__ import annotations
@@ -542,6 +544,40 @@ def _rebuild_task_tags_without_cascade(conn: sqlite3.Connection) -> None:
     )
 
 
+# ─── v10: lww_meta sidecar (MarkdownDB last-write-wins log) ──────────
+
+
+def _m010_lww_meta(conn: sqlite3.Connection) -> None:
+    """Create the ``lww_meta`` append-only write-provenance table.
+
+    Backs :class:`work_buddy.markdown_db.SqliteLwwLog`. Co-located in
+    ``task_metadata.db`` so it travels with backups + restores. Every
+    write through a :class:`~work_buddy.markdown_db.MarkdownDB` appends
+    one row per field per surface; nothing is ever updated or deleted.
+
+    The DDL is inlined here (rather than imported from
+    ``markdown_db.sqlite_lww``) deliberately: the migration runner
+    hashes this callable's source, so the schema this step installs must
+    be visible in the callable for the audit to catch any change.
+    Keep it byte-identical to ``markdown_db.sqlite_lww.LWW_META_DDL``.
+    """
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS lww_meta (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            table_name    TEXT NOT NULL,
+            row_pk        TEXT NOT NULL,
+            field         TEXT NOT NULL,
+            ts            TEXT NOT NULL,
+            actor         TEXT NOT NULL DEFAULT '[]',
+            process       TEXT NOT NULL,
+            from_surface  TEXT,
+            to_surface    TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_lww_meta_latest
+            ON lww_meta(table_name, row_pk, field, to_surface, ts);
+    """)
+
+
 # ─── Runner ─────────────────────────────────────────────────────────
 
 
@@ -555,4 +591,5 @@ TASK_MIGRATIONS = MigrationRunner("task_metadata", migrations=[
     Migration(7, "task_sync_status freshness table",     _m007_task_sync_status),
     Migration(8, "soft-delete deleted_at columns",       _m008_soft_delete),
     Migration(9, "drop ON DELETE CASCADE from FKs",      _m009_drop_cascade),
+    Migration(10, "lww_meta write-provenance sidecar",   _m010_lww_meta),
 ])
