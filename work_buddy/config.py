@@ -1,10 +1,13 @@
 """Configuration loading for work-buddy context bundle collector."""
 
+import logging
 from pathlib import Path
 from typing import Any
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
+
+logger = logging.getLogger(__name__)
 
 
 DEFAULTS = {
@@ -192,12 +195,33 @@ def write_config_local(section: str, data: Any) -> None:
         yaml.safe_dump(existing, f, default_flow_style=False, sort_keys=False)
 
 
+def safe_timezone(name: str | None, *, fallback: str = "UTC") -> str:
+    """Return ``name`` if it is a valid IANA timezone, else ``fallback``.
+
+    Runtime code (the scheduler, display formatting) constructs
+    ``ZoneInfo`` from the configured timezone. An invalid value would
+    otherwise raise every time it is used — silently halting the
+    scheduler tick. Validate once here and degrade to a safe zone
+    instead of throwing; a set-but-invalid value logs a warning.
+    """
+    if not name:
+        return fallback
+    try:
+        ZoneInfo(name)
+        return name
+    except (ZoneInfoNotFoundError, KeyError, ValueError):
+        logger.warning(
+            "Invalid timezone %r in config; falling back to %s", name, fallback
+        )
+        return fallback
+
+
 _USER_TZ_CACHE: ZoneInfo | None = None
 
 
 def _compute_user_tz() -> ZoneInfo:
     cfg = load_config()
-    return ZoneInfo(cfg.get("timezone", "America/New_York"))
+    return ZoneInfo(safe_timezone(cfg.get("timezone")))
 
 
 def __getattr__(name: str):
