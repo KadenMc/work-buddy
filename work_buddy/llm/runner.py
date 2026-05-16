@@ -68,6 +68,63 @@ def _resolve_model_for_tier(tier: ModelTier) -> str:
     return models.get(tier.value, defaults.get(tier, defaults[ModelTier.HAIKU]))
 
 
+# JSON Schema validation-constraint keywords that the constrained-
+# decoding structured-output API rejects outright. The decoding grammar
+# expresses shape, not these runtime bounds, so sending any of them is a
+# 400. They are stripped before the call; express hard limits in the
+# prompt instead. (``minItems`` is handled separately — 0 and 1 ARE
+# accepted, larger values are not.)
+_UNSUPPORTED_SCHEMA_KEYS = frozenset({
+    "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf",
+    "minLength", "maxLength", "pattern",
+    "maxItems", "uniqueItems", "contains", "minContains", "maxContains",
+    "minProperties", "maxProperties",
+})
+
+
+def _normalize_structured_output_schema(schema: Any) -> Any:
+    """Return a deep copy of a JSON Schema accepted by the constrained-
+    decoding structured-output API.
+
+    Anthropic's ``output_config.format.schema`` (and OpenAI's strict
+    ``json_schema`` response format) accept only a subset of JSON Schema.
+    This normalizer:
+
+    * sets ``additionalProperties: false`` on every object node — the
+      API requires it explicitly and rejects any other value;
+    * drops the validation-constraint keywords in
+      ``_UNSUPPORTED_SCHEMA_KEYS`` (``maxItems``, ``minimum``,
+      ``pattern``, …) — the API 400s on them;
+    * keeps ``minItems`` only when it is 0 or 1 (the only values the API
+      supports).
+
+    Doing this centrally means structured-output schema authors never
+    have to track the dialect — every schema is normalized on the way to
+    the API. An ``object`` node is one whose ``type`` is ``"object"`` or
+    that carries a ``properties`` map (some schemas omit the redundant
+    ``type``). The walk recurses through every dict value and list item,
+    so nested ``properties``, ``items``, ``$defs``, and ``anyOf`` /
+    ``oneOf`` / ``allOf`` branches are all covered.
+
+    Stripped constraints stop being enforced by constrained decoding —
+    callers that need a hard bound should state it in the prompt.
+    """
+    if isinstance(schema, dict):
+        out: dict[str, Any] = {}
+        for key, value in schema.items():
+            if key in _UNSUPPORTED_SCHEMA_KEYS:
+                continue
+            if key == "minItems" and value not in (0, 1):
+                continue
+            out[key] = _normalize_structured_output_schema(value)
+        if out.get("type") == "object" or "properties" in out:
+            out["additionalProperties"] = False
+        return out
+    if isinstance(schema, list):
+        return [_normalize_structured_output_schema(v) for v in schema]
+    return schema
+
+
 def run_task(
     *,
     task_id: str,
@@ -161,6 +218,13 @@ def run_task(
         resolved_model = model or _default_model()
         execution_mode = "cloud"
         backend_id = "anthropic_default"
+
+    # Normalize the structured-output schema once, before any backend
+    # sees it: the constrained-decoding APIs accept only a subset of
+    # JSON Schema. Done here so both the Anthropic path and the
+    # local-profile path get a compliant schema.
+    if output_schema is not None:
+        output_schema = _normalize_structured_output_schema(output_schema)
 
     # Fingerprint the prompts so the cache is content-aware by
     # construction. ``system_hash`` goes into the scoped key (editing a
