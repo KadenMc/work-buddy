@@ -149,7 +149,7 @@ async function reprobeAll(btnEl) {
         const resp = await fetch('/api/control/reprobe', {method: 'POST'});
         if (!resp.ok) {
             const errText = await resp.text();
-            showToast(`Reprobe failed: ${errText}`, 'error');
+            settingsToast(`Reprobe failed: ${errText}`, 'error');
             return;
         }
         const data = await resp.json();
@@ -157,9 +157,9 @@ async function reprobeAll(btnEl) {
         _rebuildComponentEventIndex();
         renderSettingsTree();
         renderSettingsSummary();
-        showToast('Probes refreshed.', 'success');
+        settingsToast('Probes refreshed.', 'success');
     } catch (exc) {
-        showToast(`Reprobe request failed: ${exc}`, 'error');
+        settingsToast(`Reprobe request failed: ${exc}`, 'error');
     } finally {
         btnEl.disabled = false;
         btnEl.textContent = orig;
@@ -316,7 +316,7 @@ function onBadgeDrilldown(ev) {
     }
 
     if (bad.length === 0) {
-        showToast(`${rootId} reports ${nodes[rootId].effective_state} but no bad descendant found — check the status reason directly.`, 'info');
+        settingsToast(`${rootId} reports ${nodes[rootId].effective_state} but no bad descendant found — check the status reason directly.`, 'info');
         return;
     }
 
@@ -375,7 +375,7 @@ function _flashNode(nodeId, siblingCount) {
     el.classList.add('wb-flash');
     setTimeout(() => el.classList.remove('wb-flash'), 1800);
     if (siblingCount > 1) {
-        showToast(`Showing worst of ${siblingCount} issues — badges above lead to others.`, 'info');
+        settingsToast(`Showing worst of ${siblingCount} issues — badges above lead to others.`, 'info');
     }
 }
 
@@ -465,7 +465,7 @@ async function onPreferenceClick(btnEl) {
         });
         if (!resp.ok) {
             const err = await resp.text();
-            showToast(`Preference update failed: ${err}`, 'error');
+            settingsToast(`Preference update failed: ${err}`, 'error');
             return;
         }
         const data = await resp.json();
@@ -473,9 +473,9 @@ async function onPreferenceClick(btnEl) {
         WB_MATCHED_SET = _computeMatchedSet();
         renderSettingsTree();
         renderSettingsSummary();
-        showToast(`Preference saved for ${componentId}`, 'success');
+        settingsToast(`Preference saved for ${componentId}`, 'success');
     } catch (exc) {
-        showToast(`Preference update failed: ${exc}`, 'error');
+        settingsToast(`Preference update failed: ${exc}`, 'error');
     } finally {
         // If render didn't run (error path), re-enable the buttons
         siblings.forEach(b => { b.disabled = false; });
@@ -483,8 +483,13 @@ async function onPreferenceClick(btnEl) {
     }
 }
 
-// Minimal toast fallback in case the shared one isn't loaded yet
-function showToast(msg, kind) {
+// Simple status toast for the Settings tab (fix results, reprobe,
+// preference saves). Deliberately NOT named `showToast`: core/
+// notifications.py owns `window.showToast(title, body, ..., view, ...)`
+// for notification cards, and all frontend scripts concatenate into one
+// scope — naming this `showToast` lets the notifications version shadow
+// it, and calling it with `(msg, kind)` then throws on `view.short_id`.
+function settingsToast(msg, kind) {
     const container = document.getElementById('toast-container');
     if (!container) { console.log('[toast]', kind, msg); return; }
     const el = document.createElement('div');
@@ -793,14 +798,14 @@ async function _postFix(reqId, params, btnEl) {
         });
         const data = await resp.json();
         if (data.spawned) {
-            showToast(`Help session launched (pid ${data.spawned.pid}).`, 'success');
+            settingsToast(`Help session launched (pid ${data.spawned.pid}).`, 'success');
         } else if (data.ok) {
             const eff = data.side_effects && data.side_effects.length
                 ? ` — ${data.side_effects.join('; ')}`
                 : '';
-            showToast(`Fixed: ${data.detail}${eff}`, 'success');
+            settingsToast(`Fixed: ${data.detail}${eff}`, 'success');
         } else {
-            showToast(`Fix did not apply: ${data.detail}`, 'error');
+            settingsToast(`Fix did not apply: ${data.detail}`, 'error');
         }
         // Re-fetch the graph regardless — even a failed fix may have
         // moved partial state (and recheck data is fresh server-side).
@@ -812,7 +817,7 @@ async function _postFix(reqId, params, btnEl) {
             requestAnimationFrame(() => _flashNode('req:' + reqId));
         }
     } catch (exc) {
-        showToast(`Fix request failed: ${exc}`, 'error');
+        settingsToast(`Fix request failed: ${exc}`, 'error');
         btnEl.disabled = false;
         btnEl.textContent = orig;
     }
@@ -882,13 +887,13 @@ async function onComponentReprobeClick(btnEl) {
         const resp = await fetch('/api/reprobe/' + encodeURIComponent(componentId), {method: 'POST'});
         if (!resp.ok) {
             const errText = await resp.text();
-            showToast(`Reprobe ${componentId} failed: ${errText}`, 'error');
+            settingsToast(`Reprobe ${componentId} failed: ${errText}`, 'error');
             return;
         }
         await loadSettings(true);  // force-refresh the graph (single probe is on disk now)
         requestAnimationFrame(() => _flashNode('component:' + componentId));
     } catch (exc) {
-        showToast(`Reprobe request failed: ${exc}`, 'error');
+        settingsToast(`Reprobe request failed: ${exc}`, 'error');
     } finally {
         // loadSettings re-renders so btnEl no longer exists if successful,
         // but restore state on error paths.
@@ -909,12 +914,12 @@ async function onHelpClick(btnEl) {
         const resp = await fetch('/api/control/help/' + encodeURI(nodeId), {method: 'POST'});
         const data = await resp.json();
         if (data.ok) {
-            showToast(`Help session launched (pid ${data.pid || '?'}).`, 'success');
+            settingsToast(`Help session launched (pid ${data.pid || '?'}).`, 'success');
         } else {
-            showToast(`Help launch failed: ${data.detail}`, 'error');
+            settingsToast(`Help launch failed: ${data.detail}`, 'error');
         }
     } catch (exc) {
-        showToast(`Help request failed: ${exc}`, 'error');
+        settingsToast(`Help request failed: ${exc}`, 'error');
     } finally {
         btnEl.disabled = false;
         btnEl.textContent = orig;
@@ -943,7 +948,7 @@ function onStateChipClick(state) {
         .filter(n => n.effective_state === state && n.kind !== 'capability')
         .sort((a, b) => (kindRank[a.kind] ?? 99) - (kindRank[b.kind] ?? 99));
     if (candidates.length === 0) {
-        showToast(`No ${state} nodes visible.`, 'info');
+        settingsToast(`No ${state} nodes visible.`, 'info');
         return;
     }
     const target = candidates[0];
