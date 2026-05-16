@@ -340,232 +340,6 @@ body {
 }
 .bar-unreachable:hover { opacity: 1; }
 
-/* -- Health tree ------------------------------------------------------- */
-
-.health-summary {
-    background: var(--bg-secondary);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 12px 16px;
-    margin-bottom: 12px;
-}
-
-.health-bar {
-    height: 6px;
-    background: var(--bg-tertiary);
-    border-radius: 3px;
-    overflow: hidden;
-    margin-bottom: 8px;
-}
-
-.health-bar-fill {
-    height: 100%;
-    background: var(--green);
-    border-radius: 3px;
-    transition: width 0.5s ease;
-}
-
-.health-counts {
-    display: flex;
-    gap: 16px;
-    font-size: 12px;
-}
-
-.health-count.healthy { color: var(--green); }
-.health-count.unhealthy { color: var(--yellow); }
-.health-count.disabled { color: var(--text-muted); }
-
-.health-item {
-    background: var(--bg-secondary);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    margin-bottom: 6px;
-    overflow: hidden;
-}
-
-.health-row {
-    padding: 10px 16px;
-}
-
-.health-row.issue { background: #f851490a; }
-
-.health-row-main {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    flex-wrap: wrap;
-}
-
-.health-name {
-    font-size: 13px;
-    font-weight: 500;
-}
-
-.health-chevron {
-    font-size: 10px;
-    color: var(--text-muted);
-    transition: transform 0.2s;
-    cursor: pointer;
-}
-
-.health-item.collapsed .health-chevron { transform: rotate(-90deg); }
-.health-item.collapsed .health-sub { display: none; }
-.health-item.collapsed .health-diag { display: none; }
-
-/* Clickable header row for expandable items */
-.health-item > .health-row { cursor: pointer; user-select: none; }
-.health-item > .health-row:hover { background: var(--bg-tertiary); }
-
-.health-sub-count {
-    font-size: 11px;
-    color: var(--text-muted);
-}
-
-.health-sub-count.warn { color: var(--yellow); }
-
-.health-sub {
-    border-top: 1px solid var(--border);
-}
-
-.health-row.sub {
-    padding: 8px 16px 8px 36px;
-    border-bottom: 1px solid var(--border);
-}
-
-.health-row.sub:last-child { border-bottom: none; }
-
-.health-row-detail {
-    display: flex;
-    gap: 6px;
-    margin-top: 4px;
-    padding-left: 12px;
-    flex-wrap: wrap;
-}
-
-.health-chip {
-    font-size: 10px;
-    padding: 1px 6px;
-    border-radius: 3px;
-    background: var(--bg-tertiary);
-    color: var(--text-secondary);
-}
-
-.health-chip.warn { background: #d299221a; color: var(--yellow); }
-.health-chip.reason { background: #f851490a; color: var(--text-secondary); max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-/* Right-aligned action cluster: [Diagnose] [count] [↻] */
-.health-actions {
-    margin-left: auto;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    flex-shrink: 0;
-}
-
-/* Reprobe button — per-component manual refresh */
-.health-reprobe-btn {
-    font-size: 14px;
-    padding: 0;
-    width: 26px;
-    height: 26px;
-    line-height: 26px;
-    text-align: center;
-    border-radius: 50%;
-    border: none;
-    background: transparent;
-    color: var(--text-muted);
-    cursor: pointer;
-    transition: color 0.15s, background 0.15s;
-    flex-shrink: 0;
-}
-.health-reprobe-btn:hover { color: var(--text-primary); background: var(--bg-tertiary); }
-.health-reprobe-btn.spinning {
-    pointer-events: none;
-    animation: diagSpin 0.6s linear infinite;
-    color: var(--text-secondary);
-}
-
-/* Diagnose button — appears on unhealthy components */
-.health-diagnose-btn {
-    margin-left: auto;
-    font-size: 12px;
-    padding: 4px 12px;
-    border-radius: 6px;
-    border: 1px solid var(--border);
-    background: var(--bg-tertiary);
-    color: var(--text-secondary);
-    cursor: pointer;
-    white-space: nowrap;
-    transition: background 0.15s, border-color 0.15s;
-}
-.health-diagnose-btn:hover { background: var(--bg-hover, var(--border)); color: var(--text-primary); border-color: var(--text-muted); }
-.health-diagnose-btn.loading { pointer-events: none; }
-
-/* Shared spin animation for reprobe ↻ and inline spinners */
-@keyframes diagSpin { to { transform: rotate(360deg); } }
-
-.diag-spinner {
-    display: inline-block;
-    width: 14px;
-    height: 14px;
-    border: 2px solid var(--border);
-    border-top-color: var(--text-primary);
-    border-radius: 50%;
-    animation: diagSpin 0.6s linear infinite;
-    vertical-align: middle;
-}
-
-/* Diagnostic results panel — slides in below the row */
-.health-diag {
-    border-top: 1px solid var(--border);
-    padding: 10px 16px;
-    font-size: 12px;
-    background: var(--bg-primary);
-}
-.health-diag-steps {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    margin-bottom: 8px;
-}
-.health-diag-step {
-    display: flex;
-    align-items: baseline;
-    gap: 6px;
-}
-.health-diag-step .step-icon { flex-shrink: 0; }
-.health-diag-step .step-desc { color: var(--text-secondary); }
-.health-diag-step .step-detail { color: var(--text-muted); font-size: 11px; }
-.health-diag-step.fail .step-desc { color: var(--text-primary); }
-
-.health-diag-cause {
-    padding: 8px 10px;
-    border-radius: 4px;
-    background: #f851490a;
-    border-left: 3px solid var(--red, #f85149);
-    margin-bottom: 6px;
-}
-.health-diag-cause .cause-label { font-weight: 600; font-size: 11px; text-transform: uppercase; color: var(--text-muted); margin-bottom: 2px; }
-.health-diag-cause .cause-text { color: var(--text-primary); }
-
-.health-diag-fix {
-    padding: 8px 10px;
-    border-radius: 4px;
-    background: var(--bg-tertiary);
-    border-left: 3px solid var(--blue, #58a6ff);
-    color: var(--text-secondary);
-}
-.health-diag-fix .fix-label { font-weight: 600; font-size: 11px; text-transform: uppercase; color: var(--text-muted); margin-bottom: 2px; font-family: var(--font-sans, system-ui); }
-.health-diag-fix .fix-text { margin: 0; white-space: pre-wrap; font-family: var(--font-mono, monospace); font-size: 11px; line-height: 1.5; }
-.health-diag-wizard { margin-top: 6px; padding: 6px 10px; border-radius: 4px; background: var(--surface-2); font-size: 12px; color: var(--text-secondary); display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
-.health-diag-wizard code { background: var(--bg-tertiary); padding: 1px 5px; border-radius: 3px; font-size: 11px; }
-.wizard-launch-btns { margin-left: auto; display: inline-flex; gap: 4px; }
-.wizard-launch-btn { padding: 2px 8px; border: 1px solid var(--accent); border-radius: 4px; background: transparent; color: var(--accent); font-size: 11px; cursor: pointer; transition: background 0.15s, color 0.15s; white-space: nowrap; }
-.wizard-launch-btn:hover { background: var(--accent); color: var(--bg-primary); }
-.wizard-launch-btn:disabled { opacity: 0.6; cursor: default; pointer-events: none; }
-.wizard-launch-btn.mobile { border-color: var(--text-muted); color: var(--text-muted); }
-.wizard-launch-btn.mobile:hover { background: var(--text-muted); color: var(--bg-primary); }
-
 /* -- Event log --------------------------------------------------------- */
 
 .log-container {
@@ -3177,6 +2951,71 @@ body {
 }
 
 /* ---------- Settings tab (control graph) ---------- */
+
+/* Sub-tab nav: Status (control graph) | Activity (bridge + logs).
+   First sub-tab pattern in the dashboard — underline style, matches
+   the primary tab-bar's visual language without the chrome. */
+.settings-subtab-bar {
+    display: flex;
+    gap: 4px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 16px;
+}
+.settings-subtab-btn {
+    padding: 7px 16px;
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: var(--text-secondary);
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: color 0.15s, border-color 0.15s;
+}
+.settings-subtab-btn:hover { color: var(--text-primary); }
+.settings-subtab-btn.active {
+    color: var(--text-primary);
+    border-bottom-color: var(--accent);
+}
+.settings-subtab-panel { display: none; }
+.settings-subtab-panel.active { display: block; }
+
+/* Per-component recent-events chip + expandable panel (Status sub-view).
+   The chip appears on a component row when its sidecar service has
+   logged warn/error events; clicking it expands the panel inline. */
+.settings-evt-chip {
+    font-size: 11px;
+    padding: 1px 8px;
+    border-radius: 10px;
+    border: 1px solid var(--yellow, #d29922);
+    background: transparent;
+    color: var(--yellow, #d29922);
+    cursor: pointer;
+    white-space: nowrap;
+    flex-shrink: 0;
+    transition: background 0.15s, color 0.15s;
+}
+.settings-evt-chip:hover,
+.settings-evt-chip.open {
+    background: var(--yellow, #d29922);
+    color: var(--bg-primary);
+}
+.settings-evt-panel { display: none; margin-top: 8px; }
+.settings-evt-panel.open { display: block; }
+.evt-panel-row {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 4px 8px;
+    font-size: 12px;
+    border-left: 2px solid var(--border);
+}
+.evt-panel-row.warn { border-left-color: var(--yellow, #d29922); }
+.evt-panel-row.error { border-left-color: var(--red, #f85149); }
+.evt-panel-ts { color: var(--text-muted); font-family: monospace; white-space: nowrap; }
+.evt-panel-kind { color: var(--text-secondary); white-space: nowrap; }
+.evt-panel-msg { color: var(--text-primary); flex: 1; min-width: 0; }
+
 .settings-toolbar {
     display: flex;
     align-items: center;

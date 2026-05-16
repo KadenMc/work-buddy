@@ -30,6 +30,60 @@ let WB_SHOW_DISABLED_LIST = false;
 // domain even though Telegram lives inside it.
 let WB_MATCHED_SET = null;
 
+// ---- Settings sub-tabs: Status (control graph) | Activity (bridge + logs) ----
+//
+// The Settings tab hosts two sub-views. 'status' is the control graph
+// (default). 'activity' is the bridge sparkline + event log +
+// notification log. Switching is purely client-side; the active sub-tab
+// is persisted to the URL hash via the `st` key (see core/page.py).
+let WB_SETTINGS_SUBTAB = 'status';
+
+function switchSettingsSubtab(st) {
+    if (st !== 'status' && st !== 'activity') st = 'status';
+    WB_SETTINGS_SUBTAB = st;
+    document.querySelectorAll('.settings-subtab-btn').forEach(b =>
+        b.classList.toggle('active', b.dataset.st === st));
+    document.querySelectorAll('.settings-subtab-panel').forEach(p =>
+        p.classList.toggle('active', p.id === 'ssp-' + st));
+    if (typeof _persistHash === 'function') _persistHash();
+    // Lazy-load Activity content on first switch — the panel ships with
+    // placeholder loading divs until loadActivity() populates it.
+    if (st === 'activity' && !window._activityLoaded
+        && typeof loadActivity === 'function') {
+        loadActivity();
+    }
+}
+
+// At-a-glance system cards (uptime / services healthy / jobs / last
+// tick) pinned to the top of the Status sub-view. Sourced from the
+// cached /api/state snapshot that loadSettings already fetches.
+function renderStatusCards() {
+    const el = document.getElementById('settings-status-cards');
+    if (!el) return;
+    const data = window._WB_LAST_STATE;
+    if (!data) { el.innerHTML = ''; return; }
+    const services = Object.values(data.services || {});
+    const healthy = services.filter(s => s.status === 'healthy').length;
+    el.innerHTML = `
+        <div class="card">
+            <div class="card-label">Uptime</div>
+            <div class="card-value">${formatUptime(data.uptime_seconds || 0)}</div>
+        </div>
+        <div class="card">
+            <div class="card-label">Services</div>
+            <div class="card-value">${healthy}<span class="unit"> / ${services.length} healthy</span></div>
+        </div>
+        <div class="card">
+            <div class="card-label">Jobs</div>
+            <div class="card-value">${(data.jobs || []).length}</div>
+        </div>
+        <div class="card">
+            <div class="card-label">Last Tick</div>
+            <div class="card-value small">${timeAgo(data.last_tick_at)}</div>
+        </div>
+    `;
+}
+
 async function loadSettings(force) {
     const tree = document.getElementById('settings-tree');
     const summary = document.getElementById('settings-summary');
@@ -38,16 +92,40 @@ async function loadSettings(force) {
 
     try {
         const url = '/api/control/graph' + (force ? '?force=1' : '');
-        const resp = await fetch(url);
+        // Fetch the control graph and /api/state in parallel. The latter
+        // feeds the per-component event chips and the at-a-glance status
+        // cards (both Status sub-view). A failed state fetch must not
+        // block the graph render — hence the catch.
+        const [resp, stateResp] = await Promise.all([
+            fetch(url),
+            fetch('/api/state').catch(() => null),
+        ]);
         if (!resp.ok) {
             tree.innerHTML = `<div class="error-state">Failed to load (${resp.status}): ${await resp.text()}</div>`;
             return;
         }
         const data = await resp.json();
         WB_CONTROL_GRAPH = data;
+        if (stateResp && stateResp.ok) {
+            try {
+                const state = await stateResp.json();
+                window._WB_LAST_STATE = state;
+                window._WB_EVENT_COUNTS = state.event_counts_by_source || {};
+            } catch (e) { /* event chips are optional decoration */ }
+        }
+        _rebuildComponentEventIndex();
+        renderStatusCards();
         WB_MATCHED_SET = _computeMatchedSet();
         renderSettingsTree();
         renderSettingsSummary();
+        // Restore sub-tab from the URL hash on first load. Consume the
+        // key once so a later SSE-driven loadSettings() doesn't override
+        // a manual sub-tab switch the user made in the meantime.
+        if (window._urlState && window._urlState.st
+            && typeof switchSettingsSubtab === 'function') {
+            switchSettingsSubtab(window._urlState.st);
+            delete window._urlState.st;
+        }
     } catch (exc) {
         tree.innerHTML = `<div class="error-state">Error loading control graph: ${escapeHtml(String(exc))}</div>`;
     }
@@ -77,6 +155,7 @@ async function reprobeAll(btnEl) {
         }
         const data = await resp.json();
         WB_CONTROL_GRAPH = data;
+        _rebuildComponentEventIndex();
         renderSettingsTree();
         renderSettingsSummary();
         showToast('Probes refreshed.', 'success');
@@ -974,9 +1053,8 @@ function _renderAlsoIn(node, currentParent) {
 
 function _renderComponentNode(nodes, node, underParent) {
     if (!_isVisible(node)) return '';
-    // ? button always available on components — diagnose/help via
-    // spawned Claude Code session, replacing the legacy Status-tab
-    // diagnose+launchSetupAgent path with a single help-brief flow.
+    // ? button always available on components — diagnose/help via a
+    // spawned Claude Code session briefed with help_briefs.build_help_brief.
     // Styled emphatically (red-ish) when the component isn't ok so it
     // visibly says "you may want to click me" rather than fading in.
     const helpAlert = node.effective_state !== 'ok' && node.effective_state !== 'disabled'
@@ -995,6 +1073,21 @@ function _renderComponentNode(nodes, node, underParent) {
                                  data-component-id="${escapeHtml(node.component_id || '')}"
                                  ${WB_READ_ONLY_MODE ? 'disabled' : ''}
                                  title="Re-run just this component's probe (fast). Use when you want a definitive state for this one thing without waiting for a full reprobe.">&#x21BB;</button>`;
+    // Recent-events chip — present only when this component has a sidecar
+    // service AND that service has logged warn/error events. Clicking it
+    // expands an inline panel (state tracked in window._WB_EVT_PANELS so
+    // it survives morphdom re-renders).
+    const evtReg = (window._WB_COMPONENT_EVTS || {})[node.id];
+    const evtCount = evtReg ? evtReg.events.length : 0;
+    const evtOpen = !!(window._WB_EVT_PANELS && window._WB_EVT_PANELS[node.id]);
+    const evtChip = evtCount > 0
+        ? `<button class="settings-evt-chip${evtOpen ? ' open' : ''}" type="button"
+                   onclick="toggleComponentEvents('${escapeHtml(node.id)}', this)"
+                   title="${evtCount} recent warn/error event${evtCount !== 1 ? 's' : ''} on this component — click to ${evtOpen ? 'hide' : 'show'}">&#9888; ${evtCount}</button>`
+        : '';
+    const evtPanel = evtCount > 0
+        ? _renderComponentEventPanel(node.id, evtReg.events, evtOpen)
+        : '';
     return `
         <div class="settings-node settings-component" data-state="${node.effective_state}" data-kind="component" data-wb-node-id="${escapeHtml(node.id)}">
             <div class="settings-node-header">
@@ -1003,6 +1096,7 @@ function _renderComponentNode(nodes, node, underParent) {
                 ${controlStateBadge(node.effective_state, node.id)}
                 ${preferenceBadge(node.preference)}
                 ${_renderAlsoIn(node, underParent)}
+                ${evtChip}
                 ${reprobeBtn}
                 ${helpBtn}
             </div>
@@ -1011,6 +1105,7 @@ function _renderComponentNode(nodes, node, underParent) {
             ${_renderDependencyChips(nodes, node.dependencies)}
             ${_renderRequirementList(nodes, node.requirement_ids)}
             ${_renderCapabilityList(node.affects_capabilities)}
+            ${evtPanel}
         </div>
     `;
 }
@@ -1131,35 +1226,198 @@ function renderSettingsTree() {
 // natively by morphdom; no panel-wide rewrite ever occurs.
 window.settingsSurface = {
     refresh: function() {
-        if (typeof loadSettings === 'function') return loadSettings();
+        let p;
+        if (typeof loadSettings === 'function') p = loadSettings();
+        // Keep the Activity sub-view fresh too, but only once it has been
+        // opened at least once (loadActivity sets window._activityLoaded).
+        if (window._activityLoaded && typeof loadActivity === 'function') {
+            loadActivity();
+        }
+        return p;
     },
     isMounted: function() {
         return !!document.getElementById('settings-tree');
     },
 };
 
-// ---- Setup-wizard launcher ----
-async function launchSetupAgent(componentId, mode, btn) {
-    if (_readOnly) return;
-    const origText = btn.textContent;
+// ==================================================================
+// Activity sub-view — bridge sparkline + event log + notification log.
+//
+// The component health tree is intentionally NOT rendered here: the
+// control graph in the Status sub-view is its strict superset.
+//
+// Read-only gating uses WB_READ_ONLY_MODE (set eagerly by
+// initReadOnlyFlag), not the global _readOnly — the latter is only
+// set truthfully once the Overview loader has run.
+// ==================================================================
+
+async function loadActivity() {
+    window._activityLoaded = true;
+    const data = await fetchJSON('/api/state');
+    if (!data) return;
+    window._WB_LAST_STATE = data;
+
+    // --- Obsidian bridge sparkline ---
+    const b = data.bridge || {};
+    const bridgeEl = document.getElementById('activity-bridge');
+    if (bridgeEl && b.status) {
+        const dotClass = b.status === 'healthy' ? 'healthy' : (b.status === 'timeout' ? 'unhealthy' : 'crashed');
+        const statusLabel = b.status === 'healthy'
+            ? 'connected'
+            : (b.status === 'unreachable'
+                ? 'Obsidian not running'
+                : b.status === 'timeout'
+                    ? 'bridge lagging'
+                    : b.status);
+        const latencyColor = (b.latency_ms || 0) > 2000 ? 'var(--red)' : (b.latency_ms || 0) > 500 ? 'var(--yellow)' : 'var(--text-primary)';
+
+        // Log-scale sparkline, normalized so the tallest bar fills 100%.
+        // Bar classes: bar-ok (<=500ms), bar-slow (>500ms), bar-fail
+        // (timeout), bar-unreachable (port closed / Obsidian not running).
+        const hist = b.history || [];
+        const logMax = Math.max(1, ...hist.map(h => Math.log10(Math.max(1, h.ms))));
+        const bars = hist.map(h => {
+            const logMs = Math.log10(Math.max(1, h.ms));
+            const pct = Math.max(8, (logMs / logMax) * 100);
+            let cls;
+            if (h.ok) {
+                cls = h.ms > 500 ? 'bar-slow' : 'bar-ok';
+            } else if (h.status === 'unreachable') {
+                cls = 'bar-unreachable';
+            } else {
+                cls = 'bar-fail';
+            }
+            const dt = new Date(h.ts * 1000);
+            const label = h.ok
+                ? (h.ms + 'ms')
+                : (h.status === 'unreachable'
+                    ? 'Obsidian closed (port refused)'
+                    : 'Obsidian lag/timeout (' + h.ms + 'ms)');
+            const tip = dt.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'}) + ' — ' + label;
+            return `<div class="bar ${cls}" style="height:${pct}%" title="${tip}"></div>`;
+        }).join('');
+
+        bridgeEl.innerHTML = `
+            <div class="bridge-card">
+                <div class="bridge-header">
+                    <h3><span class="status-dot ${dotClass}"></span> Obsidian Bridge — ${statusLabel}</h3>
+                    <div class="bridge-stats">
+                        <div>Latency <span class="bridge-stat-value" style="color:${latencyColor}">${b.latency_ms}ms</span></div>
+                        <div>Trend <span class="bridge-stat-value">${b.ema_ms || 0}ms</span>${(() => {
+                            const tc = (b.ema_ms||0) > 2000 ? 'var(--red)' : (b.ema_ms||0) > 500 ? 'var(--yellow)' : 'var(--text-primary)';
+                            const arrow = b.trend === 'up' ? '▲' : b.trend === 'down' ? '▼' : '◆';
+                            const tip = b.trend === 'up' ? 'Latency increasing' : b.trend === 'down' ? 'Latency decreasing' : 'Latency stable';
+                            return ` <span style="color:${tc}" title="${tip}">${arrow}</span>`;
+                        })()}</div>
+                        <div>Peak <span class="bridge-stat-value">${b.max_ms || 0}ms</span></div>
+                    </div>
+                    <div class="bridge-meta">${b.vault || ''} ${b.plugin_version ? 'v' + b.plugin_version : ''}</div>
+                </div>
+                ${bars ? `<div class="bridge-sparkline">${bars}</div>` : ''}
+            </div>
+        `;
+    } else if (bridgeEl) {
+        bridgeEl.innerHTML = '<div class="empty-state">Bridge status unavailable</div>';
+    }
+
+    // --- Event log ---
+    const events = (data.events || []).slice().reverse();  // newest first
+    window._logActivityEvents = events;
+    const logEl = document.getElementById('activity-log');
+    if (logEl) {
+        if (events.length === 0) {
+            logEl.innerHTML = '<div class="empty-state">No events yet</div>';
+        } else {
+            const logHtml = events.map((e, i) => {
+                const dt = new Date(e.ts * 1000);
+                const time = dt.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+                const kind = (e.kind || '').replace(/_/g, ' ');
+                const level = e.level || 'info';
+                const actions = (!WB_READ_ONLY_MODE && (level === 'error' || level === 'warn'))
+                    ? `<span class="log-actions"><button class="btn-investigate ${level}" onclick="investigateActivityEvent(${i}, this)" title="Spawn agent to investigate">Investigate</button></span>`
+                    : '';
+                return `<div class="log-entry ${level}">
+                    <span class="log-ts">${time}</span>
+                    <span class="log-kind">${kind}</span>
+                    <span class="log-msg"><strong>${e.source}</strong> — ${e.summary}</span>
+                    ${actions}
+                </div>`;
+            }).join('');
+            logEl.innerHTML = `<div class="log-container">${logHtml}</div>`;
+        }
+    }
+
+    // --- Notification log ---
+    // Always renders, independent of whether the event log is empty.
+    try {
+        const logData = await fetchJSON('/api/notification-log');
+        const notifEl = document.getElementById('activity-notif-log');
+        if (notifEl) {
+            if (!logData || !logData.entries || logData.entries.length === 0) {
+                notifEl.innerHTML = '<div class="empty-state">No notifications yet</div>';
+            } else {
+                const logRows = logData.entries.map(e => {
+                    const dt = new Date(e.ts * 1000);
+                    const time = dt.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+                    const isReq = e.type === 'request';
+                    const pill = isReq
+                        ? '<span class="type-pill request1" style="font-size:9px;padding:1px 6px">REQUEST</span>'
+                        : '<span class="type-pill note1" style="font-size:9px;padding:1px 6px">NOTE</span>';
+                    const sid = e.short_id ? ' <code>#' + e.short_id + '</code>' : '';
+                    const surfaces = (e.surfaces || []).join(', ') || '—';
+                    return '<tr>'
+                        + '<td style="white-space:nowrap;color:var(--text-muted)">' + time + '</td>'
+                        + '<td>' + pill + '</td>'
+                        + '<td>' + (e.title || '') + sid + '</td>'
+                        + '<td style="color:var(--text-muted)">' + surfaces + '</td>'
+                        + '</tr>';
+                }).join('');
+                notifEl.innerHTML = `
+                    <table class="data-table">
+                        <thead><tr><th>Time</th><th>Type</th><th>Title</th><th>Surfaces</th></tr></thead>
+                        <tbody>${logRows}</tbody>
+                    </table>
+                `;
+            }
+        }
+    } catch(e) { /* notification log optional */ }
+}
+
+// Copy the event log to the clipboard as plain text.
+function copyActivityLog() {
+    const events = window._logActivityEvents || [];
+    if (!events.length) return;
+    const text = events.map(e => {
+        const dt = new Date(e.ts * 1000);
+        const time = dt.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+        const kind = (e.kind || '').replace(/_/g, ' ').padEnd(16);
+        const level = (e.level || 'info').toUpperCase().padEnd(5);
+        return `${time}  ${level}  ${kind}  ${e.source}: ${e.summary}`;
+    }).join('\\n');
+    navigator.clipboard.writeText(text).then(() => {
+        const btn = document.querySelector('#ssp-activity .log-toolbar-btn');
+        if (btn) { btn.textContent = 'Copied!'; setTimeout(() => btn.textContent = 'Copy Log', 1500); }
+    });
+}
+
+// Shared spawn path for the Investigate buttons. POSTs the event to
+// /api/investigate; when componentId is set the backend produces a
+// richer brief (control-graph context for the linked component).
+async function _spawnInvestigate(evt, btn, componentId) {
+    if (WB_READ_ONLY_MODE || !evt || !btn) return;
     btn.textContent = 'Launching...';
     btn.disabled = true;
-
-    const prompt = '/wb-setup diagnose ' + componentId;
-
+    const body = {event: evt};
+    if (componentId) body.component_id = componentId;
     try {
-        const r = await fetch('/api/launch-agent', {
+        const r = await fetch('/api/investigate', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({
-                prompt: prompt,
-                mode: mode,
-                context: {source: 'setup_wizard', component_id: componentId}
-            }),
+            body: JSON.stringify(body),
         });
         const data = await r.json();
         if (data.success) {
-            btn.textContent = 'Launched \u2713';
+            btn.textContent = 'Launched';
             btn.style.background = 'var(--green-subtle)';
             btn.style.borderColor = 'var(--green)';
             btn.style.color = 'var(--green)';
@@ -1170,7 +1428,90 @@ async function launchSetupAgent(componentId, mode, btn) {
     } catch (err) {
         btn.textContent = 'Error';
         btn.disabled = false;
-        console.error('Setup agent launch failed:', err);
+        console.error('Investigate failed:', err);
     }
+}
+
+// Investigate from the Activity event log (no component context).
+async function investigateActivityEvent(idx, btnEl) {
+    const evt = (window._logActivityEvents || [])[idx];
+    const btn = btnEl || (typeof event !== 'undefined' && event ? event.target : null);
+    await _spawnInvestigate(evt, btn, null);
+}
+
+// Investigate from a per-component event chip panel (Status sub-view).
+// Carries the component id so the spawned agent gets the richer brief.
+async function investigateComponentEvent(nodeId, idx, btnEl) {
+    const reg = (window._WB_COMPONENT_EVTS || {})[nodeId];
+    if (!reg) return;
+    await _spawnInvestigate(reg.events[idx], btnEl, reg.componentId);
+}
+
+// ---- Per-component event chips (Status sub-view) ----
+//
+// Joins sidecar warn/error events to control-graph components via
+// `node.sidecar_service` === `event.source`. Rebuilt whenever the graph
+// or /api/state refreshes. window._WB_COMPONENT_EVTS maps a component
+// node id -> { componentId, sidecarService, events[] } (newest first).
+
+function _rebuildComponentEventIndex() {
+    const idx = {};
+    const state = window._WB_LAST_STATE;
+    const graph = WB_CONTROL_GRAPH;
+    if (state && graph && graph.nodes) {
+        const events = state.events || [];
+        for (const nid in graph.nodes) {
+            const n = graph.nodes[nid];
+            if (n.kind !== 'component' || !n.sidecar_service) continue;
+            const evts = events
+                .filter(e => e && e.source === n.sidecar_service
+                             && (e.level === 'warn' || e.level === 'error'))
+                .slice()
+                .reverse();  // newest first
+            if (evts.length) {
+                idx[n.id] = {
+                    componentId: n.component_id,
+                    sidecarService: n.sidecar_service,
+                    events: evts,
+                };
+            }
+        }
+    }
+    window._WB_COMPONENT_EVTS = idx;
+}
+
+// HTML for the collapsible event panel rendered inside a component node.
+// `open` reflects window._WB_EVT_PANELS so the expanded/collapsed state
+// survives morphdom re-renders.
+function _renderComponentEventPanel(nodeId, evts, open) {
+    const rows = evts.map((e, i) => {
+        const dt = new Date(e.ts * 1000);
+        const time = dt.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+        const kind = (e.kind || '').replace(/_/g, ' ');
+        const level = e.level || 'info';
+        const invBtn = WB_READ_ONLY_MODE ? '' :
+            `<button class="btn-investigate ${level}" type="button"
+                     onclick="investigateComponentEvent('${escapeHtml(nodeId)}', ${i}, this)"
+                     title="Spawn an agent to investigate this event">Investigate</button>`;
+        return `<div class="evt-panel-row ${level}">
+            <span class="evt-panel-ts">${time}</span>
+            <span class="evt-panel-kind">${escapeHtml(kind)}</span>
+            <span class="evt-panel-msg">${escapeHtml(e.summary || '')}</span>
+            ${invBtn}
+        </div>`;
+    }).join('');
+    return `<div class="settings-evt-panel${open ? ' open' : ''}" data-evt-component="${escapeHtml(nodeId)}">${rows}</div>`;
+}
+
+// Expand/collapse a component's event panel. Pure class toggle — the
+// panel is part of the rendered tree, so morphdom keeps it in place.
+function toggleComponentEvents(nodeId, btnEl) {
+    if (!window._WB_EVT_PANELS) window._WB_EVT_PANELS = {};
+    const open = !window._WB_EVT_PANELS[nodeId];
+    window._WB_EVT_PANELS[nodeId] = open;
+    const host = btnEl ? btnEl.closest('.settings-component') : null;
+    const panel = host ? host.querySelector('.settings-evt-panel') : null;
+    if (panel) panel.classList.toggle('open', open);
+    if (btnEl) btnEl.classList.toggle('open', open);
 }
 """
