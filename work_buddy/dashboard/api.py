@@ -230,6 +230,8 @@ def get_system_state() -> dict[str, Any]:
         if isinstance(job, dict) and job.get("schedule"):
             job["schedule_desc"] = _describe_cron(job["schedule"])
 
+    from work_buddy.health.preferences import is_wanted
+
     result = {
         "status": "running",
         "pid": state.get("pid", 0),
@@ -240,7 +242,12 @@ def get_system_state() -> dict[str, Any]:
         "services": state.get("services", {}),
         "jobs": jobs,
         "events": state.get("events", []),
-        "bridge": get_bridge_status(),
+        # The bridge probe is skipped entirely when Obsidian is explicitly
+        # opted out — no point pinging a bridge the user disabled, and it
+        # stops the in-process latency history from growing. Undecided
+        # (``None``) still probes; the gated card is hidden separately by
+        # the card registry. See architecture/feature-cards.
+        "bridge": None if is_wanted("obsidian") is False else get_bridge_status(),
         "chrome": get_chrome_status(),
     }
 

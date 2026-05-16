@@ -30,6 +30,7 @@ inline.
 from __future__ import annotations
 
 from .core import (
+    card_registry,
     chat_sidebar,
     event_bus,
     form_bridge,
@@ -53,6 +54,9 @@ from .tabs import (
     tasks,
     today,
 )
+from .tabs.cards import event_log as card_event_log
+from .tabs.cards import notification_log as card_notification_log
+from .tabs.cards import obsidian_bridge as card_obsidian_bridge
 from .tabs.threads import actions as threads_actions
 from .tabs.threads import card as threads_card
 from .tabs.threads import group as threads_group
@@ -74,6 +78,9 @@ from .tabs.threads import main as threads
 # * ``threads_card``, ``threads_actions``, ``threads_group`` after
 #   ``threads.script`` — the latter publishes ``window.threadsSurface``
 #   onto which the cluster modules attach.
+# * ``card_registry`` after ``helpers`` (the mounter uses ``fetchJSON`` /
+#   ``_wbMorphReplace``) and before the ``card_*`` renderer modules,
+#   which assign into the ``window.wbCardRenderers`` map it initializes.
 # * ``page`` LAST. ``core/page.py`` runs init at script-load time:
 #   ``_loadJobRegistry()`` synchronously and ``_initFromHash`` queued
 #   for ``DOMContentLoaded``. Both touch ``let``/``const`` declarations
@@ -86,6 +93,10 @@ from .tabs.threads import main as threads
 SCRIPTS = [
     event_bus.script,
     helpers.script,
+    card_registry.script,
+    card_obsidian_bridge.script,
+    card_event_log.script,
+    card_notification_log.script,
     pager.script,
     workflows.script,
     notifications.script,
