@@ -649,9 +649,34 @@ function renderSettingsSummary() {
 //   * ? — always present (when not ok). Spawns a help-agent session with
 //     a structured brief. Replaces the legacy Status-tab `🪄 /wb-setup
 //     diagnose` hint.
+// Shared data-* attributes for any button that opens the fix flow
+// (onFixClick reads them). data-fix-params is single-quoted because the
+// JSON value is full of double quotes; escapeHtml only covers < > & so
+// apostrophes inside fix_params text would close the attribute early —
+// hence the explicit ' -> &#39; pass.
+function _fixDataAttrs(r) {
+    return `data-req-id="${escapeHtml(r.id.replace(/^req:/, ''))}" ` +
+        `data-fix-kind="${escapeHtml(r.fix_kind)}" ` +
+        `data-fix-preview="${escapeHtml(r.fix_preview || '')}" ` +
+        `data-fix-params='${escapeHtml(JSON.stringify(r.fix_params || {})).replace(/'/g, '&#39;')}'`;
+}
+
 function _renderRequirementActions(r) {
-    if (r.effective_state === 'ok' || r.effective_state === 'disabled') {
+    if (r.effective_state === 'disabled') {
         return '';
+    }
+    // A satisfied (ok) requirement has no fix to apply — but an
+    // input_required one is still an editable setting (timezone, backup
+    // repo, …). Offer a subtle pencil to change its value; other ok
+    // requirements get no action.
+    if (r.effective_state === 'ok') {
+        if (r.fix_kind !== 'input_required') return '';
+        const roDisabled = WB_READ_ONLY_MODE
+            ? 'disabled title="Dashboard is in read-only mode"' : '';
+        return `<span class="settings-req-actions">` +
+            `<button class="settings-edit-btn" type="button" ` +
+            `onclick="onFixClick(this)" ${_fixDataAttrs(r)} ${roDisabled} ` +
+            `title="Change this setting">✎</button></span>`;
     }
     // Two user-facing verbs:
     //   * "Configure" covers BOTH programmatic and input_required.
@@ -678,17 +703,10 @@ function _renderRequirementActions(r) {
         fixClass += ' settings-fix-btn-agent';
         fixTitle = 'Opens a Claude Code session to walk you through this. ' + (r.fix_preview || '');
     }
-    // data-fix-params is single-quoted because the JSON value is full of
-    // double quotes; escapeHtml only covers < > & so apostrophes inside
-    // fix_params text (hints, labels) would close the attribute early —
-    // hence the explicit ' -> &#39; pass.
     const fixBtn = r.fix_kind && r.fix_kind !== 'none'
         ? `<button class="${fixClass}" type="button"
                    onclick="onFixClick(this)"
-                   data-req-id="${escapeHtml(r.id.replace(/^req:/, ''))}"
-                   data-fix-kind="${escapeHtml(r.fix_kind)}"
-                   data-fix-preview="${escapeHtml(r.fix_preview || '')}"
-                   data-fix-params='${escapeHtml(JSON.stringify(r.fix_params || {})).replace(/'/g, '&#39;')}'
+                   ${_fixDataAttrs(r)}
                    ${WB_READ_ONLY_MODE ? 'disabled title="Dashboard is in read-only mode"' : ''}
                    title="${escapeHtml(fixTitle.trim())}">${escapeHtml(fixLabel)}</button>`
         : '';
@@ -858,11 +876,16 @@ function _renderInputForm(btnEl, reqId, fixParams) {
         const inputType = spec.secret ? 'password' : (spec.type === 'path' ? 'text' : 'text');
         const required = spec.required ? 'required' : '';
         const placeholder = spec.hint ? `placeholder="${escapeHtml(spec.hint)}"` : '';
-        const defaultVal = spec.default != null ? `value="${escapeHtml(String(spec.default))}"` : '';
+        // Pre-fill with the requirement's current configured value when
+        // the server supplied one, else the declared default. This is
+        // what lets the form double as an "edit this setting" panel.
+        const prefill = spec.current_value != null ? spec.current_value
+                      : (spec.default != null ? spec.default : null);
+        const valueAttr = prefill != null ? `value="${escapeHtml(String(prefill))}"` : '';
         return `
             <label class="settings-fix-field">
                 <span class="settings-fix-field-label">${escapeHtml(spec.label || name)}${spec.required ? ' *' : ''}</span>
-                <input type="${inputType}" name="${escapeHtml(name)}" ${required} ${placeholder} ${defaultVal}
+                <input type="${inputType}" name="${escapeHtml(name)}" ${required} ${placeholder} ${valueAttr}
                        autocomplete="off" spellcheck="false" />
             </label>
         `;

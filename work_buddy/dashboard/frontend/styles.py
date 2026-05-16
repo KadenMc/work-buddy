@@ -3405,9 +3405,32 @@ body {
 }
 .settings-fix-btn:disabled,
 .settings-help-btn:disabled,
-.settings-fix-cancel-btn:disabled {
+.settings-fix-cancel-btn:disabled,
+.settings-edit-btn:disabled {
     cursor: not-allowed;
     opacity: 0.45;
+}
+
+/* Edit (pencil) button — appears on a satisfied input_required
+   requirement so a valid setting can still be changed. Deliberately
+   low-key (muted, icon-only): the requirement is fine, this is just
+   "change it if you want". Accent on hover, like the other actions. */
+.settings-edit-btn {
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text-muted);
+    border-radius: 4px;
+    width: 22px;
+    padding: 2px 0;
+    text-align: center;
+    font-size: 12px;
+    cursor: pointer;
+    transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.settings-edit-btn:hover:not(:disabled) {
+    background: var(--accent-subtle);
+    color: var(--accent);
+    border-color: var(--accent);
 }
 
 /* The component-header version sits to the right of the also-in pill */

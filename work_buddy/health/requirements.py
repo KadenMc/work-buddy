@@ -55,7 +55,11 @@ class RequirementDef:
                 side_effects?: list[str]}``. Required for programmatic / input_required.
         fix_params: For input_required, declares the form fields the user must fill.
             Shape: ``{field_name: {type: "str"|"path"|"secret", label: str,
-                                    default: Any, required: bool, hint: str}}``.
+                                    default: Any, required: bool, hint: str,
+                                    config_path: str}}``. ``config_path`` is
+            optional (non-secret fields only): a dotted path into the merged
+            config that ``fix_params_with_current_values`` reads so the
+            dashboard form can pre-fill the field's current value.
         fix_preview: One-line description of what the fix will do, shown in the
             confirm popover before the user commits. E.g. "Will create
             C:\\Vaults\\SecondBrain\\journal\\". Null = no preview shown.
@@ -118,6 +122,44 @@ def _check_fn_module(check_fn: str) -> str:
     return check_fn.rsplit(".", 1)[0]
 
 
+def _config_value_at(cfg: dict[str, Any], dotted_path: str) -> Any:
+    """Walk a dotted path into a config dict; return None if any hop is absent."""
+    node: Any = cfg
+    for key in dotted_path.split("."):
+        if not isinstance(node, dict) or key not in node:
+            return None
+        node = node[key]
+    return node
+
+
+def fix_params_with_current_values(
+    req: RequirementDef,
+) -> dict[str, dict[str, Any]]:
+    """Return ``req.fix_params`` with a ``current_value`` injected for each
+    field that declares a ``config_path``.
+
+    Lets the dashboard fix form double as an "edit this setting" panel —
+    the form pre-fills the live configured value. Secret fields never
+    declare a ``config_path``, so a token is never echoed back to the UI.
+    The input fix_params dict is not mutated (each field spec is copied).
+    """
+    params = {name: dict(spec) for name, spec in (req.fix_params or {}).items()}
+    if not params:
+        return params
+    cfg: dict[str, Any] | None = None
+    for spec in params.values():
+        path = spec.get("config_path")
+        if not path:
+            continue
+        if cfg is None:
+            from work_buddy.config import load_config
+            cfg = load_config()
+        value = _config_value_at(cfg, path)
+        if value is not None:
+            spec["current_value"] = value
+    return params
+
+
 # --- Bootstrap (core/) ---
 
 _register(RequirementDef(
@@ -174,6 +216,7 @@ _register(RequirementDef(
             "label": "Path to your repos directory",
             "hint": "Absolute path to the directory where your git repos live, e.g. C:\\repos or /home/you/code",
             "required": True,
+            "config_path": "repos_root",
         },
     },
     fix_preview="Validates the path exists, then sets repos_root in config.yaml.",
@@ -195,6 +238,7 @@ _register(RequirementDef(
             "label": "IANA timezone",
             "hint": "e.g. America/Toronto, Europe/London, Asia/Tokyo",
             "required": True,
+            "config_path": "timezone",
         },
     },
     fix_preview="Validates the timezone, then sets it in config.yaml.",
@@ -923,6 +967,7 @@ _register(RequirementDef(
             ),
             "default": "my-work-buddy-data",
             "required": True,
+            "config_path": "backups.github.repo",
         },
     },
     fix_preview=(
