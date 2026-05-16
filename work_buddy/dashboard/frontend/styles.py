@@ -232,7 +232,7 @@ body {
     font-weight: 600;
 }
 
-.badge-green { background: var(--green-subtle); color: var(--green); }
+.badge-green { background: #3fb9501a; color: var(--green); }
 .badge-yellow { background: #d299221a; color: var(--yellow); }
 .badge-red { background: #f851491a; color: var(--red); }
 .badge-blue { background: var(--accent-subtle); color: var(--accent); }
@@ -3311,7 +3311,7 @@ body {
     border: 1px solid var(--green);
     border-radius: 6px;
     color: var(--green);
-    background: var(--green-subtle);
+    background: #3fb9501a;
     font-size: 11px;
     font-weight: 600;
     cursor: help;
