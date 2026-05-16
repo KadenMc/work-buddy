@@ -91,7 +91,11 @@ def _assemble() -> dict[str, ControlNode]:
     from work_buddy.health.components import COMPONENT_CATALOG
     from work_buddy.health.engine import HealthEngine
     from work_buddy.health.preferences import load_preferences
-    from work_buddy.health.requirements import REQUIREMENT_REGISTRY, RequirementChecker
+    from work_buddy.health.requirements import (
+        REQUIREMENT_REGISTRY,
+        RequirementChecker,
+        fix_params_with_current_values,
+    )
     from work_buddy.mcp_server.registry import (
         Capability,
         WorkflowDefinition,
@@ -260,7 +264,9 @@ def _assemble() -> dict[str, ControlNode]:
             component_id=req.component,
             status_reason=(result.detail if result else "Check not yet run"),
             fix_kind=getattr(req, "fix_kind", "none"),
-            fix_params=dict(getattr(req, "fix_params", {}) or {}),
+            # Enriched with each field's current configured value so the
+            # dashboard fix form can pre-fill (and double as an editor).
+            fix_params=fix_params_with_current_values(req),
             fix_preview=getattr(req, "fix_preview", None),
         )
 

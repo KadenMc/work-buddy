@@ -50,6 +50,68 @@ _REPO_ROOT = Path(__file__).parent.parent.parent
 # ---------------------------------------------------------------------------
 
 
+def safe_port(value: Any, *, service_name: str) -> int | None:
+    """Coerce a configured service port to a valid int, or None if invalid.
+
+    A bad ``sidecar.services.<svc>.port`` (non-numeric or out of range)
+    would otherwise crash service startup. Returning None lets the
+    caller skip the misconfigured service while the daemon keeps running.
+    """
+    try:
+        port = int(value)
+    except (TypeError, ValueError):
+        logger.error(
+            "Service %r has a non-numeric port %r; skipping it.",
+            service_name, value,
+        )
+        return None
+    if not (1 <= port <= 65535):
+        logger.error(
+            "Service %r has out-of-range port %d; skipping it.",
+            service_name, port,
+        )
+        return None
+    return port
+
+
+class TickFailureTracker:
+    """Tracks consecutive daemon-tick failures and decides when to escalate.
+
+    A tick that throws is caught as non-fatal and retried, so a persistent
+    fault (e.g. an invalid config value) would otherwise fail silently
+    forever — visible only as per-tick log noise. This surfaces a sustained
+    run of failures exactly once (a loud log line + a sidecar event) and
+    announces recovery exactly once.
+    """
+
+    def __init__(self, threshold: int = 3) -> None:
+        self._threshold = threshold
+        self._consecutive = 0
+        self._escalated = False
+
+    def record_success(self) -> str | None:
+        """Note a successful tick. Returns a recovery message if the
+        tracker had previously escalated, else None."""
+        recovered = self._escalated
+        self._consecutive = 0
+        self._escalated = False
+        if recovered:
+            return "Daemon tick recovered after sustained failures."
+        return None
+
+    def record_failure(self, exc: BaseException) -> str | None:
+        """Note a failed tick. Returns an escalation message the first
+        time the failure run crosses the threshold, else None."""
+        self._consecutive += 1
+        if self._consecutive >= self._threshold and not self._escalated:
+            self._escalated = True
+            return (
+                f"Daemon tick has failed {self._consecutive} consecutive "
+                f"times: {exc}"
+            )
+        return None
+
+
 @dataclass
 class ChildService:
     """A supervised child process (messaging, embedding, etc.)."""
@@ -711,10 +773,13 @@ def run(foreground: bool = True) -> None:
     for name, svc_cfg in services_cfg.items():
         if not svc_cfg.get("enabled", True):
             continue
+        port = safe_port(svc_cfg.get("port"), service_name=name)
+        if port is None:
+            continue
         children.append(ChildService(
             name=name,
             module=svc_cfg["module"],
-            port=svc_cfg["port"],
+            port=port,
             args=svc_cfg.get("args", []),
         ))
 
@@ -834,6 +899,7 @@ def run(foreground: bool = True) -> None:
     _print_startup_banner(children, cfg)
 
     # --- Main loop ---
+    tick_failures = TickFailureTracker()
     try:
         while not _shutdown_requested:
             tick_start = time.time()
@@ -864,6 +930,18 @@ def run(foreground: bool = True) -> None:
                 # Log but don't crash the daemon — individual tick failures
                 # are recoverable. The next tick will retry.
                 logger.error("Tick error (non-fatal): %s", exc, exc_info=True)
+                escalation = tick_failures.record_failure(exc)
+                if escalation:
+                    # Sustained failure — make it loud instead of silent.
+                    logger.critical("%s", escalation)
+                    event_log.emit(
+                        "tick_failures", "daemon", escalation, level="error",
+                    )
+            else:
+                recovery = tick_failures.record_success()
+                if recovery:
+                    logger.info("%s", recovery)
+                    event_log.emit("tick_recovered", "daemon", recovery)
 
             # 5. Persist event log snapshot + write state
             state.events = event_log.recent(50)

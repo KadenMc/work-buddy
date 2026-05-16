@@ -70,13 +70,19 @@ function timeUntil(epoch) {
     return 'in ' + Math.floor(diff / 86400) + 'd';
 }
 
-async function fetchJSON(url, options) {
+async function fetchJSON(url, options, timeoutMs) {
     // Accept either ``fetchJSON(url)`` (GET) or ``fetchJSON(url, {method, body, headers})``.
     // Previously silently dropped the options argument, which meant POST
     // callers sent plain GETs and Flask replied 405 — see the Review tab
     // approve path that was a no-op until this fix landed (2026-04-20).
+    //
+    // timeoutMs (optional): abandon the request after N ms and return
+    // null. A plain try/catch does NOT cover a request that hangs
+    // without ever resolving or rejecting — only an abort signal does.
     try {
-        const r = await fetch(url, options);
+        const opts = {...(options || {})};
+        if (timeoutMs) opts.signal = AbortSignal.timeout(timeoutMs);
+        const r = await fetch(url, opts);
         return await r.json();
     } catch (e) {
         console.error('Fetch failed:', url, e);

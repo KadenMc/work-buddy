@@ -94,11 +94,13 @@ async function loadSettings(force) {
         const url = '/api/control/graph' + (force ? '?force=1' : '');
         // Fetch the control graph and /api/state in parallel. The latter
         // feeds the per-component event chips and the at-a-glance status
-        // cards (both Status sub-view). A failed state fetch must not
-        // block the graph render — hence the catch.
-        const [resp, stateResp] = await Promise.all([
+        // cards (both Status sub-view) — optional decoration. fetchJSON's
+        // timeout abandons a slow or hung /api/state so it can never
+        // block the graph render (a plain .catch covers only rejection,
+        // not a request that hangs without ever resolving).
+        const [resp, state] = await Promise.all([
             fetch(url),
-            fetch('/api/state').catch(() => null),
+            fetchJSON('/api/state', null, 5000),
         ]);
         if (!resp.ok) {
             tree.innerHTML = `<div class="error-state">Failed to load (${resp.status}): ${await resp.text()}</div>`;
@@ -106,12 +108,9 @@ async function loadSettings(force) {
         }
         const data = await resp.json();
         WB_CONTROL_GRAPH = data;
-        if (stateResp && stateResp.ok) {
-            try {
-                const state = await stateResp.json();
-                window._WB_LAST_STATE = state;
-                window._WB_EVENT_COUNTS = state.event_counts_by_source || {};
-            } catch (e) { /* event chips are optional decoration */ }
+        if (state) {
+            window._WB_LAST_STATE = state;
+            window._WB_EVENT_COUNTS = state.event_counts_by_source || {};
         }
         _rebuildComponentEventIndex();
         renderStatusCards();
@@ -150,7 +149,7 @@ async function reprobeAll(btnEl) {
         const resp = await fetch('/api/control/reprobe', {method: 'POST'});
         if (!resp.ok) {
             const errText = await resp.text();
-            showToast(`Reprobe failed: ${errText}`, 'error');
+            settingsToast(`Reprobe failed: ${errText}`, 'error');
             return;
         }
         const data = await resp.json();
@@ -158,9 +157,9 @@ async function reprobeAll(btnEl) {
         _rebuildComponentEventIndex();
         renderSettingsTree();
         renderSettingsSummary();
-        showToast('Probes refreshed.', 'success');
+        settingsToast('Probes refreshed.', 'success');
     } catch (exc) {
-        showToast(`Reprobe request failed: ${exc}`, 'error');
+        settingsToast(`Reprobe request failed: ${exc}`, 'error');
     } finally {
         btnEl.disabled = false;
         btnEl.textContent = orig;
@@ -317,7 +316,7 @@ function onBadgeDrilldown(ev) {
     }
 
     if (bad.length === 0) {
-        showToast(`${rootId} reports ${nodes[rootId].effective_state} but no bad descendant found — check the status reason directly.`, 'info');
+        settingsToast(`${rootId} reports ${nodes[rootId].effective_state} but no bad descendant found — check the status reason directly.`, 'info');
         return;
     }
 
@@ -376,7 +375,7 @@ function _flashNode(nodeId, siblingCount) {
     el.classList.add('wb-flash');
     setTimeout(() => el.classList.remove('wb-flash'), 1800);
     if (siblingCount > 1) {
-        showToast(`Showing worst of ${siblingCount} issues — badges above lead to others.`, 'info');
+        settingsToast(`Showing worst of ${siblingCount} issues — badges above lead to others.`, 'info');
     }
 }
 
@@ -466,7 +465,7 @@ async function onPreferenceClick(btnEl) {
         });
         if (!resp.ok) {
             const err = await resp.text();
-            showToast(`Preference update failed: ${err}`, 'error');
+            settingsToast(`Preference update failed: ${err}`, 'error');
             return;
         }
         const data = await resp.json();
@@ -474,9 +473,9 @@ async function onPreferenceClick(btnEl) {
         WB_MATCHED_SET = _computeMatchedSet();
         renderSettingsTree();
         renderSettingsSummary();
-        showToast(`Preference saved for ${componentId}`, 'success');
+        settingsToast(`Preference saved for ${componentId}`, 'success');
     } catch (exc) {
-        showToast(`Preference update failed: ${exc}`, 'error');
+        settingsToast(`Preference update failed: ${exc}`, 'error');
     } finally {
         // If render didn't run (error path), re-enable the buttons
         siblings.forEach(b => { b.disabled = false; });
@@ -484,8 +483,13 @@ async function onPreferenceClick(btnEl) {
     }
 }
 
-// Minimal toast fallback in case the shared one isn't loaded yet
-function showToast(msg, kind) {
+// Simple status toast for the Settings tab (fix results, reprobe,
+// preference saves). Deliberately NOT named `showToast`: core/
+// notifications.py owns `window.showToast(title, body, ..., view, ...)`
+// for notification cards, and all frontend scripts concatenate into one
+// scope — naming this `showToast` lets the notifications version shadow
+// it, and calling it with `(msg, kind)` then throws on `view.short_id`.
+function settingsToast(msg, kind) {
     const container = document.getElementById('toast-container');
     if (!container) { console.log('[toast]', kind, msg); return; }
     const el = document.createElement('div');
@@ -645,9 +649,34 @@ function renderSettingsSummary() {
 //   * ? — always present (when not ok). Spawns a help-agent session with
 //     a structured brief. Replaces the legacy Status-tab `🪄 /wb-setup
 //     diagnose` hint.
+// Shared data-* attributes for any button that opens the fix flow
+// (onFixClick reads them). data-fix-params is single-quoted because the
+// JSON value is full of double quotes; escapeHtml only covers < > & so
+// apostrophes inside fix_params text would close the attribute early —
+// hence the explicit ' -> &#39; pass.
+function _fixDataAttrs(r) {
+    return `data-req-id="${escapeHtml(r.id.replace(/^req:/, ''))}" ` +
+        `data-fix-kind="${escapeHtml(r.fix_kind)}" ` +
+        `data-fix-preview="${escapeHtml(r.fix_preview || '')}" ` +
+        `data-fix-params='${escapeHtml(JSON.stringify(r.fix_params || {})).replace(/'/g, '&#39;')}'`;
+}
+
 function _renderRequirementActions(r) {
-    if (r.effective_state === 'ok' || r.effective_state === 'disabled') {
+    if (r.effective_state === 'disabled') {
         return '';
+    }
+    // A satisfied (ok) requirement has no fix to apply — but an
+    // input_required one is still an editable setting (timezone, backup
+    // repo, …). Offer a subtle pencil to change its value; other ok
+    // requirements get no action.
+    if (r.effective_state === 'ok') {
+        if (r.fix_kind !== 'input_required') return '';
+        const roDisabled = WB_READ_ONLY_MODE
+            ? 'disabled title="Dashboard is in read-only mode"' : '';
+        return `<span class="settings-req-actions">` +
+            `<button class="settings-edit-btn" type="button" ` +
+            `onclick="onFixClick(this)" ${_fixDataAttrs(r)} ${roDisabled} ` +
+            `title="Change this setting">✎</button></span>`;
     }
     // Two user-facing verbs:
     //   * "Configure" covers BOTH programmatic and input_required.
@@ -677,10 +706,7 @@ function _renderRequirementActions(r) {
     const fixBtn = r.fix_kind && r.fix_kind !== 'none'
         ? `<button class="${fixClass}" type="button"
                    onclick="onFixClick(this)"
-                   data-req-id="${escapeHtml(r.id.replace(/^req:/, ''))}"
-                   data-fix-kind="${escapeHtml(r.fix_kind)}"
-                   data-fix-preview="${escapeHtml(r.fix_preview || '')}"
-                   data-fix-params='${escapeHtml(JSON.stringify(r.fix_params || {}))}'
+                   ${_fixDataAttrs(r)}
                    ${WB_READ_ONLY_MODE ? 'disabled title="Dashboard is in read-only mode"' : ''}
                    title="${escapeHtml(fixTitle.trim())}">${escapeHtml(fixLabel)}</button>`
         : '';
@@ -725,8 +751,16 @@ async function onFixClick(btnEl) {
     let params = {};
     try { params = JSON.parse(btnEl.dataset.fixParams || '{}'); } catch (e) { params = {}; }
 
-    if (fixKind === 'input_required' && Object.keys(params).length > 0) {
-        _renderInputForm(btnEl, reqId, params);
+    if (fixKind === 'input_required') {
+        // input_required must never fall through to the agent_handoff
+        // confirm dialog. With form fields, render the form; without
+        // (misconfigured fix_params, or a parse failure above), fall
+        // back to the programmatic confirm panel.
+        if (Object.keys(params).length > 0) {
+            _renderInputForm(btnEl, reqId, params);
+        } else {
+            _renderConfirmPanel(btnEl, reqId, preview);
+        }
         return;
     }
 
@@ -770,6 +804,24 @@ function _renderConfirmPanel(btnEl, reqId, preview) {
     li.appendChild(panel);
 }
 
+// Optimistically fold a fix endpoint's single-requirement `recheck`
+// result into the in-memory graph so the fixed row updates instantly,
+// without waiting on a full graph rebuild. Mirrors the server's
+// requirement-state derivation (see control/graph.py); the follow-up
+// loadSettings(false) is the authority that reconciles cascade
+// roll-ups onto parent components and domains.
+function _applyRecheck(reqId, recheck) {
+    if (!recheck || !WB_CONTROL_GRAPH || !WB_CONTROL_GRAPH.nodes) return;
+    const node = WB_CONTROL_GRAPH.nodes['req:' + reqId];
+    if (!node) return;
+    node.effective_state = recheck.ok
+        ? 'ok'
+        : (recheck.severity === 'required' ? 'unconfigured' : 'degraded');
+    node.status_reason = recheck.detail || '';
+    renderSettingsTree();
+    renderSettingsSummary();
+}
+
 async function _postFix(reqId, params, btnEl) {
     btnEl.disabled = true;
     const orig = btnEl.textContent;
@@ -782,26 +834,32 @@ async function _postFix(reqId, params, btnEl) {
         });
         const data = await resp.json();
         if (data.spawned) {
-            showToast(`Help session launched (pid ${data.spawned.pid}).`, 'success');
+            settingsToast(`Help session launched (pid ${data.spawned.pid}).`, 'success');
         } else if (data.ok) {
             const eff = data.side_effects && data.side_effects.length
                 ? ` — ${data.side_effects.join('; ')}`
                 : '';
-            showToast(`Fixed: ${data.detail}${eff}`, 'success');
+            settingsToast(`Fixed: ${data.detail}${eff}`, 'success');
         } else {
-            showToast(`Fix did not apply: ${data.detail}`, 'error');
+            settingsToast(`Fix did not apply: ${data.detail}`, 'error');
         }
-        // Re-fetch the graph regardless — even a failed fix may have
-        // moved partial state (and recheck data is fresh server-side).
-        await loadSettings(true);
-        // After re-render, briefly flash the requirement so the user
-        // sees that THIS row is the one that changed. Helps locate the
-        // result when a domain has many requirements.
+        // Update the fixed requirement in place from the endpoint's
+        // single-requirement `recheck`, then refresh the rest of the
+        // graph in the background (unforced — no panel blanking) so
+        // cascade roll-ups onto parent components/domains reconcile.
+        // Avoids blanking the whole panel behind a multi-second graph
+        // rebuild just to reflect one row's change.
+        if (data.recheck) {
+            _applyRecheck(reqId, data.recheck);
+        }
+        loadSettings(false);
+        // Briefly flash the requirement so the user sees THIS row is
+        // the one that changed.
         if (data.ok) {
             requestAnimationFrame(() => _flashNode('req:' + reqId));
         }
     } catch (exc) {
-        showToast(`Fix request failed: ${exc}`, 'error');
+        settingsToast(`Fix request failed: ${exc}`, 'error');
         btnEl.disabled = false;
         btnEl.textContent = orig;
     }
@@ -818,11 +876,16 @@ function _renderInputForm(btnEl, reqId, fixParams) {
         const inputType = spec.secret ? 'password' : (spec.type === 'path' ? 'text' : 'text');
         const required = spec.required ? 'required' : '';
         const placeholder = spec.hint ? `placeholder="${escapeHtml(spec.hint)}"` : '';
-        const defaultVal = spec.default != null ? `value="${escapeHtml(String(spec.default))}"` : '';
+        // Pre-fill with the requirement's current configured value when
+        // the server supplied one, else the declared default. This is
+        // what lets the form double as an "edit this setting" panel.
+        const prefill = spec.current_value != null ? spec.current_value
+                      : (spec.default != null ? spec.default : null);
+        const valueAttr = prefill != null ? `value="${escapeHtml(String(prefill))}"` : '';
         return `
             <label class="settings-fix-field">
                 <span class="settings-fix-field-label">${escapeHtml(spec.label || name)}${spec.required ? ' *' : ''}</span>
-                <input type="${inputType}" name="${escapeHtml(name)}" ${required} ${placeholder} ${defaultVal}
+                <input type="${inputType}" name="${escapeHtml(name)}" ${required} ${placeholder} ${valueAttr}
                        autocomplete="off" spellcheck="false" />
             </label>
         `;
@@ -871,13 +934,13 @@ async function onComponentReprobeClick(btnEl) {
         const resp = await fetch('/api/reprobe/' + encodeURIComponent(componentId), {method: 'POST'});
         if (!resp.ok) {
             const errText = await resp.text();
-            showToast(`Reprobe ${componentId} failed: ${errText}`, 'error');
+            settingsToast(`Reprobe ${componentId} failed: ${errText}`, 'error');
             return;
         }
         await loadSettings(true);  // force-refresh the graph (single probe is on disk now)
         requestAnimationFrame(() => _flashNode('component:' + componentId));
     } catch (exc) {
-        showToast(`Reprobe request failed: ${exc}`, 'error');
+        settingsToast(`Reprobe request failed: ${exc}`, 'error');
     } finally {
         // loadSettings re-renders so btnEl no longer exists if successful,
         // but restore state on error paths.
@@ -898,12 +961,12 @@ async function onHelpClick(btnEl) {
         const resp = await fetch('/api/control/help/' + encodeURI(nodeId), {method: 'POST'});
         const data = await resp.json();
         if (data.ok) {
-            showToast(`Help session launched (pid ${data.pid || '?'}).`, 'success');
+            settingsToast(`Help session launched (pid ${data.pid || '?'}).`, 'success');
         } else {
-            showToast(`Help launch failed: ${data.detail}`, 'error');
+            settingsToast(`Help launch failed: ${data.detail}`, 'error');
         }
     } catch (exc) {
-        showToast(`Help request failed: ${exc}`, 'error');
+        settingsToast(`Help request failed: ${exc}`, 'error');
     } finally {
         btnEl.disabled = false;
         btnEl.textContent = orig;
@@ -932,7 +995,7 @@ function onStateChipClick(state) {
         .filter(n => n.effective_state === state && n.kind !== 'capability')
         .sort((a, b) => (kindRank[a.kind] ?? 99) - (kindRank[b.kind] ?? 99));
     if (candidates.length === 0) {
-        showToast(`No ${state} nodes visible.`, 'info');
+        settingsToast(`No ${state} nodes visible.`, 'info');
         return;
     }
     const target = candidates[0];
@@ -1263,7 +1326,7 @@ window.settingsSurface = {
 // so a preference toggle re-evaluates the gates with no page reload.
 async function loadActivity() {
     window._activityLoaded = true;
-    const data = await fetchJSON('/api/state');
+    const data = await fetchJSON('/api/state', null, 5000);
     if (!data) return;
     window._WB_LAST_STATE = data;
     const container = document.getElementById('activity-cards');

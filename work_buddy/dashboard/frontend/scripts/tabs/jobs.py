@@ -270,7 +270,7 @@ if (window.wbFormBridge && typeof window.wbFormBridge.register === 'function') {
 }
 
 async function loadJobs() {
-    const data = await fetchJSON('/api/state');
+    const data = await fetchJSON('/api/state', null, 5000);
     if (!data) return;
 
     const jobs = data.jobs || [];

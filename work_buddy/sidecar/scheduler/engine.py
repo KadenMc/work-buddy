@@ -31,6 +31,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from work_buddy.config import safe_timezone
 from work_buddy.logging_config import get_logger
 from work_buddy.paths import data_dir
 from work_buddy.sidecar.scheduler.cron import cron_matches, next_cron_match
@@ -113,7 +114,8 @@ class Scheduler:
 
     def __init__(self, config: dict[str, Any], event_log: Any | None = None) -> None:
         self._config = config
-        self._timezone: str = config.get("timezone", "America/New_York")
+        self._raw_timezone = config.get("timezone")
+        self._timezone: str = safe_timezone(self._raw_timezone)
         self._event_log = event_log
 
         self._jobs_dirs: list[tuple[Path, str]] = self._resolve_jobs_dirs(config)
@@ -354,7 +356,13 @@ class Scheduler:
         new_windows = parse_exclusion_windows(sidecar_cfg.get("exclusion_windows", []))
         self._exclusion_windows = new_windows
         self._config = cfg
-        self._timezone = cfg.get("timezone", "America/New_York")
+        # Re-validate the timezone only when the raw config value
+        # changed. Otherwise a persistently-invalid value would log a
+        # fallback warning on every 30s reload.
+        raw_tz = cfg.get("timezone")
+        if raw_tz != self._raw_timezone:
+            self._raw_timezone = raw_tz
+            self._timezone = safe_timezone(raw_tz)
         self._jobs_dirs = self._resolve_jobs_dirs(cfg)
 
         # Reload jobs from all configured directories
