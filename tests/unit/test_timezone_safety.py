@@ -57,3 +57,36 @@ class TestSchedulerTimezone:
     def test_missing_config_timezone_degrades_to_utc(self):
         engine = Scheduler({})
         assert engine._timezone == "UTC"
+
+
+class TestSchedulerTimezoneReloadDedup:
+    """A persistently-invalid timezone must not re-log the fallback
+    warning on every 30s config hot-reload — only when the value changes."""
+
+    def _invalid_warnings(self, caplog):
+        return [r for r in caplog.records if "Invalid timezone" in r.message]
+
+    def test_hot_reload_does_not_respam_unchanged_value(self, monkeypatch, caplog):
+        with caplog.at_level(logging.WARNING, logger="work_buddy.config"):
+            engine = Scheduler({"timezone": "Bad/Zone"})
+            assert engine._timezone == "UTC"
+            caplog.clear()  # drop the one construction-time warning
+            monkeypatch.setattr(
+                "work_buddy.config.load_config", lambda: {"timezone": "Bad/Zone"}
+            )
+            engine._hot_reload()
+            engine._hot_reload()
+        # Same invalid value as construction → no fresh warnings.
+        assert self._invalid_warnings(caplog) == []
+
+    def test_hot_reload_rewarns_when_value_changes(self, monkeypatch, caplog):
+        with caplog.at_level(logging.WARNING, logger="work_buddy.config"):
+            engine = Scheduler({"timezone": "Bad/Zone"})
+            caplog.clear()  # drop the construction-time warning
+            monkeypatch.setattr(
+                "work_buddy.config.load_config", lambda: {"timezone": "Other/Bad"}
+            )
+            engine._hot_reload()
+        # The value changed to a different invalid zone → warn exactly once.
+        assert len(self._invalid_warnings(caplog)) == 1
+        assert engine._timezone == "UTC"
