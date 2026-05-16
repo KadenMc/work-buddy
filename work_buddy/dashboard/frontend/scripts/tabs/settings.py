@@ -94,11 +94,13 @@ async function loadSettings(force) {
         const url = '/api/control/graph' + (force ? '?force=1' : '');
         // Fetch the control graph and /api/state in parallel. The latter
         // feeds the per-component event chips and the at-a-glance status
-        // cards (both Status sub-view). A failed state fetch must not
-        // block the graph render — hence the catch.
-        const [resp, stateResp] = await Promise.all([
+        // cards (both Status sub-view) — optional decoration. fetchJSON's
+        // timeout abandons a slow or hung /api/state so it can never
+        // block the graph render (a plain .catch covers only rejection,
+        // not a request that hangs without ever resolving).
+        const [resp, state] = await Promise.all([
             fetch(url),
-            fetch('/api/state').catch(() => null),
+            fetchJSON('/api/state', null, 5000),
         ]);
         if (!resp.ok) {
             tree.innerHTML = `<div class="error-state">Failed to load (${resp.status}): ${await resp.text()}</div>`;
@@ -106,12 +108,9 @@ async function loadSettings(force) {
         }
         const data = await resp.json();
         WB_CONTROL_GRAPH = data;
-        if (stateResp && stateResp.ok) {
-            try {
-                const state = await stateResp.json();
-                window._WB_LAST_STATE = state;
-                window._WB_EVENT_COUNTS = state.event_counts_by_source || {};
-            } catch (e) { /* event chips are optional decoration */ }
+        if (state) {
+            window._WB_LAST_STATE = state;
+            window._WB_EVENT_COUNTS = state.event_counts_by_source || {};
         }
         _rebuildComponentEventIndex();
         renderStatusCards();
@@ -1275,7 +1274,7 @@ window.settingsSurface = {
 // so a preference toggle re-evaluates the gates with no page reload.
 async function loadActivity() {
     window._activityLoaded = true;
-    const data = await fetchJSON('/api/state');
+    const data = await fetchJSON('/api/state', null, 5000);
     if (!data) return;
     window._WB_LAST_STATE = data;
     const container = document.getElementById('activity-cards');

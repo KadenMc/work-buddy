@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -42,25 +43,45 @@ _BRIDGE_HISTORY: deque[dict[str, Any]] = deque(maxlen=60)  # ~30min at 30s refre
 _PROBE_REFRESH_INTERVAL = 60  # seconds between tool probe refreshes
 _last_probe_refresh: float = 0.0
 
+# Snapshot cache for get_system_state(). The build runs a requirement
+# sweep (and reads probe results) — work that can take 20s+ when an
+# optional dependency is offline and several requirement checks stack up
+# their timeouts. The endpoint serves the cached snapshot and refreshes
+# it on a background thread once stale, so no request after the first
+# ever pays that cost.
+_STATE_CACHE_TTL = 5.0  # seconds before a served snapshot is refreshed
+_state_cache: dict[str, Any] | None = None
+_state_cache_ts: float = 0.0
+_state_cache_lock = threading.Lock()
+_state_refreshing = False
+
 
 def _maybe_refresh_probes() -> None:
-    """Re-run tool probes if stale (>60s since last refresh).
+    """Kick off a tool-probe refresh in the background if stale (>60s).
 
-    This runs in the dashboard process, not the MCP server. It writes
-    fresh results to tool_status.json so the HealthEngine picks them up.
-    Probes are lightweight HTTP/TCP checks (~0.5-1s total).
+    Runs in the dashboard process (not the MCP server), writing fresh
+    results to tool_status.json for the HealthEngine to pick up.
+    ``probe_all()`` can stall for ~10s when an optional service (e.g. the
+    Obsidian bridge) is offline, so it runs on a background thread — the
+    request never waits on it; the next request sees the fresh data.
     """
     global _last_probe_refresh
     now = time.time()
     if now - _last_probe_refresh < _PROBE_REFRESH_INTERVAL:
         return
+    # Claim the slot before spawning so a burst of requests starts only
+    # one refresh thread.
     _last_probe_refresh = now
-    try:
-        from work_buddy.tools import _register_default_probes, probe_all
-        _register_default_probes()
-        probe_all(force=True)
-    except Exception as exc:
-        logger.debug("Probe refresh failed: %s", exc)
+
+    def _refresh() -> None:
+        try:
+            from work_buddy.tools import _register_default_probes, probe_all
+            _register_default_probes()
+            probe_all(force=True)
+        except Exception as exc:
+            logger.debug("Probe refresh failed: %s", exc)
+
+    threading.Thread(target=_refresh, name="probe-refresh", daemon=True).start()
 
 
 def _read_sidecar_state() -> dict[str, Any]:
@@ -215,7 +236,64 @@ def _describe_cron(expr: str) -> str:
         return expr
 
 
+def _kick_state_refresh() -> None:
+    """Rebuild the system-state snapshot on a background thread.
+
+    Single-flight: a refresh already in progress is not duplicated.
+    Keeps the slow ``_build_system_state`` off the request path entirely
+    once the cache is warm.
+    """
+    global _state_refreshing
+    with _state_cache_lock:
+        if _state_refreshing:
+            return
+        _state_refreshing = True
+
+    def _refresh() -> None:
+        global _state_cache, _state_cache_ts, _state_refreshing
+        try:
+            fresh = _build_system_state()
+            _state_cache = fresh
+            _state_cache_ts = time.time()
+        except Exception as exc:
+            logger.warning("Background system-state refresh failed: %s", exc)
+        finally:
+            _state_refreshing = False
+
+    threading.Thread(
+        target=_refresh, name="system-state-refresh", daemon=True,
+    ).start()
+
+
 def get_system_state() -> dict[str, Any]:
+    """Aggregated system snapshot, served from a background-refreshed cache.
+
+    ``_build_system_state`` runs a requirement sweep and reads probe
+    results — work that can take 20s+ when an optional dependency is
+    offline. Serving the (possibly slightly stale) cached snapshot and
+    refreshing it on a background thread keeps that cost off every
+    request after the first. Real-time changes still arrive via SSE —
+    this endpoint is the periodic reconcile, where a few seconds of
+    staleness is invisible.
+    """
+    global _state_cache, _state_cache_ts
+    cache = _state_cache
+    if cache is not None:
+        if time.time() - _state_cache_ts >= _STATE_CACHE_TTL:
+            _kick_state_refresh()  # stale — refresh for next time
+        return cache
+    # Cold start: nothing cached yet. Build once synchronously (the lock
+    # makes concurrent first-callers wait for the single build rather
+    # than each starting their own).
+    with _state_cache_lock:
+        if _state_cache is not None:
+            return _state_cache
+        _state_cache = _build_system_state()
+        _state_cache_ts = time.time()
+        return _state_cache
+
+
+def _build_system_state() -> dict[str, Any]:
     """Aggregated system snapshot: services, jobs, uptime."""
     state = _read_sidecar_state()
     if not state:
