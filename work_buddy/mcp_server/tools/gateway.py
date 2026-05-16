@@ -50,8 +50,19 @@ _SESSION_REGISTRY: dict[int, str] = {}  # id(ctx.session) → agent_session_id
 
 
 def _register_session(ctx: Context, agent_session_id: str) -> None:
-    """Map this MCP connection to an agent session ID."""
+    """Map this MCP connection to an agent session ID.
+
+    Every session-registration path (``wb_init`` tool, ``wb_run`` wb_init
+    branch, header-based auto-init) funnels through here. Each is also a
+    post-restart reconnect point, so this is where the conductor sweeps
+    any workflow-consent blanket orphaned by a server restart.
+    """
     _SESSION_REGISTRY[id(ctx.session)] = agent_session_id
+    # Re-couple workflow-consent lifetime to the run record: if a server
+    # restart wiped the in-memory run map but left this session's blanket
+    # grant live in consent.db, revoke it now. No-op when a run is active
+    # or no blanket exists. Guarded internally — never breaks registration.
+    _conductor().reconcile_workflow_consent(agent_session_id)
 
 
 def _resolve_session(ctx: Context) -> str | None:

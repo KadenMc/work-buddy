@@ -972,9 +972,19 @@ def revoke_workflow_consent(
         pass  # Already revoked or never granted — no-op
 
 
-def is_workflow_consent_active() -> bool:
-    """Check if there's an active workflow blanket consent."""
-    return _cache.is_granted(ConsentCache.WORKFLOW_CONSENT_OP)
+def is_workflow_consent_active(*, session_id: str | None = None) -> bool:
+    """Check if there's an active workflow blanket consent.
+
+    When ``session_id`` is given, the check is scoped to that specific
+    session's ``consent.db`` and skips the originating-session fallback.
+    The conductor's orphan-reconciliation sweep needs a check bound to
+    exactly one session — a blanket left in session A's DB must not be
+    deemed "active" because session B (the originating session) still
+    holds one.
+    """
+    return _cache._is_granted_in_session(
+        ConsentCache.WORKFLOW_CONSENT_OP, session_id=session_id,
+    )
 
 
 # ---------------------------------------------------------------------------

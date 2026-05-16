@@ -367,6 +367,51 @@ def list_active_runs() -> list[dict[str, Any]]:
     ]
 
 
+def reconcile_workflow_consent(session_id: str) -> dict[str, Any]:
+    """Revoke an orphaned workflow-consent blanket left by a server restart.
+
+    Called at session registration. A workflow grants a blanket consent
+    (``__workflow_consent__``) into the agent's ``consent.db`` and pins
+    the run's DAG in the in-memory ``_ACTIVE_RUNS`` map. The two have
+    mismatched lifetimes: an MCP-server restart wipes ``_ACTIVE_RUNS``
+    but the on-disk blanket survives its TTL, so it would silently
+    authorize every consent-gated call until expiry.
+
+    This sweep re-couples them. If the session's DB holds an active
+    blanket but no run in ``_ACTIVE_RUNS`` belongs to that session, the
+    blanket is orphaned — revoke it. A genuinely in-flight workflow
+    keeps its DAG in ``_ACTIVE_RUNS`` (entries leave only on completion),
+    so a re-registration that is not a post-restart reconnect finds the
+    matching run and leaves the blanket untouched.
+
+    Never raises — a failure here must not break session registration.
+    """
+    if not session_id:
+        return {"swept": False, "reason": "no_session"}
+    try:
+        from work_buddy.consent import (
+            is_workflow_consent_active, revoke_workflow_consent,
+        )
+        if not is_workflow_consent_active(session_id=session_id):
+            return {"swept": False, "reason": "no_blanket"}
+        for dag in _ACTIVE_RUNS.values():
+            if getattr(dag, "agent_session_id", None) == session_id:
+                return {"swept": False, "reason": "active_run_present"}
+        revoke_workflow_consent(session_id=session_id)
+        logger.info(
+            "Revoked orphaned workflow-consent blanket for session %s "
+            "(no active run — likely an MCP-server restart)",
+            session_id[:8],
+        )
+        return {"swept": True}
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.warning(
+            "reconcile_workflow_consent failed for session %s: %s",
+            session_id[:8] if session_id else session_id, exc,
+        )
+        return {"swept": False, "reason": "error"}
+
+
 def get_step_result(
     workflow_run_id: str,
     step_id: str,
