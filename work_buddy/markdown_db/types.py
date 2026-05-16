@@ -137,20 +137,39 @@ class FieldSpec:
     """Declares one reconcilable field for a :class:`MarkdownDB` subclass.
 
     The generic drift loop reads the field from the parsed file via
-    ``file_key``, compares it to ``store_col`` on the store row, and on a
-    mismatch resolves a winner and (if markdown wins) calls
-    ``store.update(pk, **{store_col: value})``.
+    ``file_key``, runs it through ``parse_value`` to get a *store-shaped*
+    value, compares that against ``store_col`` on the store row, and on a
+    mismatch resolves a winner.
 
-    ``parse_value`` / ``serialize_value`` carry the only shape-specific
-    logic — converting between a markdown fragment and a Python value.
-    Defaults are identity / ``str``.
+    Fields:
 
-    ``propagate_on_falsy`` matches the discipline in the legacy
-    ``obsidian/tasks/sync.py``: when ``False`` (the default) an empty /
-    ``None`` file value never overwrites a non-empty store value — a line
-    can lose an emoji without the user intending to clear the field. Set
-    ``True`` only for fields where "absent in file" genuinely means
-    "cleared" (e.g. a checkbox, which is always present).
+    - ``parse_value`` — converts the raw parsed-file value into the store
+      representation. Identity by default. The drift loop operates
+      entirely in store representation *after* this conversion, so
+      ``file_key`` may carry a different shape than ``store_col`` (the
+      task checkbox is a ``bool`` in the file but a ``state`` string in
+      the store).
+
+    - ``serialize_value`` — the inverse, for rendering a store value back
+      into a markdown fragment. Used on the store-wins write-back path.
+
+    - ``propagate_on_falsy`` — when ``False`` (default) an empty / ``None``
+      file value never overwrites a populated store value (a line can
+      lose an emoji without the user meaning to clear the field). Set
+      ``True`` only where "absent in file" genuinely means "cleared"
+      (e.g. a checkbox, always present).
+
+    - ``equivalent`` — optional custom "are these in sync?" predicate,
+      ``(file_store_value, store_value) -> bool``. Needed when the file
+      representation is a *lossy projection* of the store column: the
+      task checkbox encodes only done-vs-not-done, so an unchecked box
+      is consistent with store states ``inbox``/``mit``/``focused``/
+      ``snoozed`` alike. Defaults to ``None`` → ``MarkdownDB._values_equal``.
+
+    - ``extra_store_fields`` — optional ``(new_value) -> dict`` producing
+      additional store columns to write in lockstep with this field.
+      The task ``deadline_date`` field uses it to keep the boolean
+      ``has_deadline`` column consistent.
     """
 
     name: str
@@ -159,6 +178,8 @@ class FieldSpec:
     parse_value: Callable[[Any], Any] = lambda v: v
     serialize_value: Callable[[Any], str] = lambda v: "" if v is None else str(v)
     propagate_on_falsy: bool = False
+    equivalent: Callable[[Any, Any], bool] | None = None
+    extra_store_fields: Callable[[Any], dict[str, Any]] | None = None
 
 
 @dataclass

@@ -168,14 +168,20 @@ class MarkdownDB(ABC):
     def build_create_kwargs(self, parsed: ParsedFileRow) -> dict[str, Any]:
         """Map a :class:`ParsedFileRow` to store-create kwargs.
 
-        Default: copy each declared field's parsed value into its
-        ``store_col``. Subclasses override to inject required defaults
-        the markdown doesn't carry (e.g. a task's initial ``state``).
+        Default: run each declared field's parsed value through
+        ``parse_value`` into its ``store_col`` (plus any
+        ``extra_store_fields``). Subclasses override to inject required
+        defaults the markdown doesn't carry (e.g. a task's ``urgency``
+        when the line has no priority emoji).
         """
         out: dict[str, Any] = {}
         for spec in self.FIELDS:
-            if spec.file_key in parsed.fields:
-                out[spec.store_col] = parsed.fields[spec.file_key]
+            if spec.file_key not in parsed.fields:
+                continue
+            value = spec.parse_value(parsed.fields[spec.file_key])
+            out[spec.store_col] = value
+            if spec.extra_store_fields is not None:
+                out.update(spec.extra_store_fields(value))
         return out
 
     def markdown_exists(self, pk: str) -> bool:
@@ -380,14 +386,17 @@ class MarkdownDB(ABC):
         ts = _utcnow()
 
         for spec in self.FIELDS:
-            file_val = parsed.fields.get(spec.file_key)
+            # Convert the raw parsed value into the store representation
+            # FIRST — the whole loop operates in store shape after this.
+            file_val = spec.parse_value(parsed.fields.get(spec.file_key))
             store_val = store_row.get(spec.store_col)
 
             # Falsy-file-value discipline: an empty markdown value never
             # clears a populated store value unless the field opts in.
             if not spec.propagate_on_falsy and not file_val:
                 continue
-            if self._values_equal(file_val, store_val):
+            in_sync = spec.equivalent or self._values_equal
+            if in_sync(file_val, store_val):
                 continue
 
             winner = self.resolve(spec, [
@@ -408,8 +417,11 @@ class MarkdownDB(ABC):
 
             if winner.source == self.markdown_surface:
                 # Markdown wins → push the markdown value into the store.
+                update_fields: dict[str, Any] = {spec.store_col: file_val}
+                if spec.extra_store_fields is not None:
+                    update_fields.update(spec.extra_store_fields(file_val))
                 try:
-                    self._store_update(pk, {spec.store_col: file_val})
+                    self._store_update(pk, update_fields)
                 except Exception as exc:
                     logger.warning(
                         "markdown_db[%s]: drift update %s.%s failed: %s",
