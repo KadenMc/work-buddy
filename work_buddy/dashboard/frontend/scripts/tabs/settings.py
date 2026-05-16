@@ -674,13 +674,17 @@ function _renderRequirementActions(r) {
         fixClass += ' settings-fix-btn-agent';
         fixTitle = 'Opens a Claude Code session to walk you through this. ' + (r.fix_preview || '');
     }
+    // data-fix-params is single-quoted because the JSON value is full of
+    // double quotes; escapeHtml only covers < > & so apostrophes inside
+    // fix_params text (hints, labels) would close the attribute early —
+    // hence the explicit ' -> &#39; pass.
     const fixBtn = r.fix_kind && r.fix_kind !== 'none'
         ? `<button class="${fixClass}" type="button"
                    onclick="onFixClick(this)"
                    data-req-id="${escapeHtml(r.id.replace(/^req:/, ''))}"
                    data-fix-kind="${escapeHtml(r.fix_kind)}"
                    data-fix-preview="${escapeHtml(r.fix_preview || '')}"
-                   data-fix-params='${escapeHtml(JSON.stringify(r.fix_params || {}))}'
+                   data-fix-params='${escapeHtml(JSON.stringify(r.fix_params || {})).replace(/'/g, '&#39;')}'
                    ${WB_READ_ONLY_MODE ? 'disabled title="Dashboard is in read-only mode"' : ''}
                    title="${escapeHtml(fixTitle.trim())}">${escapeHtml(fixLabel)}</button>`
         : '';
@@ -725,8 +729,16 @@ async function onFixClick(btnEl) {
     let params = {};
     try { params = JSON.parse(btnEl.dataset.fixParams || '{}'); } catch (e) { params = {}; }
 
-    if (fixKind === 'input_required' && Object.keys(params).length > 0) {
-        _renderInputForm(btnEl, reqId, params);
+    if (fixKind === 'input_required') {
+        // input_required must never fall through to the agent_handoff
+        // confirm dialog. With form fields, render the form; without
+        // (misconfigured fix_params, or a parse failure above), fall
+        // back to the programmatic confirm panel.
+        if (Object.keys(params).length > 0) {
+            _renderInputForm(btnEl, reqId, params);
+        } else {
+            _renderConfirmPanel(btnEl, reqId, preview);
+        }
         return;
     }
 
