@@ -2425,7 +2425,7 @@ def _context_capabilities() -> list[Capability]:
         # ── Projects ──────────────────────────────────────────────
         Capability(
             name="context_projects",
-            description="Active projects with identity, state, and trajectory — synthesized from vault directories, STATE.md files in repos, task tags, git activity, and contracts. Filters the rendered output to active + inferred by default; pass ``statuses`` to widen.",
+            description="Active projects with identity, state, and trajectory — synthesized from vault directories, STATE.md files in repos, task tags, git activity, and contracts. Filters the rendered output to active projects by default; pass ``statuses`` to widen.",
             category="context",
             search_aliases=[
                 "projects",
@@ -2438,7 +2438,7 @@ def _context_capabilities() -> list[Capability]:
             parameters={
                 "statuses": {
                     "type": "list",
-                    "description": "Project statuses to include in the rendered bundle. Default: active + inferred. Pass [\"active\", \"inferred\", \"future\", \"past\"] to include everything. Filters only the rendered output — every project is still scanned and synced to the registry.",
+                    "description": "Project lifecycle statuses to include in the rendered bundle. Default: active only. Valid values: active, paused, future, past. Pass [\"active\", \"paused\", \"future\", \"past\"] to include everything (deleted is never rendered). Filters only the rendered output — every project is still scanned and synced to the registry.",
                     "required": False,
                 },
             },

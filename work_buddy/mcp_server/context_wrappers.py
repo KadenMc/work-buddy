@@ -763,9 +763,10 @@ def get_projects_context(*, statuses: list[str] | None = None) -> str:
     Also syncs results to the project store.
 
     ``statuses`` filters only the rendered markdown — every project still
-    gets scanned and synced. Default is active + inferred (past + future
-    are hidden to keep bundles uncluttered). Pass an explicit list to
-    widen.
+    gets scanned and synced. Default is active only (paused / future /
+    past are hidden to keep bundles uncluttered); valid values are
+    active, paused, future, past. Pass an explicit list to widen.
+    ``deleted`` is never rendered through this surface.
     """
     from work_buddy.projects.sync import sync_projects
 
