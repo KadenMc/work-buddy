@@ -545,17 +545,11 @@ def _html() -> str:
         <div id="settings-tree"><div class="loading">Loading control graph...</div></div>
     </div>
     <!-- Activity sub-view: bridge latency + sidecar event log + recent
-         notifications. Lazy-loaded on first switch (see
-         switchSettingsSubtab). -->
+         notifications. Registry-driven — loadActivity() mounts the
+         cards registered for mount point "activity" via wbMountCards.
+         Lazy-loaded on first switch (see switchSettingsSubtab). -->
     <div class="settings-subtab-panel" id="ssp-activity">
-        <div id="activity-bridge"><div class="loading">Loading bridge status...</div></div>
-        <div class="log-toolbar" style="margin-top: 24px;">
-            <span class="section-title">Event Log</span>
-            <button class="log-toolbar-btn" onclick="copyActivityLog()" title="Copy log to clipboard">Copy Log</button>
-        </div>
-        <div id="activity-log"><div class="loading">Loading events...</div></div>
-        <div class="section-title" style="margin-top: 24px;">Recent Notifications</div>
-        <div id="activity-notif-log"><div class="empty-state">No notifications yet</div></div>
+        <div id="activity-cards"><div class="loading">Loading activity...</div></div>
     </div>
 </div>
 

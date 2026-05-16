@@ -766,6 +766,23 @@ def api_control_graph():
         return jsonify({"error": str(exc)}), 500
 
 
+@app.get("/api/dashboard/cards/<mount_point>")
+def api_dashboard_cards(mount_point: str):
+    """Active dashboard cards for a mount point.
+
+    Evaluates each registered card's gate against the set of
+    not-opted-out components and returns the cards that should mount,
+    in render order. Powers the registry-driven Settings → Activity
+    sub-view; see ``architecture/feature-cards``.
+    """
+    try:
+        from work_buddy.dashboard.cards import cards_for_tab
+        return jsonify({"cards": cards_for_tab(mount_point)})
+    except Exception as exc:
+        logger.exception("Failed to list dashboard cards for %s", mount_point)
+        return jsonify({"error": str(exc)}), 500
+
+
 @app.get("/api/requirements")
 def api_requirements():
     """Full requirements validation results."""

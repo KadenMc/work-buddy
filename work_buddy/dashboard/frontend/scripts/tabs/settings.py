@@ -1251,136 +1251,25 @@ window.settingsSurface = {
 // set truthfully once the Overview loader has run.
 // ==================================================================
 
+// Registry-driven mounter. The Activity sub-view's widgets (bridge
+// sparkline, event log, notification log) are DashboardCards: the
+// server (work_buddy/dashboard/cards.py) decides which mount given the
+// control graph, and core/card_registry.py's wbMountCards renders the
+// registered renderers into #activity-cards. The bridge card is gated
+// on the ``obsidian`` component, so opting Obsidian out drops it here
+// AND stops the backend bridge probe (see api.get_system_state).
+//
+// settingsSurface.refresh() re-runs this on component.preference_changed,
+// so a preference toggle re-evaluates the gates with no page reload.
 async function loadActivity() {
     window._activityLoaded = true;
     const data = await fetchJSON('/api/state');
     if (!data) return;
     window._WB_LAST_STATE = data;
-
-    // --- Obsidian bridge sparkline ---
-    const b = data.bridge || {};
-    const bridgeEl = document.getElementById('activity-bridge');
-    if (bridgeEl && b.status) {
-        const dotClass = b.status === 'healthy' ? 'healthy' : (b.status === 'timeout' ? 'unhealthy' : 'crashed');
-        const statusLabel = b.status === 'healthy'
-            ? 'connected'
-            : (b.status === 'unreachable'
-                ? 'Obsidian not running'
-                : b.status === 'timeout'
-                    ? 'bridge lagging'
-                    : b.status);
-        const latencyColor = (b.latency_ms || 0) > 2000 ? 'var(--red)' : (b.latency_ms || 0) > 500 ? 'var(--yellow)' : 'var(--text-primary)';
-
-        // Log-scale sparkline, normalized so the tallest bar fills 100%.
-        // Bar classes: bar-ok (<=500ms), bar-slow (>500ms), bar-fail
-        // (timeout), bar-unreachable (port closed / Obsidian not running).
-        const hist = b.history || [];
-        const logMax = Math.max(1, ...hist.map(h => Math.log10(Math.max(1, h.ms))));
-        const bars = hist.map(h => {
-            const logMs = Math.log10(Math.max(1, h.ms));
-            const pct = Math.max(8, (logMs / logMax) * 100);
-            let cls;
-            if (h.ok) {
-                cls = h.ms > 500 ? 'bar-slow' : 'bar-ok';
-            } else if (h.status === 'unreachable') {
-                cls = 'bar-unreachable';
-            } else {
-                cls = 'bar-fail';
-            }
-            const dt = new Date(h.ts * 1000);
-            const label = h.ok
-                ? (h.ms + 'ms')
-                : (h.status === 'unreachable'
-                    ? 'Obsidian closed (port refused)'
-                    : 'Obsidian lag/timeout (' + h.ms + 'ms)');
-            const tip = dt.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'}) + ' — ' + label;
-            return `<div class="bar ${cls}" style="height:${pct}%" title="${tip}"></div>`;
-        }).join('');
-
-        bridgeEl.innerHTML = `
-            <div class="bridge-card">
-                <div class="bridge-header">
-                    <h3><span class="status-dot ${dotClass}"></span> Obsidian Bridge — ${statusLabel}</h3>
-                    <div class="bridge-stats">
-                        <div>Latency <span class="bridge-stat-value" style="color:${latencyColor}">${b.latency_ms}ms</span></div>
-                        <div>Trend <span class="bridge-stat-value">${b.ema_ms || 0}ms</span>${(() => {
-                            const tc = (b.ema_ms||0) > 2000 ? 'var(--red)' : (b.ema_ms||0) > 500 ? 'var(--yellow)' : 'var(--text-primary)';
-                            const arrow = b.trend === 'up' ? '▲' : b.trend === 'down' ? '▼' : '◆';
-                            const tip = b.trend === 'up' ? 'Latency increasing' : b.trend === 'down' ? 'Latency decreasing' : 'Latency stable';
-                            return ` <span style="color:${tc}" title="${tip}">${arrow}</span>`;
-                        })()}</div>
-                        <div>Peak <span class="bridge-stat-value">${b.max_ms || 0}ms</span></div>
-                    </div>
-                    <div class="bridge-meta">${b.vault || ''} ${b.plugin_version ? 'v' + b.plugin_version : ''}</div>
-                </div>
-                ${bars ? `<div class="bridge-sparkline">${bars}</div>` : ''}
-            </div>
-        `;
-    } else if (bridgeEl) {
-        bridgeEl.innerHTML = '<div class="empty-state">Bridge status unavailable</div>';
+    const container = document.getElementById('activity-cards');
+    if (container && typeof window.wbMountCards === 'function') {
+        await window.wbMountCards('activity', container, data);
     }
-
-    // --- Event log ---
-    const events = (data.events || []).slice().reverse();  // newest first
-    window._logActivityEvents = events;
-    const logEl = document.getElementById('activity-log');
-    if (logEl) {
-        if (events.length === 0) {
-            logEl.innerHTML = '<div class="empty-state">No events yet</div>';
-        } else {
-            const logHtml = events.map((e, i) => {
-                const dt = new Date(e.ts * 1000);
-                const time = dt.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'});
-                const kind = (e.kind || '').replace(/_/g, ' ');
-                const level = e.level || 'info';
-                const actions = (!WB_READ_ONLY_MODE && (level === 'error' || level === 'warn'))
-                    ? `<span class="log-actions"><button class="btn-investigate ${level}" onclick="investigateActivityEvent(${i}, this)" title="Spawn agent to investigate">Investigate</button></span>`
-                    : '';
-                return `<div class="log-entry ${level}">
-                    <span class="log-ts">${time}</span>
-                    <span class="log-kind">${kind}</span>
-                    <span class="log-msg"><strong>${e.source}</strong> — ${e.summary}</span>
-                    ${actions}
-                </div>`;
-            }).join('');
-            logEl.innerHTML = `<div class="log-container">${logHtml}</div>`;
-        }
-    }
-
-    // --- Notification log ---
-    // Always renders, independent of whether the event log is empty.
-    try {
-        const logData = await fetchJSON('/api/notification-log');
-        const notifEl = document.getElementById('activity-notif-log');
-        if (notifEl) {
-            if (!logData || !logData.entries || logData.entries.length === 0) {
-                notifEl.innerHTML = '<div class="empty-state">No notifications yet</div>';
-            } else {
-                const logRows = logData.entries.map(e => {
-                    const dt = new Date(e.ts * 1000);
-                    const time = dt.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'});
-                    const isReq = e.type === 'request';
-                    const pill = isReq
-                        ? '<span class="type-pill request1" style="font-size:9px;padding:1px 6px">REQUEST</span>'
-                        : '<span class="type-pill note1" style="font-size:9px;padding:1px 6px">NOTE</span>';
-                    const sid = e.short_id ? ' <code>#' + e.short_id + '</code>' : '';
-                    const surfaces = (e.surfaces || []).join(', ') || '—';
-                    return '<tr>'
-                        + '<td style="white-space:nowrap;color:var(--text-muted)">' + time + '</td>'
-                        + '<td>' + pill + '</td>'
-                        + '<td>' + (e.title || '') + sid + '</td>'
-                        + '<td style="color:var(--text-muted)">' + surfaces + '</td>'
-                        + '</tr>';
-                }).join('');
-                notifEl.innerHTML = `
-                    <table class="data-table">
-                        <thead><tr><th>Time</th><th>Type</th><th>Title</th><th>Surfaces</th></tr></thead>
-                        <tbody>${logRows}</tbody>
-                    </table>
-                `;
-            }
-        }
-    } catch(e) { /* notification log optional */ }
 }
 
 // Copy the event log to the clipboard as plain text.

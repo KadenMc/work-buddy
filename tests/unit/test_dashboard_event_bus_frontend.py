@@ -284,3 +284,36 @@ def test_assembled_javascript_parses():
     assert result.returncode == 0, (
         f"Assembled JS failed Node syntax check:\n{result.stderr}"
     )
+
+
+def test_card_registry_module_initialises_renderers_global():
+    """core/card_registry.py must initialise window.wbCardRenderers and
+    expose the generic wbMountCards mounter the card pattern relies on."""
+    from work_buddy.dashboard.frontend.scripts.core.card_registry import (
+        script,
+    )
+    src = script()
+    assert "window.wbCardRenderers" in src
+    assert "window.wbMountCards" in src
+    assert "/api/dashboard/cards/" in src
+
+
+def test_activity_loader_uses_card_mounter():
+    """Settings -> Activity must mount via the registry, not hand-coded
+    render blocks — that's what makes the bridge card preference-gated."""
+    from work_buddy.dashboard.frontend.scripts.tabs.settings import script
+    src = script()
+    assert "wbMountCards('activity'" in src
+
+
+def test_card_renderers_register_under_expected_ids():
+    """Each card module registers a renderer keyed by the id its
+    server-side DashboardCard descriptor uses."""
+    from work_buddy.dashboard.frontend.scripts.tabs.cards import (
+        event_log,
+        notification_log,
+        obsidian_bridge,
+    )
+    assert "wbCardRenderers['obsidian.bridge_sparkline']" in obsidian_bridge.script()
+    assert "wbCardRenderers['core.event_log']" in event_log.script()
+    assert "wbCardRenderers['core.notification_log']" in notification_log.script()
