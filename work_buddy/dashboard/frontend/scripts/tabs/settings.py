@@ -786,6 +786,24 @@ function _renderConfirmPanel(btnEl, reqId, preview) {
     li.appendChild(panel);
 }
 
+// Optimistically fold a fix endpoint's single-requirement `recheck`
+// result into the in-memory graph so the fixed row updates instantly,
+// without waiting on a full graph rebuild. Mirrors the server's
+// requirement-state derivation (see control/graph.py); the follow-up
+// loadSettings(false) is the authority that reconciles cascade
+// roll-ups onto parent components and domains.
+function _applyRecheck(reqId, recheck) {
+    if (!recheck || !WB_CONTROL_GRAPH || !WB_CONTROL_GRAPH.nodes) return;
+    const node = WB_CONTROL_GRAPH.nodes['req:' + reqId];
+    if (!node) return;
+    node.effective_state = recheck.ok
+        ? 'ok'
+        : (recheck.severity === 'required' ? 'unconfigured' : 'degraded');
+    node.status_reason = recheck.detail || '';
+    renderSettingsTree();
+    renderSettingsSummary();
+}
+
 async function _postFix(reqId, params, btnEl) {
     btnEl.disabled = true;
     const orig = btnEl.textContent;
@@ -807,12 +825,18 @@ async function _postFix(reqId, params, btnEl) {
         } else {
             settingsToast(`Fix did not apply: ${data.detail}`, 'error');
         }
-        // Re-fetch the graph regardless — even a failed fix may have
-        // moved partial state (and recheck data is fresh server-side).
-        await loadSettings(true);
-        // After re-render, briefly flash the requirement so the user
-        // sees that THIS row is the one that changed. Helps locate the
-        // result when a domain has many requirements.
+        // Update the fixed requirement in place from the endpoint's
+        // single-requirement `recheck`, then refresh the rest of the
+        // graph in the background (unforced — no panel blanking) so
+        // cascade roll-ups onto parent components/domains reconcile.
+        // Avoids blanking the whole panel behind a multi-second graph
+        // rebuild just to reflect one row's change.
+        if (data.recheck) {
+            _applyRecheck(reqId, data.recheck);
+        }
+        loadSettings(false);
+        // Briefly flash the requirement so the user sees THIS row is
+        // the one that changed.
         if (data.ok) {
             requestAnimationFrame(() => _flashNode('req:' + reqId));
         }
