@@ -122,6 +122,13 @@ DEFAULTS = {
         "enabled": True,
         "vault_path": "Meta/WorkBuddy",   # relative to vault_root
     },
+    "projects": {
+        # Single vault directory holding one markdown note per project
+        # (the markdown-canonical surface — see architecture/markdown-db).
+        # Vault-relative; sibling to contracts.vault_path. Surfaced as a
+        # Repository-Setup requirement so it is user-configurable.
+        "markdown_dir": "work-buddy/projects",
+    },
 }
 
 

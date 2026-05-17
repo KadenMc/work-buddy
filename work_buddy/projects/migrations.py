@@ -10,6 +10,8 @@ DB through the relational temporal redesign:
   v4 → ``project_revisions`` + history tables for folders and aliases
   v5 → data migration (slug renames, folder/alias backfill,
        initial revision rows)
+  v6 → fold ecg-cred into ecg-inquiry
+  v7 → lww_meta append-only write-provenance sidecar (MarkdownDB)
 
 Migration 1 reproduces the legacy schema verbatim so that existing
 DBs at ``user_version=0`` baseline-stamp cleanly at v1, then run
@@ -636,6 +638,43 @@ class _ProjectsMigrationRunner(MigrationRunner):
 # ─── Runner instance ────────────────────────────────────────────────
 
 
+# ─── Migration 7 — lww_meta sidecar (MarkdownDB write-provenance) ────
+
+
+def _m007_lww_meta(conn: sqlite3.Connection) -> None:
+    """Create the ``lww_meta`` append-only write-provenance table.
+
+    Backs :class:`work_buddy.markdown_db.SqliteLwwLog` for the
+    markdown-canonical projects surface (see ``architecture/markdown-db``).
+    Co-located in ``projects.db`` so it travels with backups + restores.
+    Every write through a :class:`~work_buddy.markdown_db.MarkdownDB`
+    appends one row per field per surface; nothing is updated or deleted.
+
+    The DDL is inlined (not imported from ``markdown_db.sqlite_lww``)
+    because the migration runner hashes this callable's source — the
+    installed schema must be visible here for the audit to catch a
+    change. Keep byte-identical to ``markdown_db.sqlite_lww.LWW_META_DDL``.
+    """
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS lww_meta (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            table_name    TEXT NOT NULL,
+            row_pk        TEXT NOT NULL,
+            field         TEXT NOT NULL,
+            ts            TEXT NOT NULL,
+            actor         TEXT NOT NULL DEFAULT '[]',
+            process       TEXT NOT NULL,
+            from_surface  TEXT,
+            to_surface    TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_lww_meta_latest
+            ON lww_meta(table_name, row_pk, field, to_surface, ts);
+    """)
+
+
+# ─── Runner instance ────────────────────────────────────────────────
+
+
 PROJECT_MIGRATIONS = _ProjectsMigrationRunner(
     "projects",
     migrations=[
@@ -651,5 +690,7 @@ PROJECT_MIGRATIONS = _ProjectsMigrationRunner(
                   _m005_data_migration),
         Migration(6, "fold ecg-cred into ecg-inquiry",
                   _m006_fold_ecg_cred_into_ecg_inquiry),
+        Migration(7, "lww_meta write-provenance sidecar",
+                  _m007_lww_meta),
     ],
 )

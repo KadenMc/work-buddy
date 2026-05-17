@@ -887,3 +887,33 @@ def check_backup_repo_configured() -> dict[str, Any]:
             ),
         }
     return {"ok": False, "detail": f"gh repo view failed: {stderr}"}
+
+
+def check_projects_markdown_dir() -> dict[str, Any]:
+    """Check that the project-notes directory exists.
+
+    The markdown-canonical projects surface (see architecture/markdown-db)
+    keeps one ``<slug>.md`` per project in a single vault directory named
+    by ``projects.markdown_dir`` (vault-relative). This validates that
+    directory is configured and present.
+    """
+    cfg = _cfg()
+    rel = cfg.get("projects", {}).get("markdown_dir", "")
+    if not rel:
+        return {
+            "ok": False,
+            "detail": "projects.markdown_dir is not set in config",
+        }
+    vault = cfg.get("vault_root", "")
+    if not vault:
+        return {
+            "ok": False,
+            "detail": "vault_root not set — cannot resolve projects.markdown_dir",
+        }
+    p = Path(vault) / rel
+    if p.is_dir():
+        return {"ok": True, "detail": f"project-notes directory exists: {p}"}
+    return {
+        "ok": False,
+        "detail": f"project-notes directory missing: {p} (click Fix to create it)",
+    }

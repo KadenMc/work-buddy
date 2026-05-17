@@ -347,16 +347,22 @@ def _apply_migrations_inplace(db_name: str, db_path: Path) -> None:
 
     Keyed off the LOGICAL name from VITAL_DBS (``tasks`` /
     ``projects`` / ``messages`` / ``threads``), NOT the on-disk
-    filename. Only ``tasks`` has a migration ladder so far; the
-    others no-op until they grow one.
+    filename. ``tasks`` and ``projects`` have migration ladders;
+    ``messages`` / ``threads`` no-op until they grow one.
     """
-    if db_name != "tasks":
-        # No migration ladder yet — leave the DB as-is.
+    runner = None
+    if db_name == "tasks":
+        from work_buddy.obsidian.tasks.migrations import TASK_MIGRATIONS
+        runner = TASK_MIGRATIONS
+    elif db_name == "projects":
+        from work_buddy.projects.migrations import PROJECT_MIGRATIONS
+        runner = PROJECT_MIGRATIONS
+    if runner is None:
+        # No migration ladder for this DB — leave it as-is.
         return
-    from work_buddy.obsidian.tasks.migrations import TASK_MIGRATIONS
     conn = sqlite3.connect(str(db_path))
     try:
-        TASK_MIGRATIONS.run(conn)
+        runner.run(conn)
     finally:
         conn.close()
 

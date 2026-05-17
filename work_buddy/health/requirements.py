@@ -223,6 +223,34 @@ _register(RequirementDef(
 ))
 
 _register(RequirementDef(
+    id="core/config/projects-markdown-dir",
+    component=None,
+    description="project-notes directory exists (projects.markdown_dir)",
+    check_fn="work_buddy.health.requirement_checks.check_projects_markdown_dir",
+    severity="recommended",
+    fix_hint=(
+        "Create the vault directory named by projects.markdown_dir "
+        "(default work-buddy/projects) — it holds one markdown note per "
+        "project. Click Fix to create it and set the config key."
+    ),
+    setup_group="repository",
+    fix_kind="input_required",
+    fix_fn="work_buddy.health.fixers.fix_projects_markdown_dir",
+    fix_params={
+        "path": {
+            "type": "str",
+            "label": "Project-notes directory (vault-relative)",
+            "hint": "Vault-relative path for the single directory of project "
+                    "markdown notes, e.g. work-buddy/projects",
+            "required": True,
+            "config_path": "projects.markdown_dir",
+        },
+    },
+    fix_preview="Creates the directory under the vault and sets "
+                "projects.markdown_dir in config.yaml.",
+))
+
+_register(RequirementDef(
     id="core/config/timezone",
     component=None,
     description="timezone is a valid IANA timezone",
