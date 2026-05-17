@@ -1913,29 +1913,51 @@ def api_project_detail(slug: str):
 
 @app.post("/api/projects/<slug>")
 def api_project_update(slug: str):
-    """Update project identity fields. Writes an authored revision."""
+    """Update project identity fields via the markdown-canonical path.
+
+    Routes the edit through :class:`ProjectMarkdownDB.apply_mutation`,
+    which writes BOTH surfaces — the project's markdown note (the
+    canonical store) and the projects SQLite registry — atomically. A
+    dashboard edit therefore survives the next drift reconciliation;
+    writing the registry alone would be overwritten by the note on the
+    next reconcile pass.
+    """
     blocked = _reject_read_only()
     if blocked:
         return blocked
     data = request.get_json(silent=True) or {}
     try:
-        from work_buddy.projects.store import update_project
-        kwargs: dict[str, Any] = {"author": "user", "change_summary": "dashboard edit"}
-        if "name" in data:
-            kwargs["name"] = data["name"]
-        if "status" in data:
-            kwargs["status"] = data["status"]
-        if "description" in data:
-            kwargs["description"] = data["description"]
+        from work_buddy.markdown_db import WriteProvenance
+        from work_buddy.projects.markdown_db import ProjectMarkdownDB
+        from work_buddy.projects.store import VALID_STATUSES, get_project
 
-        # Only the audit fields, nothing actually changing — reject early.
-        if set(kwargs) <= {"author", "change_summary"}:
+        fields: dict[str, Any] = {}
+        for key in ("name", "status", "description"):
+            if key in data:
+                fields[key] = data[key]
+        if not fields:
             return jsonify({"error": "No fields to update"}), 400
 
-        result = update_project(slug, **kwargs)
-        if result is None:
+        # Pre-validate status. apply_mutation writes the markdown note
+        # BEFORE the store, so an enum failure surfacing mid-write would
+        # leave the note ahead of a rejecting registry. Catch it before
+        # any surface is touched.
+        if "status" in fields and fields["status"] not in VALID_STATUSES:
+            return jsonify({
+                "error": f"Invalid status: {fields['status']!r}. "
+                         f"Must be one of {sorted(VALID_STATUSES)}"
+            }), 400
+
+        if get_project(slug) is None:
             return jsonify({"error": f"Project '{slug}' not found"}), 404
-        return jsonify(result)
+
+        ProjectMarkdownDB().apply_mutation(
+            slug, fields,
+            provenance=WriteProvenance.mutation(
+                frozenset({"user"}), "dashboard",
+            ),
+        )
+        return jsonify(get_project(slug))
     except ValueError as e:
         # CHECK-constraint or enum-validation failure from the store.
         return jsonify({"error": str(e)}), 400

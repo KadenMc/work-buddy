@@ -344,3 +344,36 @@ def test_apply_mutation_writes_both_surfaces(projects_env) -> None:
     # Markdown surface.
     parsed = parse_project_note(env.note_path("eta").read_text(encoding="utf-8"))
     assert parsed.description == "via dashboard"
+
+
+def test_apply_mutation_records_user_author(projects_env) -> None:
+    """A WriteProvenance with actor={user} (a dashboard edit) is recorded
+    as author='user' in the project's revision history — not 'agent'."""
+    env = projects_env
+    env.store.upsert_project("theta", name="Theta", description="initial")
+    env.markdown_db_mod.materialize_projects(dry_run=False)
+
+    from work_buddy.markdown_db import WriteProvenance
+    env.db.apply_mutation(
+        "theta", {"description": "user edit"},
+        provenance=WriteProvenance.mutation(frozenset({"user"}), "dashboard"),
+    )
+
+    pid = env.store.resolve_slug("theta")
+    latest = env.store.list_revisions(pid, limit=1)[0]
+    assert latest["author"] == "user"
+
+
+def test_drift_reconcile_records_agent_author(projects_env) -> None:
+    """A drift-reconciliation store write is recorded as author='agent'
+    — the reconciler acted, the originating human was not observed."""
+    env = projects_env
+    env.store.upsert_project("iota", name="Iota", description="old")
+    env.markdown_db_mod.materialize_projects(dry_run=False)
+    # Out-of-band edit to the note, then reconcile propagates it.
+    env.write_note("iota", "Iota", "active", "edited out of band")
+    env.db.reconcile_drift()
+
+    pid = env.store.resolve_slug("iota")
+    latest = env.store.list_revisions(pid, limit=1)[0]
+    assert latest["author"] == "agent"

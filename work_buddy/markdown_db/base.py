@@ -160,13 +160,31 @@ class MarkdownDB(ABC):
         """Return every live store row as a dict. Override per store API."""
         return list(self.store.query())
 
-    def _store_create(self, pk: str, fields: dict[str, Any]) -> None:
+    def _store_create(
+        self,
+        pk: str,
+        fields: dict[str, Any],
+        provenance: WriteProvenance | None = None,
+    ) -> None:
         """Create a store row. ``fields`` keyed by store column. Override
-        per store API (positional PK arg, ``upsert_*`` name, …)."""
+        per store API (positional PK arg, ``upsert_*`` name, …).
+
+        ``provenance`` is the write's :class:`WriteProvenance` when the
+        create originates from :meth:`apply_mutation`, or ``None`` from a
+        drift-reconciliation create. Subclasses whose store records an
+        author/actor on writes use it to attribute the row honestly.
+        """
         self.store.create(pk, **fields)
 
-    def _store_update(self, pk: str, fields: dict[str, Any]) -> None:
-        """Update a store row. ``fields`` keyed by store column."""
+    def _store_update(
+        self,
+        pk: str,
+        fields: dict[str, Any],
+        provenance: WriteProvenance | None = None,
+    ) -> None:
+        """Update a store row. ``fields`` keyed by store column.
+
+        ``provenance`` — see :meth:`_store_create`."""
         self.store.update(pk, **fields)
 
     def _store_delete(self, pk: str) -> None:
@@ -279,9 +297,9 @@ class MarkdownDB(ABC):
                 for name, value in fields.items()
             }
             if current:
-                self._store_update(pk, store_fields)
+                self._store_update(pk, store_fields, provenance)
             else:
-                self._store_create(pk, store_fields)
+                self._store_create(pk, store_fields, provenance)
 
             # 4. Stamp the LWW log — one event per field per surface.
             for name in fields:
@@ -341,7 +359,10 @@ class MarkdownDB(ABC):
         for pk in sorted(parsed_ids - store_ids):
             try:
                 kwargs = self.build_create_kwargs(parsed[pk])
-                self._store_create(pk, kwargs)
+                self._store_create(
+                    pk, kwargs,
+                    WriteProvenance.drift(actor=self._infer_drift_actor(pk)),
+                )
                 report.created.append(pk)
                 self._stamp_drift_fields(pk, parsed[pk].fields.keys())
                 logger.info(
@@ -465,7 +486,10 @@ class MarkdownDB(ABC):
                 if spec.extra_store_fields is not None:
                     update_fields.update(spec.extra_store_fields(file_val))
                 try:
-                    self._store_update(pk, update_fields)
+                    self._store_update(
+                        pk, update_fields,
+                        WriteProvenance.drift(actor=self._infer_drift_actor(pk)),
+                    )
                 except Exception as exc:
                     logger.warning(
                         "markdown_db[%s]: drift update %s.%s failed: %s",

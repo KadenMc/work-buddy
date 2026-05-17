@@ -45,7 +45,7 @@ from typing import Any
 
 from work_buddy.config import load_config
 from work_buddy.logging_config import get_logger
-from work_buddy.markdown_db import FieldSpec, MarkdownDB
+from work_buddy.markdown_db import FieldSpec, MarkdownDB, WriteProvenance
 from work_buddy.markdown_db.types import ParsedFileRow
 from work_buddy.obsidian.tasks import store as task_store
 from work_buddy.obsidian.tasks.mutations import (
@@ -184,13 +184,22 @@ class TaskMarkdownDB(MarkdownDB):
             "completed_at": f.get("completed_at"),
         }
 
-    def _store_create(self, pk: str, fields: dict[str, Any]) -> None:
+    def _store_create(
+        self,
+        pk: str,
+        fields: dict[str, Any],
+        provenance: "WriteProvenance | None" = None,
+    ) -> None:
         """Create a task_metadata row, then backfill ``completed_at``.
 
         ``completed_at`` is stamped by the store's state-transition
         logic, not accepted by ``create`` — so a line that arrives
         already-done with a ✅ date gets it via a post-create update,
         exactly as the legacy reconciler does.
+
+        ``provenance`` is accepted for the :class:`MarkdownDB` hook
+        contract; the task store records a free-text ``reason`` rather
+        than an author enum, so it is not threaded further here.
         """
         fields = dict(fields)
         completed_at = fields.pop("completed_at", None)
@@ -203,7 +212,12 @@ class TaskMarkdownDB(MarkdownDB):
                 reason="markdown_db: completed_at backfilled at create",
             )
 
-    def _store_update(self, pk: str, fields: dict[str, Any]) -> None:
+    def _store_update(
+        self,
+        pk: str,
+        fields: dict[str, Any],
+        provenance: "WriteProvenance | None" = None,
+    ) -> None:
         task_store.update(pk, reason="markdown_db: drift reconciliation", **fields)
 
     def _store_delete(self, pk: str) -> None:

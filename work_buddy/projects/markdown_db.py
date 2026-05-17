@@ -49,7 +49,7 @@ from typing import Any
 
 from work_buddy.config import load_config
 from work_buddy.logging_config import get_logger
-from work_buddy.markdown_db import FieldSpec, MarkdownDB
+from work_buddy.markdown_db import FieldSpec, MarkdownDB, WriteProvenance
 from work_buddy.markdown_db.storage_helpers import atomic_write_text
 from work_buddy.markdown_db.types import ParsedFileRow
 from work_buddy.projects import store as project_store
@@ -75,6 +75,27 @@ def projects_markdown_dir() -> Path:
     cfg = load_config()
     rel = cfg.get("projects", {}).get("markdown_dir") or _DEFAULT_MARKDOWN_DIR
     return Path(cfg.get("vault_root", "")) / rel
+
+
+def _author_from_provenance(provenance: WriteProvenance | None) -> str:
+    """Map a write's provenance to the projects store's author enum.
+
+    The store's ``author`` is ``{"user", "agent"}``. A write whose actor
+    set includes ``user`` (a dashboard edit) is recorded as ``user``;
+    everything else — drift reconciliation, materialization, an agent
+    mutation, or an unattributed write — is ``agent``.
+    """
+    if provenance is not None and "user" in provenance.actor:
+        return "user"
+    return "agent"
+
+
+def _summary_from_provenance(
+    provenance: WriteProvenance | None, verb: str,
+) -> str:
+    """Build a project_revisions change_summary from write provenance."""
+    process = provenance.process if provenance is not None else "drift"
+    return f"markdown_db: {verb} ({process})"
 
 
 class ProjectMarkdownDB(MarkdownDB):
@@ -166,18 +187,28 @@ class ProjectMarkdownDB(MarkdownDB):
         # deleted project should not resurrect a markdown note.
         return list(project_store.list_projects())
 
-    def _store_create(self, pk: str, fields: dict[str, Any]) -> None:
+    def _store_create(
+        self,
+        pk: str,
+        fields: dict[str, Any],
+        provenance: "WriteProvenance | None" = None,
+    ) -> None:
         project_store.upsert_project(
             pk,
             name=fields.get("name"),
             status=fields.get("status") or "active",
             description=fields.get("description"),
             origin="vault",
-            author="agent",
-            change_summary="markdown_db: created from project note",
+            author=_author_from_provenance(provenance),
+            change_summary=_summary_from_provenance(provenance, "created"),
         )
 
-    def _store_update(self, pk: str, fields: dict[str, Any]) -> None:
+    def _store_update(
+        self,
+        pk: str,
+        fields: dict[str, Any],
+        provenance: "WriteProvenance | None" = None,
+    ) -> None:
         kwargs: dict[str, Any] = {}
         for col in ("name", "status", "description"):
             if col in fields:
@@ -185,8 +216,9 @@ class ProjectMarkdownDB(MarkdownDB):
         if not kwargs:
             return
         project_store.update_project(
-            pk, author="agent",
-            change_summary="markdown_db: drift reconciliation",
+            pk,
+            author=_author_from_provenance(provenance),
+            change_summary=_summary_from_provenance(provenance, "updated"),
             **kwargs,
         )
 
