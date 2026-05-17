@@ -436,7 +436,36 @@ class MarkdownDB(ABC):
                 pk, parsed[pk], store_rows[pk], report,
             )
 
+        # 5. Subclass post-pass — derived caches / freshness state that
+        #    sit outside the field model (e.g. the task tag cache and the
+        #    task_sync_status row). No-op by default.
+        try:
+            self.post_reconcile(parsed, store_rows, report)
+        except Exception as exc:  # never let a post-pass undo the sync
+            logger.warning(
+                "markdown_db[%s]: post_reconcile failed: %s",
+                self.table_name, exc,
+            )
+            report.errors.append(f"post_reconcile: {exc}")
+
         return report
+
+    def post_reconcile(
+        self,
+        parsed: dict[str, ParsedFileRow],
+        store_rows: dict[str, dict[str, Any]],
+        report: ReconcileReport,
+    ) -> None:
+        """Hook run at the end of :meth:`reconcile_drift`.
+
+        For derived state that is not part of the :data:`FIELDS` model
+        and so isn't reconciled by the field-drift loop — caches keyed
+        off the markdown (the task tag cache), freshness-audit rows
+        (``task_sync_status``), etc. ``store_rows`` is the *pre*-reconcile
+        snapshot. Default: no-op. A raising override is caught and logged
+        — it cannot undo the reconciliation that already landed.
+        """
+        return None
 
     def _reconcile_one_entity(
         self,

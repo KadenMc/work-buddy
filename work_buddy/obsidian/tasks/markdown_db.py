@@ -5,37 +5,33 @@ declares the six reconcilable task fields and reuses the existing,
 battle-tested parsing helpers from ``obsidian/tasks/sync.py`` and
 ``obsidian/tasks/mutations.py`` rather than reimplementing them.
 
-## Status: parallel, not yet the cutover
+## The production task reconciler
 
-The legacy reconciler ``obsidian.tasks.sync.task_sync()`` is still the
-production drift job. ``TaskMarkdownDB`` is an *additive* parallel
-implementation: its :meth:`~MarkdownDB.reconcile_drift` produces the
-same store mutations as ``task_sync`` (verified by
-``tests/unit/test_markdown_db_tasks.py``). Repointing the ``task_sync``
-cron + capability at this class is a deliberate, reviewed cutover step —
-intentionally NOT done automatically.
+``obsidian.tasks.sync.task_sync()`` delegates to :func:`reconcile_tasks`
+in this module — so ``TaskMarkdownDB`` IS the task drift reconciler the
+``task-sync`` cron and the dashboard Sync button run. ``task_sync``
+remains as the stable entry-point name; its return shape (``status``
+plus per-category counts) is preserved.
 
 ## The 8-loops → 6-FieldSpec collapse
 
-``task_sync`` hand-writes eight reconciliation loops. Six of them are
-field-drift loops (checkbox / note_uuid / description / urgency /
-deadline / completed_at); they collapse into the :data:`FIELDS` list
-below and run through the generic
-:meth:`MarkdownDB.reconcile_drift`. The remaining two — orphan handling
-and the tag-cache rebuild — are the base class's orphan logic and a
-subclass hook respectively.
+The pre-existing task reconciler hand-wrote eight reconciliation loops.
+Six are field-drift loops (checkbox / note_uuid / description / urgency
+/ deadline / completed_at); they collapse into the :data:`FIELDS` list
+below and run through the generic :meth:`MarkdownDB.reconcile_drift`.
+The remaining two — orphan handling and the tag-cache rebuild — are the
+base class's orphan logic and :meth:`TaskMarkdownDB.post_reconcile`.
 
-## What is NOT yet covered here
+## Coverage notes
 
 - ``write_entity_to_markdown`` rewrites the description and checkbox of
   an existing line; it deliberately leaves the plugin emoji metadata
   (📅 / ✅ / ⏫🔼🔽) untouched. Reconciliation runs markdown→store, so the
   store-wins write-back path for emoji fields is not exercised; the task
   mutation capabilities (``update_task`` etc. in ``mutations.py``) own
-  emoji-bearing task-line writes.
+  emoji-bearing task-line writes — and they already write both surfaces.
 - The ``task_sync_status`` freshness write and the ``task_tags`` cache
-  rebuild are not performed by ``reconcile_drift`` — ``task_sync`` still
-  owns them.
+  rebuild run in :meth:`post_reconcile`, after the field-drift loop.
 """
 
 from __future__ import annotations
@@ -46,13 +42,18 @@ from typing import Any
 from work_buddy.config import load_config
 from work_buddy.logging_config import get_logger
 from work_buddy.markdown_db import FieldSpec, MarkdownDB, WriteProvenance
-from work_buddy.markdown_db.types import ParsedFileRow
+from work_buddy.markdown_db.types import ParsedFileRow, ReconcileReport
 from work_buddy.obsidian.tasks import store as task_store
 from work_buddy.obsidian.tasks.mutations import (
     MASTER_TASK_FILE,
     replace_description_in_line,
 )
-from work_buddy.obsidian.tasks.sync import _parse_file_tasks, _read_master_list
+# Imported as a module (not by-name) on purpose: `_read_master_list`,
+# `_parse_file_tasks`, and `_rebuild_tag_cache` are referenced via this
+# module so a `patch.object(sync, ...)` — or any future reassignment —
+# is seen here too. A by-value `from sync import _read_master_list`
+# would bind a private copy that monkeypatching could not reach.
+from work_buddy.obsidian.tasks import sync as _tasks_sync
 
 logger = get_logger(__name__)
 
@@ -118,12 +119,12 @@ class TaskMarkdownDB(MarkdownDB):
         Reuses :func:`obsidian.tasks.sync._read_master_list` (bridge or
         filesystem) and :func:`obsidian.tasks.sync._parse_file_tasks`.
         """
-        content = _read_master_list()
+        content = _tasks_sync._read_master_list()
         if content is None:
             logger.warning("TaskMarkdownDB: master task list unreadable")
             return {}
         out: dict[str, ParsedFileRow] = {}
-        for task_id, info in _parse_file_tasks(content).items():
+        for task_id, info in _tasks_sync._parse_file_tasks(content).items():
             out[task_id] = ParsedFileRow(
                 pk=task_id,
                 fields=dict(info),
@@ -223,14 +224,85 @@ class TaskMarkdownDB(MarkdownDB):
     def _store_delete(self, pk: str) -> None:
         task_store.delete(pk)
 
+    # ── Post-reconcile derived state ────────────────────────────────
+
+    def post_reconcile(
+        self,
+        parsed: dict[str, ParsedFileRow],
+        store_rows: dict[str, Any],
+        report: ReconcileReport,
+    ) -> None:
+        """Rebuild the task tag cache and write ``task_sync_status``.
+
+        These are the two things the legacy ``task_sync`` did beyond the
+        field-drift loop: the ``task_tags`` cache (keyed off the parsed
+        line tags, classified into namespaces) and the single-row
+        ``task_sync_status`` freshness audit the dashboard reads to
+        render "synced Xm ago". Neither belongs to the :data:`FIELDS`
+        model, so they run here.
+        """
+        # Tag cache — survivors are tasks present in the file that also
+        # have (or just got) a store row.
+        file_tasks = {pk: row.fields for pk, row in parsed.items()}
+        surviving = set(parsed) & (set(store_rows) | set(report.created))
+        try:
+            self._last_tag_rows = _tasks_sync._rebuild_tag_cache(
+                file_tasks, surviving,
+            )
+        except Exception as exc:
+            logger.warning("TaskMarkdownDB: tag cache rebuild failed: %s", exc)
+            self._last_tag_rows = 0
+
+        # Freshness audit row. ``updated`` counts markdown-wins field
+        # drifts (the writes that hit the store this pass).
+        updated = sum(
+            1
+            for entries in report.drift.values()
+            for d in entries
+            if d.get("winner") == "markdown"
+        )
+        try:
+            task_store.set_sync_status(
+                created=len(report.created),
+                updated=updated,
+                deleted=len(report.deleted),
+            )
+        except Exception as exc:
+            logger.warning("TaskMarkdownDB: set_sync_status failed: %s", exc)
+
 
 def reconcile_tasks() -> dict[str, Any]:
-    """Run a task drift reconciliation via :class:`TaskMarkdownDB`.
+    """Reconcile the master task list against the SQLite store.
 
-    Convenience entry point mirroring ``obsidian.tasks.sync.task_sync``'s
-    return shape closely enough for inspection. NOT yet wired into the
-    cron / capability registry — see the module docstring.
+    The task-reconciler entry point: runs :class:`TaskMarkdownDB`'s
+    generic drift loop (plus the tag-cache / freshness post-pass) and
+    returns a summary dict in the shape the legacy ``task_sync``
+    produced — ``status`` + per-category counts — so the ``task_sync``
+    capability and the dashboard's Sync button keep their contract.
     """
     db = TaskMarkdownDB(task_store)
     report = db.reconcile_drift()
-    return report.to_dict()
+
+    def _n(field: str) -> int:
+        return len(report.drift.get(field, []))
+
+    resolved = {
+        "resolved_mismatches": _n("checkbox"),
+        "resolved_note_uuids": _n("note_uuid"),
+        "resolved_descriptions": _n("description"),
+        "resolved_urgencies": _n("urgency"),
+        "resolved_deadlines": _n("deadline"),
+        "resolved_completed_at": _n("completed"),
+    }
+    total_actions = (
+        len(report.created) + len(report.deleted) + sum(resolved.values())
+    )
+    return {
+        "status": "ok" if total_actions == 0 else "synced",
+        "created": len(report.created),
+        "deleted": len(report.deleted),
+        **resolved,
+        "tag_rows_written": getattr(db, "_last_tag_rows", 0),
+        "errors": report.errors,
+        "warnings": report.warnings,
+    }
