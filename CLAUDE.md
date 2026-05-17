@@ -137,6 +137,18 @@ If `mcp__work-buddy__wb_init` is not in your tool list, **stop immediately and t
 3. Otherwise (CLI) → tell the user to run **`/mcp`** to reconnect.
 4. If the sidecar is down, they'll need to restart it first.
 
+## Running Python in this repo
+
+work-buddy's functionality is reached through the MCP tools (see above) — reach for those first. But some tasks legitimately need raw Python: running the test suite, `work_buddy.knowledge.build`, a one-off debug script.
+
+When you do, run it in the **`work-buddy` conda environment**. That env has every optional dependency (`hindsight_client`, `rank_bm25`, `freezegun`, …); a bare or partial Python will fail partway through with `ModuleNotFoundError`. The portable form needs no shell activation and works cross-platform:
+
+```
+conda run -n work-buddy python -m <module>     # e.g. -m pytest tests/unit/<file>.py
+```
+
+If `conda` is not on `PATH` (common in non-interactive shells), it lives in your conda/miniforge install; or invoke the env's interpreter directly — `<conda-base>/envs/work-buddy/python`. A machine-specific absolute path, if you want one pinned, belongs in `CLAUDE.local.md`, not here.
+
 ## Repo structure (navigational)
 
 ```

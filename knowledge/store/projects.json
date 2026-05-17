@@ -30,6 +30,7 @@
       "projects/project_revisions_list",
       "projects/project_set_folder_archived",
       "projects/project_state_at",
+      "projects/project_sync",
       "projects/project_update"
     ],
     "content": {
