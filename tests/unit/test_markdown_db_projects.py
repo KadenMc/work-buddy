@@ -232,25 +232,44 @@ def test_reconcile_deletes_orphan_when_flag_enabled(projects_env) -> None:
     assert env.store.get_project("ghost") is None
 
 
+def _make_malformed_note(env, slug: str) -> None:
+    env.store.upsert_project(slug, name=slug.title(), description="d")
+    d = env.vault / "work" / "projects" / slug
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{slug}.md").write_text(
+        "# " + slug.title() + "\n\nno frontmatter, not a project note\n",
+        encoding="utf-8",
+    )
+
+
 def test_reconcile_keeps_project_with_unparseable_note(projects_env) -> None:
     """A store project whose note file exists but fails to parse must
     NOT be soft-deleted, even with delete_orphans_in_store=True — a
     malformed note is a fixable error, not a deletion signal."""
     env = projects_env
-    env.store.upsert_project("malformed", name="Malformed", description="d")
-    # A file at the project's note path that is NOT a valid project note.
-    d = env.vault / "work" / "projects" / "malformed"
-    d.mkdir(parents=True, exist_ok=True)
-    (d / "malformed.md").write_text(
-        "# Malformed\n\nno frontmatter, not a project note\n",
-        encoding="utf-8",
-    )
+    _make_malformed_note(env, "malformed")
     env.db.delete_orphans_in_store = True  # even with deletion enabled
 
     report = env.db.reconcile_drift()
 
     assert "malformed" not in report.deleted
     assert env.store.get_project("malformed") is not None
+    assert any("malformed" in w for w in report.warnings)
+
+
+def test_reconcile_warns_on_unparseable_note_when_delete_disabled(
+    projects_env,
+) -> None:
+    """The malformed-note warning fires regardless of
+    delete_orphans_in_store — a non-conforming note is an
+    attention-needed condition independent of the delete policy."""
+    env = projects_env
+    _make_malformed_note(env, "malformed")
+    assert env.db.delete_orphans_in_store is False  # ProjectMarkdownDB default
+
+    report = env.db.reconcile_drift()
+
+    assert "malformed" not in report.deleted
     assert any("malformed" in w for w in report.warnings)
 
 

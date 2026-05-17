@@ -355,50 +355,57 @@ class MarkdownDB(ABC):
                 )
                 report.errors.append(f"create {pk}: {exc}")
 
-        # 3. Orphan in store → soft-delete (only when the subclass has
-        #    opted in via delete_orphans_in_store; otherwise skipped, so
-        #    an un-materialized markdown surface cannot wipe the store).
+        # 3. Orphan in store. Each store row absent from the *parsed*
+        #    set is one of two distinct cases:
+        #
+        #    (a) A markdown artifact for it EXISTS but failed to parse
+        #        (malformed YAML, a hand-edit that broke the format).
+        #        Never deleted — soft-deleting a store row over a
+        #        fixable parse error would be data loss. Always surfaced
+        #        as a warning, regardless of delete_orphans_in_store.
+        #    (b) No markdown artifact at all. A genuine orphan. Soft-
+        #        deleted only when delete_orphans_in_store is set;
+        #        otherwise left intact (the pre-materialization / opted-
+        #        out state, where an un-materialized surface must not
+        #        wipe the store).
         orphans_in_store = sorted(store_ids - parsed_ids)
-        if orphans_in_store and not self.delete_orphans_in_store:
+        intact_no_artifact: list[str] = []
+        for pk in orphans_in_store:
+            if self.markdown_exists(pk):
+                logger.warning(
+                    "markdown_db[%s]: %s is in the store and has a "
+                    "markdown file, but that file did not parse — left "
+                    "intact. Fix the markdown; do not expect a delete.",
+                    self.table_name, pk,
+                )
+                report.warnings.append(
+                    f"{pk}: markdown file present but unparsed — "
+                    f"store row left intact"
+                )
+                continue
+            if not self.delete_orphans_in_store:
+                intact_no_artifact.append(pk)
+                continue
+            try:
+                self._store_delete(pk)
+                report.deleted.append(pk)
+                logger.info(
+                    "markdown_db[%s]: soft-deleted orphan-in-store pk=%s",
+                    self.table_name, pk,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "markdown_db[%s]: failed to delete %s: %s",
+                    self.table_name, pk, exc,
+                )
+                report.errors.append(f"delete {pk}: {exc}")
+        if intact_no_artifact:
             logger.info(
-                "markdown_db[%s]: %d orphan-in-store row(s) left intact "
-                "(delete_orphans_in_store is False): %s",
-                self.table_name, len(orphans_in_store), orphans_in_store,
+                "markdown_db[%s]: %d orphan-in-store row(s) with no "
+                "markdown artifact left intact (delete_orphans_in_store "
+                "is False): %s",
+                self.table_name, len(intact_no_artifact), intact_no_artifact,
             )
-        elif self.delete_orphans_in_store:
-            for pk in orphans_in_store:
-                # A store row absent from the *parsed* set is only a
-                # genuine orphan if it has NO markdown artifact at all.
-                # When a markdown file IS present but failed to parse
-                # (malformed YAML, a hand-edit that broke the format),
-                # the entity is not deleted — soft-deleting a store row
-                # over a fixable parse error would be data loss. Leave
-                # it intact and surface a warning instead.
-                if self.markdown_exists(pk):
-                    logger.warning(
-                        "markdown_db[%s]: %s is in the store and has a "
-                        "markdown file, but that file did not parse — "
-                        "left intact. Fix the markdown; do not expect a "
-                        "delete.", self.table_name, pk,
-                    )
-                    report.warnings.append(
-                        f"{pk}: markdown file present but unparsed — "
-                        f"store row left intact"
-                    )
-                    continue
-                try:
-                    self._store_delete(pk)
-                    report.deleted.append(pk)
-                    logger.info(
-                        "markdown_db[%s]: soft-deleted orphan-in-store pk=%s",
-                        self.table_name, pk,
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "markdown_db[%s]: failed to delete %s: %s",
-                        self.table_name, pk, exc,
-                    )
-                    report.errors.append(f"delete {pk}: {exc}")
 
         # 4. Field drift over the intersection.
         for spec in self.FIELDS:
