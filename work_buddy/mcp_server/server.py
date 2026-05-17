@@ -122,6 +122,57 @@ def _warm_registry_in_background() -> None:
     t.start()
 
 
+def _regenerate_knowledge_docs_in_background() -> None:
+    """Regenerate the derived knowledge-store files from the live
+    registry, in a daemon thread.
+
+    ``knowledge/store/_generated_capabilities.json`` and
+    ``_generated_parents.json`` are a projection of the MCP capability
+    registry produced by ``knowledge.build``. They are committed to the
+    repo and loaded into the knowledge store — but nothing forces a
+    regeneration when a capability is added, so they silently drift.
+
+    Running ``build_all(write=True)`` here, off the event loop, keeps
+    the running gateway's knowledge store consistent with the code it
+    is actually executing — no manual ``build.py`` step, no waiting.
+    ``build_all`` calls ``invalidate_store()``, so the next knowledge
+    query rebuilds from the fresh files. When the registry is unchanged
+    the rewrite is byte-identical (no spurious git diff); when it has
+    changed, the diff is the correct, wanted regeneration.
+
+    Fully fail-safe: any error (e.g. an optional dependency absent from
+    this environment, which makes ``knowledge.build`` raise) is logged
+    and the committed files are left exactly as they were. Pairs with
+    ``tests/unit/test_generated_capabilities_in_sync.py``, which keeps
+    the *committed* files honest at CI time.
+    """
+    import threading
+
+    logger = logging.getLogger("work_buddy.mcp_server")
+
+    def _regen():
+        try:
+            from work_buddy.knowledge.build import build_all
+            result = build_all(write=True)
+            logger.info(
+                "Knowledge-docs auto-regen: %d capabilities, %d parent "
+                "stubs, %d hand-authored parents reconciled",
+                result.get("capabilities", 0),
+                result.get("parent_stubs", 0),
+                result.get("handauthored_parents_updated", 0),
+            )
+        except Exception as exc:
+            logger.warning(
+                "Knowledge-docs auto-regen failed; committed files left "
+                "as-is: %s", exc,
+            )
+
+    t = threading.Thread(
+        target=_regen, name="knowledge-docs-regen", daemon=True,
+    )
+    t.start()
+
+
 def main_http() -> None:
     """Entry point — run as a persistent streamable-http service."""
     port = _get_port()
@@ -140,4 +191,5 @@ def main_http() -> None:
     from work_buddy.threads.bootstrap import bootstrap_for_subprocess
     bootstrap_for_subprocess(subprocess_name="mcp-gateway")
     _warm_registry_in_background()
+    _regenerate_knowledge_docs_in_background()
     server.run(transport="streamable-http")
