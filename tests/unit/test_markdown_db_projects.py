@@ -65,21 +65,30 @@ def test_note_body_without_h1_kept_verbatim() -> None:
 # ════════════════════════════════════════════════════════════════════
 
 
+_MARKDOWN_DIR = "work-buddy/projects"  # vault-relative, matches config default
+
+
 @pytest.fixture
 def projects_env(tmp_path, monkeypatch):
     """Temp vault + temp projects DB with config redirected.
 
-    Yields a namespace with: ``db`` (a fresh ProjectMarkdownDB),
-    ``store`` (the projects store module), ``vault`` (Path), and
+    Project notes live in a single flat directory
+    ``<vault>/work-buddy/projects/<slug>.md``. The namespace exposes:
+    ``db`` (a fresh ProjectMarkdownDB), ``store``, ``vault``,
+    ``notes_dir`` (Path), ``note_path(slug)``, and
     ``write_note(slug, name, status, desc)``.
     """
     vault = tmp_path / "vault"
-    (vault / "work" / "projects").mkdir(parents=True)
+    notes_dir = vault / "work-buddy" / "projects"
+    notes_dir.mkdir(parents=True)
     db_path = tmp_path / "projects.db"
 
     fake_cfg = {
         "vault_root": str(vault),
-        "projects": {"db_path": str(db_path)},
+        "projects": {
+            "db_path": str(db_path),
+            "markdown_dir": _MARKDOWN_DIR,
+        },
     }
 
     from work_buddy.projects import store as project_store
@@ -88,10 +97,12 @@ def projects_env(tmp_path, monkeypatch):
     monkeypatch.setattr(project_store, "load_config", lambda *a, **k: fake_cfg)
     monkeypatch.setattr(pmd, "load_config", lambda *a, **k: fake_cfg)
 
+    def note_path(slug: str) -> Path:
+        return notes_dir / f"{slug}.md"
+
     def write_note(slug: str, name: str, status: str, desc: str) -> Path:
-        d = vault / "work" / "projects" / slug
-        d.mkdir(parents=True, exist_ok=True)
-        p = d / f"{slug}.md"
+        p = note_path(slug)
+        p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(
             render_project_note(slug, name, status, desc), encoding="utf-8",
         )
@@ -102,9 +113,11 @@ def projects_env(tmp_path, monkeypatch):
 
     env = Env()
     env.vault = vault
+    env.notes_dir = notes_dir
     env.store = project_store
     env.db = pmd.ProjectMarkdownDB()
     env.markdown_db_mod = pmd
+    env.note_path = note_path
     env.write_note = write_note
     return env
 
@@ -124,7 +137,7 @@ def test_materialize_dry_run(projects_env) -> None:
     assert sorted(result["planned"]) == ["alpha", "beta"]
     assert result["written"] == []
     # No files written.
-    assert list((env.vault / "work" / "projects").glob("*/*.md")) == []
+    assert list(env.notes_dir.glob("*.md")) == []
 
 
 def test_materialize_apply_writes_notes(projects_env) -> None:
@@ -134,9 +147,11 @@ def test_materialize_apply_writes_notes(projects_env) -> None:
     result = env.markdown_db_mod.materialize_projects(dry_run=False)
 
     assert result["written"] == ["alpha"]
-    note_path = env.vault / "work" / "projects" / "alpha" / "alpha.md"
-    assert note_path.is_file()
-    parsed = parse_project_note(note_path.read_text(encoding="utf-8"))
+    note = env.note_path("alpha")
+    assert note.is_file()
+    # The note lives flat in the single directory, not a per-slug subdir.
+    assert note.parent == env.notes_dir
+    parsed = parse_project_note(note.read_text(encoding="utf-8"))
     assert parsed.name == "Alpha"
     assert parsed.description == "Desc A"
 
@@ -152,10 +167,7 @@ def test_materialize_never_overwrites(projects_env) -> None:
     assert result["skipped"] == ["alpha"]
     assert result["written"] == []
     # Hand-written content preserved.
-    parsed = parse_project_note(
-        (env.vault / "work" / "projects" / "alpha" / "alpha.md")
-        .read_text(encoding="utf-8")
-    )
+    parsed = parse_project_note(env.note_path("alpha").read_text(encoding="utf-8"))
     assert parsed.description == "HAND-WRITTEN desc"
 
 
@@ -234,9 +246,7 @@ def test_reconcile_deletes_orphan_when_flag_enabled(projects_env) -> None:
 
 def _make_malformed_note(env, slug: str) -> None:
     env.store.upsert_project(slug, name=slug.title(), description="d")
-    d = env.vault / "work" / "projects" / slug
-    d.mkdir(parents=True, exist_ok=True)
-    (d / f"{slug}.md").write_text(
+    env.note_path(slug).write_text(
         "# " + slug.title() + "\n\nno frontmatter, not a project note\n",
         encoding="utf-8",
     )
@@ -278,9 +288,7 @@ def test_materialize_blocks_on_non_conforming_file(projects_env) -> None:
     'blocked' (not 'skipped', not overwritten)."""
     env = projects_env
     env.store.upsert_project("blockme", name="Block Me", description="d")
-    d = env.vault / "work" / "projects" / "blockme"
-    d.mkdir(parents=True, exist_ok=True)
-    note = d / "blockme.md"
+    note = env.note_path("blockme")
     note.write_text("not a project note\n", encoding="utf-8")
 
     result = env.markdown_db_mod.materialize_projects(dry_run=False)
@@ -292,23 +300,23 @@ def test_materialize_blocks_on_non_conforming_file(projects_env) -> None:
     assert note.read_text(encoding="utf-8") == "not a project note\n"
 
 
-def test_parse_skips_lifecycle_directories(projects_env) -> None:
-    """projects-past / projects-future are lifecycle containers, not
-    projects — parse_all_from_markdown must not treat them as notes."""
+def test_parse_skips_slug_filename_mismatch(projects_env) -> None:
+    """A note whose frontmatter slug disagrees with its filename is
+    skipped — the filename is authoritative for the single-dir layout."""
     env = projects_env
-    root = env.vault / "work" / "projects"
-    # A lifecycle dir with a sibling-named .md file (as Waypoint creates).
-    (root / "projects-future").mkdir(parents=True)
-    (root / "projects-future" / "projects-future.md").write_text(
-        "# Future projects\n\nsome folder note\n", encoding="utf-8",
+    # File named wrong-name.md but frontmatter claims slug 'realproj'.
+    (env.notes_dir / "wrong-name.md").write_text(
+        render_project_note("realproj", "Real Project", "active", "desc"),
+        encoding="utf-8",
     )
-    # A real project note alongside it.
-    env.write_note("realproj", "Real Project", "active", "desc")
+    # A correctly-named note alongside it.
+    env.write_note("goodproj", "Good Project", "active", "desc")
 
     parsed = env.db.parse_all_from_markdown()
 
-    assert "realproj" in parsed
-    assert "projects-future" not in parsed
+    assert "goodproj" in parsed
+    assert "realproj" not in parsed  # filename/slug mismatch → skipped
+    assert "wrong-name" not in parsed
 
 
 def test_reconcile_in_sync_is_noop(projects_env) -> None:
@@ -334,8 +342,5 @@ def test_apply_mutation_writes_both_surfaces(projects_env) -> None:
     # Store surface.
     assert env.store.get_project("eta")["description"] == "via dashboard"
     # Markdown surface.
-    parsed = parse_project_note(
-        (env.vault / "work" / "projects" / "eta" / "eta.md")
-        .read_text(encoding="utf-8")
-    )
+    parsed = parse_project_note(env.note_path("eta").read_text(encoding="utf-8"))
     assert parsed.description == "via dashboard"

@@ -727,3 +727,40 @@ def fix_backup_repo_configured(repo_name: str) -> dict[str, Any]:
         ),
         "side_effects": side_effects,
     }
+
+
+def fix_projects_markdown_dir(*, path: str) -> dict[str, Any]:
+    """Create the project-notes directory and set ``projects.markdown_dir``.
+
+    ``path`` is vault-relative. Unlike :func:`fix_repos_root` (which
+    requires a pre-existing directory), this directory is work-buddy's
+    own to create — so the fixer makes it if absent, then writes config.
+    """
+    from work_buddy.config import load_config
+
+    rel = path.strip().strip("/\\")
+    if not rel:
+        return {
+            "ok": False,
+            "detail": "Path must be a non-empty vault-relative directory.",
+            "side_effects": [],
+        }
+    vault = load_config().get("vault_root", "")
+    if not vault:
+        return {
+            "ok": False,
+            "detail": "vault_root is not set — set it before this requirement.",
+            "side_effects": [],
+        }
+    target = Path(vault) / rel
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        return {
+            "ok": False,
+            "detail": f"Could not create directory {target}: {exc}",
+            "side_effects": [],
+        }
+    ok, detail, side = _set_config_value("projects.markdown_dir", rel)
+    side = list(side) + [f"created directory {target}"]
+    return {"ok": ok, "detail": detail, "side_effects": side}

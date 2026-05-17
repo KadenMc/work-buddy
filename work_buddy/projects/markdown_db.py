@@ -1,9 +1,17 @@
 """``ProjectMarkdownDB`` — the projects registry as a :class:`MarkdownDB`.
 
 The second concrete MarkdownDB subclass. It gives project descriptions a
-markdown surface — one ``work/projects/<slug>/<slug>.md`` note per
-project — so the long-form prose the original task (t-98d34cf6) worried
-about losing becomes a first-class, git-syncable, hand-editable file.
+markdown surface so the long-form prose the original task (t-98d34cf6)
+worried about losing becomes a first-class, git-syncable, hand-editable
+file.
+
+## Note layout — a single flat directory
+
+All project notes live in ONE vault directory: ``<projects.markdown_dir>``
+from config (default ``work-buddy/projects``, a sibling of
+``contracts.vault_path``). Each project is ``<dir>/<slug>.md``. The
+directory is a configurable Repository-Setup requirement
+(``core/config/projects-markdown-dir``).
 
 ## Status: parallel, not yet the cutover
 
@@ -14,10 +22,9 @@ deliberate, reviewed cutover step, intentionally NOT done here.
 
 ## Materialization
 
-``projects.db`` already holds every project; the vault holds no project
-notes yet. :func:`materialize_projects` performs the one-time
-store → markdown flip — writing a note for every project that lacks one,
-never overwriting an existing file. It defaults to a dry run.
+:func:`materialize_projects` performs the one-time store → markdown flip
+— writing a note for every project that lacks one, never overwriting an
+existing file. It defaults to a dry run.
 
 ## Relation to the projects store
 
@@ -54,15 +61,20 @@ from work_buddy.projects.note_format import (
 
 logger = get_logger(__name__)
 
-# Vault-relative root under which project notes live.
-_PROJECTS_SUBDIR = ("work", "projects")
+# Fallback used only if config carries no projects.markdown_dir (it
+# always does — see config.DEFAULTS). Vault-relative.
+_DEFAULT_MARKDOWN_DIR = "work-buddy/projects"
 
-# Directories under work/projects/ that are NOT projects — lifecycle
-# containers (their children are the past/future projects) and the
-# Waypoint folder note. Mirrors projects/sync.py's _LIFECYCLE_DIRS /
-# _SKIP_FILES. parse_all_from_markdown skips these so they are never
-# mistaken for project notes.
-_NON_PROJECT_DIRS = {"projects-past", "projects-future"}
+
+def projects_markdown_dir() -> Path:
+    """Absolute path to the single directory holding project notes.
+
+    Resolved from ``projects.markdown_dir`` in config (vault-relative),
+    joined onto ``vault_root``.
+    """
+    cfg = load_config()
+    rel = cfg.get("projects", {}).get("markdown_dir") or _DEFAULT_MARKDOWN_DIR
+    return Path(cfg.get("vault_root", "")) / rel
 
 
 class ProjectMarkdownDB(MarkdownDB):
@@ -93,32 +105,24 @@ class ProjectMarkdownDB(MarkdownDB):
     # ── Markdown surface ────────────────────────────────────────────
 
     def _projects_root(self) -> Path:
-        cfg = load_config()
-        return Path(cfg.get("vault_root", "")).joinpath(*_PROJECTS_SUBDIR)
+        return projects_markdown_dir()
 
     def markdown_path_for(self, pk: str) -> Path:
-        """``<vault>/work/projects/<slug>/<slug>.md``."""
-        return self._projects_root() / pk / f"{pk}.md"
+        """``<vault>/<projects.markdown_dir>/<slug>.md`` — one flat dir."""
+        return self._projects_root() / f"{pk}.md"
 
     def parse_all_from_markdown(self) -> dict[str, ParsedFileRow]:
-        """Parse every project note under ``work/projects/*/``.
+        """Parse every ``<slug>.md`` in the project-notes directory.
 
-        A project note is ``work/projects/<slug>/<slug>.md``. Files that
-        do not parse as a project note (bad frontmatter, etc.) are
-        skipped with a warning rather than failing the whole pass.
+        Files that do not parse as a project note (bad frontmatter, the
+        slug not matching the filename) are skipped with a warning
+        rather than failing the whole pass.
         """
         root = self._projects_root()
         out: dict[str, ParsedFileRow] = {}
         if not root.is_dir():
             return out
-        for entry in sorted(root.iterdir()):
-            if not entry.is_dir():
-                continue
-            # Skip lifecycle containers (projects-past / projects-future)
-            # — they hold past/future projects, they are not projects.
-            if entry.name in _NON_PROJECT_DIRS:
-                continue
-            note = entry / f"{entry.name}.md"
+        for note in sorted(root.glob("*.md")):
             if not note.is_file():
                 continue
             try:
@@ -126,6 +130,12 @@ class ProjectMarkdownDB(MarkdownDB):
             except (ProjectNoteParseError, OSError) as exc:
                 logger.warning(
                     "ProjectMarkdownDB: skipping %s — %s", note, exc,
+                )
+                continue
+            if parsed.slug != note.stem:
+                logger.warning(
+                    "ProjectMarkdownDB: skipping %s — frontmatter slug %r "
+                    "does not match filename", note, parsed.slug,
                 )
                 continue
             out[parsed.slug] = ParsedFileRow(
