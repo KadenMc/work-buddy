@@ -221,10 +221,15 @@ class ReconcileReport:
     # field name → list of {pk, old, new}
     drift: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
+    # Non-fatal conditions that need human attention but did NOT change
+    # state — e.g. a store row whose markdown file is present but failed
+    # to parse (left intact, not deleted).
+    warnings: list[str] = field(default_factory=list)
 
     @property
     def changed(self) -> bool:
-        """True if the pass altered any state."""
+        """True if the pass altered any state. Warnings do not count —
+        a warning means something was *left alone* pending attention."""
         return bool(
             self.created
             or self.deleted
@@ -238,5 +243,6 @@ class ReconcileReport:
             "deleted": list(self.deleted),
             "drift": {k: list(v) for k, v in self.drift.items()},
             "errors": list(self.errors),
+            "warnings": list(self.warnings),
             "changed": self.changed,
         }

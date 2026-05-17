@@ -367,6 +367,25 @@ class MarkdownDB(ABC):
             )
         elif self.delete_orphans_in_store:
             for pk in orphans_in_store:
+                # A store row absent from the *parsed* set is only a
+                # genuine orphan if it has NO markdown artifact at all.
+                # When a markdown file IS present but failed to parse
+                # (malformed YAML, a hand-edit that broke the format),
+                # the entity is not deleted — soft-deleting a store row
+                # over a fixable parse error would be data loss. Leave
+                # it intact and surface a warning instead.
+                if self.markdown_exists(pk):
+                    logger.warning(
+                        "markdown_db[%s]: %s is in the store and has a "
+                        "markdown file, but that file did not parse — "
+                        "left intact. Fix the markdown; do not expect a "
+                        "delete.", self.table_name, pk,
+                    )
+                    report.warnings.append(
+                        f"{pk}: markdown file present but unparsed — "
+                        f"store row left intact"
+                    )
+                    continue
                 try:
                     self._store_delete(pk)
                     report.deleted.append(pk)
@@ -495,16 +514,44 @@ class MarkdownDB(ABC):
 
         ``dry_run`` (the default) reports what *would* be written without
         touching the filesystem. Pass ``dry_run=False`` to apply.
+
+        Three per-entity outcomes:
+
+        - ``skipped`` — a valid markdown representation already parses for
+          this entity; nothing to do.
+        - ``blocked`` — a file exists at the entity's markdown path but it
+          does NOT parse as a valid representation of this entity (a
+          non-conforming pre-existing file). Materialization refuses to
+          overwrite it; the file needs manual attention.
+        - ``planned`` / ``written`` — no markdown artifact existed; a note
+          was (or would be) created.
         """
         planned: list[str] = []
         skipped: list[str] = []
+        blocked: list[str] = []
         written: list[str] = []
         errors: list[str] = []
 
+        try:
+            parsed_ids = set(self.parse_all_from_markdown())
+        except Exception:
+            parsed_ids = set()
+
         for row in self._store_query():
             pk = row[self.pk_column]
-            if self.markdown_exists(pk):
+            if pk in parsed_ids:
+                # A valid note for this entity already parses.
                 skipped.append(pk)
+                continue
+            if self.markdown_exists(pk):
+                # A file is at the target path but did not parse as this
+                # entity — never overwrite it.
+                blocked.append(pk)
+                logger.warning(
+                    "markdown_db[%s]: %s has a non-conforming file at its "
+                    "markdown path — materialization blocked, needs manual "
+                    "attention", self.table_name, pk,
+                )
                 continue
             planned.append(pk)
             if dry_run:
@@ -532,6 +579,7 @@ class MarkdownDB(ABC):
             "planned": planned,
             "written": written,
             "skipped": skipped,
+            "blocked": blocked,
             "errors": errors,
         }
 

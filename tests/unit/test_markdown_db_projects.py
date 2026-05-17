@@ -232,6 +232,47 @@ def test_reconcile_deletes_orphan_when_flag_enabled(projects_env) -> None:
     assert env.store.get_project("ghost") is None
 
 
+def test_reconcile_keeps_project_with_unparseable_note(projects_env) -> None:
+    """A store project whose note file exists but fails to parse must
+    NOT be soft-deleted, even with delete_orphans_in_store=True — a
+    malformed note is a fixable error, not a deletion signal."""
+    env = projects_env
+    env.store.upsert_project("malformed", name="Malformed", description="d")
+    # A file at the project's note path that is NOT a valid project note.
+    d = env.vault / "work" / "projects" / "malformed"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "malformed.md").write_text(
+        "# Malformed\n\nno frontmatter, not a project note\n",
+        encoding="utf-8",
+    )
+    env.db.delete_orphans_in_store = True  # even with deletion enabled
+
+    report = env.db.reconcile_drift()
+
+    assert "malformed" not in report.deleted
+    assert env.store.get_project("malformed") is not None
+    assert any("malformed" in w for w in report.warnings)
+
+
+def test_materialize_blocks_on_non_conforming_file(projects_env) -> None:
+    """A project whose note path holds a non-conforming file is reported
+    'blocked' (not 'skipped', not overwritten)."""
+    env = projects_env
+    env.store.upsert_project("blockme", name="Block Me", description="d")
+    d = env.vault / "work" / "projects" / "blockme"
+    d.mkdir(parents=True, exist_ok=True)
+    note = d / "blockme.md"
+    note.write_text("not a project note\n", encoding="utf-8")
+
+    result = env.markdown_db_mod.materialize_projects(dry_run=False)
+
+    assert result["blocked"] == ["blockme"]
+    assert "blockme" not in result["written"]
+    assert "blockme" not in result["skipped"]
+    # The non-conforming file is left exactly as it was.
+    assert note.read_text(encoding="utf-8") == "not a project note\n"
+
+
 def test_parse_skips_lifecycle_directories(projects_env) -> None:
     """projects-past / projects-future are lifecycle containers, not
     projects — parse_all_from_markdown must not treat them as notes."""
