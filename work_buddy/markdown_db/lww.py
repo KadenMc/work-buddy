@@ -2,8 +2,9 @@
 
 The :class:`LwwLog` protocol is the storage interface the
 :class:`~work_buddy.markdown_db.base.MarkdownDB` orchestration depends
-on. Keeping it a protocol lets the abstraction ship and be fully tested
-*before* the SQLite-backed implementation exists:
+on. It being a protocol keeps the orchestration decoupled from storage,
+so a :class:`MarkdownDB` can run against an in-memory log, a no-op log,
+or the durable SQLite log without code changes. Three implementations:
 
 - :class:`NullLwwLog` — records nothing, knows nothing. The default. A
   :class:`MarkdownDB` wired with it falls back to pure markdown-canonical
@@ -11,8 +12,8 @@ on. Keeping it a protocol lets the abstraction ship and be fully tested
   behaviour of the legacy ``obsidian/tasks/sync.py`` reconciler.
 - :class:`InMemoryLwwLog` — dict-backed, append-only. For unit tests and
   for exercising the LWW resolution paths without a database.
-- ``SqliteLwwLog`` (added later, Phase 3) — backed by the per-DB
-  ``lww_meta`` table.
+- :class:`~work_buddy.markdown_db.sqlite_lww.SqliteLwwLog` — backed by
+  the per-DB ``lww_meta`` table; the durable production implementation.
 
 The log is **append-only** by contract: :meth:`LwwLog.record` adds a
 write event, it never overwrites. :meth:`LwwLog.latest` returns the most

@@ -19,18 +19,20 @@ notes yet. :func:`materialize_projects` performs the one-time
 store → markdown flip — writing a note for every project that lacks one,
 never overwriting an existing file. It defaults to a dry run.
 
-## Note on the rebuilt projects store
+## Relation to the projects store
 
-The projects store was rebuilt (commit 3bc3ca15) into a relational
-temporal model: a surrogate-``id`` PK, ``project_folders`` /
-``project_aliases`` child tables, and append-only ``project_revisions``
-history. This subclass keys on ``slug`` (the markdown surface is
-per-slug) and goes through the store's public CRUD — ``list_projects``,
-``upsert_project``, ``update_project``, ``delete_project`` — so the
-store's revision-writing and event-publishing happen for free. The
-store's own revision history and this subsystem's ``lww_meta`` log
-overlap somewhat; reconciling that is a design question flagged for
-review, not resolved here.
+The projects store is a relational temporal model: a surrogate-``id``
+PK, ``project_folders`` / ``project_aliases`` child tables, and
+append-only ``project_revisions`` history. This subclass keys on
+``slug`` (the markdown surface is per-slug) and goes through the
+store's public CRUD — ``list_projects``, ``upsert_project``,
+``update_project``, ``delete_project`` — so the store's
+revision-writing and event-publishing happen automatically. The store's
+``project_revisions`` history and this subsystem's ``lww_meta`` log are
+distinct concerns (full-state snapshots for the temporal model vs.
+per-field write provenance for cross-surface conflict resolution); a
+``ProjectMarkdownDB`` defaults to :class:`NullLwwLog`, so no ``lww_meta``
+rows are written for projects unless a caller wires one in.
 """
 
 from __future__ import annotations

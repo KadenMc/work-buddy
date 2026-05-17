@@ -483,7 +483,7 @@ class MarkdownDB(ABC):
                 report.errors.append(f"drift writeback {pk}: {exc}")
 
     # ════════════════════════════════════════════════════════════════
-    # Materialization — bulk store → markdown (first-run, Phase 4).
+    # Materialization — bulk store → markdown (first-run adoption).
     # ════════════════════════════════════════════════════════════════
 
     def materialize_from_store(self, *, dry_run: bool = True) -> dict[str, Any]:

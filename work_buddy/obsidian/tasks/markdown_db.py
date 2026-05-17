@@ -29,13 +29,13 @@ subclass hook respectively.
 
 - ``write_entity_to_markdown`` rewrites the description and checkbox of
   an existing line; it deliberately leaves the plugin emoji metadata
-  (📅 / ✅ / ⏫🔼🔽) untouched. Reconciliation is markdown→store, so the
-  store-wins write-back path for emoji fields is a later concern. The
-  task mutation capabilities (``update_task`` etc. in ``mutations.py``)
-  remain the way to write task lines for now.
+  (📅 / ✅ / ⏫🔼🔽) untouched. Reconciliation runs markdown→store, so the
+  store-wins write-back path for emoji fields is not exercised; the task
+  mutation capabilities (``update_task`` etc. in ``mutations.py``) own
+  emoji-bearing task-line writes.
 - The ``task_sync_status`` freshness write and the ``task_tags`` cache
-  rebuild are exposed as the :meth:`post_reconcile` hook; the cutover
-  step wires them in.
+  rebuild are not performed by ``reconcile_drift`` — ``task_sync`` still
+  owns them.
 """
 
 from __future__ import annotations
@@ -135,8 +135,7 @@ class TaskMarkdownDB(MarkdownDB):
         """Rewrite ``pk``'s task line — description and checkbox only.
 
         Plugin emoji metadata (📅 / ✅ / urgency) is preserved as-is; see
-        the module docstring for why emoji write-back is out of scope
-        for the parallel-implementation phase.
+        the module docstring for why emoji write-back is out of scope.
         """
         path = self.markdown_path_for(pk)
         if not path.exists():
