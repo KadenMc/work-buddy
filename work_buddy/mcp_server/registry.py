@@ -3522,6 +3522,7 @@ def _task_capabilities() -> list[Capability]:
     )
     from work_buddy.obsidian.effects import EffectSpec as _EffectSpec
     from work_buddy.obsidian.tasks.sync import task_sync
+    from work_buddy.projects.markdown_db import reconcile_projects
     from work_buddy.obsidian.tasks.namespace_suggest import (
         namespace_lookup,
         task_namespace_suggest,
@@ -3928,6 +3929,18 @@ def _task_capabilities() -> list[Capability]:
             callable=task_sync,
             search_aliases=["sync tasks", "reconcile tasks", "task discrepancy", "task watcher"],
             requires=["obsidian"],
+        ),
+        Capability(
+            name="project_sync",
+            description="Reconcile project markdown notes (work-buddy/projects/<slug>.md) against the projects SQLite registry: propagate out-of-band note edits into the store, create store rows for new notes. Markdown-canonical; never deletes a project. See architecture/markdown-db.",
+            category="projects",
+            parameters={},
+            callable=reconcile_projects,
+            search_aliases=[
+                "sync projects", "reconcile projects", "project drift",
+                "project markdown sync", "project note sync",
+            ],
+            requires=[],
         ),
         Capability(
             name="task_scattered",
