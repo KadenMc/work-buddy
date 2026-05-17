@@ -55,12 +55,28 @@ logger = get_logger(__name__)
 # Vault-relative root under which project notes live.
 _PROJECTS_SUBDIR = ("work", "projects")
 
+# Directories under work/projects/ that are NOT projects — lifecycle
+# containers (their children are the past/future projects) and the
+# Waypoint folder note. Mirrors projects/sync.py's _LIFECYCLE_DIRS /
+# _SKIP_FILES. parse_all_from_markdown skips these so they are never
+# mistaken for project notes.
+_NON_PROJECT_DIRS = {"projects-past", "projects-future"}
+
 
 class ProjectMarkdownDB(MarkdownDB):
     """:class:`MarkdownDB` over project notes ⇄ the ``projects`` store."""
 
     table_name = "projects"
     pk_column = "slug"
+
+    # Orphan-in-store deletion is OFF until the vault is materialized.
+    # Before materialize_projects() runs, NO project has a markdown note,
+    # so every store project looks like an "orphan in store" — with this
+    # True, the first reconcile_drift pass would soft-delete the entire
+    # projects registry. Flip to True only as part of the projects
+    # cutover, AFTER materialization is confirmed. See architecture/
+    # markdown-db and the cutover checklist.
+    delete_orphans_in_store = False
 
     FIELDS = [
         FieldSpec("name", "name", "name"),
@@ -95,6 +111,10 @@ class ProjectMarkdownDB(MarkdownDB):
             return out
         for entry in sorted(root.iterdir()):
             if not entry.is_dir():
+                continue
+            # Skip lifecycle containers (projects-past / projects-future)
+            # — they hold past/future projects, they are not projects.
+            if entry.name in _NON_PROJECT_DIRS:
                 continue
             note = entry / f"{entry.name}.md"
             if not note.is_file():

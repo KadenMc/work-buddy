@@ -85,6 +85,14 @@ class MarkdownDB(ABC):
     markdown_surface: Surface = SURFACE_MARKDOWN
     store_surface: Surface = SURFACE_STORE
 
+    # When True (default), reconcile_drift soft-deletes a store row whose
+    # entity is absent from markdown ("orphan in store" — markdown is
+    # canonical, so gone-from-markdown means gone). A subclass MUST set
+    # this False until its markdown surface is fully materialized:
+    # otherwise the very first reconcile pass — when no markdown notes
+    # exist yet — would soft-delete every store row. See ProjectMarkdownDB.
+    delete_orphans_in_store: bool = True
+
     def __init__(
         self,
         store: Any,
@@ -347,21 +355,31 @@ class MarkdownDB(ABC):
                 )
                 report.errors.append(f"create {pk}: {exc}")
 
-        # 3. Orphan in store → soft-delete.
-        for pk in sorted(store_ids - parsed_ids):
-            try:
-                self._store_delete(pk)
-                report.deleted.append(pk)
-                logger.info(
-                    "markdown_db[%s]: soft-deleted orphan-in-store pk=%s",
-                    self.table_name, pk,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "markdown_db[%s]: failed to delete %s: %s",
-                    self.table_name, pk, exc,
-                )
-                report.errors.append(f"delete {pk}: {exc}")
+        # 3. Orphan in store → soft-delete (only when the subclass has
+        #    opted in via delete_orphans_in_store; otherwise skipped, so
+        #    an un-materialized markdown surface cannot wipe the store).
+        orphans_in_store = sorted(store_ids - parsed_ids)
+        if orphans_in_store and not self.delete_orphans_in_store:
+            logger.info(
+                "markdown_db[%s]: %d orphan-in-store row(s) left intact "
+                "(delete_orphans_in_store is False): %s",
+                self.table_name, len(orphans_in_store), orphans_in_store,
+            )
+        elif self.delete_orphans_in_store:
+            for pk in orphans_in_store:
+                try:
+                    self._store_delete(pk)
+                    report.deleted.append(pk)
+                    logger.info(
+                        "markdown_db[%s]: soft-deleted orphan-in-store pk=%s",
+                        self.table_name, pk,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "markdown_db[%s]: failed to delete %s: %s",
+                        self.table_name, pk, exc,
+                    )
+                    report.errors.append(f"delete {pk}: {exc}")
 
         # 4. Field drift over the intersection.
         for spec in self.FIELDS:

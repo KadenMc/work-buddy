@@ -201,16 +201,54 @@ def test_reconcile_status_edit_propagates(projects_env) -> None:
     assert env.store.get_project("eps")["status"] == "paused"
 
 
-def test_reconcile_orphan_in_store_soft_deletes(projects_env) -> None:
+def test_reconcile_does_not_delete_orphan_in_store_pre_materialization(
+    projects_env,
+) -> None:
+    """ProjectMarkdownDB.delete_orphans_in_store is False — a store
+    project with no note must be left intact, not soft-deleted. This
+    is the guard against the first reconcile pass (before any note
+    exists) wiping the whole registry."""
     env = projects_env
     env.store.upsert_project("ghost", name="Ghost", description="only in DB")
     # No note on disk for 'ghost'.
 
     report = env.db.reconcile_drift()
 
+    assert report.deleted == []
+    # Still present — not soft-deleted.
+    assert env.store.get_project("ghost") is not None
+
+
+def test_reconcile_deletes_orphan_when_flag_enabled(projects_env) -> None:
+    """With delete_orphans_in_store flipped True (the post-cutover
+    state), an orphan-in-store IS soft-deleted."""
+    env = projects_env
+    env.store.upsert_project("ghost", name="Ghost", description="only in DB")
+    env.db.delete_orphans_in_store = True  # simulate post-cutover
+
+    report = env.db.reconcile_drift()
+
     assert "ghost" in report.deleted
-    # Soft-deleted: excluded from the default listing.
     assert env.store.get_project("ghost") is None
+
+
+def test_parse_skips_lifecycle_directories(projects_env) -> None:
+    """projects-past / projects-future are lifecycle containers, not
+    projects — parse_all_from_markdown must not treat them as notes."""
+    env = projects_env
+    root = env.vault / "work" / "projects"
+    # A lifecycle dir with a sibling-named .md file (as Waypoint creates).
+    (root / "projects-future").mkdir(parents=True)
+    (root / "projects-future" / "projects-future.md").write_text(
+        "# Future projects\n\nsome folder note\n", encoding="utf-8",
+    )
+    # A real project note alongside it.
+    env.write_note("realproj", "Real Project", "active", "desc")
+
+    parsed = env.db.parse_all_from_markdown()
+
+    assert "realproj" in parsed
+    assert "projects-future" not in parsed
 
 
 def test_reconcile_in_sync_is_noop(projects_env) -> None:
