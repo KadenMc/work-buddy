@@ -115,7 +115,7 @@ def assess_state() -> dict[str, Any]:
         warnings.append("No uncommitted or untracked changes detected. Nothing to commit.")
     if classified["knowledge"]:
         warnings.append(
-            "Direct edits to knowledge/store/*.json detected. Prefer "
+            "Direct edits to knowledge/store/*.md detected. Prefer "
             "docs_create/docs_update/docs_delete or workflow_create/workflow_update."
         )
 
