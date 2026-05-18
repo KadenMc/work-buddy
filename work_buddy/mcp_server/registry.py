@@ -6732,7 +6732,6 @@ def _knowledge_capabilities() -> list[Capability]:
                 "workflow": {"type": "str", "description": "(directions) Linked workflow path", "required": False},
                 "capabilities": {"type": "str", "description": "(directions) Comma-separated MCP capability paths", "required": False},
                 "parents": {"type": "str", "description": "Comma-separated parent paths", "required": False},
-                "children": {"type": "str", "description": "Comma-separated child paths", "required": False},
                 "tags": {"type": "str", "description": "Comma-separated search tags", "required": False},
                 "aliases": {"type": "str", "description": "Comma-separated search aliases", "required": False},
                 "dev_notes": {
@@ -6844,7 +6843,6 @@ def _knowledge_capabilities() -> list[Capability]:
                 "trigger": {"type": "str", "description": "(directions) New trigger", "required": False},
                 "command": {"type": "str", "description": "New slash command name", "required": False},
                 "parents": {"type": "str", "description": "New comma-separated parents (replaces)", "required": False},
-                "children": {"type": "str", "description": "New comma-separated children (replaces)", "required": False},
                 "tags": {"type": "str", "description": "New comma-separated tags (replaces)", "required": False},
                 "aliases": {"type": "str", "description": "New comma-separated aliases (replaces)", "required": False},
                 "dev_notes": {
@@ -6970,7 +6968,6 @@ def _knowledge_capabilities() -> list[Capability]:
                 "content_summary": {"type": "str", "description": "One-paragraph summary.", "required": False},
                 "command": {"type": "str", "description": "Slash command name (e.g. 'wb-dev-document')", "required": False},
                 "parents": {"type": "str", "description": "Comma-separated parent paths (typical: domain, e.g. 'dev')", "required": False},
-                "children": {"type": "str", "description": "Comma-separated child paths", "required": False},
                 "tags": {"type": "str", "description": "Comma-separated search tags", "required": False},
                 "aliases": {"type": "str", "description": "Comma-separated search aliases", "required": False},
                 "dev_notes": {"type": "str", "description": "Dev-mode-only notes about the workflow's internals", "required": False},
@@ -7035,7 +7032,6 @@ def _knowledge_capabilities() -> list[Capability]:
                 "content_summary": {"type": "str", "description": "New summary", "required": False},
                 "command": {"type": "str", "description": "New slash command name", "required": False},
                 "parents": {"type": "str", "description": "New comma-separated parent paths (replaces)", "required": False},
-                "children": {"type": "str", "description": "New comma-separated child paths (replaces)", "required": False},
                 "tags": {"type": "str", "description": "New comma-separated tags (replaces)", "required": False},
                 "aliases": {"type": "str", "description": "New comma-separated aliases (replaces)", "required": False},
                 "dev_notes": {"type": "str", "description": "New dev-mode-only notes. Pass an empty string to clear.", "required": False},
