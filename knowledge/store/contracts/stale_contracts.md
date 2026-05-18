@@ -1,0 +1,28 @@
+---
+name: Stale Contracts
+kind: capability
+description: List contracts not reviewed in N days (default 7)
+capability_name: stale_contracts
+category: contracts
+parameters:
+  stale_days:
+    type: int
+    description: Days since last review (default 7)
+    required: false
+tags:
+- contracts
+- stale
+aliases:
+- forgotten contracts
+- not reviewed recently
+- stale commitments
+- unvisited contracts
+- dormant work
+- contracts needing review
+- neglected contracts
+parents:
+- contracts
+- contracts
+requires:
+- obsidian
+---
