@@ -86,6 +86,8 @@
       "context/datacore_status",
       "context/datacore_validate",
       "context/dev_mode_toggle",
+      "context/docs_checkout",
+      "context/docs_commit",
       "context/docs_create",
       "context/docs_delete",
       "context/docs_get",
@@ -113,7 +115,7 @@
       "context/workflow_update"
     ],
     "content": {
-      "summary": "Container for 59 capabilities and workflows."
+      "summary": "Container for 61 capabilities and workflows."
     }
   },
   "artifacts": {

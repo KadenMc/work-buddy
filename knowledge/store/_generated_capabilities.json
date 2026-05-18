@@ -2464,6 +2464,79 @@
       "context"
     ]
   },
+  "context/docs_checkout": {
+    "kind": "capability",
+    "name": "Docs Checkout",
+    "description": "Materialize a knowledge unit as an editable YAML-frontmatter + markdown buffer file (artifact-backed, 1-day TTL). Edit the buffer in place with file tools, then docs_commit it. Pass template=true with a kind to scaffold a NEW unit instead. More efficient than docs_update for substantial edits — no full-content resend, no JSON-escape hazard.",
+    "capability_name": "docs_checkout",
+    "category": "context",
+    "aliases": [
+      "check out unit",
+      "materialize unit",
+      "edit unit as buffer",
+      "open unit for editing",
+      "checkout knowledge unit",
+      "edit docs efficiently"
+    ],
+    "parameters": {
+      "path": {
+        "type": "str",
+        "description": "Unit path to check out (or the path for a new unit in template mode)",
+        "required": true
+      },
+      "kind": {
+        "type": "str",
+        "description": "(template mode) Kind of unit to scaffold: directions, system, service, integration, reference, concept, capability",
+        "required": false
+      },
+      "template": {
+        "type": "bool",
+        "description": "Scaffold a blank template for a NEW unit at 'path' instead of reading an existing one",
+        "required": false
+      }
+    },
+    "mutates_state": true,
+    "retry_policy": "manual",
+    "tags": [
+      "context",
+      "docs",
+      "checkout"
+    ],
+    "parents": [
+      "context"
+    ]
+  },
+  "context/docs_commit": {
+    "kind": "capability",
+    "name": "Docs Commit",
+    "description": "Commit a checked-out editing buffer back to the knowledge store: parse, validate, persist, and re-index. On a validation failure the buffer is preserved so you can fix it in place and call docs_commit again.",
+    "capability_name": "docs_commit",
+    "category": "context",
+    "aliases": [
+      "commit unit",
+      "commit buffer",
+      "save checked-out unit",
+      "persist edited unit",
+      "finish editing unit"
+    ],
+    "parameters": {
+      "checkout_id": {
+        "type": "str",
+        "description": "The checkout_id returned by docs_checkout",
+        "required": true
+      }
+    },
+    "mutates_state": true,
+    "retry_policy": "manual",
+    "tags": [
+      "context",
+      "docs",
+      "commit"
+    ],
+    "parents": [
+      "context"
+    ]
+  },
   "context/docs_create": {
     "kind": "capability",
     "name": "Docs Create",

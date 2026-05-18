@@ -35,6 +35,10 @@ ARTIFACT_TYPES: dict[str, int] = {
     "snapshot": 14,
     "scratch": 3,
     "commit": 90,
+    # Transient editing buffers for the docs_checkout / docs_commit
+    # materialization workflow. Short TTL — a buffer outlives a single
+    # editing session but is swept the next day if a checkout is abandoned.
+    "docs_buffer": 1,
 }
 
 _DEFAULT_TTL_DAYS = 14  # for unregistered types

@@ -6505,6 +6505,7 @@ def _knowledge_capabilities() -> list[Capability]:
         docs_create, docs_update, docs_delete, docs_move,
         workflow_create, workflow_update,
     )
+    from work_buddy.knowledge.materialize import docs_checkout, docs_commit
     from work_buddy.knowledge.vault_editor import mint_personal_unit
 
     return [
@@ -6930,6 +6931,57 @@ def _knowledge_capabilities() -> list[Capability]:
                 "relocate knowledge",
                 "change unit path",
                 "move documentation",
+            ],
+        ),
+        Capability(
+            name="docs_checkout",
+            description=(
+                "Materialize a knowledge unit as an editable YAML-frontmatter "
+                "+ markdown buffer file (artifact-backed, 1-day TTL). Edit the "
+                "buffer in place with file tools, then docs_commit it. Pass "
+                "template=true with a kind to scaffold a NEW unit instead. "
+                "More efficient than docs_update for substantial edits — no "
+                "full-content resend, no JSON-escape hazard."
+            ),
+            category="context",
+            parameters={
+                "path": {"type": "str", "description": "Unit path to check out (or the path for a new unit in template mode)", "required": True},
+                "kind": {"type": "str", "description": "(template mode) Kind of unit to scaffold: directions, system, service, integration, reference, concept, capability", "required": False},
+                "template": {"type": "bool", "description": "Scaffold a blank template for a NEW unit at 'path' instead of reading an existing one", "required": False},
+            },
+            callable=docs_checkout,
+            mutates_state=True,
+            retry_policy="manual",
+            search_aliases=[
+                "check out unit",
+                "materialize unit",
+                "edit unit as buffer",
+                "open unit for editing",
+                "checkout knowledge unit",
+                "edit docs efficiently",
+            ],
+        ),
+        Capability(
+            name="docs_commit",
+            description=(
+                "Commit a checked-out editing buffer back to the knowledge "
+                "store: parse, validate, persist, and re-index. On a validation "
+                "failure the buffer is preserved so you can fix it in place and "
+                "call docs_commit again."
+            ),
+            category="context",
+            parameters={
+                "checkout_id": {"type": "str", "description": "The checkout_id returned by docs_checkout", "required": True},
+            },
+            callable=docs_commit,
+            mutates_state=True,
+            retry_policy="manual",
+            search_aliases=[
+                "commit unit",
+                "commit buffer",
+                "save checked-out unit",
+                "persist edited unit",
+                "finish editing unit",
             ],
         ),
         Capability(
