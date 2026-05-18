@@ -2559,6 +2559,51 @@
         "type": "str",
         "description": "(system kind) Comma-separated dotted module paths that implement this system, for navigation.",
         "required": false
+      },
+      "requires": {
+        "type": "str",
+        "description": "Comma-separated tool/component IDs the unit needs (e.g. 'obsidian,hindsight').",
+        "required": false
+      },
+      "op": {
+        "type": "str",
+        "description": "(capability kind) op.<namespace>.<name> ID of the Op this declaration-based capability wraps.",
+        "required": false
+      },
+      "schema_version": {
+        "type": "str",
+        "description": "(capability kind) Declaration format version, e.g. 'wb-capability/v1'.",
+        "required": false
+      },
+      "capability_name": {
+        "type": "str",
+        "description": "(capability kind) MCP dispatch name, e.g. 'task_read'.",
+        "required": false
+      },
+      "category": {
+        "type": "str",
+        "description": "(capability kind) Registry category, e.g. 'tasks'.",
+        "required": false
+      },
+      "parameters": {
+        "type": "str",
+        "description": "(capability kind) Parameter schema as a JSON string: {name: {type, description, required}}.",
+        "required": false
+      },
+      "mutates_state": {
+        "type": "bool",
+        "description": "(capability kind) Whether the capability modifies state.",
+        "required": false
+      },
+      "retry_policy": {
+        "type": "str",
+        "description": "(capability kind) 'manual' | 'replay' | 'verify_first'.",
+        "required": false
+      },
+      "consent_required": {
+        "type": "bool",
+        "description": "(capability kind) Whether the capability is consent-gated.",
+        "required": false
       }
     },
     "mutates_state": true,
@@ -6559,38 +6604,6 @@
       "task",
       "namespace",
       "suggest"
-    ],
-    "parents": [
-      "tasks"
-    ]
-  },
-  "tasks/task_read": {
-    "kind": "capability",
-    "name": "Task Read",
-    "description": "Read a task's full context (text, note, metadata) without claiming it for the current session",
-    "capability_name": "task_read",
-    "category": "tasks",
-    "aliases": [
-      "read task",
-      "view task",
-      "show task",
-      "inspect task",
-      "look at task"
-    ],
-    "parameters": {
-      "task_id": {
-        "type": "str",
-        "description": "Task ID (e.g., 't-a3f8c1e2')",
-        "required": true
-      }
-    },
-    "requires": [
-      "obsidian"
-    ],
-    "tags": [
-      "tasks",
-      "task",
-      "read"
     ],
     "parents": [
       "tasks"

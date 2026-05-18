@@ -220,6 +220,29 @@ def _check_placeholder_duplicates(store: dict[str, PromptUnit]) -> list[dict[str
     return errors
 
 
+def _check_capability_op_resolution(store: dict[str, PromptUnit]) -> list[dict[str, str]]:
+    """Check 9: declaration-based capabilities resolve to a registered op.
+
+    Only capability units carrying an ``op`` field are declaration-based;
+    generated capability units have no ``op`` and are ignored. Emits
+    *warnings* (not errors): the direct and declaration-based capability
+    registration paths coexist, so an unresolved declaration is surfaced
+    without failing the whole store. The loader is the single source of this
+    logic; this check surfaces its findings corpus-wide.
+    """
+    has_declarations = any(
+        isinstance(u, CapabilityUnit) and getattr(u, "op", "")
+        for u in store.values()
+    )
+    if not has_declarations:
+        return []
+
+    from work_buddy.knowledge.capability_loader import load_declared_capabilities
+
+    _caps, issues = load_declared_capabilities(store)
+    return issues
+
+
 def _check_parent_child_symmetry(store: dict[str, PromptUnit]) -> list[dict[str, str]]:
     """Check 7: If A lists B as child, B should list A as parent (and vice versa)."""
     errors: list[dict[str, str]] = []
@@ -259,6 +282,7 @@ _CHECKS = [
     ("kind_specific_fields", _check_kind_specific_fields),
     ("placeholder_duplicate", _check_placeholder_duplicates),
     ("parent_child_symmetry", _check_parent_child_symmetry),
+    ("capability_op_resolution", _check_capability_op_resolution),
 ]
 
 
@@ -272,7 +296,14 @@ def validate_store(
         checks: List of check names to run. None = run all.
 
     Returns:
-        Dict with ``passed``, ``failed``, ``total_units``, and ``errors`` list.
+        Dict with ``passed``, ``failed``, ``warnings``, ``total_units``, an
+        ``errors`` list (blocking, ``severity != "warning"``), and an
+        ``issues`` list (every finding, errors and warnings together).
+
+    Severity: a check may tag a finding with ``severity: "warning"`` to mark
+    it non-blocking. Findings without a ``severity`` key default to ``error``,
+    so existing checks are unaffected. ``passed`` and ``failed`` count blocking
+    errors only.
     """
     store = load_store()
     all_errors: list[dict[str, str]] = []
@@ -301,7 +332,12 @@ def validate_store(
 
         all_errors.extend(errs)
 
-    # Summarize by check
+    # Split blocking errors from non-blocking warnings. A finding with no
+    # ``severity`` key defaults to "error" — existing checks are unchanged.
+    errors = [e for e in all_errors if e.get("severity", "error") != "warning"]
+    warnings = [e for e in all_errors if e.get("severity", "error") == "warning"]
+
+    # Summarize by check (errors and warnings together)
     summary: dict[str, int] = {}
     for err in all_errors:
         summary[err["check"]] = summary.get(err["check"], 0) + 1
@@ -309,10 +345,12 @@ def validate_store(
     return {
         "total_units": len(store),
         "checks_run": checks_run,
-        "passed": len(all_errors) == 0,
-        "failed": len(all_errors),
+        "passed": len(errors) == 0,
+        "failed": len(errors),
+        "warnings": len(warnings),
         "summary": summary,
-        "errors": all_errors,
+        "errors": errors,
+        "issues": all_errors,
     }
 
 
@@ -331,7 +369,7 @@ def docs_validate(
                  Available: dag_integrity, command_mapping, thinned_commands,
                  store_path_validity, required_fields, directions_fields,
                  kind_specific_fields, placeholder_duplicate,
-                 parent_child_symmetry
+                 parent_child_symmetry, capability_op_resolution
     """
     check_list = [c.strip() for c in checks.split(",") if c.strip()] if checks else None
     return validate_store(checks=check_list)

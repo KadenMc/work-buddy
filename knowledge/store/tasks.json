@@ -411,5 +411,39 @@
       "work_buddy.obsidian.tasks.action_items.position_in_task"
     ],
     "dev_notes": "The `authorship` enum supersedes the older `user_authored INTEGER` + `approved_at TEXT` pair; same three states, one canonical column. Markdown round-trip for action items is deferred (the master-list `step N of M` frontend and `/wb-task-develop` slash command depend on Resolution Surface integration). `set_current` uses raw SQL because `store.update` does not yet take the `current_action_item_id` kwarg -- when other callers need to write that column, add the kwarg to `store.update` like the context-array fields."
+  },
+  "tasks/task_read": {
+    "kind": "capability",
+    "name": "Task Read",
+    "description": "Read a task's full context (text, note, metadata) without claiming it for the current session",
+    "tags": [
+      "tasks",
+      "task",
+      "read"
+    ],
+    "aliases": [
+      "read task",
+      "view task",
+      "show task",
+      "inspect task",
+      "look at task"
+    ],
+    "parents": [
+      "tasks"
+    ],
+    "capability_name": "task_read",
+    "category": "tasks",
+    "parameters": {
+      "task_id": {
+        "type": "str",
+        "description": "Task ID (e.g., 't-a3f8c1e2')",
+        "required": true
+      }
+    },
+    "op": "op.wb.task_read",
+    "schema_version": "wb-capability/v1",
+    "requires": [
+      "obsidian"
+    ]
   }
 }

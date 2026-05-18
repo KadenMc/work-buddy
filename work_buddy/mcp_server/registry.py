@@ -77,6 +77,15 @@ class Capability:
     # the partial-state recovery path retries the full capability.
     effects: list[Any] = field(default_factory=list)  # list[EffectSpec]
 
+    # Set when this Capability was resolved from an inert capability
+    # *declaration* (a ``kind: "capability"`` knowledge-store unit with an
+    # ``op`` field) rather than instantiated directly in this module. Holds
+    # the ``op.<namespace>.<name>`` ID the capability resolved against. None
+    # for the legacy ``Capability(...)`` registration path. The build script
+    # uses it to keep declaration-sourced capabilities out of the generated
+    # ``_generated_capabilities.json`` (they are already inert data).
+    op_id: str | None = None
+
     # ---------------- Action Catalog fields (defaults are the legacy non-action shape) ----
 
     # Whether this capability appears in the Action Catalog (i.e.
@@ -834,6 +843,36 @@ def _build_registry() -> dict[str, Capability | WorkflowDefinition]:
         except Exception as e:
             _section_times[f"cap:{label}"] = time.time() - t
             _log_to_file(_lf, f"  {label}: FAILED in {time.time()-t:.2f}s — {e}")
+
+    # --- Declaration-based capabilities (data-first capabilities) ---
+    # Capability *declarations* live in the knowledge store as inert
+    # ``kind: "capability"`` units carrying an ``op`` field. The loader
+    # resolves each against the Op registry and returns ready-to-dispatch
+    # Capability objects. Merged here, before the tool-requirements filter
+    # below, so declared capabilities with unmet ``requires`` are filtered by
+    # the same pass as registry-built ones. On a name conflict the existing
+    # ``Capability(...)`` entry wins — a name registered through both paths is
+    # a mistake we want surfaced, not silently shadowed.
+    t = time.time()
+    try:
+        from work_buddy.knowledge.capability_loader import load_declared_capabilities
+        declared, decl_issues = load_declared_capabilities()
+        for cap in declared:
+            if cap.name in registry:
+                logger.error(
+                    "capability declaration conflict for %r — keeping the "
+                    "existing registry entry, ignoring the declaration",
+                    cap.name,
+                )
+                continue
+            registry[cap.name] = cap
+        for issue in decl_issues:
+            logger.warning("capability declaration issue: %s", issue)
+        _log_to_file(_lf, f"  declared_capabilities: {time.time()-t:.2f}s "
+                           f"({len(declared)} loaded, {len(decl_issues)} issues)")
+    except Exception as e:
+        _log_to_file(_lf, f"  declared_capabilities: FAILED in {time.time()-t:.2f}s — {e}")
+        logger.exception("declaration-based capability loading failed")
 
     # --- Filter capabilities with unmet tool requirements ---
     t = time.time()
@@ -3515,7 +3554,6 @@ def _task_capabilities() -> list[Capability]:
         create_task,
         create_task_effects_resolver as _create_task_effects_resolver,
         delete_task,
-        read_task,
         set_task_tags_on_line,
         toggle_task,
         update_task_description,
@@ -3739,17 +3777,11 @@ def _task_capabilities() -> list[Capability]:
             search_aliases=["assign task", "claim task", "work on task", "start task"],
             requires=["obsidian"],
         ),
-        Capability(
-            name="task_read",
-            description="Read a task's full context (text, note, metadata) without claiming it for the current session",
-            category="tasks",
-            parameters={
-                "task_id": {"type": "str", "description": "Task ID (e.g., 't-a3f8c1e2')", "required": True},
-            },
-            callable=read_task,
-            search_aliases=["read task", "view task", "show task", "inspect task", "look at task"],
-            requires=["obsidian"],
-        ),
+        # task_read is a declaration-based capability: the op `op.wb.task_read`
+        # (work_buddy/mcp_server/ops/tasks_ops.py) plus the `tasks/task_read`
+        # capability unit in the knowledge store, resolved at registry-build
+        # time by the capability loader. It deliberately has no Capability(...)
+        # entry here.
         Capability(
             name="task_toggle",
             description="Mark a task complete, incomplete, or toggle. Handles checkbox, done date, and store state atomically. Use done=true to complete, done=false to reopen, omit to toggle. Consent-gated.",
@@ -6719,6 +6751,67 @@ def _knowledge_capabilities() -> list[Capability]:
                         "(system kind) Comma-separated dotted module paths "
                         "that implement this system, for navigation."
                     ),
+                    "required": False,
+                },
+                "requires": {
+                    "type": "str",
+                    "description": (
+                        "Comma-separated tool/component IDs the unit needs "
+                        "(e.g. 'obsidian,hindsight')."
+                    ),
+                    "required": False,
+                },
+                "op": {
+                    "type": "str",
+                    "description": (
+                        "(capability kind) op.<namespace>.<name> ID of the Op "
+                        "this declaration-based capability wraps."
+                    ),
+                    "required": False,
+                },
+                "schema_version": {
+                    "type": "str",
+                    "description": (
+                        "(capability kind) Declaration format version, "
+                        "e.g. 'wb-capability/v1'."
+                    ),
+                    "required": False,
+                },
+                "capability_name": {
+                    "type": "str",
+                    "description": (
+                        "(capability kind) MCP dispatch name, e.g. 'task_read'."
+                    ),
+                    "required": False,
+                },
+                "category": {
+                    "type": "str",
+                    "description": "(capability kind) Registry category, e.g. 'tasks'.",
+                    "required": False,
+                },
+                "parameters": {
+                    "type": "str",
+                    "description": (
+                        "(capability kind) Parameter schema as a JSON string: "
+                        "{name: {type, description, required}}."
+                    ),
+                    "required": False,
+                },
+                "mutates_state": {
+                    "type": "bool",
+                    "description": "(capability kind) Whether the capability modifies state.",
+                    "required": False,
+                },
+                "retry_policy": {
+                    "type": "str",
+                    "description": (
+                        "(capability kind) 'manual' | 'replay' | 'verify_first'."
+                    ),
+                    "required": False,
+                },
+                "consent_required": {
+                    "type": "bool",
+                    "description": "(capability kind) Whether the capability is consent-gated.",
                     "required": False,
                 },
             },
