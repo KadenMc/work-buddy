@@ -383,6 +383,31 @@ class TestCommit:
         assert "dev/created" in store
         assert store["dev/created"].name == "Created Unit"
 
+    def test_commit_reconciles_changed_parents(self, materialized_env):
+        """Editing a unit's `parents` in the buffer reconciles the child links
+        both ways — the old parent loses the child, the new parent gains it."""
+        _seed(materialized_env, "dev", {
+            "dev/p1": {"kind": "concept", "name": "P1", "description": "d",
+                       "content": {"full": "p1"}, "parents": [],
+                       "children": ["dev/child"]},
+            "dev/p2": {"kind": "concept", "name": "P2", "description": "d",
+                       "content": {"full": "p2"}, "parents": [], "children": []},
+            "dev/child": {"kind": "concept", "name": "Child", "description": "d",
+                          "content": {"full": "c"}, "parents": ["dev/p1"],
+                          "children": []},
+        })
+        co = docs_checkout(path="dev/child")
+        buf = Path(co["buffer_path"])
+        unit = markdown_to_unit_dict(buf.read_text(encoding="utf-8"))
+        unit["parents"] = ["dev/p2"]
+        buf.write_text(unit_dict_to_markdown("dev/child", unit), encoding="utf-8")
+        result = docs_commit(checkout_id=co["checkout_id"])
+        assert result["status"] == "committed"
+        store_mod.invalidate_store()
+        store = store_mod.load_store()
+        assert "dev/child" not in store["dev/p1"].children
+        assert "dev/child" in store["dev/p2"].children
+
     def test_commit_missing_required_field_rejected(self, materialized_env):
         _seed(materialized_env, "dev", {"dev/sample": dict(_DIRECTIONS_UNIT)})
         co = docs_checkout(path="dev/sample")
