@@ -171,6 +171,15 @@ def build_capability_units() -> dict[str, dict[str, Any]]:
     for name, entry in sorted(reg.items()):
         if not isinstance(entry, Capability):
             continue
+        # Declaration-based capabilities are already inert data in the
+        # knowledge store — they must not be re-emitted into the generated
+        # file, which would place the same capability in two store files.
+        # ``_get_unfiltered_registry`` builds from the ``_*_capabilities``
+        # builders directly, so declared capabilities do not reach this loop;
+        # the guard keeps that true if the build is ever pointed at the
+        # merged registry.
+        if getattr(entry, "op_id", None):
+            continue
 
         category = entry.category
         prefix = _CATEGORY_PATH_MAP.get(category, category)

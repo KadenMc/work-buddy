@@ -7,8 +7,16 @@ tests live in ``test_dev_document_validate_step.py``.
 
 from __future__ import annotations
 
-from work_buddy.knowledge.model import DirectionsUnit
-from work_buddy.knowledge.validate import _check_placeholder_duplicates
+import pytest
+
+from work_buddy.knowledge.capability_loader import SCHEMA_VERSION
+from work_buddy.knowledge.model import CapabilityUnit, DirectionsUnit
+from work_buddy.knowledge.validate import (
+    _check_capability_op_resolution,
+    _check_placeholder_duplicates,
+    validate_store,
+)
+from work_buddy.mcp_server import op_registry
 
 
 class TestPlaceholderDuplicateCheck:
@@ -103,3 +111,66 @@ class TestPlaceholderDuplicateCheck:
         )
         store = {"a": a}
         assert _check_placeholder_duplicates(store) == []
+
+
+class TestCapabilityOpResolutionCheck:
+    """``capability_op_resolution`` resolves declaration-based capability
+    units against the Op registry and reports failures as *warnings* — the
+    direct and declaration-based registration paths coexist, so an unresolved
+    declaration is surfaced without failing the store.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clean_registry(self):
+        op_registry.clear_ops()
+        yield
+        op_registry.clear_ops()
+
+    def _declaration(self, **overrides) -> CapabilityUnit:
+        fields = dict(
+            path="tasks/sample_cap",
+            name="Sample Cap",
+            description="A sample capability.",
+            capability_name="sample_cap",
+            category="tasks",
+            parameters={"x": {"type": "str", "required": True}},
+            op="op.wb.sample",
+            schema_version=SCHEMA_VERSION,
+        )
+        fields.update(overrides)
+        return CapabilityUnit(**fields)
+
+    def test_no_declarations_returns_empty(self):
+        store = {"a": DirectionsUnit(path="a", name="A", description="a")}
+        assert _check_capability_op_resolution(store) == []
+
+    def test_unresolved_declaration_flagged_as_warning(self):
+        # op.wb.sample is never registered.
+        store = {"tasks/sample_cap": self._declaration()}
+        issues = _check_capability_op_resolution(store)
+        assert len(issues) == 1
+        assert issues[0]["check"] == "capability_op_resolution"
+        assert issues[0]["severity"] == "warning"
+
+    def test_resolved_declaration_produces_no_issue(self):
+        def sample_op(x):
+            return x
+
+        op_registry.register_op("op.wb.sample", sample_op)
+        store = {"tasks/sample_cap": self._declaration()}
+        assert _check_capability_op_resolution(store) == []
+
+
+class TestValidateStoreSeverity:
+    """``validate_store`` splits blocking errors from non-blocking warnings."""
+
+    def test_return_shape_has_severity_buckets(self):
+        result = validate_store()
+        for key in ("passed", "failed", "warnings", "errors", "issues", "summary"):
+            assert key in result, f"missing key {key!r}"
+        assert isinstance(result["passed"], bool)
+        # warnings never count toward failure
+        assert result["failed"] == len(result["errors"])
+        # every error has error severity (default); warnings are separate
+        for err in result["errors"]:
+            assert err.get("severity", "error") != "warning"
