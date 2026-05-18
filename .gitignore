@@ -3,8 +3,10 @@ config.yaml
 config.local.yaml
 .telegram_chat_id
 
-# Contracts live in the Obsidian vault (see contracts.vault_path in config.yaml)
-contracts/
+# User contract data (see contracts.vault_path in config.yaml). Scoped to the
+# data directory so it does not also ignore the knowledge store's contracts
+# domain (knowledge/store/contracts/).
+/work-buddy/contracts/
 
 # All generated data: artifacts, runtime state, caches, databases, agent sessions
 data/
