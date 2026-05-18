@@ -681,7 +681,15 @@ class ConceptUnit(PromptUnit):
 
 @dataclass
 class CapabilityUnit(PromptUnit):
-    """MCP capability — callable function metadata from the registry."""
+    """MCP capability — callable function metadata.
+
+    A capability unit may be either *generated* (compiled from a
+    ``Capability(...)`` instance in ``registry.py``; no ``op`` field) or
+    *declaration-based* (hand-authored or agent-authored, carrying an ``op``
+    field that names an Op the capability loader resolves at registry-build
+    time). The non-empty ``op`` field is the discriminator between the two —
+    see ``work_buddy/knowledge/capability_loader.py``.
+    """
 
     kind: str = field(default="capability", init=False)
     capability_name: str = ""          # MCP name: "task_create"
@@ -690,6 +698,11 @@ class CapabilityUnit(PromptUnit):
     mutates_state: bool = False
     retry_policy: str = "manual"
     consent_required: bool = False
+    # Declaration-based capabilities only: the ``op.<namespace>.<name>`` ID of
+    # the Op this capability wraps, and the version of the declaration format
+    # itself (e.g. "wb-capability/v1"). Empty on generated capability units.
+    op: str = ""
+    schema_version: str = ""
 
     def _kind_fields(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -703,6 +716,10 @@ class CapabilityUnit(PromptUnit):
             d["retry_policy"] = self.retry_policy
         if self.consent_required:
             d["consent_required"] = True
+        if self.op:
+            d["op"] = self.op
+        if self.schema_version:
+            d["schema_version"] = self.schema_version
         return d
 
     _kind_dict = _kind_fields
@@ -860,6 +877,8 @@ def unit_from_dict(path: str, data: dict[str, Any]) -> KnowledgeUnit:
         base_kwargs["mutates_state"] = data.get("mutates_state", False)
         base_kwargs["retry_policy"] = data.get("retry_policy", "manual")
         base_kwargs["consent_required"] = data.get("consent_required", False)
+        base_kwargs["op"] = data.get("op", "")
+        base_kwargs["schema_version"] = data.get("schema_version", "")
     elif cls is WorkflowUnit:
         base_kwargs["workflow_name"] = data.get("workflow_name", "")
         base_kwargs["execution"] = data.get("execution", "main")

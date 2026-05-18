@@ -226,7 +226,6 @@
       "tasks/task_create",
       "tasks/task_delete",
       "tasks/task_namespace_suggest",
-      "tasks/task_read",
       "tasks/task_review_inbox",
       "tasks/task_scattered",
       "tasks/task_search",
@@ -238,7 +237,7 @@
       "tasks/weekly_review_data"
     ],
     "content": {
-      "summary": "Container for 18 capabilities and workflows."
+      "summary": "Container for 17 capabilities and workflows."
     }
   }
 }

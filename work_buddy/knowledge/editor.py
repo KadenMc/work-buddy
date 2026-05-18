@@ -372,7 +372,8 @@ def create_unit(
             unit_data["capabilities"] = capabilities
     elif kind == "capability":
         if extra:
-            for k in ("capability_name", "category", "parameters", "mutates_state", "retry_policy", "consent_required"):
+            for k in ("capability_name", "category", "parameters", "mutates_state",
+                      "retry_policy", "consent_required", "op", "schema_version"):
                 if k in extra:
                     unit_data[k] = extra[k]
     elif kind == "workflow":
@@ -679,6 +680,15 @@ def docs_create(
     aliases: str | None = None,
     dev_notes: str | None = None,
     entry_points: str | None = None,
+    requires: str | None = None,
+    op: str = "",
+    schema_version: str = "",
+    capability_name: str = "",
+    category: str = "",
+    parameters: str | None = None,
+    mutates_state: bool = False,
+    retry_policy: str = "manual",
+    consent_required: bool = False,
 ) -> dict[str, Any]:
     """Create a new unit in the knowledge store.
 
@@ -697,7 +707,47 @@ def docs_create(
         children: Comma-separated child paths.
         tags: Comma-separated search tags.
         aliases: Comma-separated search aliases.
+        requires: Comma-separated tool/component IDs the unit needs
+            (e.g. "obsidian,hindsight").
+        op: (capability) ``op.<namespace>.<name>`` ID of the Op this
+            declaration-based capability wraps.
+        schema_version: (capability) Declaration format version, e.g.
+            "wb-capability/v1".
+        capability_name: (capability) The MCP dispatch name (e.g. "task_read").
+        category: (capability) Registry category, e.g. "tasks".
+        parameters: (capability) Parameter schema as a JSON string —
+            ``{name: {type, description, required}}``.
+        mutates_state: (capability) Whether the capability modifies state.
+        retry_policy: (capability) "manual" | "replay" | "verify_first".
+        consent_required: (capability) Whether the capability is consent-gated.
     """
+    extra: dict[str, Any] = {}
+    requires_list = _split_csv(requires)
+    if requires_list:
+        extra["requires"] = requires_list
+    if kind == "capability":
+        if op:
+            extra["op"] = op
+        if schema_version:
+            extra["schema_version"] = schema_version
+        if capability_name:
+            extra["capability_name"] = capability_name
+        if category:
+            extra["category"] = category
+        if parameters:
+            try:
+                parsed = json.loads(parameters)
+            except (ValueError, TypeError) as e:
+                return {"error": f"Invalid 'parameters' JSON: {e}"}
+            if not isinstance(parsed, dict):
+                return {"error": "'parameters' must be a JSON object"}
+            extra["parameters"] = parsed
+        if mutates_state:
+            extra["mutates_state"] = True
+            extra["retry_policy"] = retry_policy
+        if consent_required:
+            extra["consent_required"] = True
+
     return create_unit(
         path=path,
         kind=kind,
@@ -715,6 +765,7 @@ def docs_create(
         aliases=_split_csv(aliases),
         dev_notes=dev_notes if dev_notes else None,
         entry_points=_split_csv(entry_points),
+        extra=extra or None,
     )
 
 
