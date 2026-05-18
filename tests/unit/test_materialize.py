@@ -396,6 +396,19 @@ class TestCommit:
         # Buffer preserved for fix-and-retry.
         assert buf.exists()
 
+    def test_commit_unknown_kind_rejected(self, materialized_env):
+        """A typo'd / unsupported kind in the buffer frontmatter is rejected;
+        the buffer survives."""
+        _seed(materialized_env, "dev", {"dev/sample": dict(_DIRECTIONS_UNIT)})
+        co = docs_checkout(path="dev/sample")
+        buf = Path(co["buffer_path"])
+        unit = markdown_to_unit_dict(buf.read_text(encoding="utf-8"))
+        unit["kind"] = "directons"  # typo
+        buf.write_text(unit_dict_to_markdown("dev/sample", unit), encoding="utf-8")
+        result = docs_commit(checkout_id=co["checkout_id"])
+        assert result["error"] == "unsupported_kind"
+        assert buf.exists()
+
     def test_commit_malformed_buffer_rejected_buffer_survives(self, materialized_env):
         _seed(materialized_env, "dev", {"dev/sample": dict(_DIRECTIONS_UNIT)})
         co = docs_checkout(path="dev/sample")

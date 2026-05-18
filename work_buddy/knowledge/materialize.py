@@ -396,7 +396,14 @@ def docs_commit(*, checkout_id: str) -> dict[str, Any]:
             "message": f"Checkout {checkout_id!r} metadata is incomplete.",
         }
 
-    buffer_text = record.path.read_text(encoding="utf-8")
+    try:
+        buffer_text = record.path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return {
+            "error": "buffer_unreadable",
+            "message": f"The buffer file for checkout {checkout_id!r} could not "
+                       f"be read ({exc}). Re-run docs_checkout.",
+        }
 
     # --- Parse (hard failure → buffer preserved) ---
     try:
@@ -422,10 +429,13 @@ def docs_commit(*, checkout_id: str) -> dict[str, Any]:
         }
 
     kind = unit_dict.get("kind")
-    if kind == "workflow":
+    if kind not in _SUPPORTED_KINDS:
         return {
             "error": "unsupported_kind",
-            "message": "Workflow units cannot be committed via materialization.",
+            "message": f"kind {kind!r} cannot be committed via materialization. "
+                       f"Supported: {', '.join(sorted(_SUPPORTED_KINDS))}. "
+                       "(Workflow units use workflow_update; check the 'kind' "
+                       "field in the buffer frontmatter for a typo.)",
             "checkout_id": checkout_id,
             "buffer_path": record.path.as_posix(),
         }
