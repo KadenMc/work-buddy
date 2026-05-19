@@ -4,6 +4,8 @@ kind: capability
 description: Store a personal fact, preference, or constraint in memory
 capability_name: memory_write
 category: memory
+op: op.wb.memory_write
+schema_version: wb-capability/v1
 parameters:
   content:
     type: str
@@ -29,7 +31,6 @@ aliases:
 - save to hindsight
 - memorize this
 parents:
-- memory
 - memory
 requires:
 - hindsight

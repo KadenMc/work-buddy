@@ -4,6 +4,8 @@ kind: capability
 description: 'Read from personal memory (Hindsight). No LLM cost. Modes: ''search'' (default) — semantic + keyword recall, use descriptive topic phrases with specific entity names for best results; ''model'' — fetch a mental model by ID; ''recent'' — list latest memories.'
 capability_name: memory_read
 category: memory
+op: op.wb.memory_read
+schema_version: wb-capability/v1
 parameters:
   query:
     type: str
@@ -38,7 +40,6 @@ aliases:
 - recall my preferences
 - search personal memory
 parents:
-- memory
 - memory
 requires:
 - hindsight

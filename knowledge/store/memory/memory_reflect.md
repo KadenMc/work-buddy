@@ -4,6 +4,8 @@ kind: capability
 description: 'LLM-powered reasoning over memories. CONSENT-GATED: triggers a server-side LLM call against your Anthropic API key (~1-3K tokens per call). Use memory_read for free retrieval first.'
 capability_name: memory_reflect
 category: memory
+op: op.wb.memory_reflect
+schema_version: wb-capability/v1
 parameters:
   query:
     type: str
@@ -13,6 +15,8 @@ parameters:
     type: str
     description: 'Retrieval depth: low (default), mid, high'
     required: false
+consent_operations:
+- memory_reflect
 tags:
 - memory
 - reflect
@@ -24,7 +28,6 @@ aliases:
 - memory synthesis
 - synthesize from memory
 parents:
-- memory
 - memory
 requires:
 - hindsight

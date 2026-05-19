@@ -4,6 +4,8 @@ kind: capability
 description: List contracts past their deadline
 capability_name: overdue_contracts
 category: contracts
+op: op.wb.overdue_contracts
+schema_version: wb-capability/v1
 tags:
 - contracts
 - overdue
@@ -16,7 +18,6 @@ aliases:
 - past deadline
 - contracts over deadline
 parents:
-- contracts
 - contracts
 requires:
 - obsidian

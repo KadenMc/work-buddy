@@ -4,6 +4,8 @@ kind: capability
 description: Query the session activity ledger — what this agent session has done through work-buddy. Filters by event type, capability, category, status. Returns last N matching entries (newest first).
 capability_name: session_activity
 category: status
+op: op.wb.session_activity
+schema_version: wb-capability/v1
 parameters:
   event_type:
     type: str
@@ -41,6 +43,5 @@ aliases:
 - session activity
 - ledger
 parents:
-- status
 - status
 ---

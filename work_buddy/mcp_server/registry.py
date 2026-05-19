@@ -810,10 +810,8 @@ def _build_registry() -> dict[str, Capability | WorkflowDefinition]:
     registry: dict[str, Capability | WorkflowDefinition] = {}
 
     for label, fn in [
-        ("contracts", _contract_capabilities),
         ("status", _status_capabilities),
         ("journal", _journal_capabilities),
-        ("memory", _memory_capabilities),
         ("pipelines", _pipeline_capabilities),
         ("threads", _thread_capabilities),
         ("tasks", _task_capabilities),
@@ -826,7 +824,6 @@ def _build_registry() -> dict[str, Capability | WorkflowDefinition]:
         ("conversations", _conversation_capabilities),
         ("inline", _inline_capabilities),
         ("remote_session", _remote_session_capabilities),
-        ("ledger", _ledger_capabilities),
         ("knowledge", _knowledge_capabilities),
         ("artifacts", _artifact_capabilities),
         ("email", _email_capabilities),
@@ -967,102 +964,6 @@ def _build_registry() -> dict[str, Capability | WorkflowDefinition]:
 # ---------------------------------------------------------------------------
 # Function capabilities (unchanged)
 # ---------------------------------------------------------------------------
-
-def _contract_capabilities() -> list[Capability]:
-    from work_buddy import contracts
-
-    return [
-        Capability(
-            name="contracts_summary",
-            description="Markdown summary of all contracts with title, status, deadline, progress",
-            category="contracts",
-            parameters={},
-            callable=contracts.contracts_summary,
-            requires=["obsidian"],
-            search_aliases=[
-                "list contracts",
-                "show my commitments",
-                "all contracts overview",
-                "what am I working on",
-                "active work commitments",
-                "contract list",
-                "status of my deliverables",
-            ],
-        ),
-        Capability(
-            name="contract_health",
-            description="Health check report: status counts, overdue, stale, missing fields",
-            category="contracts",
-            parameters={},
-            callable=contracts.contract_health_check,
-            requires=["obsidian"],
-            search_aliases=[
-                "are my commitments on track",
-                "check contract status",
-                "contract health check",
-                "deliverable health",
-                "are contracts healthy",
-                "check commitments",
-                "paper status",
-                "commitment health",
-                "check project health",
-            ],
-        ),
-        Capability(
-            name="active_contracts",
-            description="List all contracts with status=active",
-            category="contracts",
-            parameters={},
-            callable=contracts.active_contracts,
-            requires=["obsidian"],
-            search_aliases=[
-                "current commitments",
-                "what's active",
-                "active work",
-                "ongoing contracts",
-                "open deliverables",
-                "in-progress papers",
-                "live contracts",
-            ],
-        ),
-        Capability(
-            name="overdue_contracts",
-            description="List contracts past their deadline",
-            category="contracts",
-            parameters={},
-            callable=contracts.overdue_contracts,
-            requires=["obsidian"],
-            search_aliases=[
-                "late contracts",
-                "past due deliverables",
-                "missed deadlines",
-                "overdue work",
-                "what's late",
-                "past deadline",
-                "contracts over deadline",
-            ],
-        ),
-        Capability(
-            name="stale_contracts",
-            description="List contracts not reviewed in N days (default 7)",
-            category="contracts",
-            parameters={
-                "stale_days": {"type": "int", "description": "Days since last review (default 7)", "required": False},
-            },
-            callable=contracts.stale_contracts,
-            requires=["obsidian"],
-            search_aliases=[
-                "forgotten contracts",
-                "not reviewed recently",
-                "stale commitments",
-                "unvisited contracts",
-                "dormant work",
-                "contracts needing review",
-                "neglected contracts",
-            ],
-        ),
-    ]
-
 
 def _setup_help_component_param_description() -> str:
     """Build the setup_help component-id param description from the live
@@ -3265,154 +3166,6 @@ def _journal_capabilities() -> list[Capability]:
     ]
 
 
-def _memory_capabilities() -> list[Capability]:
-    from work_buddy.memory import (
-        reflect_on_query,
-        retain_personal_note,
-    )
-    from work_buddy.memory.query import memory_read, prune_memories
-
-    return [
-        Capability(
-            name="memory_read",
-            description=(
-                "Read from personal memory (Hindsight). No LLM cost. "
-                "Modes: 'search' (default) — semantic + keyword recall, "
-                "use descriptive topic phrases with specific entity names "
-                "for best results; 'model' — fetch a mental model by ID; "
-                "'recent' — list latest memories."
-            ),
-            category="memory",
-            parameters={
-                "query": {
-                    "type": "str",
-                    "description": (
-                        "Descriptive topic phrase for search mode. Use specific "
-                        "terminology and entity names (e.g. named work-pattern "
-                        "vocabulary) rather than generic labels like 'blindspots'. "
-                        "Ignored for model/recent modes."
-                    ),
-                    "required": False,
-                },
-                "mode": {
-                    "type": "str",
-                    "description": (
-                        "search (default) — semantic + keyword recall. "
-                        "model — fetch a mental model (self-profile, work-patterns, "
-                        "blindspots, preferences, current-constraints). "
-                        "recent — list N most recent memories."
-                    ),
-                    "required": False,
-                },
-                "model_id": {
-                    "type": "str",
-                    "description": "Mental model ID for mode=model (default: self-profile)",
-                    "required": False,
-                },
-                "limit": {
-                    "type": "int",
-                    "description": "Max memories for mode=recent (default 20)",
-                    "required": False,
-                },
-                "budget": {
-                    "type": "str",
-                    "description": "Retrieval depth for mode=search: low (fast, default), mid, high",
-                    "required": False,
-                },
-            },
-            callable=memory_read,
-            requires=["hindsight"],
-            search_aliases=[
-                "what do I remember",
-                "recall memory",
-                "search hindsight",
-                "retrieve memories",
-                "personal memory search",
-                "remember what I told you",
-                "recall my preferences",
-                "search personal memory",
-            ],
-        ),
-        Capability(
-            name="memory_write",
-            description="Store a personal fact, preference, or constraint in memory",
-            category="memory",
-            parameters={
-                "content": {"type": "str", "description": "The fact or preference to remember", "required": True},
-                "kind": {"type": "str", "description": "Memory kind: preference, habit, constraint, blindspot, relationship, decision, life-context (default preference)", "required": False},
-                "domain": {"type": "str", "description": "Domain: work, life, health (default life)", "required": False},
-            },
-            callable=retain_personal_note,
-            requires=["hindsight"],
-            search_aliases=[
-                "remember this",
-                "save to memory",
-                "store a preference",
-                "add memory",
-                "record fact",
-                "save to hindsight",
-                "memorize this",
-            ],
-        ),
-        Capability(
-            name="memory_reflect",
-            description=(
-                "LLM-powered reasoning over memories. CONSENT-GATED: triggers "
-                "a server-side LLM call against your Anthropic API key (~1-3K "
-                "tokens per call). Use memory_read for free retrieval first."
-            ),
-            category="memory",
-            parameters={
-                "query": {"type": "str", "description": "Question to reason about using memory", "required": True},
-                "budget": {"type": "str", "description": "Retrieval depth: low (default), mid, high", "required": False},
-            },
-            callable=reflect_on_query,
-            requires=["hindsight"],
-            consent_operations=["memory_reflect"],
-            search_aliases=[
-                "reason about memories",
-                "analyze my memories",
-                "LLM reflection on memory",
-                "think about memories",
-                "memory synthesis",
-                "synthesize from memory",
-            ],
-        ),
-        Capability(
-            name="memory_prune",
-            description=(
-                "Delete memories from the bank. CONSENT-GATED, IRREVERSIBLE. "
-                "Call with no args to list documents for review. Then provide "
-                "document_id to delete a specific document's memories, or "
-                "memory_type to bulk-delete a category (world/experience/observation)."
-            ),
-            category="memory",
-            parameters={
-                "document_id": {
-                    "type": "str",
-                    "description": "Delete a specific document and its derived memories",
-                    "required": False,
-                },
-                "memory_type": {
-                    "type": "str",
-                    "description": "Bulk delete by type: world, experience, or observation",
-                    "required": False,
-                },
-            },
-            callable=prune_memories,
-            requires=["hindsight"],
-            search_aliases=[
-                "forget memories",
-                "delete memory bank",
-                "clear memory",
-                "remove memories",
-                "prune hindsight",
-                "wipe memories",
-            ],
-        ),
-    ]
-
-
 def _task_capabilities() -> list[Capability]:
     from work_buddy.obsidian.tasks import (
         daily_briefing,
@@ -5066,75 +4819,6 @@ def _remote_session_capabilities() -> list[Capability]:
             search_aliases=[
                 "list sessions", "resumable sessions", "session picker",
                 "active sessions", "find session",
-            ],
-        ),
-    ]
-
-
-def _ledger_capabilities() -> list[Capability]:
-    """Session activity ledger — query what this session has done."""
-    from work_buddy.mcp_server.activity_ledger import query_activity, query_session_summary
-
-    return [
-        Capability(
-            name="session_activity",
-            description=(
-                "Query the session activity ledger — what this agent session "
-                "has done through work-buddy. Filters by event type, capability, "
-                "category, status. Returns last N matching entries (newest first)."
-            ),
-            category="status",
-            parameters={
-                "event_type": {
-                    "type": "str",
-                    "description": "Filter: capability_invoked, workflow_started, workflow_step_completed, search_performed",
-                    "required": False,
-                },
-                "capability_name": {
-                    "type": "str",
-                    "description": "Filter to a specific capability name",
-                    "required": False,
-                },
-                "category": {
-                    "type": "str",
-                    "description": "Filter by category (tasks, journal, context, etc.)",
-                    "required": False,
-                },
-                "status": {
-                    "type": "str",
-                    "description": "Filter by status: ok, error, consent_required",
-                    "required": False,
-                },
-                "last_n": {
-                    "type": "int",
-                    "description": "Return last N matching entries (default 20)",
-                    "required": False,
-                },
-                "include_searches": {
-                    "type": "bool",
-                    "description": "Include wb_search events (default false)",
-                    "required": False,
-                },
-            },
-            callable=query_activity,
-            search_aliases=[
-                "what did I do", "session history", "activity log",
-                "what happened", "session activity", "ledger",
-            ],
-        ),
-        Capability(
-            name="session_summary",
-            description=(
-                "Compact summary of what this agent session has done — "
-                "counts by category/capability, errors, mutations, "
-                "key artifacts created, workflow progress."
-            ),
-            category="status",
-            parameters={},
-            callable=query_session_summary,
-            search_aliases=[
-                "session overview", "what has happened", "session recap",
-                "session digest", "activity summary",
             ],
         ),
     ]

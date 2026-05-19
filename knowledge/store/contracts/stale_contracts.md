@@ -4,6 +4,8 @@ kind: capability
 description: List contracts not reviewed in N days (default 7)
 capability_name: stale_contracts
 category: contracts
+op: op.wb.stale_contracts
+schema_version: wb-capability/v1
 parameters:
   stale_days:
     type: int
@@ -21,7 +23,6 @@ aliases:
 - contracts needing review
 - neglected contracts
 parents:
-- contracts
 - contracts
 requires:
 - obsidian

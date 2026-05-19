@@ -27,25 +27,33 @@ from work_buddy.mcp_server import registry as R
 
 SCHEMA_VERSION = "wb-capability/v1"
 
-# Registry category → its builder function.
+# Registry category → its builder-function name. Resolved lazily via getattr
+# so a category whose builder has already been removed (migrated) does not
+# break the script at import time.
 _CATEGORY_BUILDERS = {
-    "messaging": R._messaging_capabilities,
-    "contracts": R._contract_capabilities,
-    "status": R._status_capabilities,
-    "journal": R._journal_capabilities,
-    "memory": R._memory_capabilities,
-    "tasks": R._task_capabilities,
-    "context": R._context_capabilities,
-    "projects": R._project_capabilities,
-    "sidecar": R._sidecar_capabilities,
-    "llm": R._llm_capabilities,
-    "consent": R._consent_capabilities,
-    "notifications": R._notification_capabilities,
-    "conversations": R._conversation_capabilities,
-    "remote_session": R._remote_session_capabilities,
-    "ledger": R._ledger_capabilities,
-    "artifacts": R._artifact_capabilities,
-    "knowledge": R._knowledge_capabilities,
+    "messaging": "_messaging_capabilities",
+    "contracts": "_contract_capabilities",
+    "status": "_status_capabilities",
+    "journal": "_journal_capabilities",
+    "memory": "_memory_capabilities",
+    "pipelines": "_pipeline_capabilities",
+    "threads": "_thread_capabilities",
+    "tasks": "_task_capabilities",
+    "context": "_context_capabilities",
+    "projects": "_project_capabilities",
+    "sidecar": "_sidecar_capabilities",
+    "llm": "_llm_capabilities",
+    "consent": "_consent_capabilities",
+    "notifications": "_notification_capabilities",
+    "conversations": "_conversation_capabilities",
+    "inline": "_inline_capabilities",
+    "remote_session": "_remote_session_capabilities",
+    "ledger": "_ledger_capabilities",
+    "knowledge": "_knowledge_capabilities",
+    "artifacts": "_artifact_capabilities",
+    "email": "_email_capabilities",
+    "backups": "_backup_capabilities",
+    "conversation_observability": "_conversation_observability_capabilities",
 }
 
 # Registry category → store path prefix (categories absent here use the
@@ -115,11 +123,17 @@ def _declaration_dict(cap) -> dict:
 
 def migrate_category(category: str) -> dict:
     """Regenerate every declaration file for one registry category."""
-    builder = _CATEGORY_BUILDERS.get(category)
-    if builder is None:
+    builder_name = _CATEGORY_BUILDERS.get(category)
+    if builder_name is None:
         raise SystemExit(
             f"Unknown category {category!r}. "
             f"Known: {', '.join(sorted(_CATEGORY_BUILDERS))}"
+        )
+    builder = getattr(R, builder_name, None)
+    if builder is None:
+        raise SystemExit(
+            f"Category {category!r} has no builder {builder_name!r} — "
+            "already migrated?"
         )
 
     caps = builder()
