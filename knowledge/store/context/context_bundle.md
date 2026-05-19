@@ -4,6 +4,8 @@ kind: capability
 description: Run all (or selected) collectors and save a context bundle to disk. Use individual collectors (context_git, context_chat, etc.) when you only need one source.
 capability_name: context_bundle
 category: context
+op: op.wb.context_bundle
+schema_version: wb-capability/v1
 parameters:
   days:
     type: int
@@ -26,6 +28,5 @@ aliases:
 - collect everything
 - snapshot all context
 parents:
-- context
 - context
 ---

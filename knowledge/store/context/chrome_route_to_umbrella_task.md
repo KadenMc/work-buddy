@@ -4,6 +4,8 @@ kind: capability
 description: Create a single task representing the whole Chrome group. The cluster label becomes the task text; the tabs are listed in the linked summary note.
 capability_name: chrome_route_to_umbrella_task
 category: context
+op: op.wb.chrome_route_to_umbrella_task
+schema_version: wb-capability/v1
 parameters:
   thread_id:
     type: str
@@ -23,6 +25,10 @@ parameters:
     required: false
 mutates_state: true
 retry_policy: manual
+is_action: true
+intrinsic_amplifiers:
+  irreversibility: low
+  regret_potential: low
 tags:
 - context
 - chrome
@@ -34,7 +40,6 @@ aliases:
 - create umbrella task from chrome group
 - single task for tab group
 parents:
-- context
 - context
 requires:
 - obsidian

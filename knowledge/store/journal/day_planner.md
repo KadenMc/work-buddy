@@ -4,6 +4,8 @@ kind: capability
 description: 'Day Planner operations: check plugin status, read current plan, generate schedule from events+tasks, or write plan to journal. Composite: replaces separate check_ready/get_plan/generate/write/resync calls.'
 capability_name: day_planner
 category: journal
+op: op.wb.day_planner
+schema_version: wb-capability/v1
 parameters:
   action:
     type: str
@@ -38,7 +40,6 @@ aliases:
 - daily plan
 - time blocks
 parents:
-- journal
 - journal
 requires:
 - obsidian

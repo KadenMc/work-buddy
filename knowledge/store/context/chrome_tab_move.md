@@ -4,6 +4,8 @@ kind: capability
 description: Move Chrome tabs to a specific position or window.
 capability_name: chrome_tab_move
 category: context
+op: op.wb.chrome_tab_move
+schema_version: wb-capability/v1
 parameters:
   tab_ids:
     type: list
@@ -19,6 +21,10 @@ parameters:
     required: false
 mutates_state: true
 retry_policy: manual
+is_action: true
+intrinsic_amplifiers:
+  irreversibility: low
+  regret_potential: low
 tags:
 - context
 - chrome
@@ -32,7 +38,6 @@ aliases:
 - send tab to another window
 - reposition tab
 parents:
-- context
 - context
 requires:
 - chrome_extension

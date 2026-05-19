@@ -4,6 +4,8 @@ kind: capability
 description: Ask a question in a conversation and optionally wait for the user's response.
 capability_name: conversation_ask
 category: conversations
+op: op.wb.conversation_ask
+schema_version: wb-capability/v1
 parameters:
   conversation_id:
     type: string
@@ -32,6 +34,5 @@ aliases:
 - conversation question
 - follow up question
 parents:
-- conversations
 - conversations
 ---

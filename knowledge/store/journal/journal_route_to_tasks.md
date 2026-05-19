@@ -4,6 +4,8 @@ kind: capability
 description: 'Walk a journal-group thread''s context items and create one task per item in the master task list. Each item''s label becomes the task text. Continue-on-error: a single failed item doesn''t block the rest.'
 capability_name: journal_route_to_tasks
 category: journal
+op: op.wb.journal_route_to_tasks
+schema_version: wb-capability/v1
 parameters:
   thread_id:
     type: str
@@ -23,6 +25,10 @@ parameters:
     required: false
 mutates_state: true
 retry_policy: manual
+is_action: true
+intrinsic_amplifiers:
+  irreversibility: low
+  regret_potential: low
 tags:
 - journal
 - route
@@ -33,7 +39,6 @@ aliases:
 - route group to task list
 - spin out group as tasks
 parents:
-- journal
 - journal
 requires:
 - obsidian

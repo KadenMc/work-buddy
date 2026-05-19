@@ -4,6 +4,8 @@ kind: capability
 description: Wellness tracker summary from recent journal entries
 capability_name: context_wellness
 category: context
+op: op.wb.context_wellness
+schema_version: wb-capability/v1
 parameters:
   days:
     type: int
@@ -18,6 +20,5 @@ aliases:
 - sleep exercise mood
 - self-care data
 parents:
-- context
 - context
 ---

@@ -4,6 +4,8 @@ kind: capability
 description: Send a fire-and-forget notification to the user via all available surfaces (Obsidian, Telegram if enabled). No response expected. Optionally target specific surfaces.
 capability_name: notification_send
 category: notifications
+op: op.wb.notification_send
+schema_version: wb-capability/v1
 parameters:
   title:
     type: str
@@ -45,6 +47,5 @@ aliases:
 - message user
 - send notification
 parents:
-- notifications
 - notifications
 ---

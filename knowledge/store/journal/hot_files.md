@@ -4,6 +4,8 @@ kind: capability
 description: Rank vault files by activity intensity, fusing modification frequency (vault events) with writing intensity (Keep the Rhythm). Hierarchically collapses busy directories to prevent context flooding. Use sub_directory to drill into a specific area.
 capability_name: hot_files
 category: journal
+op: op.wb.hot_files
+schema_version: wb-capability/v1
 parameters:
   since:
     type: str
@@ -30,7 +32,6 @@ aliases:
 - frequently edited
 - vault activity
 parents:
-- journal
 - journal
 requires:
 - obsidian

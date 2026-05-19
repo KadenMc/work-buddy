@@ -4,6 +4,8 @@ kind: capability
 description: 'Obsidian vault summary: journal entries, recently modified notes'
 capability_name: context_obsidian
 category: context
+op: op.wb.context_obsidian
+schema_version: wb-capability/v1
 parameters:
   journal_days:
     type: int
@@ -23,7 +25,6 @@ aliases:
 - recent notes
 - daily journal
 parents:
-- context
 - context
 requires:
 - obsidian

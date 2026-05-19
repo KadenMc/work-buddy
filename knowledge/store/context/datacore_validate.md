@@ -4,6 +4,8 @@ kind: capability
 description: Validate a Datacore query string without executing it. Returns parse error details if invalid.
 capability_name: datacore_validate
 category: context
+op: op.wb.datacore_validate
+schema_version: wb-capability/v1
 parameters:
   query:
     type: str
@@ -21,7 +23,6 @@ aliases:
 - parse check
 - query validator
 parents:
-- context
 - context
 requires:
 - obsidian

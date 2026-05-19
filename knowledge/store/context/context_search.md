@@ -4,6 +4,8 @@ kind: capability
 description: 'Search indexed content (conversations, documents, tabs). Requires IR index — build with ir_index first. Methods: ''substring'' (exact match, no embedding service), ''keyword'' (BM25), ''semantic'' (dense), or comma-delimited combo like ''keyword,semantic'' (default, RRF fused).'
 capability_name: context_search
 category: context
+op: op.wb.context_search
+schema_version: wb-capability/v1
 parameters:
   query:
     type: str
@@ -41,6 +43,5 @@ aliases:
 - search index
 - information retrieval
 parents:
-- context
 - context
 ---

@@ -4,6 +4,8 @@ kind: capability
 description: Check if the latest question in a conversation has been answered.
 capability_name: conversation_poll
 category: conversations
+op: op.wb.conversation_poll
+schema_version: wb-capability/v1
 parameters:
   conversation_id:
     type: string
@@ -24,6 +26,5 @@ aliases:
 - conversation answered
 - check for reply
 parents:
-- conversations
 - conversations
 ---

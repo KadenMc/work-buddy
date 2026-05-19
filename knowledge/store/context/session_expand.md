@@ -4,6 +4,8 @@ kind: capability
 description: Full context around a specific message in a session. Returns untruncated text for the target and surrounding messages.
 capability_name: session_expand
 category: context
+op: op.wb.session_expand
+schema_version: wb-capability/v1
 parameters:
   session_id:
     type: str
@@ -30,6 +32,5 @@ aliases:
 - what came before this message
 - conversation context around message
 parents:
-- context
 - context
 ---

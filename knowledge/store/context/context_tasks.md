@@ -4,6 +4,8 @@ kind: capability
 description: 'Obsidian task summary: outstanding tasks + recent state changes (last 48h by default)'
 capability_name: context_tasks
 category: context
+op: op.wb.context_tasks
+schema_version: wb-capability/v1
 parameters:
   journal_days:
     type: int
@@ -25,7 +27,6 @@ aliases:
 - task history
 - task changes
 parents:
-- context
 - context
 requires:
 - obsidian

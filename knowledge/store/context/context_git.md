@@ -4,6 +4,8 @@ kind: capability
 description: 'Recent git activity across all repos: commits, diffs, dirty trees. Pass annotate=true to tag commits made by agent sessions with their session ID.'
 capability_name: context_git
 category: context
+op: op.wb.context_git
+schema_version: wb-capability/v1
 parameters:
   days:
     type: int
@@ -17,6 +19,8 @@ parameters:
     type: bool
     description: Tag commits made by agent sessions with session ID (default false). Slower — scans JSONL files.
     required: false
+param_aliases:
+  since: days
 tags:
 - context
 - git
@@ -29,6 +33,5 @@ aliases:
 - which session made this commit
 - agent commits
 parents:
-- context
 - context
 ---

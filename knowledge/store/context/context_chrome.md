@@ -4,6 +4,8 @@ kind: capability
 description: Currently open Chrome tabs (requires Chrome extension running)
 capability_name: context_chrome
 category: context
+op: op.wb.context_chrome
+schema_version: wb-capability/v1
 tags:
 - context
 - chrome
@@ -17,7 +19,6 @@ aliases:
 - what am I looking at
 - currently open tabs
 parents:
-- context
 - context
 requires:
 - chrome_extension

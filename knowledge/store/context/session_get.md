@@ -4,6 +4,8 @@ kind: capability
 description: Browse messages in a Claude Code session. Paginated with role/type filtering. Use after context_search finds a session.
 capability_name: session_get
 category: context
+op: op.wb.session_get
+schema_version: wb-capability/v1
 parameters:
   session_id:
     type: str
@@ -40,6 +42,5 @@ aliases:
 - read session
 - drill into session
 parents:
-- context
 - context
 ---

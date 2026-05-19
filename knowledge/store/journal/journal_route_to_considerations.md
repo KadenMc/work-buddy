@@ -4,6 +4,8 @@ kind: capability
 description: Walk a journal-group thread's context items and create one consideration note per item. Each item's label becomes the title; raw text becomes the body.
 capability_name: journal_route_to_considerations
 category: journal
+op: op.wb.journal_route_to_considerations
+schema_version: wb-capability/v1
 parameters:
   thread_id:
     type: str
@@ -27,6 +29,10 @@ parameters:
     required: false
 mutates_state: true
 retry_policy: manual
+is_action: true
+intrinsic_amplifiers:
+  irreversibility: low
+  regret_potential: low
 tags:
 - journal
 - route
@@ -36,7 +42,6 @@ aliases:
 - create considerations from journal group
 - route group to considerations
 parents:
-- journal
 - journal
 requires:
 - obsidian

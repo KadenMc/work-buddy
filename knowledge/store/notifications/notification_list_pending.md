@@ -4,6 +4,8 @@ kind: capability
 description: List all pending notifications and requests awaiting user response.
 capability_name: notification_list_pending
 category: notifications
+op: op.wb.notification_list_pending
+schema_version: wb-capability/v1
 tags:
 - notifications
 - notification
@@ -18,6 +20,5 @@ aliases:
 - unresolved notifications
 - open requests
 parents:
-- notifications
 - notifications
 ---

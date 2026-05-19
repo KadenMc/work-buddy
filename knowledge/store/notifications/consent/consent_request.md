@@ -4,6 +4,8 @@ kind: capability
 description: 'One-call consent flow: create a consent request, deliver to all available surfaces, and optionally poll + auto-resolve. The modal shows Allow always / Allow for N min / Allow once / Deny options. Without timeout_seconds: non-blocking (returns request_id for later polling via request_poll + consent_request_resolve). With timeout_seconds: blocks until user responds, then auto-resolves (writes the grant on approval, returns denial on deny). Max recommended timeout: 110s to stay within MCP limits.'
 capability_name: consent_request
 category: consent
+op: op.wb.consent_request
+schema_version: wb-capability/v1
 parameters:
   operation:
     type: str
@@ -62,6 +64,5 @@ aliases:
 - request consent
 - consent modal
 parents:
-- notifications/consent
 - notifications/consent
 ---

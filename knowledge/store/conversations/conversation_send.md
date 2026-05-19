@@ -4,6 +4,8 @@ kind: capability
 description: Send a message in an existing conversation (fire-and-forget, no response expected).
 capability_name: conversation_send
 category: conversations
+op: op.wb.conversation_send
+schema_version: wb-capability/v1
 parameters:
   conversation_id:
     type: string
@@ -24,6 +26,5 @@ aliases:
 - post in conversation
 - speak in conversation
 parents:
-- conversations
 - conversations
 ---

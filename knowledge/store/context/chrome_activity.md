@@ -4,6 +4,8 @@ kind: capability
 description: 'Query Chrome browsing history from the rolling tab ledger. Supports: hot_tabs (ranked by engagement), changes (opened/closed/navigated/engaged/moved), sessions (domain clusters), tabs_at (snapshot at a time), context (tab proximity and window layout), details (full URLs by filter), status (ledger health). Output is compact (no URLs) — use details query for full URLs.'
 capability_name: chrome_activity
 category: context
+op: op.wb.chrome_activity
+schema_version: wb-capability/v1
 parameters:
   query:
     type: str
@@ -43,7 +45,6 @@ aliases:
 - hot tabs
 - browser activity
 parents:
-- context
 - context
 requires:
 - chrome_extension

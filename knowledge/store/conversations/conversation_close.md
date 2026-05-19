@@ -4,6 +4,8 @@ kind: capability
 description: Close a conversation.
 capability_name: conversation_close
 category: conversations
+op: op.wb.conversation_close
+schema_version: wb-capability/v1
 parameters:
   conversation_id:
     type: string
@@ -20,6 +22,5 @@ aliases:
 - wrap up conversation
 - close dashboard chat
 parents:
-- conversations
 - conversations
 ---

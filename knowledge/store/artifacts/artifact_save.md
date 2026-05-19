@@ -4,6 +4,8 @@ kind: capability
 description: Save an artifact (context bundle, export, report, snapshot, or scratch) to the centralized data store with metadata and TTL-based lifecycle.
 capability_name: artifact_save
 category: artifacts
+op: op.wb.artifact_save
+schema_version: wb-capability/v1
 parameters:
   content:
     type: str
@@ -51,6 +53,5 @@ aliases:
 - save export
 - save report
 parents:
-- artifacts
 - artifacts
 ---

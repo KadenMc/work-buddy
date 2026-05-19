@@ -4,6 +4,8 @@ kind: capability
 description: Active projects with identity, state, and trajectory — synthesized from vault directories, STATE.md files in repos, task tags, git activity, and contracts. Filters the rendered output to active projects by default; pass ``statuses`` to widen.
 capability_name: context_projects
 category: context
+op: op.wb.context_projects
+schema_version: wb-capability/v1
 parameters:
   statuses:
     type: list
@@ -20,6 +22,5 @@ aliases:
 - project state
 - project list
 parents:
-- context
 - context
 ---

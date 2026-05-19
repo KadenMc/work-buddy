@@ -4,6 +4,8 @@ kind: capability
 description: Hybrid search within a single session. Uses IR (keyword/semantic/substring) scoped to the session, then resolves chunk hits to message-level results via the span map.
 capability_name: session_search
 category: context
+op: op.wb.session_search
+schema_version: wb-capability/v1
 parameters:
   session_id:
     type: str
@@ -31,6 +33,5 @@ aliases:
 - session query
 - semantic session search
 parents:
-- context
 - context
 ---

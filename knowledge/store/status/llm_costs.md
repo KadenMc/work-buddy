@@ -4,6 +4,8 @@ kind: capability
 description: Check LLM token usage, costs, and breakdown for this session. Shows per-task costs, per-model costs, cache hit rates, and top callers.
 capability_name: llm_costs
 category: status
+op: op.wb.llm_costs
+schema_version: wb-capability/v1
 parameters:
   breakdown:
     type: bool
@@ -20,6 +22,5 @@ aliases:
 - how much has haiku cost
 - llm spending
 parents:
-- status
 - status
 ---

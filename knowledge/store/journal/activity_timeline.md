@@ -4,6 +4,8 @@ kind: capability
 description: Infer recent activity from journal entries and optionally deeper signals. Returns a structured timeline with events, gaps, and relative timestamps. Use for understanding what happened during a time window.
 capability_name: activity_timeline
 category: journal
+op: op.wb.activity_timeline
+schema_version: wb-capability/v1
 parameters:
   since:
     type: str
@@ -34,7 +36,6 @@ aliases:
 - activity digest
 - journal entries structured
 parents:
-- journal
 - journal
 requires:
 - obsidian

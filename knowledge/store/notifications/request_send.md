@@ -4,6 +4,8 @@ kind: capability
 description: 'Create a request, deliver to all available surfaces, and optionally poll for the user''s response. Supports choice, boolean, freeform, and range response types. Without timeout_seconds: non-blocking (returns immediately, use request_poll later). With timeout_seconds: blocks until response or timeout (max recommended: 110s to stay within MCP call limits).'
 capability_name: request_send
 category: notifications
+op: op.wb.request_send
+schema_version: wb-capability/v1
 parameters:
   title:
     type: str
@@ -82,6 +84,5 @@ aliases:
 - user input
 - show modal
 parents:
-- notifications
 - notifications
 ---

@@ -4,6 +4,8 @@ kind: capability
 description: Retrieve an artifact by ID (filename stem). Returns metadata and content (inline if < 50KB, otherwise file path).
 capability_name: artifact_get
 category: artifacts
+op: op.wb.artifact_get
+schema_version: wb-capability/v1
 parameters:
   id:
     type: str
@@ -22,6 +24,5 @@ aliases:
 - load artifact
 - artifact contents
 parents:
-- artifacts
 - artifacts
 ---

@@ -4,6 +4,8 @@ kind: capability
 description: Insert content at a specific section in a vault note. Configurable note (path or resolver like 'latest_journal', 'today'), section (header text), and position ('top' or 'bottom' of section). Used by Telegram capture and general-purpose vault writing.
 capability_name: vault_write_at_location
 category: journal
+op: op.wb.vault_write_at_location
+schema_version: wb-capability/v1
 parameters:
   content:
     type: str
@@ -41,7 +43,6 @@ aliases:
 - insert into note
 - capture
 parents:
-- journal
 - journal
 requires:
 - obsidian

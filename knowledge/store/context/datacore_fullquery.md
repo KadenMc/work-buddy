@@ -4,6 +4,8 @@ kind: capability
 description: Execute a Datacore query with timing and revision metadata. Same as datacore_query but includes duration_s and revision.
 capability_name: datacore_fullquery
 category: context
+op: op.wb.datacore_fullquery
+schema_version: wb-capability/v1
 parameters:
   query:
     type: str
@@ -29,7 +31,6 @@ aliases:
 - datacore query debug
 - query timing metadata
 parents:
-- context
 - context
 requires:
 - obsidian

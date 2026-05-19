@@ -4,6 +4,8 @@ kind: capability
 description: 'Read sign-in state (sleep/energy/mood/check-in/motto) and wellness trends, optionally write fields. Composite: replaces separate extract_sign_in + interpret_wellness + write_sign_in calls.'
 capability_name: journal_sign_in
 category: journal
+op: op.wb.journal_sign_in
+schema_version: wb-capability/v1
 parameters:
   target:
     type: str
@@ -15,6 +17,8 @@ parameters:
     required: false
 mutates_state: true
 retry_policy: manual
+consent_operations:
+- morning.write_sign_in
 tags:
 - journal
 - sign
@@ -26,7 +30,6 @@ aliases:
 - wellness trends
 - write sign in
 parents:
-- journal
 - journal
 requires:
 - obsidian

@@ -4,6 +4,8 @@ kind: capability
 description: Record structured commit metadata (hash, files, test results, knowledge units updated) as an artifact. Called after a successful git commit to enable enriched commit cards in the dashboard.
 capability_name: commit_record
 category: artifacts
+op: op.wb.commit_record
+schema_version: wb-capability/v1
 parameters:
   commit_hash:
     type: str
@@ -58,6 +60,5 @@ aliases:
 - log commit
 - commit artifact
 parents:
-- artifacts
 - artifacts
 ---

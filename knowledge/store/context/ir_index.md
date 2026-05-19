@@ -4,6 +4,8 @@ kind: capability
 description: Build or check the IR search index. Run 'build' to (re)encode dense vectors for indexed documents; 'status' returns per-source counts including dense_eligible_docs (how many docs CAN be encoded) and pending_eligible (real backlog — NOT doc_count vs vector_count, which is misleading because sources like conversation intentionally leave dense_text empty for tool-only spans).
 capability_name: ir_index
 category: context
+op: op.wb.ir_index
+schema_version: wb-capability/v1
 parameters:
   action:
     type: str
@@ -32,6 +34,5 @@ aliases:
 - search index status
 - reindex
 parents:
-- context
 - context
 ---

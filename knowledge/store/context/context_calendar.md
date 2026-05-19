@@ -4,6 +4,8 @@ kind: capability
 description: Google Calendar schedule for a given date. Also checks plugin readiness.
 capability_name: context_calendar
 category: context
+op: op.wb.context_calendar
+schema_version: wb-capability/v1
 parameters:
   date:
     type: str
@@ -23,7 +25,6 @@ aliases:
 - what's on the calendar
 - calendar ready
 parents:
-- context
 - context
 requires:
 - obsidian

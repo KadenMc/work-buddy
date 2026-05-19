@@ -4,6 +4,8 @@ kind: capability
 description: Synchronous bridge-aware retry for Obsidian-dependent capabilities. Checks bridge health before each attempt, waits between retries, and returns a structured result. Use when you need the result before proceeding (e.g., step 1 of a multi-step task). For fire-and-forget retries, the gateway's automatic background retry handles it.
 capability_name: obsidian_retry
 category: obsidian
+op: op.wb.obsidian_retry
+schema_version: wb-capability/v1
 parameters:
   operation_id:
     type: str
@@ -28,6 +30,5 @@ aliases:
 - bridge failure
 - obsidian unavailable
 parents:
-- obsidian
 - obsidian
 ---

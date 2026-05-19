@@ -4,6 +4,8 @@ kind: capability
 description: Create a new conversation with the user. Opens a chat sidebar on the dashboard.
 capability_name: conversation_create
 category: conversations
+op: op.wb.conversation_create
+schema_version: wb-capability/v1
 parameters:
   title:
     type: string
@@ -26,6 +28,5 @@ aliases:
 - multi-turn
 - side chat
 parents:
-- conversations
 - conversations
 ---

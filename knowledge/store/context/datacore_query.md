@@ -4,6 +4,8 @@ kind: capability
 description: Execute a Datacore query against the vault index. Supports @page, @section, @block, @task, @list-item, @codeblock with filters like path(), tags, childof(), parentof(). Returns serialized results.
 capability_name: datacore_query
 category: context
+op: op.wb.datacore_query
+schema_version: wb-capability/v1
 parameters:
   query:
     type: str
@@ -29,7 +31,6 @@ aliases:
 - structural vault query
 - datacore search
 parents:
-- context
 - context
 requires:
 - obsidian

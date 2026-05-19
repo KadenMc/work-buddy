@@ -4,6 +4,8 @@ kind: capability
 description: 'Append log entries or persist a briefing to the journal. For log entries: pass time/description tuples. For briefing: pass markdown to wrap in a callout.'
 capability_name: journal_write
 category: journal
+op: op.wb.journal_write
+schema_version: wb-capability/v1
 parameters:
   mode:
     type: str
@@ -23,6 +25,12 @@ parameters:
     required: false
 mutates_state: true
 retry_policy: verify_first
+consent_operations:
+- update_journal_entry
+- morning.persist_briefing
+param_aliases:
+  target_date: target
+  date: target
 tags:
 - journal
 - write
@@ -33,7 +41,6 @@ aliases:
 - persist briefing
 - update log
 parents:
-- journal
 - journal
 requires:
 - obsidian
