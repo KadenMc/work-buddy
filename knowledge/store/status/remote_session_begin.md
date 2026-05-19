@@ -4,6 +4,8 @@ kind: capability
 description: Launch or resume a visible Claude Code session in a real terminal window. If session_id or session_name is provided, resumes that session; otherwise starts a new one. Designed for Remote Control (phone app) connection.
 capability_name: remote_session_begin
 category: sidecar
+op: op.wb.remote_session_begin
+schema_version: wb-capability/v1
 parameters:
   cwd:
     type: str
@@ -45,6 +47,5 @@ aliases:
 - continue session
 - reconnect
 parents:
-- status
 - status
 ---

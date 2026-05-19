@@ -4,6 +4,8 @@ kind: capability
 description: List resumable Claude Code sessions from ~/.claude/sessions/. Shows session ID, name, cwd, and start time.
 capability_name: remote_session_list
 category: sidecar
+op: op.wb.remote_session_list
+schema_version: wb-capability/v1
 parameters:
   cwd:
     type: str
@@ -21,6 +23,5 @@ aliases:
 - active sessions
 - find session
 parents:
-- status
 - status
 ---
