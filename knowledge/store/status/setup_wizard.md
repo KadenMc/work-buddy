@@ -4,6 +4,8 @@ kind: capability
 description: 'Comprehensive setup wizard for work-buddy. Validates bootstrap requirements, checks feature health, manages user preferences (wanted/unwanted features), and provides guided first-time setup. Modes: ''status'' (quick overview), ''guided'' (interactive walkthrough), ''diagnose'' (deep diagnostic for one component), ''preferences'' (view/edit).'
 capability_name: setup_wizard
 category: status
+op: op.wb.setup_wizard
+schema_version: wb-capability/v1
 parameters:
   mode:
     type: str
@@ -19,6 +21,7 @@ parameters:
     required: false
 mutates_state: true
 retry_policy: manual
+slash_command: wb-setup
 tags:
 - status
 - setup
@@ -35,6 +38,5 @@ aliases:
 - wanted
 - unwanted
 parents:
-- status
 - status
 ---

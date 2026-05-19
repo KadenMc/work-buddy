@@ -4,6 +4,8 @@ kind: capability
 description: Diagnose why a component isn't working. Runs automated check sequences that walk dependency chains and stop at the first failure with a root cause and fix suggestion. Use 'all' for an overview of all components, or specify a component ID (e.g. 'hindsight', 'obsidian', 'postgresql') for targeted diagnostics.
 capability_name: setup_help
 category: status
+op: op.wb.setup_help
+schema_version: wb-capability/v1
 parameters:
   component:
     type: str
@@ -22,6 +24,5 @@ aliases:
 - health check
 - what's wrong
 parents:
-- status
 - status
 ---

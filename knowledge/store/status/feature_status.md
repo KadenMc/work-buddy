@@ -4,6 +4,8 @@ kind: capability
 description: Show which tools, features, and capabilities are available or disabled, and why. Use this to diagnose missing integrations.
 capability_name: feature_status
 category: status
+op: op.wb.feature_status
+schema_version: wb-capability/v1
 parameters:
   verbose:
     type: bool
@@ -24,6 +26,5 @@ aliases:
 - disabled
 - unavailable
 parents:
-- status
 - status
 ---
