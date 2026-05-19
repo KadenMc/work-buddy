@@ -31,6 +31,13 @@ logger = logging.getLogger(__name__)
 OP_ID_RE = re.compile(r"^op\.[a-z0-9]+(?:\.[a-z0-9_]+)+$")
 
 _OPS: dict[str, Callable] = {}
+# Effect manifests keyed by op ID. An ``effects`` manifest is a list of
+# ``EffectSpec`` objects — code, not data (an ``EffectSpec`` may carry a
+# ``resolver`` callable), so it cannot live in a data declaration. A capability
+# declaration that needs effects names its op; the op module registers the
+# manifest here, and the capability loader threads it onto the resolved
+# ``Capability``. Empty for the overwhelming majority of capabilities.
+_OP_EFFECTS: dict[str, list] = {}
 _builtins_loaded = False
 
 
@@ -69,10 +76,28 @@ def list_ops() -> list[str]:
     return sorted(_OPS)
 
 
+def register_op_effects(op_id: str, effects: list) -> None:
+    """Register an effect manifest for an op.
+
+    Effects are code (an ``EffectSpec`` may hold a ``resolver`` callable), so
+    they cannot ride in a data declaration — the op module registers them here
+    and the capability loader threads them onto the resolved ``Capability``.
+    """
+    if not is_valid_op_id(op_id):
+        raise ValueError(f"Invalid op ID {op_id!r} for effect registration.")
+    _OP_EFFECTS[op_id] = list(effects)
+
+
+def get_op_effects(op_id: str) -> list:
+    """Return the effect manifest registered for ``op_id`` (empty if none)."""
+    return _OP_EFFECTS.get(op_id, [])
+
+
 def clear_ops() -> None:
     """Drop all registered ops. For test isolation and reload cleanliness."""
     global _builtins_loaded
     _OPS.clear()
+    _OP_EFFECTS.clear()
     _builtins_loaded = False
 
 

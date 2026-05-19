@@ -706,6 +706,21 @@ class CapabilityUnit(PromptUnit):
     # consent-gated capability migrates faithfully; ``consent_required`` remains
     # the coarse boolean flag.
     consent_operations: list[str] = field(default_factory=list)
+    # Runtime metadata mirroring the live ``Capability`` dataclass so a
+    # declaration migrates a capability faithfully. ``invokes`` — capability
+    # names this one calls (control-graph dependency resolution).
+    # ``param_aliases`` — {alias: canonical} parameter-name aliases.
+    # ``auto_retry`` — whether the gateway auto-enqueues transient failures.
+    # ``slash_command`` — the wb-* command that surfaces this capability.
+    # ``is_action`` / ``intrinsic_amplifiers`` — Action Catalog opt-in and
+    # intrinsic risk amplifiers. (``effects`` is code, not data — it lives on
+    # the Op side via ``op_registry.register_op_effects``.)
+    invokes: list[str] = field(default_factory=list)
+    param_aliases: dict[str, str] = field(default_factory=dict)
+    auto_retry: bool = True
+    slash_command: str = ""
+    is_action: bool = False
+    intrinsic_amplifiers: dict[str, str] = field(default_factory=dict)
     # Declaration-based capabilities only: the ``op.<namespace>.<name>`` ID of
     # the Op this capability wraps, and the version of the declaration format
     # itself (e.g. "wb-capability/v1"). Empty on generated capability units.
@@ -726,6 +741,18 @@ class CapabilityUnit(PromptUnit):
             d["consent_required"] = True
         if self.consent_operations:
             d["consent_operations"] = self.consent_operations
+        if self.invokes:
+            d["invokes"] = self.invokes
+        if self.param_aliases:
+            d["param_aliases"] = self.param_aliases
+        if not self.auto_retry:
+            d["auto_retry"] = False
+        if self.slash_command:
+            d["slash_command"] = self.slash_command
+        if self.is_action:
+            d["is_action"] = True
+        if self.intrinsic_amplifiers:
+            d["intrinsic_amplifiers"] = self.intrinsic_amplifiers
         if self.op:
             d["op"] = self.op
         if self.schema_version:
@@ -892,6 +919,12 @@ def unit_from_dict(path: str, data: dict[str, Any]) -> KnowledgeUnit:
         base_kwargs["retry_policy"] = data.get("retry_policy", "manual")
         base_kwargs["consent_required"] = data.get("consent_required", False)
         base_kwargs["consent_operations"] = data.get("consent_operations", [])
+        base_kwargs["invokes"] = data.get("invokes", [])
+        base_kwargs["param_aliases"] = data.get("param_aliases", {})
+        base_kwargs["auto_retry"] = data.get("auto_retry", True)
+        base_kwargs["slash_command"] = data.get("slash_command", "")
+        base_kwargs["is_action"] = data.get("is_action", False)
+        base_kwargs["intrinsic_amplifiers"] = data.get("intrinsic_amplifiers", {})
         base_kwargs["op"] = data.get("op", "")
         base_kwargs["schema_version"] = data.get("schema_version", "")
     elif cls is WorkflowUnit:

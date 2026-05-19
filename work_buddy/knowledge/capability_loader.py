@@ -163,10 +163,18 @@ def load_declared_capabilities(
             parameters=unit.parameters,
             callable=fn,
             search_aliases=list(unit.aliases),
+            param_aliases=dict(unit.param_aliases),
             requires=list(unit.requires),
+            invokes=list(unit.invokes),
             mutates_state=unit.mutates_state,
             retry_policy=unit.retry_policy,
+            auto_retry=unit.auto_retry,
+            slash_command=unit.slash_command or None,
+            consent_operations=list(unit.consent_operations),
+            effects=op_registry.get_op_effects(unit.op),
             op_id=unit.op,
+            is_action=unit.is_action,
+            intrinsic_amplifiers=dict(unit.intrinsic_amplifiers),
         ))
 
     return capabilities, issues
