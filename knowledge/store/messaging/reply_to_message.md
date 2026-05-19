@@ -4,6 +4,8 @@ kind: capability
 description: Reply to an existing message
 capability_name: reply_to_message
 category: messaging
+op: op.wb.reply_to_message
+schema_version: wb-capability/v1
 parameters:
   msg_id:
     type: str
@@ -34,6 +36,5 @@ aliases:
 - message reply
 - acknowledge message
 parents:
-- messaging
 - messaging
 ---

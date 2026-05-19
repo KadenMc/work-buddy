@@ -810,7 +810,6 @@ def _build_registry() -> dict[str, Capability | WorkflowDefinition]:
     registry: dict[str, Capability | WorkflowDefinition] = {}
 
     for label, fn in [
-        ("messaging", _messaging_capabilities),
         ("contracts", _contract_capabilities),
         ("status", _status_capabilities),
         ("journal", _journal_capabilities),
@@ -968,131 +967,6 @@ def _build_registry() -> dict[str, Capability | WorkflowDefinition]:
 # ---------------------------------------------------------------------------
 # Function capabilities (unchanged)
 # ---------------------------------------------------------------------------
-
-def _messaging_capabilities() -> list[Capability]:
-    from work_buddy.messaging import client
-
-    return [
-        Capability(
-            name="send_message",
-            description="Send a message to another agent or project",
-            category="messaging",
-            parameters={
-                "sender": {"type": "str", "description": "Sender project name", "required": True},
-                "recipient": {"type": "str", "description": "Recipient project name", "required": True},
-                "type": {"type": "str", "description": "Message type: status-update, question, result, escalation", "required": True},
-                "subject": {"type": "str", "description": "Message subject", "required": True},
-                "body": {"type": "str", "description": "Message body text", "required": False},
-                "thread_id": {"type": "str", "description": "Thread ID to continue a conversation", "required": False},
-                "priority": {"type": "str", "description": "Priority: low, normal, high, urgent", "required": False},
-            },
-            callable=client.send_message,
-            search_aliases=[
-                "send a message",
-                "message another agent",
-                "contact another session",
-                "ping another claude",
-                "notify another project",
-                "write to another session",
-                "inter-agent message",
-            ],
-        ),
-        Capability(
-            name="query_messages",
-            description="Query messages by recipient, sender, status, or limit",
-            category="messaging",
-            parameters={
-                "recipient": {"type": "str", "description": "Filter by recipient", "required": False},
-                "sender": {"type": "str", "description": "Filter by sender", "required": False},
-                "status": {"type": "str", "description": "Filter by status (e.g., pending)", "required": False},
-                "limit": {"type": "int", "description": "Max messages to return (default 50)", "required": False},
-            },
-            callable=client.query_messages,
-            search_aliases=[
-                "list messages",
-                "find messages",
-                "show inter-agent messages",
-                "recent messages",
-                "what messages have arrived",
-                "search messaging log",
-                "filter messages",
-            ],
-        ),
-        Capability(
-            name="read_message",
-            description="Fetch a single message with full body content",
-            category="messaging",
-            parameters={
-                "msg_id": {"type": "str", "description": "Message ID", "required": True},
-                "session": {"type": "str", "description": "Session ID for read-tracking", "required": False},
-            },
-            callable=client.read_message,
-            search_aliases=[
-                "open a message",
-                "read message contents",
-                "full message body",
-                "view specific message",
-                "fetch one message",
-                "show message body",
-            ],
-        ),
-        Capability(
-            name="reply_to_message",
-            description="Reply to an existing message",
-            category="messaging",
-            parameters={
-                "msg_id": {"type": "str", "description": "ID of message to reply to", "required": True},
-                "sender": {"type": "str", "description": "Sender project name", "required": True},
-                "body": {"type": "str", "description": "Reply body text", "required": True},
-                "type": {"type": "str", "description": "Reply type (default: ack)", "required": False},
-            },
-            callable=client.reply,
-            search_aliases=[
-                "respond to message",
-                "answer a message",
-                "reply to another agent",
-                "continue conversation",
-                "message reply",
-                "acknowledge message",
-            ],
-        ),
-        Capability(
-            name="update_message_status",
-            description="Update a message's status (e.g., pending → resolved)",
-            category="messaging",
-            parameters={
-                "msg_id": {"type": "str", "description": "Message ID", "required": True},
-                "new_status": {"type": "str", "description": "New status value", "required": True},
-            },
-            callable=client.update_status,
-            search_aliases=[
-                "mark message read",
-                "change message status",
-                "resolve a message",
-                "update message state",
-                "close out a message",
-                "message status change",
-            ],
-        ),
-        Capability(
-            name="get_thread",
-            description="Get all messages in a conversation thread",
-            category="messaging",
-            parameters={
-                "thread_id": {"type": "str", "description": "Thread ID", "required": True},
-            },
-            callable=client.get_thread,
-            search_aliases=[
-                "view conversation thread",
-                "message thread history",
-                "all messages in thread",
-                "read threaded messages",
-                "conversation history",
-                "thread transcript",
-            ],
-        ),
-    ]
-
 
 def _contract_capabilities() -> list[Capability]:
     from work_buddy import contracts

@@ -4,6 +4,8 @@ kind: capability
 description: Get all messages in a conversation thread
 capability_name: get_thread
 category: messaging
+op: op.wb.get_thread
+schema_version: wb-capability/v1
 parameters:
   thread_id:
     type: str
@@ -21,6 +23,5 @@ aliases:
 - conversation history
 - thread transcript
 parents:
-- messaging
 - messaging
 ---

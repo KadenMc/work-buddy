@@ -4,6 +4,8 @@ kind: capability
 description: Send a message to another agent or project
 capability_name: send_message
 category: messaging
+op: op.wb.send_message
+schema_version: wb-capability/v1
 parameters:
   sender:
     type: str
@@ -46,6 +48,5 @@ aliases:
 - write to another session
 - inter-agent message
 parents:
-- messaging
 - messaging
 ---

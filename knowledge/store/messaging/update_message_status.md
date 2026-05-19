@@ -4,6 +4,8 @@ kind: capability
 description: Update a message's status (e.g., pending → resolved)
 capability_name: update_message_status
 category: messaging
+op: op.wb.update_message_status
+schema_version: wb-capability/v1
 parameters:
   msg_id:
     type: str
@@ -26,6 +28,5 @@ aliases:
 - close out a message
 - message status change
 parents:
-- messaging
 - messaging
 ---

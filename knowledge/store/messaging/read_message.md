@@ -4,6 +4,8 @@ kind: capability
 description: Fetch a single message with full body content
 capability_name: read_message
 category: messaging
+op: op.wb.read_message
+schema_version: wb-capability/v1
 parameters:
   msg_id:
     type: str
@@ -25,6 +27,5 @@ aliases:
 - fetch one message
 - show message body
 parents:
-- messaging
 - messaging
 ---
