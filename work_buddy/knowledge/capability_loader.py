@@ -7,17 +7,11 @@ declared parameter schema against the resolved callable's signature, and emits
 ready-to-dispatch ``Capability`` objects the gateway registry can hold.
 
 It is the data-first counterpart to ``_discover_workflows_from_store()``:
-workflows are already inert data the conductor resolves at load time;
-capability declarations now load the same way.
+workflows are inert data the conductor resolves at load time; capability
+declarations load the same way. Every capability unit is a declaration,
+discriminated by a non-empty ``op`` field.
 
-Coexistence rule: a ``CapabilityUnit`` is declaration-based **iff** its ``op``
-field is non-empty. Generated capability units (compiled from ``registry.py``)
-have no ``op`` and are skipped here — they flow through the direct
-``Capability(...)`` registration path instead. That single discriminator is
-what lets the two registration paths run side by side.
-
-See ``architecture/data-first-capabilities`` and
-``.data/designs/data-first-capabilities/DECISIONS.md``.
+See ``architecture/data-first-capabilities``.
 """
 
 from __future__ import annotations

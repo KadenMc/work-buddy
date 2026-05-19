@@ -23,7 +23,7 @@ parents:
 
 Two parallel knowledge stores share a common `KnowledgeUnit` base:
 
-- **System docs** (`knowledge/store/*.json`) — behavioral directions, system docs, capability metadata, workflow structure. Queried via `agent_docs`.
+- **System docs** — one Markdown file per unit under `knowledge/store/**/*.md` (YAML frontmatter + body). Behavioral directions, system docs, capability declarations, workflow structure. Queried via `agent_docs`. Editing a unit is editing its file.
 - **Personal knowledge** (Obsidian vault markdown at `<vault_root>/<personal_knowledge.vault_path>`) — user-authored patterns, feedback, preferences, calibration. Queried via `knowledge_personal`. Created/updated via `knowledge_mint`.
 
 ## Unit types
@@ -31,7 +31,7 @@ Two parallel knowledge stores share a common `KnowledgeUnit` base:
 Nine kinds, each positively anchored to a clear functional or structural definition:
 
 - `directions` — behavioral guide loaded by a slash command ("how to do X")
-- `capability` — callable from MCP via `wb_run`; auto-generated from the registry
+- `capability` — callable from MCP via `wb_run`; an inert declaration that names an `op` the loader resolves against the Op registry (see `architecture/data-first-capabilities`)
 - `workflow` — DAG of steps the conductor advances; hand-authored
 - `personal` — user-authored knowledge backed by the Obsidian vault
 - `system` — coherent functional domain whose persistent state work-buddy owns (e.g. `tasks`, `triage`, `journal`)
@@ -43,6 +43,18 @@ Nine kinds, each positively anchored to a clear functional or structural definit
 The `system` / `integration` boundary is anchored on **memory ownership**: a domain whose persistent state work-buddy itself manages is a `system`; a domain whose state lives outside (Obsidian vault, Thunderbird, etc.) is an `integration`, even when work-buddy provides operations against it.
 
 The `service` / `integration` boundary is internal vs. external: a `service` is something work-buddy *runs* (sidecar-managed); an `integration` is something work-buddy *talks to* (the bridge that wraps it may be a Flask app, but the unit's identity is the external dependency).
+
+## File substrate
+
+A unit at store path `P` lives at `knowledge/store/<P>.md`. A domain parent unit and its children's directory coexist (e.g. `tasks.md` beside `tasks/`). The path↔file mapping is bijective; no `index.md` convention is needed.
+
+`children` is **not stored** — it is derived at load time from other units' `parents`, so the parent/child graph cannot drift. Only `parents` is authored.
+
+Workflow units carry their `steps` DAG in YAML frontmatter; each step's per-step instruction prose lives as a `## <step-id>` body section, split only at headings whose text exactly matches a known step id. Body text before the first step-id heading is the workflow's `content.full` narrative.
+
+The engine talks to a narrow read/write seam (`read_unit`, `write_unit`, `list_unit_paths`, `delete_unit`, `move_unit`, `load_units_from_dir`) defined in `work_buddy/knowledge/file_store.py`. A future storage provider can implement the same seam without touching the engine.
+
+Local patches live in `knowledge/store.local/*.json` (gitignored, JSON-shaped, deep-merged on top of the file-per-unit base on load) — the personal-overlay seam.
 
 ## DAG hierarchy and multi-parent nesting
 
@@ -58,7 +70,7 @@ The "subsystem-of-system" relationship is derivable: walk a unit's `parents` and
 
 ## Inline placeholders
 
-Content can reference other units inline. The syntax is two angle brackets, `wb:`, the target unit path, two angle brackets — e.g. a reference to `obsidian/bridge` is written as that path surrounded by the `wb:` prefix and angle-bracket markers. At `depth="full"`, the placeholder is replaced with the referenced unit's content. Appending ` --recursive` after the path opts in to transitive expansion. Parsed with argparse (extensible to `--depth`, `--section`, etc.). Works in both JSON content strings and vault markdown files.
+Content can reference other units inline. The syntax is two angle brackets, `wb:`, the target unit path, two angle brackets — e.g. a reference to `obsidian/bridge` is written as that path surrounded by the `wb:` prefix and angle-bracket markers. At `depth="full"`, the placeholder is replaced with the referenced unit's content. Appending ` --recursive` after the path opts in to transitive expansion. Parsed with argparse (extensible to `--depth`, `--section`, etc.).
 
 ### Caller-side knobs on `agent_docs`
 
@@ -83,7 +95,7 @@ Each cap emits a distinct visible marker so the reader sees exactly what was eli
 
 - **Write-time hint (informational).** `docs_create` / `docs_update` return a `hints` field flagging plain placeholders that target units with their own placeholders — the case where the author probably wanted `--recursive` but forgot. Never blocks an edit.
 - **Write-time hard reject (error).** The same write path rejects content with **duplicate placeholders within a single unit**: the same target appearing more than once contributes zero readable content (the per-unit-occurrence cap renders subsequent references as back-ref markers), so it's never the right authorial choice. The editor returns `{"error": "placeholder_duplicate", "duplicates": [...]}` and does not persist.
-- **Validator parity.** `docs_validate` runs a `placeholder_duplicate` check corpus-wide so direct-JSON bypasses are still caught.
+- **Validator parity.** `docs_validate` runs a `placeholder_duplicate` check corpus-wide so direct-file bypasses are still caught.
 
 ## Retired: context chaining
 
@@ -107,7 +119,3 @@ A persistent BM25 + dense vector index over full unit content is warmed eagerly 
 - `knowledge_index_rebuild` — force rebuild knowledge search index with full embeddings
 - `knowledge_index_status` — check index health
 - `docs_create` / `docs_update` / `docs_delete` / `docs_move` / `docs_validate` — structured editing. `docs_update` accepts a `kind` parameter for reclassifying existing units.
-
-## Build system
-
-`python -m work_buddy.knowledge.build --write` generates capability units from the live registry and parent stubs for capability domains. Workflow definitions live in `knowledge/store/workflows.json` as hand-authored content (not generated). Parent stubs default to `kind: "concept"` (category heading); domains whose persistent state work-buddy owns are listed in `_SYSTEM_PARENT_DOMAINS` in `build.py` and emit as `kind: "system"`. See `knowledge/README.md` for the full schema and architecture.

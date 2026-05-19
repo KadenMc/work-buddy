@@ -686,12 +686,12 @@ class ConceptUnit(PromptUnit):
 class CapabilityUnit(PromptUnit):
     """MCP capability — callable function metadata.
 
-    A capability unit may be either *generated* (compiled from a
-    ``Capability(...)`` instance in ``registry.py``; no ``op`` field) or
-    *declaration-based* (hand-authored or agent-authored, carrying an ``op``
-    field that names an Op the capability loader resolves at registry-build
-    time). The non-empty ``op`` field is the discriminator between the two —
-    see ``work_buddy/knowledge/capability_loader.py``.
+    A capability unit is an inert *declaration*: it carries the prose,
+    parameter schema, and runtime metadata, and names an Op via its ``op``
+    field. The capability loader resolves the op against the Op registry at
+    registry-build time and emits a dispatchable ``Capability``. See
+    ``work_buddy/knowledge/capability_loader.py`` and the
+    ``architecture/data-first-capabilities`` knowledge unit.
     """
 
     kind: str = field(default="capability", init=False)
@@ -721,9 +721,8 @@ class CapabilityUnit(PromptUnit):
     slash_command: str = ""
     is_action: bool = False
     intrinsic_amplifiers: dict[str, str] = field(default_factory=dict)
-    # Declaration-based capabilities only: the ``op.<namespace>.<name>`` ID of
-    # the Op this capability wraps, and the version of the declaration format
-    # itself (e.g. "wb-capability/v1"). Empty on generated capability units.
+    # The ``op.<namespace>.<name>`` ID of the Op this capability wraps, and
+    # the version of the declaration format itself (e.g. "wb-capability/v1").
     op: str = ""
     schema_version: str = ""
 
