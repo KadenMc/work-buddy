@@ -4,6 +4,8 @@ kind: capability
 description: 'Aggregate LLM cost / usage across one or both data sources (work-buddy''s per-call internal log + Claude Code transcripts). Smart parameters: time window (named or ISO range), group_by (project, model, session, day, tool), source filter, min_cost / project / model filters, and previous-window comparison. Single capability covering most cost questions.'
 capability_name: llm_costs_query
 category: llm
+op: op.wb.llm_costs_query
+schema_version: wb-capability/v1
 parameters:
   window:
     type: str
@@ -59,6 +61,5 @@ aliases:
 - cost trend
 - spend comparison
 parents:
-- status
 - status
 ---

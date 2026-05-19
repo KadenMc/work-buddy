@@ -4,6 +4,8 @@ kind: capability
 description: Recent LLM-escalation observability records. Each record is one logical job (one LLMRunner.call OR one adapter-level escalation chain across multiple calls) with its full per-tier attempt list, final outcome, and trace correlation.
 capability_name: escalation_recent
 category: llm
+op: op.wb.escalation_recent
+schema_version: wb-capability/v1
 parameters:
   limit:
     type: int
@@ -39,6 +41,5 @@ aliases:
 - validation failed
 - tier observability
 parents:
-- status
 - status
 ---

@@ -4,6 +4,8 @@ kind: capability
 description: Asynchronously submit an llm_call for background execution. Returns immediately with an operation_id; the sidecar's retry sweep invokes llm_call with your params and messages the originating session on completion. Use when local inference latency (tens of seconds) would block the caller unnecessarily. For synchronous bounded calls use llm_call. Cloud tier calls are already fast — no point submitting them; profile is therefore required.
 capability_name: llm_submit
 category: llm
+op: op.wb.llm_submit
+schema_version: wb-capability/v1
 parameters:
   system:
     type: str
@@ -33,6 +35,7 @@ parameters:
     type: int
     description: Cache TTL in minutes. None=config default, 0=no cache.
     required: false
+auto_retry: false
 tags:
 - llm
 - submit
@@ -46,6 +49,5 @@ aliases:
 - autodream
 - background inference
 parents:
-- status
 - status
 ---

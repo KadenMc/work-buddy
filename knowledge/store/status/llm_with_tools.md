@@ -4,6 +4,8 @@ kind: capability
 description: 'Invoke a local model with restricted work-buddy MCP tool access, so it can look things up (projects, tasks, journal, context) while answering. Tool access is limited to a named preset defined in work_buddy/llm/tool_presets.py (currently: ''readonly_safe'', ''readonly_context''). No arbitrary tool list accepted at call time — presets are the security boundary. Requires ''profile'' and ''tool_preset''.'
 capability_name: llm_with_tools
 category: llm
+op: op.wb.llm_with_tools
+schema_version: wb-capability/v1
 parameters:
   system:
     type: str
@@ -45,6 +47,75 @@ parameters:
     type: bool
     description: When True, raw MCP tool outputs are saved to the artifact store and the artifact id is embedded in each tool_calls entry (output_artifact_id). Default False — responses contain only tool-call metadata, not raw output. Errors auto-escalate to persist regardless of this flag.
     required: false
+invokes:
+- active_contracts
+- activity_timeline
+- agent_docs
+- artifact_get
+- artifact_list
+- chrome_activity
+- chrome_content
+- chrome_infer
+- context_bundle
+- context_calendar
+- context_chat
+- context_chrome
+- context_git
+- context_messages
+- context_obsidian
+- context_projects
+- context_search
+- context_smart
+- context_tasks
+- context_wellness
+- contract_constraints
+- contract_health
+- contract_wip_check
+- contracts_summary
+- conversation_list
+- datacore_compile_plan
+- datacore_evaluate
+- datacore_fullquery
+- datacore_get_page
+- datacore_query
+- datacore_run_plan
+- datacore_schema
+- datacore_status
+- datacore_validate
+- day_planner
+- feature_status
+- get_thread
+- hot_files
+- ir_index
+- journal_state
+- knowledge
+- knowledge_personal
+- list_sessions
+- overdue_contracts
+- project_get
+- project_list
+- query_messages
+- read_message
+- running_notes
+- service_health
+- session_activity
+- session_commits
+- session_expand
+- session_get
+- session_locate
+- session_search
+- session_summary
+- session_uncommitted
+- sidecar_jobs
+- sidecar_status
+- stale_contracts
+- tailscale_status
+- task_briefing
+- task_review_inbox
+- task_scattered
+- task_stale_check
+- weekly_review_data
+auto_retry: false
 tags:
 - llm
 - with
@@ -59,6 +130,5 @@ aliases:
 - qwen with tools
 - tool use local
 parents:
-- status
 - status
 ---

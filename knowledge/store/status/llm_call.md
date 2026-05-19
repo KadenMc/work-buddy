@@ -4,6 +4,8 @@ kind: capability
 description: Make a single LLM API call (Tier 2 execution). Cheaper than spawning a full agent session. Supports freeform text or structured JSON output via output_schema (inline dict or named schema from work_buddy/llm/schemas/). Routes to Claude via 'tier' or to a local/remote OpenAI-compatible server (LM Studio, vLLM, Ollama) via 'profile'. Handles caching and cost tracking automatically.
 capability_name: llm_call
 category: llm
+op: op.wb.llm_call
+schema_version: wb-capability/v1
 parameters:
   system:
     type: str
@@ -54,6 +56,5 @@ aliases:
 - lm studio
 - qwen
 parents:
-- status
 - status
 ---
