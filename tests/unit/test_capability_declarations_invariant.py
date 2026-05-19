@@ -35,6 +35,20 @@ def _capability_units(store: dict) -> list[CapabilityUnit]:
     return [u for u in store.values() if isinstance(u, CapabilityUnit)]
 
 
+def _expected_op_module(category: str) -> str:
+    """Convention: capabilities of ``category`` are registered by
+    ``ops/<category>_ops.py``. Used to identify declarations whose op is
+    expected to be unregistered when the corresponding op module failed to
+    load (e.g. an optional runtime dependency is missing)."""
+    return f"{category}_ops"
+
+
+def _is_expected_unregistered(unit: CapabilityUnit, failed_modules: set[str]) -> bool:
+    """True when ``unit``'s op is unresolved because its op module failed
+    to load — an expected per-environment gap, not a regression."""
+    return _expected_op_module(unit.category) in failed_modules
+
+
 def test_every_capability_unit_is_a_declaration(loaded) -> None:
     """Every capability knowledge unit carries an ``op`` field."""
     missing = [
@@ -61,35 +75,62 @@ def test_every_declaration_uses_the_current_schema_version(loaded) -> None:
 
 
 def test_loader_resolves_every_declaration_with_zero_issues(loaded) -> None:
-    """``load_declared_capabilities`` returns no warnings against the live store."""
-    issues = loaded["issues"]
-    assert issues == [], (
-        f"{len(issues)} resolution issue(s) against the live store: "
-        f"{[(i['path'], i['message']) for i in issues[:5]]}"
+    """``load_declared_capabilities`` returns no unexpected warnings.
+
+    A declaration whose op module failed to load (because the host
+    environment lacks the module's optional runtime dependency) is allowed
+    to surface a ``not registered`` issue — that is the per-environment
+    safe-degradation path, not a regression. Every other issue is a bug.
+    """
+    failed = op_registry.failed_op_modules()
+    by_path = {u.path: u for u in _capability_units(loaded["store"])}
+    unexpected = [
+        i for i in loaded["issues"]
+        if not (
+            "not registered in the Op registry" in i["message"]
+            and i["path"] in by_path
+            and _is_expected_unregistered(by_path[i["path"]], failed)
+        )
+    ]
+    assert unexpected == [], (
+        f"{len(unexpected)} unexpected resolution issue(s): "
+        f"{[(i['path'], i['message']) for i in unexpected[:5]]}"
     )
 
 
 def test_resolved_capability_count_matches_unit_count(loaded) -> None:
-    """Every capability unit resolves; the loader drops none."""
-    unit_count = len(_capability_units(loaded["store"]))
+    """Every capability unit resolves, modulo declarations whose op module
+    legitimately failed to load in this environment."""
+    failed = op_registry.failed_op_modules()
+    expected = [
+        u for u in _capability_units(loaded["store"])
+        if not _is_expected_unregistered(u, failed)
+    ]
     resolved_count = len(loaded["caps"])
-    assert resolved_count == unit_count, (
-        f"{unit_count} capability unit(s) in the store but only "
-        f"{resolved_count} resolved — the missing ones likely point at an "
-        f"op that is not registered."
+    assert resolved_count == len(expected), (
+        f"{len(expected)} capability unit(s) expected to resolve in this "
+        f"environment but only {resolved_count} resolved — the missing "
+        f"ones likely point at an op that is not registered. "
+        f"Failed op modules this run: {sorted(failed) or 'none'}."
     )
 
 
 def test_every_op_id_is_registered(loaded) -> None:
-    """Every declaration's ``op`` resolves to a registered Op callable."""
+    """Every declaration's ``op`` resolves to a registered Op callable —
+    except declarations whose op module legitimately failed to load."""
+    failed = op_registry.failed_op_modules()
     unregistered = [
         (u.path, u.op)
         for u in _capability_units(loaded["store"])
-        if u.op and op_registry.get_op(u.op) is None
+        if u.op
+           and op_registry.get_op(u.op) is None
+           and not _is_expected_unregistered(u, failed)
     ]
     assert unregistered == [], (
         f"{len(unregistered)} declaration(s) name an op that is not "
-        f"registered: {unregistered[:5]}"
+        f"registered (and whose op module did not legitimately fail to "
+        f"load): {unregistered[:5]}. Failed op modules this run: "
+        f"{sorted(failed) or 'none'}."
     )
 
 

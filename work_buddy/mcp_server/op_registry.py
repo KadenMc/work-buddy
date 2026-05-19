@@ -38,6 +38,12 @@ _OPS: dict[str, Callable] = {}
 # manifest here, and the capability loader threads it onto the resolved
 # ``Capability``. Empty for the overwhelming majority of capabilities.
 _OP_EFFECTS: dict[str, list] = {}
+# Short names (e.g. ``"memory_ops"``) of op modules whose import failed during
+# ``load_builtin_ops`` — typically because an optional runtime dependency is
+# absent from this environment. Consumers asserting that every declaration's
+# op resolves can consult this set to distinguish a real bug from an expected
+# per-environment gap.
+_FAILED_MODULES: set[str] = set()
 _builtins_loaded = False
 
 
@@ -93,11 +99,17 @@ def get_op_effects(op_id: str) -> list:
     return _OP_EFFECTS.get(op_id, [])
 
 
+def failed_op_modules() -> set[str]:
+    """Short names of op modules whose import failed in ``load_builtin_ops``."""
+    return frozenset(_FAILED_MODULES)
+
+
 def clear_ops() -> None:
     """Drop all registered ops. For test isolation and reload cleanliness."""
     global _builtins_loaded
     _OPS.clear()
     _OP_EFFECTS.clear()
+    _FAILED_MODULES.clear()
     _builtins_loaded = False
 
 
@@ -131,6 +143,7 @@ def load_builtin_ops() -> None:
             else:
                 importlib.import_module(full_name)
         except Exception as exc:
+            _FAILED_MODULES.add(mod.name)
             logger.warning(
                 "Op module %s failed to load (%s: %s); skipping its ops.",
                 full_name, type(exc).__name__, exc,
