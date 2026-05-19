@@ -4,6 +4,8 @@ kind: capability
 description: Manually create a project. Accepts initial folders + aliases + provenance metadata. Consent-gated.
 capability_name: project_create
 category: projects
+op: op.wb.project_create
+schema_version: wb-capability/v1
 parameters:
   slug:
     type: str
@@ -52,6 +54,5 @@ aliases:
 - start tracking a project
 - project registry new entry
 parents:
-- projects
 - projects
 ---

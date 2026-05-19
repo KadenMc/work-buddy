@@ -4,6 +4,8 @@ kind: capability
 description: Attach an alternative slug (alias) to a project. Aliases route to the canonical row across capabilities. Writes a revision.
 capability_name: project_add_alias
 category: projects
+op: op.wb.project_add_alias
+schema_version: wb-capability/v1
 parameters:
   slug:
     type: str
@@ -34,6 +36,5 @@ aliases:
 - alternate project name
 - register old project name
 parents:
-- projects
 - projects
 ---

@@ -4,6 +4,8 @@ kind: capability
 description: Delete a unit from the knowledge store. Cleans up parent/child references.
 capability_name: docs_delete
 category: context
+op: op.wb.docs_delete
+schema_version: wb-capability/v1
 parameters:
   path:
     type: str
@@ -23,6 +25,5 @@ aliases:
 - erase knowledge unit
 - remove docs unit
 parents:
-- context
 - context
 ---

@@ -4,6 +4,8 @@ kind: capability
 description: Get active contracts with their current bottleneck constraints
 capability_name: contract_constraints
 category: contracts
+op: op.wb.contract_constraints
+schema_version: wb-capability/v1
 tags:
 - contracts
 - contract
@@ -16,7 +18,6 @@ aliases:
 - where are contracts stuck
 - blocking issues per contract
 parents:
-- contracts
 - contracts
 requires:
 - obsidian

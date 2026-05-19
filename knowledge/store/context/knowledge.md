@@ -4,6 +4,8 @@ kind: capability
 description: Search across both system documentation and personal knowledge from the Obsidian vault. Returns results tagged with their source scope (system or personal).
 capability_name: knowledge
 category: context
+op: op.wb.knowledge
+schema_version: wb-capability/v1
 parameters:
   query:
     type: str
@@ -54,6 +56,5 @@ aliases:
 - system docs
 - unified search
 parents:
-- context
 - context
 ---

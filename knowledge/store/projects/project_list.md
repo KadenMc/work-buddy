@@ -4,6 +4,8 @@ kind: capability
 description: List projects with folders + aliases, ordered by lifecycle status. Soft-deleted rows are filtered by default; pass include_deleted=True to see them.
 capability_name: project_list
 category: projects
+op: op.wb.project_list
+schema_version: wb-capability/v1
 parameters:
   status:
     type: str
@@ -23,6 +25,5 @@ aliases:
 - show projects
 - all projects
 parents:
-- projects
 - projects
 ---

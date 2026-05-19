@@ -4,6 +4,8 @@ kind: capability
 description: Search personal knowledge from the Obsidian vault. Includes minted insights, patterns, feedback, preferences. Supports filtering by category and severity.
 capability_name: knowledge_personal
 category: context
+op: op.wb.knowledge_personal
+schema_version: wb-capability/v1
 parameters:
   query:
     type: str
@@ -51,6 +53,5 @@ aliases:
 - preferences
 - vault knowledge
 parents:
-- context
 - context
 ---

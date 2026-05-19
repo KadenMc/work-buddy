@@ -4,6 +4,8 @@ kind: capability
 description: Create a new workflow unit (DAG + step instructions). Use this instead of docs_create for kind='workflow' units — docs_create does not accept workflow-specific fields.
 capability_name: workflow_create
 category: context
+op: op.wb.workflow_create
+schema_version: wb-capability/v1
 parameters:
   path:
     type: str
@@ -53,10 +55,6 @@ parameters:
     type: str
     description: 'Comma-separated parent paths (typical: domain, e.g. ''dev'')'
     required: false
-  children:
-    type: str
-    description: Comma-separated child paths
-    required: false
   tags:
     type: str
     description: Comma-separated search tags
@@ -87,6 +85,5 @@ aliases:
 - add workflow unit
 - define workflow
 parents:
-- context
 - context
 ---

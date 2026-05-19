@@ -4,6 +4,8 @@ kind: capability
 description: Create or update a personal knowledge unit in the Obsidian vault. Generates a markdown file with YAML frontmatter. If the file already exists, appends new evidence.
 capability_name: knowledge_mint
 category: context
+op: op.wb.knowledge_mint
+schema_version: wb-capability/v1
 parameters:
   name:
     type: str
@@ -60,6 +62,5 @@ aliases:
 - mint knowledge
 - add observation
 parents:
-- context
 - context
 ---

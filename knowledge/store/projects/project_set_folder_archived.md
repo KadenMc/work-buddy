@@ -4,6 +4,8 @@ kind: capability
 description: Flip the archived flag on a project folder (mark dormant or active). Writes a revision.
 capability_name: project_set_folder_archived
 category: projects
+op: op.wb.project_set_folder_archived
+schema_version: wb-capability/v1
 parameters:
   slug:
     type: str
@@ -38,6 +40,5 @@ aliases:
 - unarchive project folder
 - mark folder dormant
 parents:
-- projects
 - projects
 ---

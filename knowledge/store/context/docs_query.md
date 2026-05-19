@@ -4,6 +4,8 @@ kind: capability
 description: '[Legacy] Search knowledge units. Use agent_docs instead.'
 capability_name: docs_query
 category: context
+op: op.wb.docs_query
+schema_version: wb-capability/v1
 parameters:
   query:
     type: str
@@ -17,6 +19,8 @@ parameters:
   top_n:
     type: int
     required: false
+invokes:
+- agent_docs
 tags:
 - context
 - docs
@@ -27,6 +31,5 @@ aliases:
 - legacy search knowledge
 - deprecated knowledge query
 parents:
-- context
 - context
 ---

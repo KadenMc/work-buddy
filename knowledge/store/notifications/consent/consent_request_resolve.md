@@ -4,6 +4,8 @@ kind: capability
 description: Approve or deny a pending consent request. If approved, writes the grant and dispatches the callback (session resume or messaging).
 capability_name: consent_request_resolve
 category: consent
+op: op.wb.consent_request_resolve
+schema_version: wb-capability/v1
 parameters:
   request_id:
     type: str
@@ -36,6 +38,5 @@ aliases:
 - respond to consent request
 - decide on permission
 parents:
-- notifications/consent
 - notifications/consent
 ---

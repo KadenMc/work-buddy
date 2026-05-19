@@ -4,6 +4,8 @@ kind: capability
 description: Attach a folder to a project. Writes a revision capturing the new folder set.
 capability_name: project_add_folder
 category: projects
+op: op.wb.project_add_folder
+schema_version: wb-capability/v1
 parameters:
   slug:
     type: str
@@ -38,6 +40,5 @@ aliases:
 - register project folder
 - track project folder
 parents:
-- projects
 - projects
 ---

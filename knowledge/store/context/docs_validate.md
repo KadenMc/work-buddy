@@ -4,6 +4,8 @@ kind: capability
 description: 'Validate the knowledge store: DAG integrity, command-to-store mappings, thinned command format, required fields, kind-specific fields, placeholder duplicates, and parent-child symmetry.'
 capability_name: docs_validate
 category: context
+op: op.wb.docs_validate
+schema_version: wb-capability/v1
 parameters:
   checks:
     type: str
@@ -20,6 +22,5 @@ aliases:
 - integrity check
 - knowledge validation
 parents:
-- context
 - context
 ---

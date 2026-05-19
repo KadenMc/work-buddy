@@ -4,6 +4,8 @@ kind: capability
 description: Move a unit to a new path. Updates all parent/child references across the store.
 capability_name: docs_move
 category: context
+op: op.wb.docs_move
+schema_version: wb-capability/v1
 parameters:
   old_path:
     type: str
@@ -28,6 +30,5 @@ aliases:
 - change unit path
 - move documentation
 parents:
-- context
 - context
 ---

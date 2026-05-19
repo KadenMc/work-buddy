@@ -4,6 +4,8 @@ kind: capability
 description: Record an observation about a project — strategic decisions, supervisor feedback, pivots, blockers, or anything that shapes trajectory but wouldn't appear in code or tasks
 capability_name: project_observe
 category: projects
+op: op.wb.project_observe
+schema_version: wb-capability/v1
 parameters:
   project:
     type: str
@@ -26,6 +28,5 @@ aliases:
 - record decision
 - project pivot
 parents:
-- projects
 - projects
 ---

@@ -4,6 +4,8 @@ kind: capability
 description: Update fields on an existing knowledge unit. Only provided fields are changed; omitted fields preserved.
 capability_name: docs_update
 category: context
+op: op.wb.docs_update
+schema_version: wb-capability/v1
 parameters:
   path:
     type: str
@@ -36,10 +38,6 @@ parameters:
   parents:
     type: str
     description: New comma-separated parents (replaces)
-    required: false
-  children:
-    type: str
-    description: New comma-separated children (replaces)
     required: false
   tags:
     type: str
@@ -76,6 +74,5 @@ aliases:
 - edit documentation field
 - update docs entry
 parents:
-- context
 - context
 ---

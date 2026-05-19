@@ -4,6 +4,8 @@ kind: capability
 description: Create a new task in the master task list. Optionally attach a note file for details/subtasks. Slice 2 GTD vocabulary (task_kind, density, outcome_text, next_action_text, definition_of_done, creation_effort, user_involvement, creation_provenance, deadline, dependency) is optional and defaults to 'looks like a legacy manually-authored task'. Agent-driven creators should set creation_provenance (e.g. 'agent_inferred_from_journal') and lower user_involvement.
 capability_name: task_create
 category: tasks
+op: op.wb.task_create
+schema_version: wb-capability/v1
 parameters:
   task_text:
     type: str
@@ -83,6 +85,13 @@ parameters:
     required: false
 mutates_state: true
 retry_policy: verify_first
+consent_operations:
+- tasks.create_task
+- obsidian.write_file
+is_action: true
+intrinsic_amplifiers:
+  irreversibility: low
+  regret_potential: low
 tags:
 - tasks
 - task
@@ -93,7 +102,6 @@ aliases:
 - create todo
 - add todo
 parents:
-- tasks
 - tasks
 requires:
 - obsidian

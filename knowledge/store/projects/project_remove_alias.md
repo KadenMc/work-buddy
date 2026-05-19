@@ -4,6 +4,8 @@ kind: capability
 description: Detach an alias from a project. Writes a revision.
 capability_name: project_remove_alias
 category: projects
+op: op.wb.project_remove_alias
+schema_version: wb-capability/v1
 parameters:
   slug:
     type: str
@@ -33,6 +35,5 @@ aliases:
 - drop alias
 - unregister alternative project name
 parents:
-- projects
 - projects
 ---

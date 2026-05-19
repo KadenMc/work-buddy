@@ -4,6 +4,8 @@ kind: capability
 description: Update an existing workflow unit. Only provided fields change; omitted fields preserved. 'steps' and 'step_instructions' replace/merge rather than patch individual entries — read the current value, mutate, and pass the whole structure back.
 capability_name: workflow_update
 category: context
+op: op.wb.workflow_update
+schema_version: wb-capability/v1
 parameters:
   path:
     type: str
@@ -53,10 +55,6 @@ parameters:
     type: str
     description: New comma-separated parent paths (replaces)
     required: false
-  children:
-    type: str
-    description: New comma-separated child paths (replaces)
-    required: false
   tags:
     type: str
     description: New comma-separated tags (replaces)
@@ -87,6 +85,5 @@ aliases:
 - patch workflow
 - edit step instructions
 parents:
-- context
 - context
 ---

@@ -4,6 +4,8 @@ kind: capability
 description: 'Search and navigate all agent documentation: directions, system docs, capabilities, and workflows. Supports exact path lookup, subtree browsing, and natural language search with hierarchical progressive disclosure.'
 capability_name: agent_docs
 category: context
+op: op.wb.agent_docs
+schema_version: wb-capability/v1
 parameters:
   query:
     type: str
@@ -61,6 +63,5 @@ aliases:
 - find capability
 - what can I do
 parents:
-- context
 - context
 ---

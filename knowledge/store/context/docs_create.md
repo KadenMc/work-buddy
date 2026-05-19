@@ -4,6 +4,8 @@ kind: capability
 description: Create a new unit in the knowledge store. Writes to the appropriate JSON file, updates parent children lists, and validates DAG integrity.
 capability_name: docs_create
 category: context
+op: op.wb.docs_create
+schema_version: wb-capability/v1
 parameters:
   path:
     type: str
@@ -48,10 +50,6 @@ parameters:
   parents:
     type: str
     description: Comma-separated parent paths
-    required: false
-  children:
-    type: str
-    description: Comma-separated child paths
     required: false
   tags:
     type: str
@@ -120,6 +118,5 @@ aliases:
 - add documentation unit
 - new knowledge unit
 parents:
-- context
 - context
 ---

@@ -4,6 +4,8 @@ kind: capability
 description: Reconstruct a project's state as of a given timestamp (latest revision ≤ timestamp). Includes folders + aliases as they were then.
 capability_name: project_state_at
 category: projects
+op: op.wb.project_state_at
+schema_version: wb-capability/v1
 parameters:
   slug:
     type: str
@@ -24,6 +26,5 @@ aliases:
 - historical project state
 - point-in-time project
 parents:
-- projects
 - projects
 ---

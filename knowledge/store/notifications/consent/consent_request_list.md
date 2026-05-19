@@ -4,6 +4,8 @@ kind: capability
 description: List all pending (unresolved) consent requests.
 capability_name: consent_request_list
 category: consent
+op: op.wb.consent_request_list
+schema_version: wb-capability/v1
 tags:
 - consent
 - request
@@ -16,6 +18,5 @@ aliases:
 - unresolved consent
 - approval queue
 parents:
-- notifications/consent
 - notifications/consent
 ---

@@ -4,6 +4,8 @@ kind: capability
 description: Search tasks by description text via the SQLite store. Bridge-independent — works even when Obsidian isn't running. Returns task records (full task_metadata rows) ordered most-recently-updated first. For full-text search over task NOTE bodies (the [[uuid|📓]]-linked detail files), use context_search(source='task_note') instead — that's hybrid retrieval over note content; this is exact-text search over the line description.
 capability_name: task_search
 category: tasks
+op: op.wb.task_search
+schema_version: wb-capability/v1
 parameters:
   query:
     type: str
@@ -34,6 +36,5 @@ aliases:
 - tasks containing
 - search task descriptions
 parents:
-- tasks
 - tasks
 ---

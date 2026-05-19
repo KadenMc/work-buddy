@@ -4,6 +4,8 @@ kind: capability
 description: 'Update a project''s identity: name, status, or description. Writes a revision row capturing the change (author + summary).'
 capability_name: project_update
 category: projects
+op: op.wb.project_update
+schema_version: wb-capability/v1
 parameters:
   slug:
     type: str
@@ -42,6 +44,5 @@ aliases:
 - pause project
 - archive project
 parents:
-- projects
 - projects
 ---

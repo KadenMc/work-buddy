@@ -4,6 +4,8 @@ kind: capability
 description: Check if active contract count is within the WIP limit (max 3)
 capability_name: contract_wip_check
 category: contracts
+op: op.wb.contract_wip_check
+schema_version: wb-capability/v1
 tags:
 - contracts
 - contract
@@ -17,7 +19,6 @@ aliases:
 - how many active commitments
 - over WIP
 parents:
-- contracts
 - contracts
 requires:
 - obsidian

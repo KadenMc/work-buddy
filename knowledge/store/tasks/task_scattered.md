@@ -4,6 +4,8 @@ kind: capability
 description: Find open tasks scattered across the vault outside the master task list. Groups by file with counts. Uses Datacore structural queries.
 capability_name: task_scattered
 category: tasks
+op: op.wb.task_scattered
+schema_version: wb-capability/v1
 parameters:
   limit:
     type: int
@@ -21,7 +23,6 @@ aliases:
 - tasks in journal
 - tasks in docs
 parents:
-- tasks
 - tasks
 requires:
 - obsidian

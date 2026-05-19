@@ -4,6 +4,8 @@ kind: capability
 description: Return revision history for a project, newest first. Each entry snapshots the project state plus folder + alias sets at that revision.
 capability_name: project_revisions_list
 category: projects
+op: op.wb.project_revisions_list
+schema_version: wb-capability/v1
 parameters:
   slug:
     type: str
@@ -25,6 +27,5 @@ aliases:
 - project audit
 - revision history
 parents:
-- projects
 - projects
 ---

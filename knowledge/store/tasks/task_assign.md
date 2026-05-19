@@ -4,6 +4,8 @@ kind: capability
 description: Claim a task for the current session and get full context (text, note, metadata)
 capability_name: task_assign
 category: tasks
+op: op.wb.task_assign
+schema_version: wb-capability/v1
 parameters:
   task_id:
     type: str
@@ -19,7 +21,6 @@ aliases:
 - work on task
 - start task
 parents:
-- tasks
 - tasks
 requires:
 - obsidian

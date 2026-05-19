@@ -4,6 +4,8 @@ kind: capability
 description: 'Gather all data for the weekly review: contracts, constraints, WIP, tasks, staleness, suggestions'
 capability_name: weekly_review_data
 category: tasks
+op: op.wb.weekly_review_data
+schema_version: wb-capability/v1
 tags:
 - tasks
 - weekly
@@ -17,7 +19,6 @@ aliases:
 - weekly MIT data
 - prepare weekly review
 parents:
-- tasks
 - tasks
 requires:
 - obsidian

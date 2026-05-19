@@ -4,6 +4,8 @@ kind: capability
 description: Get a single project (resolved via slug or alias) with its folders, aliases, and recent Hindsight memory recall
 capability_name: project_get
 category: projects
+op: op.wb.project_get
+schema_version: wb-capability/v1
 parameters:
   slug:
     type: str
@@ -19,6 +21,5 @@ aliases:
 - project state
 - project observations
 parents:
-- projects
 - projects
 ---

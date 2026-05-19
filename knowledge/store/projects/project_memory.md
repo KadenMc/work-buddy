@@ -4,6 +4,8 @@ kind: capability
 description: 'Read from the project memory bank (Hindsight-backed). Modes: ''search'' (semantic recall, optionally scoped to one project), ''model'' (fetch a mental model: project-landscape, active-risks, recent-decisions, inter-project-deps), ''recent'' (latest project memories)'
 capability_name: project_memory
 category: projects
+op: op.wb.project_memory
+schema_version: wb-capability/v1
 parameters:
   query:
     type: str
@@ -37,7 +39,6 @@ aliases:
 - project decisions
 - project landscape
 parents:
-- projects
 - projects
 requires:
 - hindsight
