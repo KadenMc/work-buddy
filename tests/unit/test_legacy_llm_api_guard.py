@@ -61,6 +61,10 @@ _ALLOWED_EXCEPTIONS = {
     "work_buddy/llm/__init__.py",
     # MCP registry still exposes legacy capabilities for external agents.
     "work_buddy/mcp_server/registry.py",
+    # The llm_call / llm_with_tools MCP capabilities are ops: their data
+    # declarations live in the knowledge store, their callables in this op
+    # module, which legitimately imports the legacy llm entry points.
+    "work_buddy/mcp_server/ops/llm_ops.py",
 }
 
 

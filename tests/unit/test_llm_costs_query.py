@@ -275,9 +275,13 @@ def test_capability_dispatches_to_query(fake_internal, empty_claude_code):
 
 
 def test_capability_registered_in_registry():
-    """Sanity: the capability shows up in _llm_capabilities()."""
-    from work_buddy.mcp_server.registry import _llm_capabilities
-    caps = {c.name for c in _llm_capabilities()}
-    assert "llm_costs_query" in caps
-    assert "claude_code_usage_summary" not in caps  # removed
-    assert "claude_code_usage_scan" in caps         # kept (mutates state)
+    """Sanity: llm_costs_query resolves as a declared llm capability."""
+    from work_buddy.knowledge.capability_loader import load_declared_capabilities
+    from work_buddy.mcp_server import op_registry
+    op_registry.clear_ops()
+    op_registry.load_builtin_ops()
+    caps, _issues = load_declared_capabilities()
+    names = {c.name for c in caps if c.category == "llm"}
+    assert "llm_costs_query" in names
+    assert "claude_code_usage_summary" not in names  # removed
+    assert "claude_code_usage_scan" in names         # kept (mutates state)
