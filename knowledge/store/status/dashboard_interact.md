@@ -4,6 +4,8 @@ kind: capability
 description: Drive a dashboard form on the user's behalf — fill fields, open the form, click submit, or read current state. Single typed entry point for chat-walkthrough agents; each call is validated against the form's registered FormSchema before anything reaches the frontend. See the brief's structural section for the form_id and field names you can address.
 capability_name: dashboard_interact
 category: status
+op: op.wb.dashboard_interact
+schema_version: wb-capability/v1
 parameters:
   action:
     type: str
@@ -39,6 +41,5 @@ aliases:
 - form bridge
 - set form field
 parents:
-- status
 - status
 ---

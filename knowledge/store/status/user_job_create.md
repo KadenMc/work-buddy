@@ -4,6 +4,8 @@ kind: capability
 description: Author a personal scheduled cron job by writing a .md file under <data_root>/user_jobs/. Validates the cron expression and refuses to overwrite an existing job. The scheduler hot-reloads (~30s) and starts firing the job. See features/user-jobs for the schema.
 capability_name: user_job_create
 category: status
+op: op.wb.user_job_create
+schema_version: wb-capability/v1
 parameters:
   name:
     type: str
@@ -64,6 +66,5 @@ aliases:
 - new scheduled job
 - wb-job-new
 parents:
-- status
 - status
 ---
