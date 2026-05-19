@@ -107,6 +107,11 @@ def load_builtin_ops() -> None:
     Idempotent within a process: a module guard runs the import side effects
     once. If a prior ``clear_ops`` reset the guard while the op modules are
     still cached in ``sys.modules``, they are reloaded so registration re-runs.
+
+    A per-module failure (an optional dependency the host environment lacks,
+    e.g. ``hindsight_client`` on CI) is logged and skipped; remaining modules
+    still register. This mirrors how the legacy capability builders were
+    guarded with try/except inside ``_build_registry``.
     """
     global _builtins_loaded
     if _builtins_loaded:
@@ -120,10 +125,16 @@ def load_builtin_ops() -> None:
 
     for mod in pkgutil.iter_modules(_ops_pkg.__path__):
         full_name = f"{_ops_pkg.__name__}.{mod.name}"
-        if full_name in sys.modules:
-            importlib.reload(sys.modules[full_name])
-        else:
-            importlib.import_module(full_name)
+        try:
+            if full_name in sys.modules:
+                importlib.reload(sys.modules[full_name])
+            else:
+                importlib.import_module(full_name)
+        except Exception as exc:
+            logger.warning(
+                "Op module %s failed to load (%s: %s); skipping its ops.",
+                full_name, type(exc).__name__, exc,
+            )
 
     _builtins_loaded = True
     logger.debug("Built-in ops loaded: %d registered", len(_OPS))
