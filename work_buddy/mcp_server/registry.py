@@ -809,27 +809,13 @@ def _build_registry() -> dict[str, Capability | WorkflowDefinition]:
 
     registry: dict[str, Capability | WorkflowDefinition] = {}
 
-    for label, fn in [
-    ]:
-        t = time.time()
-        try:
-            for cap in fn():
-                registry[cap.name] = cap
-            _section_times[f"cap:{label}"] = time.time() - t
-            _log_to_file(_lf, f"  {label}: {time.time()-t:.2f}s")
-        except Exception as e:
-            _section_times[f"cap:{label}"] = time.time() - t
-            _log_to_file(_lf, f"  {label}: FAILED in {time.time()-t:.2f}s — {e}")
-
-    # --- Declaration-based capabilities (data-first capabilities) ---
-    # Capability *declarations* live in the knowledge store as inert
-    # ``kind: "capability"`` units carrying an ``op`` field. The loader
-    # resolves each against the Op registry and returns ready-to-dispatch
-    # Capability objects. Merged here, before the tool-requirements filter
-    # below, so declared capabilities with unmet ``requires`` are filtered by
-    # the same pass as registry-built ones. On a name conflict the existing
-    # ``Capability(...)`` entry wins — a name registered through both paths is
-    # a mistake we want surfaced, not silently shadowed.
+    # --- Capabilities (resolved from declarations) ---
+    # Every capability is a declaration: a ``kind: "capability"`` knowledge
+    # unit carrying an ``op`` field. The loader resolves each against the Op
+    # registry and returns ready-to-dispatch Capability objects, resolved
+    # before the tool-requirements filter below so capabilities with unmet
+    # ``requires`` are filtered out by the same pass. A name appearing in two
+    # declarations is a mistake we surface, not silently shadow.
     t = time.time()
     try:
         from work_buddy.knowledge.capability_loader import load_declared_capabilities
