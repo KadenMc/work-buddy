@@ -509,3 +509,75 @@ def test_foreign_keys_enabled(entity_env):
         assert fk == 1
     finally:
         conn.close()
+
+
+def test_migrations_idempotent_across_many_opens(entity_env):
+    """Every store operation opens a fresh connection and runs the
+    migration ladder. Re-running it must be cheap and must never trip
+    the framework's source-hash audit. Open the DB many times and
+    assert it stays at the target version without error."""
+    store = entity_env.store
+    for _ in range(10):
+        conn = store.get_connection()
+        try:
+            assert conn.execute("PRAGMA user_version").fetchone()[0] == 1
+        finally:
+            conn.close()
+    # A real CRUD round-trip after the repeated opens still works.
+    e = store.create_entity("Max")
+    assert store.get_entity(e["id"]) is not None
+
+
+def test_schema_shape(entity_env):
+    """The migration creates exactly the four expected tables, each
+    with its load-bearing columns."""
+    store = entity_env.store
+    conn = store.get_connection()
+    try:
+        tables = {
+            r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name NOT LIKE 'sqlite_%' "
+                "AND name != '_migration_history'"
+            )
+        }
+        assert tables == {
+            "entities", "entity_tags", "entity_aliases", "entity_references",
+        }
+
+        def cols(table: str) -> set[str]:
+            return {
+                r[1] for r in conn.execute(f"PRAGMA table_info({table})")
+            }
+
+        assert {"id", "canonical_name", "canonical_norm", "description",
+                "author", "created_at", "updated_at"} <= cols("entities")
+        assert {"id", "entity_id", "tag", "tag_norm"} <= cols("entity_tags")
+        assert {"id", "entity_id", "alias", "alias_norm"} <= cols(
+            "entity_aliases")
+        assert {"id", "entity_id", "source_path", "source_kind",
+                "occurred_at", "snippet"} <= cols("entity_references")
+    finally:
+        conn.close()
+
+
+def test_canonical_norm_uniqueness_enforced_at_db_level(entity_env):
+    """The UNIQUE constraint on entities.canonical_norm is a real DB
+    constraint, not just an application check — a direct INSERT of a
+    colliding norm must fail."""
+    import sqlite3
+    store = entity_env.store
+    store.create_entity("Max McKeen")
+    conn = store.get_connection()
+    try:
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO entities (canonical_name, canonical_norm, "
+                "author, created_at, updated_at) VALUES "
+                "(?, ?, 'user', ?, ?)",
+                ("Different Display", "max mckeen",
+                 store._now(), store._now()),
+            )
+            conn.commit()
+    finally:
+        conn.close()
