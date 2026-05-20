@@ -227,11 +227,18 @@ function _entityDetailHTML(e) {
     );
 }
 
+// Tag + alias chips embed the target value into an inline onclick.
+// The value is encodeURIComponent-encoded on the way in and
+// decodeURIComponent-decoded in the handler — encodeURIComponent
+// output contains no quotes or backslashes, so it is always safe
+// inside a single-quoted JS string literal regardless of what
+// punctuation the tag or alias contains (e.g. an alias like O'Brien).
 function _renderTagChip(eid, tag) {
     return '<span class="entity-tag-chip-edit">' +
         escapeHtml(tag.tag) +
         '<button class="entity-chip-x" title="Remove tag"' +
-        ' onclick="removeEntityTag(' + eid + ', \'' + escapeJsString(tag.tag_norm) + '\')">×</button>' +
+        ' onclick="removeEntityTag(' + eid + ', \'' +
+        encodeURIComponent(tag.tag_norm) + '\')">×</button>' +
         '</span>';
 }
 
@@ -239,7 +246,8 @@ function _renderAliasChip(eid, alias) {
     return '<span class="entity-alias-chip">' +
         escapeHtml(alias.alias) +
         '<button class="entity-chip-x" title="Remove alias"' +
-        ' onclick="removeEntityAlias(' + eid + ', \'' + escapeJsString(alias.alias) + '\')">×</button>' +
+        ' onclick="removeEntityAlias(' + eid + ', \'' +
+        encodeURIComponent(alias.alias) + '\')">×</button>' +
         '</span>';
 }
 
@@ -320,19 +328,27 @@ async function saveEntityIdentity(eid) {
     await renderEntityDetail(eid);
 }
 
+// Tag and alias edits are computed against SERVER truth, not the
+// rendered DOM: fetch the entity's current set, mutate it, POST the
+// result. DOM-scraping would drift if a concurrent edit landed
+// between render and click, and it couldn't see the normalized
+// tag_norm the server actually stored.
+async function _fetchEntityTags(eid) {
+    const data = await fetchJSON('/api/entities/' + eid);
+    if (!data || data.error) return null;
+    return (data.tags || []);
+}
+
 async function addEntityTag(eid) {
     const input = document.getElementById('entity-tag-add');
     const tag = (input.value || '').trim();
     if (!tag) return;
-    // Read current tags off the rendered list, prepend the new one,
-    // and POST the full new set.
-    const current = Array.from(document.querySelectorAll('#entity-tags-list .entity-tag-chip-edit'))
-        .map(el => el.childNodes[0].textContent.trim());
-    if (current.includes(tag)) {
-        _entitySetStatus('entity-tag-status', 'Already attached.', 'var(--text-muted)');
+    const current = await _fetchEntityTags(eid);
+    if (current === null) {
+        _entitySetStatus('entity-tag-status', 'Could not load current tags.', 'var(--red)');
         return;
     }
-    const newTags = current.concat([tag]);
+    const newTags = current.map(t => t.tag).concat([tag]);
     _entitySetStatus('entity-tag-status', 'Adding…');
     const resp = await fetch('/api/entities/' + eid + '/tags', {
         method: 'POST',
@@ -350,11 +366,17 @@ async function addEntityTag(eid) {
     await renderEntityDetail(eid);
 }
 
-async function removeEntityTag(eid, tagNorm) {
-    const current = Array.from(document.querySelectorAll('#entity-tags-list .entity-tag-chip-edit'))
-        .map(el => el.childNodes[0].textContent.trim());
-    // Remove by norm comparison — case-fold both sides for safety.
-    const remaining = current.filter(t => t.toLowerCase().replace(/\\s+/g, '') !== tagNorm.toLowerCase().replace(/\\s+/g, ''));
+async function removeEntityTag(eid, encodedTagNorm) {
+    const tagNorm = decodeURIComponent(encodedTagNorm);
+    const current = await _fetchEntityTags(eid);
+    if (current === null) {
+        _entitySetStatus('entity-tag-status', 'Could not load current tags.', 'var(--red)');
+        return;
+    }
+    // Filter by the server-stored tag_norm — an exact, unambiguous key.
+    const remaining = current
+        .filter(t => t.tag_norm !== tagNorm)
+        .map(t => t.tag);
     _entitySetStatus('entity-tag-status', 'Removing…');
     const resp = await fetch('/api/entities/' + eid + '/tags', {
         method: 'POST',
@@ -392,7 +414,8 @@ async function addEntityAlias(eid) {
     await renderEntityDetail(eid);
 }
 
-async function removeEntityAlias(eid, alias) {
+async function removeEntityAlias(eid, encodedAlias) {
+    const alias = decodeURIComponent(encodedAlias);
     _entitySetStatus('entity-alias-status', 'Removing…');
     const resp = await fetch('/api/entities/' + eid + '/aliases', {
         method: 'DELETE',
@@ -511,12 +534,6 @@ async function submitEntityCreate() {
     _entitySetStatus('entity-create-status', 'Created.', 'var(--green)');
     await loadEntities();
     if (data.id) await selectEntity(data.id);
-}
-
-// Helper: escape a string for safe single-quoted JS literal interpolation
-// inside onclick attributes.
-function escapeJsString(s) {
-    return String(s).replace(/\\\\/g, '\\\\\\\\').replace(/'/g, "\\\\'").replace(/\n/g, '\\\\n');
 }
 """
 
