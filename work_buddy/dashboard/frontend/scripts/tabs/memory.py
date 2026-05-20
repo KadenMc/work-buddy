@@ -708,7 +708,7 @@ function openEntityCreateForm() {
         '  <h2 class="entity-create-title">New entity</h2>' +
         '  <div class="entity-detail-row">' +
         '    <label>Canonical name</label>' +
-        '    <input id="entity-create-name" class="entity-name-input" placeholder="e.g. Max McKeen" />' +
+        '    <input id="entity-create-name" class="entity-name-input" placeholder="e.g. Ada Lovelace" />' +
         '  </div>' +
         '  <div class="entity-detail-row">' +
         '    <label>Description</label>' +
@@ -717,11 +717,11 @@ function openEntityCreateForm() {
         '  </div>' +
         '  <div class="entity-detail-row">' +
         '    <label>Tags (comma-separated, hierarchical OK)</label>' +
-        '    <input id="entity-create-tags" class="entity-name-input" placeholder="e.g. person, person/family" />' +
+        '    <input id="entity-create-tags" class="entity-create-input" placeholder="e.g. person, person/family" />' +
         '  </div>' +
         '  <div class="entity-detail-row">' +
         '    <label>Aliases (comma-separated)</label>' +
-        '    <input id="entity-create-aliases" class="entity-name-input" placeholder="e.g. Max, M" />' +
+        '    <input id="entity-create-aliases" class="entity-create-input" placeholder="e.g. Ada, A.L." />' +
         '  </div>' +
         '  <div class="entity-save-row">' +
         '    <button class="entity-save-btn dirty" onclick="submitEntityCreate()">Create</button>' +
@@ -943,10 +943,25 @@ def styles() -> str:
     background: var(--bg-secondary, #1a1a1a);
     color: var(--text-primary, #fff);
     border: 1px solid var(--border, #303030);
-    padding: 8px 12px;
+    padding: 6px 10px;
     border-radius: 3px;
-    font-size: 18px;
+    font-size: 15px;
     font-weight: 600;
+}
+
+/* Plain create-form text inputs (comma-separated tags / aliases).
+   Distinct from .entity-name-input — these are ordinary fields, not
+   the entity's title, so they get normal size + weight. */
+.entity-create-input {
+    width: 100%;
+    box-sizing: border-box;
+    background: var(--bg-secondary, #1a1a1a);
+    color: var(--text-primary, #fff);
+    border: 1px solid var(--border, #303030);
+    padding: 5px 8px;
+    border-radius: 3px;
+    font-size: 12px;
+    font-family: inherit;
 }
 
 .entity-delete-btn {
@@ -1116,9 +1131,16 @@ def styles() -> str:
     font-size: 12px;
 }
 
+/* Highlighted row — pure black against the #1a1a1a dropdown body so
+   the selection is unmistakable on a dark theme. The keyboard-active
+   row additionally gets an accent inset bar. */
 .entity-tag-suggest-row:hover,
 .entity-tag-suggest-row.active {
-    background: var(--bg-primary, #111);
+    background: #000;
+}
+
+.entity-tag-suggest-row.active {
+    box-shadow: inset 2px 0 0 var(--accent, #6cf);
 }
 
 .entity-tag-suggest-path {
