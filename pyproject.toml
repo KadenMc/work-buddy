@@ -1,9 +1,9 @@
 [tool.poetry]
 name = "work-buddy"
-version = "0.1.1"
+version = "0.2.0"
 description = "Personal agent framework built on Claude Code and MCP"
 authors = ["Kaden McKeen"]
-license = "MIT"
+license = "GPL-3.0-only"
 readme = "README.md"
 packages = [{include = "work_buddy"}]
 classifiers = ["Development Status :: 4 - Beta"]
