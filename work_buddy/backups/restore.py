@@ -127,17 +127,32 @@ def _download_remote_snapshot(tag: str, repo: str | None = None) -> Path:
 def _current_known_max_schema_versions() -> dict[str, int]:
     """Return the highest migration version this code knows per DB.
 
-    For DBs without a migration ladder yet, returns 0 (which means
-    "we don't constrain — any schema_version satisfies the check").
+    Keyed by the VITAL_DBS logical name — the same key the manifest's
+    ``schema_versions`` uses — so ``_validate_manifest``'s ceiling
+    check (``known_versions.get(db, 0)``) looks the value up directly.
+
+    For a DB without a migration ladder the entry stays 0, which the
+    ceiling check reads as "do not constrain — any schema_version
+    satisfies it" (``messages`` and ``threads`` today).
     """
     out = {name: 0 for name in VITAL_DBS}
+    # Each block is best-effort and independent: a failed import must
+    # degrade only that DB's ceiling check, not abort restore validation.
     try:
         from work_buddy.obsidian.tasks.migrations import TASK_MIGRATIONS
-        out["task_metadata"] = TASK_MIGRATIONS.target_version
+        out["tasks"] = TASK_MIGRATIONS.target_version
     except Exception as exc:
         logger.warning("restore: cannot read TASK_MIGRATIONS: %s", exc)
-    # When projects/messages/threads gain migration ladders, import
-    # them here and update the per-DB entries.
+    try:
+        from work_buddy.projects.migrations import PROJECT_MIGRATIONS
+        out["projects"] = PROJECT_MIGRATIONS.target_version
+    except Exception as exc:
+        logger.warning("restore: cannot read PROJECT_MIGRATIONS: %s", exc)
+    try:
+        from work_buddy.entities.migrations import ENTITY_MIGRATIONS
+        out["entities"] = ENTITY_MIGRATIONS.target_version
+    except Exception as exc:
+        logger.warning("restore: cannot read ENTITY_MIGRATIONS: %s", exc)
     return out
 
 
@@ -346,9 +361,10 @@ def _apply_migrations_inplace(db_name: str, db_path: Path) -> None:
     runner so any newer-in-code migrations roll forward.
 
     Keyed off the LOGICAL name from VITAL_DBS (``tasks`` /
-    ``projects`` / ``messages`` / ``threads``), NOT the on-disk
-    filename. ``tasks`` and ``projects`` have migration ladders;
-    ``messages`` / ``threads`` no-op until they grow one.
+    ``projects`` / ``messages`` / ``threads`` / ``entities``), NOT the
+    on-disk filename. ``tasks``, ``projects``, and ``entities`` have
+    migration ladders; ``messages`` / ``threads`` no-op until they
+    grow one.
     """
     runner = None
     if db_name == "tasks":
@@ -357,6 +373,9 @@ def _apply_migrations_inplace(db_name: str, db_path: Path) -> None:
     elif db_name == "projects":
         from work_buddy.projects.migrations import PROJECT_MIGRATIONS
         runner = PROJECT_MIGRATIONS
+    elif db_name == "entities":
+        from work_buddy.entities.migrations import ENTITY_MIGRATIONS
+        runner = ENTITY_MIGRATIONS
     if runner is None:
         # No migration ladder for this DB — leave it as-is.
         return
