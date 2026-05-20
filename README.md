@@ -5,7 +5,7 @@
 <h1 align="center">work-buddy</h1>
 
 <p align="center">
-    Your AI doesn't know you; it can't remember yesterday. Meet <b>work buddy</b>.
+    Your AI doesn't understand how you actually operate. Meet <b>work-buddy</b>.
 </p>
 
 <p align="center">
@@ -31,11 +31,9 @@
 
 ---
 
-**work-buddy** is a personal agent framework built on [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and [Obsidian](https://obsidian.md/) which orchestrates tasks, manages workflows, coordinates across projects — so you can focus on your actual work. It gives your AI agent structured multi-step workflows, memory that survives across sessions, deep integration with external tooling, and a dashboard that empowers you directly!
+**work-buddy** is the AI assistant for knowledge workers — a local-first personal-agent runtime built on [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and [Obsidian](https://obsidian.md/) that organizes the work *around* the work: backlogged notes, scattered tasks, open browser tabs, and the projects they belong to. It gives your agent structured multi-step workflows, memory that survives across sessions, deep integration with the tools your work already lives in, and a dashboard that lends visibility and collaboration.
 
 **Runs on your existing Claude Code subscription** — no separate service fees. The agent you're already paying for does the work; your data stays on your machine.
-
-> **90+ capabilities** &bull; **15+ structured workflows** &bull; **36 slash commands** &bull; **277 Python modules**
 
 <p align="center">
     <img src="docs/hero_dashboard.png" alt="work-buddy dashboard — browsing agent session conversations" width="700" />
@@ -51,6 +49,7 @@
 - Triage 40 open Chrome tabs into close, task, group, or keep decisions
 - Empty your scratchpad — quick captures get routed into tasks, references, or kept as open questions
 - Run a morning routine that writes a briefing, picks your top priorities, and generates a day plan
+- Have the agent surface what would help next — captured fragments, stale tasks, drifted projects — proactively, before you have to ask
 - Keep agent sessions coordinated through dashboard threads, notifications, and approvals
 
 ### Principles that shape the framework
@@ -180,7 +179,7 @@ The dashboard is not just observability. It is part of the control loop: a place
 
 ## You Stay in Control
 
-Powerful agents are only useful if you can trust them. work-buddy is built around **human-in-the-loop by default** — not as a safety afterthought, but as a core design choice.
+Powerful agents are only useful if you can trust them. work-buddy is built around **convenient consent — automation without handing over control.** Not as a safety afterthought, but as a core design choice.
 
 **Consent-gated operations.** Sensitive actions — deleting tasks, pruning memory, modifying vault content — require your explicit approval before they execute. Consent requests are delivered simultaneously to every surface you have connected. Grants are session-scoped and time-limited.
 
@@ -198,9 +197,9 @@ Your agents work autonomously when they can, and check in when they should. You 
 
 ## Self-Developing
 
-Just wait until you see how this one works.
-
 work-buddy builds work-buddy. The same gateway, conductor, knowledge store, and slash commands that manage your daily work are also used to extend the framework itself — tell an agent what you want, and the foundation does the heavy lifting so your idea ships instead of stalling.
+
+**What gets built is yours to read, edit, share, or remove.** The agent drafts; you curate. **What your agent does for you is yours.**
 
 **Want to add a workflow?** Tell your agent what you want, and it will:
 
@@ -688,12 +687,12 @@ Features are modular. The dependency-aware toggle system lets you enable/disable
 
 ## Status
 
-work-buddy is pre-release software, actively developed by one person and the agents they direct. It works well for its creator's PhD research workflow, but:
+work-buddy is pre-release software, actively developed by one person and the agents they direct. It runs reliably day-to-day, but known limitations remain:
 
 - **Developed on Windows 11.** Linux and macOS support is new — cross-platform compatibility has been audited and the core paths are guarded, but edge cases may remain. Issues and PRs for other platforms are especially welcome.
 - Setup requires some manual configuration
 - Documentation assumes familiarity with Claude Code and Obsidian
-- Some features are tightly coupled to the creator's specific setup
+- Some features are tightly coupled to specific local setups
 - The API surface is not yet stable
 
 That said — this is a framework designed to be extended. If you use Claude Code and want structured workflows, persistent memory, and deep tool integration, this is built for you.
