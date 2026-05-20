@@ -66,6 +66,7 @@ RESOURCES: dict[str, str] = {
     "db/messages":               "db/messages.db",
     "db/tasks":                  "db/task_metadata.db",
     "db/projects":               "db/projects.db",
+    "db/entities":               "db/entities.db",
     "db/threads":                "db/threads.db",  # Thread + thread_events
     "db/llm_queue":              "db/llm_call_queue.db",  # LLM-call priority queue
 
