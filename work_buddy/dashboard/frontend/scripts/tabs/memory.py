@@ -28,6 +28,14 @@ let WB_MEMORY_SUBTAB = 'entities';
 // away when an SSE event arrives mid-create.
 let _entityCreateFormOpen = false;
 
+// Tag-autocomplete index: hierarchical tag nodes
+// ({path, count, segments, is_literal}) fetched from
+// /api/entities/tags. Drives the inline ghost and the suggestion
+// dropdown on the detail panel's tag-add input.
+let _entityTagNodes = [];
+let _tagSuggestItems = [];   // current dropdown items
+let _tagSuggestActive = -1;  // highlighted dropdown row; -1 = none
+
 // Surgical in-place render. morphdom (via window._wbMorphReplace) diffs
 // fresh HTML against the live DOM so scroll position, focused inputs,
 // and unchanged nodes survive — the Memory tab never does a wholesale
@@ -64,6 +72,13 @@ async function loadEntities() {
     if (!data) return;
     _entitiesCache = data.entities || [];
     renderEntityList(_entitiesCache);
+
+    // Refresh the tag-autocomplete index alongside the list — it is
+    // small and goes stale whenever any entity's tags change. Fired
+    // without awaiting so it never delays the list render.
+    fetchJSON('/api/entities/tags').then(td => {
+        if (td && Array.isArray(td.tags)) _entityTagNodes = td.tags;
+    });
 
     // Hash hydration: restore selection if ``e=<id>`` is set.
     if (!_selectedEntityId
@@ -218,8 +233,16 @@ function _entityDetailHTML(e) {
         tags.map(t => _renderTagChip(e.id, t)).join('') +
         '    </div>' +
         '    <div class="entity-tag-add-row">' +
-        '      <input id="entity-tag-add" class="entity-tag-add-input" placeholder="Add tag (e.g. person/family)"' +
-        '             onkeydown="if(event.key===\'Enter\'){event.preventDefault();addEntityTag(' + e.id + ')}" />' +
+        '      <div class="entity-tag-add-combo">' +
+        '        <input id="entity-tag-add" class="entity-tag-add-input"' +
+        '               placeholder="Add tag (e.g. person/family)"' +
+        '               autocomplete="off" spellcheck="false"' +
+        '               oninput="entityTagInput(event, ' + e.id + ')"' +
+        '               onkeydown="entityTagKeydown(event, ' + e.id + ')"' +
+        '               onblur="entityTagBlur()" />' +
+        '        <div id="entity-tag-suggest" class="entity-tag-suggest"' +
+        '             style="display:none;"></div>' +
+        '      </div>' +
         '      <button class="entity-add-chip-btn" onclick="addEntityTag(' + e.id + ')">Add</button>' +
         '    </div>' +
         '    <div id="entity-tag-status" class="entity-save-status"></div>' +
@@ -347,6 +370,7 @@ async function addEntityTag(eid) {
     const input = document.getElementById('entity-tag-add');
     const tag = (input.value || '').trim();
     if (!tag) return;
+    _closeTagSuggest();
     const current = await _fetchEntityTags(eid);
     if (current === null) {
         _entitySetStatus('entity-tag-status', 'Could not load current tags.', 'var(--red)');
@@ -395,6 +419,217 @@ async function removeEntityTag(eid, encodedTagNorm) {
     _entitySetStatus('entity-tag-status', 'Removed.', 'var(--green)');
     await loadEntities();
     await renderEntityDetail(eid);
+}
+
+// ---- Tag autocomplete ----
+//
+// The detail panel's tag-add input completes hierarchical tags against
+// how every other entity is tagged. Two surfaces share one index
+// (_entityTagNodes, refreshed by loadEntities):
+//
+//   - inline ghost: the segment being typed is completed to the
+//     most-popular matching node. Rendered with the SELECTION
+//     technique — the input value becomes the completion and its
+//     suffix is selected; Tab / -> collapses the selection to accept,
+//     and typing a character that matches the next ghost character
+//     consumes it (so `person` flows into `/family` without the ghost
+//     fighting the slash).
+//   - dropdown: the top 5 nodes (any depth) under the typed prefix,
+//     scored count * 0.6^(depth-1) — shorter paths are boosted, but a
+//     very popular deep tag still surfaces.
+//
+// Both exclude tags already on the entity, and strict ancestors of an
+// added tag (adding those is a no-op under the write-time collapse).
+
+function _entityAddedTagNorms(eid) {
+    const ent = _entitiesCache.find(e => e.id === eid);
+    return ent && Array.isArray(ent.tags)
+        ? ent.tags.map(t => t.tag_norm)
+        : [];
+}
+
+function _tagCandidateRedundant(path, addedNorms) {
+    if (addedNorms.indexOf(path) !== -1) return true;
+    // A strict ancestor of an added tag would collapse away on write.
+    const prefix = path + '/';
+    return addedNorms.some(a => a.indexOf(prefix) === 0);
+}
+
+// Inline ghost: complete the CURRENT segment to the most-popular node.
+// `typed` is what the user has committed, with no ghost suffix.
+function _tagInlineCompletion(typed, addedNorms) {
+    if (!typed) return null;
+    const depth = typed.split('/').length;
+    // _entityTagNodes is pre-sorted most-popular-first, so the first
+    // node matching the segment depth and prefix is the best one.
+    for (let i = 0; i < _entityTagNodes.length; i++) {
+        const n = _entityTagNodes[i];
+        if (n.segments !== depth) continue;
+        if (n.path === typed) continue;
+        if (n.path.indexOf(typed) !== 0) continue;
+        if (_tagCandidateRedundant(n.path, addedNorms)) continue;
+        return n.path;
+    }
+    return null;
+}
+
+// Dropdown: up to 5 nodes under the typed prefix, any depth.
+function _tagDropdownItems(typed, addedNorms) {
+    const scored = [];
+    for (let i = 0; i < _entityTagNodes.length; i++) {
+        const n = _entityTagNodes[i];
+        if (n.path === typed) continue;
+        if (n.path.indexOf(typed) !== 0) continue;
+        if (_tagCandidateRedundant(n.path, addedNorms)) continue;
+        scored.push({
+            path: n.path,
+            count: n.count,
+            score: n.count * Math.pow(0.6, n.segments - 1),
+        });
+    }
+    scored.sort((a, b) =>
+        b.score - a.score || a.path.localeCompare(b.path));
+    return scored.slice(0, 5);
+}
+
+function entityTagInput(event, eid) {
+    const input = event.target;
+    const addedNorms = _entityAddedTagNorms(eid);
+    const deleting = event.inputType
+        && event.inputType.indexOf('delete') === 0;
+    // The user just typed: the caret is at the end and there is no
+    // ghost selection yet, so the whole value is the typed prefix.
+    const typed = input.value;
+
+    // Inline ghost — only when inserting (not deleting) non-empty text.
+    if (!deleting && typed) {
+        const completion = _tagInlineCompletion(typed, addedNorms);
+        if (completion && completion !== typed
+            && completion.indexOf(typed) === 0) {
+            input.value = completion;
+            input.setSelectionRange(typed.length, completion.length);
+        }
+    }
+    // The dropdown always matches the genuinely-typed prefix, never
+    // the ghost suffix.
+    _renderTagSuggest(typed, addedNorms);
+}
+
+function entityTagKeydown(event, eid) {
+    const input = event.target;
+    const key = event.key;
+    const selStart = input.selectionStart;
+    const selEnd = input.selectionEnd;
+    const hasGhost = selStart < selEnd && selEnd === input.value.length;
+
+    // Accept the inline ghost: Tab / -> collapses the selection to end.
+    if (hasGhost && (key === 'Tab' || key === 'ArrowRight')) {
+        event.preventDefault();
+        input.setSelectionRange(input.value.length, input.value.length);
+        _renderTagSuggest(input.value, _entityAddedTagNorms(eid));
+        return;
+    }
+    // Type-through: a printable char matching the next ghost character
+    // consumes that character instead of replacing the whole ghost.
+    if (hasGhost && key.length === 1
+        && !event.ctrlKey && !event.metaKey && !event.altKey
+        && input.value.charAt(selStart) === key) {
+        event.preventDefault();
+        input.setSelectionRange(selStart + 1, input.value.length);
+        _renderTagSuggest(
+            input.value.slice(0, selStart + 1),
+            _entityAddedTagNorms(eid));
+        return;
+    }
+    // Dropdown navigation.
+    if (key === 'ArrowDown' && _tagSuggestItems.length) {
+        event.preventDefault();
+        _moveTagSuggest(1);
+        return;
+    }
+    if (key === 'ArrowUp' && _tagSuggestItems.length) {
+        event.preventDefault();
+        _moveTagSuggest(-1);
+        return;
+    }
+    if (key === 'Escape') {
+        _closeTagSuggest();
+        return;
+    }
+    if (key === 'Enter') {
+        event.preventDefault();
+        if (_tagSuggestActive >= 0 && _tagSuggestItems[_tagSuggestActive]) {
+            acceptTagSuggestion(eid, _tagSuggestItems[_tagSuggestActive].path);
+        } else {
+            addEntityTag(eid);
+        }
+        return;
+    }
+}
+
+function entityTagBlur() {
+    // Delay the close so a dropdown row's mousedown still resolves.
+    // (Rows also preventDefault on mousedown to keep input focus; the
+    // delay is a belt-and-suspenders guard.)
+    setTimeout(_closeTagSuggest, 120);
+}
+
+function _renderTagSuggest(typed, addedNorms) {
+    const box = document.getElementById('entity-tag-suggest');
+    if (!box) return;
+    _tagSuggestItems = typed ? _tagDropdownItems(typed, addedNorms) : [];
+    _tagSuggestActive = -1;
+    if (_tagSuggestItems.length === 0) {
+        box.style.display = 'none';
+        box.innerHTML = '';
+        return;
+    }
+    box.innerHTML = _tagSuggestItems.map((it, i) =>
+        '<div class="entity-tag-suggest-row" data-i="' + i + '"' +
+        ' onmousedown="event.preventDefault();acceptTagSuggestionFromRow(' + i + ')">' +
+        '<span class="entity-tag-suggest-path">' + escapeHtml(it.path) + '</span>' +
+        '<span class="entity-tag-suggest-count">' + it.count + '</span>' +
+        '</div>'
+    ).join('');
+    box.style.display = 'block';
+}
+
+function _moveTagSuggest(delta) {
+    const n = _tagSuggestItems.length;
+    if (!n) return;
+    if (_tagSuggestActive === -1) {
+        _tagSuggestActive = delta > 0 ? 0 : n - 1;
+    } else {
+        _tagSuggestActive = (_tagSuggestActive + delta + n) % n;
+    }
+    const box = document.getElementById('entity-tag-suggest');
+    if (!box) return;
+    box.querySelectorAll('.entity-tag-suggest-row').forEach((row, i) => {
+        row.classList.toggle('active', i === _tagSuggestActive);
+    });
+}
+
+function _closeTagSuggest() {
+    const box = document.getElementById('entity-tag-suggest');
+    if (box) { box.style.display = 'none'; box.innerHTML = ''; }
+    _tagSuggestItems = [];
+    _tagSuggestActive = -1;
+}
+
+// Dropdown row clicked, or Enter on a highlighted row.
+function acceptTagSuggestionFromRow(i) {
+    const item = _tagSuggestItems[i];
+    // The dropdown only exists while one entity's detail panel is open.
+    if (item && _selectedEntityId != null) {
+        acceptTagSuggestion(_selectedEntityId, item.path);
+    }
+}
+
+function acceptTagSuggestion(eid, path) {
+    const input = document.getElementById('entity-tag-add');
+    if (input) input.value = path;
+    _closeTagSuggest();
+    addEntityTag(eid);
 }
 
 async function addEntityAlias(eid) {
@@ -833,6 +1068,13 @@ def styles() -> str:
     gap: 4px;
 }
 
+/* The tag-add input + its autocomplete dropdown share a positioned
+   wrapper so the dropdown can anchor directly under the input. */
+.entity-tag-add-combo {
+    position: relative;
+    flex: 1;
+}
+
 .entity-tag-add-input, .entity-alias-add-input {
     flex: 1;
     background: var(--bg-secondary, #1a1a1a);
@@ -841,6 +1083,56 @@ def styles() -> str:
     padding: 4px 8px;
     border-radius: 3px;
     font-size: 12px;
+}
+
+.entity-tag-add-combo .entity-tag-add-input {
+    width: 100%;
+    box-sizing: border-box;
+}
+
+/* Tag autocomplete dropdown */
+.entity-tag-suggest {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    z-index: 30;
+    margin-top: 2px;
+    background: var(--bg-secondary, #1a1a1a);
+    border: 1px solid var(--border, #303030);
+    border-radius: 3px;
+    max-height: 180px;
+    overflow-y: auto;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+
+.entity-tag-suggest-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 8px;
+    cursor: pointer;
+    font-size: 12px;
+}
+
+.entity-tag-suggest-row:hover,
+.entity-tag-suggest-row.active {
+    background: var(--bg-primary, #111);
+}
+
+.entity-tag-suggest-path {
+    color: var(--text-primary, #fff);
+}
+
+.entity-tag-suggest-count {
+    color: var(--text-muted, #888);
+    font-size: 10px;
+    background: var(--bg-primary, #111);
+    border: 1px solid var(--border, #303030);
+    border-radius: 8px;
+    padding: 0 6px;
+    flex-shrink: 0;
 }
 
 .entity-add-chip-btn {

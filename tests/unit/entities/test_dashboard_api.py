@@ -51,6 +51,38 @@ def test_schema_endpoint(api_client):
     assert "document" in body["source_kinds"]
 
 
+# ─── Tag autocomplete endpoint ──────────────────────────────────────
+
+
+def test_tags_endpoint_empty(api_client):
+    resp = api_client.client.get("/api/entities/tags")
+    assert resp.status_code == 200
+    assert resp.get_json()["tags"] == []
+
+
+def test_tags_endpoint_returns_aggregated_nodes(api_client):
+    api_client.store.create_entity("A", tags=["person/family"])
+    api_client.store.create_entity("B", tags=["person/family"])
+    api_client.store.create_entity("C", tags=["person/colleague"])
+    resp = api_client.client.get("/api/entities/tags")
+    assert resp.status_code == 200
+    nodes = {n["path"]: n for n in resp.get_json()["tags"]}
+    # Intermediate `person` node aggregates its subtree.
+    assert nodes["person"]["count"] == 3
+    assert nodes["person"]["is_literal"] is False
+    assert nodes["person/family"]["count"] == 2
+    assert nodes["person/family"]["is_literal"] is True
+
+
+def test_tags_endpoint_not_shadowed_by_int_route(api_client):
+    """``/api/entities/tags`` must resolve to the tag endpoint, not be
+    swallowed by ``/api/entities/<int:entity_id>`` (it is not an int,
+    so the converter rejects it — this pins that)."""
+    resp = api_client.client.get("/api/entities/tags")
+    assert resp.status_code == 200
+    assert "tags" in resp.get_json()
+
+
 # ─── List + filter ──────────────────────────────────────────────────
 
 

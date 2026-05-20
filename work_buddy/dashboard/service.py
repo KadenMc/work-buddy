@@ -2310,6 +2310,25 @@ def api_entities_list():
         return jsonify({"entities": [], "error": str(e)})
 
 
+@app.get("/api/entities/tags")
+def api_entity_tags():
+    """Hierarchical tag nodes with aggregate usage counts.
+
+    Powers the Memory tab's tag autocomplete. Each node carries the
+    subtree-summed usage of every stored tag at or below it, so an
+    intermediate segment (``person``) ranks by the combined
+    popularity of its children. Declared before the ``<int:entity_id>``
+    routes is unnecessary (``tags`` never matches the int converter)
+    but kept adjacent to the other collection-level entity routes.
+    """
+    try:
+        from work_buddy.entities.store import tag_autocomplete_nodes
+        return jsonify({"tags": tag_autocomplete_nodes()})
+    except Exception as e:
+        logger.exception("Failed to read entity tag stats")
+        return jsonify({"tags": [], "error": str(e)}), 500
+
+
 @app.get("/api/entities/<int:entity_id>")
 def api_entity_detail(entity_id: int):
     """Return a single entity with tags, aliases, recent references,

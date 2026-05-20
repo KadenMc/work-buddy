@@ -608,6 +608,57 @@ def _replace_tags_unchecked(
         )
 
 
+def tag_autocomplete_nodes() -> list[dict[str, Any]]:
+    """Return every hierarchical tag-path node, for tag autocomplete.
+
+    Each distinct stored tag contributes one node per path-prefix at a
+    segment boundary: ``person/family`` yields the nodes ``person`` and
+    ``person/family``. A node's ``count`` is the **aggregate** usage of
+    every stored tag at or below it (the subtree sum), so an
+    intermediate node like ``person`` carries the combined popularity
+    of ``person/family`` + ``person/colleague`` even when no entity is
+    tagged with a bare ``person`` (the ancestor-collapse rule means a
+    standalone ``person`` rarely gets stored).
+
+    ``is_literal`` marks a node that is itself a stored tag, as opposed
+    to a purely intermediate segment that exists only as a prefix.
+
+    Sorted most-popular-first, then shortest, then alphabetical — a
+    stable order the autocomplete UI can consume directly.
+    """
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT tag_norm, COUNT(*) AS n FROM entity_tags "
+            "GROUP BY tag_norm"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    aggregate: dict[str, int] = {}
+    literal: set[str] = set()
+    for r in rows:
+        norm = r["tag_norm"]
+        count = int(r["n"])
+        literal.add(norm)
+        segments = norm.split("/")
+        for depth in range(1, len(segments) + 1):
+            node = "/".join(segments[:depth])
+            aggregate[node] = aggregate.get(node, 0) + count
+
+    out = [
+        {
+            "path": path,
+            "count": count,
+            "segments": path.count("/") + 1,
+            "is_literal": path in literal,
+        }
+        for path, count in aggregate.items()
+    ]
+    out.sort(key=lambda n: (-n["count"], n["segments"], n["path"]))
+    return out
+
+
 # ─── Aliases ────────────────────────────────────────────────────────
 
 

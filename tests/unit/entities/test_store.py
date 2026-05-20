@@ -333,6 +333,82 @@ def test_set_tags_missing_entity_returns_none(entity_env):
     assert store.set_tags(9999, ["person"]) is None
 
 
+# ─── Tag autocomplete ───────────────────────────────────────────────
+
+
+def test_tag_autocomplete_empty(entity_env):
+    store = entity_env.store
+    assert store.tag_autocomplete_nodes() == []
+
+
+def _tag_nodes_by_path(store):
+    return {n["path"]: n for n in store.tag_autocomplete_nodes()}
+
+
+def test_tag_autocomplete_aggregates_subtree_counts(entity_env):
+    """An intermediate node's count is the sum of every stored tag at
+    or below it — person = person/family (x2) + person/colleague (x1)."""
+    store = entity_env.store
+    store.create_entity("A", tags=["person/family"])
+    store.create_entity("B", tags=["person/family"])
+    store.create_entity("C", tags=["person/colleague"])
+    nodes = _tag_nodes_by_path(store)
+    assert nodes["person/family"]["count"] == 2
+    assert nodes["person/colleague"]["count"] == 1
+    assert nodes["person"]["count"] == 3
+
+
+def test_tag_autocomplete_includes_intermediate_nodes(entity_env):
+    """`person` appears as a node even though no entity is bare-tagged
+    it — it exists purely as a path prefix of person/family."""
+    store = entity_env.store
+    store.create_entity("A", tags=["person/family"])
+    store.create_entity("B", tags=["place/work"])
+    paths = {n["path"] for n in store.tag_autocomplete_nodes()}
+    assert paths == {"person", "person/family", "place", "place/work"}
+
+
+def test_tag_autocomplete_is_literal_flag(entity_env):
+    """is_literal marks a node that is itself a stored tag."""
+    store = entity_env.store
+    store.create_entity("A", tags=["person/family"])
+    nodes = _tag_nodes_by_path(store)
+    assert nodes["person/family"]["is_literal"] is True
+    assert nodes["person"]["is_literal"] is False
+
+
+def test_tag_autocomplete_bare_tag_is_literal(entity_env):
+    """A genuinely bare `person` tag (no descendant) is a literal node."""
+    store = entity_env.store
+    store.create_entity("A", tags=["person"])
+    nodes = _tag_nodes_by_path(store)
+    assert nodes["person"]["is_literal"] is True
+    assert nodes["person"]["count"] == 1
+
+
+def test_tag_autocomplete_segments_field(entity_env):
+    store = entity_env.store
+    store.create_entity("A", tags=["person/family"])
+    nodes = _tag_nodes_by_path(store)
+    assert nodes["person"]["segments"] == 1
+    assert nodes["person/family"]["segments"] == 2
+
+
+def test_tag_autocomplete_sorted_most_popular_first(entity_env):
+    """The result is pre-sorted so the autocomplete UI can take the
+    first match as the best — most popular, then shortest, then alpha."""
+    store = entity_env.store
+    store.create_entity("A", tags=["person/family"])
+    store.create_entity("B", tags=["person/family"])
+    store.create_entity("C", tags=["person/colleague"])
+    store.create_entity("D", tags=["place/work"])
+    nodes = store.tag_autocomplete_nodes()
+    # `person` (count 3) outranks everything.
+    assert nodes[0]["path"] == "person"
+    counts = [n["count"] for n in nodes]
+    assert counts == sorted(counts, reverse=True)
+
+
 # ─── Aliases ────────────────────────────────────────────────────────
 
 
