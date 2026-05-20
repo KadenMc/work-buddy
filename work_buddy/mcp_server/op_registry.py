@@ -39,11 +39,23 @@ _OPS: dict[str, Callable] = {}
 # ``Capability``. Empty for the overwhelming majority of capabilities.
 _OP_EFFECTS: dict[str, list] = {}
 # Short names (e.g. ``"memory_ops"``) of op modules whose import failed during
-# ``load_builtin_ops`` — typically because an optional runtime dependency is
+# ``load_builtin_ops`` because a *whitelisted* optional runtime dependency is
 # absent from this environment. Consumers asserting that every declaration's
 # op resolves can consult this set to distinguish a real bug from an expected
-# per-environment gap.
+# per-environment gap. Failures outside the whitelist propagate.
 _FAILED_MODULES: set[str] = set()
+
+# Op modules that are allowed to skip loading when a specific optional Python
+# dependency is missing — the only case in which a missing op is treated as
+# safe degradation rather than a regression. Any *other* import failure (a
+# different missing module, a syntax error, a wrong ``register_op`` call)
+# propagates out of ``load_builtin_ops`` and crashes the gateway boot loudly.
+#
+# Keys are op-module short names (matching ``ops/<name>.py``); values are the
+# set of top-level package names whose absence is acceptable for that module.
+_OPTIONAL_DEP_WHITELIST: dict[str, set[str]] = {
+    "memory_ops": {"hindsight_client"},
+}
 _builtins_loaded = False
 
 
@@ -120,10 +132,13 @@ def load_builtin_ops() -> None:
     once. If a prior ``clear_ops`` reset the guard while the op modules are
     still cached in ``sys.modules``, they are reloaded so registration re-runs.
 
-    A per-module failure (an optional dependency the host environment lacks,
-    e.g. ``hindsight_client`` on CI) is logged and skipped; remaining modules
-    still register. This mirrors how the legacy capability builders were
-    guarded with try/except inside ``_build_registry``.
+    A ``ModuleNotFoundError`` whose missing module is whitelisted for the op
+    module being loaded (see ``_OPTIONAL_DEP_WHITELIST``) is logged and
+    skipped — the corresponding capabilities are simply unavailable in this
+    environment. Any other exception (a different missing module, a syntax
+    error, a wrong ``register_op`` call) propagates out of this function and
+    crashes the gateway boot, so a genuine regression in an op module
+    surfaces immediately instead of masquerading as safe degradation.
     """
     global _builtins_loaded
     if _builtins_loaded:
@@ -142,12 +157,18 @@ def load_builtin_ops() -> None:
                 importlib.reload(sys.modules[full_name])
             else:
                 importlib.import_module(full_name)
-        except Exception as exc:
-            _FAILED_MODULES.add(mod.name)
-            logger.warning(
-                "Op module %s failed to load (%s: %s); skipping its ops.",
-                full_name, type(exc).__name__, exc,
-            )
+        except ModuleNotFoundError as exc:
+            allowed = _OPTIONAL_DEP_WHITELIST.get(mod.name, set())
+            missing = (exc.name or "").split(".")[0]
+            if missing in allowed:
+                _FAILED_MODULES.add(mod.name)
+                logger.warning(
+                    "Op module %s skipped: optional dependency %r is absent "
+                    "from this environment.",
+                    full_name, missing,
+                )
+            else:
+                raise
 
     _builtins_loaded = True
     logger.debug("Built-in ops loaded: %d registered", len(_OPS))
