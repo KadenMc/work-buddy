@@ -86,14 +86,14 @@ def test_create_entity_with_tags_and_aliases_and_description(entity_env):
     e = store.create_entity(
         "Max McKeen",
         description="Kaden's younger brother.",
-        tags=["person", "Person/Family"],
+        tags=["Person/Family", "institution"],
         aliases=["Max"],
         author="agent",
     )
     assert e["description"] == "Kaden's younger brother."
     assert e["author"] == "agent"
     tag_norms = {t["tag_norm"] for t in e["tags"]}
-    assert tag_norms == {"person", "person/family"}
+    assert tag_norms == {"person/family", "institution"}
     alias_norms = {a["alias_norm"] for a in e["aliases"]}
     assert alias_norms == {"max"}
 
@@ -243,13 +243,89 @@ def test_set_tags_replaces_full_set(entity_env):
 
 
 def test_set_tags_dedup_within_input(entity_env):
+    """Exact duplicates collapse — case-folded, whitespace-trimmed.
+    Uses non-hierarchical tags so this exercises only exact-dedup,
+    not ancestor collapse (covered separately below)."""
     store = entity_env.store
     e = store.create_entity("X")
     updated = store.set_tags(
-        e["id"], ["person", "Person", "  person/family  "],
+        e["id"], ["place", "Place", "  institution  "],
     )
     norms = {t["tag_norm"] for t in updated["tags"]}
-    assert norms == {"person", "person/family"}
+    assert norms == {"place", "institution"}
+
+
+def test_set_tags_collapses_ancestor_when_descendant_present(entity_env):
+    """An ancestor tag is dropped when a more specific descendant is
+    in the same set — person is implied by person/family."""
+    store = entity_env.store
+    e = store.create_entity("Max")
+    updated = store.set_tags(e["id"], ["person", "person/family"])
+    norms = {t["tag_norm"] for t in updated["tags"]}
+    assert norms == {"person/family"}
+
+
+def test_create_entity_collapses_ancestor(entity_env):
+    """The collapse runs on create, not only on set_tags."""
+    store = entity_env.store
+    e = store.create_entity("Max", tags=["person", "person/family"])
+    norms = {t["tag_norm"] for t in e["tags"]}
+    assert norms == {"person/family"}
+
+
+def test_collapse_keeps_siblings(entity_env):
+    """Two descendants of the same ancestor are siblings — neither is
+    an ancestor of the other, both survive. The shared ancestor, if
+    also passed, is still dropped."""
+    store = entity_env.store
+    e = store.create_entity(
+        "Max", tags=["person", "person/family", "person/colleague"],
+    )
+    norms = {t["tag_norm"] for t in e["tags"]}
+    assert norms == {"person/family", "person/colleague"}
+
+
+def test_collapse_keeps_lone_ancestor(entity_env):
+    """An ancestor with no descendant in the set is a valid leaf and
+    is kept — a person whose sub-type is not known."""
+    store = entity_env.store
+    e = store.create_entity("Max", tags=["person"])
+    norms = {t["tag_norm"] for t in e["tags"]}
+    assert norms == {"person"}
+
+
+def test_collapse_deep_hierarchy_keeps_only_deepest(entity_env):
+    """The rule applies transitively: of person, person/family, and
+    person/family/close, only the deepest survives."""
+    store = entity_env.store
+    e = store.create_entity(
+        "Max", tags=["person", "person/family", "person/family/close"],
+    )
+    norms = {t["tag_norm"] for t in e["tags"]}
+    assert norms == {"person/family/close"}
+
+
+def test_collapse_does_not_treat_unrelated_prefix_as_ancestor(entity_env):
+    """``person`` is not an ancestor of ``person-of-interest`` — the
+    ancestor test is on full path segments (T + '/'), not raw string
+    prefix. Both survive."""
+    store = entity_env.store
+    e = store.create_entity("Max", tags=["person", "person-of-interest"])
+    norms = {t["tag_norm"] for t in e["tags"]}
+    assert norms == {"person", "person-of-interest"}
+
+
+def test_collapsed_ancestor_still_matches_hierarchical_filter(entity_env):
+    """The contract that makes the collapse lossless: an entity stored
+    with only ``person/family`` (after ``person`` is collapsed away)
+    is still returned by a ``tag='person'`` query."""
+    store = entity_env.store
+    e = store.create_entity("Max", tags=["person", "person/family"])
+    # The ancestor was collapsed out of storage...
+    assert {t["tag_norm"] for t in e["tags"]} == {"person/family"}
+    # ...but a query for that ancestor still resolves the entity.
+    found = {x["canonical_name"] for x in store.list_entities(tag="person")}
+    assert "Max" in found
 
 
 def test_set_tags_missing_entity_returns_none(entity_env):

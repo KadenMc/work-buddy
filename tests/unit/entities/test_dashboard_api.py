@@ -200,11 +200,23 @@ def test_delete_missing_404(api_client):
 def test_set_tags_replaces_set(api_client):
     e = api_client.store.create_entity("Max", tags=["person/family"])
     resp = api_client.client.post(f"/api/entities/{e['id']}/tags", json={
-        "tags": ["person/colleague", "person"],
+        "tags": ["person/colleague", "institution"],
     })
     assert resp.status_code == 200
     norms = {t["tag_norm"] for t in resp.get_json()["tags"]}
-    assert norms == {"person/colleague", "person"}
+    assert norms == {"person/colleague", "institution"}
+
+
+def test_set_tags_collapses_ancestor(api_client):
+    """The store's ancestor collapse applies through the HTTP route —
+    POSTing person + person/family stores only person/family."""
+    e = api_client.store.create_entity("Max")
+    resp = api_client.client.post(f"/api/entities/{e['id']}/tags", json={
+        "tags": ["person", "person/family"],
+    })
+    assert resp.status_code == 200
+    norms = {t["tag_norm"] for t in resp.get_json()["tags"]}
+    assert norms == {"person/family"}
 
 
 def test_set_tags_clear(api_client):

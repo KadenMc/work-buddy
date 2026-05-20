@@ -33,7 +33,7 @@ Editing an entity is split across five capabilities so a focused change cannot a
 
 ## Tags — entity_set_tags
 
-`entity_set_tags(entity_id, tags)` REPLACES the full tag set. To add one tag, fetch the current set with `entity_get`, append, and pass the whole list. To clear all tags, pass `[]`.
+`entity_set_tags(entity_id, tags)` REPLACES the full tag set. To add one tag, fetch the current set with `entity_get`, append, and pass the whole list. To clear all tags, pass `[]`. The store normalizes each tag and collapses redundancy: exact duplicates merge, and an ancestor tag is dropped when a more specific descendant is in the same set (`["person", "person/family"]` stores only `person/family`). So you never need to strip ancestors yourself before passing the list.
 
 ## Aliases — entity_add_alias / entity_remove_alias
 

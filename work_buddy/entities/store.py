@@ -255,6 +255,13 @@ def list_entities(
     ``person/colleague``, etc. The match is on ``tag_norm`` with a
     prefix-and-slash expansion.
 
+    This prefix expansion is the contract that lets
+    :func:`_collapse_ancestor_tags` drop a redundant ancestor at write
+    time: an entity stored with only ``person/family`` is still
+    returned here for ``tag='person'``. Write-side collapse and this
+    read-side expansion are two halves of one design — changing either
+    in isolation breaks ancestor queries.
+
     ``limit`` caps the result set; ``None`` returns every match.
     """
     conn = get_connection()
@@ -263,6 +270,10 @@ def list_entities(
             norm = _normalize_tag(tag)
             if not norm:
                 return []
+            # ``tag_norm = ?`` catches an exact-leaf match;
+            # ``LIKE ?||'/%'`` catches every descendant. Together they
+            # resolve a query for an ancestor that was collapsed away
+            # at write time.
             sql = (
                 "SELECT e.* FROM entities e "
                 "JOIN entity_tags t ON t.entity_id = e.id "
@@ -484,9 +495,12 @@ def set_tags(
 ) -> dict[str, Any] | None:
     """Replace the full tag set on an entity.
 
-    Tags are normalized via :func:`_normalize_tag`. Duplicates within
-    the input collapse via the unique index. Empty tags after
-    normalization are silently dropped.
+    Tags are normalized via :func:`_normalize_tag`. Empty tags are
+    dropped. Exact duplicates collapse. An ancestor tag is dropped
+    when a more specific descendant is also present — passing
+    ``["person", "person/family"]`` stores only ``person/family``
+    (see :func:`_collapse_ancestor_tags`); the hierarchical read
+    filter still resolves a ``person`` query against it.
 
     Returns the updated record, or ``None`` if no such entity.
     """
@@ -520,15 +534,60 @@ def set_tags(
     return get_entity(entity_id)
 
 
+def _collapse_ancestor_tags(norms: list[str]) -> set[str]:
+    """Return the subset of normalized tags to keep after dropping any
+    tag that is a strict hierarchical ancestor of another in the set.
+
+    ``person`` is dropped when ``person/family`` is present: the
+    ancestor carries no information the descendant does not, and no
+    filtering power either — :func:`list_entities`'s ``tag_norm = ?
+    OR tag_norm LIKE ?||'/%'`` prefix match already resolves a
+    ``person`` query against a ``person/family`` row. Collapsing the
+    ancestor at write time is therefore lossless.
+
+    Kept as-is:
+
+    - ``person/family`` + ``person/colleague`` — siblings; neither is
+      an ancestor of the other (a family member who is also a
+      colleague keeps both).
+    - ``person`` alone — a valid leaf (a person whose sub-type is not
+      known).
+    - ``person/family`` + ``person/family/close`` — only the deepest
+      survives; the same rule applied transitively.
+
+    The comparison is on full path segments (``T + '/'``), so
+    ``person`` is not treated as an ancestor of an unrelated
+    ``person-of-interest``.
+    """
+    keep: set[str] = set()
+    for t in norms:
+        prefix = t + "/"
+        if any(other != t and other.startswith(prefix) for other in norms):
+            continue  # a more specific descendant is present
+        keep.add(t)
+    return keep
+
+
 def _replace_tags_unchecked(
     conn: sqlite3.Connection,
     entity_id: int,
     tags: Iterable[str],
 ) -> None:
-    """Replace an entity's tag set. Caller must hold the transaction."""
+    """Replace an entity's tag set. Caller must hold the transaction.
+
+    Two passes: normalize + drop exact duplicates, then drop ancestor
+    tags implied by a more specific descendant (see
+    :func:`_collapse_ancestor_tags`). The stored set is therefore
+    canonical — only the most specific tag in any hierarchy chain
+    survives — while the hierarchical read filter still resolves the
+    dropped ancestors.
+    """
     conn.execute(
         "DELETE FROM entity_tags WHERE entity_id = ?", (entity_id,)
     )
+    # Pass 1: normalize, drop blanks + exact duplicates, keep first-seen
+    # display casing.
+    pairs: list[tuple[str, str]] = []  # (display, norm)
     seen: set[str] = set()
     for tag in tags:
         display = tag.strip()
@@ -536,6 +595,12 @@ def _replace_tags_unchecked(
         if not norm or norm in seen:
             continue
         seen.add(norm)
+        pairs.append((display, norm))
+    # Pass 2: drop ancestors that a descendant in the same set implies.
+    keep = _collapse_ancestor_tags([norm for _, norm in pairs])
+    for display, norm in pairs:
+        if norm not in keep:
+            continue
         conn.execute(
             "INSERT INTO entity_tags (entity_id, tag, tag_norm) "
             "VALUES (?, ?, ?)",

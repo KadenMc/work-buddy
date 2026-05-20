@@ -29,7 +29,7 @@ Always call `entity_resolve` on the name first. If a match already exists, do NO
 
 - **canonical_name** (required) — the display name, e.g. `Max McKeen`. Stored as-is; a normalized form (lowercase, collapsed whitespace) drives case-insensitive uniqueness. Two entities cannot share a normalized name.
 - **description** — free-form prose. This is where relationship context lives: "Max McKeen — Kaden's younger brother." Write the description so a cold agent reading it understands what the entity means to the user.
-- **tags** — hierarchical, multi-valued. `person`, `person/family`, `person/colleague`, `place/work`, `institution`. Prefer specific tags; the hierarchy means `person/family` is still found by a `person` filter.
+- **tags** — hierarchical, multi-valued. `person`, `person/family`, `person/colleague`, `place/work`, `institution`. Prefer specific tags; the hierarchy means `person/family` is still found by a `person` filter. You do **not** need to also pass the ancestor: if you supply both `person` and `person/family`, the store keeps only `person/family` — the ancestor is implied and is collapsed away at write time. Pass a bare `person` only when no sub-type is known.
 - **aliases** — alternative names that should resolve to this entity. Each alias is globally unique across the registry.
 - **author** — `user` (default) or `agent`. Agent-authored creates are consent-gated; the user approves the pattern once per cache window.
 

@@ -284,11 +284,21 @@ def test_entity_delete_missing_returns_error(wrappers_env):
 def test_entity_set_tags(wrappers_env):
     e = wrappers_env.entities.create_entity("Max")
     out = json.loads(wrappers_env.cw.entity_set_tags(
-        entity_id=e["id"], tags=["person", "person/family"],
+        entity_id=e["id"], tags=["person/family", "place/work"],
     ))
     assert {t["tag_norm"] for t in out["tags"]} == {
-        "person", "person/family",
+        "person/family", "place/work",
     }
+
+
+def test_entity_set_tags_collapses_ancestor(wrappers_env):
+    """Ancestor collapse applies through the capability wrapper —
+    person is dropped when person/family is in the same set."""
+    e = wrappers_env.entities.create_entity("Max")
+    out = json.loads(wrappers_env.cw.entity_set_tags(
+        entity_id=e["id"], tags=["person", "person/family"],
+    ))
+    assert {t["tag_norm"] for t in out["tags"]} == {"person/family"}
 
 
 def test_entity_add_alias_and_remove(wrappers_env):

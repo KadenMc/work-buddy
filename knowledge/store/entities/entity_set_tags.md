@@ -1,7 +1,7 @@
 ---
 name: Entity Set Tags
 kind: capability
-description: Replace the full tag set on an entity. Pass an empty list to clear. Tags are normalized + de-duplicated before writing.
+description: Replace the full tag set on an entity. Pass an empty list to clear. Tags are normalized; exact duplicates and redundant ancestor tags (person when person/family is present) are collapsed before writing.
 capability_name: entity_set_tags
 category: entities
 parameters:
