@@ -30,6 +30,7 @@ const staticLoaders = {
     chats: () => loadChats(),
     contracts: () => loadContracts(),
     projects: () => loadProjects(),
+    memory: () => loadMemory(),
     costs: () => loadCosts(),
     settings: () => loadSettings(),
 };
@@ -157,6 +158,16 @@ function _persistHash() {
             // value so the typical view leaves the hash clean.
             if (WB_SETTINGS_SUBTAB && WB_SETTINGS_SUBTAB !== 'status') {
                 params.set('st', WB_SETTINGS_SUBTAB);
+            }
+        } else if (tab === 'memory'
+                   && typeof _selectedEntityId !== 'undefined'
+                   && _selectedEntityId != null) {
+            // Memory uses the entity's stable integer id so the URL
+            // survives canonical-name renames.
+            params.set('e', String(_selectedEntityId));
+            if (typeof WB_MEMORY_SUBTAB !== 'undefined'
+                && WB_MEMORY_SUBTAB && WB_MEMORY_SUBTAB !== 'entities') {
+                params.set('mst', WB_MEMORY_SUBTAB);
             }
         }
     }

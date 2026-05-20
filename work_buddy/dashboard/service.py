@@ -2265,6 +2265,252 @@ def api_project_memory_items(slug: str):
 
 
 # ---------------------------------------------------------------------------
+# Entity registry (Memory tab)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/entities/_schema")
+def api_entities_schema():
+    """Return enum metadata for the entity store.
+
+    Source of truth for any future frontend selects (source-kind
+    chips, author chips). Derived from constants in
+    ``work_buddy.entities.store`` so schema additions propagate without
+    a frontend code change.
+    """
+    try:
+        from work_buddy.entities.store import (
+            VALID_AUTHORS, VALID_SOURCE_KINDS,
+        )
+        return jsonify({
+            "authors": sorted(VALID_AUTHORS),
+            "source_kinds": sorted(VALID_SOURCE_KINDS),
+        })
+    except Exception as e:
+        logger.exception("Failed to read entities schema")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.get("/api/entities")
+def api_entities_list():
+    """List entities, optionally filtered by a hierarchical tag.
+
+    ``?tag=person`` matches every entity tagged ``person`` plus
+    ``person/family``, ``person/colleague``, etc. ``?limit=N`` caps
+    the result set.
+    """
+    try:
+        from work_buddy.entities.store import list_entities
+        tag = request.args.get("tag")
+        limit = request.args.get("limit", type=int)
+        entities = list_entities(tag=tag or None, limit=limit)
+        return jsonify({"entities": entities})
+    except Exception as e:
+        logger.exception("Failed to list entities")
+        return jsonify({"entities": [], "error": str(e)})
+
+
+@app.get("/api/entities/<int:entity_id>")
+def api_entity_detail(entity_id: int):
+    """Return a single entity with tags, aliases, recent references,
+    and a total reference count."""
+    try:
+        from work_buddy.entities.store import (
+            get_entity, list_references, count_references,
+        )
+        e = get_entity(entity_id)
+        if not e:
+            return jsonify({"error": f"Entity id={entity_id} not found"}), 404
+        e["recent_references"] = list_references(entity_id, limit=10)
+        e["reference_count"] = count_references(entity_id)
+        return jsonify(e)
+    except Exception as exc:
+        logger.exception("Failed to get entity %d", entity_id)
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.post("/api/entities")
+def api_entity_create():
+    """Create a new entity. User-author write (the dashboard click
+    IS the consent)."""
+    try:
+        from work_buddy.entities.store import create_entity
+        body = request.get_json(silent=True) or {}
+        canonical_name = (body.get("canonical_name") or "").strip()
+        if not canonical_name:
+            return jsonify({"error": "canonical_name is required"}), 400
+        entity = create_entity(
+            canonical_name,
+            description=body.get("description") or None,
+            tags=body.get("tags") or None,
+            aliases=body.get("aliases") or None,
+            author="user",
+        )
+        return jsonify(entity), 201
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        logger.exception("Failed to create entity")
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.patch("/api/entities/<int:entity_id>")
+def api_entity_update(entity_id: int):
+    """Update an entity's canonical name and/or description.
+
+    Empty-string description clears it. Omitted fields are left
+    untouched. Tags and aliases are managed through their own routes.
+    """
+    try:
+        from work_buddy.entities.store import update_entity
+        body = request.get_json(silent=True) or {}
+        kwargs = {"author": "user"}
+        if "canonical_name" in body and body["canonical_name"] is not None:
+            kwargs["canonical_name"] = body["canonical_name"]
+        if "description" in body:
+            desc = body["description"]
+            kwargs["description"] = desc if desc != "" else None
+        updated = update_entity(entity_id, **kwargs)
+        if updated is None:
+            return jsonify({"error": f"Entity id={entity_id} not found"}), 404
+        return jsonify(updated)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        logger.exception("Failed to update entity %d", entity_id)
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.delete("/api/entities/<int:entity_id>")
+def api_entity_delete(entity_id: int):
+    """Hard-delete an entity (cascades tags, aliases, references).
+
+    The dashboard click confirms — no separate consent prompt is
+    needed at this layer (the wrapper's consent gate exists for
+    programmatic agent callers).
+    """
+    try:
+        from work_buddy.entities.store import delete_entity
+        if not delete_entity(entity_id, author="user"):
+            return jsonify({"error": f"Entity id={entity_id} not found"}), 404
+        return jsonify({"deleted": True, "entity_id": entity_id})
+    except Exception as exc:
+        logger.exception("Failed to delete entity %d", entity_id)
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.post("/api/entities/<int:entity_id>/tags")
+def api_entity_set_tags(entity_id: int):
+    """Replace the full tag set on an entity. Body: ``{tags: [...]}``."""
+    try:
+        from work_buddy.entities.store import set_tags
+        body = request.get_json(silent=True) or {}
+        tags = body.get("tags") or []
+        if not isinstance(tags, list):
+            return jsonify({"error": "tags must be a list"}), 400
+        updated = set_tags(entity_id, tags, author="user")
+        if updated is None:
+            return jsonify({"error": f"Entity id={entity_id} not found"}), 404
+        return jsonify(updated)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        logger.exception("Failed to set tags on entity %d", entity_id)
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.post("/api/entities/<int:entity_id>/aliases")
+def api_entity_add_alias(entity_id: int):
+    """Add an alias to an entity. Body: ``{alias: \"...\"}``."""
+    try:
+        from work_buddy.entities.store import add_alias
+        body = request.get_json(silent=True) or {}
+        alias = (body.get("alias") or "").strip()
+        if not alias:
+            return jsonify({"error": "alias is required"}), 400
+        updated = add_alias(entity_id, alias, author="user")
+        if updated is None:
+            return jsonify({"error": f"Entity id={entity_id} not found"}), 404
+        return jsonify(updated)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        logger.exception("Failed to add alias on entity %d", entity_id)
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.delete("/api/entities/<int:entity_id>/aliases")
+def api_entity_remove_alias(entity_id: int):
+    """Remove an alias from an entity. Body: ``{alias: \"...\"}``."""
+    try:
+        from work_buddy.entities.store import remove_alias
+        body = request.get_json(silent=True) or {}
+        alias = (body.get("alias") or "").strip()
+        if not alias:
+            return jsonify({"error": "alias is required"}), 400
+        updated = remove_alias(entity_id, alias, author="user")
+        if updated is None:
+            return jsonify({"error": f"Entity id={entity_id} not found"}), 404
+        return jsonify(updated)
+    except Exception as exc:
+        logger.exception("Failed to remove alias on entity %d", entity_id)
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.get("/api/entities/<int:entity_id>/references")
+def api_entity_list_references(entity_id: int):
+    """List references for an entity. ``?limit=N`` caps; default 50."""
+    try:
+        from work_buddy.entities.store import list_references, count_references
+        limit = request.args.get("limit", 50, type=int)
+        refs = list_references(entity_id, limit=limit)
+        total = count_references(entity_id)
+        return jsonify({
+            "entity_id": entity_id,
+            "references": refs,
+            "count": len(refs),
+            "total": total,
+        })
+    except Exception as exc:
+        logger.exception("Failed to list references for entity %d", entity_id)
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.post("/api/entities/<int:entity_id>/references")
+def api_entity_add_reference(entity_id: int):
+    """Explicitly append a reference row.
+
+    Body: ``{source_path, source_kind, snippet?}``. De-dup window
+    applies (same store default as the side-effect path).
+    """
+    try:
+        from work_buddy.entities.store import record_reference
+        body = request.get_json(silent=True) or {}
+        source_path = (body.get("source_path") or "").strip()
+        source_kind = (body.get("source_kind") or "").strip()
+        if not source_path or not source_kind:
+            return jsonify({
+                "error": "source_path and source_kind are required",
+            }), 400
+        rid = record_reference(
+            entity_id=entity_id,
+            source_path=source_path,
+            source_kind=source_kind,
+            snippet=body.get("snippet"),
+        )
+        if rid is None:
+            return jsonify({"error": f"Entity id={entity_id} not found"}), 404
+        return jsonify({
+            "reference_id": rid, "entity_id": entity_id,
+        }), 201
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        logger.exception("Failed to add reference for entity %d", entity_id)
+        return jsonify({"error": str(exc)}), 500
+
+
+# ---------------------------------------------------------------------------
 # Workflow views
 # ---------------------------------------------------------------------------
 

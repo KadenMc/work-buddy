@@ -59,6 +59,8 @@ def _html() -> str:
         <button class="tab-btn" data-tab="chats">Chats</button>
         <button class="tab-btn" data-tab="contracts">Contracts</button>
         <button class="tab-btn" data-tab="projects">Projects</button>
+        <button class="tab-btn" data-tab="memory"
+                title="Entity registry — named things in your world.">Memory</button>
         <button class="tab-btn" data-tab="costs">Costs</button>
         <!-- Settings is an off-nav tab reached via the gear icon in the
              header. The panel still lives below (#panel-settings) and
@@ -561,6 +563,27 @@ def _html() -> str:
         </div>
         <div id="project-detail" style="flex:1; min-width:0;">
             <div class="empty-state" style="margin-top:80px;">Select a project to view details</div>
+        </div>
+    </div>
+</div>
+
+<!-- MEMORY — entity registry. Sub-tab structure mirrors Settings; v1
+     ships only the Entities sub-view. Future memory-shaped sub-views
+     (e.g. a unified Contracts + Projects rollup) plug in under the
+     same bar without an IA migration. -->
+<div class="tab-panel" id="panel-memory">
+    <div class="memory-subtab-bar">
+        <button class="memory-subtab-btn active" data-mst="entities"
+                onclick="switchMemorySubtab('entities')">Entities</button>
+    </div>
+    <div class="memory-subtab-panel active" id="msp-entities">
+        <div style="display:flex; gap:24px; align-items:flex-start; min-height:500px;">
+            <div id="entities-list" style="flex:0 0 340px; position:sticky; top:16px; max-height:calc(100vh - 32px); overflow-y:auto;">
+                <div class="loading">Loading entities...</div>
+            </div>
+            <div id="entity-detail" style="flex:1; min-width:0;">
+                <div class="empty-state" style="margin-top:80px;">Select an entity to view details</div>
+            </div>
         </div>
     </div>
 </div>
