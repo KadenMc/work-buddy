@@ -23,6 +23,23 @@ let _entitiesCache = [];
 let _selectedEntityId = null;
 let _entityTagFilter = '';
 let WB_MEMORY_SUBTAB = 'entities';
+// True while the inline "New entity" form occupies the detail panel.
+// Guards entitiesSurface.refresh() from morphing the half-filled form
+// away when an SSE event arrives mid-create.
+let _entityCreateFormOpen = false;
+
+// Surgical in-place render. morphdom (via window._wbMorphReplace) diffs
+// fresh HTML against the live DOM so scroll position, focused inputs,
+// and unchanged nodes survive — the Memory tab never does a wholesale
+// innerHTML wipe. Falls back to innerHTML only if morphdom is absent.
+function _entityMorph(el, html) {
+    if (!el) return;
+    if (typeof window._wbMorphReplace === 'function') {
+        window._wbMorphReplace(el, html);
+    } else {
+        el.innerHTML = html;
+    }
+}
 
 function switchMemorySubtab(mst) {
     if (mst !== 'entities') mst = 'entities';  // v1: only Entities exists
@@ -65,9 +82,8 @@ function renderEntityList(entities) {
     const container = document.getElementById('entities-list');
     if (!container) return;
     if (entities.length === 0) {
-        container.innerHTML = renderEntityListHeader() +
-            '<div class="empty-state">No entities yet. Click <strong>+ New entity</strong> above to create one.</div>';
-        wireEntityListHeader();
+        _entityMorph(container, renderEntityListHeader() +
+            '<div class="empty-state">No entities yet. Click <strong>+ New entity</strong> above to create one.</div>');
         return;
     }
 
@@ -109,31 +125,30 @@ function renderEntityList(entities) {
                 '</div>';
         }
     }
-    container.innerHTML = html;
-    wireEntityListHeader();
+    _entityMorph(container, html);
 }
 
 function renderEntityListHeader() {
+    // The tag-filter input commits via inline handlers (onchange +
+    // Enter) rather than addEventListener: morphdom preserves the live
+    // input node across re-renders, so re-attaching a listener every
+    // render would stack duplicates. Inline handlers are attributes —
+    // morphdom syncs them idempotently.
     return '<div class="entity-list-header">' +
         '<button class="entity-new-btn" onclick="openEntityCreateForm()">+ New entity</button>' +
-        '<input type="text" id="entity-tag-filter" class="entity-tag-filter-input" placeholder="Filter by tag (e.g. person)" value="' +
-        escapeHtml(_entityTagFilter) + '" />' +
+        '<input type="text" id="entity-tag-filter" class="entity-tag-filter-input"' +
+        ' placeholder="Filter by tag (e.g. person)" value="' +
+        escapeHtml(_entityTagFilter) + '"' +
+        ' onchange="onEntityTagFilterCommit(this.value)"' +
+        ' onkeydown="if(event.key===\'Enter\')onEntityTagFilterCommit(this.value)" />' +
         '</div>';
 }
 
-function wireEntityListHeader() {
-    const input = document.getElementById('entity-tag-filter');
-    if (!input) return;
-    input.addEventListener('change', () => {
-        _entityTagFilter = input.value.trim();
-        loadEntities();
-    });
-    input.addEventListener('keydown', e => {
-        if (e.key === 'Enter') {
-            _entityTagFilter = input.value.trim();
-            loadEntities();
-        }
-    });
+function onEntityTagFilterCommit(value) {
+    const next = (value || '').trim();
+    if (next === _entityTagFilter) return;  // no-op: avoids a redundant fetch
+    _entityTagFilter = next;
+    loadEntities();
 }
 
 function _topTag(entity) {
@@ -145,6 +160,7 @@ function _topTag(entity) {
 
 async function selectEntity(eid) {
     _selectedEntityId = eid;
+    _entityCreateFormOpen = false;
     if (typeof _persistHash === 'function') _persistHash();
     document.querySelectorAll('.entity-list-row').forEach(row => {
         row.classList.toggle('selected',
@@ -156,16 +172,17 @@ async function selectEntity(eid) {
 async function renderEntityDetail(eid) {
     const detail = document.getElementById('entity-detail');
     if (!detail) return;
-    detail.innerHTML = '<div class="loading">Loading entity...</div>';
+    // No "Loading…" placeholder: the fetch hits a local endpoint and
+    // morphdom diffs the result in place, so the prior content simply
+    // holds for the round-trip rather than flashing blank.
     const data = await fetchJSON('/api/entities/' + eid);
     if (!data || data.error) {
-        detail.innerHTML = '<div class="empty-state">' +
+        _entityMorph(detail, '<div class="empty-state">' +
             escapeHtml(data && data.error ? data.error : 'Failed to load') +
-            '</div>';
+            '</div>');
         return;
     }
-    detail.innerHTML = _entityDetailHTML(data);
-    wireEntityDetailEvents(data);
+    _entityMorph(detail, _entityDetailHTML(data));
 }
 
 function _entityDetailHTML(e) {
@@ -178,13 +195,15 @@ function _entityDetailHTML(e) {
         '  <div class="entity-detail-header">' +
         '    <input id="entity-name-input" class="entity-name-input"' +
         '           value="' + escapeHtml(e.canonical_name) + '"' +
-        '           data-original="' + escapeHtml(e.canonical_name) + '" />' +
+        '           data-original="' + escapeHtml(e.canonical_name) + '"' +
+        '           oninput="entitySyncDirty()" />' +
         '    <button class="entity-delete-btn" onclick="deleteEntity(' + e.id + ')">Delete</button>' +
         '  </div>' +
         '  <div class="entity-detail-row">' +
         '    <label>Description</label>' +
         '    <textarea id="entity-description-input" class="entity-description-input"' +
         '              data-original="' + escapeHtml(e.description || '') + '"' +
+        '              oninput="entitySyncDirty()"' +
         '              placeholder="What is this? Relationship context lives here.">' +
         escapeHtml(e.description || '') +
         '    </textarea>' +
@@ -199,7 +218,8 @@ function _entityDetailHTML(e) {
         tags.map(t => _renderTagChip(e.id, t)).join('') +
         '    </div>' +
         '    <div class="entity-tag-add-row">' +
-        '      <input id="entity-tag-add" class="entity-tag-add-input" placeholder="Add tag (e.g. person/family)" />' +
+        '      <input id="entity-tag-add" class="entity-tag-add-input" placeholder="Add tag (e.g. person/family)"' +
+        '             onkeydown="if(event.key===\'Enter\'){event.preventDefault();addEntityTag(' + e.id + ')}" />' +
         '      <button class="entity-add-chip-btn" onclick="addEntityTag(' + e.id + ')">Add</button>' +
         '    </div>' +
         '    <div id="entity-tag-status" class="entity-save-status"></div>' +
@@ -210,7 +230,8 @@ function _entityDetailHTML(e) {
         aliases.map(a => _renderAliasChip(e.id, a)).join('') +
         '    </div>' +
         '    <div class="entity-alias-add-row">' +
-        '      <input id="entity-alias-add" class="entity-alias-add-input" placeholder="Add alias" />' +
+        '      <input id="entity-alias-add" class="entity-alias-add-input" placeholder="Add alias"' +
+        '             onkeydown="if(event.key===\'Enter\'){event.preventDefault();addEntityAlias(' + e.id + ')}" />' +
         '      <button class="entity-add-chip-btn" onclick="addEntityAlias(' + e.id + ')">Add</button>' +
         '    </div>' +
         '    <div id="entity-alias-status" class="entity-save-status"></div>' +
@@ -261,36 +282,19 @@ function _renderRefRow(ref) {
         '</div>';
 }
 
-function wireEntityDetailEvents(_e) {
-    // Enable Save on dirty changes — purely visual hint; the user can
-    // hit Save unconditionally.
+// Toggle the Save button's "dirty" affordance when the name or
+// description diverges from the values last loaded from the server.
+// Bound via inline oninput on both fields — no addEventListener, so a
+// morphdom re-render that preserves the live input cannot stack a
+// duplicate handler. Purely a visual hint; Save works regardless.
+function entitySyncDirty() {
     const name = document.getElementById('entity-name-input');
     const desc = document.getElementById('entity-description-input');
     const saveBtn = document.querySelector('.entity-save-btn');
     if (!name || !desc || !saveBtn) return;
-    function syncDirty() {
-        const dirty = name.value !== name.dataset.original
-            || desc.value !== desc.dataset.original;
-        saveBtn.classList.toggle('dirty', dirty);
-    }
-    name.addEventListener('input', syncDirty);
-    desc.addEventListener('input', syncDirty);
-
-    // Enter in the tag/alias add inputs commits.
-    const tagAdd = document.getElementById('entity-tag-add');
-    if (tagAdd) tagAdd.addEventListener('keydown', ev => {
-        if (ev.key === 'Enter') {
-            ev.preventDefault();
-            addEntityTag(_e.id);
-        }
-    });
-    const aliasAdd = document.getElementById('entity-alias-add');
-    if (aliasAdd) aliasAdd.addEventListener('keydown', ev => {
-        if (ev.key === 'Enter') {
-            ev.preventDefault();
-            addEntityAlias(_e.id);
-        }
-    });
+    const dirty = name.value !== name.dataset.original
+        || desc.value !== desc.dataset.original;
+    saveBtn.classList.toggle('dirty', dirty);
 }
 
 // ---- Mutations ----
@@ -450,9 +454,10 @@ async function deleteEntity(eid) {
         return;
     }
     _selectedEntityId = null;
+    _entityCreateFormOpen = false;
     const detail = document.getElementById('entity-detail');
     if (detail) {
-        detail.innerHTML = '<div class="empty-state" style="margin-top:80px;">Select an entity to view details</div>';
+        _entityMorph(detail, '<div class="empty-state" style="margin-top:80px;">Select an entity to view details</div>');
     }
     await loadEntities();
 }
@@ -462,7 +467,8 @@ async function deleteEntity(eid) {
 function openEntityCreateForm() {
     const detail = document.getElementById('entity-detail');
     if (!detail) return;
-    detail.innerHTML =
+    _entityCreateFormOpen = true;
+    _entityMorph(detail,
         '<div class="entity-detail-card">' +
         '  <h2 class="entity-create-title">New entity</h2>' +
         '  <div class="entity-detail-row">' +
@@ -487,7 +493,7 @@ function openEntityCreateForm() {
         '    <button class="entity-cancel-btn" onclick="cancelEntityCreate()">Cancel</button>' +
         '    <span id="entity-create-status" class="entity-save-status"></span>' +
         '  </div>' +
-        '</div>';
+        '</div>');
     setTimeout(() => {
         const f = document.getElementById('entity-create-name');
         if (f) f.focus();
@@ -497,10 +503,11 @@ function openEntityCreateForm() {
 function cancelEntityCreate() {
     const detail = document.getElementById('entity-detail');
     if (!detail) return;
+    _entityCreateFormOpen = false;
     if (_selectedEntityId) {
         renderEntityDetail(_selectedEntityId);
     } else {
-        detail.innerHTML = '<div class="empty-state" style="margin-top:80px;">Select an entity to view details</div>';
+        _entityMorph(detail, '<div class="empty-state" style="margin-top:80px;">Select an entity to view details</div>');
     }
 }
 
@@ -532,6 +539,7 @@ async function submitEntityCreate() {
         return;
     }
     _entitySetStatus('entity-create-status', 'Created.', 'var(--green)');
+    _entityCreateFormOpen = false;
     await loadEntities();
     if (data.id) await selectEntity(data.id);
 }
@@ -540,13 +548,20 @@ async function submitEntityCreate() {
 // Other processes (MCP-driven entity_create/update/delete, agent edits)
 // publish ``entity.*`` events; ``core/event_bus.py`` debounces them and
 // calls ``window.entitiesSurface.refresh()`` when the Memory tab is
-// mounted. refresh() re-fetches the list and, if a detail panel is
-// open, re-renders it so a concurrent edit elsewhere is reflected.
+// mounted. refresh() re-fetches the list and, if a saved entity's
+// detail panel is open, re-renders it so a concurrent edit elsewhere is
+// reflected. Both go through morphdom (_entityMorph), so a refresh
+// triggered mid-typing preserves the focused field and scroll.
+//
+// The open "New entity" form is NOT re-rendered: morphing the detail
+// panel would discard a half-filled form. The list still refreshes so
+// a concurrent create elsewhere appears.
 window.entitiesSurface = {
     refresh: function() {
         if (typeof loadEntities !== 'function') return;
         const p = loadEntities();
         if (_selectedEntityId != null
+            && !_entityCreateFormOpen
             && typeof renderEntityDetail === 'function') {
             return p.then(() => renderEntityDetail(_selectedEntityId));
         }
