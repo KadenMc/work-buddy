@@ -535,6 +535,27 @@ async function submitEntityCreate() {
     await loadEntities();
     if (data.id) await selectEntity(data.id);
 }
+
+// ---- Surface handle for the SSE event bus ----
+// Other processes (MCP-driven entity_create/update/delete, agent edits)
+// publish ``entity.*`` events; ``core/event_bus.py`` debounces them and
+// calls ``window.entitiesSurface.refresh()`` when the Memory tab is
+// mounted. refresh() re-fetches the list and, if a detail panel is
+// open, re-renders it so a concurrent edit elsewhere is reflected.
+window.entitiesSurface = {
+    refresh: function() {
+        if (typeof loadEntities !== 'function') return;
+        const p = loadEntities();
+        if (_selectedEntityId != null
+            && typeof renderEntityDetail === 'function') {
+            return p.then(() => renderEntityDetail(_selectedEntityId));
+        }
+        return p;
+    },
+    isMounted: function() {
+        return !!document.getElementById('entities-list');
+    },
+};
 """
 
 
