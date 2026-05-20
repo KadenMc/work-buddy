@@ -7,11 +7,11 @@ category: entities
 parameters:
   canonical_name:
     type: str
-    description: Display name, e.g. 'Max McKeen'. Normalized to lowercase+collapsed-whitespace for uniqueness.
+    description: Display name, e.g. 'Ada Lovelace'. Normalized to lowercase+collapsed-whitespace for uniqueness.
     required: true
   description:
     type: str
-    description: Free-form prose. Where relationship context lives ("Max McKeen — Kaden's younger brother.").
+    description: Free-form prose. Where relationship context lives ("Ada Lovelace — the user's former manager.").
     required: false
   tags:
     type: list

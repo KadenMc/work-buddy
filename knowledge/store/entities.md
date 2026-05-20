@@ -19,7 +19,7 @@ The entity registry holds canonical names, descriptions, hierarchical tags, and 
 
 Four features ship in v1:
 
-1. **Authored-only entities.** Entities exist because an agent or the user created them. No corpus scanner, no LLM extraction. The act of creation is the act of confirmation. Descriptions are free-form prose and are where relationship context lives ("Max McKeen — Kaden's younger brother.").
+1. **Authored-only entities.** Entities exist because an agent or the user created them. No corpus scanner, no LLM extraction. The act of creation is the act of confirmation. Descriptions are free-form prose and are where relationship context lives ("Ada Lovelace — the user's former manager.").
 
 2. **Hierarchical multi-valued tags.** `person`, `person/family`, `person/colleague`, `place/work`. Multiple tags per entity. The `entity_list` filter is hierarchical: `tag=person` matches every entity tagged at `person` OR `person/*`. Storage is canonical — only the most specific tag in any chain is kept: writing `["person", "person/family"]` collapses to `person/family`, because the read-side prefix match still resolves a `person` query against it. Write-side collapse (`_collapse_ancestor_tags`) and read-side prefix expansion (`list_entities`) are two halves of one design. Tags are the v1 substitute for an enum-typed `type` column; they characterize the entity more richly and survive future kinds without a schema migration.
 
