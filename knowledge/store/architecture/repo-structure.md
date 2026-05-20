@@ -16,7 +16,7 @@ aliases:
 parents:
 - architecture
 - architecture
-dev_notes: 'The entities/ package mirrors projects/ structurally (store.py CRUD + migrations.py versioned ladder via storage.MigrationRunner) but is deliberately leaner: no revision-history tables, no soft-delete, no markdown-canonical sync. entities.db is durable user data and SHOULD eventually join the architecture/backups vital set -- that wiring was scoped out of entity-registry v1 and is a known follow-up.'
+dev_notes: 'The entities/ package mirrors projects/ structurally (store.py CRUD + migrations.py versioned ladder via storage.MigrationRunner) but is deliberately leaner: no revision-history tables, no soft-delete, no markdown-canonical sync. entities.db is in the architecture/backups VITAL_DBS set.'
 ---
 
 work_buddy/ = Python package. Key top-level modules: agent_session.py (identity), artifacts.py (centralized store), paths.py (path resolution), tools.py (feature toggles), config.py (config.yaml + config.local.yaml overlay), consent.py (SQLite-backed), workflow.py (DAG engine).
@@ -25,6 +25,6 @@ Key packages: knowledge/ (agent docs: query, index, store, editor, vault adapter
 
 knowledge/store/ = workflow definitions + agent docs (JSON). contracts/ = live data. sidecar_jobs/ = system scheduled jobs (git-tracked, ship with work-buddy).
 
-<data_root>/ = all generated data (default `.data/`, gitignored; configured via `paths.data_root` in `config.yaml`): agents/ (per-session: consent.db, manifests, logs, ledgers), context/ (bundles), runtime/ (PID, state, tool status, per-service rotated logs), cache/ (LLM, chrome tabs, Claude Code usage DB), chrome/ (ledger), db/ (SQLite: messages, tasks, projects, threads -- the four vital DBs backed up by architecture/backups; plus entities -- the entity-registry DB, not yet registered with the backup set), logs/ (debug logs), commit/ (90d TTL), export/, report/, scratch/ (artifact types with TTL lifecycle), user_jobs/ (user-authored scheduled jobs -- personal cron tasks not shared across installs), backups/ (local snapshot tarballs + last_run.json health-check sentinel).
+<data_root>/ = all generated data (default `.data/`, gitignored; configured via `paths.data_root` in `config.yaml`): agents/ (per-session: consent.db, manifests, logs, ledgers), context/ (bundles), runtime/ (PID, state, tool status, per-service rotated logs), cache/ (LLM, chrome tabs, Claude Code usage DB), chrome/ (ledger), db/ (SQLite: messages, tasks, projects, threads, entities -- the five vital DBs backed up by architecture/backups), logs/ (debug logs), commit/ (90d TTL), export/, report/, scratch/ (artifact types with TTL lifecycle), user_jobs/ (user-authored scheduled jobs -- personal cron tasks not shared across installs), backups/ (local snapshot tarballs + last_run.json health-check sentinel).
 
 .claude/commands/ = slash commands (thin launchers loading from knowledge store).

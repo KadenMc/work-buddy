@@ -44,6 +44,7 @@ Vital DBs that get backed up (declared in `work_buddy/backups/local.py` as `VITA
 | `projects` | `.data/db/projects.db` | `projects/` |
 | `messages` | `.data/db/messages.db` | `messaging/` |
 | `threads` | `.data/db/threads.db` | `threads/` |
+| `entities` | `.data/db/entities.db` | `entities/` |
 
 The logical name is what appears in the manifest and the snapshot tag; the on-disk filename is preserved inside the tarball so restore can reconstruct the directory layout.
 
