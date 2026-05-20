@@ -29,6 +29,10 @@ Run `/wb-dev-pr` to commit work-buddy code changes. The workflow enforces branch
 
 At the end of every dev session, once your changes are ready to ship. Run `/wb-dev-document` standalone first if you want to preview doc edits outside the commit flow.
 
+## Sign-off is mandatory (DCO)
+
+work-buddy enforces a Developer Certificate of Origin: every commit must be signed off with `git commit -s`, which appends a `Signed-off-by` trailer. The `DCO` status check is required on `main`, so a pull request with any unsigned commit cannot merge. The `commit` step's instructions sign off for you; if a commit still lands unsigned, run `git rebase --signoff origin/main` and force-push before the PR can pass.
+
 ## Doc update is the teeth
 
 `dev-document` runs as a mandatory step. The skip path requires a specific rationale that gets recorded in the commit body. Do not treat skipping as normal — the default is to run dev-document, even when you expect it will propose nothing.
