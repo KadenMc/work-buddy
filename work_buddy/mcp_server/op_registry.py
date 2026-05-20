@@ -31,6 +31,31 @@ logger = logging.getLogger(__name__)
 OP_ID_RE = re.compile(r"^op\.[a-z0-9]+(?:\.[a-z0-9_]+)+$")
 
 _OPS: dict[str, Callable] = {}
+# Effect manifests keyed by op ID. An ``effects`` manifest is a list of
+# ``EffectSpec`` objects — code, not data (an ``EffectSpec`` may carry a
+# ``resolver`` callable), so it cannot live in a data declaration. A capability
+# declaration that needs effects names its op; the op module registers the
+# manifest here, and the capability loader threads it onto the resolved
+# ``Capability``. Empty for the overwhelming majority of capabilities.
+_OP_EFFECTS: dict[str, list] = {}
+# Short names (e.g. ``"memory_ops"``) of op modules whose import failed during
+# ``load_builtin_ops`` because a *whitelisted* optional runtime dependency is
+# absent from this environment. Consumers asserting that every declaration's
+# op resolves can consult this set to distinguish a real bug from an expected
+# per-environment gap. Failures outside the whitelist propagate.
+_FAILED_MODULES: set[str] = set()
+
+# Op modules that are allowed to skip loading when a specific optional Python
+# dependency is missing — the only case in which a missing op is treated as
+# safe degradation rather than a regression. Any *other* import failure (a
+# different missing module, a syntax error, a wrong ``register_op`` call)
+# propagates out of ``load_builtin_ops`` and crashes the gateway boot loudly.
+#
+# Keys are op-module short names (matching ``ops/<name>.py``); values are the
+# set of top-level package names whose absence is acceptable for that module.
+_OPTIONAL_DEP_WHITELIST: dict[str, set[str]] = {
+    "memory_ops": {"hindsight_client"},
+}
 _builtins_loaded = False
 
 
@@ -69,10 +94,34 @@ def list_ops() -> list[str]:
     return sorted(_OPS)
 
 
+def register_op_effects(op_id: str, effects: list) -> None:
+    """Register an effect manifest for an op.
+
+    Effects are code (an ``EffectSpec`` may hold a ``resolver`` callable), so
+    they cannot ride in a data declaration — the op module registers them here
+    and the capability loader threads them onto the resolved ``Capability``.
+    """
+    if not is_valid_op_id(op_id):
+        raise ValueError(f"Invalid op ID {op_id!r} for effect registration.")
+    _OP_EFFECTS[op_id] = list(effects)
+
+
+def get_op_effects(op_id: str) -> list:
+    """Return the effect manifest registered for ``op_id`` (empty if none)."""
+    return _OP_EFFECTS.get(op_id, [])
+
+
+def failed_op_modules() -> set[str]:
+    """Short names of op modules whose import failed in ``load_builtin_ops``."""
+    return frozenset(_FAILED_MODULES)
+
+
 def clear_ops() -> None:
     """Drop all registered ops. For test isolation and reload cleanliness."""
     global _builtins_loaded
     _OPS.clear()
+    _OP_EFFECTS.clear()
+    _FAILED_MODULES.clear()
     _builtins_loaded = False
 
 
@@ -82,6 +131,14 @@ def load_builtin_ops() -> None:
     Idempotent within a process: a module guard runs the import side effects
     once. If a prior ``clear_ops`` reset the guard while the op modules are
     still cached in ``sys.modules``, they are reloaded so registration re-runs.
+
+    A ``ModuleNotFoundError`` whose missing module is whitelisted for the op
+    module being loaded (see ``_OPTIONAL_DEP_WHITELIST``) is logged and
+    skipped — the corresponding capabilities are simply unavailable in this
+    environment. Any other exception (a different missing module, a syntax
+    error, a wrong ``register_op`` call) propagates out of this function and
+    crashes the gateway boot, so a genuine regression in an op module
+    surfaces immediately instead of masquerading as safe degradation.
     """
     global _builtins_loaded
     if _builtins_loaded:
@@ -95,10 +152,23 @@ def load_builtin_ops() -> None:
 
     for mod in pkgutil.iter_modules(_ops_pkg.__path__):
         full_name = f"{_ops_pkg.__name__}.{mod.name}"
-        if full_name in sys.modules:
-            importlib.reload(sys.modules[full_name])
-        else:
-            importlib.import_module(full_name)
+        try:
+            if full_name in sys.modules:
+                importlib.reload(sys.modules[full_name])
+            else:
+                importlib.import_module(full_name)
+        except ModuleNotFoundError as exc:
+            allowed = _OPTIONAL_DEP_WHITELIST.get(mod.name, set())
+            missing = (exc.name or "").split(".")[0]
+            if missing in allowed:
+                _FAILED_MODULES.add(mod.name)
+                logger.warning(
+                    "Op module %s skipped: optional dependency %r is absent "
+                    "from this environment.",
+                    full_name, missing,
+                )
+            else:
+                raise
 
     _builtins_loaded = True
     logger.debug("Built-in ops loaded: %d registered", len(_OPS))

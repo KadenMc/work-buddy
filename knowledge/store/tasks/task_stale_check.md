@@ -1,0 +1,26 @@
+---
+name: Task Stale Check
+kind: capability
+description: Find forgotten/stale tasks across inbox, snoozed, MIT, and focused
+capability_name: task_stale_check
+category: tasks
+op: op.wb.task_stale_check
+schema_version: wb-capability/v1
+tags:
+- tasks
+- task
+- stale
+- check
+aliases:
+- forgotten tasks
+- stale todos
+- neglected tasks
+- tasks I haven't touched
+- what tasks are rotting
+- dormant tasks
+- tasks going stale
+parents:
+- tasks
+requires:
+- obsidian
+---

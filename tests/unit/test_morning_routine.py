@@ -24,24 +24,25 @@ from work_buddy.morning import (
 # ---------------------------------------------------------------------------
 
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-WORKFLOWS_JSON = REPO_ROOT / "knowledge" / "store" / "workflows.json"
-MORNING_JSON = REPO_ROOT / "knowledge" / "store" / "morning.json"
-
-
 @pytest.fixture(scope="module")
 def morning_workflow() -> dict:
     """Load the morning-routine workflow definition from the knowledge store."""
-    with WORKFLOWS_JSON.open(encoding="utf-8") as f:
-        data = json.load(f)
-    return data["morning/morning-routine"]
+    from work_buddy.knowledge.store import load_store
+
+    return load_store()["morning/morning-routine"].to_dict()
 
 
 @pytest.fixture(scope="module")
 def morning_docs() -> dict:
-    """Load the morning directions docs unit."""
-    with MORNING_JSON.open(encoding="utf-8") as f:
-        return json.load(f)
+    """Load the morning domain's documentation units, keyed by store path."""
+    from work_buddy.knowledge.store import load_store
+
+    store = load_store()
+    return {
+        path: unit.to_dict()
+        for path, unit in store.items()
+        if path == "morning" or path.startswith("morning/")
+    }
 
 
 # ---------------------------------------------------------------------------

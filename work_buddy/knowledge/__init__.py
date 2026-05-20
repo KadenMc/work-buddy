@@ -3,8 +3,9 @@
 Two parallel hierarchies share a common base:
 
 * **System docs** — behavioral directions, system docs, capability
-  metadata, workflow structure — JSON-backed in ``knowledge/store/``.
-  User patches in ``knowledge/store.local/`` (gitignored).
+  metadata, workflow structure — one Markdown file per unit in
+  ``knowledge/store/``. User patches in ``knowledge/store.local/``
+  (gitignored).
 
 * **Personal knowledge** — user-authored insights, patterns, feedback,
   preferences — markdown-backed in the Obsidian vault. Queryable through

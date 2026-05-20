@@ -139,7 +139,7 @@ If `mcp__work-buddy__wb_init` is not in your tool list, **stop immediately and t
 
 ## Running Python in this repo
 
-work-buddy's functionality is reached through the MCP tools (see above) — reach for those first. But some tasks legitimately need raw Python: running the test suite, `work_buddy.knowledge.build`, a one-off debug script.
+work-buddy's functionality is reached through the MCP tools (see above) — reach for those first. But some tasks legitimately need raw Python: running the test suite, a one-off debug script, or a `scripts/` utility.
 
 When you do, run it in the **`work-buddy` conda environment**. That env has every optional dependency (`hindsight_client`, `rank_bm25`, `freezegun`, …); a bare or partial Python will fail partway through with `ModuleNotFoundError`. The portable form needs no shell activation and works cross-platform:
 
@@ -155,7 +155,7 @@ If `conda` is not on `PATH` (common in non-interactive shells), it lives in your
 CLAUDE.md                              # This file
 CLAUDE.local.md                        # User-specific behavioral rules (gitignored; auto-loaded)
 config.yaml / config.local.yaml        # Shared + local config
-knowledge/store/                       # Queryable knowledge units (JSON)
+knowledge/store/                       # Queryable knowledge units (one Markdown file per unit)
 
 work_buddy/                            # Python package
   mcp_server/                          # MCP gateway and registry (localhost:5126)

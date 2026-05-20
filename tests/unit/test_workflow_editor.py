@@ -27,14 +27,14 @@ def tmp_store(tmp_path):
     """
     from work_buddy.knowledge import store as store_mod
 
+    from work_buddy.knowledge import file_store
+
     store_dir = tmp_path / "store"
     store_dir.mkdir()
     # Seed a `dev` parent so workflows can point their parents at it.
-    (store_dir / "dev.json").write_text(
-        '{"dev": {"kind": "system", "name": "Dev", "description": "root",'
-        ' "children": []}}',
-        encoding="utf-8",
-    )
+    file_store.write_unit(store_dir, "dev", {
+        "kind": "system", "name": "Dev", "description": "root",
+    })
 
     saved_editor = editor._STORE_DIR
     saved_store = store_mod._STORE_DIR
@@ -194,9 +194,8 @@ def test_workflow_update_merges_step_instructions(tmp_store):
     assert unit.step_instructions["decide"] == "Original decide."
 
 
-def test_workflow_create_lands_in_workflows_json(tmp_store):
-    """New workflow-kind units should route to workflows.json even if
-    the domain file exists — convention for colocation."""
+def test_workflow_create_writes_one_file_per_unit(tmp_store):
+    """A new workflow unit is written to its own file at ``<path>.md``."""
     result = editor.workflow_create(
         path="dev/routed-wf",
         name="R",
@@ -205,8 +204,8 @@ def test_workflow_create_lands_in_workflows_json(tmp_store):
         steps=_sample_steps(),
         parents="dev",
     )
-    assert result["file"] == "workflows.json"
-    # And sibling directions still route to dev.json (unchanged prose routing).
+    assert result["file"] == "dev/routed-wf.md"
+    # A sibling directions unit lands at its own path-derived file.
     dir_result = editor.docs_create(
         path="dev/routed-dir",
         kind="directions",
@@ -214,4 +213,4 @@ def test_workflow_create_lands_in_workflows_json(tmp_store):
         description="d",
         parents="dev",
     )
-    assert dir_result["file"] == "dev.json"
+    assert dir_result["file"] == "dev/routed-dir.md"

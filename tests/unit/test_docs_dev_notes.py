@@ -33,16 +33,15 @@ def tmp_store(tmp_path):
     """
     from work_buddy.knowledge import store as store_mod
 
+    from work_buddy.knowledge import file_store
+
     store_dir = tmp_path / "store"
     store_dir.mkdir()
-    # Seed an empty architecture.json so _best_file_for_new_path finds
-    # a real destination for 'architecture/*' paths.
-    arch = store_dir / "architecture.json"
-    arch.write_text(
-        '{"architecture": {"kind": "system", "name": "Architecture",'
-        ' "description": "root", "children": []}}',
-        encoding="utf-8",
-    )
+    # Seed an `architecture` parent so 'architecture/*' units have a
+    # real parent in the store.
+    file_store.write_unit(store_dir, "architecture", {
+        "kind": "system", "name": "Architecture", "description": "root",
+    })
 
     saved_editor = editor._STORE_DIR
     saved_store = store_mod._STORE_DIR

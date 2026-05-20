@@ -72,11 +72,15 @@ def tmp_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 def _write_units(store_dir: Path, file_stem: str, units: dict[str, dict[str, Any]]) -> None:
-    """Helper: dump a units dict as one of the store's JSON files."""
-    (store_dir / f"{file_stem}.json").write_text(
-        json.dumps(units, indent=2),
-        encoding="utf-8",
-    )
+    """Helper: seed the store with hand-crafted units as file-per-unit ``.md``.
+
+    ``file_stem`` is accepted for call-site compatibility and unused — under
+    the file-per-unit substrate each unit is written to its own file by path.
+    """
+    from work_buddy.knowledge import file_store
+
+    for unit_path, unit_data in units.items():
+        file_store.write_unit(store_dir, unit_path, unit_data)
 
 
 # ---------------------------------------------------------------------------

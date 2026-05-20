@@ -521,6 +521,7 @@ class DirectionsUnit(PromptUnit):
     command: str | None = None         # slash command: "wb-task-triage"
     workflow: str | None = None        # linked workflow path: "tasks/task-triage"
     capabilities: list[str] = field(default_factory=list)  # MCP capability paths used
+    schema_version: str = ""           # declaration format version, e.g. "wb-direction/v1"
 
     def _kind_fields(self) -> dict[str, Any]:
         d: dict[str, Any] = {}
@@ -532,6 +533,8 @@ class DirectionsUnit(PromptUnit):
             d["workflow"] = self.workflow
         if self.capabilities:
             d["capabilities"] = self.capabilities
+        if self.schema_version:
+            d["schema_version"] = self.schema_version
         return d
 
     _kind_dict = _kind_fields  # same for serialization
@@ -683,12 +686,12 @@ class ConceptUnit(PromptUnit):
 class CapabilityUnit(PromptUnit):
     """MCP capability — callable function metadata.
 
-    A capability unit may be either *generated* (compiled from a
-    ``Capability(...)`` instance in ``registry.py``; no ``op`` field) or
-    *declaration-based* (hand-authored or agent-authored, carrying an ``op``
-    field that names an Op the capability loader resolves at registry-build
-    time). The non-empty ``op`` field is the discriminator between the two —
-    see ``work_buddy/knowledge/capability_loader.py``.
+    A capability unit is an inert *declaration*: it carries the prose,
+    parameter schema, and runtime metadata, and names an Op via its ``op``
+    field. The capability loader resolves the op against the Op registry at
+    registry-build time and emits a dispatchable ``Capability``. See
+    ``work_buddy/knowledge/capability_loader.py`` and the
+    ``architecture/data-first-capabilities`` knowledge unit.
     """
 
     kind: str = field(default="capability", init=False)
@@ -698,9 +701,28 @@ class CapabilityUnit(PromptUnit):
     mutates_state: bool = False
     retry_policy: str = "manual"
     consent_required: bool = False
-    # Declaration-based capabilities only: the ``op.<namespace>.<name>`` ID of
-    # the Op this capability wraps, and the version of the declaration format
-    # itself (e.g. "wb-capability/v1"). Empty on generated capability units.
+    # Consent operation IDs the capability gates on (mirrors the live
+    # ``Capability.consent_operations`` field). A declaration carries these so a
+    # consent-gated capability migrates faithfully; ``consent_required`` remains
+    # the coarse boolean flag.
+    consent_operations: list[str] = field(default_factory=list)
+    # Runtime metadata mirroring the live ``Capability`` dataclass so a
+    # declaration migrates a capability faithfully. ``invokes`` — capability
+    # names this one calls (control-graph dependency resolution).
+    # ``param_aliases`` — {alias: canonical} parameter-name aliases.
+    # ``auto_retry`` — whether the gateway auto-enqueues transient failures.
+    # ``slash_command`` — the wb-* command that surfaces this capability.
+    # ``is_action`` / ``intrinsic_amplifiers`` — Action Catalog opt-in and
+    # intrinsic risk amplifiers. (``effects`` is code, not data — it lives on
+    # the Op side via ``op_registry.register_op_effects``.)
+    invokes: list[str] = field(default_factory=list)
+    param_aliases: dict[str, str] = field(default_factory=dict)
+    auto_retry: bool = True
+    slash_command: str = ""
+    is_action: bool = False
+    intrinsic_amplifiers: dict[str, str] = field(default_factory=dict)
+    # The ``op.<namespace>.<name>`` ID of the Op this capability wraps, and
+    # the version of the declaration format itself (e.g. "wb-capability/v1").
     op: str = ""
     schema_version: str = ""
 
@@ -716,6 +738,20 @@ class CapabilityUnit(PromptUnit):
             d["retry_policy"] = self.retry_policy
         if self.consent_required:
             d["consent_required"] = True
+        if self.consent_operations:
+            d["consent_operations"] = self.consent_operations
+        if self.invokes:
+            d["invokes"] = self.invokes
+        if self.param_aliases:
+            d["param_aliases"] = self.param_aliases
+        if not self.auto_retry:
+            d["auto_retry"] = False
+        if self.slash_command:
+            d["slash_command"] = self.slash_command
+        if self.is_action:
+            d["is_action"] = True
+        if self.intrinsic_amplifiers:
+            d["intrinsic_amplifiers"] = self.intrinsic_amplifiers
         if self.op:
             d["op"] = self.op
         if self.schema_version:
@@ -744,6 +780,7 @@ class WorkflowUnit(PromptUnit):
     # ``Capability.parameters`` shape ``{name: {type, description, required}}``.
     # Workflows that omit this field reject any non-empty params at start.
     params_schema: dict[str, dict[str, Any]] = field(default_factory=dict)
+    schema_version: str = ""           # declaration format version, e.g. "wb-workflow/v1"
 
     def _kind_fields(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -760,6 +797,8 @@ class WorkflowUnit(PromptUnit):
             d["command"] = self.command
         if self.params_schema:
             d["params_schema"] = self.params_schema
+        if self.schema_version:
+            d["schema_version"] = self.schema_version
         return d
 
     _kind_dict = _kind_fields
@@ -856,6 +895,7 @@ def unit_from_dict(path: str, data: dict[str, Any]) -> KnowledgeUnit:
         base_kwargs["command"] = data.get("command")
         base_kwargs["workflow"] = data.get("workflow")
         base_kwargs["capabilities"] = data.get("capabilities", [])
+        base_kwargs["schema_version"] = data.get("schema_version", "")
     elif cls is SystemUnit or cls is ConceptUnit:
         # Both are prose-first with no kind-specific fields beyond the base.
         pass
@@ -877,6 +917,13 @@ def unit_from_dict(path: str, data: dict[str, Any]) -> KnowledgeUnit:
         base_kwargs["mutates_state"] = data.get("mutates_state", False)
         base_kwargs["retry_policy"] = data.get("retry_policy", "manual")
         base_kwargs["consent_required"] = data.get("consent_required", False)
+        base_kwargs["consent_operations"] = data.get("consent_operations", [])
+        base_kwargs["invokes"] = data.get("invokes", [])
+        base_kwargs["param_aliases"] = data.get("param_aliases", {})
+        base_kwargs["auto_retry"] = data.get("auto_retry", True)
+        base_kwargs["slash_command"] = data.get("slash_command", "")
+        base_kwargs["is_action"] = data.get("is_action", False)
+        base_kwargs["intrinsic_amplifiers"] = data.get("intrinsic_amplifiers", {})
         base_kwargs["op"] = data.get("op", "")
         base_kwargs["schema_version"] = data.get("schema_version", "")
     elif cls is WorkflowUnit:
@@ -887,6 +934,7 @@ def unit_from_dict(path: str, data: dict[str, Any]) -> KnowledgeUnit:
         base_kwargs["step_instructions"] = data.get("step_instructions", {})
         base_kwargs["command"] = data.get("command")
         base_kwargs["params_schema"] = data.get("params_schema", {})
+        base_kwargs["schema_version"] = data.get("schema_version", "")
     elif cls is VaultUnit:
         base_kwargs["category"] = data.get("category", "")
         base_kwargs["severity"] = data.get("severity", "")

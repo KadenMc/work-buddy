@@ -7,17 +7,11 @@ declared parameter schema against the resolved callable's signature, and emits
 ready-to-dispatch ``Capability`` objects the gateway registry can hold.
 
 It is the data-first counterpart to ``_discover_workflows_from_store()``:
-workflows are already inert data the conductor resolves at load time;
-capability declarations now load the same way.
+workflows are inert data the conductor resolves at load time; capability
+declarations load the same way. Every capability unit is a declaration,
+discriminated by a non-empty ``op`` field.
 
-Coexistence rule: a ``CapabilityUnit`` is declaration-based **iff** its ``op``
-field is non-empty. Generated capability units (compiled from ``registry.py``)
-have no ``op`` and are skipped here — they flow through the direct
-``Capability(...)`` registration path instead. That single discriminator is
-what lets the two registration paths run side by side.
-
-See ``architecture/data-first-capabilities`` and
-``.data/designs/data-first-capabilities/DECISIONS.md``.
+See ``architecture/data-first-capabilities``.
 """
 
 from __future__ import annotations
@@ -163,10 +157,18 @@ def load_declared_capabilities(
             parameters=unit.parameters,
             callable=fn,
             search_aliases=list(unit.aliases),
+            param_aliases=dict(unit.param_aliases),
             requires=list(unit.requires),
+            invokes=list(unit.invokes),
             mutates_state=unit.mutates_state,
             retry_policy=unit.retry_policy,
+            auto_retry=unit.auto_retry,
+            slash_command=unit.slash_command or None,
+            consent_operations=list(unit.consent_operations),
+            effects=op_registry.get_op_effects(unit.op),
             op_id=unit.op,
+            is_action=unit.is_action,
+            intrinsic_amplifiers=dict(unit.intrinsic_amplifiers),
         ))
 
     return capabilities, issues

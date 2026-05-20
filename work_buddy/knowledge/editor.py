@@ -3,22 +3,25 @@
 Provides CRUD operations for PromptUnits: create, update, delete, move.
 Every mutation validates the store and invalidates the cache.
 
-All operations write to hand-authored JSON files in ``knowledge/store/``.
-Generated files (``_generated_*.json``) are never touched — those are
-rebuilt by ``build.py``.
+Each unit is one Markdown file under ``knowledge/store/`` — editing a unit is
+editing its file. The editor is the *transactional* API around the file-store
+seam (``work_buddy/knowledge/file_store.py``): it adds path validation,
+duplicate-placeholder rejection, DAG validation, and cache invalidation.
+
+``children`` is not authored or stored — a unit's children are derived at load
+time from other units' ``parents`` — so no child-list reconciliation happens
+here.
 """
 
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Any
 
+from work_buddy.knowledge import file_store
 from work_buddy.knowledge.model import (
-    PromptUnit,
     _KIND_MAP,
     _PLACEHOLDER_RE,
-    unit_from_dict,
     validate_dag,
 )
 from work_buddy.knowledge.store import (
@@ -32,95 +35,8 @@ logger = get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# File locators
+# Store-mutation helpers
 # ---------------------------------------------------------------------------
-
-def _find_file_for_path(unit_path: str) -> Path | None:
-    """Find which JSON file contains a given unit path. Skips generated files."""
-    for json_file in sorted(_STORE_DIR.glob("*.json")):
-        if json_file.name.startswith("_generated_"):
-            continue
-        try:
-            data = json.loads(json_file.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            continue
-        if unit_path in data:
-            return json_file
-    return None
-
-
-def _best_file_for_new_path(unit_path: str, kind: str | None = None) -> Path:
-    """Choose the best JSON file to house a new unit based on path prefix.
-
-    Heuristic:
-    - ``kind == "workflow"`` → always ``workflows.json`` (convention; the
-      conductor scans all files by kind, but colocating workflows keeps
-      hand-authoring consistent).
-    - Otherwise: prefer the hand-authored file whose existing paths share
-      the longest common prefix with the new path; fall back to the top-
-      level domain segment (e.g. ``tasks/foo`` → ``tasks.json``).
-    """
-    if kind == "workflow":
-        return _STORE_DIR / "workflows.json"
-
-    top_segment = unit_path.split("/")[0]
-
-    # Try exact domain file
-    candidate = _STORE_DIR / f"{top_segment}.json"
-    if candidate.exists() and not candidate.name.startswith("_generated_"):
-        return candidate
-
-    # Scan for best prefix match
-    best_file: Path | None = None
-    best_overlap = 0
-    for json_file in sorted(_STORE_DIR.glob("*.json")):
-        if json_file.name.startswith("_generated_"):
-            continue
-        try:
-            data = json.loads(json_file.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            continue
-        for existing_path in data:
-            overlap = len(_common_prefix(unit_path, existing_path))
-            if overlap > best_overlap:
-                best_overlap = overlap
-                best_file = json_file
-
-    if best_file:
-        return best_file
-
-    # Last resort: create new file for the domain
-    return _STORE_DIR / f"{top_segment}.json"
-
-
-def _common_prefix(a: str, b: str) -> str:
-    """Common path prefix of two unit paths."""
-    parts_a = a.split("/")
-    parts_b = b.split("/")
-    common = []
-    for pa, pb in zip(parts_a, parts_b):
-        if pa == pb:
-            common.append(pa)
-        else:
-            break
-    return "/".join(common)
-
-
-def _read_json_file(path: Path) -> dict[str, Any]:
-    """Read a JSON file, returning empty dict if not found."""
-    if not path.exists():
-        return {}
-    return json.loads(path.read_text(encoding="utf-8"))
-
-
-def _write_json_file(path: Path, data: dict[str, Any]) -> None:
-    """Write JSON with consistent formatting."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(data, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
-
 
 def _invalidate_and_validate() -> list[str]:
     """Invalidate cache and run DAG validation. Returns errors."""
@@ -167,7 +83,7 @@ def check_duplicate_placeholders(content_full: str) -> list[dict[str, Any]]:
       * Editor pre-write (``update_unit`` / ``create_unit``) — to
         reject duplicate-bearing edits before they land on disk.
       * Validator (``docs_validate``) — to surface duplicates that
-        slipped in via direct JSON edits or other bypass paths.
+        slipped in via direct file edits or other bypass paths.
 
     The function operates on a raw string so the editor can call it
     against a *proposed* content_full (not yet written to disk) and
@@ -185,7 +101,7 @@ def check_duplicate_placeholders(content_full: str) -> list[dict[str, Any]]:
 
 def _scan_placeholder_hints(
     unit_path: str,
-    store: dict[str, PromptUnit],
+    store: dict[str, Any],
 ) -> list[dict[str, str]]:
     """Authoring-time lint for the placeholder-recursion foot-gun.
 
@@ -280,9 +196,7 @@ def _duplicate_error_response(
             "once per unit — at read time the per-unit-occurrence cap "
             "renders subsequent references as back-reference markers, "
             "so duplicates add zero content. Remove the extras and "
-            "re-submit. (When the materialization workflow lands, "
-            "the buffer file will persist on rejection so you can "
-            "fix in place without re-sending the whole payload.)"
+            "re-submit."
         ),
     }
 
@@ -304,7 +218,6 @@ def create_unit(
     workflow: str | None = None,
     capabilities: list[str] | None = None,
     parents: list[str] | None = None,
-    children: list[str] | None = None,
     tags: list[str] | None = None,
     aliases: list[str] | None = None,
     dev_notes: str | None = None,
@@ -313,9 +226,8 @@ def create_unit(
 ) -> dict[str, Any]:
     """Create a new unit in the knowledge store.
 
-    Validates the path doesn't already exist, writes to the appropriate
-    JSON file, updates parent children lists, validates DAG, and
-    invalidates the cache.
+    Validates the path doesn't already exist, writes the unit's ``.md``
+    file, validates the DAG, and invalidates the cache.
     """
     store = load_store()
 
@@ -350,8 +262,6 @@ def create_unit(
         unit_data["aliases"] = aliases
     if parents:
         unit_data["parents"] = parents
-    if children:
-        unit_data["children"] = children
     # Universal: dev_notes surfaces in dev mode regardless of kind.
     # entry_points is system-kind metadata but we accept it here as a
     # first-class param so callers don't need to use the generic ``extra``.
@@ -373,12 +283,14 @@ def create_unit(
     elif kind == "capability":
         if extra:
             for k in ("capability_name", "category", "parameters", "mutates_state",
-                      "retry_policy", "consent_required", "op", "schema_version"):
+                      "retry_policy", "consent_required", "consent_operations",
+                      "op", "schema_version"):
                 if k in extra:
                     unit_data[k] = extra[k]
     elif kind == "workflow":
         if extra:
-            for k in ("workflow_name", "execution", "allow_override", "steps", "step_instructions", "params_schema"):
+            for k in ("workflow_name", "execution", "allow_override", "steps",
+                      "step_instructions", "params_schema", "schema_version"):
                 if k in extra:
                     unit_data[k] = extra[k]
         if command:
@@ -397,19 +309,11 @@ def create_unit(
         if extra and "entry_points" in extra:
             unit_data["entry_points"] = extra["entry_points"]
 
-    if extra:
-        # Pass through requires
-        if "requires" in extra:
-            unit_data["requires"] = extra["requires"]
+    if extra and "requires" in extra:
+        unit_data["requires"] = extra["requires"]
 
-    # Determine target file and write
-    target_file = _best_file_for_new_path(path, kind=kind)
-    file_data = _read_json_file(target_file)
-    file_data[path] = unit_data
-    _write_json_file(target_file, file_data)
-
-    # Update parent children lists
-    _add_child_to_parents(path, parents or [])
+    # Write the unit file
+    target_file = file_store.write_unit(_STORE_DIR, path, unit_data)
 
     # Validate
     errors = _invalidate_and_validate()
@@ -418,7 +322,7 @@ def create_unit(
     return {
         "status": "created",
         "path": path,
-        "file": target_file.name,
+        "file": target_file.relative_to(_STORE_DIR).as_posix(),
         "dag_errors": errors,
         "hints": hints,
     }
@@ -439,15 +343,9 @@ def update_unit(
     if path not in store:
         return {"error": f"Path '{path}' not found in store."}
 
-    target_file = _find_file_for_path(path)
-    if target_file is None:
-        return {"error": f"Path '{path}' exists in store but not in any hand-authored JSON file (may be generated)."}
-
-    file_data = _read_json_file(target_file)
-    if path not in file_data:
-        return {"error": f"Path '{path}' not found in {target_file.name}."}
-
-    unit_data = file_data[path]
+    unit_data = file_store.read_unit(_STORE_DIR, path)
+    if unit_data is None:
+        return {"error": f"Path '{path}' has no unit file in the store."}
 
     # Capture all field names before popping shorthand keys
     all_updated_fields = list(updates.keys())
@@ -484,8 +382,7 @@ def update_unit(
         else:
             unit_data[key] = value
 
-    file_data[path] = unit_data
-    _write_json_file(target_file, file_data)
+    target_file = file_store.write_unit(_STORE_DIR, path, unit_data)
 
     errors = _invalidate_and_validate()
     hints = _scan_placeholder_hints(path, load_store())
@@ -493,7 +390,7 @@ def update_unit(
     return {
         "status": "updated",
         "path": path,
-        "file": target_file.name,
+        "file": target_file.relative_to(_STORE_DIR).as_posix(),
         "updated_fields": all_updated_fields,
         "dag_errors": errors,
         "hints": hints,
@@ -503,37 +400,36 @@ def update_unit(
 def delete_unit(path: str) -> dict[str, Any]:
     """Delete a unit from the store.
 
-    Removes parent/child references, cleans up the JSON file,
-    validates DAG, and invalidates the cache.
+    Removes the unit's file and strips it from any child unit's ``parents``
+    list so the DAG carries no dangling reference. Validates and invalidates.
     """
     store = load_store()
 
     if path not in store:
         return {"error": f"Path '{path}' not found in store."}
 
-    target_file = _find_file_for_path(path)
-    if target_file is None:
-        return {"error": f"Path '{path}' exists in store but not in any hand-authored JSON file."}
-
     unit = store[path]
+    child_paths = list(unit.children)  # derived; snapshot before invalidation
 
-    # Remove from parent's children lists
-    _remove_child_from_parents(path, unit.parents)
+    if not file_store.delete_unit(_STORE_DIR, path):
+        return {"error": f"Path '{path}' has no unit file in the store."}
 
-    # Remove from children's parent lists
-    _remove_parent_from_children(path, unit.children)
-
-    # Remove from file
-    file_data = _read_json_file(target_file)
-    file_data.pop(path, None)
-    _write_json_file(target_file, file_data)
+    # Strip the deleted path from each child's parents so no unit references
+    # a parent that no longer exists.
+    for child_path in child_paths:
+        child_data = file_store.read_unit(_STORE_DIR, child_path)
+        if child_data is None:
+            continue
+        parents = child_data.get("parents", [])
+        if path in parents:
+            child_data["parents"] = [p for p in parents if p != path]
+            file_store.write_unit(_STORE_DIR, child_path, child_data)
 
     errors = _invalidate_and_validate()
 
     return {
         "status": "deleted",
         "path": path,
-        "file": target_file.name,
         "dag_errors": errors,
     }
 
@@ -541,7 +437,8 @@ def delete_unit(path: str) -> dict[str, Any]:
 def move_unit(old_path: str, new_path: str) -> dict[str, Any]:
     """Move a unit to a new path.
 
-    Updates all parent/child references, moves the data in JSON files.
+    Moves the unit's file and rewrites any other unit that names the old
+    path as a parent.
     """
     store = load_store()
 
@@ -549,24 +446,11 @@ def move_unit(old_path: str, new_path: str) -> dict[str, Any]:
         return {"error": f"Path '{old_path}' not found in store."}
     if new_path in store:
         return {"error": f"Path '{new_path}' already exists."}
+    if file_store.read_unit(_STORE_DIR, old_path) is None:
+        return {"error": f"Path '{old_path}' has no unit file in the store."}
 
-    # Read current data
-    source_file = _find_file_for_path(old_path)
-    if source_file is None:
-        return {"error": f"Path '{old_path}' not in any hand-authored JSON file."}
-
-    source_data = _read_json_file(source_file)
-    unit_data = source_data.pop(old_path)
-    _write_json_file(source_file, source_data)
-
-    # Write to destination file
-    dest_file = _best_file_for_new_path(new_path)
-    dest_data = _read_json_file(dest_file)
-    dest_data[new_path] = unit_data
-    _write_json_file(dest_file, dest_data)
-
-    # Update references: any unit referencing old_path in parents/children
-    _update_references(old_path, new_path)
+    file_store.move_unit(_STORE_DIR, old_path, new_path)
+    _update_parent_references(old_path, new_path)
 
     errors = _invalidate_and_validate()
 
@@ -574,88 +458,22 @@ def move_unit(old_path: str, new_path: str) -> dict[str, Any]:
         "status": "moved",
         "old_path": old_path,
         "new_path": new_path,
-        "source_file": source_file.name,
-        "dest_file": dest_file.name,
         "dag_errors": errors,
     }
 
 
-# ---------------------------------------------------------------------------
-# Reference management helpers
-# ---------------------------------------------------------------------------
-
-def _add_child_to_parents(child_path: str, parent_paths: list[str]) -> None:
-    """Add child_path to each parent's children list in their JSON files."""
-    for parent_path in parent_paths:
-        parent_file = _find_file_for_path(parent_path)
-        if parent_file is None:
+def _update_parent_references(old_path: str, new_path: str) -> None:
+    """Rewrite every unit that names ``old_path`` as a parent to ``new_path``."""
+    for unit_path in file_store.list_unit_paths(_STORE_DIR):
+        unit_data = file_store.read_unit(_STORE_DIR, unit_path)
+        if unit_data is None:
             continue
-        file_data = _read_json_file(parent_file)
-        if parent_path not in file_data:
-            continue
-        children = file_data[parent_path].get("children", [])
-        if child_path not in children:
-            children.append(child_path)
-            children.sort()
-            file_data[parent_path]["children"] = children
-            _write_json_file(parent_file, file_data)
-
-
-def _remove_child_from_parents(child_path: str, parent_paths: list[str]) -> None:
-    """Remove child_path from each parent's children list."""
-    for parent_path in parent_paths:
-        parent_file = _find_file_for_path(parent_path)
-        if parent_file is None:
-            continue
-        file_data = _read_json_file(parent_file)
-        if parent_path not in file_data:
-            continue
-        children = file_data[parent_path].get("children", [])
-        if child_path in children:
-            children.remove(child_path)
-            file_data[parent_path]["children"] = children
-            _write_json_file(parent_file, file_data)
-
-
-def _remove_parent_from_children(parent_path: str, child_paths: list[str]) -> None:
-    """Remove parent_path from each child's parents list."""
-    for child_path in child_paths:
-        child_file = _find_file_for_path(child_path)
-        if child_file is None:
-            continue
-        file_data = _read_json_file(child_file)
-        if child_path not in file_data:
-            continue
-        parents = file_data[child_path].get("parents", [])
-        if parent_path in parents:
-            parents.remove(parent_path)
-            file_data[child_path]["parents"] = parents
-            _write_json_file(child_file, file_data)
-
-
-def _update_references(old_path: str, new_path: str) -> None:
-    """Update all parent/child references from old_path to new_path across all files."""
-    for json_file in sorted(_STORE_DIR.glob("*.json")):
-        if json_file.name.startswith("_generated_"):
-            continue
-        try:
-            file_data = _read_json_file(json_file)
-        except (json.JSONDecodeError, OSError):
-            continue
-
-        changed = False
-        for unit_path, unit_data in file_data.items():
-            parents = unit_data.get("parents", [])
-            if old_path in parents:
-                parents[parents.index(old_path)] = new_path
-                changed = True
-            children = unit_data.get("children", [])
-            if old_path in children:
-                children[children.index(old_path)] = new_path
-                changed = True
-
-        if changed:
-            _write_json_file(json_file, file_data)
+        parents = unit_data.get("parents", [])
+        if old_path in parents:
+            unit_data["parents"] = [
+                new_path if p == old_path else p for p in parents
+            ]
+            file_store.write_unit(_STORE_DIR, unit_path, unit_data)
 
 
 # ---------------------------------------------------------------------------
@@ -675,7 +493,6 @@ def docs_create(
     workflow: str | None = None,
     capabilities: str | None = None,
     parents: str | None = None,
-    children: str | None = None,
     tags: str | None = None,
     aliases: str | None = None,
     dev_notes: str | None = None,
@@ -704,7 +521,6 @@ def docs_create(
         workflow: (directions) Linked workflow path.
         capabilities: (directions) Comma-separated MCP capability paths.
         parents: Comma-separated parent paths.
-        children: Comma-separated child paths.
         tags: Comma-separated search tags.
         aliases: Comma-separated search aliases.
         requires: Comma-separated tool/component IDs the unit needs
@@ -760,7 +576,6 @@ def docs_create(
         workflow=workflow,
         capabilities=_split_csv(capabilities),
         parents=_split_csv(parents),
-        children=_split_csv(children),
         tags=_split_csv(tags),
         aliases=_split_csv(aliases),
         dev_notes=dev_notes if dev_notes else None,
@@ -779,7 +594,6 @@ def docs_update(
     trigger: str | None = None,
     command: str | None = None,
     parents: str | None = None,
-    children: str | None = None,
     tags: str | None = None,
     aliases: str | None = None,
     dev_notes: str | None = None,
@@ -799,7 +613,6 @@ def docs_update(
         trigger: (directions) New trigger description.
         command: (directions/workflow) New slash command name.
         parents: New comma-separated parent paths (replaces existing).
-        children: New comma-separated child paths (replaces existing).
         tags: New comma-separated tags (replaces existing).
         aliases: New comma-separated aliases (replaces existing).
         kind: New kind. Must be a registered kind (see ``_KIND_MAP``).
@@ -825,8 +638,6 @@ def docs_update(
         updates["command"] = command
     if parents is not None:
         updates["parents"] = _split_csv(parents)
-    if children is not None:
-        updates["children"] = _split_csv(children)
     if tags is not None:
         updates["tags"] = _split_csv(tags)
     if aliases is not None:
@@ -847,7 +658,7 @@ def docs_update(
 def docs_delete(*, path: str) -> dict[str, Any]:
     """Delete a unit from the knowledge store.
 
-    Removes the unit and cleans up parent/child references.
+    Removes the unit and strips it from any child unit's ``parents``.
 
     Args:
         path: Path of unit to delete.
@@ -858,7 +669,7 @@ def docs_delete(*, path: str) -> dict[str, Any]:
 def docs_move(*, old_path: str, new_path: str) -> dict[str, Any]:
     """Move a unit to a new path in the knowledge store.
 
-    Updates all parent/child references across the store.
+    Updates every unit that names the old path as a parent.
 
     Args:
         old_path: Current path of the unit.
@@ -909,7 +720,6 @@ def workflow_create(
     content_summary: str = "",
     command: str | None = None,
     parents: str | None = None,
-    children: str | None = None,
     tags: str | None = None,
     aliases: str | None = None,
     dev_notes: str | None = None,
@@ -940,7 +750,6 @@ def workflow_create(
         content_summary: Optional one-paragraph summary.
         command: Slash-command name (e.g. ``"wb-dev-document"``) for routing.
         parents: Comma-separated parent paths (typical: the domain, e.g. ``"dev"``).
-        children: Comma-separated child paths (usually empty).
         tags: Comma-separated search tags.
         aliases: Comma-separated search aliases.
         dev_notes: Dev-mode-only notes about the workflow's internals.
@@ -983,7 +792,6 @@ def workflow_create(
         content_summary=content_summary,
         command=command,
         parents=_split_csv(parents),
-        children=_split_csv(children),
         tags=_split_csv(tags),
         aliases=_split_csv(aliases),
         dev_notes=dev_notes if dev_notes else None,
@@ -1005,7 +813,6 @@ def workflow_update(
     content_summary: str | None = None,
     command: str | None = None,
     parents: str | None = None,
-    children: str | None = None,
     tags: str | None = None,
     aliases: str | None = None,
     dev_notes: str | None = None,
@@ -1056,8 +863,6 @@ def workflow_update(
         updates["command"] = command
     if parents is not None:
         updates["parents"] = _split_csv(parents)
-    if children is not None:
-        updates["children"] = _split_csv(children)
     if tags is not None:
         updates["tags"] = _split_csv(tags)
     if aliases is not None:

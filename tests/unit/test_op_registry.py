@@ -96,3 +96,97 @@ class TestBuiltinOps:
         first = op_registry.list_ops()
         op_registry.load_builtin_ops()  # second call must not raise
         assert op_registry.list_ops() == first
+
+
+class TestOptionalDependencyWhitelist:
+    """``load_builtin_ops`` skips an op module only when its failure matches
+    the optional-dependency whitelist; everything else propagates so a real
+    bug in an op module surfaces at boot instead of being silently swallowed."""
+
+    def _force_import_error(self, monkeypatch, missing: str, target_module: str = None):
+        """Make every import (or just ``target_module``) raise
+        ``ModuleNotFoundError(name=missing)`` to simulate an absent dependency.
+        """
+        import builtins
+        real_import = builtins.__import__
+
+        def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+            if target_module is None or name == target_module:
+                raise ModuleNotFoundError(f"No module named {missing!r}", name=missing)
+            return real_import(name, globals, locals, fromlist, level)
+
+        monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    def _patch_memory_ops_reload(self, monkeypatch, raise_with):
+        """Make loading the memory_ops module raise ``raise_with``, whether
+        the loader takes the ``importlib.reload`` path (module already in
+        ``sys.modules`` — the typical case after warm-up on a host with the
+        optional dep) or the ``importlib.import_module`` path (memory_ops
+        was never successfully imported — the CI case)."""
+        import importlib
+
+        # Warm up so every ops module is in sys.modules and gets reloaded
+        # (rather than imported fresh) on the next load_builtin_ops call.
+        op_registry.load_builtin_ops()
+        # Clear state so the next load_builtin_ops re-iterates and the
+        # already-registered ops don't trigger duplicate-registration errors.
+        op_registry.clear_ops()
+
+        real_reload = importlib.reload
+        real_import = importlib.import_module
+
+        def fake_reload(module):
+            if module.__name__.endswith(".memory_ops"):
+                raise raise_with
+            return real_reload(module)
+
+        def fake_import(name, package=None):
+            if name.endswith(".memory_ops"):
+                raise raise_with
+            return real_import(name, package)
+
+        monkeypatch.setattr(importlib, "reload", fake_reload)
+        monkeypatch.setattr(importlib, "import_module", fake_import)
+
+    def test_whitelisted_missing_dep_records_failure_and_continues(self, monkeypatch):
+        """When ``memory_ops`` fails to import because the whitelisted optional
+        dep is absent, the module is recorded in ``failed_op_modules`` and the
+        load proceeds — other ops still register."""
+        self._patch_memory_ops_reload(
+            monkeypatch,
+            ModuleNotFoundError(
+                "No module named 'hindsight_client'", name="hindsight_client",
+            ),
+        )
+
+        op_registry.load_builtin_ops()  # must not raise
+
+        assert "memory_ops" in op_registry.failed_op_modules()
+        assert op_registry.get_op("op.wb.memory_read") is None
+        # An unrelated module's ops are still there.
+        assert op_registry.get_op("op.wb.task_read") is not None
+
+    def test_non_whitelisted_missing_dep_propagates(self, monkeypatch):
+        """A ``ModuleNotFoundError`` whose missing module is NOT whitelisted
+        for that op module crashes ``load_builtin_ops`` loudly."""
+        self._patch_memory_ops_reload(
+            monkeypatch,
+            ModuleNotFoundError(
+                "No module named 'definitely_not_a_real_optional_dep'",
+                name="definitely_not_a_real_optional_dep",
+            ),
+        )
+
+        with pytest.raises(ModuleNotFoundError):
+            op_registry.load_builtin_ops()
+
+    def test_non_import_error_propagates(self, monkeypatch):
+        """A non-import error (e.g. a wrong ``register_op`` call) in an op
+        module is NOT swallowed by the whitelist."""
+        self._patch_memory_ops_reload(
+            monkeypatch,
+            RuntimeError("simulated bug in memory_ops._register()"),
+        )
+
+        with pytest.raises(RuntimeError, match="simulated bug"):
+            op_registry.load_builtin_ops()

@@ -1,8 +1,9 @@
-"""JSON + vault store loader for the unified knowledge system.
+"""Store loader for the unified knowledge system.
 
-Loads system PromptUnit data from ``knowledge/store/*.json``, merges
-user patches from ``knowledge/store.local/``, and optionally loads
-personal VaultUnit data from the Obsidian vault.
+Loads system PromptUnit data from the file-per-unit markdown store at
+``knowledge/store/`` (one ``.md`` file per unit), merges user patches from
+``knowledge/store.local/``, and optionally loads personal VaultUnit data from
+the Obsidian vault.
 
 Three scopes:
 
@@ -75,6 +76,30 @@ def _deep_merge(base: dict, patch: dict) -> dict:
     return result
 
 
+def _load_system_raw() -> dict[str, dict[str, Any]]:
+    """Load the system store's raw unit dicts from the file-per-unit store."""
+    from work_buddy.knowledge.file_store import load_units_from_dir
+
+    raw = load_units_from_dir(_STORE_DIR)
+    logger.info("Loaded %d units from %s", len(raw), _STORE_DIR)
+    return raw
+
+
+def _derive_children(units: dict[str, PromptUnit]) -> None:
+    """Populate each unit's ``children`` from other units' ``parents``.
+
+    ``children`` is not stored — a unit's children are every unit that names
+    it as a parent. Deriving it removes the parent/child symmetry-reconciliation
+    class of bugs.
+    """
+    by_parent: dict[str, list[str]] = {}
+    for path, unit in units.items():
+        for parent in unit.parents:
+            by_parent.setdefault(parent, []).append(path)
+    for path, unit in units.items():
+        unit.children = sorted(by_parent.get(path, []))
+
+
 def _vault_dir() -> Path | None:
     """Resolve the configured vault directory for personal knowledge.
 
@@ -128,10 +153,10 @@ def load_store(
 ) -> dict[str, KnowledgeUnit]:
     """Load the knowledge store.
 
-    1. Reads all JSON files from ``knowledge/store/``
+    1. Reads the file-per-unit markdown store from ``knowledge/store/``
     2. Applies user patches from ``knowledge/store.local/``
     3. Deserializes into typed PromptUnit objects
-    4. Validates DAG integrity
+    4. Derives ``children`` from ``parents`` and validates DAG integrity
     5. Caches the result
 
     Args:
@@ -151,11 +176,11 @@ def load_store(
 
     # Load system store if needed
     if _STORE is None or force:
-        # Step 1: Load base store
-        raw = _load_json_dir(_STORE_DIR)
-        logger.info("Loaded %d units from %s", len(raw), _STORE_DIR)
+        # Step 1: Load base store (file-per-unit markdown)
+        raw = _load_system_raw()
 
-        # Step 2: Apply local patches
+        # Step 2: Apply local patches (always JSON; store.local/ is never
+        # migrated to the file-per-unit substrate).
         local = _load_json_dir(_LOCAL_DIR)
         if local:
             for path, patch_data in local.items():
@@ -175,24 +200,9 @@ def load_store(
             except Exception as e:
                 logger.warning("Failed to deserialize %s: %s", path, e)
 
-        # Step 4: Reconcile parent-child symmetry
-        #
-        # Auto-generated capabilities set parents but the parent's children
-        # list may not include them (and vice versa). Fix both directions
-        # so the DAG is always bidirectional regardless of authoring source.
-        for path, unit in units.items():
-            for parent_path in unit.parents:
-                parent = units.get(parent_path)
-                if parent is not None and path not in parent.children:
-                    parent.children.append(path)
-            for child_path in unit.children:
-                child = units.get(child_path)
-                if child is not None and child_path not in child.parents:
-                    child.parents.append(path)
-
-        # Sort children lists for deterministic ordering
-        for unit in units.values():
-            unit.children.sort()
+        # Step 4: Derive ``children`` from ``parents`` — children is not
+        # stored; a unit's children are every unit that names it as a parent.
+        _derive_children(units)
 
         # Step 5: Validate DAG
         errors = validate_dag(units)  # type: ignore[arg-type]
