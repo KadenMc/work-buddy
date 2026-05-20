@@ -118,8 +118,11 @@ class TestOptionalDependencyWhitelist:
         monkeypatch.setattr(builtins, "__import__", fake_import)
 
     def _patch_memory_ops_reload(self, monkeypatch, raise_with):
-        """Make ``importlib.reload`` raise ``raise_with`` whenever it reloads
-        the memory_ops module; other modules reload normally."""
+        """Make loading the memory_ops module raise ``raise_with``, whether
+        the loader takes the ``importlib.reload`` path (module already in
+        ``sys.modules`` — the typical case after warm-up on a host with the
+        optional dep) or the ``importlib.import_module`` path (memory_ops
+        was never successfully imported — the CI case)."""
         import importlib
 
         # Warm up so every ops module is in sys.modules and gets reloaded
@@ -130,13 +133,20 @@ class TestOptionalDependencyWhitelist:
         op_registry.clear_ops()
 
         real_reload = importlib.reload
+        real_import = importlib.import_module
 
         def fake_reload(module):
             if module.__name__.endswith(".memory_ops"):
                 raise raise_with
             return real_reload(module)
 
+        def fake_import(name, package=None):
+            if name.endswith(".memory_ops"):
+                raise raise_with
+            return real_import(name, package)
+
         monkeypatch.setattr(importlib, "reload", fake_reload)
+        monkeypatch.setattr(importlib, "import_module", fake_import)
 
     def test_whitelisted_missing_dep_records_failure_and_continues(self, monkeypatch):
         """When ``memory_ops`` fails to import because the whitelisted optional
