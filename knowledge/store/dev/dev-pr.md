@@ -282,6 +282,10 @@ Advance with `{"ready": true}` when clean. If you find and fix issues, mention t
 
 Reasoning step. Stage and commit.
 
+## Sign off every commit (DCO)
+
+work-buddy enforces a Developer Certificate of Origin: every commit must be signed off with the `-s` flag (`git commit -s ...`), which appends a `Signed-off-by` trailer. The `DCO` status check is required on `main` — a pull request with any unsigned commit cannot merge. Commit with `-s` from the start; to repair commits already made without it, run `git rebase --signoff origin/main` and force-push.
+
 ## Stage precisely
 
 Do NOT use `git add -A` or `git add .`.
@@ -297,10 +301,10 @@ Follow the repo's conventional-commit style (check `git log --oneline -5`). Keep
 
 If the `document` step was skipped, paste the `skip_rationale` into the commit body under a `Doc-update skipped:` line so the skip is visible in history.
 
-Use a HEREDOC for multi-line commit messages:
+Use a HEREDOC for multi-line commit messages, and keep the `-s`:
 
 ```bash
-git commit -m "$(cat <<'EOF'
+git commit -s -m "$(cat <<'EOF'
 <subject>
 
 <body>

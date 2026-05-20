@@ -153,6 +153,9 @@ mcp__work-buddy__wb_run("service_restart", {"service": "dashboard"})
 - Production: `poetry add <package>`
 - Temporary/testing: `poetry add --group temp <package>` (cleanly removable)
 
+### Committing
+work-buddy enforces a Developer Certificate of Origin: **every commit must be signed off** with `git commit -s`, which appends a `Signed-off-by` trailer. The `DCO` status check is required on `main` — a pull request with any unsigned commit cannot merge. `/wb-dev-pr` signs off in its commit step; if you commit by hand, always pass `-s`.
+
 ## What NOT to do
 
 - **Don't skip the orientation workflow.** Every documented failure to orient has produced wrong code. You are the next data point if you skip.
@@ -162,4 +165,5 @@ mcp__work-buddy__wb_run("service_restart", {"service": "dashboard"})
 - **Don't forget doc hygiene** — run `/wb-dev-document` before `/wb-dev-pr`.
 - **Don't hand-edit `knowledge/store/*.json`** — use `docs_*` / `workflow_*` / the auto-generator for capability units.
 - **Don't commit unrelated files** — stage only what you changed.
+- **Don't commit without `-s`** — work-buddy enforces a DCO; an unsigned commit fails the required `DCO` check and blocks the PR.
 - **Don't ship transient narrative in durable surfaces.** See `<<wb:dev/durable-surfaces>>`.
