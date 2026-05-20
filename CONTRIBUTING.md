@@ -145,6 +145,7 @@ You're welcome to develop however you prefer — by hand, with Claude Code, or w
 Run `/wb-dev-push` to check most of these automatically. When submitting your PR, ensure:
 
 - [ ] All tests pass (`poetry run pytest` or `/wb-dev-test`)
+- [ ] All commits are signed off (`git commit -s` — see [License and the Developer Certificate of Origin](#license-and-the-developer-certificate-of-origin))
 - [ ] New features include tests
 - [ ] Knowledge store validates (no broken DAG refs, no orphaned commands)
 - [ ] The PR title is descriptive and concise
@@ -163,6 +164,36 @@ A few principles that guide decisions:
 - **Feature toggles over hard dependencies.** Not everyone needs Telegram, Chrome triaging, or persistent memory. New integrations should be optional.
 - **Honest about maturity.** This is a pre-release project. APIs may change. Document what's stable and what isn't.
 
-## License
+## License and the Developer Certificate of Origin
 
-By contributing, you agree that your work will be licensed under the [MIT License](LICENSE).
+### Why GPL-3.0-only
+
+As of 0.2.0, work-buddy is licensed under the GNU General Public License v3.0 (`GPL-3.0-only`); earlier releases were MIT.
+
+The reasoning, plainly. work-buddy is a local-first runtime built for individuals — something people run on their own machines and shape to their own work. The GPL keeps it a shared resource: anyone can use, study, modify, and redistribute it, and the single reciprocal condition is that redistributed modifications carry the license forward, so every downstream user inherits the same freedoms. Improvements to the core runtime return to the commons instead of being folded into a closed product.
+
+It is also a deliberate strategic choice, and worth saying plainly: permissive licensing suits projects with established brand and ecosystem reach to fall back on. For a focused project, copyleft is the better tool — it keeps the runtime a common resource rather than raw material for a closed competitor. That is the right footing for work-buddy.
+
+For you as a contributor, the part that matters most: **the GPL binds the maintainer exactly as much as anyone else.** work-buddy uses a Developer Certificate of Origin, not a Contributor License Agreement — so no one, the maintainer included, can relicense your work or move it into a closed edition without your agreement. The project staying open is not a promise you are asked to trust; it is how the licensing is built.
+
+### Signing off your commits
+
+work-buddy uses the [Developer Certificate of Origin](DCO) (DCO) — a lightweight, standard attestation that you wrote the contribution, or otherwise have the right to submit it under `GPL-3.0-only`. There is no separate agreement to sign and nothing to mail.
+
+You sign off by adding a `Signed-off-by` line to each commit. `git commit -s` does it for you:
+
+```bash
+git commit -s -m "Your commit message"
+```
+
+That appends a line from your configured git identity:
+
+```
+Signed-off-by: Your Name <you@example.com>
+```
+
+Every commit in a pull request must be signed off. An automated check verifies this, and a PR cannot be merged until all of its commits carry a valid sign-off.
+
+Forgot to sign off?
+- Last commit only: `git commit --amend -s --no-edit`, then `git push --force`
+- Several commits: `git rebase --signoff origin/main`, then `git push --force`

@@ -707,4 +707,8 @@ For bugs and feature requests, [open an issue](https://github.com/KadenMc/work-b
 
 ## License
 
-[MIT](LICENSE)
+work-buddy is free software, licensed under the **[GNU General Public License v3.0](LICENSE)** (`GPL-3.0-only`).
+
+Use it, study it, modify it, share it. The GPL adds one reciprocal condition: anyone you pass a modified version to receives the same freedoms you had. work-buddy is built for individuals, and copyleft is how it stays that way — improvements to the runtime keep flowing back to the people who use it rather than being absorbed into a closed product.
+
+Copyright © 2025–2026 Kaden McKeen.
