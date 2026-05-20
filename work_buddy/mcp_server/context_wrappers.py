@@ -2421,16 +2421,19 @@ def entity_get(*, name_or_id: str) -> str:
     Returns the full record including tags, aliases, and a recency
     snippet of the reference index (last 5 references). Returns
     ``{"error": ...}`` if not found.
+
+    A numeric string (e.g. ``"2024"``) is resolved as a name/alias
+    first and only falls back to an integer id lookup on a miss — so
+    an entity that happens to be *named* a number is still reachable
+    by name, while ``entity_get(name_or_id="7")`` still finds entity
+    id 7 when no entity is named "7".
     """
     import json
     from work_buddy.entities import store as entity_store
 
-    # The wrapper accepts the id as a string for JSON-RPC simplicity;
-    # promote numeric strings to int for the store call.
-    key: str | int = name_or_id
-    if isinstance(name_or_id, str) and name_or_id.isdigit():
-        key = int(name_or_id)
-    e = entity_store.get_entity(key)
+    e = entity_store.get_entity(name_or_id)
+    if e is None and isinstance(name_or_id, str) and name_or_id.isdigit():
+        e = entity_store.get_entity(int(name_or_id))
     if e is None:
         return json.dumps({"error": f"Entity {name_or_id!r} not found"})
     e["recent_references"] = entity_store.list_references(e["id"], limit=5)

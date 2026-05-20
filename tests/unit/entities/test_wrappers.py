@@ -128,6 +128,26 @@ def test_entity_get_missing_returns_error(wrappers_env):
     assert "error" in out
 
 
+def test_entity_get_numeric_string_falls_back_to_id(wrappers_env):
+    """A numeric string with no name match resolves as an integer id."""
+    e = wrappers_env.entities.create_entity("Max")
+    out = json.loads(wrappers_env.cw.entity_get(name_or_id=str(e["id"])))
+    assert out["canonical_name"] == "Max"
+
+
+def test_entity_get_numeric_name_resolves_by_name_first(wrappers_env):
+    """An entity literally named a number is reachable by that name —
+    name resolution is tried before the integer-id fallback."""
+    numeric = wrappers_env.entities.create_entity("2024")
+    # Create filler rows so the numeric name does not coincide with
+    # its own id by accident.
+    for i in range(3):
+        wrappers_env.entities.create_entity(f"filler-{i}")
+    out = json.loads(wrappers_env.cw.entity_get(name_or_id="2024"))
+    assert out["id"] == numeric["id"]
+    assert out["canonical_name"] == "2024"
+
+
 # ─── entity_create ──────────────────────────────────────────────────
 
 
