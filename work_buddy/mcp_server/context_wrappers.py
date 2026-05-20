@@ -2208,3 +2208,517 @@ def task_scattered(*, limit: int = 200) -> dict:
         "files_count": len(by_file),
         "by_file": grouped,
     }
+
+
+# ---------------------------------------------------------------------------
+# Entity registry (backed by entities.store)
+# ---------------------------------------------------------------------------
+#
+# Federated resolution rides on a small provider protocol: each provider is
+# a callable ``(query: str) -> list[dict]`` returning zero or more match
+# dicts shaped like
+#
+#     {
+#         "provider": "entities" | "projects" | ...,
+#         "kind": "person" | "project" | ...,    # provider-defined
+#         "id": <opaque ref into the provider>,
+#         "name": <display>,
+#         "description": <prose or None>,
+#         "aliases": [<str>, ...],
+#         "tags": [<str>, ...],                  # entities only
+#     }
+#
+# ``entity_resolve`` calls every registered provider and merges the
+# results. New providers (contracts, users, …) are added by extending
+# ``_RESOLUTION_PROVIDERS`` below. The function never falls back from one
+# provider to another — they're queried in parallel and all matches are
+# returned. This is what makes "federated resolution" the accurate term
+# (as opposed to "fallback").
+
+
+def _entity_provider_entities(query: str) -> list[dict[str, Any]]:
+    """Resolution provider: the entity store.
+
+    Returns zero, one, or many matches. The entity store's
+    ``resolve_name`` does canonical-then-alias lookup; we return the
+    single match here (entities have a uniqueness constraint, so an
+    alias lookup can return at most one entity).
+    """
+    from work_buddy.entities import store as entity_store
+
+    eid = entity_store.resolve_name(query)
+    if eid is None:
+        return []
+    e = entity_store.get_entity(eid)
+    if e is None:
+        return []
+    return [{
+        "provider": "entities",
+        "kind": _entity_kind_from_tags(e.get("tags") or []),
+        "id": e["id"],
+        "name": e["canonical_name"],
+        "description": e.get("description"),
+        "aliases": [a["alias"] for a in e.get("aliases") or []],
+        "tags": [t["tag"] for t in e.get("tags") or []],
+    }]
+
+
+def _entity_kind_from_tags(tags: list[dict[str, Any]]) -> str | None:
+    """Derive a top-level kind string from an entity's tags.
+
+    Returns the topmost path segment of the first tag (e.g. ``person``
+    for ``person/family``). Useful for callers that want a quick
+    "what is this" label without parsing the tag list. ``None`` if
+    no tags.
+    """
+    for t in tags:
+        norm = t.get("tag_norm") if isinstance(t, dict) else None
+        if norm:
+            return norm.split("/", 1)[0]
+    return None
+
+
+def _entity_provider_projects(query: str) -> list[dict[str, Any]]:
+    """Resolution provider: the project registry.
+
+    Projects already implement the entity-result shape: canonical
+    ``slug``, ``aliases``, and ``description`` — so they qualify as a
+    resolution source at zero migration cost. We do NOT copy project
+    rows into the entity table; the project store remains sole owner
+    of its rows.
+    """
+    from work_buddy.projects import store as project_store
+
+    pid = project_store.resolve_slug(query)
+    if pid is None:
+        return []
+    p = project_store.get_project_by_id(pid, include_deleted=False)
+    if p is None:
+        return []
+    return [{
+        "provider": "projects",
+        "kind": "project",
+        "id": p["slug"],
+        "name": p.get("name") or p["slug"],
+        "description": p.get("description"),
+        "aliases": [a["alias"] for a in p.get("aliases") or []],
+        "tags": [],
+    }]
+
+
+# Order matters only for tie-breaking when callers want a deterministic
+# first match — the merge itself is order-stable. Registering a new
+# provider is a one-line append below.
+_RESOLUTION_PROVIDERS: list = [
+    _entity_provider_entities,
+    _entity_provider_projects,
+]
+
+
+def _maybe_record_resolution_reference(
+    matches: list[dict[str, Any]],
+    *,
+    source_path: str | None,
+    source_kind: str | None,
+) -> None:
+    """Side-effect: record an entity reference for each entities-provider hit.
+
+    Only fires when the caller supplied both ``source_path`` and
+    ``source_kind``. Matches from the projects provider (or any
+    non-entities provider) are not recorded — references belong to the
+    entity store, not to the project registry. Best-effort: a recording
+    failure must not bubble up and break the resolve call.
+    """
+    if not source_path or not source_kind:
+        return
+    from work_buddy.entities import store as entity_store
+    for m in matches:
+        if m.get("provider") != "entities":
+            continue
+        try:
+            entity_store.record_reference(
+                entity_id=m["id"],
+                source_path=source_path,
+                source_kind=source_kind,
+            )
+        except Exception:
+            # Logged at the store level; never break resolve.
+            pass
+
+
+def entity_resolve(
+    *,
+    query: str,
+    source_path: str | None = None,
+    source_kind: str | None = None,
+) -> str:
+    """Federated lookup over the entity store + the project registry.
+
+    Returns all matches from every registered resolution provider. The
+    federation is parallel (all providers are queried), not fallback —
+    a name that's both an entity and a project name surfaces twice,
+    flagged by ``provider``. Callers disambiguate.
+
+    Args:
+        query: A name, alias, or slug to resolve. Case-insensitive.
+        source_path: Optional document/session/agent path. When
+            supplied alongside ``source_kind``, each entities-provider
+            match is recorded as a reference (de-dup window applies).
+            Pass these together to populate the reference index from
+            inside other agent work.
+        source_kind: One of ``document``, ``chat``, ``task``,
+            ``agent``, ``manual``. Required alongside ``source_path``
+            for the side-effect reference recording.
+
+    Returns:
+        JSON string:
+        ``{"query": ..., "matches": [...], "ambiguous": bool}``. The
+        ``ambiguous`` flag is True when more than one match was found
+        across all providers — the agent should disambiguate before
+        acting.
+    """
+    import json
+
+    matches: list[dict[str, Any]] = []
+    for provider in _RESOLUTION_PROVIDERS:
+        try:
+            matches.extend(provider(query))
+        except Exception:
+            # A misbehaving provider must not poison the whole resolve.
+            # The provider is responsible for its own logging.
+            continue
+
+    _maybe_record_resolution_reference(
+        matches, source_path=source_path, source_kind=source_kind,
+    )
+
+    return json.dumps({
+        "query": query,
+        "matches": matches,
+        "ambiguous": len(matches) > 1,
+    }, indent=2, default=str)
+
+
+def entity_list(
+    *, tag: str | None = None, limit: int | None = None,
+) -> str:
+    """List entities, optionally filtered by a hierarchical tag.
+
+    ``tag='person'`` returns everything tagged ``person`` plus
+    ``person/family``, ``person/colleague``, etc. ``limit`` caps the
+    result set; omit for everything.
+    """
+    import json
+    from work_buddy.entities import store as entity_store
+
+    entities = entity_store.list_entities(tag=tag, limit=limit)
+    return json.dumps(entities, indent=2, default=str)
+
+
+def entity_get(*, name_or_id: str) -> str:
+    """Fetch a single entity by canonical name, alias, or integer id.
+
+    Returns the full record including tags, aliases, and a recency
+    snippet of the reference index (last 5 references). Returns
+    ``{"error": ...}`` if not found.
+
+    A numeric string (e.g. ``"2024"``) is resolved as a name/alias
+    first and only falls back to an integer id lookup on a miss — so
+    an entity that happens to be *named* a number is still reachable
+    by name, while ``entity_get(name_or_id="7")`` still finds entity
+    id 7 when no entity is named "7".
+    """
+    import json
+    from work_buddy.entities import store as entity_store
+
+    e = entity_store.get_entity(name_or_id)
+    if e is None and isinstance(name_or_id, str) and name_or_id.isdigit():
+        e = entity_store.get_entity(int(name_or_id))
+    if e is None:
+        return json.dumps({"error": f"Entity {name_or_id!r} not found"})
+    e["recent_references"] = entity_store.list_references(e["id"], limit=5)
+    e["reference_count"] = entity_store.count_references(e["id"])
+    return json.dumps(e, indent=2, default=str)
+
+
+def entity_create(
+    *,
+    canonical_name: str,
+    description: str | None = None,
+    tags: list[str] | None = None,
+    aliases: list[str] | None = None,
+    author: str = "user",
+    source_path: str | None = None,
+    source_kind: str | None = None,
+) -> str:
+    """Create a new entity. Consent-gated for agent-author writes.
+
+    User-author writes (``author='user'``, the default) skip the
+    consent gate — the user invoking the capability is the consent.
+    Agent-author writes raise ``ConsentRequired`` on first call so the
+    user can approve the creation pattern; subsequent writes ride the
+    cached grant within its TTL.
+
+    If ``source_path`` and ``source_kind`` are both supplied, an
+    initial reference row is appended for this entity recording the
+    create event. This is how an agent that creates an entity while
+    working in a document context anchors the entity to that document
+    without a separate ``entity_add_reference`` call.
+    """
+    import json
+    from work_buddy.consent import ConsentRequired, _cache as consent_cache
+    from work_buddy.entities import store as entity_store
+
+    if author == "agent" and not consent_cache.is_granted("entity_create"):
+        raise ConsentRequired(
+            operation="entity_create",
+            reason=f"Create entity {canonical_name!r} with tags={tags or []}.",
+            risk="low",
+            default_ttl=30,
+        )
+
+    try:
+        entity = entity_store.create_entity(
+            canonical_name,
+            description=description,
+            tags=tags,
+            aliases=aliases,
+            author=author,
+        )
+    except ValueError as exc:
+        return json.dumps({"error": str(exc)})
+
+    if source_path and source_kind:
+        try:
+            entity_store.record_reference(
+                entity_id=entity["id"],
+                source_path=source_path,
+                source_kind=source_kind,
+                snippet=f"created: {canonical_name}",
+            )
+        except ValueError:
+            # Invalid source_kind — the create still succeeded, just
+            # surface the failure as a field on the response so the
+            # caller can fix the kind on retry.
+            entity["reference_record_error"] = (
+                f"invalid source_kind {source_kind!r}; entity created "
+                "without an initial reference"
+            )
+
+    return json.dumps(entity, indent=2, default=str)
+
+
+def entity_update(
+    *,
+    entity_id: int,
+    canonical_name: str | None = None,
+    description: str | None = None,
+    author: str = "user",
+    source_path: str | None = None,
+    source_kind: str | None = None,
+) -> str:
+    """Update an entity's canonical name and/or description.
+
+    Only provided fields change. Pass ``description=""`` (empty string)
+    to clear the description; omit ``description`` to leave it alone.
+    Tags and aliases are managed through ``entity_set_tags`` /
+    ``entity_add_alias`` / ``entity_remove_alias`` — they don't appear
+    here so a rename PATCH can't accidentally wipe them.
+
+    If ``source_path`` and ``source_kind`` are supplied, an update
+    reference is appended (subject to the standard de-dup window).
+    """
+    import json
+    from work_buddy.entities import store as entity_store
+
+    kwargs: dict[str, Any] = {"author": author}
+    if canonical_name is not None:
+        kwargs["canonical_name"] = canonical_name
+    if description is not None:
+        # An explicit empty string means "clear it." We translate to
+        # None at the store boundary so the column is NULL, not "".
+        kwargs["description"] = description if description != "" else None
+
+    try:
+        updated = entity_store.update_entity(entity_id, **kwargs)
+    except ValueError as exc:
+        return json.dumps({"error": str(exc)})
+
+    if updated is None:
+        return json.dumps({"error": f"Entity id={entity_id} not found"})
+
+    if source_path and source_kind:
+        try:
+            entity_store.record_reference(
+                entity_id=updated["id"],
+                source_path=source_path,
+                source_kind=source_kind,
+                snippet=f"updated: {updated['canonical_name']}",
+            )
+        except ValueError:
+            updated["reference_record_error"] = (
+                f"invalid source_kind {source_kind!r}; update succeeded"
+            )
+
+    return json.dumps(updated, indent=2, default=str)
+
+
+def entity_delete(
+    *,
+    entity_id: int,
+    author: str = "user",
+) -> str:
+    """Hard-delete an entity. Consent-gated.
+
+    Cascades through tags, aliases, and references. The handoff design
+    chose hard-delete over soft-delete; if you need preservation, add
+    a tag like ``status/archived`` and filter on it at read time.
+
+    Both user-author and agent-author deletes go through the consent
+    gate: deletion is destructive and the user should always see a
+    prompt the first time per cache window.
+    """
+    import json
+    from work_buddy.consent import ConsentRequired, _cache as consent_cache
+    from work_buddy.entities import store as entity_store
+
+    if not consent_cache.is_granted("entity_delete"):
+        # Look up the entity name so the consent prompt is meaningful.
+        existing = entity_store.get_entity(entity_id)
+        name = existing["canonical_name"] if existing else f"id={entity_id}"
+        ref_count = (
+            entity_store.count_references(entity_id) if existing else 0
+        )
+        raise ConsentRequired(
+            operation="entity_delete",
+            reason=(
+                f"Delete entity {name!r} (id={entity_id}). Cascades "
+                f"through {ref_count} reference row(s)."
+            ),
+            risk="medium",
+            default_ttl=15,
+        )
+
+    if not entity_store.delete_entity(entity_id, author=author):
+        return json.dumps({"error": f"Entity id={entity_id} not found"})
+    return json.dumps({"deleted": True, "entity_id": entity_id})
+
+
+def entity_set_tags(
+    *,
+    entity_id: int,
+    tags: list[str],
+    author: str = "user",
+) -> str:
+    """Replace the full tag set on an entity.
+
+    To remove all tags, pass an empty list. The store normalizes each
+    tag (lowercase, collapse adjacent slashes) and de-duplicates the
+    input before writing.
+    """
+    import json
+    from work_buddy.entities import store as entity_store
+
+    updated = entity_store.set_tags(entity_id, tags, author=author)
+    if updated is None:
+        return json.dumps({"error": f"Entity id={entity_id} not found"})
+    return json.dumps(updated, indent=2, default=str)
+
+
+def entity_add_alias(
+    *,
+    entity_id: int,
+    alias: str,
+    author: str = "user",
+) -> str:
+    """Attach an alias to an entity.
+
+    Raises a wrapped error if the alias collides with another entity's
+    canonical name or another entity's alias. An alias belongs to
+    exactly one entity at a time.
+    """
+    import json
+    from work_buddy.entities import store as entity_store
+
+    try:
+        updated = entity_store.add_alias(entity_id, alias, author=author)
+    except ValueError as exc:
+        return json.dumps({"error": str(exc)})
+    if updated is None:
+        return json.dumps({"error": f"Entity id={entity_id} not found"})
+    return json.dumps(updated, indent=2, default=str)
+
+
+def entity_remove_alias(
+    *,
+    entity_id: int,
+    alias: str,
+    author: str = "user",
+) -> str:
+    """Detach an alias from an entity. No-op if not attached."""
+    import json
+    from work_buddy.entities import store as entity_store
+
+    updated = entity_store.remove_alias(entity_id, alias, author=author)
+    if updated is None:
+        return json.dumps({"error": f"Entity id={entity_id} not found"})
+    return json.dumps(updated, indent=2, default=str)
+
+
+def entity_add_reference(
+    *,
+    entity_id: int,
+    source_path: str,
+    source_kind: str,
+    snippet: str | None = None,
+) -> str:
+    """Explicitly append a reference row for an entity.
+
+    The standard recording path is the side effect of ``entity_resolve``
+    + ``entity_create`` + ``entity_update``. This capability exists for
+    scripts, tests, and dashboard-driven recording that don't ride one
+    of those flows. De-dup window applies (same store default, 3600s
+    per ``(entity_id, source_path, source_kind)``).
+    """
+    import json
+    from work_buddy.entities import store as entity_store
+
+    try:
+        rid = entity_store.record_reference(
+            entity_id=entity_id,
+            source_path=source_path,
+            source_kind=source_kind,
+            snippet=snippet,
+        )
+    except ValueError as exc:
+        return json.dumps({"error": str(exc)})
+
+    if rid is None:
+        return json.dumps({"error": f"Entity id={entity_id} not found"})
+    return json.dumps({
+        "reference_id": rid,
+        "entity_id": entity_id,
+        "source_path": source_path,
+        "source_kind": source_kind,
+    })
+
+
+def entity_list_references(
+    *,
+    entity_id: int,
+    limit: int | None = 50,
+) -> str:
+    """List references for an entity, newest first.
+
+    Default limit 50 to keep dashboard responses small. Pass an
+    explicit larger limit when scraping the full history.
+    """
+    import json
+    from work_buddy.entities import store as entity_store
+
+    refs = entity_store.list_references(entity_id, limit=limit)
+    return json.dumps({
+        "entity_id": entity_id,
+        "references": refs,
+        "count": len(refs),
+    }, indent=2, default=str)

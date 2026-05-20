@@ -70,6 +70,16 @@ Use `knowledge` for unified search across both stores, `agent_docs` for system o
 
 `CLAUDE.local.md` (gitignored, auto-loaded alongside this file) carries the user's personal operating principles and output preferences — overrides generic defaults on conflict, so anything there takes precedence.
 
+## Resolve unfamiliar references before asking
+
+work-buddy keeps an **entity registry** — a store of the named things in the user's world (people, places, institutions, projects, concepts) and what each one means to the user. When you encounter a proper noun naming a person, place, or organization that the user mentions as if you should already know it, call `entity_resolve` **before** asking the user "who/what is that":
+
+```
+mcp__work-buddy__wb_run("entity_resolve", {"query": "Max"})
+```
+
+`entity_resolve` federates over the entity registry and the project registry; a single match answers "what is this." Only if it returns zero matches should you ask the user — and if they explain it, offer to record it with `entity_create` so the next agent never has to ask. The registry is pull-based by design: it is not injected into your context, so it only helps if you reach for it. See the `entities/` scope.
+
 ## Search before you build — and pick the right search tool
 
 Before writing Python that touches work-buddy state, search first. work-buddy has **two** search tools that look interchangeable but aren't, and reaching for the wrong one is the most common discovery mistake:
@@ -111,6 +121,7 @@ Every scope below is browsable with `mcp__work-buddy__wb_run("agent_docs", {"sco
 | `tasks/` | Create, assign, toggle, triage, weekly review, namespace tags |
 | `contracts/` | Commitments, health, WIP limits, constraints |
 | `projects/` | Registry, observations, memory bank |
+| `entities/` | Entity registry — authored names, hierarchical tags, aliases, federated `entity_resolve`, append-only reference index |
 | `journal/` | Daily note, sign-in, running notes, day planner |
 | `context/` | Collectors (git, chrome, calendar, obsidian, smart, datacore…), bundles, conversation search, session inspection, knowledge-store editing |
 | `conversation_observability/` | Durable session-attributed commits / writes / uncommitted-work / topic summaries derived from Claude Code JSONL sessions |

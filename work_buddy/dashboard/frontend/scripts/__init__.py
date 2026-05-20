@@ -49,6 +49,7 @@ from .tabs import (
     conversations,
     costs,
     jobs,
+    memory,
     projects,
     settings,
     tasks,
@@ -114,6 +115,7 @@ SCRIPTS = [
     chats.script,
     contracts.script,
     projects.script,
+    memory.script,
     threads.script,
     threads_card.script,
     threads_actions.script,
@@ -133,4 +135,5 @@ STYLES = [
     automation.styles,
     today.styles,
     chat_sidebar.styles,
+    memory.styles,
 ]

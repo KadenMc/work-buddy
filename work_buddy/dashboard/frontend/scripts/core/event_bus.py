@@ -244,6 +244,12 @@ def script() -> str:
     window.eventBus.on('project.aliases_changed',       () => _refreshSoon('projectsSurface'));
     window.eventBus.on('project.description_confirmed', () => _refreshSoon('projectsSurface'));
 
+    window.eventBus.on('entity.created',        () => _refreshSoon('entitiesSurface'));
+    window.eventBus.on('entity.updated',        () => _refreshSoon('entitiesSurface'));
+    window.eventBus.on('entity.deleted',        () => _refreshSoon('entitiesSurface'));
+    window.eventBus.on('entity.tags_changed',   () => _refreshSoon('entitiesSurface'));
+    window.eventBus.on('entity.aliases_changed', () => _refreshSoon('entitiesSurface'));
+
     window.eventBus.on('component.health_changed',     () => _refreshSoon('settingsSurface'));
     window.eventBus.on('component.preference_changed', () => _refreshSoon('settingsSurface'));
 
@@ -271,6 +277,11 @@ def script() -> str:
         'project.folders_changed':         'projectsSurface.refresh (full refetch)',
         'project.aliases_changed':         'projectsSurface.refresh (full refetch)',
         'project.description_confirmed':   'projectsSurface.refresh (full refetch)',
+        'entity.created':                  'entitiesSurface.refresh (full refetch)',
+        'entity.updated':                  'entitiesSurface.refresh (full refetch)',
+        'entity.deleted':                  'entitiesSurface.refresh (full refetch)',
+        'entity.tags_changed':             'entitiesSurface.refresh (full refetch)',
+        'entity.aliases_changed':          'entitiesSurface.refresh (full refetch)',
         'component.health_changed':        'settingsSurface.refresh (morphdom)',
         'component.preference_changed':    'settingsSurface.refresh (morphdom)',
         'llm.call_logged':                 'costsSurface.refresh (morphdom)',
