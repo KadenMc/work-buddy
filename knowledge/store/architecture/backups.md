@@ -25,7 +25,10 @@ aliases:
 parents:
 - architecture
 - architecture
-dev_notes: Centerpiece of the backups documentation cluster. Pairs with architecture/migrations (separate concern, used beyond restore). VITAL_DBS table is the single source of truth for which DBs are backed up; if a new vital DB is added (e.g. consent.db, conversations.db) this is the unit that needs the table updated. File pointers for each subsystem live next to the code in the relevant modules; this unit deliberately does not duplicate that file map -- search `work_buddy/backups/` and `work_buddy/health/` to discover.
+dev_notes: |-
+  Centerpiece of the backups documentation cluster. Pairs with architecture/migrations (separate concern, used beyond restore). VITAL_DBS table is the single source of truth for which DBs are backed up; if a new vital DB is added (e.g. consent.db, conversations.db) this is the unit that needs the table updated. File pointers for each subsystem live next to the code in the relevant modules; this unit deliberately does not duplicate that file map -- search `work_buddy/backups/` and `work_buddy/health/` to discover.
+
+  Remote retention (`prune_remote_snapshots`) buckets releases by `parse_snapshot_ts(tag)`, never by the `gh` release `createdAt` field: `createdAt` is the date of the commit a release tag points at, and in a data-only backup repo every tag points at the single seed commit -- so `createdAt` is identical across every release, and keying retention on it collapses all rolling snapshots into one bucket (the sweep then deletes all but one off-machine copy). `list_remote_snapshots` surfaces `publishedAt` (the real push time) for display only.
 ---
 
 Off-machine snapshot + restore for work-buddy's vital SQLite databases. Built on SQLite's hot-backup API, tarballed with a structured manifest, pushed to a user-owned private GitHub Releases bucket, and recoverable on a fresh-installed machine through a schema-aware restore pipeline.
@@ -71,7 +74,7 @@ Keys:
 
 ## Retention (tiered, per-tier capped)
 
-Sweep runs after every snapshot. Mirrors locally and remotely (the remote push uses `gh release delete` for out-of-bucket snapshots).
+Sweep runs after every snapshot, mirrored locally and remotely. Both sweeps bucket a snapshot by the timestamp encoded in its `snap-<isots>` id/tag -- never by a filesystem mtime or a GitHub release's `createdAt` -- so the local set and the remote set converge on the same tiered selection. The remote sweep deletes out-of-bucket releases with `gh release delete`.
 
 | Tier | Cadence | Cap |
 |---|---|---|
@@ -84,15 +87,17 @@ Sweep runs after every snapshot. Mirrors locally and remotely (the remote push u
 
 Steady-state local footprint at ~3 MB compressed per snapshot is ~156 MB across the ~52 retained slots. Manual snapshots are deliberately a small bucket -- they are *anchor points* a user takes before something risky, not archival.
 
-Configured in `config.local.yaml` under `backups.github.retention.*`.
+The tier caps are defined by the `RETENTION` dict in `work_buddy/backups/local.py`.
 
 ## Remote push (`work_buddy/backups/remote.py`)
 
 The remote target is a *user-owned private GitHub repository*. Snapshots are uploaded as GitHub Release assets, one release per snapshot, tagged with the snapshot ID. We subprocess the `gh` CLI rather than embed PyGithub because:
 
 - The user's existing GitHub credentials are managed by `gh`; we never touch a PAT.
-- `gh release create <tag> <files>` is one-shot, idempotent on retry, and supports private repos natively.
+- `gh release create` / `gh release upload` support private repos natively and need no Python GitHub client.
 - The `gh release list --json` query lets the restore pipeline enumerate remote snapshots without a Python GitHub client.
+
+Transient-fault handling: `push_snapshot` retries a push that fails with a network/DNS fault (e.g. intermittent resolution of `uploads.github.com`) up to three attempts with a short backoff -- well inside the hourly cron window. Permanent faults (gh missing, unauthenticated) are not retried. `gh release create` uploads the asset after creating the release object; if an earlier attempt created the release but its asset upload failed, the retry detects the "already exists" error and falls back to `gh release upload --clobber`, so a retried push converges instead of looping.
 
 No encryption layer. A private GitHub repo is the same trust model as the user's other private code repositories -- the threat model is account compromise, not in-transit interception. Adding GPG encryption would buy nothing and add a key-management failure mode.
 

@@ -419,6 +419,32 @@ def check_tailscale_self_online() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+def _parse_backup_ts(ts_str: str):
+    """Parse a ``last_run.json`` backup timestamp to a tz-aware UTC datetime.
+
+    Accepts both the standard ISO-8601 form (``2026-05-20T16:00:20Z``,
+    written by the backup op) and the compact snapshot form with dashes
+    in the time component (``2026-05-20T16-00-20Z``, the snapshot-id
+    shape) — ``last_run.json`` may carry either. Returns ``None`` if
+    neither form matches.
+    """
+    from datetime import datetime, timezone
+
+    s = (ts_str or "").strip()
+    if not s:
+        return None
+    iso = s[:-1] + "+00:00" if s.endswith("Z") else s
+    dt = None
+    try:
+        dt = datetime.fromisoformat(iso)
+    except ValueError:
+        try:
+            dt = datetime.strptime(s, "%Y-%m-%dT%H-%M-%SZ")
+        except ValueError:
+            return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
 def check_github_backup_freshness() -> dict[str, Any]:
     """Read ``.data/backups/last_run.json`` and assess freshness.
 
@@ -467,19 +493,12 @@ def check_github_backup_freshness() -> dict[str, Any]:
     if not ts_str:
         return {"ok": True, "detail": "last backup ok (timestamp missing — "
                 "freshness window not enforced)"}
-    try:
-        from datetime import datetime, timezone
-        # Accept both manifest-format (YYYY-MM-DDTHH-MM-SSZ) and
-        # ISO-with-colons formats.
-        cleaned = ts_str.replace("-", ":", 2) if "T" in ts_str else ts_str
-        cleaned = cleaned.replace("Z", "+00:00") if cleaned.endswith("Z") else cleaned
-        last_dt = datetime.fromisoformat(cleaned)
-        if last_dt.tzinfo is None:
-            last_dt = last_dt.replace(tzinfo=timezone.utc)
-        age_seconds = (datetime.now(timezone.utc) - last_dt).total_seconds()
-    except (ValueError, TypeError) as exc:
+    from datetime import datetime, timezone
+    last_dt = _parse_backup_ts(ts_str)
+    if last_dt is None:
         return {"ok": True, "detail": f"last backup ok (ts {ts_str!r} "
-                f"unparseable: {exc})"}
+                "unparseable — freshness window not enforced)"}
+    age_seconds = (datetime.now(timezone.utc) - last_dt).total_seconds()
 
     if age_seconds > deadline_seconds:
         mins = int(age_seconds / 60)

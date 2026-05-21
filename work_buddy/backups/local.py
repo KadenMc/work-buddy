@@ -342,7 +342,7 @@ def _enumerate_snapshots(backups_root: Path) -> list[dict[str, Any]]:
     for entry in backups_root.iterdir():
         if not entry.is_dir() or not entry.name.startswith("snap-"):
             continue
-        ts = _parse_snapshot_ts(entry.name)
+        ts = parse_snapshot_ts(entry.name)
         if ts is None:
             continue
         out.append({
@@ -355,9 +355,16 @@ def _enumerate_snapshots(backups_root: Path) -> list[dict[str, Any]]:
     return out
 
 
-def _parse_snapshot_ts(snapshot_id: str) -> datetime | None:
-    """Snapshot dirs are named ``snap-<isots>[--manual]``. Extract
-    the isots and parse to a UTC datetime, or None if malformed."""
+def parse_snapshot_ts(snapshot_id: str) -> datetime | None:
+    """Snapshot dirs / release tags are named ``snap-<isots>[-manual]``.
+    Extract the isots and parse it to a UTC datetime, or None if
+    malformed.
+
+    The ``isots`` is the *snapshot time* — the canonical timestamp the
+    tiered retention sweep buckets on. Both the local sweep and the
+    remote sweep parse it from this name; neither may substitute a
+    GitHub release's ``createdAt`` (which is the tagged commit's date,
+    constant across every release in a data-only repo)."""
     name = snapshot_id
     if name.endswith(MANUAL_SUFFIX):
         name = name[: -len(MANUAL_SUFFIX)]
