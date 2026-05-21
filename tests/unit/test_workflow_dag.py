@@ -8,6 +8,17 @@ from freezegun import freeze_time
 from work_buddy.workflow import WorkflowDAG, TaskStatus
 
 
+@pytest.fixture(autouse=True)
+def _isolate_agents_dir(tmp_agents_dir):
+    """Redirect agent-session writes to a temp dir for every test here.
+
+    DAG transitions call ``_save()``; without isolation those writes land
+    in the live ``.data/agents/<session>/workflows/`` and are then picked
+    up by the conductor's restart recovery as bogus active runs.
+    """
+    yield
+
+
 class TestDAGConstruction:
     def test_add_single_task(self):
         dag = WorkflowDAG(name="test:t1", description="test")
