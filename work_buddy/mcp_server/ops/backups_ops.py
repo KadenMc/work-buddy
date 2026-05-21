@@ -13,6 +13,23 @@ from pathlib import Path
 from work_buddy.mcp_server.op_registry import register_op
 
 
+def _last_run_ts(snapshot_id: str) -> str:
+    """Normalise a snapshot id to a colon-delimited ISO-8601 timestamp.
+
+    ``last_run.json``'s ``ts`` field feeds the ``github_backups``
+    freshness health check, which parses it with
+    ``datetime.fromisoformat``. The snapshot id's own time component
+    uses dashes (``snap-2026-05-20T16-00-20Z``) and is not
+    ISO-parseable, so it is converted here:
+    ``snap-2026-05-20T16-00-20Z`` (or its ``-manual`` variant) →
+    ``2026-05-20T16:00:20Z``.
+    """
+    from work_buddy.backups.local import parse_snapshot_ts
+
+    dt = parse_snapshot_ts(snapshot_id)
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ") if dt else snapshot_id
+
+
 def data_backup(manual: bool = False, push_remote: bool | None = None) -> dict:
     """Snapshot work-buddy's vital SQLite DBs; optionally push to remote."""
     from work_buddy.backups.local import run_backup
@@ -42,7 +59,7 @@ def data_backup(manual: bool = False, push_remote: bool | None = None) -> dict:
         # Write last_run.json for the health check (regardless of whether the
         # push succeeded — failure-state visibility is exactly the point).
         write_last_run({
-            "ts":          result["snapshot_id"].replace("snap-", "").rstrip("-manual"),
+            "ts":          _last_run_ts(result["snapshot_id"]),
             "snapshot_id": result["snapshot_id"],
             "manual":      manual,
             "status":      "ok" if push_result.get("status") == "ok" else "error",
@@ -53,7 +70,7 @@ def data_backup(manual: bool = False, push_remote: bool | None = None) -> dict:
         # Local-only run: still write last_run.json so the health check can
         # show "local-only mode" rather than "no backups".
         write_last_run({
-            "ts":          result["snapshot_id"].replace("snap-", "").rstrip("-manual"),
+            "ts":          _last_run_ts(result["snapshot_id"]),
             "snapshot_id": result["snapshot_id"],
             "manual":      manual,
             "status":      "ok",

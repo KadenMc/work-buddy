@@ -20,11 +20,16 @@ from __future__ import annotations
 import json
 import re
 import subprocess
-from datetime import datetime, timezone
+import time
 from pathlib import Path
 from typing import Any
 
-from work_buddy.backups.local import BACKUP_FILENAME, MANUAL_SUFFIX, RETENTION
+from work_buddy.backups.local import (
+    BACKUP_FILENAME,
+    MANUAL_SUFFIX,
+    RETENTION,
+    parse_snapshot_ts,
+)
 from work_buddy.config import load_config
 from work_buddy.logging_config import get_logger
 from work_buddy.paths import data_dir
@@ -33,6 +38,40 @@ logger = get_logger(__name__)
 
 
 LAST_RUN_FILENAME = "last_run.json"
+
+
+# ─── Transient-failure handling ─────────────────────────────────────
+
+# Substrings (lower-cased) that mark a `gh` failure as a transient
+# network/DNS fault — worth retrying — rather than a permanent
+# misconfiguration. The dominant observed fault is intermittent DNS
+# resolution of `uploads.github.com` on corporate networks, which Go
+# surfaces as `dial tcp: lookup ...: getaddrinfow: ... no data of the
+# requested type was found`.
+_NETWORK_ERROR_MARKERS = (
+    "dial tcp",
+    "lookup ",
+    "no such host",
+    "getaddrinfo",
+    "i/o timeout",
+    "operation timed out",
+    "connection refused",
+    "connection reset",
+    "network is unreachable",
+    "tls handshake",
+    "server misbehaving",
+    "could not resolve host",
+    "temporary failure in name resolution",
+    "no data of the requested type",
+)
+
+# `gh` result statuses worth retrying within a single push.
+_TRANSIENT_PUSH_STATUSES = frozenset({"gh_network", "gh_timeout"})
+
+# Backoff (seconds) slept between push attempts. With the default
+# 3 attempts this is two sleeps — worst case ~60s, comfortably inside
+# the hourly cron window.
+_PUSH_RETRY_BACKOFF = (15, 45)
 
 
 # ─── Config ─────────────────────────────────────────────────────────
@@ -53,13 +92,25 @@ def get_backup_repo() -> str | None:
 # ─── Push ───────────────────────────────────────────────────────────
 
 
-def push_snapshot(snapshot_dir: Path, *, repo: str | None = None) -> dict[str, Any]:
+def push_snapshot(
+    snapshot_dir: Path, *,
+    repo: str | None = None,
+    max_attempts: int = 3,
+) -> dict[str, Any]:
     """Upload the tarball in ``snapshot_dir`` to GitHub Releases.
 
     ``snapshot_dir.name`` becomes the release tag (e.g.
     ``snap-2026-05-11T14-23-00Z``). The release title mirrors the tag.
     Release body includes the manifest snippet for at-a-glance
     introspection.
+
+    Transient network/DNS faults are retried in-process up to
+    ``max_attempts`` times with a short backoff. The hourly cron is the
+    primary caller: a retry here recovers the *current* snapshot within
+    the same run, rather than abandoning it and waiting an hour for the
+    next (different) snapshot to be the next off-machine copy. Permanent
+    faults (gh missing, unauthenticated) are not retried — they cannot
+    be fixed by waiting.
 
     Args:
         snapshot_dir: Local snapshot directory containing the
@@ -68,13 +119,19 @@ def push_snapshot(snapshot_dir: Path, *, repo: str | None = None) -> dict[str, A
             ``backups.github.repo`` from config. If still unset,
             returns an "unconfigured" result without attempting
             the push.
+        max_attempts: Total push attempts before giving up. The first
+            attempt plus ``max_attempts - 1`` retries.
 
     Returns:
-        ``{status, tag, repo, error?, gh_stdout, gh_stderr}``.
+        ``{status, tag, repo, error?, gh_stdout, gh_stderr, ...}``.
         ``status`` is one of ``"ok"`` / ``"unconfigured"`` /
-        ``"gh_missing"`` / ``"gh_unauthenticated"`` / ``"gh_failed"``.
-        Always returns a dict — never raises (callers expect a
-        result, not an exception, so they can write last_run.json).
+        ``"gh_missing"`` / ``"gh_unauthenticated"`` / ``"gh_not_found"``
+        / ``"gh_network"`` / ``"gh_timeout"`` / ``"gh_failed"``. On
+        success after a retry, ``recovered_after_attempts`` records
+        which attempt landed; on exhausted retries, ``attempts`` records
+        the total tried. Always returns a dict — never raises (callers
+        expect a result, not an exception, so they can write
+        last_run.json).
     """
     repo = repo or get_backup_repo()
     if not repo:
@@ -87,26 +144,89 @@ def push_snapshot(snapshot_dir: Path, *, repo: str | None = None) -> dict[str, A
                 "error": f"tarball missing: {tarball}"}
 
     tag = snapshot_dir.name
-    title = tag
     body = _format_release_body(snapshot_dir)
 
-    # gh release create <tag> <files> --repo <repo> --title <t> --notes <body> --prerelease
-    # --prerelease is OFF: these are normal releases. Use --draft=false explicitly.
-    cmd = [
+    result: dict[str, Any] = {}
+    for attempt in range(1, max_attempts + 1):
+        result = _attempt_push(tag, tarball, repo, body)
+        if result["status"] == "ok":
+            if attempt > 1:
+                result["recovered_after_attempts"] = attempt
+            return result
+        if result["status"] not in _TRANSIENT_PUSH_STATUSES:
+            # Permanent fault (auth, gh missing, repo gone) — retrying
+            # burns time the hourly cron does not have and cannot help.
+            return result
+        if attempt < max_attempts:
+            backoff = _PUSH_RETRY_BACKOFF[
+                min(attempt - 1, len(_PUSH_RETRY_BACKOFF) - 1)
+            ]
+            logger.warning(
+                "remote: push of %s failed transiently (%s); "
+                "retry %d/%d in %ds",
+                tag, result["status"], attempt + 1, max_attempts, backoff,
+            )
+            time.sleep(backoff)
+
+    result["attempts"] = max_attempts
+    logger.error(
+        "remote: push of %s exhausted %d attempts (%s)",
+        tag, max_attempts, result.get("status"),
+    )
+    return result
+
+
+def _attempt_push(
+    tag: str, tarball: Path, repo: str, body: str,
+) -> dict[str, Any]:
+    """One create-or-upload push attempt.
+
+    ``gh release create`` creates the release object via
+    ``api.github.com``, then uploads the asset via
+    ``uploads.github.com``. If an earlier attempt created the release
+    but its asset upload failed (the common DNS-fault shape — the error
+    is on the ``uploads.github.com`` POST), the release exists assetless
+    and a re-``create`` errors with "already exists". On that signal we
+    fall back to ``gh release upload --clobber``, which attaches (or
+    replaces) the asset idempotently — so a retried push converges
+    instead of looping on "already exists".
+    """
+    create = [
         "gh", "release", "create", tag, str(tarball),
         "--repo", repo,
-        "--title", title,
+        "--title", tag,
         "--notes", body,
     ]
-    return _run_gh(cmd, op_label="push", repo=repo, tag=tag)
+    res = _run_gh(create, op_label="push", repo=repo, tag=tag)
+    if res["status"] == "ok":
+        return res
+    if "already exists" in (res.get("error") or "").lower():
+        upload = [
+            "gh", "release", "upload", tag, str(tarball),
+            "--clobber",
+            "--repo", repo,
+        ]
+        return _run_gh(upload, op_label="push", repo=repo, tag=tag)
+    return res
 
 
 def list_remote_snapshots(repo: str | None = None) -> list[dict[str, Any]]:
     """List all releases on the backup repo, newest first.
 
-    Returns a list of ``{tag, created_at, size_bytes, url, manual}``
-    entries. Manual snapshots are detected by the ``-manual`` suffix
-    on the tag name.
+    Returns a list of ``{tag, published_at, url, manual}`` entries.
+    Manual snapshots are detected by the ``-manual`` suffix on the tag
+    name.
+
+    The timestamp reported is the release's ``publishedAt`` — the
+    moment the snapshot was pushed off-machine. The ``gh`` field
+    ``createdAt`` is deliberately NOT used: for a release whose tag is
+    auto-created against a data-only repo, ``createdAt`` is the tagged
+    commit's date, which is *identical* for every release. The
+    canonical snapshot time always lives in the ``snap-<isots>`` tag —
+    see :func:`work_buddy.backups.local.parse_snapshot_ts`.
+
+    ``url`` is not a ``gh release list --json`` field; it is
+    reconstructed from ``repo`` + ``tagName``.
 
     Returns an empty list if ``gh`` is unavailable or the repo is
     unconfigured — callers should distinguish "no snapshots" from
@@ -115,15 +235,11 @@ def list_remote_snapshots(repo: str | None = None) -> list[dict[str, Any]]:
     repo = repo or get_backup_repo()
     if not repo:
         return []
-    # ``url`` is NOT a valid ``gh release list --json`` field
-    # (would silently error out and return [] from the fallback —
-    # bug fixed 2026-05-11). The release URL is reconstructible
-    # from ``repo`` + ``tagName`` so we just synthesize it.
     cmd = [
         "gh", "release", "list",
         "--repo", repo,
         "--limit", "200",
-        "--json", "tagName,createdAt",
+        "--json", "tagName,publishedAt",
     ]
     res = _run_gh(cmd, op_label="list", repo=repo, tag=None)
     if res["status"] != "ok":
@@ -138,10 +254,10 @@ def list_remote_snapshots(repo: str | None = None) -> list[dict[str, Any]]:
         if not tag.startswith("snap-"):
             continue
         out.append({
-            "tag":        tag,
-            "created_at": r.get("createdAt"),
-            "url":        f"https://github.com/{repo}/releases/tag/{tag}",
-            "manual":     tag.endswith(MANUAL_SUFFIX),
+            "tag":          tag,
+            "published_at": r.get("publishedAt"),
+            "url":          f"https://github.com/{repo}/releases/tag/{tag}",
+            "manual":       tag.endswith(MANUAL_SUFFIX),
         })
     # gh release list returns newest first by default.
     return out
@@ -170,6 +286,11 @@ def prune_remote_snapshots(repo: str | None = None) -> dict[str, Any]:
     apply per-tier caps, keep newest-per-bucket. Manual snapshots
     live in their own ``RETENTION['manual']`` bucket (default 20).
 
+    Each release is bucketed by its *snapshot time*, parsed from the
+    ``snap-<isots>`` tag — the same key the local sweep uses. A release
+    whose tag does not parse is left untouched (neither kept-set nor
+    delete-set), so a malformed tag can never trigger a deletion.
+
     Returns ``{status, kept, pruned, errors}``.
     """
     repo = repo or get_backup_repo()
@@ -182,7 +303,7 @@ def prune_remote_snapshots(repo: str | None = None) -> dict[str, Any]:
 
     parsed = []
     for s in snapshots:
-        ts = _parse_iso_zulu(s.get("created_at", ""))
+        ts = parse_snapshot_ts(s["tag"])
         if ts is None:
             continue
         parsed.append({
@@ -281,6 +402,10 @@ def _run_gh(
     lower = stderr.lower()
     if "not logged into" in lower or "authentication required" in lower:
         status = "gh_unauthenticated"
+    elif any(marker in lower for marker in _NETWORK_ERROR_MARKERS):
+        # Transient network/DNS fault — checked before "not found" so a
+        # DNS blip is never misread as a missing repo/release.
+        status = "gh_network"
     elif "not found" in lower or "could not find any releases" in lower:
         status = "gh_not_found"
     else:
@@ -328,22 +453,6 @@ def _format_release_body(snapshot_dir: Path) -> str:
         total = sum(counts.values())
         lines.append(f"- `{db}`: {total} rows ({len(counts)} tables)")
     return "\n".join(lines)
-
-
-def _parse_iso_zulu(s: str) -> datetime | None:
-    """Parse an ISO-8601 timestamp (gh returns ``2026-05-11T14:23:00Z``).
-
-    Returns None on parse failure.
-    """
-    if not s:
-        return None
-    # Python <3.11 needs the Z replaced with +00:00; fromisoformat in
-    # 3.11+ accepts Z directly. Be permissive either way.
-    s2 = s.replace("Z", "+00:00") if s.endswith("Z") else s
-    try:
-        return datetime.fromisoformat(s2).astimezone(timezone.utc)
-    except ValueError:
-        return None
 
 
 def _select_rolling_retain_set(rolling: list[dict[str, Any]]) -> set[str]:
