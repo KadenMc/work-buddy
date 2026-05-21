@@ -13,12 +13,13 @@ from config (default ``work-buddy/projects``, a sibling of
 directory is a configurable Repository-Setup requirement
 (``core/config/projects-markdown-dir``).
 
-## Status: parallel, not yet the cutover
+## Edits flow through both surfaces
 
-This is additive. The projects store and its dashboard edit path are
-untouched. Wiring this in — repointing ``POST /api/projects/<slug>`` at
-:meth:`apply_mutation`, scheduling a ``project_sync`` drift cron — is a
-deliberate, reviewed cutover step, intentionally NOT done here.
+The dashboard project-edit path routes ``POST /api/projects/<slug>``
+through :meth:`apply_mutation`, which writes the project's markdown note
+and the SQLite registry together. The ``project_sync`` capability
+reconciles drift on a recurring schedule, catching notes hand-edited in
+Obsidian out-of-band.
 
 ## Materialization
 
@@ -104,13 +105,11 @@ class ProjectMarkdownDB(MarkdownDB):
     table_name = "projects"
     pk_column = "slug"
 
-    # Orphan-in-store deletion is OFF until the vault is materialized.
-    # Before materialize_projects() runs, NO project has a markdown note,
-    # so every store project looks like an "orphan in store" — with this
-    # True, the first reconcile_drift pass would soft-delete the entire
-    # projects registry. Flip to True only as part of the projects
-    # cutover, AFTER materialization is confirmed. See architecture/
-    # markdown-db and the cutover checklist.
+    # Orphan-in-store deletion stays OFF by design: a registry project
+    # whose markdown note is missing or fails to parse is kept intact
+    # and surfaced as a warning, never soft-deleted. project_sync
+    # reconciles drift but never removes a project. See
+    # architecture/markdown-db.
     delete_orphans_in_store = False
 
     FIELDS = [
@@ -226,7 +225,7 @@ class ProjectMarkdownDB(MarkdownDB):
         project_store.delete_project(pk, author="agent")
 
 
-# ── Entry points (not yet wired to the gateway / cron) ──────────────
+# ── Reconciliation entry points ─────────────────────────────────────
 
 
 def reconcile_projects() -> dict[str, Any]:
