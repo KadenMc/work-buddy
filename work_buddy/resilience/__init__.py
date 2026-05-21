@@ -20,6 +20,7 @@ from work_buddy.resilience.outcome import Outcome, OutcomeError, OutcomeKind
 from work_buddy.resilience.seam import (
     Classifier,
     GuardedFn,
+    ResultClassifier,
     Strategy,
     default_classify,
     guarded_call,
@@ -50,6 +51,7 @@ __all__ = [
     # seam
     "Classifier",
     "GuardedFn",
+    "ResultClassifier",
     "Strategy",
     "default_classify",
     "guarded_call",

@@ -451,3 +451,98 @@ def test_default_classify():
     assert default_classify(TimeoutError()) is OutcomeKind.TIMEOUT
     assert default_classify(asyncio.TimeoutError()) is OutcomeKind.TIMEOUT
     assert default_classify(ValueError()) is OutcomeKind.TRANSIENT_FAILURE
+
+
+# ===========================================================================
+# Seam — passthrough exceptions (DESIGN §15)
+# ===========================================================================
+
+
+class _ControlSignal(Exception):
+    """Stand-in for a control-flow exception (e.g. ObsidianPostWriteUncertain)."""
+
+
+def test_passthrough_exception_propagates_untouched():
+    def _fn():
+        raise _ControlSignal("verify me upstream")
+
+    # Not declared passthrough -> classified into an Outcome, no raise.
+    classified = asyncio.run(guarded_call("op", _fn))
+    assert not classified.is_success
+    assert isinstance(classified.error, _ControlSignal)
+
+    # Declared passthrough -> re-raised untouched for an upstream handler.
+    with pytest.raises(_ControlSignal, match="verify me upstream"):
+        asyncio.run(guarded_call(
+            "op", _fn, passthrough_exceptions=(_ControlSignal,),
+        ))
+
+
+def test_passthrough_exception_emits_no_telemetry():
+    m = InMemoryMetrics()
+    register_listener(m)
+
+    def _fn():
+        raise _ControlSignal("x")
+
+    with pytest.raises(_ControlSignal):
+        asyncio.run(guarded_call(
+            "op", _fn, passthrough_exceptions=(_ControlSignal,),
+        ))
+    # A passthrough exception is handled elsewhere — not recorded as an outcome.
+    assert m.snapshot()["call_count"] == 0
+
+
+def test_non_passthrough_exception_still_classified_with_set_present():
+    def _fn():
+        raise ValueError("ordinary failure")
+
+    # ValueError is not in the passthrough set -> still classified, not raised.
+    outcome = asyncio.run(guarded_call(
+        "op", _fn, passthrough_exceptions=(_ControlSignal,),
+    ))
+    assert not outcome.is_success
+    assert outcome.kind is OutcomeKind.TRANSIENT_FAILURE
+
+
+# ===========================================================================
+# Seam — result classifier (failure signalled by return value)
+# ===========================================================================
+
+
+def test_result_classifier_converts_return_value_to_failure():
+    def _fn():
+        return {"ok": False, "why": "downstream said no"}
+
+    def _classify_result(value):
+        if isinstance(value, dict) and value.get("ok") is False:
+            return OutcomeKind.TRANSIENT_FAILURE
+        return None
+
+    outcome = asyncio.run(guarded_call(
+        "op", _fn, result_classifier=_classify_result,
+    ))
+    assert not outcome.is_success
+    assert outcome.kind is OutcomeKind.TRANSIENT_FAILURE
+    # the offending value is retained in metadata for inspection
+    assert outcome.metadata["result"]["why"] == "downstream said no"
+
+
+def test_result_classifier_none_means_genuine_success():
+    outcome = asyncio.run(guarded_call(
+        "op", lambda: {"ok": True}, result_classifier=lambda v: None,
+    ))
+    assert outcome.is_success
+    assert outcome.unwrap() == {"ok": True}
+
+
+def test_result_classified_failure_emits_failure_telemetry():
+    m = InMemoryMetrics()
+    register_listener(m)
+    asyncio.run(guarded_call(
+        "op", lambda: "bad",
+        result_classifier=lambda v: OutcomeKind.TERMINAL_FAILURE,
+    ))
+    counts = m.snapshot()["counts_by_operation_outcome"]
+    assert counts.get("op/terminal_failure") == 1
+    assert "op/success" not in counts
