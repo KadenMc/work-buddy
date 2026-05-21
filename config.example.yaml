@@ -43,6 +43,18 @@ tasks:
   db_path: "tasks/task_metadata.db"
   event_lookback_hours: 48
 
+workflows:
+  run_lifecycle:
+    # Auto-cancel a workflow run with no step progress for this long. An
+    # orphaned run (agent stopped calling wb_advance) is reclaimed by the
+    # in-process idle sweep once it crosses this threshold.
+    idle_timeout_hours: 24
+    # How often the in-process idle sweep runs (MCP gateway process).
+    sweep_interval_minutes: 60
+    # Reload incomplete runs from disk into the active-runs map when the
+    # MCP gateway starts. Set false to disable restart recovery.
+    recovery_enabled: true
+
 embedding:
   service_port: 5124
   device: "auto"           # "auto" (GPU if available, else CPU), "cpu", or "cuda"

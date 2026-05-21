@@ -32,6 +32,18 @@ from work_buddy.mcp_server._response_audit import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _isolate_agents_dir(tmp_agents_dir):
+    """Redirect agent-session writes to a temp dir for every test here.
+
+    The integration tests call ``start_workflow``, which persists a DAG
+    via ``_save()``. Without isolation those files land in the live
+    ``.data/agents/<session>/workflows/`` and the conductor's restart
+    recovery later loads them as bogus active runs.
+    """
+    yield
+
+
 def assert_no_duplicated_subtrees(
     resp: Any,
     *,
