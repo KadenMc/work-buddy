@@ -129,6 +129,15 @@ DEFAULTS = {
         # Repository-Setup requirement so it is user-configurable.
         "markdown_dir": "work-buddy/projects",
     },
+    "workflows": {
+        # Lifecycle of in-flight workflow runs in the MCP gateway's
+        # in-memory active-runs map. See work_buddy/mcp_server/conductor.py.
+        "run_lifecycle": {
+            "idle_timeout_hours": 24,
+            "sweep_interval_minutes": 60,
+            "recovery_enabled": True,
+        },
+    },
 }
 
 

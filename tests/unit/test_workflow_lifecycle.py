@@ -296,3 +296,64 @@ class TestRunLastActivity:
 
         last = conductor._run_last_activity(dag)
         assert last.hour == 8
+
+
+# ---------------------------------------------------------------------------
+# Gateway startup wiring (server._recover_workflow_runs)
+# ---------------------------------------------------------------------------
+
+class TestServerStartupWiring:
+    def test_recovery_skipped_when_disabled(self, monkeypatch):
+        from work_buddy.mcp_server import server
+        import work_buddy.config as config_mod
+
+        called: list[bool] = []
+        monkeypatch.setattr(
+            config_mod, "load_config",
+            lambda *a, **k: {
+                "workflows": {"run_lifecycle": {"recovery_enabled": False}}
+            },
+        )
+        monkeypatch.setattr(
+            conductor, "recover_active_runs",
+            lambda *a, **k: called.append(True) or {},
+        )
+        server._recover_workflow_runs()
+        assert called == []  # the config kill-switch was honored
+
+    def test_recovery_runs_when_enabled(self, monkeypatch):
+        from work_buddy.mcp_server import server
+        import work_buddy.config as config_mod
+
+        called: list[bool] = []
+        monkeypatch.setattr(
+            config_mod, "load_config",
+            lambda *a, **k: {
+                "workflows": {"run_lifecycle": {"recovery_enabled": True}}
+            },
+        )
+        monkeypatch.setattr(
+            conductor, "recover_active_runs",
+            lambda *a, **k: called.append(True) or {"recovered": [], "expired": []},
+        )
+        server._recover_workflow_runs()
+        assert called == [True]
+
+    def test_recovery_swallows_errors(self, monkeypatch):
+        """A recovery failure must never block the gateway from booting."""
+        from work_buddy.mcp_server import server
+        import work_buddy.config as config_mod
+
+        monkeypatch.setattr(
+            config_mod, "load_config",
+            lambda *a, **k: {
+                "workflows": {"run_lifecycle": {"recovery_enabled": True}}
+            },
+        )
+
+        def _boom(*a, **k):
+            raise RuntimeError("disk on fire")
+
+        monkeypatch.setattr(conductor, "recover_active_runs", _boom)
+        # Must not raise.
+        server._recover_workflow_runs()
