@@ -80,6 +80,17 @@ class WorkflowDAG:
         self._graph = nx.DiGraph()
         self._created_at = datetime.now(timezone.utc).isoformat()
 
+        # Run-level lifecycle state. ``agent_session_id`` pins the run to the
+        # agent session that started it (assigned by the conductor); it is
+        # persisted so a run recovered after an MCP-server restart can still
+        # resolve consent against the right session.  The cancellation fields
+        # record an explicit cancel — manual or by the idle-timeout sweep —
+        # which is a run-level property, distinct from per-task status.
+        self.agent_session_id: str | None = None
+        self.cancelled: bool = False
+        self.cancelled_reason: str | None = None
+        self.cancelled_at: str | None = None
+
     @staticmethod
     def _read_workflow_policy(workflow_file: str) -> tuple[str, bool]:
         """Read execution policy from a workflow file's YAML frontmatter.
@@ -262,6 +273,20 @@ class WorkflowDAG:
         logger.info(f"Task completed: {task_id}")
         self._save()
 
+    def mark_cancelled(self, reason: str) -> None:
+        """Mark the whole run as cancelled and persist.
+
+        Cancellation is a run-level property, not a per-task status: a
+        cancelled run may still have pending or running tasks. The conductor
+        removes the run from its active-runs map after calling this; the
+        persisted flag keeps restart-recovery from re-importing the run.
+        """
+        self.cancelled = True
+        self.cancelled_reason = reason
+        self.cancelled_at = datetime.now(timezone.utc).isoformat()
+        logger.info(f"Workflow cancelled: {self.name} — {reason}")
+        self._save()
+
     def fail_task(self, task_id: str, error: str = "") -> None:
         """Mark a task as failed."""
         if task_id not in self._graph:
@@ -376,20 +401,49 @@ class WorkflowDAG:
 
     # --- Persistence ---
 
+    @staticmethod
+    def _safe_name(name: str) -> str:
+        """Turn a DAG name into a filesystem-safe stem.
+
+        A run's name is ``"<workflow>:<run_id>"``. The ``:`` is **not**
+        merely cosmetic to strip — on Windows/NTFS a ``:`` in a path opens
+        an alternate data stream, so ``write_text`` on ``wf:run.json`` would
+        silently divert the content into a stream of a 0-byte base file and
+        ``glob("*.json")`` would never see it. Replacing it is what makes
+        on-disk workflow state real on Windows.
+        """
+        return (
+            name.replace(" ", "_")
+            .replace("/", "_")
+            .replace(":", "_")
+            .lower()
+        )
+
     def _get_save_path(self) -> Path:
         """Get the save path for this workflow's state."""
         wf_dir = get_session_dir() / "workflows"
         wf_dir.mkdir(exist_ok=True)
-        safe_name = self.name.replace(" ", "_").replace("/", "_").lower()
-        return wf_dir / f"{safe_name}.json"
+        return wf_dir / f"{self._safe_name(self.name)}.json"
 
     def _save(self) -> None:
-        """Persist the DAG state to disk."""
+        """Persist the DAG state to disk.
+
+        The write is atomic (write to a temp file, then ``replace``) so a
+        crash mid-write can never leave a half-written DAG file — important
+        now that restart-recovery reads every DAG file on boot.
+        """
         data = {
             "name": self.name,
             "description": self.description,
             "created_at": self._created_at,
             "saved_at": datetime.now(timezone.utc).isoformat(),
+            # Agent session that owns this run — needed to resolve consent
+            # for a run recovered after an MCP-server restart.
+            "agent_session_id": getattr(self, "agent_session_id", None),
+            # Run-level cancellation record (manual or idle-timeout sweep).
+            "cancelled": getattr(self, "cancelled", False),
+            "cancelled_reason": getattr(self, "cancelled_reason", None),
+            "cancelled_at": getattr(self, "cancelled_at", None),
             "nodes": {},
             "edges": [],
             # Caller-provided initial params (set by start_workflow when the
@@ -403,7 +457,9 @@ class WorkflowDAG:
             data["edges"].append([u, v])
 
         path = self._get_save_path()
-        path.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
+        tmp.replace(path)
 
     def save(self) -> Path:
         """Explicitly save and return the save path."""
@@ -418,6 +474,11 @@ class WorkflowDAG:
         dag._created_at = raw.get("created_at", "")
         # Restore initial_params if persisted (None for older save files).
         dag.initial_params = raw.get("initial_params")  # type: ignore[attr-defined]
+        # Restore run-level lifecycle state (safe defaults for older files).
+        dag.agent_session_id = raw.get("agent_session_id")
+        dag.cancelled = raw.get("cancelled", False)
+        dag.cancelled_reason = raw.get("cancelled_reason")
+        dag.cancelled_at = raw.get("cancelled_at")
 
         # Rebuild graph
         for node_id, node_data in raw["nodes"].items():
@@ -431,8 +492,7 @@ class WorkflowDAG:
     def load_by_name(cls, name: str) -> "WorkflowDAG":
         """Load a DAG by workflow name from the current session."""
         wf_dir = get_session_dir() / "workflows"
-        safe_name = name.replace(" ", "_").replace("/", "_").lower()
-        path = wf_dir / f"{safe_name}.json"
+        path = wf_dir / f"{cls._safe_name(name)}.json"
         if not path.exists():
             raise FileNotFoundError(f"No saved workflow '{name}' in current session.")
         return cls.load(path)

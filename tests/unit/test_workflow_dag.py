@@ -195,3 +195,91 @@ class TestDAGSummary:
         assert "Step A" in summary
         assert "Step B" in summary
         assert "0/2 tasks completed" in summary
+
+
+class TestDAGSafeName:
+    """The save filename must be filesystem-safe — notably colon-free.
+
+    A run's name is ``"<workflow>:<run_id>"``. On Windows/NTFS a ``:`` in a
+    path opens an alternate data stream, so a save would silently divert the
+    JSON into a stream of a 0-byte base file and ``glob("*.json")`` would
+    never see it. (BUG 2 in the lifecycle plan.)
+    """
+
+    def test_safe_name_strips_colon(self):
+        assert ":" not in WorkflowDAG._safe_name("update-journal:wf_abc123")
+
+    def test_safe_name_strips_spaces_and_slashes(self):
+        out = WorkflowDAG._safe_name("My Workflow/sub:wf_1")
+        assert " " not in out and "/" not in out and ":" not in out
+        assert out == "my_workflow_sub_wf_1"
+
+    @freeze_time("2026-04-12 10:00:00")
+    def test_save_produces_real_nonempty_json(self, tmp_agents_dir, monkeypatch):
+        """Regression for BUG 2: the saved file must be a real, non-empty
+        ``.json`` — not the 0-byte ADS husk produced by an unsanitized name."""
+        monkeypatch.setenv("WORK_BUDDY_SESSION_ID", "test-colon")
+        import work_buddy.agent_session as asmod
+        monkeypatch.setattr(asmod, "_cached_session_dir", None)
+
+        dag = WorkflowDAG(name="update-journal:wf_abc123", description="x")
+        dag.add_task("a", name="A")
+        save_path = dag.save()
+
+        assert save_path.exists()
+        assert save_path.suffix == ".json"
+        assert ":" not in save_path.name
+        assert save_path.stat().st_size > 0
+        # The directory listing should show the real file (glob must match).
+        assert list(save_path.parent.glob("*.json")) == [save_path]
+
+
+class TestDAGLifecyclePersistence:
+    """Round-trip of the run-level lifecycle fields added for cancel/recovery."""
+
+    @freeze_time("2026-04-12 10:00:00")
+    def test_persists_agent_session_id(self, tmp_agents_dir, monkeypatch):
+        monkeypatch.setenv("WORK_BUDDY_SESSION_ID", "test-sess-persist")
+        import work_buddy.agent_session as asmod
+        monkeypatch.setattr(asmod, "_cached_session_dir", None)
+
+        dag = WorkflowDAG(name="recover-test:wf_sess", description="x")
+        dag.add_task("a", name="A")
+        dag.agent_session_id = "agent-12345678"
+        save_path = dag.save()
+
+        loaded = WorkflowDAG.load(save_path)
+        assert loaded.agent_session_id == "agent-12345678"
+
+    @freeze_time("2026-04-12 10:00:00")
+    def test_mark_cancelled_persists(self, tmp_agents_dir, monkeypatch):
+        monkeypatch.setenv("WORK_BUDDY_SESSION_ID", "test-cancel-persist")
+        import work_buddy.agent_session as asmod
+        monkeypatch.setattr(asmod, "_cached_session_dir", None)
+
+        dag = WorkflowDAG(name="cancel-test:wf_c1", description="x")
+        dag.add_task("a", name="A")
+        dag.mark_cancelled("idle_timeout")
+
+        loaded = WorkflowDAG.load(dag._get_save_path())
+        assert loaded.cancelled is True
+        assert loaded.cancelled_reason == "idle_timeout"
+        assert loaded.cancelled_at == "2026-04-12T10:00:00+00:00"
+
+    def test_load_tolerates_file_without_lifecycle_fields(self, tmp_path):
+        """An older DAG file (pre-lifecycle) loads with safe defaults."""
+        old = {
+            "name": "legacy:wf_old",
+            "description": "old",
+            "created_at": "2026-01-01T00:00:00+00:00",
+            "saved_at": "2026-01-01T00:00:00+00:00",
+            "nodes": {},
+            "edges": [],
+        }
+        path = tmp_path / "legacy_wf_old.json"
+        path.write_text(json.dumps(old), encoding="utf-8")
+
+        loaded = WorkflowDAG.load(path)
+        assert loaded.cancelled is False
+        assert loaded.cancelled_reason is None
+        assert loaded.agent_session_id is None
