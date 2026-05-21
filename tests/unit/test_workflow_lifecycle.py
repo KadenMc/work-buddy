@@ -179,6 +179,30 @@ class TestSweepIdleRuns:
         result = conductor.sweep_idle_runs()
         assert result["threshold_hours"] == 99.0
 
+    def test_sweep_survives_concurrent_mutation(self, tmp_agents_dir):
+        """The sweep snapshots _ACTIVE_RUNS under a lock — a concurrent
+        insert/remove must never raise 'dict changed size during iteration'."""
+        import threading
+
+        stop = threading.Event()
+
+        def _churn() -> None:
+            i = 0
+            while not stop.is_set():
+                key = f"wf_churn{i}"
+                conductor._ACTIVE_RUNS[key] = _make_dag(f"t:{key}", started=False)
+                conductor._ACTIVE_RUNS.pop(key, None)
+                i += 1
+
+        churner = threading.Thread(target=_churn, daemon=True)
+        churner.start()
+        try:
+            for _ in range(50):
+                conductor.sweep_idle_runs(idle_threshold_hours=24)  # must not raise
+        finally:
+            stop.set()
+            churner.join(timeout=2)
+
 
 # ---------------------------------------------------------------------------
 # recover_active_runs
