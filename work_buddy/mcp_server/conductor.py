@@ -25,8 +25,10 @@ import logging
 import os
 import subprocess
 import sys
+import threading
 import uuid
-from datetime import date, datetime, timezone
+from collections.abc import Iterator
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -46,6 +48,18 @@ logger = logging.getLogger(__name__)
 # In-memory map of active workflow runs.
 # Key: workflow_run_id, Value: WorkflowDAG instance
 _ACTIVE_RUNS: dict[str, WorkflowDAG] = {}
+
+# Guards compound mutations of _ACTIVE_RUNS. The dict is touched both by
+# gateway request workers (start/advance run on asyncio.to_thread threads)
+# and by the idle-sweep daemon thread. Single dict ops are GIL-atomic, but
+# this lock makes snapshot-then-iterate and check-then-delete sequences
+# safe. It is held only for microsecond dict ops — never across _save()
+# (disk I/O) or subprocess calls — so it cannot serialize real work.
+_ACTIVE_RUNS_LOCK = threading.Lock()
+
+# Fallback idle timeout when config is unavailable. The config surface is
+# workflows.run_lifecycle.idle_timeout_hours (see config.yaml).
+_DEFAULT_IDLE_TIMEOUT_HOURS = 24.0
 
 
 def _validate_workflow_params(
@@ -179,16 +193,18 @@ def start_workflow(
             metadata=meta,
         )
 
-    dag.save()
-    _ACTIVE_RUNS[run_id] = dag
+    # Pin the caller's session to the DAG *before* the first save, so the
+    # persisted file — and any run recovered from it after an MCP-server
+    # restart — can resolve consent against the right session. Every
+    # auto_run subprocess started from this workflow also uses the agent's
+    # consent.db via this pin; without it the subprocess reads
+    # WORK_BUDDY_SESSION_ID from its parent (the MCP server's own session)
+    # and consent grants land in a different DB.
+    dag.agent_session_id = agent_session_id
 
-    # Pin the caller's session to the DAG so every auto_run subprocess
-    # started from this workflow uses the agent's consent.db (not the
-    # MCP server's bootstrap sidecar session). Without this the
-    # subprocess reads WORK_BUDDY_SESSION_ID from its parent process,
-    # which is the MCP server's own session — and consent grants issued
-    # by the agent land in a different DB.
-    dag.agent_session_id = agent_session_id  # type: ignore[attr-defined]
+    dag.save()
+    with _ACTIVE_RUNS_LOCK:
+        _ACTIVE_RUNS[run_id] = dag
 
     # Grant blanket consent for the workflow's lifetime.  Accepting a
     # workflow implies consent for all its operations unless a step
@@ -320,7 +336,8 @@ def advance_workflow(
     # Check if workflow is now complete
     if dag.is_complete():
         result = _build_complete_response(workflow_run_id, dag)
-        del _ACTIVE_RUNS[workflow_run_id]
+        with _ACTIVE_RUNS_LOCK:
+            _ACTIVE_RUNS.pop(workflow_run_id, None)
         return result
 
     # Build response — auto_run steps are consumed transparently inside.
@@ -332,7 +349,8 @@ def advance_workflow(
 
     if response.get("type") == "workflow_complete":
         # Auto-run chain finished the workflow — clean up
-        _ACTIVE_RUNS.pop(workflow_run_id, None)
+        with _ACTIVE_RUNS_LOCK:
+            _ACTIVE_RUNS.pop(workflow_run_id, None)
         return response
 
     # ``prior_step`` is a pointer; the just-completed step's result lives
@@ -357,13 +375,16 @@ def get_workflow_status(workflow_run_id: str) -> dict[str, Any]:
 
 def list_active_runs() -> list[dict[str, Any]]:
     """List all active workflow runs."""
+    with _ACTIVE_RUNS_LOCK:
+        snapshot = list(_ACTIVE_RUNS.items())
     return [
         {
             "workflow_run_id": run_id,
             "name": dag.name,
             "is_complete": dag.is_complete(),
+            "cancelled": getattr(dag, "cancelled", False),
         }
-        for run_id, dag in _ACTIVE_RUNS.items()
+        for run_id, dag in snapshot
     ]
 
 
@@ -394,7 +415,9 @@ def reconcile_workflow_consent(session_id: str) -> dict[str, Any]:
         )
         if not is_workflow_consent_active(session_id=session_id):
             return {"swept": False, "reason": "no_blanket"}
-        for dag in _ACTIVE_RUNS.values():
+        with _ACTIVE_RUNS_LOCK:
+            dags = list(_ACTIVE_RUNS.values())
+        for dag in dags:
             if getattr(dag, "agent_session_id", None) == session_id:
                 return {"swept": False, "reason": "active_run_present"}
         revoke_workflow_consent(session_id=session_id)
@@ -479,26 +502,56 @@ def get_step_result(
     return {"step_id": step_id, "result": result}
 
 
-def _load_dag_from_disk(workflow_run_id: str) -> WorkflowDAG | None:
-    """Try to load a DAG from persisted state files.
+def _iter_dag_files() -> Iterator[Path]:
+    """Yield every persisted workflow-DAG JSON file across all agent sessions.
 
-    Searches the current session's workflow directory for a DAG whose
-    name contains the ``workflow_run_id``.
+    A DAG is saved under the ``workflows/`` directory of whichever session
+    the saving process belonged to. After an MCP-server restart there is
+    no meaningful "current session", and the persistent gateway runs under
+    its own synthetic session — so any code that needs to find a run by id
+    (the disk fallback, restart recovery) must scan every session.
+
+    Scans ``agents/*/workflows/`` directly rather than via ``list_sessions``
+    so a session directory missing its ``manifest.json`` is still covered.
     """
-    from work_buddy.agent_session import get_agent_dir
+    from work_buddy.agent_session import get_agents_dir
 
-    wf_dir = get_agent_dir() / "workflows"
-    if not wf_dir.is_dir():
-        return None
+    try:
+        agents_dir = get_agents_dir()
+    except Exception:  # pragma: no cover — defensive
+        return
+    if not agents_dir.is_dir():
+        return
+    for session_dir in sorted(agents_dir.iterdir()):
+        wf_dir = session_dir / "workflows"
+        if not wf_dir.is_dir():
+            continue
+        for path in sorted(wf_dir.glob("*.json")):
+            try:
+                if path.stat().st_size == 0:
+                    continue  # empty file — never a valid DAG
+            except OSError:  # pragma: no cover — defensive
+                continue
+            yield path
 
-    for path in wf_dir.glob("*.json"):
+
+def _load_dag_from_disk(workflow_run_id: str) -> WorkflowDAG | None:
+    """Find a persisted DAG by run id, scanning every agent session.
+
+    The run id is matched against the DAG ``name`` (format
+    ``"<workflow>:<run_id>"``), not the filename — filenames are
+    lower-cased and colon-sanitized, so the id may not survive verbatim.
+    """
+    for path in _iter_dag_files():
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-            dag_name = data.get("name", "")
-            if workflow_run_id in dag_name:
-                return WorkflowDAG.load(path)
-        except Exception:
+        except (json.JSONDecodeError, OSError):
             continue
+        if workflow_run_id in data.get("name", ""):
+            try:
+                return WorkflowDAG.load(path)
+            except Exception:  # pragma: no cover — defensive
+                continue
     return None
 
 
@@ -581,6 +634,274 @@ def fail_after_retry_exhaustion(
         "workflow_run_id": workflow_run_id,
         "step_id": step_id,
         "error": error,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Run lifecycle — cancel, idle sweep, restart recovery
+# ---------------------------------------------------------------------------
+
+
+def _idle_threshold_hours(override: float | None = None) -> float:
+    """Resolve the idle-timeout threshold in hours.
+
+    An explicit ``override`` wins; otherwise read
+    ``workflows.run_lifecycle.idle_timeout_hours`` from config, falling
+    back to the module default.
+    """
+    if override is not None:
+        return float(override)
+    try:
+        from work_buddy.config import load_config
+        cfg = load_config().get("workflows", {}).get("run_lifecycle", {})
+        return float(cfg.get("idle_timeout_hours", _DEFAULT_IDLE_TIMEOUT_HOURS))
+    except Exception:  # pragma: no cover — defensive
+        return _DEFAULT_IDLE_TIMEOUT_HOURS
+
+
+def _parse_ts(raw: Any) -> datetime | None:
+    """Parse an ISO-8601 string to an aware UTC datetime, or None."""
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        ts = datetime.fromisoformat(raw)
+    except (ValueError, TypeError):
+        return None
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return ts
+
+
+def _run_last_activity(dag: WorkflowDAG) -> datetime:
+    """Return the timestamp of the run's most recent step progress.
+
+    Idleness is measured from genuine workflow progress — the freshest
+    ``started_at`` / ``completed_at`` across all DAG nodes — not from the
+    file's ``saved_at`` (which also advances on non-progress writes).
+    Falls back to the run's ``created_at`` when no task has run yet, and
+    to "now" if even that is unparseable (a malformed run is treated as
+    fresh rather than swept on sight).
+    """
+    latest: datetime | None = None
+    for _, data in dag._graph.nodes(data=True):
+        for field in ("completed_at", "started_at"):
+            ts = _parse_ts(data.get(field))
+            if ts is not None and (latest is None or ts > latest):
+                latest = ts
+    if latest is None:
+        latest = _parse_ts(getattr(dag, "_created_at", "")) or datetime.now(timezone.utc)
+    return latest
+
+
+def cancel_workflow(
+    workflow_run_id: str,
+    reason: str | None = None,
+) -> dict[str, Any]:
+    """Cancel a workflow run.
+
+    Marks the on-disk DAG cancelled (kept for audit), drops the run from
+    the in-memory active-runs map, and revokes the workflow consent
+    blanket. Looks the run up in ``_ACTIVE_RUNS`` first; if it is not
+    active (e.g. only on disk after a restart) it falls back to the
+    persisted DAG so a stale run can still be cleaned.
+
+    Idempotent: cancelling an already-cancelled run is a no-op, and a run
+    that has already completed is left untouched.
+    """
+    reason = reason or "user_requested"
+
+    with _ACTIVE_RUNS_LOCK:
+        dag = _ACTIVE_RUNS.get(workflow_run_id)
+    was_active = dag is not None
+
+    if dag is None:
+        dag = _load_dag_from_disk(workflow_run_id)
+
+    if dag is None:
+        return {
+            "cancelled": False,
+            "workflow_run_id": workflow_run_id,
+            "error": (
+                f"Unknown workflow run: {workflow_run_id!r} "
+                f"(not active and not found on disk)."
+            ),
+        }
+
+    if getattr(dag, "cancelled", False):
+        # Already cancelled — ensure it isn't lingering in the map; no-op.
+        with _ACTIVE_RUNS_LOCK:
+            _ACTIVE_RUNS.pop(workflow_run_id, None)
+        return {
+            "cancelled": True,
+            "already_cancelled": True,
+            "workflow_run_id": workflow_run_id,
+            "reason": getattr(dag, "cancelled_reason", None),
+        }
+
+    if dag.is_complete():
+        return {
+            "cancelled": False,
+            "workflow_run_id": workflow_run_id,
+            "detail": "Workflow run already complete — nothing to cancel.",
+        }
+
+    # Mark cancelled on disk first (the audit trail survives even if the
+    # process dies right here), then drop from the active map.
+    dag.mark_cancelled(reason)
+    with _ACTIVE_RUNS_LOCK:
+        _ACTIVE_RUNS.pop(workflow_run_id, None)
+
+    # Revoke the workflow consent blanket via the DAG-pinned session, so a
+    # cancelled run never leaves a live blanket behind in the agent's DB.
+    try:
+        from work_buddy.consent import revoke_workflow_consent
+        revoke_workflow_consent(
+            workflow_run_id,
+            session_id=getattr(dag, "agent_session_id", None),
+        )
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.warning(
+            "cancel_workflow: consent revoke failed for %s: %s",
+            workflow_run_id, exc,
+        )
+
+    logger.info(
+        "Workflow run %s cancelled (reason=%s, was_active=%s)",
+        workflow_run_id, reason, was_active,
+    )
+    return {
+        "cancelled": True,
+        "workflow_run_id": workflow_run_id,
+        "reason": reason,
+        "was_active": was_active,
+    }
+
+
+def sweep_idle_runs(
+    idle_threshold_hours: float | None = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Cancel active workflow runs idle past the timeout.
+
+    An orphaned run — one whose agent stopped calling ``wb_advance`` —
+    never leaves ``_ACTIVE_RUNS`` on its own; this sweep reclaims it. It
+    runs in the same process as ``_ACTIVE_RUNS`` (the MCP gateway), so it
+    works whether invoked by the background sweep thread or manually via
+    ``wb_run``. Complete and already-cancelled runs are skipped.
+    """
+    threshold = _idle_threshold_hours(idle_threshold_hours)
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(hours=threshold)
+
+    with _ACTIVE_RUNS_LOCK:
+        snapshot = list(_ACTIVE_RUNS.items())
+
+    candidates: list[dict[str, Any]] = []
+    cancelled: list[str] = []
+
+    for run_id, dag in snapshot:
+        if dag.is_complete() or getattr(dag, "cancelled", False):
+            continue
+        last = _run_last_activity(dag)
+        if last >= cutoff:
+            continue
+        candidates.append({
+            "workflow_run_id": run_id,
+            "name": dag.name,
+            "idle_hours": round((now - last).total_seconds() / 3600.0, 2),
+        })
+        if not dry_run:
+            result = cancel_workflow(run_id, reason="idle_timeout")
+            if result.get("cancelled"):
+                cancelled.append(run_id)
+
+    if candidates:
+        logger.info(
+            "Idle-run sweep: %d candidate(s), %d cancelled "
+            "(threshold=%.1fh, dry_run=%s)",
+            len(candidates), len(cancelled), threshold, dry_run,
+        )
+    return {
+        "checked": len(snapshot),
+        "candidates": candidates,
+        "cancelled": cancelled,
+        "dry_run": dry_run,
+        "threshold_hours": threshold,
+    }
+
+
+def recover_active_runs(
+    idle_threshold_hours: float | None = None,
+) -> dict[str, Any]:
+    """Reload incomplete workflow runs from disk into ``_ACTIVE_RUNS``.
+
+    The in-memory active-runs map does not survive an MCP-server restart,
+    but the DAG state on disk does. Without this, a restart silently
+    abandons every in-flight workflow — an agent's next ``wb_advance``
+    would get "unknown run". Called once at gateway startup.
+
+    Runs that are complete or already cancelled are not recovered. Runs
+    idle past the timeout are not recovered either — they are marked
+    cancelled on disk so they don't resurface on the next boot.
+    """
+    threshold = _idle_threshold_hours(idle_threshold_hours)
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=threshold)
+
+    recovered: list[str] = []
+    expired: list[str] = []
+    skipped = 0
+    errors = 0
+
+    for path in _iter_dag_files():
+        try:
+            dag = WorkflowDAG.load(path)
+        except Exception:
+            # Corrupt or unreadable file — skip it, don't fail the boot.
+            errors += 1
+            continue
+
+        # run_id is the segment after the last ':' in "<workflow>:<run_id>".
+        name = dag.name or ""
+        if ":" not in name:
+            logger.warning(
+                "recover_active_runs: DAG at %s has un-keyable name %r — "
+                "skipping", path, name,
+            )
+            skipped += 1
+            continue
+        run_id = name.rsplit(":", 1)[1]
+
+        if dag.is_complete() or getattr(dag, "cancelled", False):
+            skipped += 1
+            continue
+
+        if _run_last_activity(dag) < cutoff:
+            # Idle past the timeout — don't repopulate a dead run; mark it
+            # cancelled on disk so it doesn't resurface on the next boot.
+            try:
+                dag.mark_cancelled("idle_timeout")
+            except Exception as exc:  # pragma: no cover — defensive
+                logger.warning(
+                    "recover_active_runs: failed to expire %s: %s",
+                    run_id, exc,
+                )
+            expired.append(run_id)
+            continue
+
+        with _ACTIVE_RUNS_LOCK:
+            _ACTIVE_RUNS[run_id] = dag
+        recovered.append(run_id)
+
+    logger.info(
+        "Workflow run recovery: %d recovered, %d expired (idle), "
+        "%d skipped, %d errors",
+        len(recovered), len(expired), skipped, errors,
+    )
+    return {
+        "recovered": recovered,
+        "expired": expired,
+        "skipped": skipped,
+        "errors": errors,
     }
 
 

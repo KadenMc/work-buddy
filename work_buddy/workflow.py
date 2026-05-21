@@ -91,6 +91,12 @@ class WorkflowDAG:
         self.cancelled_reason: str | None = None
         self.cancelled_at: str | None = None
 
+        # When this DAG was loaded from disk, the file it came from. A
+        # subsequent _save() writes back there rather than recomputing a
+        # path under the *current* process's session directory — see
+        # _get_save_path.
+        self._loaded_from: Path | None = None
+
     @staticmethod
     def _read_workflow_policy(workflow_file: str) -> tuple[str, bool]:
         """Read execution policy from a workflow file's YAML frontmatter.
@@ -420,7 +426,17 @@ class WorkflowDAG:
         )
 
     def _get_save_path(self) -> Path:
-        """Get the save path for this workflow's state."""
+        """Get the save path for this workflow's state.
+
+        A DAG loaded from disk re-saves to the file it came from
+        (``_loaded_from``). Otherwise — for a run recovered after a restart,
+        or a disk-only run being cancelled — ``_save()`` would write a
+        duplicate under the *current* process's session directory instead
+        of updating the original file.
+        """
+        if self._loaded_from is not None:
+            self._loaded_from.parent.mkdir(parents=True, exist_ok=True)
+            return self._loaded_from
         wf_dir = get_session_dir() / "workflows"
         wf_dir.mkdir(exist_ok=True)
         return wf_dir / f"{self._safe_name(self.name)}.json"
@@ -472,6 +488,7 @@ class WorkflowDAG:
         raw = json.loads(path.read_text(encoding="utf-8"))
         dag = cls(name=raw["name"], description=raw.get("description", ""))
         dag._created_at = raw.get("created_at", "")
+        dag._loaded_from = Path(path)
         # Restore initial_params if persisted (None for older save files).
         dag.initial_params = raw.get("initial_params")  # type: ignore[attr-defined]
         # Restore run-level lifecycle state (safe defaults for older files).
