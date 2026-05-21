@@ -357,3 +357,71 @@ class TestServerStartupWiring:
         monkeypatch.setattr(conductor, "recover_active_runs", _boom)
         # Must not raise.
         server._recover_workflow_runs()
+
+
+# ---------------------------------------------------------------------------
+# End-to-end — start a real run through the conductor, then cancel / recover
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def _minimal_workflow():
+    """Register a one-step reasoning workflow for end-to-end exercises."""
+    from work_buddy.mcp_server.registry import (
+        WorkflowDefinition, WorkflowStep, get_registry,
+    )
+
+    name = "test_lifecycle_e2e"
+    wf = WorkflowDefinition(
+        name=name,
+        description="End-to-end lifecycle fixture.",
+        workflow_file="test:in-memory",
+        execution="main",
+        steps=[
+            WorkflowStep(
+                id="only", name="Only step", step_type="reasoning",
+                depends_on=[], instruction="Do the thing.",
+            ),
+        ],
+    )
+    registry = get_registry()
+    registry[name] = wf
+    yield name
+    registry.pop(name, None)
+
+
+class TestEndToEnd:
+    def test_start_persists_real_json_then_cancel(self, tmp_agents_dir,
+                                                  _minimal_workflow):
+        start = conductor.start_workflow(_minimal_workflow)
+        run_id = start["workflow_run_id"]
+        assert run_id in conductor._ACTIVE_RUNS
+
+        # BUG 2 end-to-end: the persisted DAG is a real, non-empty .json,
+        # not a 0-byte colon-mangled husk.
+        dag = conductor._ACTIVE_RUNS[run_id]
+        path = dag._get_save_path()
+        assert path.exists() and path.suffix == ".json"
+        assert path.stat().st_size > 0
+        assert ":" not in path.name
+
+        result = conductor.cancel_workflow(run_id, reason="user_requested")
+        assert result["cancelled"] is True
+        assert run_id not in conductor._ACTIVE_RUNS
+
+        # A cancelled run is not resurrected by restart recovery.
+        conductor._ACTIVE_RUNS.clear()
+        conductor.recover_active_runs(idle_threshold_hours=24)
+        assert run_id not in conductor._ACTIVE_RUNS
+
+    def test_start_then_restart_recovery_repopulates(self, tmp_agents_dir,
+                                                     _minimal_workflow):
+        start = conductor.start_workflow(_minimal_workflow)
+        run_id = start["workflow_run_id"]
+
+        # Simulate an MCP-server restart: the in-memory map is wiped.
+        conductor._ACTIVE_RUNS.clear()
+        assert run_id not in conductor._ACTIVE_RUNS
+
+        rec = conductor.recover_active_runs(idle_threshold_hours=24)
+        assert run_id in rec["recovered"]
+        assert run_id in conductor._ACTIVE_RUNS
