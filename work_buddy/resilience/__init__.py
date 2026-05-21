@@ -1,10 +1,9 @@
 """work-buddy resilience framework.
 
 A unified foundation for fault mitigation across guarded calls — the
-propagating Deadline, the outcome taxonomy, the execution seam, and the
-telemetry surface. Strategies (Timeout, Retry, CircuitBreaker, Bulkhead,
-RateLimiter, Fallback) arrive in a later stage; this package currently
-provides the spine they compose onto.
+propagating Deadline, the outcome taxonomy, the execution seam, the
+telemetry surface, the composable strategy library, and the pipeline /
+registry that assembles them.
 
 Design: ``.data/designs/resilience-framework/DESIGN.md``.
 """
@@ -17,6 +16,12 @@ from work_buddy.resilience.context import (
 )
 from work_buddy.resilience.deadline import Deadline
 from work_buddy.resilience.outcome import Outcome, OutcomeError, OutcomeKind
+from work_buddy.resilience.pipeline import (
+    ResiliencePipeline,
+    ResiliencePipelineBuilder,
+    ResiliencePipelineRegistry,
+    get_pipeline_registry,
+)
 from work_buddy.resilience.seam import (
     Classifier,
     GuardedFn,
@@ -26,10 +31,21 @@ from work_buddy.resilience.seam import (
     guarded_call,
     guarded_call_sync,
 )
+from work_buddy.resilience.strategies import (
+    BulkheadStrategy,
+    CircuitBreakerStrategy,
+    CircuitState,
+    FallbackStrategy,
+    RateLimiterStrategy,
+    RetryStrategy,
+    TimeoutStrategy,
+)
 from work_buddy.resilience.telemetry import (
     CallCompleted,
+    CircuitStateChanged,
     GuardEvent,
     InMemoryMetrics,
+    LoadShed,
     TelemetryListener,
     emit,
     get_listeners,
@@ -56,10 +72,25 @@ __all__ = [
     "default_classify",
     "guarded_call",
     "guarded_call_sync",
+    # strategies
+    "BulkheadStrategy",
+    "CircuitBreakerStrategy",
+    "CircuitState",
+    "FallbackStrategy",
+    "RateLimiterStrategy",
+    "RetryStrategy",
+    "TimeoutStrategy",
+    # pipeline
+    "ResiliencePipeline",
+    "ResiliencePipelineBuilder",
+    "ResiliencePipelineRegistry",
+    "get_pipeline_registry",
     # telemetry
     "CallCompleted",
+    "CircuitStateChanged",
     "GuardEvent",
     "InMemoryMetrics",
+    "LoadShed",
     "TelemetryListener",
     "emit",
     "get_listeners",
