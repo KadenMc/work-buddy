@@ -214,7 +214,7 @@ class TestDAGSafeName:
     A run's name is ``"<workflow>:<run_id>"``. On Windows/NTFS a ``:`` in a
     path opens an alternate data stream, so a save would silently divert the
     JSON into a stream of a 0-byte base file and ``glob("*.json")`` would
-    never see it. (BUG 2 in the lifecycle plan.)
+    never see it.
     """
 
     def test_safe_name_strips_colon(self):
@@ -227,8 +227,9 @@ class TestDAGSafeName:
 
     @freeze_time("2026-04-12 10:00:00")
     def test_save_produces_real_nonempty_json(self, tmp_agents_dir, monkeypatch):
-        """Regression for BUG 2: the saved file must be a real, non-empty
-        ``.json`` — not the 0-byte ADS husk produced by an unsanitized name."""
+        """The saved file must be a real, non-empty ``.json`` — not the
+        0-byte NTFS alternate-data-stream husk an unsanitized colon in the
+        name would produce."""
         monkeypatch.setenv("WORK_BUDDY_SESSION_ID", "test-colon")
         import work_buddy.agent_session as asmod
         monkeypatch.setattr(asmod, "_cached_session_dir", None)

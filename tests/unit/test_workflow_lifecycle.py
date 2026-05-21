@@ -281,12 +281,12 @@ class TestRecoverActiveRuns:
 
 
 # ---------------------------------------------------------------------------
-# _load_dag_from_disk — BUG 1 (get_agent_dir ImportError) regression
+# _load_dag_from_disk — get_agent_dir ImportError regression
 # ---------------------------------------------------------------------------
 
 class TestLoadDagFromDisk:
     def test_load_dag_from_disk_does_not_raise_importerror(self, tmp_agents_dir):
-        """Regression: the old code imported a non-existent get_agent_dir."""
+        """_load_dag_from_disk must not import a non-existent get_agent_dir."""
         result = conductor._load_dag_from_disk("wf_whatever")
         assert result is None  # nothing on disk — but no ImportError
 
@@ -420,8 +420,8 @@ class TestEndToEnd:
         run_id = start["workflow_run_id"]
         assert run_id in conductor._ACTIVE_RUNS
 
-        # BUG 2 end-to-end: the persisted DAG is a real, non-empty .json,
-        # not a 0-byte colon-mangled husk.
+        # End-to-end: the persisted DAG is a real, non-empty .json, not a
+        # 0-byte colon-mangled NTFS alternate-data-stream husk.
         dag = conductor._ACTIVE_RUNS[run_id]
         path = dag._get_save_path()
         assert path.exists() and path.suffix == ".json"

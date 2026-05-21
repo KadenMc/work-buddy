@@ -446,7 +446,7 @@ class WorkflowDAG:
 
         The write is atomic (write to a temp file, then ``replace``) so a
         crash mid-write can never leave a half-written DAG file — important
-        now that restart-recovery reads every DAG file on boot.
+        because restart-recovery reads every DAG file on boot.
         """
         data = {
             "name": self.name,
