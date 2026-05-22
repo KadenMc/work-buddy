@@ -40,6 +40,8 @@ from work_buddy.resilience import (
     Deadline,
     Outcome,
     OutcomeKind,
+    ResiliencePipeline,
+    ResiliencePipelineBuilder,
     default_classify,
     guarded_call,
 )
@@ -136,4 +138,64 @@ async def guarded_bridge_call(
         classify=classify_obsidian_error,
         result_classifier=classify_bridge_result,
         passthrough_exceptions=OBSIDIAN_PASSTHROUGH,
+    )
+
+
+# ---------------------------------------------------------------------------
+# The Obsidian resilience pipeline (stage B3)
+# ---------------------------------------------------------------------------
+
+
+def build_obsidian_pipeline(
+    *,
+    name: str = "obsidian",
+    max_attempts: int = 3,
+    retry_base_delay_s: float = 1.0,
+    retry_max_delay_s: float = 30.0,
+    circuit_failure_threshold: int = 5,
+    circuit_reset_timeout_s: float = 30.0,
+) -> ResiliencePipeline:
+    """Build the resilience pipeline for Obsidian bridge calls.
+
+    Composition (outermost-first): ``Retry`` → ``CircuitBreaker`` → call.
+
+    - ``Retry`` re-attempts ``TIMEOUT`` / ``TRANSIENT_FAILURE`` outcomes.
+      Terminal Obsidian errors (plugin disabled / missing, Obsidian not
+      running, a 4xx refusal) classify to ``TERMINAL_FAILURE`` and so are
+      not retried — the taxonomy encodes ``@bridge_retry``'s terminal
+      short-circuit for free.
+    - ``CircuitBreaker`` trips after repeated transient failures, so a
+      genuinely-down bridge stops being hammered.
+    - ``classify_obsidian_error`` / ``classify_bridge_result`` map the typed
+      ``ObsidianError`` hierarchy and the legacy ``bridge_failure`` dicts
+      onto the outcome taxonomy.
+    - ``ObsidianPostWriteUncertain`` is a passthrough exception — it
+      propagates to the gateway's verify-then-decide path untouched.
+
+    This is the framework-native equivalent of the ``@bridge_retry``
+    decorator. Wiring it in front of bridge calls — and removing
+    ``@bridge_retry``'s own retry, per the one-retry-layer rule — is the
+    deferred B3 live-migration step (see DESIGN §15 / AFK-DECISIONS).
+
+    The retry-cadence defaults are sane transient-failure values; the exact
+    schedule (``@bridge_retry`` waits a full 60s for the user to reopen
+    Obsidian) is a tuning decision for the live migration, when the
+    interaction with the propagating deadline can be measured.
+    """
+    return (
+        ResiliencePipelineBuilder(name)
+        .retry(
+            max_attempts=max_attempts,
+            base_delay_s=retry_base_delay_s,
+            max_delay_s=retry_max_delay_s,
+        )
+        .circuit_breaker(
+            name=f"{name}-circuit",
+            failure_threshold=circuit_failure_threshold,
+            reset_timeout_s=circuit_reset_timeout_s,
+        )
+        .classify(classify_obsidian_error)
+        .result_classifier(classify_bridge_result)
+        .passthrough(*OBSIDIAN_PASSTHROUGH)
+        .build()
     )

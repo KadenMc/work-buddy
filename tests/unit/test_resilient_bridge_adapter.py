@@ -24,6 +24,7 @@ from work_buddy.obsidian.errors import (
     ObsidianTimeout,
 )
 from work_buddy.obsidian.resilient_bridge import (
+    build_obsidian_pipeline,
     classify_bridge_result,
     classify_obsidian_error,
     guarded_bridge_call,
@@ -203,3 +204,67 @@ def test_guarded_bridge_call_emits_telemetry():
     ))
     snap = m.snapshot()
     assert snap["counts_by_operation_outcome"]["obsidian:read/success"] == 1
+
+
+# ---------------------------------------------------------------------------
+# build_obsidian_pipeline — the framework-native @bridge_retry equivalent (B3)
+# ---------------------------------------------------------------------------
+
+
+def test_obsidian_pipeline_retries_transient_then_succeeds():
+    pipeline = build_obsidian_pipeline(max_attempts=3, retry_base_delay_s=0.01)
+    calls: list[int] = []
+
+    def _fn():
+        calls.append(1)
+        if len(calls) < 3:
+            raise ObsidianServerError(500)  # 5xx -> TRANSIENT_FAILURE
+        return {"ok": True}
+
+    outcome = asyncio.run(pipeline.execute(_fn))
+    assert outcome.is_success
+    assert len(calls) == 3
+
+
+def test_obsidian_pipeline_does_not_retry_terminal():
+    pipeline = build_obsidian_pipeline(max_attempts=5, retry_base_delay_s=0.01)
+    calls: list[int] = []
+
+    def _fn():
+        calls.append(1)
+        raise ObsidianNotRunning("obsidian closed")  # terminal
+
+    outcome = asyncio.run(pipeline.execute(_fn))
+    assert outcome.kind is OutcomeKind.TERMINAL_FAILURE
+    assert len(calls) == 1  # terminal failures short-circuit retry
+
+
+def test_obsidian_pipeline_passes_post_write_uncertain_through():
+    pipeline = build_obsidian_pipeline()
+
+    def _fn():
+        raise ObsidianPostWriteUncertain("notes/x.md", write_mode="append")
+
+    with pytest.raises(ObsidianPostWriteUncertain):
+        asyncio.run(pipeline.execute(_fn))
+
+
+def test_obsidian_pipeline_maps_terminal_bridge_failure_dict():
+    pipeline = build_obsidian_pipeline(max_attempts=1)
+
+    def _fn():
+        return bridge_failure(
+            "obsidian down", state="obsidian_not_running", state_detail="x",
+        )
+
+    outcome = asyncio.run(pipeline.execute(_fn))
+    assert outcome.kind is OutcomeKind.TERMINAL_FAILURE
+
+
+def test_obsidian_pipeline_success_passthrough():
+    pipeline = build_obsidian_pipeline()
+    outcome = asyncio.run(pipeline.execute(
+        lambda: {"path": "notes/x.md", "created": True},
+    ))
+    assert outcome.is_success
+    assert outcome.unwrap()["created"] is True
