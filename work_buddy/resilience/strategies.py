@@ -24,12 +24,48 @@ import random
 import time
 from typing import Callable, TypeVar
 
-from work_buddy.resilience.context import ResilienceContext
+from work_buddy.resilience.context import ResilienceContext, TypedKey
 from work_buddy.resilience.outcome import Outcome, OutcomeKind
 from work_buddy.resilience.seam import GuardedFn
 from work_buddy.resilience.telemetry import CircuitStateChanged, LoadShed, emit
 
 T = TypeVar("T")
+
+
+class Priority(enum.IntEnum):
+    """Priority class for a guarded call competing for a scarce resource.
+
+    Lower value = higher priority. Read by ``PriorityBulkheadStrategy`` off
+    the context (the ``PRIORITY`` key). Mirrors the inference broker's
+    classes so the broker's logic ports faithfully.
+    """
+
+    INTERACTIVE = 0
+    """User-facing / a human is waiting. Admits ahead of everything."""
+    WORKFLOW = 1
+    """Agent work tied to a user request but not UI-facing. The default."""
+    BACKGROUND = 2
+    """Cron / bulk jobs. Yields to everything else."""
+
+
+#: Context property key carrying a call's :class:`Priority`. Absent → WORKFLOW.
+PRIORITY: TypedKey[Priority] = TypedKey("priority")
+
+
+def _emit_shed(
+    name: str, reason: str, ctx: ResilienceContext, detail: str,
+) -> Outcome:
+    """Emit a ``LoadShed`` event and build the ``REJECTED`` outcome for it.
+
+    Shared by the admission-control strategies (circuit breaker, both
+    bulkheads) — composition-by-helper, not a base class (see the design
+    doc's inheritance-vs-composition decision).
+    """
+    emit(LoadShed(
+        operation_key=ctx.operation_key, call_id=ctx.call_id,
+        name=name, reason=reason,
+    ))
+    return Outcome.failure(OutcomeKind.REJECTED, detail=detail)
 
 
 # ---------------------------------------------------------------------------
@@ -195,11 +231,7 @@ class CircuitBreakerStrategy:
         self._transition(CircuitState.CLOSED, ctx)
 
     def _shed(self, ctx: ResilienceContext, detail: str) -> Outcome:
-        emit(LoadShed(
-            operation_key=ctx.operation_key, call_id=ctx.call_id,
-            name=self.name, reason="circuit_open",
-        ))
-        return Outcome.failure(OutcomeKind.REJECTED, detail=detail)
+        return _emit_shed(self.name, "circuit_open", ctx, detail)
 
     async def execute(
         self, nxt: GuardedFn, ctx: ResilienceContext,
@@ -270,11 +302,7 @@ class BulkheadStrategy:
         self._waiting = 0
 
     def _shed(self, ctx: ResilienceContext, detail: str) -> Outcome:
-        emit(LoadShed(
-            operation_key=ctx.operation_key, call_id=ctx.call_id,
-            name=self.name, reason="bulkhead_full",
-        ))
-        return Outcome.failure(OutcomeKind.REJECTED, detail=detail)
+        return _emit_shed(self.name, "bulkhead_full", ctx, detail)
 
     async def execute(
         self, nxt: GuardedFn, ctx: ResilienceContext,
@@ -391,3 +419,110 @@ class FallbackStrategy:
                 error=exc,
                 detail=f"fallback raised: {type(exc).__name__}: {exc}",
             )
+
+
+# ---------------------------------------------------------------------------
+# Priority Bulkhead
+# ---------------------------------------------------------------------------
+
+
+class PriorityBulkheadStrategy:
+    """Concurrency limiter with priority-aware admission.
+
+    Like ``BulkheadStrategy``, but when slots are scarce and calls queue, a
+    higher-priority waiter is admitted ahead of lower-priority ones — strict
+    priority across classes, FIFO within a class. Non-preemptive: an
+    in-flight call is never evicted. Reads the call's :class:`Priority` from
+    the context (``PRIORITY`` key; absent → ``WORKFLOW``).
+
+    A native-async, faithful port of the inference broker's per-profile
+    admission algorithm (``work_buddy.inference.broker._ProfileState``). It
+    is a *sibling* of ``BulkheadStrategy``, not a subclass — the resilience
+    framework is composition-only (see the design doc §7).
+
+    Holds an ``asyncio.Condition`` — assumes a single, stable event loop.
+    """
+
+    def __init__(
+        self,
+        *,
+        name: str = "priority_bulkhead",
+        max_concurrent: int = 1,
+        max_queued: int = 32,
+    ) -> None:
+        if max_concurrent < 1:
+            raise ValueError("max_concurrent must be >= 1")
+        self.name = name
+        self.max_concurrent = max_concurrent
+        self.max_queued = max_queued
+        self._cv = asyncio.Condition()
+        self._in_flight = 0
+        self._waiting: dict[Priority, int] = {p: 0 for p in Priority}
+
+    def _can_admit(self, priority: Priority) -> bool:
+        """True iff a ticket at ``priority`` may admit now. Call with the
+        condition held."""
+        if self._in_flight >= self.max_concurrent:
+            return False
+        # Strict priority: don't admit while any higher-priority ticket waits.
+        for p in Priority:
+            if p.value < priority.value and self._waiting[p] > 0:
+                return False
+        return True
+
+    async def _admit(self, priority: Priority, ctx: ResilienceContext) -> str:
+        """Attempt admission within the propagating deadline.
+
+        Returns ``"admitted"``, ``"queue_full"``, or ``"wait_timeout"``.
+        On ``"admitted"`` the caller MUST call :meth:`_release` eventually.
+        """
+        async with self._cv:
+            if self._waiting[priority] >= self.max_queued:
+                return "queue_full"
+            self._waiting[priority] += 1
+            try:
+                while not self._can_admit(priority):
+                    if ctx.deadline.expired():
+                        return "wait_timeout"
+                    remaining = ctx.deadline.remaining()
+                    try:
+                        if remaining == float("inf"):
+                            await self._cv.wait()
+                        else:
+                            await asyncio.wait_for(
+                                self._cv.wait(), timeout=remaining,
+                            )
+                    except asyncio.TimeoutError:
+                        return "wait_timeout"
+                self._in_flight += 1
+                return "admitted"
+            finally:
+                self._waiting[priority] -= 1
+                self._cv.notify_all()
+
+    async def _release(self) -> None:
+        async with self._cv:
+            self._in_flight -= 1
+            self._cv.notify_all()
+
+    async def execute(
+        self, nxt: GuardedFn, ctx: ResilienceContext,
+    ) -> Outcome:
+        priority = ctx.get(PRIORITY, Priority.WORKFLOW) or Priority.WORKFLOW
+        status = await self._admit(priority, ctx)
+        if status == "queue_full":
+            return _emit_shed(
+                self.name, "bulkhead_full", ctx,
+                f"priority bulkhead {self.name!r} queue is full at "
+                f"{priority.name}",
+            )
+        if status == "wait_timeout":
+            return _emit_shed(
+                self.name, "bulkhead_full", ctx,
+                f"priority bulkhead {self.name!r} slot wait timed out at "
+                f"{priority.name}",
+            )
+        try:
+            return await nxt(ctx)
+        finally:
+            await self._release()

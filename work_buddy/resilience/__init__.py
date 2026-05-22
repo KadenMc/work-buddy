@@ -32,10 +32,13 @@ from work_buddy.resilience.seam import (
     guarded_call_sync,
 )
 from work_buddy.resilience.strategies import (
+    PRIORITY,
     BulkheadStrategy,
     CircuitBreakerStrategy,
     CircuitState,
     FallbackStrategy,
+    Priority,
+    PriorityBulkheadStrategy,
     RateLimiterStrategy,
     RetryStrategy,
     TimeoutStrategy,
@@ -73,10 +76,13 @@ __all__ = [
     "guarded_call",
     "guarded_call_sync",
     # strategies
+    "PRIORITY",
     "BulkheadStrategy",
     "CircuitBreakerStrategy",
     "CircuitState",
     "FallbackStrategy",
+    "Priority",
+    "PriorityBulkheadStrategy",
     "RateLimiterStrategy",
     "RetryStrategy",
     "TimeoutStrategy",

@@ -12,8 +12,9 @@ See ``.data/designs/resilience-framework/DESIGN.md`` §7.
 from __future__ import annotations
 
 import threading
-from typing import Awaitable, Callable, TypeVar, Union
+from typing import Any, Awaitable, Callable, Mapping, TypeVar, Union
 
+from work_buddy.resilience.context import TypedKey
 from work_buddy.resilience.deadline import Deadline
 from work_buddy.resilience.outcome import Outcome
 from work_buddy.resilience.seam import (
@@ -64,6 +65,7 @@ class ResiliencePipeline:
         *,
         operation_key: str | None = None,
         deadline: Deadline | None = None,
+        properties: Mapping[TypedKey[Any], Any] | None = None,
     ) -> Outcome:
         """Run ``fn`` through this pipeline.
 
@@ -77,6 +79,7 @@ class ResiliencePipeline:
             classify=self._classify,
             result_classifier=self._result_classifier,
             passthrough_exceptions=self._passthrough,
+            properties=properties,
         )
 
     @property

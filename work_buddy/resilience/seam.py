@@ -29,6 +29,7 @@ from typing import (
     Any,
     Awaitable,
     Callable,
+    Mapping,
     Protocol,
     TypeVar,
     Union,
@@ -37,6 +38,7 @@ from typing import (
 
 from work_buddy.resilience.context import (
     ResilienceContext,
+    TypedKey,
     current_context,
     use_context,
 )
@@ -113,6 +115,7 @@ async def guarded_call(
     classify: Classifier = default_classify,
     result_classifier: ResultClassifier | None = None,
     passthrough_exceptions: tuple[type[BaseException], ...] = (),
+    properties: Mapping[TypedKey[Any], Any] | None = None,
 ) -> Outcome:
     """Run ``fn`` as a guarded call and return its ``Outcome``.
 
@@ -141,6 +144,10 @@ async def guarded_call(
             operation_key=operation_key,
             deadline=deadline or Deadline.never(),
         )
+
+    if properties:
+        for _key, _value in properties.items():
+            ctx.set(_key, _value)
 
     # Innermost link: deadline-gate, run fn, wrap the result in an Outcome.
     async def _base(c: ResilienceContext) -> Outcome:
@@ -206,6 +213,7 @@ def guarded_call_sync(
     classify: Classifier = default_classify,
     result_classifier: ResultClassifier | None = None,
     passthrough_exceptions: tuple[type[BaseException], ...] = (),
+    properties: Mapping[TypedKey[Any], Any] | None = None,
 ) -> Outcome:
     """Synchronous entry point for callers with no running event loop.
 
@@ -228,4 +236,5 @@ def guarded_call_sync(
         classify=classify,
         result_classifier=result_classifier,
         passthrough_exceptions=passthrough_exceptions,
+        properties=properties,
     ))
