@@ -59,7 +59,7 @@ ResultClassifier = Callable[[Any], "OutcomeKind | None"]
 
 
 @runtime_checkable
-class Strategy(Protocol):
+class ResilienceStrategy(Protocol):
     """One composable resilience primitive.
 
     A strategy receives the next-in-chain as ``nxt``, decides whether and
@@ -97,7 +97,7 @@ async def _invoke(fn: Callable[[], Union[T, Awaitable[T]]]) -> T:
     return result  # type: ignore[return-value]
 
 
-def _wrap(strategy: Strategy, nxt: GuardedFn) -> GuardedFn:
+def _wrap(strategy: ResilienceStrategy, nxt: GuardedFn) -> GuardedFn:
     async def _wrapped(ctx: ResilienceContext) -> Outcome:
         return await strategy.execute(nxt, ctx)
 
@@ -109,7 +109,7 @@ async def guarded_call(
     fn: Callable[[], Union[T, Awaitable[T]]],
     *,
     deadline: Deadline | None = None,
-    strategies: list[Strategy] | None = None,
+    strategies: list[ResilienceStrategy] | None = None,
     classify: Classifier = default_classify,
     result_classifier: ResultClassifier | None = None,
     passthrough_exceptions: tuple[type[BaseException], ...] = (),
@@ -202,7 +202,7 @@ def guarded_call_sync(
     fn: Callable[[], T],
     *,
     deadline: Deadline | None = None,
-    strategies: list[Strategy] | None = None,
+    strategies: list[ResilienceStrategy] | None = None,
     classify: Classifier = default_classify,
     result_classifier: ResultClassifier | None = None,
     passthrough_exceptions: tuple[type[BaseException], ...] = (),

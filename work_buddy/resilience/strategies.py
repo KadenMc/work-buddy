@@ -1,6 +1,6 @@
 """Resilience strategies — the composable fault-mitigation primitives.
 
-Each strategy implements the ``Strategy`` protocol (``seam.py``): it receives
+Each strategy implements the ``ResilienceStrategy`` protocol (``seam.py``): it receives
 the next-in-chain as ``nxt``, decides whether and when to call it, and
 returns an ``Outcome``. Strategies compose into a pipeline in the canonical
 order: overall Timeout → RateLimiter / Bulkhead → Retry → CircuitBreaker →

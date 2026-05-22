@@ -19,7 +19,7 @@ from work_buddy.resilience.outcome import Outcome
 from work_buddy.resilience.seam import (
     Classifier,
     ResultClassifier,
-    Strategy,
+    ResilienceStrategy,
     default_classify,
     guarded_call,
 )
@@ -45,7 +45,7 @@ class ResiliencePipeline:
 
     def __init__(
         self,
-        strategies: list[Strategy],
+        strategies: list[ResilienceStrategy],
         *,
         name: str = "pipeline",
         classify: Classifier = default_classify,
@@ -80,7 +80,7 @@ class ResiliencePipeline:
         )
 
     @property
-    def strategies(self) -> list[Strategy]:
+    def strategies(self) -> list[ResilienceStrategy]:
         """A copy of the strategy list, outermost-first."""
         return list(self._strategies)
 
@@ -96,12 +96,12 @@ class ResiliencePipelineBuilder:
 
     def __init__(self, name: str = "pipeline") -> None:
         self._name = name
-        self._strategies: list[Strategy] = []
+        self._strategies: list[ResilienceStrategy] = []
         self._classify: Classifier = default_classify
         self._result_classifier: ResultClassifier | None = None
         self._passthrough: tuple[type[BaseException], ...] = ()
 
-    def add(self, strategy: Strategy) -> "ResiliencePipelineBuilder":
+    def add(self, strategy: ResilienceStrategy) -> "ResiliencePipelineBuilder":
         """Append a pre-built strategy (for custom strategies)."""
         self._strategies.append(strategy)
         return self
