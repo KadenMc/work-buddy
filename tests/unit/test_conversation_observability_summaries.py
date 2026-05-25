@@ -32,8 +32,15 @@ def co_env(tmp_path, monkeypatch):
     projects = tmp_path / "projects"
     projects.mkdir()
     db_file = tmp_path / "co.db"
+    # The summarization framework's durable store lives in its own DB; point
+    # both `_default_db_path` and `db_path` at a tmp file so the new conv_obs
+    # composition writes there.
+    summ_db_file = tmp_path / "summarization.db"
 
     from work_buddy.sessions import inspector
+    from work_buddy.conversation_observability import (
+        summarizer_binding as _binding,
+    )
 
     monkeypatch.setattr(inspector, "_CLAUDE_PROJECTS", projects)
     monkeypatch.setattr(
@@ -44,8 +51,19 @@ def co_env(tmp_path, monkeypatch):
         "work_buddy.conversation_observability.db.db_path",
         lambda cfg=None: db_file,
     )
+    monkeypatch.setattr(
+        "work_buddy.summarization.db._default_db_path",
+        lambda: summ_db_file,
+    )
+    monkeypatch.setattr(
+        "work_buddy.summarization.db.db_path",
+        lambda cfg=None: summ_db_file,
+    )
+    # Reset the singleton so the next `get_session_summarizer()` call
+    # picks up the patched paths.
+    _binding.reset_session_summarizer()
     inspector._commit_cache.clear()
-    return {"projects": projects, "db": db_file}
+    return {"projects": projects, "db": db_file, "summ_db": summ_db_file}
 
 
 def _basic_session(sid: str) -> list[dict[str, Any]]:
@@ -165,7 +183,11 @@ def test_summarize_session_records_error_on_invalid_response(co_env) -> None:
     assert row is not None
     assert row["status"] == "error"
     assert row["error"]
-    assert "valid json" in row["error"].lower() or "invalid llm response" in row["error"].lower()
+    # The new framework records "parse error: ..." when the LLM response
+    # is not a structured dict; older code recorded "invalid LLM response: ...".
+    # Either form is acceptable — what matters is an error was recorded.
+    err_lower = row["error"].lower()
+    assert "parse" in err_lower or "valid" in err_lower or "json" in err_lower
 
 
 def test_summarize_session_error_does_not_corrupt_prior_good_summary(
@@ -213,7 +235,6 @@ def test_summarize_session_error_does_not_corrupt_prior_good_summary(
 
 
 def test_summary_marked_stale_when_prompt_version_bumps(co_env) -> None:
-    from work_buddy.conversation_observability import summaries as summary_mod
     from work_buddy.conversation_observability.sessions import (
         refresh_observed_sessions,
     )
@@ -221,6 +242,7 @@ def test_summary_marked_stale_when_prompt_version_bumps(co_env) -> None:
         refresh_session_summaries,
         summarize_session,
     )
+    from work_buddy.summarization.strategies import LayeredDisclosureStrategy
 
     sid = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"
     write_session(
@@ -234,23 +256,25 @@ def test_summary_marked_stale_when_prompt_version_bumps(co_env) -> None:
         llm_call=lambda **kw: _stub_response("v1 tldr"),
     )
 
-    # First refresh: fresh — _select_candidates returns no stale work.
+    # First refresh: fresh — discover returns the session, but the store's
+    # select_stale prunes it (versions + token match).
     r1 = refresh_session_summaries(
         days=30, llm_call=lambda **kw: _stub_response("v2 tldr"),
     )
     assert r1["summarized"] == 0
-    assert r1["total_candidates"] == 0
 
-    # Bump PROMPT_VERSION → that session becomes stale.
-    original = summary_mod.PROMPT_VERSION
+    # Bump the strategy's prompt_version → that session becomes stale.
+    # `Summarizer.refresh` re-syncs versions into the store on every call,
+    # so the patched attribute is picked up automatically.
+    original = LayeredDisclosureStrategy.prompt_version
     try:
-        summary_mod.PROMPT_VERSION = original + 1
+        LayeredDisclosureStrategy.prompt_version = original + 1
         r2 = refresh_session_summaries(
             days=30, llm_call=lambda **kw: _stub_response("v2 tldr"),
         )
         assert r2["summarized"] >= 1
     finally:
-        summary_mod.PROMPT_VERSION = original
+        LayeredDisclosureStrategy.prompt_version = original
 
 
 def test_summary_marked_stale_when_source_file_changes(co_env) -> None:

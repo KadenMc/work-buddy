@@ -138,110 +138,19 @@ def _summarize_tabs(
     selected: list[dict],
     tab_contents: dict[str, dict],
 ) -> tuple[list, int]:
-    """Summarize tabs using the summarize module. Returns (summaries, cached_count).
+    """Summarize tabs and return `(summaries_aligned_with_selected, cached_count)`.
 
-    Checks per-tab cache first. Uncached tabs are batch-summarized in one
-    Haiku call. Results are cached for future calls.
+    Delegates to the summarization framework
+    (`chrome_summarizer_binding.summarize_tabs`), which composes
+    `ChromeSource × FlatExtractionStrategy × TtlCacheStore`. The framework
+    issues one batched Haiku call for stale tabs and reuses cached entries
+    for the rest.
     """
-    from work_buddy.llm.cache import get as cache_get, put as cache_put
-    from work_buddy.llm.cost import log_call
-    from work_buddy.llm.summarize import PageSummary, summarize_batch
+    from work_buddy.collectors.chrome_summarizer_binding import (
+        summarize_tabs as _framework_summarize_tabs,
+    )
 
-    summaries: list[PageSummary] = [None] * len(selected)  # type: ignore
-    uncached_indices: list[int] = []
-    tabs_cached = 0
-
-    # Cache provenance: the summarize_batch path has its own system
-    # prompt we don't see here. Use a versioned tag as the ``system``
-    # identity so prompt revisions can be bumped without silent cache
-    # reuse. When ``summarize_batch`` changes materially, bump this.
-    _SUMMARIZE_TAB_VERSION = "summarize_tab:v1"
-    _summarize_system_hash = hashlib.sha256(
-        _SUMMARIZE_TAB_VERSION.encode()
-    ).hexdigest()[:12]
-
-    # Check cache per tab
-    for i, tab in enumerate(selected):
-        url = tab["url"]
-        cache_key = f"summarize_tab:{_normalize_for_cache(url)}"
-        content_text = tab_contents.get(url, {}).get("text", "") or ""
-        input_hash = hashlib.sha256(content_text.encode()).hexdigest()
-        cached = cache_get(
-            cache_key,
-            input_hash=input_hash,
-            input_text=content_text,
-        )
-        if cached:
-            tabs_cached += 1
-            r = cached["result"]
-            from work_buddy.llm.summarize import TypedEntity
-            summaries[i] = PageSummary(
-                content_summary=r.get("content_summary", ""),
-                entities=[TypedEntity(**e) for e in r.get("entities", [])],
-                key_claims=r.get("key_claims", []),
-                user_intent_speculation=r.get("user_intent_speculation", ""),
-                user_posture=r.get("user_posture", "referencing"),
-                source_label=_tab_label(tab),
-                cached=True,
-            )
-            log_call(
-                model=load_config().get("llm", {}).get("default_model", "claude-haiku-4-5-20251001"),
-                input_tokens=0, output_tokens=0,
-                task_id=cache_key, cached=True,
-            )
-        else:
-            uncached_indices.append(i)
-
-    # Batch-summarize uncached tabs
-    if uncached_indices:
-        batch_items = []
-        for i in uncached_indices:
-            tab = selected[i]
-            url = tab["url"]
-            text = tab_contents.get(url, {}).get("text", "")
-            meta_desc = tab_contents.get(url, {}).get("meta", {}).get("description", "")
-            if meta_desc:
-                text = f"[Meta: {meta_desc[:150]}]\n{text}"
-            batch_items.append({"text": text, "label": _tab_label(tab)})
-
-        batch_results = summarize_batch(batch_items)
-
-        for j, i in enumerate(uncached_indices):
-            if j < len(batch_results):
-                summaries[i] = batch_results[j]
-
-                # Cache the result
-                tab = selected[i]
-                url = tab["url"]
-                cache_key = f"summarize_tab:{_normalize_for_cache(url)}"
-                content_text = tab_contents.get(url, {}).get("text", "") or ""
-                cache_put(
-                    cache_key,
-                    result={
-                        "content_summary": batch_results[j].content_summary,
-                        "entities": [{"name": e.name, "type": e.type, "context": e.context} for e in batch_results[j].entities],
-                        "key_claims": batch_results[j].key_claims,
-                        "user_intent_speculation": batch_results[j].user_intent_speculation,
-                        "user_posture": batch_results[j].user_posture,
-                    },
-                    input_hash=hashlib.sha256(content_text.encode()).hexdigest(),
-                    input_text=content_text,
-                    system_hash=_summarize_system_hash,
-                    system_preview=_SUMMARIZE_TAB_VERSION,
-                    ttl_minutes=30,
-                )
-
-    # Fill any remaining None entries
-    for i in range(len(summaries)):
-        if summaries[i] is None:
-            summaries[i] = PageSummary(
-                content_summary="Content unavailable",
-                entities=[], key_claims=[],
-                user_intent_speculation="", user_posture="referencing",
-                source_label=_tab_label(selected[i]),
-            )
-
-    return summaries, tabs_cached
+    return _framework_summarize_tabs(selected, tab_contents)
 
 
 def _classify_summaries(
