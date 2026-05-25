@@ -83,7 +83,7 @@ def refresh_session_summaries(
         llm_caller=as_caller(llm_call),
         profile=profile,
     )
-    return report.to_legacy_dict()
+    return report.to_op_dict()
 
 
 def summarize_session(

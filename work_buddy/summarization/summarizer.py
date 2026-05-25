@@ -36,8 +36,9 @@ class RefreshReport:
     total_candidates: int = 0
     errors: list[tuple[str, str]] = field(default_factory=list)
 
-    def to_legacy_dict(self) -> dict:
-        """Map to the conv_obs legacy result shape."""
+    def to_op_dict(self) -> dict:
+        """Map to the `conversation_observability_summarize` op's result shape
+        — the four-key dict consumers (sidecar job, MCP capability) expect."""
         return {
             "summarized": self.summarized,
             "skipped_fresh": self.skipped_fresh,
@@ -161,7 +162,7 @@ class Summarizer:
 
         Short-circuits when `force=False` AND a `freshness_token` is provided
         AND `store.is_fresh(item_id, token)` returns True — in which case the
-        previously-saved tree is returned via `store.load`. Otherwise renders,
+        stored tree is returned via `store.load`. Otherwise renders,
         calls the LLM, parses, and persists.
 
         On render returning `None` (e.g. an empty session) → returns `None`.

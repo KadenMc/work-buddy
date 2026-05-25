@@ -310,17 +310,20 @@ def as_caller(fn: Callable[..., Any] | None) -> LLMCaller | None:
                 )
             except Exception as exc:
                 return LLMCallResult(error=str(exc))
-            return _normalize_legacy_response(resp)
+            return _normalize_stub_response(resp)
 
     return _Adapter()
 
 
-def _normalize_legacy_response(resp: Any) -> LLMCallResult:
-    """Normalize whatever a legacy `llm_call` stub returned into an
+def _normalize_stub_response(resp: Any) -> LLMCallResult:
+    """Normalize whatever a bare-callable LLM stub returned into an
     `LLMCallResult`.
 
-    Folds in the same logic conv_obs's `_coerce_response` used to do, so
-    existing test stubs (which return bare dicts) work unchanged.
+    Accepts: bare dict (taken as `structured_output`), JSON-decodable str
+    (`structured_output` + `content`), arbitrary str (`content`),
+    `LLMResponse`-shaped object (fields read via `getattr`), `None`
+    (`error`). This lets test stubs written against `def fn(*, system, user,
+    output_schema, profile) -> dict` plug in via `as_caller`.
     """
     if resp is None:
         return LLMCallResult(error="None response")

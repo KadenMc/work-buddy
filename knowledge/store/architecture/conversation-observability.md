@@ -59,7 +59,7 @@ dev_notes: |-
   - `currently_dirty` is best-effort. The `uncommitted_report` helper re-queries `git status --porcelain` during assembly so the surfaced status codes reflect current state; storing the codes at refresh time would lie about a mutable resource.
 ---
 
-Centralizes session-derived facts that previously lived ad hoc in `work_buddy/sessions/inspector.py`. The subsystem is a thin SQLite store plus refresh functions; raw JSONL parsing stays in the inspector (single source of truth for the parser), and Git context source continues to own commit/status collection.
+A SQLite-backed store of session-derived facts for Claude Code: commits, file writes, uncommitted-work attribution, observed-session metadata. The subsystem is a thin SQLite store plus refresh functions; raw JSONL parsing stays in `work_buddy/sessions/inspector.py` (single source of truth for the parser), and Git context source continues to own commit/status collection. Per-session LLM topic summaries are produced and stored by the summarization framework (`architecture/summarization-framework`); this subsystem owns the discovery side (observed-session enumeration) and the conv_obs-shaped read API that maps the framework's tree storage to a flat row.
 
 ## Why
 
@@ -67,28 +67,28 @@ Centralizes session-derived facts that previously lived ad hoc in `work_buddy/se
 
 ## Surface
 
-Five tables in `<data_root>/conversation_observability/conversation_observability.db` (path overridable via `conversation_observability.db_path`):
+Three live tables in `<data_root>/conversation_observability/conversation_observability.db` (path overridable via `conversation_observability.db_path`):
 
 - `observed_sessions` — per-JSONL ledger. Carries metadata (start/end, message_count, span_count, tool_names) plus three per-concern scan-mtime columns: `source_mtime` (metadata load), `commits_scanned_mtime` (commits refresh), `writes_scanned_mtime` (writes refresh). Each refresher owns its column so running them in any order doesn't conflate staleness state.
 - `session_commits` — one row per git commit attributed to a session. Keyed by full SHA, indexed on `short_sha` for GitSource lookups.
 - `session_file_writes` — one row per (session, file_path). Carries the tool that wrote it, the latest write timestamp, an optional `committed_sha` cross-reference, and a `currently_dirty` snapshot (best-effort — git state is mutable, so consumers should treat this as not authoritative without a refresh).
-- `topic_summaries` — LLM-generated topic chunks for a summarized session, each with title, summary, span range, turn range, and keywords.
-- `session_summaries` — per-session tldr + full provenance (model, profile, backend, prompt_version, summary_schema_version, selection_version, cache_version). Status flag + error column track failures.
 
-Foreign-key cascades use `SqliteRowsStorage.post_delete_sql` rather than SQLite's FK enforcement. Deleting an `observed_sessions` row removes every child in the same transaction.
+`session_summaries` and `topic_summaries` schemas remain defined in `schema.py` for rollback safety but are no longer written. Per-session tldr + ordered topic segments live in the summarization framework's `<data_root>/summarization/summarization.db` under namespace `conversation_session` (see `architecture/summarization-framework`). The legacy read API (`query_session_summary`, `query_topic_summaries`, and the `conversation_observability_summarize` / `conversation_observability_summary_get` capabilities) is preserved via thin shims in `summaries.py` that map between the framework's tree-shaped storage and the legacy row shape consumers expect (dashboard `/api/chats/<id>/topics`, the `claude_session_summary` context collector, `/wb-session-identify`'s tldr triage).
+
+Foreign-key cascades on the three live tables use `SqliteRowsStorage.post_delete_sql` rather than SQLite's FK enforcement. Deleting an `observed_sessions` row removes every child in the same transaction. Cross-DB cascade into `summarization.db` is not provided; both DBs use `INFINITE_LIFECYCLE` so stale rows are tolerated.
 
 ## Refresh model
 
 Two sidecar crons keep the DB fresh independent of caller demand:
 
 - `conversation-observability-refresh.md` — every 5 minutes (offset from `ir-index-rebuild` by 2 minutes), `max_sessions=5`, `stale_only=true`. Runs all three non-LLM refreshers.
-- `conversation-observability-summarize.md` — every 2 hours, `max_sessions=3`, feature-gated on `conversation_observability.summaries.enabled` (default off).
+- `conversation-observability-summarize.md` — every 2 hours, `max_sessions=3`. Calls the `conversation_observability_summarize` op, which drives the framework's `Summarizer.refresh` over the `conversation_session` composition.
 
 The `claude_session_summary` context source also triggers a stale-only refresh inline before rendering so bundle collections never read a cold DB. The `/ir/index` endpoint is deliberately NOT hooked — stale-only DB-backed scans are cheap enough that an independent cron is cleaner than embedding-service coupling.
 
 ## Lifecycle
 
-The artifact uses `INFINITE_LIFECYCLE` (paired with the new `NeverExpires` lifecycle trigger): every row is derived from JSONL session files that may have been deleted, so losing the DB means losing data that cannot be recovered. The sweep tick will see the artifact but never remove rows. Bumping any version constant in `summaries.py` invalidates cached summaries (re-summarize on next refresh); the row schema otherwise has no automatic eviction.
+The artifact uses `INFINITE_LIFECYCLE` (paired with the `NeverExpires` lifecycle trigger): every row is derived from JSONL session files that may have been deleted, so losing the DB means losing data that cannot be recovered. The sweep tick will see the artifact but never remove rows. Summary invalidation lives on the framework side: bumping `LayeredDisclosureStrategy.prompt_version` or `schema_version` (in `work_buddy/summarization/strategies.py`), or the `DurableSummaryStore`'s `selection_version` / `cache_version` (set in the conv_obs binding), invalidates cached summaries. The framework's composer re-bridges the strategy's versions into the store on every refresh, so a bump takes effect on the next sidecar fire.
 
 ## Consumers
 

@@ -134,7 +134,7 @@ Every scope below is browsable with `mcp__work-buddy__wb_run("agent_docs", {"sco
 | `services/` | Messaging, memory (Hindsight), dashboard, sidecar |
 | `features/` | Preferences and feature opt-in |
 | `operations/` | Gateway, agent sessions |
-| `architecture/` | Repo structure, workflows, knowledge system, embedding service, retry queue, artifact system, llm-with-tools |
+| `architecture/` | Repo structure, workflows, knowledge system, embedding service, retry queue, artifact system, summarization framework, llm-with-tools |
 | `status/` | Setup wizard, tailscale, feature status |
 | `morning/` | Morning routine |
 | `metacognition/` | Blindspot patterns (personal knowledge) |

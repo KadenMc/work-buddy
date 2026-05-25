@@ -257,7 +257,7 @@ class Store(Protocol):
     ) -> None:
         """Record that summarization failed for `item_id` without overwriting
         a prior good result. Implementations flip a status flag and keep the
-        previously-saved tree (if any) loadable via `load`."""
+        prior tree (if any) loadable via `load`."""
         ...
 
 
