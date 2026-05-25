@@ -185,15 +185,14 @@ def is_bridge_failure(result: Any) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# @bridge_retry decorator — IS a Retry strategy (B3 live wiring, Approach A)
+# @bridge_retry decorator — a Retry strategy expressed as a decorator
 # ---------------------------------------------------------------------------
 #
-# B3 live wiring. ``@bridge_retry`` is now a thin shim over the resilience
-# framework: a guarded call whose strategy chain is
-# ``RetryStrategy → _BridgeHealthGate → call``. The framework owns the retry
-# loop; the decorator configures the chain (max_attempts, base wait) and
-# translates the final ``Outcome`` back into the decorator's return / raise
-# contract via ``_outcome_to_contract``.
+# ``@bridge_retry`` is a thin shim over the resilience framework: a guarded
+# call whose strategy chain is ``RetryStrategy → _BridgeHealthGate → call``.
+# The framework owns the retry loop; the decorator configures the chain
+# (max_attempts, base wait) and translates the final ``Outcome`` back into
+# the decorator's return / raise contract via ``_outcome_to_contract``.
 #
 # What lives where now:
 #   - The retry loop:        ``RetryStrategy`` (outermost in the chain).
@@ -212,21 +211,21 @@ def is_bridge_failure(result: Any) -> bool:
 #                            ``RetryStrategy`` so it runs once per attempt.
 #                            On attempt > 1, if the bridge is unavailable, the
 #                            gate re-yields the prior attempt's ``Outcome``
-#                            (the prior failure stands) — faithful to the
-#                            pre-B3 decorator, which skipped the call and let
-#                            the prior failure carry through to exhaustion.
+#                            (the prior failure stands) — sleeping while the
+#                            bridge is known-down would help nobody, and the
+#                            prior attempt's classification is already the
+#                            answer the caller will receive.
 #   - Final-``Outcome``
 #     translation:           ``_outcome_to_contract``.
 #
-# One deliberate cadence change vs the pre-B3 decorator: the wait between
-# attempts is the framework's exponential backoff + full jitter
-# (``asyncio.sleep`` inside ``RetryStrategy``), not a fixed ``time.sleep``.
-# Backoff ceiling is ``max(wait_seconds, 30)`` and the first wait samples
+# The wait between attempts is the framework's exponential backoff with
+# full jitter (``asyncio.sleep`` inside ``RetryStrategy``). Backoff ceiling
+# is ``max(wait_seconds, 30)`` and the first wait samples
 # ``uniform(0, wait_seconds)``. Standard Polly v8 / resilience4j / AWS /
-# Google SRE pattern — better than fixed waits for transient-failure recovery
-# (avoids thundering-herd pile-ups), and exactly what the framework was built
-# to provide. The behavioral contract (retry up to N times with a wait
-# between) is unchanged.
+# Google SRE pattern — avoids thundering-herd retry pile-ups. Despite the
+# parameter name, ``wait_seconds`` is the *base* of the jittered backoff,
+# not a fixed wait. The behavioural contract (retry up to N times with a
+# wait between) holds.
 
 
 def _bridge_classify(exc: BaseException) -> Any:
@@ -263,9 +262,10 @@ class _BridgeHealthGate:
 
     Composed *inside* ``RetryStrategy`` so it runs once per retry attempt.
     On attempt > 1, if ``bridge.is_available()`` is False, the gate re-yields
-    the previous attempt's ``Outcome`` instead of calling the bridge — exactly
-    as the pre-B3 decorator skipped the call on a failed health check and let
-    the prior ``last_exc`` / ``last_failure`` carry through to exhaustion.
+    the previous attempt's ``Outcome`` instead of calling the bridge —
+    sleeping the next attempt while the bridge is known-down would help
+    nobody, and the prior attempt's classification is already what the
+    caller will receive on exhaustion.
 
     One instance per decorated call (created fresh in ``wrapper``), driven by
     a single event loop across its retry attempts — plain instance state is

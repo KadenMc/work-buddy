@@ -58,9 +58,9 @@ Six composable strategies in `strategies.py`: `TimeoutStrategy`, `RetryStrategy`
 
 `ResiliencePipelineBuilder` assembles strategies (declaration order = outermost-first; canonical order: overall Timeout -> RateLimiter/Bulkhead -> Retry -> CircuitBreaker -> per-attempt Timeout). `ResiliencePipeline.execute` runs a call through them. `ResiliencePipelineRegistry` (`get_pipeline_registry()`) holds named, lazily-built pipelines. **One hard rule: retry at exactly one layer per failure domain.**
 
-## Adapters
+## Adapters and consumers
 
-Existing systems *participate* without being rewritten: `work_buddy/inference/resilient_broker.py` (`guarded_broker_call`) and `work_buddy/obsidian/resilient_bridge.py` (`guarded_bridge_call`, `build_obsidian_pipeline`) map broker / Obsidian errors onto the taxonomy, propagate the deadline, and emit unified `guard.*` telemetry.
+Existing systems *participate* without being rewritten at their call sites: `work_buddy/inference/resilient_broker.py` (`guarded_broker_call`) and `work_buddy/obsidian/resilient_bridge.py` (`guarded_bridge_call`, `build_obsidian_pipeline`) map broker / Obsidian errors onto the taxonomy, propagate the deadline, and emit unified `guard.*` telemetry. The `@bridge_retry` decorator (`work_buddy/obsidian/retry.py`) is itself a thin framework consumer — each decorated call runs a `RetryStrategy → _BridgeHealthGate → call` chain via `guarded_call_sync`, so decorated capabilities share the same foundation as ad-hoc adapter calls. There is one retry loop in the codebase for the Obsidian failure domain (the one-retry-layer rule, structurally).
 
 ## Telemetry
 
@@ -72,4 +72,7 @@ The framework is **fault mitigation only**. Durable execution and human-in-the-l
 
 ## State
 
-The framework, strategy library, pipeline/registry, and both adapters are built and unit-tested. The live migration of the broker's synchronous call-sites and of `@bridge_retry` / `DISABLED_CAPABILITIES` is pending — it needs a sync->async conversion of the inference path and the running system to verify.
+The framework, strategy library, pipeline/registry, both adapters, and `@bridge_retry`'s live wiring are built and verified (unit-tested plus a live integration smoke test against the real Obsidian bridge). The remaining live migrations are:
+
+- The broker's synchronous LM Studio call-sites (embedding provider + LLM backends) — gated on a sync→async conversion of the inference path.
+- `DISABLED_CAPABILITIES` → a `CircuitBreakerStrategy` on the capability registry.

@@ -50,7 +50,7 @@ dev_notes: |-
   For concurrently-modified files (master task list, archive, journals), substring witness is robust to unrelated changes. sha256 verify gives false negatives any time anything else touches the file between PUT and verify — trips spurious retry-exhausted notifications. Reach for substring whenever the inserted content has a unique-by-construction marker (task_id, timestamp, header line).
 ---
 
-HTTP bridge on 27125 exposing bridge.eval_js; intermittent ~4s latency spikes; on failure retry per 60/60/60 protocol (or obsidian_retry), then admit failure. NEVER bypass to direct vault writes or REST.
+HTTP bridge on 27125 exposing bridge.eval_js; intermittent ~4s latency spikes; on failure the framework's `RetryStrategy` retries via `@bridge_retry` (max 3 attempts, jittered backoff with `base≈60s`, capped at `max(wait, 30s)`) — or `obsidian_retry` does the same explicitly — then admit failure. NEVER bypass to direct vault writes or REST.
 
 ## Typed exception hierarchy (post-CP1–CP9)
 
@@ -81,7 +81,7 @@ The pre-typed-exception four-state classification still flows through `get_last_
 Every bridge-dependent capability's failure response also carries:
 - `_bridge_state`: one of `ok`, `timeout`, `obsidian_not_running`, `plugin_not_installed`, `plugin_disabled`, `http_error`, `unknown`
 - `_bridge_state_detail`: human-readable explanation
-- `_bridge_terminal`: `true` when the state is one that retrying will never fix (obsidian_not_running / plugin_not_installed / plugin_disabled). `@bridge_retry` short-circuits on these. The typed-exception path uses the analogous `_TERMINAL_OBSIDIAN_ERROR_KINDS` set in `work_buddy.obsidian.retry`.
+- `_bridge_terminal`: `true` when the state is one that retrying will never fix (obsidian_not_running / plugin_not_installed / plugin_disabled). `@bridge_retry` short-circuits on these via `_BridgeHealthGate`'s terminal-classification path. The typed-exception path uses the analogous `_TERMINAL_OBSIDIAN_ERROR_KINDS` set in `work_buddy.obsidian.retry`.
 
 ## Post-write-uncertain recovery (CP5)
 
@@ -109,7 +109,7 @@ For master-task-list and other concurrently-edited files, prefer the atomic help
 
 Classification is cheap: `get_last_bridge_state()` reads module-level counters set by `_request_with_status`, consults `is_obsidian_running()` (process check) and `get_work_buddy_plugin_state()` (filesystem check on `.obsidian/plugins/obsidian-work-buddy/manifest.json` + `community-plugins.json`). On Windows, closed TCP ports often surface as socket timeouts rather than ECONNREFUSED; `_probe_port_open()` disambiguates via a direct TCP probe so timeouts on closed ports reclassify as `unreachable`.
 
-Entry points: `work_buddy.obsidian.errors` (typed hierarchy), `work_buddy.obsidian.bridge.get_last_bridge_state`, `work_buddy.obsidian.bridge._request_with_status`, `work_buddy.obsidian.bridge.write_file_raw`, `work_buddy.obsidian.bridge.atomic_replace_line_by_task_id`, `work_buddy.obsidian.bridge.atomic_delete_line_by_task_id`, `work_buddy.obsidian.post_write_verify.verify_post_write`, `work_buddy.obsidian.post_write_verify.verify_post_write_effects`, `work_buddy.obsidian.effects.EffectSpec`, `work_buddy.obsidian.retry.bridge_failure` (auto-enriches), `work_buddy.obsidian.retry.bridge_retry` (decorator), `work_buddy.obsidian.retry.obsidian_retry` (capability), `work_buddy.health.requirement_checks.get_work_buddy_plugin_state`.
+Entry points: `work_buddy.obsidian.errors` (typed hierarchy), `work_buddy.obsidian.bridge.get_last_bridge_state`, `work_buddy.obsidian.bridge._request_with_status`, `work_buddy.obsidian.bridge.write_file_raw`, `work_buddy.obsidian.bridge.atomic_replace_line_by_task_id`, `work_buddy.obsidian.bridge.atomic_delete_line_by_task_id`, `work_buddy.obsidian.post_write_verify.verify_post_write`, `work_buddy.obsidian.post_write_verify.verify_post_write_effects`, `work_buddy.obsidian.effects.EffectSpec`, `work_buddy.obsidian.retry.bridge_failure` (auto-enriches), `work_buddy.obsidian.retry.bridge_retry` (decorator — a thin shim that runs `RetryStrategy → _BridgeHealthGate → call` via `guarded_call_sync`; see `architecture/resilience`), `work_buddy.obsidian.retry.obsidian_retry` (capability), `work_buddy.health.requirement_checks.get_work_buddy_plugin_state`.
 
 ## What was removed in CP9
 

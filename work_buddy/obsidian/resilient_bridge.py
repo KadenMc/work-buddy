@@ -6,14 +6,14 @@ are both mapped onto the outcome taxonomy, ``ObsidianPostWriteUncertain`` is
 passed through untouched for the gateway's verify-then-decide path, and the
 unified ``guard.*`` telemetry is emitted.
 
-This is the "participate, don't rewrite" adapter (DESIGN §6, stage A3) for
-*ad-hoc* bridge calls that don't go through the ``@bridge_retry`` decorator.
-It does NOT add retry — the framework's one-retry-layer rule means an outer
-layer (``@bridge_retry`` itself, or ``build_obsidian_pipeline()`` below)
-owns retry for the call. ``@bridge_retry`` (B3 live wiring, Approach A) is
-*itself* a Retry strategy: it composes ``RetryStrategy`` →
-``_BridgeHealthGate`` → call via ``guarded_call_sync``. Decorated calls and
-adapter calls therefore share one framework foundation.
+The "participate, don't rewrite" adapter for *ad-hoc* bridge calls that
+don't go through the ``@bridge_retry`` decorator. It does NOT add retry —
+the framework's one-retry-layer rule means an outer layer (``@bridge_retry``
+itself, or ``build_obsidian_pipeline()`` below) owns retry for the call.
+``@bridge_retry`` is itself a Retry strategy expressed as a decorator: it
+composes ``RetryStrategy`` → ``_BridgeHealthGate`` → call via
+``guarded_call_sync``. Decorated calls and adapter calls therefore share
+one framework foundation.
 
 Deadline propagation: an already-expired deadline yields ``REJECTED`` at the
 seam without running ``fn``. Deeper integration (clamping the bridge's own
@@ -146,7 +146,7 @@ async def guarded_bridge_call(
 
 
 # ---------------------------------------------------------------------------
-# The Obsidian resilience pipeline (stage B3)
+# The Obsidian resilience pipeline (standalone composition for ad-hoc callers)
 # ---------------------------------------------------------------------------
 
 
@@ -182,8 +182,8 @@ def build_obsidian_pipeline(
     same Retry primitive that ``@bridge_retry`` uses, so a genuinely-down
     bridge stops being hammered after repeated transient failures.
 
-    ``@bridge_retry`` itself (B3 live wiring, Approach A) is a thin shim
-    over a ``RetryStrategy`` → ``_BridgeHealthGate`` → call chain — i.e. a
+    ``@bridge_retry`` itself is a thin shim over a
+    ``RetryStrategy`` → ``_BridgeHealthGate`` → call chain — a
     decorator-shaped use of the same framework primitives this pipeline
     composes. The two coexist; the one-retry-layer rule means a given call
     goes through exactly one of them.

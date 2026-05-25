@@ -221,14 +221,12 @@ def test_bridge_retry_short_circuits_on_terminal_state(monkeypatch, tmp_path):
 def test_bridge_retry_still_loops_on_transient_state(monkeypatch):
     """Non-terminal states (timeout) must still retry.
 
-    B3 (Approach A) co-migration: ``@bridge_retry`` is now a thin shim over
-    the resilience framework — the retry loop lives in ``RetryStrategy``,
-    which waits via ``asyncio.sleep`` (jittered exponential backoff), not
-    ``time.sleep``. The behavioural asserts (``call_count == 3``, the state /
-    terminal flags) are preserved exactly; the mechanism assert was moved
-    from the decorator's ``time.sleep`` to the framework's ``asyncio.sleep``
-    — the same intent ("there was a wait between attempts"), just observed
-    at the new mechanism's home.
+    ``@bridge_retry`` is a thin shim over the resilience framework — the
+    retry loop lives in ``RetryStrategy``, which waits via ``asyncio.sleep``
+    (jittered exponential backoff). The mechanism assert in this test
+    targets ``strategies.asyncio.sleep`` rather than ``retry.time.sleep``:
+    same intent ("there was a wait between attempts"), observed at the
+    actual sleep site.
     """
     monkeypatch.setattr(bridge_mod, "_last_failure_kind", "timeout", raising=False)
 
