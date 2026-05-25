@@ -219,12 +219,26 @@ def test_bridge_retry_short_circuits_on_terminal_state(monkeypatch, tmp_path):
 
 
 def test_bridge_retry_still_loops_on_transient_state(monkeypatch):
-    """Non-terminal states (timeout) must still retry."""
+    """Non-terminal states (timeout) must still retry.
+
+    B3 (Approach A) co-migration: ``@bridge_retry`` is now a thin shim over
+    the resilience framework — the retry loop lives in ``RetryStrategy``,
+    which waits via ``asyncio.sleep`` (jittered exponential backoff), not
+    ``time.sleep``. The behavioural asserts (``call_count == 3``, the state /
+    terminal flags) are preserved exactly; the mechanism assert was moved
+    from the decorator's ``time.sleep`` to the framework's ``asyncio.sleep``
+    — the same intent ("there was a wait between attempts"), just observed
+    at the new mechanism's home.
+    """
     monkeypatch.setattr(bridge_mod, "_last_failure_kind", "timeout", raising=False)
 
-    import work_buddy.obsidian.retry as retry_mod
-    sleeps: list[int] = []
-    monkeypatch.setattr(retry_mod.time, "sleep", lambda s: sleeps.append(s))
+    import work_buddy.resilience.strategies as strat_mod
+    sleeps: list[float] = []
+
+    async def _fake_sleep(s):
+        sleeps.append(s)
+
+    monkeypatch.setattr(strat_mod.asyncio, "sleep", _fake_sleep)
     monkeypatch.setattr(bridge_mod, "is_available", lambda: True)
 
     call_count = {"n": 0}
@@ -237,6 +251,6 @@ def test_bridge_retry_still_loops_on_transient_state(monkeypatch):
     result = fn()
 
     assert call_count["n"] == 3  # all three attempts used
-    assert len(sleeps) == 2      # sleeps between attempts 1-2 and 2-3
+    assert len(sleeps) == 2      # waits between attempts 1-2 and 2-3
     assert result["_bridge_state"] == "timeout"
     assert result["_bridge_terminal"] is False

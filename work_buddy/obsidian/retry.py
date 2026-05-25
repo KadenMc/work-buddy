@@ -185,27 +185,48 @@ def is_bridge_failure(result: Any) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# @bridge_retry decorator — routed through the resilience framework (B3)
+# @bridge_retry decorator — IS a Retry strategy (B3 live wiring, Approach A)
 # ---------------------------------------------------------------------------
 #
-# B3 live wiring. ``@bridge_retry`` now runs each attempt as a resilience
-# *guarded call* (``work_buddy.resilience.guarded_call_sync``): the framework
-# classifies the call into the outcome taxonomy, applies the bridge-aware
-# exception / result classifiers, honours ``ObsidianPostWriteUncertain`` as a
-# passthrough control-flow signal, and emits unified ``guard.*`` telemetry.
+# B3 live wiring. ``@bridge_retry`` is now a thin shim over the resilience
+# framework: a guarded call whose strategy chain is
+# ``RetryStrategy → _BridgeHealthGate → call``. The framework owns the retry
+# loop; the decorator configures the chain (max_attempts, base wait) and
+# translates the final ``Outcome`` back into the decorator's return / raise
+# contract via ``_outcome_to_contract``.
 #
-# The retry *loop* itself stays in the decorator — the ``is_available()``
-# health-skip, the per-attempt wait, and the ``last_exc`` / ``last_failure``
-# bookkeeping are orchestration the decorator owns. Each attempt is a single
-# guarded call (no ``RetryStrategy`` in the chain): the framework instruments
-# the attempt; the decorator decides whether to retry. There is exactly one
-# retry layer for the Obsidian failure domain (the one-retry-layer rule).
+# What lives where now:
+#   - The retry loop:        ``RetryStrategy`` (outermost in the chain).
+#   - The 3-way exception
+#     policy:                ``_bridge_classify`` (the ``classify=`` hook):
+#                              PWU         -> never reaches it (passthrough,
+#                                            re-raised by the seam).
+#                              terminal-3  -> TERMINAL_FAILURE (not retryable).
+#                              permanent   -> TERMINAL_FAILURE (not retryable).
+#                              transient   -> TRANSIENT_FAILURE (retryable).
+#   - ``bridge_failure()`` return-dicts:
+#                            ``classify_bridge_result`` (the
+#                            ``result_classifier=`` hook).
+#   - ``is_available()`` health-skip:
+#                            ``_BridgeHealthGate``, composed *inside*
+#                            ``RetryStrategy`` so it runs once per attempt.
+#                            On attempt > 1, if the bridge is unavailable, the
+#                            gate re-yields the prior attempt's ``Outcome``
+#                            (the prior failure stands) — faithful to the
+#                            pre-B3 decorator, which skipped the call and let
+#                            the prior failure carry through to exhaustion.
+#   - Final-``Outcome``
+#     translation:           ``_outcome_to_contract``.
 #
-# See AFK-DECISIONS.md (B3) for why the loop was deliberately NOT folded into
-# a framework ``RetryStrategy`` — doing so collaterally breaks an
-# implementation-coupled test (``test_bridge_four_state.py``, which asserts the
-# decorator sleeps via ``retry.time.sleep``) and so is left as a documented,
-# user-supervised follow-on.
+# One deliberate cadence change vs the pre-B3 decorator: the wait between
+# attempts is the framework's exponential backoff + full jitter
+# (``asyncio.sleep`` inside ``RetryStrategy``), not a fixed ``time.sleep``.
+# Backoff ceiling is ``max(wait_seconds, 30)`` and the first wait samples
+# ``uniform(0, wait_seconds)``. Standard Polly v8 / resilience4j / AWS /
+# Google SRE pattern — better than fixed waits for transient-failure recovery
+# (avoids thundering-herd pile-ups), and exactly what the framework was built
+# to provide. The behavioral contract (retry up to N times with a wait
+# between) is unchanged.
 
 
 def _bridge_classify(exc: BaseException) -> Any:
@@ -237,21 +258,135 @@ def _bridge_classify(exc: BaseException) -> Any:
     return OutcomeKind.TRANSIENT_FAILURE
 
 
+class _BridgeHealthGate:
+    """Resilience strategy reproducing ``@bridge_retry``'s ``is_available()`` skip.
+
+    Composed *inside* ``RetryStrategy`` so it runs once per retry attempt.
+    On attempt > 1, if ``bridge.is_available()`` is False, the gate re-yields
+    the previous attempt's ``Outcome`` instead of calling the bridge — exactly
+    as the pre-B3 decorator skipped the call on a failed health check and let
+    the prior ``last_exc`` / ``last_failure`` carry through to exhaustion.
+
+    One instance per decorated call (created fresh in ``wrapper``), driven by
+    a single event loop across its retry attempts — plain instance state is
+    safe without a lock.
+    """
+
+    def __init__(self, fn_name: str, max_retries: int) -> None:
+        self._fn_name = fn_name
+        self._max_retries = max_retries
+        self._attempt = 0
+        self._last_outcome: Any = None
+
+    async def execute(self, nxt: Any, ctx: Any) -> Any:
+        self._attempt += 1
+        if self._attempt > 1:
+            # Lazy imports keep the module load surface narrow and let test
+            # patches of these attributes take effect.
+            from work_buddy.obsidian.bridge import (
+                get_latency_context,
+                is_available,
+            )
+            if not is_available():
+                latency = get_latency_context()
+                logger.info(
+                    "bridge_retry(%s): bridge unavailable before attempt "
+                    "%d/%d (%s) — skipping call; prior outcome stands.",
+                    self._fn_name, self._attempt, self._max_retries, latency,
+                )
+                if self._last_outcome is not None:
+                    return self._last_outcome
+                # Unreachable in practice: a skip only happens on attempt
+                # > 1, which only happens after a retryable attempt 1.
+                from work_buddy.resilience import Outcome, OutcomeKind
+                return Outcome.failure(
+                    OutcomeKind.TRANSIENT_FAILURE,
+                    detail=f"bridge unavailable; no prior outcome [{latency}]",
+                )
+        outcome = await nxt(ctx)
+        self._last_outcome = outcome
+        return outcome
+
+
+def _outcome_to_contract(outcome: Any, fn_name: str) -> Any:
+    """Translate a guarded-call ``Outcome`` back into ``@bridge_retry``'s contract.
+
+    The decorator either returns a value / a ``bridge_failure`` dict, or
+    raises. This maps the framework's uniform ``Outcome`` onto that three-way
+    return / raise contract — the inverse of ``_bridge_classify`` +
+    ``classify_bridge_result``:
+
+      - success                                       → return ``outcome.value``.
+      - failure carrying a ``bridge_failure`` dict
+        (a result-classified failure)                 → return that dict.
+      - failure carrying a terminal ``ObsidianError``
+        (Obsidian not running, plugin missing /
+         disabled)                                    → translate to a
+                                                        ``bridge_failure`` dict
+                                                        and return.
+      - failure carrying a permanent error
+        (``classify_error != "transient"`` — incl.
+         ``ObsidianRefused`` and non-Obsidian
+         permanent errors)                            → re-raise.
+      - failure carrying an exhausted *transient*
+        ``ObsidianError``                             → translate to a
+                                                        ``bridge_failure`` dict
+                                                        and return (CP7 — MCP
+                                                        callers see a
+                                                        structured shape).
+      - failure carrying an exhausted *transient*
+        non-Obsidian error                            → re-raise.
+    """
+    from work_buddy.errors import classify_error
+    try:
+        from work_buddy.obsidian.errors import ObsidianError
+    except ImportError:
+        ObsidianError = ()  # type: ignore[assignment,misc]
+
+    if outcome.is_success:
+        return outcome.value
+
+    # A bridge_failure() return-dict, surfaced by the result classifier onto
+    # outcome.metadata["result"]. RetryStrategy returns the *last* outcome;
+    # if that last attempt was a result-classified failure, the dict is what
+    # the contract returns (never raises on this path).
+    result = outcome.metadata.get("result")
+    if is_bridge_failure(result):
+        return result
+
+    err = outcome.error
+    if err is not None:
+        if _is_terminal_obsidian_error(err):
+            return _exception_to_bridge_failure(err, fn_name)
+        if classify_error(err) != "transient":
+            raise err  # permanent (incl. ObsidianRefused) — don't retry
+        if isinstance(err, ObsidianError):
+            return _exception_to_bridge_failure(err, fn_name)  # CP7
+        raise err  # exhausted transient non-Obsidian — re-raise
+
+    # Defensive: a failure outcome with neither result nor error (e.g. a
+    # REJECTED deadline gate). The decorator never raises on this path.
+    return bridge_failure(
+        f"bridge_retry({fn_name}): {outcome.kind.value} [{outcome.detail}]"
+    )
+
+
 def bridge_retry(
     max_retries: int = 3,
     wait_seconds: int = 60,
 ) -> Callable[[F], F]:
     """Decorator: retry a bridge-dependent function on transient failures.
 
-    Apply to any function that depends on the Obsidian bridge. Each attempt
-    runs as a resilience guarded call (B3 live wiring); the decorator
-    orchestrates the retry loop around it. Two failure modes are handled
-    transparently:
+    Apply to any function that depends on the Obsidian bridge. The decorator
+    is a thin shim over the resilience framework: each call becomes a guarded
+    call whose strategy chain is
+    ``RetryStrategy → _BridgeHealthGate → call``. Two failure modes are
+    handled transparently:
 
     1. **Exceptions** — a transient error (timeout, connection refused) is
        waited out and retried; a permanent error is re-raised immediately;
        a terminal ``ObsidianError`` (Obsidian not running, plugin missing /
-       disabled) short-circuits to a ``bridge_failure`` dict without sleeping.
+       disabled) short-circuits to a ``bridge_failure`` dict without waiting.
 
     2. **bridge_failure() returns** — a result created by ``bridge_failure()``
        is treated like a transient exception: wait, health-check, retry; a
@@ -259,13 +394,13 @@ def bridge_retry(
 
     On success the result is returned transparently. On exhaustion:
 
-    - Exception path → re-raises the last exception (a typed transient
+    - Exception path → re-raises the last exception (a typed *transient*
       ``ObsidianError`` is instead translated to a ``bridge_failure`` dict,
       so MCP callers see a structured result).
     - bridge_failure path → returns the last failure result (never raises).
 
     ``ObsidianPostWriteUncertain`` is a passthrough: it propagates immediately
-    (no retry, no sleep) so the gateway's verify-then-decide path can run.
+    (no retry, no wait) so the gateway's verify-then-decide path can run.
 
     Decorated functions stay safe for MCP gateway use — a transient bridge
     outage can never crash the gateway process. Works with the
@@ -273,10 +408,12 @@ def bridge_retry(
     running at all" at dispatch time, while this decorator catches transient
     failures *during* execution.
 
-    Cadence note: the framework retains a fixed ``wait_seconds`` between
-    decorator-loop attempts (the loop sleeps directly). If this loop is ever
-    folded into a framework ``RetryStrategy``, the wait becomes exponential
-    backoff + jitter — a deliberate, separate change.
+    Cadence note: the wait between attempts is the framework's exponential
+    backoff with full jitter (``asyncio.sleep`` inside ``RetryStrategy``),
+    not a fixed ``wait_seconds``. Backoff ceiling is
+    ``max(wait_seconds, 30)`` and the first wait is sampled from
+    ``uniform(0, wait_seconds)``. Standard Polly v8 / resilience4j / AWS /
+    Google SRE pattern; avoids thundering-herd retry pile-ups.
 
     Usage::
 
@@ -292,9 +429,9 @@ def bridge_retry(
         def wrapper(*args: Any, **kwargs: Any) -> Any:
             # One-retry-layer rule: if a guarded call is already running on
             # this thread (an outer guarded call, or an async caller), that
-            # layer owns resilience for this call — and guarded_call_sync
-            # refuses to run inside a live event loop anyway. Call fn bare and
-            # let the outer layer classify / retry.
+            # layer owns resilience for this call — and ``guarded_call_sync``
+            # refuses to run inside a live event loop anyway. Call ``fn``
+            # bare and let the outer layer classify / retry.
             try:
                 asyncio.get_running_loop()
             except RuntimeError:
@@ -302,169 +439,42 @@ def bridge_retry(
             else:
                 return fn(*args, **kwargs)
 
-            from work_buddy.errors import classify_error
-            from work_buddy.obsidian.bridge import (
-                get_latency_context,
-                is_available,
-            )
             from work_buddy.obsidian.resilient_bridge import (
                 classify_bridge_result,
             )
-            from work_buddy.resilience import guarded_call_sync
+            from work_buddy.resilience import RetryStrategy, guarded_call_sync
 
             try:
                 from work_buddy.obsidian.errors import (
-                    ObsidianError,
                     ObsidianPostWriteUncertain,
                 )
                 passthrough: tuple[type[BaseException], ...] = (
                     ObsidianPostWriteUncertain,
                 )
             except ImportError:
-                ObsidianError = ()  # type: ignore[assignment,misc]
                 passthrough = ()
 
-            operation_key = f"bridge_retry:{fn.__name__}"
+            strategies = [
+                RetryStrategy(
+                    max_attempts=max_retries,
+                    base_delay_s=float(wait_seconds),
+                    max_delay_s=max(float(wait_seconds), 30.0),
+                ),
+                _BridgeHealthGate(fn.__name__, max_retries),
+            ]
 
             def _call() -> Any:
                 return fn(*args, **kwargs)
 
-            last_exc: BaseException | None = None
-            last_failure: dict[str, Any] | None = None
-
-            for attempt in range(1, max_retries + 1):
-                # Check bridge health before each attempt (except the first
-                # — the gateway's requires check already verified it).
-                if attempt > 1 and not is_available():
-                    latency = get_latency_context()
-                    logger.info(
-                        "bridge_retry(%s): bridge unavailable before attempt "
-                        "%d/%d (%s). Waiting %ds...",
-                        fn.__name__, attempt, max_retries, latency,
-                        wait_seconds,
-                    )
-                    if attempt < max_retries:
-                        time.sleep(wait_seconds)
-                        continue
-                    # Exhausted waiting for bridge.
-                    if last_failure is not None:
-                        return last_failure
-                    if last_exc is not None:
-                        raise last_exc
-                    return bridge_failure(
-                        f"Bridge unavailable after {max_retries} "
-                        f"attempts [{latency}]"
-                    )
-
-                # One guarded attempt. ObsidianPostWriteUncertain is a
-                # passthrough exception — it propagates straight out of
-                # guarded_call_sync (no retry, no sleep) so the gateway's
-                # CP5 verify-then-decide path can read filesystem and decide.
-                outcome = guarded_call_sync(
-                    operation_key,
-                    _call,
-                    classify=_bridge_classify,
-                    result_classifier=classify_bridge_result,
-                    passthrough_exceptions=passthrough,
-                )
-
-                # Success — return transparently. This includes a plain,
-                # non-marked failure dict (e.g. {"success": False, ...}): the
-                # result classifier does not flag it, so it is a success
-                # outcome and is returned immediately, NOT retried.
-                if outcome.is_success:
-                    return outcome.value
-
-                # A bridge_failure() return-dict, surfaced by the result
-                # classifier onto outcome.metadata["result"].
-                failed_result = outcome.metadata.get("result")
-                if is_bridge_failure(failed_result):
-                    last_failure = failed_result
-                    logger.warning(
-                        "bridge_retry(%s): attempt %d/%d returned "
-                        "bridge_failure: %s",
-                        fn.__name__, attempt, max_retries,
-                        failed_result.get("message", ""),
-                    )
-                    # Short-circuit on terminal states — sleeping 60s for a
-                    # disabled plugin is pure waste; the user must act.
-                    if is_terminal_bridge_failure(failed_result):
-                        logger.info(
-                            "bridge_retry(%s): terminal state '%s' — "
-                            "skipping remaining retries.",
-                            fn.__name__, failed_result.get("_bridge_state"),
-                        )
-                        return failed_result
-                    if attempt < max_retries:
-                        time.sleep(wait_seconds)
-                        continue
-                    return failed_result  # exhausted — return (never raise)
-
-                # An exception, caught and classified by the framework and
-                # carried on the outcome.
-                exc = outcome.error
-                if exc is not None:
-                    # CP7: terminal ObsidianError subclasses short-circuit
-                    # without sleeping — the user must act out of band
-                    # (open Obsidian, install / enable the plugin) before
-                    # any retry could succeed.
-                    if _is_terminal_obsidian_error(exc):
-                        logger.info(
-                            "bridge_retry(%s): terminal ObsidianError '%s' "
-                            "on attempt %d/%d — short-circuiting "
-                            "(translating to bridge_failure dict).",
-                            fn.__name__, getattr(exc, "error_kind", ""),
-                            attempt, max_retries,
-                        )
-                        return _exception_to_bridge_failure(exc, fn.__name__)
-
-                    last_exc = exc
-                    error_class = classify_error(exc)
-                    logger.warning(
-                        "bridge_retry(%s): attempt %d/%d raised (%s): %s",
-                        fn.__name__, attempt, max_retries, error_class, exc,
-                    )
-
-                    if error_class != "transient":
-                        raise exc  # permanent error — don't retry
-
-                    if attempt < max_retries:
-                        time.sleep(wait_seconds)
-                        continue
-                    # CP7: on exhaustion of a typed ObsidianError, translate
-                    # to a bridge_failure dict so MCP callers see a structured
-                    # failure shape rather than a raw exception. Non-Obsidian
-                    # transient exceptions still raise (gateway classifies).
-                    if isinstance(exc, ObsidianError):
-                        return _exception_to_bridge_failure(exc, fn.__name__)
-                    raise exc  # exhausted — let gateway handle it
-
-                # Defensive: a failure outcome with neither an exception nor
-                # a bridge_failure result (e.g. a REJECTED deadline gate).
-                # The decorator never raises on this path.
-                logger.warning(
-                    "bridge_retry(%s): attempt %d/%d — failure outcome with "
-                    "no error/result (%s: %s)",
-                    fn.__name__, attempt, max_retries,
-                    outcome.kind.value, outcome.detail,
-                )
-                last_failure = bridge_failure(
-                    f"bridge_retry({fn.__name__}): {outcome.kind.value} "
-                    f"[{outcome.detail}]"
-                )
-                if attempt < max_retries:
-                    time.sleep(wait_seconds)
-                    continue
-                return last_failure
-
-            # Safety net (e.g. max_retries < 1 — the loop never ran).
-            if last_failure is not None:
-                return last_failure
-            if last_exc is not None:
-                raise last_exc
-            return bridge_failure(
-                f"bridge_retry({fn.__name__}): unexpected exhaustion"
+            outcome = guarded_call_sync(
+                f"bridge_retry:{fn.__name__}",
+                _call,
+                strategies=strategies,
+                classify=_bridge_classify,
+                result_classifier=classify_bridge_result,
+                passthrough_exceptions=passthrough,
             )
+            return _outcome_to_contract(outcome, fn.__name__)
 
         return wrapper  # type: ignore[return-value]
     return decorator

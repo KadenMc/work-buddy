@@ -6,16 +6,18 @@ are both mapped onto the outcome taxonomy, ``ObsidianPostWriteUncertain`` is
 passed through untouched for the gateway's verify-then-decide path, and the
 unified ``guard.*`` telemetry is emitted.
 
-This is the "participate, don't rewrite" adapter (DESIGN §6, stage A3). It
-does NOT add retry — ``@bridge_retry`` already owns Obsidian retry, and the
-framework's one-retry-layer rule means the adapter must not duplicate it.
-``obsidian/retry.py`` and the typed-error hierarchy are not modified.
+This is the "participate, don't rewrite" adapter (DESIGN §6, stage A3) for
+*ad-hoc* bridge calls that don't go through the ``@bridge_retry`` decorator.
+It does NOT add retry — the framework's one-retry-layer rule means an outer
+layer (``@bridge_retry`` itself, or ``build_obsidian_pipeline()`` below)
+owns retry for the call. ``@bridge_retry`` (B3 live wiring, Approach A) is
+*itself* a Retry strategy: it composes ``RetryStrategy`` →
+``_BridgeHealthGate`` → call via ``guarded_call_sync``. Decorated calls and
+adapter calls therefore share one framework foundation.
 
-Deeper deadline integration — clamping the bridge's HTTP timeout, or
-stopping ``@bridge_retry`` mid-loop when the budget is spent — is deferred
-to stage B3, when ``@bridge_retry`` becomes a Retry strategy. Here the
-deadline is carried on the context and gates the call at the seam (an
-already-expired deadline yields ``REJECTED`` without running ``fn``).
+Deadline propagation: an already-expired deadline yields ``REJECTED`` at the
+seam without running ``fn``. Deeper integration (clamping the bridge's own
+HTTP timeout to the remaining budget) is a follow-on tuning.
 
 Import direction: lives under ``work_buddy.obsidian`` and depends on
 ``work_buddy.resilience`` (the foundation), never the reverse.
@@ -122,7 +124,9 @@ async def guarded_bridge_call(
     Typed ``ObsidianError`` exceptions and ``bridge_failure`` return-dicts
     are mapped onto the taxonomy; ``ObsidianPostWriteUncertain`` propagates
     untouched (re-raised, not returned as an Outcome). Retry is NOT added
-    here — ``@bridge_retry`` owns that.
+    here — an outer layer owns retry (``@bridge_retry`` for decorated
+    capabilities, ``build_obsidian_pipeline()`` for explicitly-composed
+    pipelines), per the one-retry-layer rule.
 
     Returns an :class:`Outcome` — except that ``ObsidianPostWriteUncertain``
     propagates as a raise.
@@ -172,15 +176,21 @@ def build_obsidian_pipeline(
     - ``ObsidianPostWriteUncertain`` is a passthrough exception — it
       propagates to the gateway's verify-then-decide path untouched.
 
-    This is the framework-native equivalent of the ``@bridge_retry``
-    decorator. Wiring it in front of bridge calls — and removing
-    ``@bridge_retry``'s own retry, per the one-retry-layer rule — is the
-    deferred B3 live-migration step (see DESIGN §15 / AFK-DECISIONS).
+    Standalone alternative to ``@bridge_retry`` for bridge calls that are
+    *not* routed through the decorator (ad-hoc gateway code, future
+    explicitly-composed call sites). Adds a circuit breaker on top of the
+    same Retry primitive that ``@bridge_retry`` uses, so a genuinely-down
+    bridge stops being hammered after repeated transient failures.
+
+    ``@bridge_retry`` itself (B3 live wiring, Approach A) is a thin shim
+    over a ``RetryStrategy`` → ``_BridgeHealthGate`` → call chain — i.e. a
+    decorator-shaped use of the same framework primitives this pipeline
+    composes. The two coexist; the one-retry-layer rule means a given call
+    goes through exactly one of them.
 
     The retry-cadence defaults are sane transient-failure values; the exact
-    schedule (``@bridge_retry`` waits a full 60s for the user to reopen
-    Obsidian) is a tuning decision for the live migration, when the
-    interaction with the propagating deadline can be measured.
+    schedule is a tuning decision for the call site, balanced against the
+    propagating deadline.
     """
     return (
         ResiliencePipelineBuilder(name)
