@@ -30,7 +30,7 @@ Provenance (model / backend / version / timestamp stamping) is uniform and baked
 
 ## Tree-shaped record invariant
 
-Every stored summary is a `SummaryNode` tree: `{summary, source_ref?, children: [], extra}`. Flat extraction = depth-1 (root only, empty `children`, null `source_ref`). Layered disclosure = root + children, each child carrying a `source_ref` pointer to exact source events. The durable store schema persists arbitrary-depth trees with a `source_ref` slot on every node — the structural foundation that lets future progressive-disclosure features (deeper navigation, IR indexing of summaries) land additively without schema migration.
+Every stored summary is a `SummaryNode` tree: `{summary, source_ref?, children: [], extra}`. Flat extraction = depth-1 (root only, empty `children`, null `source_ref`). Layered disclosure = root + children, each child carrying a `source_ref` pointer to exact source events. The durable store schema persists arbitrary-depth trees with a `source_ref` slot on every node — the structural foundation that the progressive-disclosure layer (IR indexing of summaries + `drill_tree` navigation) consumes.
 
 ## Composer + coherence
 
@@ -44,6 +44,16 @@ At each `refresh` / `refresh_one` the composer re-bridges the strategy's `prompt
 |---|---|---|---|---|
 | `conversation_session` | `SessionSource` | `LayeredDisclosureStrategy` | `DurableSummaryStore(namespace="conversation_session")` | dashboard `/api/chats/<id>/topics`, `/wb-session-identify`, `claude_session_summary` collector, the `conversation_observability_summarize` MCP capability, the sidecar `conversation-observability-summarize` job |
 | `chrome_page` | `ChromeSource` (per-call) | `FlatExtractionStrategy` (BATCHED) | `TtlCacheStore(key_prefix="summarize_tab", ttl=30m)` | `chrome_infer._summarize_tabs`, `pipelines/chrome.py` |
+
+## Consumers / search surface
+
+Summaries are made searchable and drillable by two separate but coordinated layers:
+
+- **IR `summary` source** (`work_buddy/ir/sources/summary.py`) — emits one Document per `SummaryNode` row. BM25 fields (`title` 1.75x, `summary` 1.0x, `keywords` 2.0x) plus a combined dense_text. Rebuilt by the `summary-index-rebuild` sidecar job every 5 minutes; built ad-hoc via `ir_index(source="summary")`.
+- **`summary_search`** capability (`work_buddy/summarization/funnel.py`) — the coarse-to-fine retrieval funnel. Stage 1 ranks summary nodes; stage 2 drills via `session_search` (or any registered per-namespace drill handler). See `summarization/summary_search`.
+- **`drill_tree`** capability (`work_buddy/disclosure/`) — the unified navigation contract. `domain="summary"` walks the per-node tree at three depths (index / summary / full). See `disclosure/`.
+
+A new summarizable domain becomes searchable + drillable as soon as it ships a composition: no per-domain IR source or navigator to write.
 
 ## Adding a new composition
 
@@ -62,11 +72,14 @@ Unit-test the composition by injecting a stub LLM via `as_caller(stub_fn)` — t
 - `work_buddy/summarization/orchestrator.py` — `run_refresh` (per-item + batch paths), `as_caller`, `default_llm_caller`, provenance assembly.
 - `work_buddy/summarization/strategies.py` — `LayeredDisclosureStrategy`, `FlatExtractionStrategy`.
 - `work_buddy/summarization/stores.py` — `DurableSummaryStore`, `TtlCacheStore`.
+- `work_buddy/summarization/funnel.py` — `summary_search` coarse-to-fine funnel + default drill handler.
 - `work_buddy/summarization/db.py` + `schema.py` — durable SQLite (WAL, idempotent schema; tree-shaped `summary_items` + `summary_nodes` tables).
 - `work_buddy/conversation_observability/summarizer_binding.py` — `SessionSource`, `build_session_summarizer`.
 - `work_buddy/collectors/chrome_summarizer_binding.py` — `ChromeSource`, `build_chrome_summarizer`, `summarize_tabs` (the public Chrome entry).
+- `work_buddy/ir/sources/summary.py` — IR adapter for the per-node summary store.
+- `work_buddy/disclosure/summary_tree.py` — `SummaryTreeDrillable` for the unified `drill_tree` capability.
 
-Tests: `tests/unit/test_summarization_framework.py`, `tests/unit/test_summarization_store.py`, `tests/unit/test_chrome_summarization.py`, `tests/unit/test_conversation_observability_summaries.py`.
+Tests: `tests/unit/test_summarization_framework.py`, `tests/unit/test_summarization_store.py`, `tests/unit/test_chrome_summarization.py`, `tests/unit/test_conversation_observability_summaries.py`, `tests/unit/test_ir_summary_source.py`, `tests/unit/test_summarization_funnel.py`, `tests/unit/test_disclosure.py`.
 
 ## Dev notes
 
@@ -95,3 +108,7 @@ The TTL store does not invent caching — it wraps the existing `llm/cache.py` (
 ### Conv_obs legacy tables
 
 `session_summaries` and `topic_summaries` in `conversation_observability/schema.py` remain defined but are no longer written — they predate the framework and are retained as a zero-effort rollback path. Removing them is a separate, follow-up change after the new store has proven out.
+
+### IR source / disclosure id mapping
+
+The IR `summary` source uses `doc_id = "{namespace}:{item_id}:n{ordinal}"`. The `drill_tree` `summary` domain uses `node_id = "{namespace}:{item_id}#n{ordinal}"` (or the bare `{namespace}:{item_id}` for the root). The `:n` vs `#n` difference is intentional: doc_ids use the same separator throughout (`:` runs uniformly), but node_ids need an unambiguous boundary between the item id (which may itself contain colons, e.g. session UUIDs don't, but generic item_ids might) and the ordinal. Consumers translate one to the other by replacing the last `:n` with `#n`.
