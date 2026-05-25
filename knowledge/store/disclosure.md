@@ -25,8 +25,19 @@ Three depths:
 
 ## Registered domains today
 
-- `summary` — wraps `summarization.db` (`summary_items` + `summary_nodes`). Roots are summary items (one per summarized session/page); children are topic nodes. node_id format: `{namespace}:{item_id}` for the root, `{namespace}:{item_id}#n{ordinal}` for an internal node. The latter matches the IR `summary` source's doc_id format (with `:n` vs `#n` differing) so a hit from `summary_search` can be drilled directly.
-- `knowledge` — wraps the knowledge store via `agent_docs`. node_id is the unit path (`tasks/triage-directions`, `architecture/summarization-framework`, etc.).
+### `summary` — framework summaries
+
+Wraps `summarization.db` (`summary_items` + `summary_nodes`). Three node-id shapes:
+
+- `{namespace}` (no colon) — the namespace itself. Children are every summary item under that namespace, ordered by `generated_at` DESC. Use for discovery ("show me every summarized session").
+- `{namespace}:{item_id}` — the whole item (root of one summarized session or page). Children are the level-1 topic nodes.
+- `{namespace}:{item_id}#n{ordinal}` — a specific node within the tree.
+
+The IR `summary` source's `doc_id` field uses `{namespace}:{item_id}:n{ordinal}`; a `summary_search` hit can be drilled by swapping the final `:n` for `#n`.
+
+### `knowledge` — knowledge units
+
+Wraps the knowledge store via `agent_docs`. node_id is the unit path (`tasks/triage-directions`, `architecture/summarization-framework`, etc.). The `roots` are the top-level domain directories; `agent_docs(scope=...)` is what you'd use for cross-cutting search, but `drill_tree` gives a uniform walk-by-id surface.
 
 ## Out of scope (today)
 

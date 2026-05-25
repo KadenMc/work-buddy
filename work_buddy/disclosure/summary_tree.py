@@ -1,16 +1,17 @@
 """`TreeDrillable` over the summarization framework's summary store.
 
 Node-id formats:
+- ``{namespace}`` (no colon) — the namespace itself. Children are all
+  summary items under that namespace, ordered by `generated_at` DESC.
+  Useful for "show me every summarized session" discovery.
 - ``{namespace}:{item_id}`` — the whole item (the tree's root, e.g. one
   summarized session). Children are the level-1 topic nodes.
 - ``{namespace}:{item_id}#n{ordinal}`` — a specific node within the tree.
   Children are its direct descendants (deeper trees aren't built today, so
   level-1 nodes have no children in practice).
 
-The same node-id format is used in the IR `summary` source's `doc_id`
-field (sans the `#n{ordinal}` suffix becoming `:n{ordinal}`), so a hit
-from `summary_search` can be drilled by translating its `doc_id` to
-`{namespace}:{item_id}#n{ordinal}`.
+The IR `summary` source's `doc_id` field uses `{namespace}:{item_id}:n{ordinal}`;
+translate to a drill node_id by swapping the last `:n` for `#n`.
 """
 
 from __future__ import annotations
@@ -28,8 +29,13 @@ from work_buddy.disclosure.protocol import (
 )
 
 
-def _parse_node_id(node_id: str) -> tuple[str, str, int | None]:
-    """Parse a node_id into `(namespace, inner_item_id, ordinal_or_None)`.
+def _parse_node_id(node_id: str) -> tuple[str, str | None, int | None]:
+    """Parse a node_id into `(namespace, inner_item_id|None, ordinal|None)`.
+
+    Three valid shapes:
+    - ``{namespace}`` → `(ns, None, None)` — namespace root.
+    - ``{namespace}:{item}`` → `(ns, item, None)` — item root.
+    - ``{namespace}:{item}#n{ord}`` → `(ns, item, ord)` — internal node.
 
     Raises `DrillError` on malformed inputs.
     """
@@ -41,7 +47,7 @@ def _parse_node_id(node_id: str) -> tuple[str, str, int | None]:
                 f"{node_id!r}"
             )
         try:
-            ordinal = int(suffix[1:])
+            ordinal: int | None = int(suffix[1:])
         except ValueError:
             raise DrillError(
                 f"summary node_id ordinal not an int: {node_id!r}"
@@ -50,10 +56,18 @@ def _parse_node_id(node_id: str) -> tuple[str, str, int | None]:
         head = node_id
         ordinal = None
 
+    if not head:
+        raise DrillError(f"summary node_id is empty: {node_id!r}")
+
     if ":" not in head:
-        raise DrillError(
-            f"summary node_id missing namespace prefix: {node_id!r}"
-        )
+        # Pure namespace — no item id, must not have ordinal.
+        if ordinal is not None:
+            raise DrillError(
+                f"summary node_id cannot specify ordinal on a namespace: "
+                f"{node_id!r}"
+            )
+        return head, None, None
+
     namespace, inner = head.split(":", 1)
     if not namespace or not inner:
         raise DrillError(f"summary node_id has empty parts: {node_id!r}")
@@ -86,6 +100,73 @@ class SummaryTreeDrillable:
                 "produced yet."
             )
 
+        if inner_id is None:
+            # Namespace-root view: list all items as children.
+            return self._namespace_view(namespace, depth, path)
+
+        return self._item_view(namespace, inner_id, ordinal, depth, path)
+
+    # --------------------------------------------------------------- views
+
+    def _namespace_view(
+        self, namespace: str, depth: str, path: Any,
+    ) -> TreeView:
+        conn = sqlite3.connect(str(path))
+        conn.row_factory = sqlite3.Row
+        try:
+            rows = list(conn.execute(
+                "SELECT item_id, generated_at, model, status "
+                "FROM summary_items "
+                "WHERE namespace = ? "
+                "ORDER BY generated_at DESC",
+                (namespace,),
+            ))
+        finally:
+            conn.close()
+
+        children: list[ChildRef] = []
+        for r in rows:
+            child_summary_text: str | None = None
+            if depth in ("summary", "full"):
+                # Lazy per-child fetch for the root summary text. Cost is
+                # one query per item — acceptable for the namespace-list
+                # view, which is bounded by how many summarized items exist.
+                child_summary_text = self._root_summary_text(
+                    namespace, r["item_id"], path,
+                )
+            title = f"{namespace}:{r['item_id']}"
+            children.append(ChildRef(
+                node_id=title,
+                title=title,
+                summary_text=child_summary_text,
+            ))
+
+        return TreeView(
+            domain=self.domain,
+            node_id=namespace,
+            title=namespace,
+            depth=depth,
+            summary_text=(
+                f"{len(rows)} summarized item(s) in namespace "
+                f"{namespace!r}"
+            ),
+            full_text=None,
+            children=children,
+            parent_id=None,
+            metadata={
+                "namespace": namespace,
+                "item_count": len(rows),
+            },
+        )
+
+    def _item_view(
+        self,
+        namespace: str,
+        inner_id: str,
+        ordinal: int | None,
+        depth: str,
+        path: Any,
+    ) -> TreeView:
         conn = sqlite3.connect(str(path))
         conn.row_factory = sqlite3.Row
         try:
@@ -108,21 +189,23 @@ class SummaryTreeDrillable:
             conn.close()
 
         if not all_nodes:
-            # Error rows (record_error after no prior good summary) — no nodes.
             return TreeView(
                 domain=self.domain,
-                node_id=node_id,
+                node_id=f"{namespace}:{inner_id}",
                 title=f"{namespace}:{inner_id}",
                 depth=depth,
                 summary_text=(
                     f"[no nodes; status={item_row['status']!r}"
-                    + (f"; error={item_row['error']!r}"
-                       if item_row["error"] else "")
+                    + (
+                        f"; error={item_row['error']!r}"
+                        if item_row["error"]
+                        else ""
+                    )
                     + "]"
                 ),
                 full_text=None,
                 children=[],
-                parent_id=None,
+                parent_id=namespace,
                 metadata={
                     "namespace": namespace,
                     "item_id": inner_id,
@@ -172,6 +255,26 @@ class SummaryTreeDrillable:
         except (ValueError, AttributeError):
             return None
 
+    @staticmethod
+    def _root_summary_text(
+        namespace: str, item_id: str, path: Any,
+    ) -> str | None:
+        """Fetch the root node's summary text for an item — used by the
+        namespace-root view to populate per-child `summary_text`."""
+        conn = sqlite3.connect(str(path))
+        conn.row_factory = sqlite3.Row
+        try:
+            row = conn.execute(
+                "SELECT summary FROM summary_nodes "
+                "WHERE namespace = ? AND item_id = ? AND ordinal = 0",
+                (namespace, item_id),
+            ).fetchone()
+        finally:
+            conn.close()
+        if row is None:
+            return None
+        return row["summary"]
+
     def _render(
         self,
         *,
@@ -202,8 +305,6 @@ class SummaryTreeDrillable:
             title = f"{namespace}:{inner_id}"
         summary_text = node["summary"] or ""
 
-        # children: at depth=index → just node_ids + titles; at depth=summary
-        # → also summary_text; at depth=full → also build full subtree concat.
         children: list[ChildRef] = []
         for child_ord in children_of.get(ordinal, []):
             child = by_ordinal[child_ord]
@@ -232,7 +333,10 @@ class SummaryTreeDrillable:
 
         parent_ord = self._ordinal_of(node.get("parent_id"))
         parent_id_str: str | None
-        if parent_ord is None:
+        if ordinal == 0:
+            # Root's parent is the namespace.
+            parent_id_str = namespace
+        elif parent_ord is None:
             parent_id_str = None
         elif parent_ord == 0:
             parent_id_str = f"{namespace}:{inner_id}"
@@ -241,8 +345,6 @@ class SummaryTreeDrillable:
 
         full_text: str | None = None
         if depth == "full":
-            # Subtree concat: this node's summary + every descendant's
-            # title+summary in pre-order.
             full_text = self._concat_subtree(
                 ordinal, by_ordinal, children_of,
             )

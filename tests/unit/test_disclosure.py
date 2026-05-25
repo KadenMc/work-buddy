@@ -81,6 +81,12 @@ def _prov():
 # ---------------------------------------------------------------------------
 
 
+def test_parse_node_id_namespace_only():
+    """A bare namespace (no colon) is the namespace-root form."""
+    ns, inner, ord_ = _parse_node_id("conversation_session")
+    assert (ns, inner, ord_) == ("conversation_session", None, None)
+
+
 def test_parse_node_id_item_only():
     ns, inner, ord_ = _parse_node_id("conversation_session:abc")
     assert (ns, inner, ord_) == ("conversation_session", "abc", None)
@@ -91,9 +97,10 @@ def test_parse_node_id_with_ordinal():
     assert (ns, inner, ord_) == ("conversation_session", "abc", 3)
 
 
-def test_parse_node_id_missing_namespace_raises():
-    with pytest.raises(DrillError, match="missing namespace"):
-        _parse_node_id("just-an-id")
+def test_parse_node_id_namespace_with_ordinal_raises():
+    """An ordinal makes no sense without an item id."""
+    with pytest.raises(DrillError, match="ordinal"):
+        _parse_node_id("ns#n0")
 
 
 def test_parse_node_id_bad_ordinal_raises():
@@ -104,6 +111,11 @@ def test_parse_node_id_bad_ordinal_raises():
 def test_parse_node_id_empty_parts_raises():
     with pytest.raises(DrillError, match="empty"):
         _parse_node_id(":")
+
+
+def test_parse_node_id_namespace_only_empty_part_raises():
+    with pytest.raises(DrillError, match="empty"):
+        _parse_node_id("ns:")
 
 
 # ---------------------------------------------------------------------------
@@ -219,6 +231,70 @@ def test_summary_invalid_depth_raises_drillerror(tmp_summarization_db):
         )
 
 
+def test_summary_namespace_root_lists_all_items(tmp_summarization_db):
+    """Drilling on just `{namespace}` (no item id) lists every summary
+    item under that namespace as children."""
+    store = DurableSummaryStore("conversation_session")
+    store.set_strategy_versions(1, 1)
+    _seed_layered(store, "sess-a", "tldr A", [("T", "S", (0, 1), [])])
+    _seed_layered(store, "sess-b", "tldr B", [("T", "S", (0, 1), [])])
+
+    view = SummaryTreeDrillable().get("conversation_session", depth="summary")
+
+    assert view.domain == "summary"
+    assert view.title == "conversation_session"
+    assert view.parent_id is None
+    assert len(view.children) == 2
+    child_ids = {c.node_id for c in view.children}
+    assert child_ids == {
+        "conversation_session:sess-a", "conversation_session:sess-b",
+    }
+    # depth=summary populates child summary_text with the item's root tldr.
+    summaries = {c.summary_text for c in view.children}
+    assert summaries == {"tldr A", "tldr B"}
+
+
+def test_summary_namespace_root_at_depth_index_skips_child_summary(
+    tmp_summarization_db,
+):
+    store = DurableSummaryStore("conversation_session")
+    store.set_strategy_versions(1, 1)
+    _seed_layered(store, "sess-a", "tldr A", [("T", "S", (0, 1), [])])
+
+    view = SummaryTreeDrillable().get("conversation_session", depth="index")
+    assert view.children[0].summary_text is None
+
+
+def test_summary_namespace_root_empty_returns_view_with_no_children(
+    tmp_summarization_db,
+):
+    """A namespace with no items returns an empty children list and a
+    meaningful summary_text, not an error."""
+    # Seed a different namespace so the DB file exists.
+    store = DurableSummaryStore("other_namespace")
+    store.set_strategy_versions(1, 1)
+    _seed_layered(store, "x", "tldr", [("T", "S", (0, 1), [])])
+
+    view = SummaryTreeDrillable().get(
+        "conversation_session", depth="summary",
+    )
+    assert view.children == []
+    assert "0" in view.summary_text  # "0 summarized item(s)..."
+
+
+def test_summary_item_view_links_parent_to_namespace(tmp_summarization_db):
+    """The item root's parent_id is the namespace (so the parent_id chain
+    walks all the way up to the root namespace)."""
+    store = DurableSummaryStore("conversation_session")
+    store.set_strategy_versions(1, 1)
+    _seed_layered(store, "sess-p", "tldr", [("T", "S", (0, 1), [])])
+
+    view = SummaryTreeDrillable().get(
+        "conversation_session:sess-p", depth="index",
+    )
+    assert view.parent_id == "conversation_session"
+
+
 def test_summary_error_status_returns_view_with_no_nodes(tmp_summarization_db):
     """When an item was recorded as an error with no prior nodes, the
     drillable returns a view explaining the state (rather than raising)."""
@@ -328,10 +404,11 @@ def test_dispatch_unknown_domain_returns_structured_error():
 
 
 def test_dispatch_propagates_drill_error_as_dict():
-    out = drill_tree("summary", "no-colon-anywhere", "summary")
+    # An ordinal on a bare namespace is invalid — _parse_node_id raises.
+    out = drill_tree("summary", "ns#n0", "summary")
     assert "error" in out
     assert out["domain"] == "summary"
-    assert out["node_id"] == "no-colon-anywhere"
+    assert out["node_id"] == "ns#n0"
 
 
 def test_dispatch_returns_view_dict_on_success(tmp_summarization_db):
