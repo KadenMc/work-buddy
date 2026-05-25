@@ -135,6 +135,8 @@ Every scope below is browsable with `mcp__work-buddy__wb_run("agent_docs", {"sco
 | `features/` | Preferences and feature opt-in |
 | `operations/` | Gateway, agent sessions |
 | `architecture/` | Repo structure, workflows, knowledge system, embedding service, retry queue, artifact system, summarization framework, llm-with-tools |
+| `summarization/` | Producer + search surface for content summaries — `summary_search` funnel and per-composition producers |
+| `disclosure/` | Unified `drill_tree` navigation across registered tree-shaped resources (knowledge units, summary nodes) |
 | `status/` | Setup wizard, tailscale, feature status |
 | `morning/` | Morning routine |
 | `metacognition/` | Blindspot patterns (personal knowledge) |
