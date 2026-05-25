@@ -396,9 +396,12 @@ def _get_source(source_name: str) -> Source:
     if source_name == "task_note":
         from work_buddy.ir.sources.task_notes import TaskNoteSource
         return TaskNoteSource()
+    if source_name == "summary":
+        from work_buddy.ir.sources.summary import SummarySource
+        return SummarySource()
     raise ValueError(
         f"Unknown source: {source_name}. "
-        "Available: conversation, chrome, projects, docs, task_note"
+        "Available: conversation, chrome, projects, docs, task_note, summary"
     )
 
 
