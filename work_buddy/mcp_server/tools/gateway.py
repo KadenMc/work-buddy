@@ -1383,10 +1383,15 @@ def register_tools(mcp: FastMCP) -> None:
                     "operation_id": op_id,
                 })
 
-        # Inject caller's session ID for capabilities that need it
+        # Inject caller's session ID for capabilities that need it.
+        # ``consent_list`` reads grants out of a session-scoped SQLite
+        # DB; without the injection it returns rows from whichever
+        # session the cache instance was first connected against
+        # (typically the MCP server's bootstrap session), not the
+        # agent's view.
         if capability in (
             "session_activity", "session_summary", "session_wb_activity",
-            "artifact_save",
+            "artifact_save", "consent_list",
         ) and _agent_sid:
             parsed_params.setdefault("agent_session_id", _agent_sid)
 

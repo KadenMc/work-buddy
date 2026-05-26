@@ -786,10 +786,18 @@ class ConsentCache:
         finally:
             conn.close()
 
-    def list_all(self) -> dict[str, Any]:
-        """Return all consent entries, marking expired ones."""
+    def list_all(self, *, session_id: str | None = None) -> dict[str, Any]:
+        """Return all consent entries from the named session's DB, marking
+        expired ones. When ``session_id`` is None, falls back to the
+        cache's default DB path — which is whichever session the
+        instance was first connected against. Callers that need the
+        agent's view (e.g. ``consent_list`` dispatched via wb_run) must
+        pass the agent session id explicitly; otherwise the cache may
+        return rows from the MCP server's bootstrap session rather than
+        the agent's.
+        """
         now = datetime.now(timezone.utc)
-        conn = self._connect()
+        conn = self._connect(session_id=session_id)
         try:
             rows = conn.execute(
                 "SELECT operation, mode, granted_at, expires_at FROM grants"
@@ -1113,9 +1121,21 @@ def revoke_consent(operation: str) -> None:
     _audit_log("REVOKED", operation)
 
 
-def list_consents() -> dict[str, Any]:
-    """List all consent entries with status."""
-    return _cache.list_all()
+def list_consents(
+    *, agent_session_id: str | None = None,
+) -> dict[str, Any]:
+    """List all consent entries with status.
+
+    ``agent_session_id`` routes the lookup to that session's
+    ``consent.db``. The gateway injects the caller's session id when
+    dispatching ``consent_list`` via wb_run so the result reflects the
+    agent's view — without it, the cache would return rows from
+    whichever session the cache instance was first connected against
+    (typically the MCP server's bootstrap session). When called
+    directly (no session id), the existing cache-default behaviour is
+    preserved.
+    """
+    return _cache.list_all(session_id=agent_session_id)
 
 
 # ---------------------------------------------------------------------------

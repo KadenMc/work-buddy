@@ -799,3 +799,64 @@ def test_resolve_dismisses_other_surfaces(cache, monkeypatch):
     # helper passes that through.
     assert calls[0]["responding_surface"] == "direct"
     assert set(calls[0]["delivered_surfaces"]) == {"telegram", "obsidian"}
+
+
+# ---------------------------------------------------------------------------
+# consent_list session routing — without ``agent_session_id``, the cache's
+# default-path fallback can read from a different session than the
+# caller's. The gateway injects the agent session id; the helper here
+# exercises the routing directly.
+# ---------------------------------------------------------------------------
+
+
+def test_list_consents_routes_to_named_session(cache, tmp_path, monkeypatch):
+    """``list_consents(agent_session_id=...)`` reads from the named
+    session's DB, not from whatever the cache's instance path is
+    cached against.
+    """
+    import sqlite3
+    from datetime import datetime, timezone
+    from work_buddy.consent import list_consents
+
+    # Hand-write a grant directly into a sibling session's DB so we
+    # can verify the routing without needing a full second-session
+    # setup. ``ConsentCache._connect(session_id=...)`` resolves the
+    # path via ``agent_session.get_session_dir(session_id)``.
+    import work_buddy.agent_session as asmod
+    other_dir = tmp_path / "agents" / "99999999_other"
+    other_dir.mkdir(parents=True, exist_ok=True)
+    other_db = other_dir / "consent.db"
+
+    original_get_dir = asmod.get_session_dir
+
+    def _patched_get_session_dir(session_id=None):
+        if session_id == "other-session-id":
+            return other_dir
+        return original_get_dir(session_id)
+
+    monkeypatch.setattr(asmod, "get_session_dir", _patched_get_session_dir)
+
+    conn = sqlite3.connect(str(other_db))
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS grants (
+              operation TEXT PRIMARY KEY,
+              mode TEXT NOT NULL,
+              granted_at TEXT NOT NULL,
+              expires_at TEXT
+           )"""
+    )
+    conn.execute(
+        "INSERT OR REPLACE INTO grants VALUES (?, ?, ?, ?)",
+        ("other.op", "always",
+         datetime.now(timezone.utc).isoformat(), None),
+    )
+    conn.commit()
+    conn.close()
+
+    # Default-path lookup does NOT see the other session's grant.
+    assert "other.op" not in list_consents()
+
+    # Session-routed lookup DOES see it.
+    other = list_consents(agent_session_id="other-session-id")
+    assert "other.op" in other
+    assert other["other.op"]["mode"] == "always"
