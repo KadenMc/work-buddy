@@ -123,6 +123,21 @@ def test_parse_node_id_namespace_only_empty_part_raises():
 # ---------------------------------------------------------------------------
 
 
+def test_drill_tree_default_depth_is_index(tmp_summarization_db):
+    """drill_tree's default depth is 'index' — cheap walk-by-id, no
+    child-content fetch. Opt into 'summary' or 'full' explicitly."""
+    store = DurableSummaryStore("conversation_session")
+    store.set_strategy_versions(1, 1)
+    _seed_layered(store, "sess-x", "tldr", [("T", "S", (0, 1), [])])
+
+    # Default depth omitted → should be 'index'.
+    out = drill_tree("summary", "conversation_session:sess-x")
+    assert out["depth"] == "index"
+    # Children listed but no summary_text (that's the depth=summary contract).
+    assert out["children"]
+    assert out["children"][0]["summary_text"] is None
+
+
 def test_summary_get_root_index_lists_topic_children(tmp_summarization_db):
     store = DurableSummaryStore("conversation_session")
     store.set_strategy_versions(1, 1)

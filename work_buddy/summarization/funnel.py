@@ -67,7 +67,7 @@ def _default_drill_handler(
 def summary_search(
     query: str,
     *,
-    namespace: str | None = None,
+    scope: str | None = None,
     top_k: int = 8,
     drill: bool = True,
     drill_top_k: int = 5,
@@ -80,9 +80,11 @@ def summary_search(
 
     Args:
         query: Natural-language query.
-        namespace: Restrict stage-1 to one summary namespace (e.g.
-            `"conversation_session"`); `None` searches across all
-            summary namespaces.
+        scope: Restrict stage-1 to one summary namespace (e.g.
+            ``"conversation_session"``); ``None`` searches across all
+            summary namespaces. Named ``scope`` to match
+            ``context_search`` / ``agent_docs`` vocabulary — it's a
+            doc-id prefix filter on the IR index.
         top_k: Stage-1 (coarse) cap — how many summary nodes to consider.
         drill: When True, run stage 2 over candidates.
         drill_top_k: How many distinct items to drill into (deduplicated
@@ -96,12 +98,15 @@ def summary_search(
 
     Returns a dict with three keys (always present, may be empty):
 
-    - ``stage1_hits`` — list of per-node hits, each with ``namespace``,
-      ``item_id``, ``level``, ``title``, ``summary``, ``score``,
-      ``source_ref``, ``generated_at``, ``model``.
+    - ``stage1_hits`` — list of per-node hits. Each entry has
+      ``doc_id`` (IR identity), ``drill_node_id`` (ready to pass straight
+      to ``drill_tree(domain="summary", ...)``), ``namespace``,
+      ``item_id``, ``level``, ``ordinal``, ``title``, ``summary``,
+      ``score``, ``source_ref``, ``generated_at``, ``model``.
     - ``candidate_items`` — per-item aggregate, ranked by best hit. Each
       entry has ``namespace``, ``item_id``, ``best_score``, ``n_hits``,
-      ``top_titles`` (up to 3 distinct titles seen for that item).
+      ``top_titles`` (up to 3 distinct titles seen for that item),
+      ``drill_node_id`` (the item-root drill coordinate).
     - ``drilled`` — dict mapping ``item_id`` to the drill handler's result
       (typically a `session_search`-shaped object), or ``None`` per item
       when the namespace has no drill handler. Empty when ``drill=False``.
@@ -118,18 +123,21 @@ def summary_search(
 
     out: dict[str, Any] = {
         "query": query,
-        "namespace": namespace,
+        "scope": scope,
         "stage1_hits": [],
         "candidate_items": [],
         "drilled": {},
     }
 
     # --- Stage 1: search summary nodes ---
-    scope = f"{namespace}:" if namespace else None
+    # `scope` is a namespace string (e.g. "conversation_session"); the IR
+    # engine wants a doc-id prefix, so append ':' to match all docs under
+    # that namespace.
+    ir_scope = f"{scope}:" if scope else None
     raw = ir_search_fn(
         query,
         source="summary",
-        scope=scope,
+        scope=ir_scope,
         top_k=top_k,
         method=method,
     )
@@ -149,11 +157,22 @@ def summary_search(
             continue
         extra = meta.get("extra") or {}
         title = extra.get("title") or ""
+        ordinal = meta.get("ordinal")
+        # Build the drill-coordinate so callers don't have to translate
+        # between IR `doc_id` format (`{ns}:{id}:n{ord}`) and `drill_tree`
+        # `node_id` format (`{ns}:{id}#n{ord}` or bare `{ns}:{id}` for
+        # the root).
+        if isinstance(ordinal, int) and ordinal != 0:
+            drill_node_id = f"{ns}:{item_id}#n{ordinal}"
+        else:
+            drill_node_id = f"{ns}:{item_id}"
         stage1.append({
             "doc_id": r.get("doc_id"),
+            "drill_node_id": drill_node_id,
             "namespace": ns,
             "item_id": item_id,
             "level": meta.get("level"),
+            "ordinal": ordinal,
             "title": title,
             "summary": r.get("display_text") or "",
             "score": r.get("score", 0.0),
@@ -172,6 +191,8 @@ def summary_search(
             agg = {
                 "namespace": h["namespace"],
                 "item_id": h["item_id"],
+                # Item-root drill coordinate (no ordinal).
+                "drill_node_id": f"{h['namespace']}:{h['item_id']}",
                 "best_score": h["score"],
                 "n_hits": 0,
                 "top_titles": [],

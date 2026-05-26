@@ -17,7 +17,7 @@ from work_buddy.disclosure.registry import available_domains, get_drillable
 def drill_tree(
     domain: str,
     node_id: str,
-    depth: str = "summary",
+    depth: str = "index",
 ) -> dict[str, Any]:
     """Walk a registered tree-shaped resource at the requested depth.
 
@@ -28,8 +28,12 @@ def drill_tree(
             (e.g. ``"architecture/summarization-framework"``). Summary:
             ``"{namespace}:{item_id}"`` for the whole tree or
             ``"{namespace}:{item_id}#n{ordinal}"`` for one node.
-        depth: ``"index"`` (this node + child names), ``"summary"`` (this
-            node + each child's summary), ``"full"`` (everything).
+        depth: ``"index"`` (default — this node + child names only, no
+            child-content fetch), ``"summary"`` (this node + each child's
+            summary text), ``"full"`` (everything including this node's
+            full content). Default is ``"index"`` because it is the
+            cheapest read and makes the verb's intent ("walk by id") unambiguous
+            — to *read* children's content, opt in via ``depth="summary"``.
 
     Returns a dict containing the `TreeView` fields, or
     ``{"error": "...", "domain": ..., "available_domains": [...]}`` on

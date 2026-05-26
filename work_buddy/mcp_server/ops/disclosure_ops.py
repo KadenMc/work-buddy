@@ -15,7 +15,7 @@ from work_buddy.mcp_server.op_registry import register_op
 def drill_tree_op(
     domain: str,
     node_id: str,
-    depth: str = "summary",
+    depth: str = "index",
 ) -> dict[str, Any]:
     """Walk a tree-shaped drillable resource at the requested depth."""
     from work_buddy.disclosure.dispatch import drill_tree

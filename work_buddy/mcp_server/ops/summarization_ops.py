@@ -19,7 +19,7 @@ from work_buddy.mcp_server.op_registry import register_op
 def summary_search_op(
     query: str,
     *,
-    namespace: str | None = None,
+    scope: str | None = None,
     top_k: int = 8,
     drill: bool = True,
     drill_top_k: int = 5,
@@ -32,7 +32,7 @@ def summary_search_op(
 
     return summary_search(
         query,
-        namespace=namespace,
+        scope=scope,
         top_k=top_k,
         drill=drill,
         drill_top_k=drill_top_k,

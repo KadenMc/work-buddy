@@ -46,6 +46,45 @@ def _hit(
     }
 
 
+def test_stage1_hits_carry_ready_to_drill_node_id():
+    """Each stage1_hit should include a `drill_node_id` ready to pass
+    straight to drill_tree — no string parsing required."""
+    fake_hits = [
+        _hit("conversation_session", "sess-a", level=0, ordinal=0,
+             title="root", summary="tldr", score=0.9),
+        _hit("conversation_session", "sess-a", level=1, ordinal=3,
+             title="topic 3", summary="body", score=0.8),
+    ]
+
+    def fake_ir(query, **kw):
+        return fake_hits
+
+    out = summary_search("q", drill=False, ir_search_fn=fake_ir)
+
+    hits = out["stage1_hits"]
+    # Root node → item-root drill coordinate (no ordinal suffix).
+    root_hit = next(h for h in hits if h["level"] == 0)
+    assert root_hit["drill_node_id"] == "conversation_session:sess-a"
+    assert root_hit["ordinal"] == 0
+    # Internal node → {ns}:{id}#n{ord}.
+    inner_hit = next(h for h in hits if h["level"] == 1)
+    assert inner_hit["drill_node_id"] == "conversation_session:sess-a#n3"
+    assert inner_hit["ordinal"] == 3
+
+
+def test_candidate_items_include_item_root_drill_node_id():
+    fake_hits = [
+        _hit("conversation_session", "sess-a", ordinal=1, score=0.7),
+    ]
+
+    def fake_ir(query, **kw):
+        return fake_hits
+
+    out = summary_search("q", drill=False, ir_search_fn=fake_ir)
+    cand = out["candidate_items"][0]
+    assert cand["drill_node_id"] == "conversation_session:sess-a"
+
+
 # ---------------------------------------------------------------------------
 # stage 1
 # ---------------------------------------------------------------------------
@@ -84,7 +123,7 @@ def test_stage1_passes_scope_when_namespace_supplied():
 
     summary_search(
         "q",
-        namespace="conversation_session",
+        scope="conversation_session",
         drill=False,
         ir_search_fn=fake_ir,
     )
