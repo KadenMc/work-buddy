@@ -1,13 +1,13 @@
 """Snapshot regression tests for `GET /api/chats/<sid>/topics`.
 
-Added as a gating test for Phase 3b's consumer migration: locks the JSON
-shape of the topics endpoint so the dashboard cannot silently drift when
-the underlying call path changes from `query_session_summary` to
-`legacy_row_from_session_id`.
+Locks the JSON shape the dashboard's topics endpoint emits. The
+endpoint composes its response from a Python adapter; this test
+asserts the response keys + value types so a refactor of the adapter
+cannot silently change what the frontend sees.
 
 The test seeds a deterministic fixture summary directly into a tmp
 `summarization.db`, monkey-patches `db_path()`, and verifies the
-endpoint emits a byte-equivalent JSON response.
+endpoint emits the expected JSON shape.
 """
 
 from __future__ import annotations

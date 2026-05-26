@@ -4,9 +4,9 @@ The structured-returning universal search verb. Two return modes:
 - `drill=False` -> plain `list[dict]` from `ir.search.search`.
 - `drill=True` -> funnel-shape dict, with per-source drill handler lookup.
 
-Parity with `summary_search` is required for `source="summary"`,
-`drill=True` callers — that's how Phase 3a keeps the back-compat alias
-honest.
+`summary_search` is the existing alias for the funnel shape; these
+tests assert parity when callers pass `source="summary"`, `drill=True`
+so the two ops stay byte-equivalent.
 """
 
 from __future__ import annotations

@@ -1,9 +1,11 @@
 """Tests for `work_buddy.ir.store._get_source` factory dispatch.
 
-Phase 3d refactored the if/elif chain to a small factory dict. These
-tests verify each source name resolves to the expected adapter class,
-unknown sources raise a clear error, and the docs source remains
-intact as the knowledge-store search path.
+`_get_source` resolves an IR source name (``"conversation"``, ``"docs"``,
+etc.) to a concrete adapter instance. These tests verify each known
+source name resolves to the expected adapter class, unknown sources
+raise a clear error with the available list, and the docs source's
+``name`` property is preserved (load-bearing for the IR DB's ``source``
+filter on knowledge-store reads).
 """
 
 from __future__ import annotations

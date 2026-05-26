@@ -1147,14 +1147,14 @@ def api_chat_topics(session_id: str):
     topic-timeline rail entirely when topics is empty.
     """
     try:
-        from work_buddy.conversation_observability.legacy_row_adapter import (
-            legacy_row_from_session_id,
+        from work_buddy.conversation_observability.session_summary_row import (
+            session_summary_row,
         )
     except ImportError:
         return jsonify({"topics": [], "tldr": None})
 
     try:
-        row = legacy_row_from_session_id(session_id)
+        row = session_summary_row(session_id)
         if row is None:
             return jsonify({"topics": [], "tldr": None})
         tldr = None
