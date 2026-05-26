@@ -60,12 +60,12 @@ def collect(cfg: dict[str, Any]) -> str:
             query_session_commits,
             refresh_session_commits,
         )
+        from work_buddy.conversation_observability.legacy_row_adapter import (
+            legacy_row_from_session_id,
+        )
         from work_buddy.conversation_observability.sessions import (
             list_observed_sessions,
             refresh_observed_sessions,
-        )
-        from work_buddy.conversation_observability.summaries import (
-            query_session_summary,
         )
         from work_buddy.conversation_observability.writes import (
             query_session_writes,
@@ -142,7 +142,7 @@ def collect(cfg: dict[str, Any]) -> str:
 
             if include_tldr:
                 try:
-                    summary_row = query_session_summary(sid)
+                    summary_row = legacy_row_from_session_id(sid)
                 except Exception:
                     summary_row = None
                 if (

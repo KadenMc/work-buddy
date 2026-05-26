@@ -127,10 +127,19 @@ def summarize_session(
 def query_session_summary(session_id: str) -> dict[str, Any] | None:
     """Return the legacy `session_summaries` row dict (with `topics`).
 
-    Consumed by:
-    - the dashboard `/api/chats/<id>/topics` endpoint
-    - the `conversation_observability_summary_get` MCP capability
-    - the `claude_session_summary` context collector
+    NEW CODE: prefer
+    :func:`work_buddy.conversation_observability.legacy_row_adapter.legacy_row_from_session_id` —
+    it lives in a separate, narrowly-scoped module dedicated to the legacy
+    row shape. This function remains as a back-compat shim for the sidecar
+    job and any out-of-tree caller that imports it directly; both paths
+    are byte-equivalent.
+
+    Consumed (historically) by:
+    - the dashboard `/api/chats/<id>/topics` endpoint (migrated to the
+      adapter in Phase 3b)
+    - the `claude_session_summary` context collector (migrated)
+    - the `session_summary_get` / `conversation_observability_summary_get`
+      MCP capabilities (now point at the adapter)
     """
     summarizer = get_session_summarizer()
     store = summarizer.store
@@ -166,6 +175,10 @@ def query_session_summary(session_id: str) -> dict[str, Any] | None:
 
 def query_topic_summaries(session_id: str) -> list[dict[str, Any]]:
     """Return the legacy `topic_summaries` row dicts (one per child node).
+
+    NEW CODE: prefer
+    :func:`work_buddy.conversation_observability.legacy_row_adapter.legacy_topics_from_session_id` —
+    same return shape, lives in the dedicated adapter module.
 
     `turn_start` / `turn_end` are computed lazily from `span_start` /
     `span_end` via `span_range_to_turn_range`. The previous implementation
