@@ -631,3 +631,171 @@ def test_decorator_rejects_invalid_consent_weight(cache):
         )
         def _bad():
             return "x"
+
+
+# ---------------------------------------------------------------------------
+# Out-of-band approval — resolve_consent_request fills in the workflow_class
+# grant AND dismisses sibling surfaces (the gateway's in-window poll does
+# both synchronously; this path closes the gap for Telegram / Obsidian
+# approvals landing after the poll has exited).
+# ---------------------------------------------------------------------------
+
+
+def _seed_workflow_consent_notification(workflow_name: str = "task-new"):
+    """Build a workflow-consent notification record in the same shape
+    the gateway's ``_auto_workflow_consent_request`` creates."""
+    from work_buddy.consent import create_consent_request
+    record = create_consent_request(
+        operation=f"workflow:{workflow_name}",
+        reason="(test) authorize this workflow?",
+        risk="moderate",
+        default_ttl=15,
+        requester=f"gateway:workflow:{workflow_name}",
+        context={
+            "kind": "workflow_consent",
+            "workflow_name": workflow_name,
+            "operation_id": "op_test",
+            "consent_ops": ["tasks.create_task"],
+        },
+    )
+    return record["notification_id"]
+
+
+def test_resolve_workflow_consent_temporary_mints_class_grant(cache):
+    """Out-of-band approval with mode='temporary' mints the
+    ``workflow_class:<name>`` grant with the 15-min TTL — the same
+    grant the in-window poll path would have written."""
+    from work_buddy.consent import (
+        resolve_consent_request, is_workflow_authorized,
+        WORKFLOW_CLASS_TEMPORARY_TTL_MIN,
+    )
+    nid = _seed_workflow_consent_notification("task-new")
+
+    # Sanity: no class grant before resolve.
+    assert is_workflow_authorized("task-new")[0] is False
+
+    resolve_consent_request(
+        nid, approved=True, mode="temporary",
+        ttl_minutes=WORKFLOW_CLASS_TEMPORARY_TTL_MIN,
+    )
+
+    ok, via = is_workflow_authorized("task-new")
+    assert ok is True
+    assert via == "class"
+
+
+def test_resolve_workflow_consent_always_mints_24h_class_grant(cache):
+    """Out-of-band approval with mode='always' uses the 24h TTL constant."""
+    from work_buddy.consent import (
+        resolve_consent_request, is_workflow_authorized,
+    )
+    nid = _seed_workflow_consent_notification("task-new")
+
+    resolve_consent_request(nid, approved=True, mode="always")
+
+    ok, via = is_workflow_authorized("task-new")
+    assert ok is True
+    assert via == "class"
+
+
+def test_resolve_workflow_consent_once_does_not_mint_class_grant(cache):
+    """Out-of-band approval with mode='once' authorizes only this
+    invocation (via the run grant minted later by start_workflow);
+    no class grant is written."""
+    from work_buddy.consent import (
+        resolve_consent_request, is_workflow_authorized,
+    )
+    nid = _seed_workflow_consent_notification("task-new")
+
+    resolve_consent_request(nid, approved=True, mode="once")
+
+    # No class grant minted on "once" — the run grant covers this run.
+    ok, _ = is_workflow_authorized("task-new")
+    assert ok is False
+
+
+def test_resolve_workflow_consent_denied_writes_no_grants(cache):
+    """A denied workflow-consent prompt writes no class grant."""
+    from work_buddy.consent import (
+        resolve_consent_request, is_workflow_authorized,
+    )
+    nid = _seed_workflow_consent_notification("task-new")
+
+    resolve_consent_request(nid, approved=False)
+
+    ok, _ = is_workflow_authorized("task-new")
+    assert ok is False
+
+
+def test_resolve_capability_consent_unchanged(cache):
+    """A non-workflow-consent notification (e.g. capability bundle)
+    does NOT mint a workflow_class grant. The new code path is gated
+    on ``context.kind == "workflow_consent"``."""
+    from work_buddy.consent import (
+        create_consent_request, resolve_consent_request,
+        is_workflow_authorized, _cache,
+    )
+    # Capability-style bundle (no ``kind`` field).
+    record = create_consent_request(
+        operation="bundle:task_create",
+        reason="(test)",
+        risk="moderate",
+        default_ttl=15,
+        requester="gateway:task_create",
+        context={"capability": "task_create", "operations": ["tasks.create_task"]},
+    )
+    nid = record["notification_id"]
+
+    resolve_consent_request(
+        nid, approved=True, mode="temporary", ttl_minutes=15,
+    )
+
+    # Individual op grant was written...
+    assert _cache.is_granted("tasks.create_task") is True
+    # ...but no workflow_class grant for "task_create" exists.
+    assert is_workflow_authorized("task_create")[0] is False
+
+
+def test_resolve_dismisses_other_surfaces(cache, monkeypatch):
+    """``resolve_consent_request`` calls ``dispatcher.dismiss_others`` so
+    a notification approved on one surface disappears on the others.
+    This is the bug surfaced in the live test: Telegram approvals
+    landing after the gateway's poll exit used to leave the Obsidian
+    modal up indefinitely.
+    """
+    from work_buddy.consent import resolve_consent_request
+    from work_buddy.notifications import store, dispatcher as dispatcher_mod
+
+    nid = _seed_workflow_consent_notification("task-new")
+    # Pretend the notification was delivered to two surfaces.
+    store.mark_delivered(nid, "telegram")
+    store.mark_delivered(nid, "obsidian")
+
+    calls = []
+
+    class _FakeDispatcher:
+        @classmethod
+        def from_config(cls):
+            return cls()
+
+        def dismiss_others(self, request_id, *, responding_surface,
+                           delivered_surfaces):
+            calls.append({
+                "request_id": request_id,
+                "responding_surface": responding_surface,
+                "delivered_surfaces": list(delivered_surfaces),
+            })
+            return {"dismissed": [s for s in delivered_surfaces if s != responding_surface]}
+
+    monkeypatch.setattr(dispatcher_mod, "SurfaceDispatcher", _FakeDispatcher)
+
+    resolve_consent_request(
+        nid, approved=True, mode="temporary", ttl_minutes=15,
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["request_id"] == nid
+    # ``response.surface`` was "direct" (programmatic resolve); the
+    # helper passes that through.
+    assert calls[0]["responding_surface"] == "direct"
+    assert set(calls[0]["delivered_surfaces"]) == {"telegram", "obsidian"}

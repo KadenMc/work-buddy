@@ -1222,6 +1222,14 @@ def is_workflow_consent_active(*, session_id: str | None = None) -> bool:
 WORKFLOW_CLASS_PREFIX = "workflow_class:"
 WORKFLOW_RUN_PREFIX = "workflow_run:"
 
+# Default TTLs for the class-grant prompt choices. The gateway's
+# ``_auto_workflow_consent_request`` uses these for in-window approvals;
+# ``resolve_consent_request`` uses them for out-of-band approvals (e.g.
+# Telegram callbacks landing after the gateway's poll has exited) so the
+# two paths agree on the window the user thought they were authorizing.
+WORKFLOW_CLASS_TEMPORARY_TTL_MIN = 15      # "Allow for 15 min"
+WORKFLOW_CLASS_ALWAYS_TTL_MIN = 24 * 60    # "Allow always (this session)" = 24h
+
 
 def _workflow_class_key(workflow_name: str) -> str:
     return f"{WORKFLOW_CLASS_PREFIX}{workflow_name}"
@@ -1590,12 +1598,35 @@ def resolve_consent_request(
         # ``consent_meta.context.operations``. Doing the unbundle here
         # keeps the out-of-band approval path self-sufficient (it goes
         # through this resolve, not through ``_auto_consent_request``).
-        operations = (consent_meta.get("context") or {}).get("operations")
+        context = consent_meta.get("context") or {}
+        operations = context.get("operations")
         if isinstance(operations, list) and operations:
             grant_consent_batch(
                 operations, mode=mode, ttl_minutes=ttl_for_grant,
                 session_id=target_session,
             )
+
+        # When the notification is the workflow-consent pre-flight
+        # prompt (``context.kind == "workflow_consent"``), additionally
+        # mint the ``workflow_class:<name>`` grant. Without this, an
+        # out-of-band approval (Telegram callback landing after the
+        # gateway's poll has exited) would write no class grant and
+        # subsequent invocations of the same workflow would re-prompt
+        # within the window the user thought they had authorized.
+        if context.get("kind") == "workflow_consent" and mode in (
+            "temporary", "always",
+        ):
+            workflow_name = context.get("workflow_name")
+            if workflow_name:
+                class_ttl = (
+                    WORKFLOW_CLASS_TEMPORARY_TTL_MIN if mode == "temporary"
+                    else WORKFLOW_CLASS_ALWAYS_TTL_MIN
+                )
+                grant_workflow_class(
+                    workflow_name,
+                    ttl_minutes=class_ttl,
+                    session_id=target_session,
+                )
 
         # Dispatch callback
         dispatch_status = store.dispatch_callback(notification)
@@ -1605,6 +1636,29 @@ def resolve_consent_request(
                    + (f" | dispatch={dispatch_status}" if dispatch_status else ""))
     else:
         _audit_log("REQUEST_DENIED", operation, f"request_id={request_id}")
+
+    # Dismiss the notification on sibling surfaces. The in-window
+    # gateway / dashboard / MCP-resolve paths already do this when they
+    # receive the response synchronously; this branch covers the
+    # out-of-band approval path (Telegram callback / Obsidian-modal
+    # click landing after the in-window poll has exited) so the user
+    # doesn't see the prompt linger on the surface they didn't use.
+    # Best-effort: never fails the resolve.
+    try:
+        notif_after = store.get_notification(request_id)
+        if notif_after and notif_after.delivered_surfaces:
+            from work_buddy.notifications.dispatcher import SurfaceDispatcher
+            dispatcher = SurfaceDispatcher.from_config()
+            dispatcher.dismiss_others(
+                request_id,
+                responding_surface=response.surface,
+                delivered_surfaces=notif_after.delivered_surfaces,
+            )
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.warning(
+            "resolve_consent_request: dismiss_others failed for %s: %s",
+            request_id, exc,
+        )
 
     # Return dict for backward compatibility
     result = store.get_notification(request_id)

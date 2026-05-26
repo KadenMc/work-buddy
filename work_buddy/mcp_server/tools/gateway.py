@@ -484,8 +484,15 @@ def _auto_consent_request(
 # Slash-command launchers entering ``user_initiated()`` opt their dispatch
 # into the bypass.
 
-_WORKFLOW_CLASS_DEFAULT_TTL_MIN = 15      # "Allow for 15 min" default
-_WORKFLOW_CLASS_ALWAYS_TTL_MIN = 24 * 60  # "Allow always (this session)" = 24h
+# Class-grant TTLs are sourced from ``work_buddy.consent`` so that the
+# in-window prompt path (this module) and the out-of-band resolve path
+# (``resolve_consent_request``) agree on the window each affordance maps
+# to. Reassigning at module import keeps the prompt-rendering code below
+# tidy without introducing a second source of truth.
+from work_buddy.consent import (
+    WORKFLOW_CLASS_TEMPORARY_TTL_MIN as _WORKFLOW_CLASS_DEFAULT_TTL_MIN,
+    WORKFLOW_CLASS_ALWAYS_TTL_MIN as _WORKFLOW_CLASS_ALWAYS_TTL_MIN,
+)
 
 
 def _is_workflow_class_authorized(
