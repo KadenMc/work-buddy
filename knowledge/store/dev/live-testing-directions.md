@@ -45,6 +45,27 @@ A good live test:
 
 When the change is in the consent / notification layer, the **handoff task creation** is often the perfect test driver: it requires moderate-risk consent (`tasks.create_task`, `obsidian.write_file`), it's a real piece of work the user wants saved, and it exercises the full consent prompt → response → grant → execution flow.
 
+## When the test is verifying a bug fix
+
+A live test can have one of two motivations: **validate new behavior** (a feature being added) or **verify a bug fix** (something that was broken now works). These differ in what counts as success, and confusing them is how fix verifications quietly turn into feature smoke-tests that pass for the wrong reason.
+
+This subsection applies *only* when the test exists because a bug was diagnosed and a fix was applied. If the test is for a green-field feature, skip ahead.
+
+A fix verification needs three things on top of the standard protocol:
+
+1. **A reproduction of the broken behavior** — captured as a one-sentence assertion of what *would have happened* without the fix. Make it concrete and falsifiable: 'Without the fix, calling `task_create` while grants exist in the agent DB would still raise `ConsentRequired` because the decorator reads the bootstrap session DB'. Not 'consent didn't work right'.
+
+2. **A delta assertion** — what observation, specifically, distinguishes the fixed code from the broken code. The delta should be visible at the surface the test exercises. Examples:
+   - 'Same operation now succeeds where it previously raised ConsentRequired.'
+   - 'The duplicate notification that fired pre-fix no longer fires.'
+   - 'Audit log line carries `via=originating_session` where it carried `via=none` pre-fix.'
+
+3. **Honest framing of confidence** — a green test result is necessary but not sufficient to declare the fix correct. State explicitly what the test did NOT cover (other code paths, race conditions, edge cases) so the user can decide whether more verification is wanted.
+
+If the broken state is easily reproducible (e.g. by NOT restarting the MCP server to pick up the fix, or by reverting one file), running the test once against the broken state and once against the fixed state is the gold standard. It rules out 'the test passed for a reason unrelated to the fix.' This is heavyweight, though — only worth doing when the fix is subtle or the failure mode was hard to diagnose.
+
+If the broken state is not easily reproducible, lean harder on the delta assertion: state in advance what behavior would prove the fix didn't actually work, and watch for that. A test that 'passes' but can't articulate what failure would look like isn't proving anything.
+
 ## The standard four-phase live test
 
 Phase 1. **Pre-check (agent)**
