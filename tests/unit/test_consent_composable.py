@@ -860,3 +860,173 @@ def test_list_consents_routes_to_named_session(cache, tmp_path, monkeypatch):
     other = list_consents(agent_session_id="other-session-id")
     assert "other.op" in other
     assert other["other.op"]["mode"] == "always"
+
+
+# ---------------------------------------------------------------------------
+# finalize_consent_response — the helper that surfaces with their own
+# response-recording paths (Telegram inline buttons, /reply command) call
+# after ``respond_to_notification``. Until this helper existed, Telegram
+# out-of-band approvals recorded the response but never wrote any
+# consent grant — the "Allow for 15 min" window was a dead promise.
+# ---------------------------------------------------------------------------
+
+
+def _seed_responded_workflow_consent(workflow_name: str, choice: str = "temporary"):
+    """Helper: create a workflow-consent notification AND record a
+    Telegram-shaped response on it. Mimics the state Telegram's
+    ``on_button`` leaves the notification in after ``respond_to_notification``.
+    """
+    from work_buddy.consent import create_consent_request
+    from work_buddy.notifications.store import respond_to_notification
+    from work_buddy.notifications.models import StandardResponse, ResponseType
+    record = create_consent_request(
+        operation=f"workflow:{workflow_name}",
+        reason="(test) authorize this workflow?",
+        risk="moderate",
+        default_ttl=15,
+        requester=f"gateway:workflow:{workflow_name}",
+        context={
+            "kind": "workflow_consent",
+            "workflow_name": workflow_name,
+            "operation_id": "op_test",
+            "consent_ops": ["tasks.create_task"],
+        },
+    )
+    nid = record["notification_id"]
+    respond_to_notification(
+        nid,
+        StandardResponse(
+            response_type=ResponseType.CHOICE.value,
+            value=choice,
+            raw={"callback_data": f"{nid[:8]}:{choice}", "telegram_message_id": 1},
+            surface="telegram",
+        ),
+    )
+    return nid
+
+
+def test_finalize_workflow_consent_mints_class_grant_from_recorded_response(cache):
+    """``finalize_consent_response`` reads the already-recorded response
+    and mints the workflow_class grant — the path Telegram's
+    ``on_button`` exercises."""
+    from work_buddy.consent import (
+        finalize_consent_response, is_workflow_authorized,
+    )
+    nid = _seed_responded_workflow_consent("task-new", choice="temporary")
+
+    # Sanity: no class grant before finalize.
+    assert is_workflow_authorized("task-new")[0] is False
+
+    out = finalize_consent_response(nid)
+    assert out["status"] == "approved"
+    assert out["mode"] == "temporary"
+    assert out["operation"] == "workflow:task-new"
+
+    ok, via = is_workflow_authorized("task-new")
+    assert ok is True
+    assert via == "class"
+
+
+def test_finalize_workflow_consent_always_mode_uses_24h_ttl(cache):
+    from work_buddy.consent import (
+        finalize_consent_response, is_workflow_authorized,
+    )
+    nid = _seed_responded_workflow_consent("task-new", choice="always")
+
+    finalize_consent_response(nid)
+
+    ok, via = is_workflow_authorized("task-new")
+    assert ok is True
+    assert via == "class"
+
+
+def test_finalize_workflow_consent_once_writes_no_class_grant(cache):
+    from work_buddy.consent import (
+        finalize_consent_response, is_workflow_authorized,
+    )
+    nid = _seed_responded_workflow_consent("task-new", choice="once")
+
+    finalize_consent_response(nid)
+
+    # "once" doesn't mint a class grant — only the run grant covers the run.
+    ok, _ = is_workflow_authorized("task-new")
+    assert ok is False
+
+
+def test_finalize_returns_no_response_when_unanswered(cache):
+    from work_buddy.consent import (
+        create_consent_request, finalize_consent_response,
+    )
+    record = create_consent_request(
+        operation="workflow:task-new",
+        reason="(test)", risk="moderate", default_ttl=15,
+        requester="gateway:workflow:task-new",
+        context={"kind": "workflow_consent", "workflow_name": "task-new"},
+    )
+    out = finalize_consent_response(record["notification_id"])
+    assert out["status"] == "no_response"
+
+
+def test_finalize_returns_not_found_for_unknown_id(cache):
+    from work_buddy.consent import finalize_consent_response
+    out = finalize_consent_response("req_doesnotexist")
+    assert out["status"] == "not_found"
+
+
+def test_finalize_capability_bundle_writes_individual_op_grants(cache):
+    """For a capability-bundle consent (the ``bundle:<cap>`` shape), the
+    helper grants each underlying op so the ``@requires_consent``
+    decorators (which check individual op names) pass."""
+    from work_buddy.consent import (
+        create_consent_request, finalize_consent_response, _cache,
+    )
+    from work_buddy.notifications.store import respond_to_notification
+    from work_buddy.notifications.models import StandardResponse, ResponseType
+    record = create_consent_request(
+        operation="bundle:task_create",
+        reason="(test)", risk="moderate", default_ttl=15,
+        requester="gateway:task_create",
+        context={"capability": "task_create", "operations": ["tasks.create_task"]},
+    )
+    nid = record["notification_id"]
+    respond_to_notification(
+        nid,
+        StandardResponse(
+            response_type=ResponseType.CHOICE.value, value="temporary",
+            raw={}, surface="telegram",
+        ),
+    )
+
+    finalize_consent_response(nid)
+
+    assert _cache.is_granted("tasks.create_task") is True
+
+
+def test_finalize_idempotent_on_repeated_calls(cache):
+    """Calling ``finalize_consent_response`` twice for the same
+    notification is a no-op the second time — the grant write uses
+    INSERT OR REPLACE, so no spurious state changes."""
+    from work_buddy.consent import (
+        finalize_consent_response, is_workflow_authorized,
+    )
+    nid = _seed_responded_workflow_consent("task-new", choice="temporary")
+
+    out_1 = finalize_consent_response(nid)
+    out_2 = finalize_consent_response(nid)
+
+    assert out_1["status"] == "approved"
+    assert out_2["status"] == "approved"  # still approved on re-read
+    assert is_workflow_authorized("task-new")[0] is True
+
+
+def test_finalize_denied_writes_no_grants(cache):
+    from work_buddy.consent import (
+        finalize_consent_response, is_workflow_authorized,
+    )
+    nid = _seed_responded_workflow_consent("task-new", choice="deny")
+
+    out = finalize_consent_response(nid)
+    assert out["status"] == "denied"
+
+    ok, _ = is_workflow_authorized("task-new")
+    assert ok is False

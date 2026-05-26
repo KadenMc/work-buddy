@@ -949,6 +949,20 @@ async def cmd_reply(
 
         # Record the response
         notification = respond_to_notification(notification_id, resp)
+
+        # When the notification is a consent prompt, translate the
+        # response into actual grants. ``respond_to_notification`` only
+        # records the choice — the grant-writing lives in the consent
+        # layer. See ``on_button`` for the rationale.
+        try:
+            from work_buddy.consent import finalize_consent_response
+            finalize_consent_response(notification_id)
+        except Exception as exc:
+            logger.warning(
+                "finalize_consent_response failed for %s: %s",
+                notification_id, exc,
+            )
+
         dispatch_callback(notification)
 
         # Dismiss on other surfaces
@@ -1066,6 +1080,24 @@ async def on_button(
             surface="telegram",
         )
         notification = respond_to_notification(notification_id, response)
+
+        # When the notification is a consent prompt, translate the
+        # response into actual consent grants. Telegram's
+        # ``respond_to_notification`` flow does not pass through
+        # ``resolve_consent_request`` (the consent-request resolver
+        # the other surfaces use), so without this call the grant
+        # never lands for out-of-band Telegram approvals — the
+        # ``Allow for 15 min`` window the user thought they
+        # authorized never gets a corresponding grant row, and the
+        # next invocation of the same workflow re-prompts.
+        try:
+            from work_buddy.consent import finalize_consent_response
+            finalize_consent_response(notification_id)
+        except Exception as exc:
+            logger.warning(
+                "finalize_consent_response failed for %s: %s",
+                notification_id, exc,
+            )
 
         # Dispatch callback if configured
         dispatch_callback(notification)

@@ -1539,6 +1539,124 @@ def create_consent_request(
     return result
 
 
+def finalize_consent_response(request_id: str) -> dict:
+    """Write consent grants from an already-recorded notification response.
+
+    Translates the response that ``store.respond_to_notification`` (or a
+    surface handler like Telegram's ``on_button``) wrote onto the
+    notification into the actual consent grants in the appropriate
+    session DB.
+
+    Surfaces whose response-recording paths bypass
+    ``resolve_consent_request`` (notably Telegram inline buttons —
+    ``work_buddy/telegram/handlers.py:on_button``) call this from the
+    same handler that records the response, AFTER
+    ``respond_to_notification``. ``resolve_consent_request`` calls it
+    internally; do not call both for the same notification (the second
+    call is a no-op for the grant write because the underlying SQL is
+    ``INSERT OR REPLACE``, but it would emit a duplicate audit line).
+
+    Does NOT record the response, dispatch the callback, or dismiss
+    sibling surfaces — each surface's existing handler already owns
+    those concerns. This function does exactly one thing: write the
+    grants the response calls for.
+
+    Returns ``{"status": "approved"|"denied"|"no_response"|"not_found",
+    "request_id": ..., "mode": ..., "operation": ...}``.
+    """
+    from work_buddy.notifications import store
+
+    notification = store.get_notification(request_id)
+    if notification is None:
+        return {"status": "not_found", "request_id": request_id}
+    response = notification.response
+    if not response:
+        return {"status": "no_response", "request_id": request_id}
+
+    # Response may be a StandardResponse or a dict (in-store form).
+    if hasattr(response, "value"):
+        choice = response.value
+    elif isinstance(response, dict):
+        choice = response.get("value", "deny")
+    else:
+        choice = str(response)
+    # Unwrap dashboard's ``{"phase": "generic", "value": "..."}`` shape.
+    if isinstance(choice, dict) and "value" in choice:
+        choice = choice["value"]
+
+    approved = choice != "deny"
+    mode = choice if approved else None
+
+    consent_meta = (notification.custom_template or {}).get(
+        "consent_meta", {},
+    )
+    operation = consent_meta.get(
+        "operation", notification.title.removeprefix("Consent: "),
+    )
+    default_ttl = consent_meta.get("default_ttl", 5)
+    target_session = notification.callback_session_id
+
+    if not approved:
+        _audit_log("REQUEST_DENIED", operation, f"request_id={request_id}")
+        return {
+            "status": "denied",
+            "request_id": request_id,
+            "operation": operation,
+        }
+
+    # Approved: write grants.
+    ttl_for_grant = default_ttl if mode == "temporary" else None
+
+    grant_consent(
+        operation, mode=mode, ttl_minutes=ttl_for_grant,
+        session_id=target_session,
+    )
+
+    context = consent_meta.get("context") or {}
+
+    # Bundle unbundle: grant each underlying op so the
+    # ``@requires_consent`` decorators (which check individual op names,
+    # not the bundle label) actually pass.
+    operations = context.get("operations")
+    if isinstance(operations, list) and operations:
+        grant_consent_batch(
+            operations, mode=mode, ttl_minutes=ttl_for_grant,
+            session_id=target_session,
+        )
+
+    # Workflow-class grant when the notification is a workflow-consent
+    # pre-flight prompt. Without this, an out-of-band approval (Telegram
+    # or Obsidian-modal callback landing after the gateway's poll has
+    # exited) would write no class grant and subsequent invocations of
+    # the same workflow would re-prompt within the window the user
+    # thought they had authorized.
+    if context.get("kind") == "workflow_consent" and mode in (
+        "temporary", "always",
+    ):
+        workflow_name = context.get("workflow_name")
+        if workflow_name:
+            class_ttl = (
+                WORKFLOW_CLASS_TEMPORARY_TTL_MIN if mode == "temporary"
+                else WORKFLOW_CLASS_ALWAYS_TTL_MIN
+            )
+            grant_workflow_class(
+                workflow_name, ttl_minutes=class_ttl,
+                session_id=target_session,
+            )
+
+    _audit_log(
+        "REQUEST_APPROVED", operation,
+        f"request_id={request_id} | mode={mode}",
+    )
+
+    return {
+        "status": "approved",
+        "request_id": request_id,
+        "mode": mode,
+        "operation": operation,
+    }
+
+
 def resolve_consent_request(
     request_id: str,
     approved: bool,
@@ -1583,79 +1701,25 @@ def resolve_consent_request(
     # Record the response
     store.respond_to_notification(request_id, response)
 
-    # Extract consent metadata
-    consent_meta = (notification.custom_template or {}).get("consent_meta", {})
-    operation = consent_meta.get("operation", notification.title.removeprefix("Consent: "))
-    default_ttl = consent_meta.get("default_ttl", 5)
+    # Write grants via the shared helper (one source of truth for the
+    # response → grant translation, also used by surfaces whose own
+    # response-recording paths bypass this function — e.g. Telegram's
+    # ``on_button``). The helper emits its own ``REQUEST_APPROVED`` /
+    # ``REQUEST_DENIED`` audit lines.
+    finalize_result = finalize_consent_response(request_id)
+    operation = finalize_result.get("operation", "")
 
     dispatch_status = None
-
     if approved:
-        # Write the consent grant
-        ttl = ttl_minutes or default_ttl
-        ttl_for_grant = ttl if mode == "temporary" else None
-
-        # Route the grant to the ORIGINATING agent's session DB when this
-        # resolve runs in a different process from the agent that
-        # requested consent (e.g. the sidecar handling an out-of-band
-        # consent_grant message). The notification record carries
-        # ``callback_session_id`` set by the gateway from the agent's
-        # ``WORK_BUDDY_SESSION_ID`` at request creation.
-        # ``ConsentCache.grant`` already supports the keyword for
-        # workflow blanket grants — same plumbing.
-        target_session = notification.callback_session_id
-
-        grant_consent(
-            operation, mode=mode, ttl_minutes=ttl_for_grant,
-            session_id=target_session,
-        )
-
-        # When the operation is a bundle label (the gateway uses
-        # ``bundle:<capability>`` as a notification label for multi-op
-        # consent), also grant each individual op the decorators
-        # actually check. The bundle key alone satisfies no
-        # ``@requires_consent`` gate; the underlying ops live in
-        # ``consent_meta.context.operations``. Doing the unbundle here
-        # keeps the out-of-band approval path self-sufficient (it goes
-        # through this resolve, not through ``_auto_consent_request``).
-        context = consent_meta.get("context") or {}
-        operations = context.get("operations")
-        if isinstance(operations, list) and operations:
-            grant_consent_batch(
-                operations, mode=mode, ttl_minutes=ttl_for_grant,
-                session_id=target_session,
-            )
-
-        # When the notification is the workflow-consent pre-flight
-        # prompt (``context.kind == "workflow_consent"``), additionally
-        # mint the ``workflow_class:<name>`` grant. Without this, an
-        # out-of-band approval (Telegram callback landing after the
-        # gateway's poll has exited) would write no class grant and
-        # subsequent invocations of the same workflow would re-prompt
-        # within the window the user thought they had authorized.
-        if context.get("kind") == "workflow_consent" and mode in (
-            "temporary", "always",
-        ):
-            workflow_name = context.get("workflow_name")
-            if workflow_name:
-                class_ttl = (
-                    WORKFLOW_CLASS_TEMPORARY_TTL_MIN if mode == "temporary"
-                    else WORKFLOW_CLASS_ALWAYS_TTL_MIN
-                )
-                grant_workflow_class(
-                    workflow_name,
-                    ttl_minutes=class_ttl,
-                    session_id=target_session,
-                )
-
-        # Dispatch callback
+        # Dispatch the notification's optional ``callback`` (e.g.
+        # session resume). Done outside ``finalize_consent_response``
+        # because not every surface that records a response wants the
+        # callback fired here — Telegram's handler dispatches its
+        # own. ``resolve_consent_request`` is used by the dashboard
+        # endpoint, the MCP ``consent_request_resolve`` op, and the
+        # sidecar's Obsidian-modal callback path, all of which expect
+        # the dispatch to happen here.
         dispatch_status = store.dispatch_callback(notification)
-
-        _audit_log("REQUEST_APPROVED", operation,
-                   f"request_id={request_id} | mode={mode}"
-                   + (f" | dispatch={dispatch_status}" if dispatch_status else ""))
-    else:
-        _audit_log("REQUEST_DENIED", operation, f"request_id={request_id}")
 
     # Dismiss the notification on sibling surfaces. The in-window
     # gateway / dashboard / MCP-resolve paths already do this when they
