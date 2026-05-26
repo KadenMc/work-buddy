@@ -1,7 +1,7 @@
 ---
 name: Conversation Observability Summary Get
 kind: capability
-description: Look up the cached tldr + topic summaries for one session_id. Returns None when nothing has been summarized yet.
+description: 'DEPRECATED ALIAS — use `session_summary_get` instead. Same callable, shorter canonical name. Look up the cached tldr + topic summaries for one session_id; returns None when nothing has been summarized yet.'
 capability_name: conversation_observability_summary_get
 category: conversation_observability
 op: op.wb.conversation_observability_summary_get
@@ -17,6 +17,7 @@ tags:
 - observability
 - summary
 - get
+- deprecated
 aliases:
 - session summary lookup
 - get session tldr
@@ -24,3 +25,7 @@ aliases:
 parents:
 - conversation_observability
 ---
+
+**Deprecated alias of [`session_summary_get`](../observability/session_summary_get).** Both names currently bind to the same Python callable (`legacy_row_from_session_id`); the long namespace prefix is preserved as a back-compat alias. Reach for `session_summary_get` in new code.
+
+Returns the legacy row dict: `{session_id, tldr, topic_count, generated_at, model, profile, backend, prompt_version, summary_schema_version, selection_version, cache_version, status, error, topics: [...]}`. For the topic-tree alone, an agent can also use `drill_tree(domain="summary", node_id=f"conversation_session:{sid}", depth="summary")` — that's the canonical agent-facing path for navigating summary trees.

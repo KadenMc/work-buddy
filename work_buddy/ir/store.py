@@ -380,29 +380,55 @@ def load_vectors(
 # ---------------------------------------------------------------------------
 
 def _get_source(source_name: str) -> Source:
-    """Import and instantiate a source adapter by name."""
-    if source_name == "conversation":
+    """Import and instantiate a source adapter by name.
+
+    The factory map below keeps each adapter's import lazy so the IR layer
+    doesn't pull in every backend at import time. Aliases (e.g. ``"knowledge"``
+    pointing at ``DocsSource``) keep the universal ``find`` verb's
+    ergonomics — agents can reach for the source name that matches their
+    mental model.
+    """
+
+    def _conversation():
         from work_buddy.ir.sources.conversations import ConversationSource
         return ConversationSource()
-    if source_name == "chrome":
+
+    def _chrome():
         from work_buddy.ir.sources.chrome import ChromeSource
         return ChromeSource()
-    if source_name == "projects":
+
+    def _projects():
         from work_buddy.ir.sources.projects import ProjectsSource
         return ProjectsSource()
-    if source_name == "docs":
+
+    def _docs():
         from work_buddy.ir.sources.docs import DocsSource
         return DocsSource()
-    if source_name == "task_note":
+
+    def _task_note():
         from work_buddy.ir.sources.task_notes import TaskNoteSource
         return TaskNoteSource()
-    if source_name == "summary":
+
+    def _summary():
         from work_buddy.ir.sources.summary import SummarySource
         return SummarySource()
-    raise ValueError(
-        f"Unknown source: {source_name}. "
-        "Available: conversation, chrome, projects, docs, task_note, summary"
-    )
+
+    factories = {
+        "conversation": _conversation,
+        "chrome": _chrome,
+        "projects": _projects,
+        "docs": _docs,
+        "task_note": _task_note,
+        "summary": _summary,
+    }
+
+    factory = factories.get(source_name)
+    if factory is None:
+        raise ValueError(
+            f"Unknown source: {source_name}. "
+            f"Available: {', '.join(sorted(factories))}"
+        )
+    return factory()
 
 
 def build_index(

@@ -81,12 +81,14 @@ def conversation_observability_refresh(
 
 
 def _register() -> None:
+    from work_buddy.conversation_observability.legacy_row_adapter import (
+        legacy_row_from_session_id,
+    )
     from work_buddy.conversation_observability.sessions import (
         list_observed_sessions,
         query_observed_session,
     )
     from work_buddy.conversation_observability.summaries import (
-        query_session_summary,
         refresh_session_summaries,
     )
     from work_buddy.conversation_observability.writes import uncommitted_report
@@ -98,8 +100,18 @@ def _register() -> None:
     register_op("op.wb.conversation_observability_list", list_observed_sessions)
     register_op("op.wb.conversation_observability_summarize",
                 refresh_session_summaries)
+    # Canonical name for the legacy-row read. Both op IDs bind the same
+    # callable so existing `conversation_observability_summary_get` callers
+    # keep working; the capability declaration for the long-namespace name
+    # is marked as a deprecated alias. ``replace=True`` is set on the new
+    # ops so a registry reload (importlib.reload via load_builtin_ops)
+    # re-binds cleanly rather than crashing on the already-registered
+    # names — important under pytest collection when test ordering
+    # triggers the reload path.
+    register_op("op.wb.session_summary_get",
+                legacy_row_from_session_id, replace=True)
     register_op("op.wb.conversation_observability_summary_get",
-                query_session_summary)
+                legacy_row_from_session_id, replace=True)
 
 
 _register()
