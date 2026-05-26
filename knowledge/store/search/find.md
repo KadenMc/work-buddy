@@ -76,6 +76,10 @@ Universal structured IR search. Two return modes:
 
 Sources without a registered drill handler get an empty `drilled` block and a DEBUG log on `drill=True`. Register a new handler via `work_buddy.summarization.drill_registry.register_drill_handler(source, handler)`.
 
+## Searching the knowledge store
+
+`find(source="docs", query="...")` ranks knowledge-store units (`.md` files under `knowledge/store/`). The `docs` IR source is the structured-result alternative to `agent_docs(query=...)` — same backing data, BM25+dense ranking, plus the cross-source composability that `find` provides. Use `agent_docs(query=...)` when you want the prose-formatted results with the full unit lookup conveniences (path matching, depth filters, recursive expansion); use `find(source="docs")` when you need the structured hit list (e.g., chaining into `walk(domain="knowledge", node_id=hit_path)` for full-content navigation).
+
 ## Requires the IR index
 
-Run `ir_index(action="build", source=...)` if a source's index is cold. The `summary`, `conversation`, and `task_note` sources are kept fresh by sidecar crons.
+Run `ir_index(action="build", source=...)` if a source's index is cold. The `summary`, `conversation`, `task_note`, and `docs` sources are kept fresh by sidecar crons (`summary-index-rebuild`, `ir-index-rebuild`, `task-note-index`, `docs-index-rebuild`).

@@ -65,3 +65,9 @@ aliases:
 parents:
 - context
 ---
+
+## Structured-result alternative — `find(source="docs")`
+
+`agent_docs` returns prose-formatted results with the full unit lookup conveniences (path matching, depth filters, recursive `<<wb:...>>` expansion). For *structured* (dict-shaped) results — e.g. when chaining into [`walk`](../disclosure/walk) for full-content navigation, or building UI lists — reach for [`find`](../search/find)`(source="docs", query="...")` instead. Same backing data (the unified knowledge store); BM25 + dense ranking; structured hit list.
+
+The `docs` IR source is kept fresh by the `docs-index-rebuild` sidecar job (every 15 minutes). Both `agent_docs` and `find(source="docs")` read from the same store; the difference is in the return shape and dispatch behaviour.
