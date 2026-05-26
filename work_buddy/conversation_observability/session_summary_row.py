@@ -1,27 +1,28 @@
-"""Adapter from the summarization framework's per-node store to the
-legacy `session_summaries` + `topic_summaries` row shape consumed by:
+"""Canonical accessor for the `session_summaries` + `topic_summaries`
+row shape.
+
+Returns one Python dict per session, assembled from the summarization
+framework's per-node store. Consumed by:
 
 - The dashboard `GET /api/chats/<sid>/topics` endpoint.
 - The `claude_session_summary` context collector's `include_tldr` branch.
-- The MCP op `session_summary_get` (and its deprecated alias
+- The MCP op `session_summary_get` (and its alias
   `conversation_observability_summary_get`).
 
-This module is the canonical Python entry point for the legacy row shape.
-The pre-Phase-3 `work_buddy.conversation_observability.summaries.query_session_summary`
-function still exists as a compat shim and delegates here.
+The compatibility shims in `summaries.py` (`query_session_summary`,
+`query_topic_summaries`) wrap the same logic and delegate here for new
+code.
 
-**Why not `drill_tree`?** The agent-facing
-`drill_tree(domain="summary", ...)` carries `TreeView.ChildRef` with only
-`node_id` / `title` / `summary_text` — child `extra` (where `span_start`,
-`span_end`, `keywords` live) is intentionally stripped to keep the
-tree-navigation contract narrow. The legacy row needs all three of those
-per-topic fields, so this adapter reads `summarization` storage directly
-via `store.load` + `store.load_item_meta`. Callers reaching for *agent*
-tree navigation use `drill_tree`; this adapter is a Python-internal
-shape transform that needs more than the tree view exposes.
-
-The returned dict is byte-equivalent (keys and value types) to what the
-legacy `query_session_summary` produced.
+**Why this reads `summarization` storage directly, not `drill_tree`:**
+the agent-facing `drill_tree(domain="summary", ...)` returns
+`TreeView.ChildRef` carrying only `node_id` / `title` / `summary_text` —
+each child's `extra` dict (which holds `span_start`, `span_end`,
+`keywords`) is intentionally stripped to keep the tree-navigation
+contract narrow. The row shape these consumers expect needs all three
+per-topic fields, so this module reads `store.load` + `store.load_item_meta`
+directly. Callers reaching for *agent* tree navigation use `drill_tree`;
+this module is a Python-internal shape transform that needs more than
+the tree view exposes.
 """
 
 from __future__ import annotations
@@ -32,12 +33,11 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
-def legacy_row_from_session_id(session_id: str) -> dict[str, Any] | None:
-    """Return the legacy `session_summaries` row dict (with embedded
+def session_summary_row(session_id: str) -> dict[str, Any] | None:
+    """Return the full `session_summaries` row dict (with embedded
     `topics`) for one session, or `None` if the session has no summary.
 
-    The shape mirrors what `conversation_observability.summaries.query_session_summary`
-    has produced since PR #130:
+    Shape:
 
         {
           "session_id": str,
@@ -93,7 +93,7 @@ def legacy_row_from_session_id(session_id: str) -> dict[str, Any] | None:
     node = store.load(session_id)
     tldr = node.summary if node is not None else ""
 
-    topics = _legacy_topics_from_node(session_id, node)
+    topics = _topics_from_node(session_id, node)
 
     return {
         "session_id": session_id,
@@ -113,12 +113,11 @@ def legacy_row_from_session_id(session_id: str) -> dict[str, Any] | None:
     }
 
 
-def legacy_topics_from_session_id(session_id: str) -> list[dict[str, Any]]:
-    """Return just the topic-list portion of the legacy row.
+def session_topics(session_id: str) -> list[dict[str, Any]]:
+    """Return just the topic-list portion of the row.
 
-    Same shape as the `topics` entry in `legacy_row_from_session_id`'s
-    return. Provided as a convenience for callers that only want the
-    topic list (matches the pre-Phase-3 `query_topic_summaries` shape).
+    Same shape as the `topics` entry in `session_summary_row`'s return.
+    Provided as a convenience for callers that only want the topic list.
     """
     from work_buddy.conversation_observability.summarizer_binding import (
         get_session_summarizer,
@@ -128,7 +127,7 @@ def legacy_topics_from_session_id(session_id: str) -> list[dict[str, Any]]:
     node = summarizer.store.load(session_id)
     if node is None:
         return []
-    return _legacy_topics_from_node(session_id, node)
+    return _topics_from_node(session_id, node)
 
 
 # ---------------------------------------------------------------------------
@@ -136,7 +135,7 @@ def legacy_topics_from_session_id(session_id: str) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
-def _legacy_topics_from_node(
+def _topics_from_node(
     session_id: str,
     node: Any,
 ) -> list[dict[str, Any]]:

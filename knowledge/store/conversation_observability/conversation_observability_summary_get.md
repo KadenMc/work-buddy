@@ -26,6 +26,6 @@ parents:
 - conversation_observability
 ---
 
-**Deprecated alias of [`session_summary_get`](../observability/session_summary_get).** Both names currently bind to the same Python callable (`legacy_row_from_session_id`); the long namespace prefix is preserved as a back-compat alias. Reach for `session_summary_get` in new code.
+**Alias of [`session_summary_get`](session_summary_get).** Both names bind to the same Python callable (`session_summary_row`); the long namespace prefix is preserved for back-compat. Reach for `session_summary_get` in new code.
 
-Returns the legacy row dict: `{session_id, tldr, topic_count, generated_at, model, profile, backend, prompt_version, summary_schema_version, selection_version, cache_version, status, error, topics: [...]}`. For the topic-tree alone, an agent can also use `drill_tree(domain="summary", node_id=f"conversation_session:{sid}", depth="summary")` — that's the canonical agent-facing path for navigating summary trees.
+Returns the row dict: `{session_id, tldr, topic_count, generated_at, model, profile, backend, prompt_version, summary_schema_version, selection_version, cache_version, status, error, topics: [...]}`. For the topic-tree alone, an agent can also use `drill_tree(domain="summary", node_id=f"conversation_session:{sid}", depth="summary")` — that's the canonical agent-facing path for navigating summary trees.
