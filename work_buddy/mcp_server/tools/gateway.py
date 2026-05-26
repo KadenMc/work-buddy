@@ -282,22 +282,42 @@ def _invoke_with_session(callable_, session_id, /, **kwargs):
         reset_originating_session(token)
 
 
-def _check_missing_consent(operations: list[str]) -> list[str]:
+def _check_missing_consent(
+    operations: list[str],
+    agent_session_id: str | None = None,
+) -> list[str]:
     """Return operations from the list that lack a valid consent grant.
 
     Each operation's ``consent_weight`` (from its ``@requires_consent``
     metadata) is consulted so that ``"high"`` weight ops are NOT counted
     as granted via a workflow blanket — pre-flight must surface them for
     individual prompting even when a workflow grant is live.
+
+    ``agent_session_id`` pins the originating-session ContextVar around
+    the check so ``is_granted`` resolves to the agent's consent DB
+    rather than the MCP server's bootstrap session DB. Without it the
+    pre-flight re-prompts for grants that already exist in the agent's
+    session.
     """
     from work_buddy.consent import _cache, get_consent_metadata
-    missing: list[str] = []
-    for op in operations:
-        meta = get_consent_metadata(op) or {}
-        weight = meta.get("consent_weight", "low")
-        if not _cache.is_granted(op, consent_weight=weight):
-            missing.append(op)
-    return missing
+    if agent_session_id:
+        from work_buddy.agent_session import (
+            set_originating_session, reset_originating_session,
+        )
+        _orig_token = set_originating_session(agent_session_id)
+    else:
+        _orig_token = None
+    try:
+        missing: list[str] = []
+        for op in operations:
+            meta = get_consent_metadata(op) or {}
+            weight = meta.get("consent_weight", "low")
+            if not _cache.is_granted(op, consent_weight=weight):
+                missing.append(op)
+        return missing
+    finally:
+        if _orig_token is not None:
+            reset_originating_session(_orig_token)
 
 
 def _auto_consent_request(
@@ -1461,9 +1481,12 @@ def register_tools(mcp: FastMCP) -> None:
         # --- Pre-flight consent check ---
         # If the capability declares consent_operations, check upfront
         # and request all missing consents in a single bundled notification.
+        # Pass _agent_sid so the check looks in the agent's session DB
+        # (where grants from prior auto-consent flows landed), not the
+        # MCP server's bootstrap session DB.
         if entry.consent_operations:
             missing = await asyncio.to_thread(
-                _check_missing_consent, entry.consent_operations,
+                _check_missing_consent, entry.consent_operations, _agent_sid,
             )
             if missing:
                 consent_result = await asyncio.to_thread(
@@ -2214,7 +2237,9 @@ def retry_operation(operation_id: str) -> dict[str, Any]:
     # will look for them.
     _retry_session_id = record.get("originating_session_id")
     if record["type"] != "workflow" and isinstance(entry, registry.Capability) and entry.consent_operations:
-        missing = _check_missing_consent(entry.consent_operations)
+        missing = _check_missing_consent(
+            entry.consent_operations, _retry_session_id,
+        )
         if missing:
             consent_result = _auto_consent_request(
                 missing, cap_name, operation_id,
