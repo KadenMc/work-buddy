@@ -1,0 +1,102 @@
+---
+name: Live Testing Directions
+kind: directions
+description: How to drive a live end-to-end test of an in-progress code change — distinct from unit tests; verifies wiring across MCP server, sidecar, and surfaces with the user in the loop.
+trigger: user invokes /wb-dev-live-testing or asks to verify a change live
+command: wb-dev-live-testing
+tags:
+- dev
+- live
+- testing
+- verification
+- directions
+aliases:
+- live test
+- end-to-end
+- verify in MCP
+- exercise the surface
+parents:
+- dev
+---
+
+When the user invokes `/wb-dev-live-testing`, drive an end-to-end live test of an in-progress code change. Distinct from automated testing (`pytest`) — this is real MCP / sidecar / surfaces actually exercising the new code path with the user in the loop where their judgment is needed.
+
+Live testing exists because some changes only manifest correctly in a running multi-process system: anything touching FastMCP tool registration, the gateway's request handlers, surface dispatchers, sidecar message routing, or session-scoped storage. Unit tests catch logic bugs; live tests catch wiring bugs.
+
+## Two-process model — what restart picks up what
+
+work-buddy spans two long-running processes that load Python code at different times:
+
+- **Sidecar** — restarts when the user does a sidecar-only reset. Re-reads code at startup. Hosts cron jobs, the retry queue, the dashboard, the messaging service, the sidecar MCP gateway.
+- **Claude Code Desktop's MCP server** — restarts only on **Ctrl+R** in the Desktop app. This is the process that handles `wb_run` calls from the agent. Its `wb_run` and `wb_search` tool functions are frozen function references held by FastMCP at startup; module-level reloads via `mcp_registry_reload` do NOT replace them.
+
+If you change code inside `wb_run` / `wb_search` directly (e.g. the gateway's workflow pre-flight branch), only a Ctrl+R picks it up. If you change code that's *lazy-imported* by those functions (e.g. the conductor, the consent layer, capability callables), `mcp_registry_reload` plus a sidecar reset is usually enough — but Ctrl+R is the safe move that always works.
+
+Before driving any live test: confirm with the user that they have restarted whichever process owns the changed code. The user prompt 'I reset the sidecar/MCP!' typically means a sidecar reset; ask whether they also did Ctrl+R if the change touches gateway entry-point functions.
+
+## Protocol for designing the test
+
+A good live test:
+
+1. **Has one clear assertion** — what behavior, observably, distinguishes the new code from the old.
+2. **Touches the actual user-facing surface** the change affects (Telegram, Obsidian modal, dashboard, MCP tool response shape).
+3. **Specifies who does what** at each step — the agent or the user — explicitly.
+4. **Uses an operation that has real intent**, when possible. A test that doubles as work the user wanted done anyway is self-justifying and avoids 'why are we creating this test task' friction.
+
+When the change is in the consent / notification layer, the **handoff task creation** is often the perfect test driver: it requires moderate-risk consent (`tasks.create_task`, `obsidian.write_file`), it's a real piece of work the user wants saved, and it exercises the full consent prompt → response → grant → execution flow.
+
+## The standard four-phase live test
+
+Phase 1. **Pre-check (agent)**
+- Call any state-inspection capability relevant to the change (e.g. `consent_list`, `wb_status`, `agent_docs`). Verify the starting state is what the test assumes.
+
+Phase 2. **Trigger (agent)**
+- Invoke the operation under test. If it blocks waiting for a user response (consent prompt, request_send), the agent's call blocks too — make this explicit to the user: 'I'm going to call X. It will block for up to 90 seconds waiting for you. Either approve / answer on a surface, OR deliberately wait > 90 seconds so we can verify the timeout path.'
+
+Phase 3. **User action (user)**
+- Tell the user precisely what to do (which button to click, which mode to choose) AND what to observe on adjacent surfaces (does the other surface dismiss? does the dashboard update? does the audit log fire?).
+- For consent flows, the choice of mode matters: 'Allow once' tests the run-grant-only path; 'Allow for 15 min' tests the class-grant carry; 'Allow always' tests the long-TTL class grant; 'Deny' tests the rejection path.
+
+Phase 4. **Verify (agent)**
+- Re-check state (re-call the same inspection capability from Phase 1) AND check the audit log for the expected events. Relay the exact JSON / line content back to the user — never paraphrase: 'the grant landed' is not as useful as 'consent_list returned `{workflow_class:task-new: {mode: temporary, expires_at: ...}}`'.
+- If the test had a follow-up assertion (e.g. 're-running the operation should now skip the prompt'), execute that too.
+
+## Reporting
+
+After each phase, report back to the user in a tight format:
+
+```
+Phase 2: triggered task_create — blocking for up to 90s on your response
+Phase 3 (you): wait > 90s, then approve on Telegram with "Allow 5 min"
+Phase 4: consent_list shows tasks.create_task | mode=temporary | expires_at=17:54Z. Audit log: REQUEST_APPROVED, GRANTED, EXECUTED.
+```
+
+After the full test:
+
+- One-line verdict (`all checks passed` / `phase N failed: $reason`).
+- Cleanup: cancel any in-flight workflow runs, revoke any time-limited grants the test minted unless they're useful to leave for follow-up testing.
+
+## What NOT to do
+
+- **Don't skip the pre-check.** It catches stale state that would confuse the verification step.
+- **Don't paraphrase the user's observation.** If they say 'the modal disappeared', record that verbatim, don't translate to 'dismiss worked'. The translation hides ambiguity.
+- **Don't test multiple changes in one live run.** Each test verifies one assertion. If two changes need verification, run two tests; the cost is small and the diagnosis on failure is sharper.
+- **Don't use synthetic operations when a real one fits.** A test that creates a real task the user wanted saved is better than one that creates a `test_xxx` task they have to clean up.
+- **Don't manually mint grants to work around bugs DURING the test.** If the test reveals a bug, that's the test working. Report the bug; don't paper over it. (Outside the test, when you're trying to unblock the user, manual grants are fine — just don't conflate the two.)
+
+## Example: composable-consent-v1 live test
+
+The exact protocol that validated the workflow-consent pre-flight prompt and the Telegram out-of-band grant-writing:
+
+1. **Pre-check**: `consent_list` returns `{}`.
+2. **Trigger**: `wb_run("task-new")` (a moderate-risk workflow).
+3. **User**: ignore prompt for > 90s, then approve on Telegram with 'Allow for 15 min'.
+4. **Verify**:
+   - Agent receives `{status: "timeout", request_id, operation_id}` after 90s.
+   - After user's Telegram tap: Obsidian modal disappears (visual confirmation).
+   - `consent_list` shows `workflow_class:task-new` with `mode: temporary` and `expires_at: ~15 min`.
+   - Audit log shows `REQUEST_APPROVED | workflow:task-new | mode=temporary`.
+   - Follow-up: `wb_run("task-new")` again returns the first workflow step immediately (no prompt — class grant carried it).
+5. **Cleanup**: cancel the second workflow run; revoke `workflow_class:task-new` to leave a clean slate.
+
+This is a single end-to-end run that simultaneously verifies: the pre-flight prompt fires, the timeout payload is correct, out-of-band Telegram approval triggers the grant write (via `finalize_consent_response`), sibling-surface dismissal works, the class grant is queryable, and the re-run silence promise is honored.

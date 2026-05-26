@@ -1030,3 +1030,126 @@ def test_finalize_denied_writes_no_grants(cache):
 
     ok, _ = is_workflow_authorized("task-new")
     assert ok is False
+
+
+# ---------------------------------------------------------------------------
+# _auto_consent_request session routing — the bug an earlier session
+# exposed: capability-bundle consent prompts had their
+# ``callback_session_id`` set from ``os.environ.get("WORK_BUDDY_SESSION_ID")``
+# (the MCP server's bootstrap session), not from the agent's session.
+# Out-of-band approvals (Telegram callback, Obsidian-modal click after
+# the gateway's poll has exited) then mis-routed grants into the
+# bootstrap DB while the agent's DB stayed empty. The fix threads an
+# explicit ``session_id`` argument from the caller (the agent's session
+# id, resolved via ``_resolve_session(ctx)``) through to
+# ``create_consent_request``.
+# ---------------------------------------------------------------------------
+
+
+def test_auto_consent_request_routes_callback_to_explicit_session(
+    cache, monkeypatch,
+):
+    """``_auto_consent_request(session_id=<sid>)`` sets the resulting
+    notification's ``callback_session_id`` to ``<sid>``, not to the
+    process's env-var session."""
+    from work_buddy.mcp_server.tools import gateway
+
+    # Capture the args ``create_consent_request`` receives.
+    captured: dict = {}
+
+    def _fake_create(**kwargs):
+        captured.update(kwargs)
+        return {
+            "notification_id": "req_fake",
+            "request_id": "req_fake",
+            "notification_id_short": "fake1234",
+        }
+
+    monkeypatch.setattr(gateway, "create_consent_request", _fake_create, raising=False)
+    # The function imports ``create_consent_request`` from
+    # ``work_buddy.consent`` inside its body; patch that source too.
+    from work_buddy import consent as cmod
+    monkeypatch.setattr(cmod, "create_consent_request", _fake_create)
+
+    # Make the dispatcher path a no-op so the function exits fast (no
+    # 90s wait). Returning a dispatcher whose poll yields None makes
+    # _auto_consent_request return the "timeout" payload — but we
+    # don't care about its return value here, only the captured args.
+    class _NoopDispatcher:
+        @classmethod
+        def from_config(cls):
+            return cls()
+        def deliver(self, *args, **kwargs):
+            pass
+        def poll_response(self, *args, **kwargs):
+            return None
+
+    from work_buddy.notifications import dispatcher as disp_mod
+    monkeypatch.setattr(disp_mod, "SurfaceDispatcher", _NoopDispatcher)
+    # Also patch get_notification so the "delivered_surfaces" branch
+    # gracefully returns None.
+    monkeypatch.setattr(
+        "work_buddy.notifications.store.get_notification",
+        lambda nid: None,
+    )
+
+    # Force the env to a known bogus value so we can prove the
+    # function did NOT fall back to env when session_id was given.
+    monkeypatch.setenv("WORK_BUDDY_SESSION_ID", "bootstrap-bogus-sid")
+
+    gateway._auto_consent_request(
+        operations=["test.op"],
+        capability_name="test_cap",
+        op_id="op_test",
+        session_id="explicit-agent-sid",
+    )
+
+    assert captured.get("callback_session_id") == "explicit-agent-sid", (
+        f"Expected callback_session_id='explicit-agent-sid', got "
+        f"{captured.get('callback_session_id')!r}. The function must "
+        f"route to the explicit session id, not the env-var fallback."
+    )
+
+
+def test_auto_consent_request_falls_back_to_env_when_session_id_none(
+    cache, monkeypatch,
+):
+    """Back-compat: when no ``session_id`` is passed,
+    ``_auto_consent_request`` still reads the env var. Keeps any
+    legacy / direct caller that hasn't been updated working."""
+    from work_buddy.mcp_server.tools import gateway
+
+    captured: dict = {}
+
+    def _fake_create(**kwargs):
+        captured.update(kwargs)
+        return {"notification_id": "req_fake", "request_id": "req_fake"}
+
+    from work_buddy import consent as cmod
+    monkeypatch.setattr(cmod, "create_consent_request", _fake_create)
+
+    class _NoopDispatcher:
+        @classmethod
+        def from_config(cls):
+            return cls()
+        def deliver(self, *args, **kwargs):
+            pass
+        def poll_response(self, *args, **kwargs):
+            return None
+
+    from work_buddy.notifications import dispatcher as disp_mod
+    monkeypatch.setattr(disp_mod, "SurfaceDispatcher", _NoopDispatcher)
+    monkeypatch.setattr(
+        "work_buddy.notifications.store.get_notification",
+        lambda nid: None,
+    )
+    monkeypatch.setenv("WORK_BUDDY_SESSION_ID", "env-fallback-sid")
+
+    gateway._auto_consent_request(
+        operations=["test.op"],
+        capability_name="test_cap",
+        op_id="op_test",
+        # No session_id arg.
+    )
+
+    assert captured.get("callback_session_id") == "env-fallback-sid"

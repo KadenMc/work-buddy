@@ -277,6 +277,7 @@ def _auto_consent_request(
     capability_name: str,
     op_id: str,
     timeout: int = _AUTO_CONSENT_TIMEOUT,
+    session_id: str | None = None,
 ) -> dict[str, Any]:
     """Send a bundled consent request and poll for user response.
 
@@ -333,8 +334,16 @@ def _auto_consent_request(
 
     body = "\n".join(lines)
 
-    # Auto-inject session ID for callback delivery
-    callback_session_id = os.environ.get("WORK_BUDDY_SESSION_ID")
+    # Route to the agent's session DB. When ``session_id`` is None
+    # (legacy callers that haven't been updated to pass it), fall back
+    # to the process's env var — which is the MCP server's bootstrap
+    # session, NOT the agent's. That fallback is the historical
+    # behavior; for out-of-band approval paths (Telegram callback /
+    # Obsidian-modal click after the gateway's poll has exited), it
+    # mis-routes the grant to the bootstrap DB and the agent's session
+    # never sees it. Every wb_run dispatch site passes the agent's
+    # session id explicitly; the env fallback exists for back-compat.
+    callback_session_id = session_id or os.environ.get("WORK_BUDDY_SESSION_ID")
 
     # Create the consent request (uses notification substrate)
     record = create_consent_request(
@@ -459,8 +468,17 @@ def _auto_consent_request(
 
     # Always grant the individual operations.  resolve_consent_request
     # only grants the bundle name (e.g., "bundle:task_toggle"), not the
-    # individual operations the decorators actually check.
-    grant_consent_batch(operations, mode=mode, ttl_minutes=ttl)
+    # individual operations the decorators actually check. Route the
+    # grants to the same session DB the notification's
+    # ``callback_session_id`` targets, so the in-window write and the
+    # out-of-band ``finalize_consent_response`` write land in the same
+    # place. Without the explicit ``session_id``, the cache uses its
+    # default DB — which is whichever session the cache was first
+    # connected against (usually the agent's, but race-dependent).
+    grant_consent_batch(
+        operations, mode=mode, ttl_minutes=ttl,
+        session_id=callback_session_id,
+    )
 
     return {
         "status": "granted",
@@ -1422,6 +1440,7 @@ def register_tools(mcp: FastMCP) -> None:
             if missing:
                 consent_result = await asyncio.to_thread(
                     _auto_consent_request, missing, capability, op_id,
+                    _AUTO_CONSENT_TIMEOUT, _agent_sid,
                 )
                 if consent_result["status"] != "granted":
                     _complete_operation(
@@ -1470,6 +1489,7 @@ def register_tools(mcp: FastMCP) -> None:
                 # Auto-request consent for this unanticipated gate
                 consent_result = await asyncio.to_thread(
                     _auto_consent_request, [exc.operation], capability, op_id,
+                    _AUTO_CONSENT_TIMEOUT, _agent_sid,
                 )
                 if consent_result["status"] != "granted":
                     _complete_operation(
@@ -2152,10 +2172,18 @@ def retry_operation(operation_id: str) -> dict[str, Any]:
 
     # Pre-flight consent for capabilities with declared operations
     cap_name = record["name"]
+    # Retry path: the original op record carries the agent session id
+    # that requested the work. Route the (re-)prompt to that session so
+    # an out-of-band approval lands grants where the retried operation
+    # will look for them.
+    _retry_session_id = record.get("originating_session_id")
     if record["type"] != "workflow" and isinstance(entry, registry.Capability) and entry.consent_operations:
         missing = _check_missing_consent(entry.consent_operations)
         if missing:
-            consent_result = _auto_consent_request(missing, cap_name, operation_id)
+            consent_result = _auto_consent_request(
+                missing, cap_name, operation_id,
+                session_id=_retry_session_id,
+            )
             if consent_result["status"] != "granted":
                 _complete_operation(
                     operation_id,
@@ -2184,7 +2212,10 @@ def retry_operation(operation_id: str) -> dict[str, Any]:
                     "error": f"Too many consent gates for {cap_name}. Last: {exc.operation}",
                     "operation_id": operation_id,
                 }
-            consent_result = _auto_consent_request([exc.operation], cap_name, operation_id)
+            consent_result = _auto_consent_request(
+                [exc.operation], cap_name, operation_id,
+                session_id=_retry_session_id,
+            )
             if consent_result["status"] != "granted":
                 _complete_operation(
                     operation_id,
