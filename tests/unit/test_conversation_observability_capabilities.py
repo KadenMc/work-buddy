@@ -77,6 +77,11 @@ def test_all_capabilities_register_under_observability_category() -> None:
         "conversation_observability_list",
         "conversation_observability_summarize",
         "conversation_observability_summary_get",
+        # `session_summary_get` is the canonical short-name capability for
+        # the legacy-row read. Same callable as the deprecated alias
+        # `conversation_observability_summary_get`; lives in the same
+        # category so the invariant holds.
+        "session_summary_get",
     }
     for cap in caps.values():
         assert cap.category == "conversation_observability"
