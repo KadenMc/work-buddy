@@ -64,7 +64,7 @@ Run `summary_search` with the user's strongest topic phrase. This is the **load-
 ```
 mcp__work-buddy__wb_run("summary_search", {
   "query": "<topic phrase>",
-  "namespace": "conversation_session",
+  "scope": "conversation_session",
   "top_k": 12,
   "drill": true,
   "drill_top_k": 4,
