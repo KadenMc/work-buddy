@@ -16,6 +16,9 @@ depth-1 case. This invariant keeps the deferred progressive-disclosure phase
 additive (it adds consumers of the tree, never reshapes it).
 """
 
+from work_buddy.summarization.artifacts import (
+    register_summarization_artifact,
+)
 from work_buddy.summarization.protocol import (
     DiscoveryWindow,
     IncoherentComposition,
@@ -31,6 +34,11 @@ from work_buddy.summarization.protocol import (
 )
 from work_buddy.summarization.summarizer import RefreshReport, Summarizer
 from work_buddy.summarization.orchestrator import as_caller, run_refresh
+
+# Importing this package registers the artifact so it appears in
+# `artifact_registry_dump` and the cleanup tick (no-op under
+# INFINITE_LIFECYCLE; provides registry visibility).
+register_summarization_artifact()
 
 __all__ = [
     "DiscoveryWindow",
