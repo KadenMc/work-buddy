@@ -27,14 +27,25 @@ def _clean_active_runs():
 
 @pytest.fixture(autouse=True)
 def _no_consent_db(monkeypatch):
-    """Stub the workflow-consent revoke so tests never touch a real DB."""
+    """Stub the workflow-consent revoke paths so tests never touch a real DB.
+
+    Captures both the legacy ``revoke_workflow_consent`` and the
+    current ``revoke_workflow_run``. Each call is recorded as a dict
+    carrying ``workflow_run_id`` and ``session_id`` regardless of
+    which entry point fired; this gives tests a single
+    ``workflow_run_id`` / ``session_id`` shape to assert on.
+    """
     calls: list[dict] = []
 
-    def _fake_revoke(workflow_run_id="", *, session_id=None):
+    def _fake_legacy_revoke(workflow_run_id="", *, session_id=None):
+        calls.append({"workflow_run_id": workflow_run_id, "session_id": session_id})
+
+    def _fake_run_revoke(workflow_name, workflow_run_id, *, session_id=None, reason="complete"):
         calls.append({"workflow_run_id": workflow_run_id, "session_id": session_id})
 
     import work_buddy.consent as consent_mod
-    monkeypatch.setattr(consent_mod, "revoke_workflow_consent", _fake_revoke)
+    monkeypatch.setattr(consent_mod, "revoke_workflow_consent", _fake_legacy_revoke)
+    monkeypatch.setattr(consent_mod, "revoke_workflow_run", _fake_run_revoke)
     return calls
 
 

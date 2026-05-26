@@ -329,7 +329,7 @@ def advance_workflow(
     if current_meta.get("requires_individual_consent", False):
         from work_buddy.consent import grant_workflow_run
         wf_name = getattr(dag, "workflow_name", None) or (
-            dag.name.split(":", 1)[0] if dag.name and ":" in dag.name else dag.name
+            (getattr(dag, "name", "") or "").split(":", 1)[0] if ":" in (getattr(dag, "name", "") or "") else getattr(dag, "name", "")
         )
         grant_workflow_run(
             wf_name,
@@ -540,8 +540,9 @@ def cascade_revoke_workflow(
     revoked_runs: list[str] = []
     for run_id, dag in _snapshot_active_runs():
         dag_workflow_name = getattr(dag, "workflow_name", None) or (
-            dag.name.split(":", 1)[0]
-            if dag.name and ":" in dag.name else dag.name
+            (getattr(dag, "name", "") or "").split(":", 1)[0]
+            if ":" in (getattr(dag, "name", "") or "")
+            else getattr(dag, "name", "")
         )
         if dag_workflow_name != workflow_name:
             continue
@@ -892,7 +893,7 @@ def cancel_workflow(
     try:
         from work_buddy.consent import revoke_workflow_run
         wf_name = getattr(dag, "workflow_name", None) or (
-            dag.name.split(":", 1)[0] if dag.name and ":" in dag.name else dag.name
+            (getattr(dag, "name", "") or "").split(":", 1)[0] if ":" in (getattr(dag, "name", "") or "") else getattr(dag, "name", "")
         )
         revoke_workflow_run(
             wf_name,
@@ -1155,8 +1156,9 @@ def _build_response(
             if meta.get("requires_individual_consent", False):
                 from work_buddy.consent import revoke_workflow_run
                 wf_name = getattr(dag, "workflow_name", None) or (
-                    dag.name.split(":", 1)[0]
-                    if dag.name and ":" in dag.name else dag.name
+                    (getattr(dag, "name", "") or "").split(":", 1)[0]
+                    if ":" in (getattr(dag, "name", "") or "")
+                    else getattr(dag, "name", "")
                 )
                 revoke_workflow_run(
                     wf_name,
@@ -1177,8 +1179,9 @@ def _build_response(
         if explicit_consent:
             from work_buddy.consent import revoke_workflow_run
             wf_name = getattr(dag, "workflow_name", None) or (
-                dag.name.split(":", 1)[0]
-                if dag.name and ":" in dag.name else dag.name
+                (getattr(dag, "name", "") or "").split(":", 1)[0]
+                if ":" in (getattr(dag, "name", "") or "")
+                else getattr(dag, "name", "")
             )
             revoke_workflow_run(
                 wf_name,
@@ -1204,8 +1207,9 @@ def _build_response(
         if explicit_consent:
             from work_buddy.consent import grant_workflow_run
             wf_name = getattr(dag, "workflow_name", None) or (
-                dag.name.split(":", 1)[0]
-                if dag.name and ":" in dag.name else dag.name
+                (getattr(dag, "name", "") or "").split(":", 1)[0]
+                if ":" in (getattr(dag, "name", "") or "")
+                else getattr(dag, "name", "")
             )
             grant_workflow_run(
                 wf_name,
@@ -1529,7 +1533,7 @@ def _build_complete_response(run_id: str, dag: WorkflowDAG) -> dict[str, Any]:
     # linger in the agent's DB.
     from work_buddy.consent import revoke_workflow_run
     wf_name = getattr(dag, "workflow_name", None) or (
-        dag.name.split(":", 1)[0] if dag.name and ":" in dag.name else dag.name
+        (getattr(dag, "name", "") or "").split(":", 1)[0] if ":" in (getattr(dag, "name", "") or "") else getattr(dag, "name", "")
     )
     revoke_workflow_run(
         wf_name,

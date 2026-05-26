@@ -974,7 +974,20 @@ def requires_consent(
                 # ``individual`` / ``workflow_run`` / ``workflow_class``
                 # / ``legacy_blanket`` — and ``diagnose_carry`` returns
                 # which one matched plus the actual key for traceability.
-                carry_source, carry_key = _cache.diagnose_carry(operation)
+                # Defensive against test-time mocks of ``_cache`` that
+                # don't supply a usable ``diagnose_carry``: if the call
+                # raises or returns an unexpected shape, fall back to
+                # the generic ``("none", None)`` and let the audit log
+                # show ``via=originating_session`` — the consent gate
+                # itself already passed.
+                try:
+                    _carry = _cache.diagnose_carry(operation)
+                    if isinstance(_carry, tuple) and len(_carry) == 2:
+                        carry_source, carry_key = _carry
+                    else:
+                        carry_source, carry_key = "none", None
+                except Exception:
+                    carry_source, carry_key = "none", None
                 if carry_source == "individual":
                     op_mode = _cache.get_mode(operation)
                     is_once = op_mode == "once"
