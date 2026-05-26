@@ -48,6 +48,7 @@ Flow:
 """
 
 import functools
+import logging
 import sqlite3
 import threading
 from datetime import datetime, timezone, timedelta
@@ -59,6 +60,33 @@ from work_buddy.agent_session import (
     get_session_consent_db_path,
     get_session_audit_path,
 )
+
+
+logger = logging.getLogger(__name__)
+
+# One-shot deprecation logger for legacy ``__workflow_consent__`` carries.
+# A workflow that still relies on the legacy blanket key (rather than the
+# composable ``workflow_class:`` / ``workflow_run:`` keys) trips this log
+# the first time it carries each operation in a given process. We do NOT
+# emit per-call to avoid log spam — one line per (operation) is enough to
+# locate unconverted call sites.
+_LEGACY_BLANKET_LOGGED: set[str] = set()
+
+
+def _log_legacy_blanket_use_once(operation: str) -> None:
+    if operation in _LEGACY_BLANKET_LOGGED:
+        return
+    _LEGACY_BLANKET_LOGGED.add(operation)
+    _audit_log(
+        "LEGACY_WORKFLOW_BLANKET_USED",
+        operation,
+        "deprecated: use workflow_class/workflow_run keys",
+    )
+    logger.info(
+        "consent: legacy __workflow_consent__ carried operation=%r — "
+        "convert the workflow to mint workflow_class:/workflow_run: keys",
+        operation,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -410,34 +438,49 @@ class ConsentCache:
             self._initialized = True
         return conn
 
-    def is_granted(self, operation: str) -> bool:
+    def is_granted(
+        self,
+        operation: str,
+        *,
+        consent_weight: str = "low",
+    ) -> bool:
         """Check if a valid consent exists for the operation.
 
         Checks in order:
         1. Per-operation grant (explicit consent for this exact operation)
            in the CURRENT session's DB
-        2. Workflow blanket grant in the CURRENT session's DB
-        3. (Fix-a) If neither found AND
+        2. (When ``consent_weight != "high"``) composable workflow grants:
+           any unexpired ``workflow_run:*`` or ``workflow_class:*`` key in
+           the current session's DB
+        3. (When ``consent_weight != "high"``) legacy
+           ``__workflow_consent__`` blanket — deprecation-logged once per
+           operation per process
+        4. (Fix-a) If none found AND
            ``work_buddy.agent_session.get_originating_session()`` returns
-           a session ID different from the current one, repeat steps 1-2
-           against THAT session's DB.
+           a session ID different from the current one, re-check step 1
+           against THAT session's DB. Steps 2 and 3 are deliberately
+           skipped on the originating-session fallback: workflow grants
+           do not time-travel across the sidecar retry queue — replays
+           only ride individual op grants.
 
-        Step 3 closes the cross-session-replay gap (`t-e2f1a8c4`):
-        when the sidecar replays a PWU'd operation, the user's
-        consent grant lives in their session's DB, not the
-        sidecar's. Honoring the originating-session reference lets
-        the replay proceed without forcing a fresh consent prompt
-        for an operation the user already authorized.
+        ``consent_weight``:
+            High-weight operations (e.g. destructive writes, irreversible
+            external sends) bypass the workflow-grant carry. The per-op
+            consent gate always fires for them, even inside an approved
+            workflow run. This mirrors Cursor's destructive-command
+            carve-out and OpenAI's ``isConsequential`` flag.
 
         Revocation semantics preserved: if the user revokes the grant
         in their session, the originating-session lookup also finds
         nothing → returns False → caller gets ConsentRequired.
         """
-        # Step 1+2: current session.
-        if self._is_granted_in_session(operation, session_id=None):
+        # Step 1+2+3: current session.
+        if self._is_granted_in_session(
+            operation, session_id=None, consent_weight=consent_weight,
+        ):
             return True
 
-        # Step 3: originating session, if set and different.
+        # Step 4: originating session, if set and different.
         try:
             from work_buddy.agent_session import (
                 get_originating_session, _get_session_id,
@@ -457,7 +500,10 @@ class ConsentCache:
 
         try:
             granted = self._is_granted_in_session(
-                operation, session_id=originating,
+                operation,
+                session_id=originating,
+                consent_weight=consent_weight,
+                from_originating=True,
             )
         except Exception as exc:  # pragma: no cover — defensive
             logger.warning(
@@ -474,14 +520,27 @@ class ConsentCache:
         return granted
 
     def _is_granted_in_session(
-        self, operation: str, *, session_id: str | None,
+        self,
+        operation: str,
+        *,
+        session_id: str | None,
+        consent_weight: str = "low",
+        from_originating: bool = False,
     ) -> bool:
-        """Same logic as is_granted's first two checks, scoped to
-        ``session_id`` (or current session when None). Extracted so the
-        originating-session fallback can reuse it cleanly."""
+        """Check grant matching for one session's DB.
+
+        ``from_originating`` enables retry-queue isolation: when True (the
+        sidecar's originating-session fallback path), workflow grants
+        (both composable keys and the legacy blanket) are skipped
+        entirely. Only an individual op grant satisfies a replay. This
+        prevents workflow grants from time-traveling across the retry-
+        queue boundary.
+        """
         conn = self._connect(session_id=session_id)
         try:
             now = datetime.now(timezone.utc).isoformat()
+
+            # ── Step 1: individual op grant ──
             row = conn.execute(
                 """SELECT 1 FROM grants
                    WHERE operation = ?
@@ -491,14 +550,46 @@ class ConsentCache:
             if row:
                 return True
 
-            if operation != self.WORKFLOW_CONSENT_OP:
+            # Workflow-grant carry is suppressed on the retry-queue
+            # replay path (``from_originating=True``) and for
+            # ``consent_weight == "high"`` operations.
+            workflow_carry_allowed = (
+                not from_originating
+                and consent_weight != "high"
+                and operation != self.WORKFLOW_CONSENT_OP
+                and not operation.startswith(WORKFLOW_CLASS_PREFIX)
+                and not operation.startswith(WORKFLOW_RUN_PREFIX)
+            )
+
+            if workflow_carry_allowed:
+                # ── Step 2: composable workflow grants ──
+                # Any unexpired ``workflow_run:*`` or ``workflow_class:*``
+                # key in this session authorizes the call. We log which
+                # key matched via the diagnostic helper, but the boolean
+                # answer is all the decorator needs here — the decorator
+                # calls ``diagnose_carry`` separately for audit detail.
                 wf_row = conn.execute(
+                    """SELECT 1 FROM grants
+                       WHERE (operation LIKE 'workflow_run:%'
+                              OR operation LIKE 'workflow_class:%')
+                         AND (expires_at IS NULL OR expires_at > ?)
+                       LIMIT 1""",
+                    (now,),
+                ).fetchone()
+                if wf_row:
+                    return True
+
+                # ── Step 3: legacy ``__workflow_consent__`` fallback ──
+                # Single deprecation-log line per operation per process so
+                # we can grep for unconverted call sites without spam.
+                legacy_row = conn.execute(
                     """SELECT 1 FROM grants
                        WHERE operation = ?
                          AND (expires_at IS NULL OR expires_at > ?)""",
                     (self.WORKFLOW_CONSENT_OP, now),
                 ).fetchone()
-                if wf_row:
+                if legacy_row:
+                    _log_legacy_blanket_use_once(operation)
                     return True
 
             # Clean up expired entries lazily — only on the current
@@ -512,6 +603,75 @@ class ConsentCache:
             return False
         finally:
             conn.close()
+
+    def diagnose_carry(
+        self,
+        operation: str,
+        *,
+        session_id: str | None = None,
+    ) -> tuple[str, str | None]:
+        """Identify which kind of grant currently carries ``operation``.
+
+        Returns ``(source, matched_key)`` where ``source`` is one of:
+        ``"individual"``, ``"workflow_run"``, ``"workflow_class"``,
+        ``"legacy_blanket"``, or ``"none"`` (no grant). ``matched_key``
+        is the actual grant key that matched (or ``None`` for
+        ``"none"``).
+
+        Used by the decorator's audit-log emission to record *why* a
+        call was authorized (``via=workflow_run:task-new:wf_abc``,
+        etc.).  Strict best-effort — never raises.
+        """
+        try:
+            conn = self._connect(session_id=session_id)
+        except Exception:  # pragma: no cover — defensive
+            return ("none", None)
+        try:
+            now = datetime.now(timezone.utc).isoformat()
+            # Individual op grant has highest priority.
+            row = conn.execute(
+                """SELECT 1 FROM grants
+                   WHERE operation = ?
+                     AND (expires_at IS NULL OR expires_at > ?)""",
+                (operation, now),
+            ).fetchone()
+            if row:
+                return ("individual", operation)
+            # Composable workflow grants — prefer run-level when both
+            # are present (more specific scope).
+            wf_run = conn.execute(
+                """SELECT operation FROM grants
+                   WHERE operation LIKE 'workflow_run:%'
+                     AND (expires_at IS NULL OR expires_at > ?)
+                   LIMIT 1""",
+                (now,),
+            ).fetchone()
+            if wf_run:
+                return ("workflow_run", wf_run[0])
+            wf_cls = conn.execute(
+                """SELECT operation FROM grants
+                   WHERE operation LIKE 'workflow_class:%'
+                     AND (expires_at IS NULL OR expires_at > ?)
+                   LIMIT 1""",
+                (now,),
+            ).fetchone()
+            if wf_cls:
+                return ("workflow_class", wf_cls[0])
+            # Legacy blanket — last resort.
+            legacy = conn.execute(
+                """SELECT operation FROM grants
+                   WHERE operation = ?
+                     AND (expires_at IS NULL OR expires_at > ?)""",
+                (self.WORKFLOW_CONSENT_OP, now),
+            ).fetchone()
+            if legacy:
+                return ("legacy_blanket", legacy[0])
+            return ("none", None)
+        finally:
+            try:
+                conn.close()
+            except Exception:  # pragma: no cover — defensive
+                pass
 
     def get_mode(self, operation: str) -> str | None:
         """Return the mode of a grant, or None if not found/expired.
@@ -695,6 +855,7 @@ def requires_consent(
     risk: str = "moderate",
     default_ttl: int = 5,
     body_extras: Callable[[], str] | None = None,
+    consent_weight: str | None = None,
 ):
     """Decorator that gates a function on user consent.
 
@@ -725,19 +886,40 @@ def requires_consent(
             best-effort try/except in the gateway — exceptions are logged
             and skipped, never blocking the prompt. Must be cheap (single
             file read, no network); the user is waiting.
+        consent_weight: ``"low"`` (default — derived from ``risk``),
+            ``"moderate"``, or ``"high"``. Controls whether workflow-level
+            grants (``workflow_class:`` / ``workflow_run:`` keys) may
+            carry the call without surfacing a per-op prompt. A
+            ``"high"`` weight bypasses workflow-grant carry: the per-op
+            consent gate fires even inside an approved workflow run.
+            When omitted, the weight defaults to mirror ``risk`` so
+            existing call sites that did not specify a weight retain the
+            sensible behavior: high-risk operations get high-weight
+            treatment, moderate-risk get moderate-weight, etc.
     """
+    # Default consent_weight to mirror risk when not explicitly set.
+    # This keeps existing call sites — which never passed consent_weight
+    # — calibrated to their declared risk.
+    effective_weight = consent_weight if consent_weight is not None else risk
+
     # Register metadata for gateway auto-request lookup
     _CONSENT_REGISTRY[operation] = {
         "reason": reason,
         "risk": risk,
         "default_ttl": default_ttl,
         "body_extras": body_extras,
+        "consent_weight": effective_weight,
     }
 
     # Validate risk at decoration time (fail-fast on typos)
     if risk not in (r.value for r in Risk):
         raise ValueError(
             f"Invalid risk value: {risk!r}. "
+            f"Must be one of: {', '.join(r.value for r in Risk)}"
+        )
+    if effective_weight not in (r.value for r in Risk):
+        raise ValueError(
+            f"Invalid consent_weight value: {effective_weight!r}. "
             f"Must be one of: {', '.join(r.value for r in Risk)}"
         )
 
@@ -778,16 +960,44 @@ def requires_consent(
                     _consent_ctx.covered_operations = prev_covered
 
             # ── Top-level: check consent cache ──
-            if _cache.is_granted(operation):
-                # Determine consent source for audit
-                op_mode = _cache.get_mode(operation)
-                if op_mode is not None:
+            if _cache.is_granted(operation, consent_weight=effective_weight):
+                # Determine consent source for audit. The composable
+                # consent model recognizes four carry shapes —
+                # ``individual`` / ``workflow_run`` / ``workflow_class``
+                # / ``legacy_blanket`` — and ``diagnose_carry`` returns
+                # which one matched plus the actual key for traceability.
+                carry_source, carry_key = _cache.diagnose_carry(operation)
+                if carry_source == "individual":
+                    op_mode = _cache.get_mode(operation)
                     is_once = op_mode == "once"
-                    _audit_log("EXECUTED", operation, "consent_valid")
-                else:
-                    # Covered by workflow blanket
+                    _audit_log("EXECUTED", operation, "via=individual")
+                elif carry_source == "workflow_run":
                     is_once = False
-                    _audit_log("EXECUTED", operation, "workflow_blanket")
+                    _audit_log(
+                        "EXECUTED", operation,
+                        f"via=workflow_run | key={carry_key}",
+                    )
+                elif carry_source == "workflow_class":
+                    is_once = False
+                    _audit_log(
+                        "EXECUTED", operation,
+                        f"via=workflow_class | key={carry_key}",
+                    )
+                elif carry_source == "legacy_blanket":
+                    is_once = False
+                    _audit_log(
+                        "EXECUTED", operation,
+                        "via=legacy_blanket (deprecated)",
+                    )
+                else:
+                    # is_granted returned True but diagnose_carry did
+                    # not find a matching key — likely the
+                    # originating-session fallback path. Record
+                    # generically.
+                    is_once = False
+                    _audit_log(
+                        "EXECUTED", operation, "via=originating_session",
+                    )
 
                 # Enter consent context — inner @requires_consent will
                 # pass through for the duration of this execution.
@@ -985,6 +1195,235 @@ def is_workflow_consent_active(*, session_id: str | None = None) -> bool:
     return _cache._is_granted_in_session(
         ConsentCache.WORKFLOW_CONSENT_OP, session_id=session_id,
     )
+
+
+# ---------------------------------------------------------------------------
+# Composable workflow consent — class + run grant keys
+# ---------------------------------------------------------------------------
+# Two grant levels coexist with the legacy ``__workflow_consent__`` blanket:
+#
+#   ``workflow_class:<name>``         — class-level trust for a workflow
+#                                       (the "Allow for 15 min" option).
+#                                       TTL-bounded; bounded re-invocation
+#                                       within the window reuses the grant.
+#
+#   ``workflow_run:<name>:<run_id>``  — authorization for a single in-flight
+#                                       run. Has no TTL; revoked at run
+#                                       completion or cascade-revoked when
+#                                       the class grant is explicitly revoked.
+#
+# The decorator's check path (in ``_is_granted_in_session``) consults these
+# keys via a single ``LIKE 'workflow_run:%' OR LIKE 'workflow_class:%'``
+# probe — no need for the cache to introspect ``_ACTIVE_RUNS``. Lifecycle
+# is enforced by the conductor: ``start_workflow`` mints the run grant;
+# ``_build_complete_response`` revokes it; orphan reconciliation cleans up
+# after MCP-server restarts.
+
+WORKFLOW_CLASS_PREFIX = "workflow_class:"
+WORKFLOW_RUN_PREFIX = "workflow_run:"
+
+
+def _workflow_class_key(workflow_name: str) -> str:
+    return f"{WORKFLOW_CLASS_PREFIX}{workflow_name}"
+
+
+def _workflow_run_key(workflow_name: str, run_id: str) -> str:
+    return f"{WORKFLOW_RUN_PREFIX}{workflow_name}:{run_id}"
+
+
+def grant_workflow_class(
+    workflow_name: str,
+    *,
+    ttl_minutes: int,
+    session_id: str | None = None,
+) -> None:
+    """Grant class-level consent for a workflow.
+
+    Lives in the agent's session DB; bounded by ``ttl_minutes``. Subsequent
+    invocations of the same workflow within the window check this grant
+    and skip the user-facing pre-flight prompt (the workflow is "trusted
+    for the session" up to TTL).
+    """
+    _cache.grant(
+        _workflow_class_key(workflow_name),
+        mode="temporary",
+        ttl_minutes=ttl_minutes,
+        session_id=session_id,
+    )
+    sid_tag = f" | session={session_id[:8]}" if session_id else ""
+    _audit_log(
+        "WORKFLOW_CLASS_GRANTED",
+        _workflow_class_key(workflow_name),
+        f"workflow={workflow_name} | ttl={ttl_minutes}m{sid_tag}",
+    )
+
+
+def grant_workflow_run(
+    workflow_name: str,
+    run_id: str,
+    *,
+    session_id: str | None = None,
+) -> None:
+    """Grant run-level consent for an in-flight workflow run.
+
+    No TTL — revoked when the run completes (``revoke_workflow_run`` with
+    ``reason="complete"``) or when the user explicitly revokes the class
+    grant with cascade. Stored with ``mode="once"`` as a marker that says
+    "expect explicit revocation"; the lazy-expiry path does not affect it.
+    """
+    _cache.grant(
+        _workflow_run_key(workflow_name, run_id),
+        mode="once",
+        session_id=session_id,
+    )
+    sid_tag = f" | session={session_id[:8]}" if session_id else ""
+    _audit_log(
+        "WORKFLOW_RUN_GRANTED",
+        _workflow_run_key(workflow_name, run_id),
+        f"workflow={workflow_name} | run={run_id}{sid_tag}",
+    )
+
+
+def revoke_workflow_run(
+    workflow_name: str,
+    run_id: str,
+    *,
+    session_id: str | None = None,
+    reason: str = "complete",
+) -> None:
+    """Revoke run-level consent for a workflow run.
+
+    ``reason`` is one of: ``"complete"`` (normal lifecycle),
+    ``"cascade"`` (parent class-grant revoked), ``"explicit"`` (user
+    revoked this specific run), ``"ttl"`` (rare — class TTL expired
+    mid-run and we narrowed). Recorded in audit log.
+
+    Idempotent: revoking a missing run is a no-op.
+    """
+    try:
+        _cache.revoke(
+            _workflow_run_key(workflow_name, run_id), session_id=session_id,
+        )
+        sid_tag = f" | session={session_id[:8]}" if session_id else ""
+        _audit_log(
+            "WORKFLOW_RUN_REVOKED",
+            _workflow_run_key(workflow_name, run_id),
+            f"workflow={workflow_name} | run={run_id} | reason={reason}{sid_tag}",
+        )
+    except Exception:  # pragma: no cover — defensive idempotency
+        pass
+
+
+def revoke_workflow_class(
+    workflow_name: str,
+    *,
+    session_id: str | None = None,
+) -> None:
+    """Revoke class-level consent for a workflow.
+
+    Does NOT cascade to in-flight runs — that is the conductor's job (it
+    owns ``_ACTIVE_RUNS``). The convention is:
+
+    - Direct callers wanting cascade behavior call
+      ``conductor.cascade_revoke_workflow(name, session_id=...)``, which
+      invokes this function THEN walks ``_ACTIVE_RUNS`` calling
+      ``revoke_workflow_run`` for each matching run.
+    - Callers who only want to remove the class grant (e.g. a TTL-aware
+      cleanup that does not want to interrupt in-flight runs) call this
+      function directly.
+
+    Idempotent.
+    """
+    try:
+        _cache.revoke(
+            _workflow_class_key(workflow_name), session_id=session_id,
+        )
+        sid_tag = f" | session={session_id[:8]}" if session_id else ""
+        _audit_log(
+            "WORKFLOW_CLASS_REVOKED",
+            _workflow_class_key(workflow_name),
+            f"workflow={workflow_name}{sid_tag}",
+        )
+    except Exception:  # pragma: no cover — defensive idempotency
+        pass
+
+
+def is_workflow_authorized(
+    workflow_name: str,
+    run_id: str | None = None,
+    *,
+    session_id: str | None = None,
+) -> tuple[bool, str | None]:
+    """Check whether a workflow (and optional specific run) is authorized.
+
+    Lookup order:
+        1. ``workflow_run:<name>:<run_id>`` (only when ``run_id`` is given)
+        2. ``workflow_class:<name>``
+
+    Returns ``(authorized, via)`` where ``via`` is ``"run"`` when the
+    run-key matched, ``"class"`` when the class-key matched, or ``None``.
+    """
+    if run_id is not None:
+        if _cache._is_granted_in_session(
+            _workflow_run_key(workflow_name, run_id), session_id=session_id,
+        ):
+            return True, "run"
+    if _cache._is_granted_in_session(
+        _workflow_class_key(workflow_name), session_id=session_id,
+    ):
+        return True, "class"
+    return False, None
+
+
+def list_active_workflow_grants(
+    *, session_id: str | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    """Diagnostic helper: list active workflow_class and workflow_run grants.
+
+    Returns ``{"class": [...], "run": [...]}`` where each entry has
+    ``operation``, ``mode``, ``granted_at``, ``expires_at`` (when set), and
+    parsed ``workflow_name`` / ``run_id`` fields. Used by the dashboard,
+    by orphan reconciliation, and by ``scripts/audit_workflow_consent.py``.
+    """
+    conn = _cache._connect(session_id=session_id)
+    now = datetime.now(timezone.utc).isoformat()
+    try:
+        rows = conn.execute(
+            """SELECT operation, mode, granted_at, expires_at
+               FROM grants
+               WHERE (operation LIKE 'workflow_class:%'
+                      OR operation LIKE 'workflow_run:%')
+                 AND (expires_at IS NULL OR expires_at > ?)""",
+            (now,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    out: dict[str, list[dict[str, Any]]] = {"class": [], "run": []}
+    for operation, mode, granted_at, expires_at in rows:
+        entry: dict[str, Any] = {
+            "operation": operation,
+            "mode": mode,
+            "granted_at": granted_at,
+        }
+        if expires_at:
+            entry["expires_at"] = expires_at
+        if operation.startswith(WORKFLOW_CLASS_PREFIX):
+            entry["workflow_name"] = operation[len(WORKFLOW_CLASS_PREFIX):]
+            out["class"].append(entry)
+        elif operation.startswith(WORKFLOW_RUN_PREFIX):
+            tail = operation[len(WORKFLOW_RUN_PREFIX):]
+            # ``workflow_run:<name>:<run_id>`` — split on the LAST colon so
+            # workflow names containing colons (none today, but possible)
+            # don't get garbled.
+            if ":" in tail:
+                wf_name, run_id = tail.rsplit(":", 1)
+            else:  # pragma: no cover — malformed key
+                wf_name, run_id = tail, ""
+            entry["workflow_name"] = wf_name
+            entry["run_id"] = run_id
+            out["run"].append(entry)
+    return out
 
 
 # ---------------------------------------------------------------------------

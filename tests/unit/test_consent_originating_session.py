@@ -251,12 +251,21 @@ def test_originating_equals_current_skips_double_lookup(
         agent_session.reset_originating_session(token)
 
 
-def test_workflow_blanket_grant_in_originating_session(
+def test_workflow_blanket_grant_in_originating_session_does_not_carry(
     two_sessions, fresh_cache,
 ):
-    """The workflow blanket grant pattern (which is checked by both
-    is_granted and get_mode) ALSO works across the
-    current/originating boundary."""
+    """Workflow grants do not time-travel through the originating-session
+    fallback.
+
+    A workflow grant active when an op is queued for retry could
+    authorize a replay minutes or hours later in a completely different
+    temporal context — an autonomy hole. The originating-session
+    fallback is therefore scoped to individual op grants only;
+    ``workflow_class`` / ``workflow_run`` / legacy ``__workflow_consent__``
+    keys are skipped on the replay path. Replays succeed only when the
+    user individually granted the specific op (or when consent is
+    granted in the current session during the replay window).
+    """
     _, originating_sid, _, originating_db = two_sessions
 
     _write_grant(
@@ -267,7 +276,26 @@ def test_workflow_blanket_grant_in_originating_session(
 
     token = agent_session.set_originating_session(originating_sid)
     try:
-        # Any operation under the workflow blanket → granted.
-        assert fresh_cache.is_granted("any.operation") is True
+        # Workflow blanket in originating session → does NOT carry the
+        # op across the replay boundary.
+        assert fresh_cache.is_granted("any.operation") is False
+    finally:
+        agent_session.reset_originating_session(token)
+
+
+def test_individual_grant_in_originating_session_still_carries(
+    two_sessions, fresh_cache,
+):
+    """The replay-path isolation only suppresses *workflow* grants;
+    individual op grants in the originating session continue to
+    authorize replays."""
+    _, originating_sid, _, originating_db = two_sessions
+
+    # User explicitly granted ``tasks.create_task`` in their session.
+    _write_grant(originating_db, "tasks.create_task", mode="always")
+
+    token = agent_session.set_originating_session(originating_sid)
+    try:
+        assert fresh_cache.is_granted("tasks.create_task") is True
     finally:
         agent_session.reset_originating_session(token)

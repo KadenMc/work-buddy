@@ -1,0 +1,633 @@
+"""Unit tests — composable consent primitives.
+
+Validates the ``grant_workflow_class`` / ``grant_workflow_run`` /
+``revoke_workflow_class`` / ``revoke_workflow_run`` /
+``is_workflow_authorized`` primitives in isolation, without any
+conductor or gateway involvement — pure unit tests on the consent
+layer.
+
+Lifecycle properties under test:
+
+- Class grant: TTL-bounded, persists across re-invocations within the
+  window, revokable independently of run grants.
+- Run grant: no TTL, revoked explicitly at run completion (or via
+  cascade from class revoke), idempotent revoke.
+- ``is_workflow_authorized`` lookup order: run → class.
+- Session routing: grants land in the named session's DB, not the
+  current process's session DB.
+- ``list_active_workflow_grants`` returns parsed class + run entries.
+
+Test isolation:
+  Uses the ``tmp_agents_dir`` fixture from the root ``conftest.py``,
+  which monkeypatches ``paths.data_dir`` so every test sees a clean
+  agents/ directory under a per-test ``tmp_path``.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+
+@pytest.fixture
+def cache(tmp_agents_dir, monkeypatch):
+    """Reset the module-level consent cache for each test.
+
+    ``tmp_agents_dir`` redirects ``paths.data_dir("agents")`` to a clean
+    temp directory. Other test files (e.g. ``test_consent_auto_request``)
+    monkey-patch ``agent_session.get_agents_dir`` to a closure-bound
+    lambda — that patch survives across tests and silently overrides our
+    fixture's path redirection. We defensively re-install the original
+    ``get_agents_dir`` (the one that consults ``data_dir("agents")``)
+    so this fixture's redirection sticks regardless of what ran first.
+
+    We also reset the per-process dedupe set for the legacy-blanket
+    deprecation log so the dedupe-counting test sees a clean slate.
+    """
+    import work_buddy.agent_session as asmod
+    # The canonical ``get_agents_dir`` consults ``data_dir("agents")``;
+    # cross-file leaks may have replaced it with a lambda that bypasses
+    # our path redirection. Reinstall the real implementation so
+    # ``tmp_agents_dir``'s ``data_dir`` monkey-patch applies.
+    def _canonical_get_agents_dir():
+        return asmod.data_dir("agents")
+    monkeypatch.setattr(asmod, "get_agents_dir", _canonical_get_agents_dir)
+    monkeypatch.setattr(asmod, "_cached_session_dir", None)
+
+    from work_buddy.consent import _cache
+    _cache._db_path = None
+    _cache._initialized = False
+
+    # Reset the per-process dedupe set for the legacy-blanket
+    # deprecation log so tests that count emits see a clean slate.
+    from work_buddy import consent as cmod
+    cmod._LEGACY_BLANKET_LOGGED.clear()
+
+    return _cache
+
+
+# ---------------------------------------------------------------------------
+# Key shape & accessors (no DB needed)
+# ---------------------------------------------------------------------------
+
+
+def test_key_helpers():
+    from work_buddy.consent import (
+        _workflow_class_key, _workflow_run_key,
+        WORKFLOW_CLASS_PREFIX, WORKFLOW_RUN_PREFIX,
+    )
+    assert _workflow_class_key("task-new") == "workflow_class:task-new"
+    assert _workflow_run_key("task-new", "wf_abc123") == "workflow_run:task-new:wf_abc123"
+    assert WORKFLOW_CLASS_PREFIX == "workflow_class:"
+    assert WORKFLOW_RUN_PREFIX == "workflow_run:"
+
+
+# ---------------------------------------------------------------------------
+# Class grants
+# ---------------------------------------------------------------------------
+
+
+def test_class_grant_lifecycle(cache):
+    """grant_workflow_class writes; revoke_workflow_class clears."""
+    from work_buddy.consent import (
+        grant_workflow_class, revoke_workflow_class,
+        is_workflow_authorized,
+    )
+
+    ok, via = is_workflow_authorized("task-new")
+    assert ok is False and via is None
+
+    grant_workflow_class("task-new", ttl_minutes=15)
+    ok, via = is_workflow_authorized("task-new")
+    assert ok is True and via == "class"
+
+    revoke_workflow_class("task-new")
+    ok, via = is_workflow_authorized("task-new")
+    assert ok is False
+
+
+def test_class_grant_is_per_workflow(cache):
+    """A class grant for one workflow does not authorize another."""
+    from work_buddy.consent import (
+        grant_workflow_class, is_workflow_authorized,
+    )
+
+    grant_workflow_class("task-new", ttl_minutes=15)
+    assert is_workflow_authorized("task-new")[0] is True
+    assert is_workflow_authorized("morning-routine")[0] is False
+    assert is_workflow_authorized("dev-pr")[0] is False
+
+
+def test_class_grant_idempotent_revoke(cache):
+    """Revoking a missing class grant is a no-op."""
+    from work_buddy.consent import revoke_workflow_class
+    # Should not raise
+    revoke_workflow_class("does-not-exist")
+    revoke_workflow_class("does-not-exist")  # second call also fine
+
+
+# ---------------------------------------------------------------------------
+# Run grants
+# ---------------------------------------------------------------------------
+
+
+def test_run_grant_lifecycle(cache):
+    """grant_workflow_run writes; revoke_workflow_run clears."""
+    from work_buddy.consent import (
+        grant_workflow_run, revoke_workflow_run, is_workflow_authorized,
+    )
+
+    grant_workflow_run("task-new", "wf_abc")
+    ok, via = is_workflow_authorized("task-new", "wf_abc")
+    assert ok is True and via == "run"
+
+    revoke_workflow_run("task-new", "wf_abc")
+    ok, via = is_workflow_authorized("task-new", "wf_abc")
+    assert ok is False
+
+
+def test_run_grant_is_per_run(cache):
+    """A grant for one run does not authorize a different run of the same
+    workflow."""
+    from work_buddy.consent import (
+        grant_workflow_run, is_workflow_authorized,
+    )
+
+    grant_workflow_run("task-new", "wf_abc")
+    ok_a, _ = is_workflow_authorized("task-new", "wf_abc")
+    ok_b, _ = is_workflow_authorized("task-new", "wf_xyz")
+    assert ok_a is True
+    assert ok_b is False
+
+
+def test_run_grant_idempotent_revoke(cache):
+    """Revoking a missing run grant is a no-op."""
+    from work_buddy.consent import revoke_workflow_run
+    revoke_workflow_run("task-new", "wf_doesnotexist")
+    revoke_workflow_run("task-new", "wf_doesnotexist")
+
+
+# ---------------------------------------------------------------------------
+# Authorization lookup order
+# ---------------------------------------------------------------------------
+
+
+def test_lookup_prefers_run_over_class(cache):
+    """When both run and class grants exist, ``via`` reports 'run'."""
+    from work_buddy.consent import (
+        grant_workflow_class, grant_workflow_run, is_workflow_authorized,
+    )
+
+    grant_workflow_class("task-new", ttl_minutes=15)
+    grant_workflow_run("task-new", "wf_abc")
+
+    ok, via = is_workflow_authorized("task-new", "wf_abc")
+    assert ok is True
+    assert via == "run"
+
+
+def test_lookup_falls_back_to_class_when_run_missing(cache):
+    """If only the class grant exists, ``via`` reports 'class'."""
+    from work_buddy.consent import (
+        grant_workflow_class, is_workflow_authorized,
+    )
+
+    grant_workflow_class("task-new", ttl_minutes=15)
+    ok, via = is_workflow_authorized("task-new", "wf_abc_not_granted")
+    assert ok is True
+    assert via == "class"
+
+
+def test_lookup_without_run_id_only_checks_class(cache):
+    """When ``run_id`` is None, the run-grant lookup is skipped."""
+    from work_buddy.consent import (
+        grant_workflow_run, is_workflow_authorized,
+    )
+
+    grant_workflow_run("task-new", "wf_abc")
+    # Without a run_id, the run grant should not match.
+    ok, via = is_workflow_authorized("task-new", None)
+    assert ok is False
+    assert via is None
+
+
+# ---------------------------------------------------------------------------
+# Independence of class and run grant lifecycles
+# ---------------------------------------------------------------------------
+
+
+def test_revoke_run_leaves_class_intact(cache):
+    """Revoking the run grant should not affect the class grant."""
+    from work_buddy.consent import (
+        grant_workflow_class, grant_workflow_run,
+        revoke_workflow_run, is_workflow_authorized,
+    )
+
+    grant_workflow_class("task-new", ttl_minutes=15)
+    grant_workflow_run("task-new", "wf_abc")
+    revoke_workflow_run("task-new", "wf_abc")
+
+    # Class grant should still satisfy the lookup.
+    ok, via = is_workflow_authorized("task-new", "wf_abc")
+    assert ok is True
+    assert via == "class"
+
+
+def test_revoke_class_leaves_run_intact(cache):
+    """Revoking the class grant (without cascade — cascade lives in the
+    conductor) leaves the run grant intact."""
+    from work_buddy.consent import (
+        grant_workflow_class, grant_workflow_run,
+        revoke_workflow_class, is_workflow_authorized,
+    )
+
+    grant_workflow_class("task-new", ttl_minutes=15)
+    grant_workflow_run("task-new", "wf_abc")
+    revoke_workflow_class("task-new")
+
+    # Run grant is unaffected; lookup with a known run still authorized.
+    ok, via = is_workflow_authorized("task-new", "wf_abc")
+    assert ok is True
+    assert via == "run"
+
+
+# ---------------------------------------------------------------------------
+# Diagnostic helper
+# ---------------------------------------------------------------------------
+
+
+def test_list_active_workflow_grants_parses_keys(cache):
+    """``list_active_workflow_grants`` returns parsed class and run entries."""
+    from work_buddy.consent import (
+        grant_workflow_class, grant_workflow_run,
+        list_active_workflow_grants,
+    )
+
+    grant_workflow_class("task-new", ttl_minutes=15)
+    grant_workflow_run("task-new", "wf_abc")
+    grant_workflow_run("morning-routine", "wf_xyz")
+
+    snapshot = list_active_workflow_grants()
+    assert "class" in snapshot
+    assert "run" in snapshot
+    assert len(snapshot["class"]) == 1
+    assert len(snapshot["run"]) == 2
+
+    class_entry = snapshot["class"][0]
+    assert class_entry["workflow_name"] == "task-new"
+    assert class_entry["mode"] == "temporary"
+
+    run_names = {e["workflow_name"] for e in snapshot["run"]}
+    assert run_names == {"task-new", "morning-routine"}
+
+    run_ids = {e["run_id"] for e in snapshot["run"]}
+    assert run_ids == {"wf_abc", "wf_xyz"}
+
+
+def test_list_active_workflow_grants_skips_legacy_blanket(cache):
+    """The legacy ``__workflow_consent__`` is NOT a workflow_class:/run: key
+    and should not appear in the new diagnostic."""
+    from work_buddy.consent import (
+        grant_workflow_consent, list_active_workflow_grants,
+    )
+
+    grant_workflow_consent("wf_legacy", ttl_minutes=15)
+    snapshot = list_active_workflow_grants()
+    # Legacy blanket doesn't show up here — it's a separate key shape.
+    assert snapshot["class"] == []
+    assert snapshot["run"] == []
+
+
+# ---------------------------------------------------------------------------
+# TTL behavior on class grants
+# ---------------------------------------------------------------------------
+
+
+def test_class_grant_respects_ttl(cache):
+    """A class grant whose ``expires_at`` is set in the past is treated as
+    expired by the lookup path."""
+    from work_buddy.consent import (
+        grant_workflow_class, is_workflow_authorized, _cache,
+    )
+    from datetime import datetime, timedelta, timezone
+
+    grant_workflow_class("task-new", ttl_minutes=1)
+    assert is_workflow_authorized("task-new")[0] is True
+
+    # Fast-forward by tampering with the row's expires_at directly so we
+    # don't have to sleep in the test.
+    import sqlite3
+    db = _cache._get_db_path()
+    conn = sqlite3.connect(str(db))
+    past = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    conn.execute(
+        "UPDATE grants SET expires_at = ? "
+        "WHERE operation = 'workflow_class:task-new'",
+        (past,),
+    )
+    conn.commit()
+    conn.close()
+
+    ok, via = is_workflow_authorized("task-new")
+    assert ok is False
+    assert via is None
+
+
+# ---------------------------------------------------------------------------
+# Audit-log emission (smoke — full audit-format tests live elsewhere)
+# ---------------------------------------------------------------------------
+
+
+def test_grant_class_writes_audit_line(cache, monkeypatch):
+    """Audit log records WORKFLOW_CLASS_GRANTED on class grant."""
+    from work_buddy import consent as cmod
+
+    captured: list[tuple[str, str, str]] = []
+
+    def _capture(event, operation, details=""):
+        captured.append((event, operation, details))
+
+    monkeypatch.setattr(cmod, "_audit_log", _capture)
+
+    cmod.grant_workflow_class("task-new", ttl_minutes=15)
+
+    events = [e for e, _, _ in captured]
+    assert "WORKFLOW_CLASS_GRANTED" in events
+
+
+def test_grant_run_writes_audit_line(cache, monkeypatch):
+    """Audit log records WORKFLOW_RUN_GRANTED on run grant."""
+    from work_buddy import consent as cmod
+
+    captured: list[tuple[str, str, str]] = []
+
+    def _capture(event, operation, details=""):
+        captured.append((event, operation, details))
+
+    monkeypatch.setattr(cmod, "_audit_log", _capture)
+
+    cmod.grant_workflow_run("task-new", "wf_abc")
+
+    events = [e for e, _, _ in captured]
+    assert "WORKFLOW_RUN_GRANTED" in events
+
+
+def test_revoke_run_writes_audit_line_with_reason(cache, monkeypatch):
+    """Audit log records WORKFLOW_RUN_REVOKED with the supplied reason."""
+    from work_buddy import consent as cmod
+
+    cmod.grant_workflow_run("task-new", "wf_abc")
+
+    captured: list[tuple[str, str, str]] = []
+
+    def _capture(event, operation, details=""):
+        captured.append((event, operation, details))
+
+    monkeypatch.setattr(cmod, "_audit_log", _capture)
+
+    cmod.revoke_workflow_run("task-new", "wf_abc", reason="cascade")
+
+    matching = [
+        (e, op, d) for (e, op, d) in captured
+        if e == "WORKFLOW_RUN_REVOKED"
+    ]
+    assert matching, "expected WORKFLOW_RUN_REVOKED audit entry"
+    _, _, details = matching[0]
+    assert "reason=cascade" in details
+
+
+# ---------------------------------------------------------------------------
+# Decorator check path honors the new keys
+# ---------------------------------------------------------------------------
+
+
+def test_workflow_run_grant_carries_low_weight_op(cache):
+    """A workflow_run grant authorizes a low-weight op invocation via
+    ``is_granted`` (the path the decorator uses)."""
+    from work_buddy.consent import grant_workflow_run, _cache
+    grant_workflow_run("task-new", "wf_abc")
+    # Low-weight (default) — workflow grant carries it.
+    assert _cache.is_granted("some.low_op") is True
+
+
+def test_workflow_class_grant_carries_low_weight_op(cache):
+    """A workflow_class grant authorizes a low-weight op invocation."""
+    from work_buddy.consent import grant_workflow_class, _cache
+    grant_workflow_class("task-new", ttl_minutes=15)
+    assert _cache.is_granted("some.low_op") is True
+
+
+def test_high_weight_op_is_not_carried_by_workflow_run_grant(cache):
+    """A workflow_run grant does NOT authorize a high-weight op."""
+    from work_buddy.consent import grant_workflow_run, _cache
+    grant_workflow_run("task-new", "wf_abc")
+    assert _cache.is_granted("destructive.op", consent_weight="high") is False
+
+
+def test_high_weight_op_is_not_carried_by_workflow_class_grant(cache):
+    """A workflow_class grant does NOT authorize a high-weight op."""
+    from work_buddy.consent import grant_workflow_class, _cache
+    grant_workflow_class("task-new", ttl_minutes=15)
+    assert _cache.is_granted("destructive.op", consent_weight="high") is False
+
+
+def test_high_weight_op_with_individual_grant_passes(cache):
+    """A high-weight op *can* be authorized by an individual grant."""
+    from work_buddy.consent import grant_consent, _cache
+    grant_consent("destructive.op", mode="always")
+    assert _cache.is_granted("destructive.op", consent_weight="high") is True
+
+
+def test_diagnose_carry_reports_individual(cache):
+    """``diagnose_carry`` returns ``individual`` when an op grant matches."""
+    from work_buddy.consent import grant_consent, _cache
+    grant_consent("some.op", mode="always")
+    source, key = _cache.diagnose_carry("some.op")
+    assert source == "individual"
+    assert key == "some.op"
+
+
+def test_diagnose_carry_reports_workflow_run(cache):
+    """``diagnose_carry`` returns ``workflow_run`` with the matched key."""
+    from work_buddy.consent import grant_workflow_run, _cache
+    grant_workflow_run("task-new", "wf_abc")
+    source, key = _cache.diagnose_carry("some.op")
+    assert source == "workflow_run"
+    assert key == "workflow_run:task-new:wf_abc"
+
+
+def test_diagnose_carry_reports_workflow_class_when_no_run(cache):
+    """``diagnose_carry`` falls back to workflow_class when no run key."""
+    from work_buddy.consent import grant_workflow_class, _cache
+    grant_workflow_class("task-new", ttl_minutes=15)
+    source, key = _cache.diagnose_carry("some.op")
+    assert source == "workflow_class"
+    assert key == "workflow_class:task-new"
+
+
+def test_diagnose_carry_reports_legacy_blanket(cache):
+    """``diagnose_carry`` reports ``legacy_blanket`` when only the legacy
+    key is present."""
+    from work_buddy.consent import grant_workflow_consent, _cache
+    grant_workflow_consent("wf_test", ttl_minutes=15)
+    source, key = _cache.diagnose_carry("some.op")
+    assert source == "legacy_blanket"
+    assert key == "__workflow_consent__"
+
+
+def test_diagnose_carry_reports_none_when_no_grant(cache):
+    """``diagnose_carry`` reports ``none`` when nothing matches."""
+    from work_buddy.consent import _cache
+    source, key = _cache.diagnose_carry("some.op")
+    assert source == "none"
+    assert key is None
+
+
+def test_diagnose_carry_prefers_run_over_class(cache):
+    """When both run and class grants exist, ``diagnose_carry`` reports
+    the more specific run grant."""
+    from work_buddy.consent import (
+        grant_workflow_run, grant_workflow_class, _cache,
+    )
+    grant_workflow_class("task-new", ttl_minutes=15)
+    grant_workflow_run("task-new", "wf_abc")
+    source, _ = _cache.diagnose_carry("some.op")
+    assert source == "workflow_run"
+
+
+def test_legacy_blanket_still_carries_with_deprecation_log(cache, monkeypatch):
+    """The legacy ``__workflow_consent__`` key still grants (back-compat),
+    but emits exactly one deprecation audit-log line per operation per
+    process."""
+    from work_buddy.consent import grant_workflow_consent, _cache
+    from work_buddy import consent as cmod
+
+    cmod._LEGACY_BLANKET_LOGGED.clear()
+
+    captured: list[tuple[str, str, str]] = []
+
+    def _capture(event, operation, details=""):
+        captured.append((event, operation, details))
+
+    monkeypatch.setattr(cmod, "_audit_log", _capture)
+
+    grant_workflow_consent("wf_legacy", ttl_minutes=15)
+    # Call 1 — carries, emits deprecation log
+    assert _cache.is_granted("legacy.op_1") is True
+    # Call 2 same op — carries, NO duplicate deprecation log
+    assert _cache.is_granted("legacy.op_1") is True
+    # Call 3 different op — carries, emits one deprecation log for that op
+    assert _cache.is_granted("legacy.op_2") is True
+
+    legacy_events = [
+        (e, op) for (e, op, _) in captured
+        if e == "LEGACY_WORKFLOW_BLANKET_USED"
+    ]
+    assert ("LEGACY_WORKFLOW_BLANKET_USED", "legacy.op_1") in legacy_events
+    assert ("LEGACY_WORKFLOW_BLANKET_USED", "legacy.op_2") in legacy_events
+    op_1_count = sum(1 for (_, op) in legacy_events if op == "legacy.op_1")
+    assert op_1_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Retry-queue isolation (originating-session fallback)
+# ---------------------------------------------------------------------------
+# Detailed cross-session tests live in
+# ``tests/unit/test_consent_originating_session.py`` (it has the
+# ``two_sessions`` fixture wiring two SQLite DBs). Here we cover the
+# in-session behavior: ``from_originating=True`` suppresses workflow
+# grants even when they exist in the same session DB.
+
+
+def test_from_originating_suppresses_workflow_run_grant(cache):
+    """When ``from_originating=True``, workflow_run grants do not carry."""
+    from work_buddy.consent import grant_workflow_run, _cache
+    grant_workflow_run("task-new", "wf_abc")
+    # Direct in-session check carries...
+    assert _cache._is_granted_in_session("some.op", session_id=None) is True
+    # ...but the replay-path lookup does not.
+    assert _cache._is_granted_in_session(
+        "some.op", session_id=None, from_originating=True,
+    ) is False
+
+
+def test_from_originating_still_carries_individual_grant(cache):
+    """The replay-path isolation only suppresses workflow grants;
+    individual op grants continue to authorize replay-path lookups."""
+    from work_buddy.consent import grant_consent, _cache
+    grant_consent("some.op", mode="always")
+    assert _cache._is_granted_in_session(
+        "some.op", session_id=None, from_originating=True,
+    ) is True
+
+
+def test_from_originating_suppresses_legacy_blanket(cache):
+    """``from_originating=True`` also suppresses the legacy
+    ``__workflow_consent__`` blanket — replays should not ride any
+    workflow-shaped grant, new or legacy."""
+    from work_buddy.consent import grant_workflow_consent, _cache
+    grant_workflow_consent("wf_test", ttl_minutes=15)
+    assert _cache._is_granted_in_session(
+        "some.op", session_id=None, from_originating=True,
+    ) is False
+
+
+# ---------------------------------------------------------------------------
+# @requires_consent decorator integration
+# ---------------------------------------------------------------------------
+
+
+def test_decorator_accepts_consent_weight_parameter(cache):
+    """``@requires_consent(..., consent_weight="high")`` registers the
+    weight in the metadata registry."""
+    from work_buddy.consent import (
+        requires_consent, get_consent_metadata,
+    )
+
+    @requires_consent(
+        "test.high_weight_op",
+        reason="testing",
+        risk="moderate",
+        consent_weight="high",
+    )
+    def _high_weight_fn():
+        return "ok"
+
+    meta = get_consent_metadata("test.high_weight_op")
+    assert meta is not None
+    assert meta["consent_weight"] == "high"
+    assert meta["risk"] == "moderate"
+
+
+def test_decorator_defaults_consent_weight_to_risk(cache):
+    """When ``consent_weight`` is omitted, it mirrors the declared ``risk``."""
+    from work_buddy.consent import (
+        requires_consent, get_consent_metadata,
+    )
+
+    @requires_consent(
+        "test.moderate_default_op",
+        reason="testing",
+        risk="moderate",
+    )
+    def _moderate_fn():
+        return "ok"
+
+    meta = get_consent_metadata("test.moderate_default_op")
+    assert meta is not None
+    assert meta["consent_weight"] == "moderate"
+
+
+def test_decorator_rejects_invalid_consent_weight(cache):
+    """Invalid consent_weight raises at decoration time."""
+    from work_buddy.consent import requires_consent
+
+    import pytest as _pytest
+    with _pytest.raises(ValueError, match="Invalid consent_weight"):
+        @requires_consent(
+            "test.bad_weight",
+            reason="testing",
+            risk="moderate",
+            consent_weight="ultraviolet",
+        )
+        def _bad():
+            return "x"
