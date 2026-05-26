@@ -254,6 +254,34 @@ _AUTO_CONSENT_TIMEOUT = 90  # seconds to wait for user response
 _MAX_CONSENT_RETRIES = 2   # max sequential ConsentRequired retries per wb_run
 
 
+def _invoke_with_session(callable_, session_id, /, **kwargs):
+    """Invoke ``callable_`` with the agent's session id pinned on the
+    ``_originating_session`` ContextVar.
+
+    The MCP server process runs under its own ``WORK_BUDDY_SESSION_ID``
+    (typically a sidecar-bootstrap session), distinct from the agent's
+    session. Consent grants that come back via ``callback_session_id``
+    land in the *agent's* session DB. Without this wrapper, the
+    ``@requires_consent`` decorator's ``is_granted`` check resolves to
+    the bootstrap session via ``os.environ`` and never sees the grant.
+
+    Setting ``_originating_session`` to the agent's id makes the
+    decorator's Step-4 originating-session fallback fire against the
+    correct DB. Mirrors the pattern the sidecar's ``retry_sweep`` uses
+    (see ``work_buddy/sidecar/retry_sweep.py``).
+    """
+    if not session_id:
+        return callable_(**kwargs)
+    from work_buddy.agent_session import (
+        set_originating_session, reset_originating_session,
+    )
+    token = set_originating_session(session_id)
+    try:
+        return callable_(**kwargs)
+    finally:
+        reset_originating_session(token)
+
+
 def _check_missing_consent(operations: list[str]) -> list[str]:
     """Return operations from the list that lack a valid consent grant.
 
@@ -1456,10 +1484,18 @@ def register_tools(mcp: FastMCP) -> None:
                     return _prepare(consent_result)
 
         # --- Execute the callable (with fallback retry on ConsentRequired) ---
+        # Pin the agent's session on the originating-session ContextVar so
+        # the @requires_consent decorator's is_granted check resolves to
+        # the agent's consent.db (where grants from the gateway's
+        # auto-consent flow land) rather than the MCP server process's
+        # bootstrap session.
         _consent_retries = 0
         while True:
             try:
-                result = await asyncio.to_thread(entry.callable, **parsed_params)
+                result = await asyncio.to_thread(
+                    _invoke_with_session, entry.callable, _agent_sid,
+                    **parsed_params,
+                )
                 break  # Success — exit retry loop
             except TypeError as exc:
                 param_help = registry._entry_to_dict(entry).get("parameters", {})
@@ -2202,7 +2238,13 @@ def retry_operation(operation_id: str) -> dict[str, Any]:
                     record.get("originating_session_id"),
                 )
             else:
-                result = entry.callable(**record["params"])
+                # Pin the originating session so the decorator's
+                # is_granted check finds grants in the agent's DB
+                # rather than the MCP server's bootstrap session DB.
+                result = _invoke_with_session(
+                    entry.callable, _retry_session_id,
+                    **record["params"],
+                )
             break
         except ConsentRequired as exc:
             consent_retries += 1
