@@ -48,6 +48,8 @@ parents:
 
 Universal IR search across every indexed source. Builds the BM25 + dense vectors at index time (`ir_index(source=...)`); `context_search(query, source=..., method=...)` ranks documents at query time. Returns markdown-formatted results.
 
+For *structured* (dict-shaped) results — e.g. when chaining into [`walk`](../disclosure/walk) / [`drill_tree`](../disclosure/drill_tree) or building UI lists — reach for [`find`](../search/find) instead. Same underlying engine; different return shape.
+
 ## When to use `context_search` vs related capabilities
 
 - Use **`context_search`** when you want to rank by query across one or more raw indexed sources and don't need post-hit drilling. Common path: `context_search(query, source="conversation")` for raw turn text across sessions; `context_search(query, source="chrome")` for tab text; `context_search(query, source="task_note")` for task notes; `context_search(query, source="docs")` for documents. Omitting `source` searches everywhere (results dilute fast — prefer a `source` filter when you know which domain).

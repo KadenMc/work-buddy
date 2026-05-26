@@ -24,7 +24,16 @@ def drill_tree_op(
 
 
 def _register() -> None:
-    register_op("op.wb.drill_tree", drill_tree_op)
+    # Canonical short-name alias `walk` registered alongside `drill_tree`.
+    # Both bind the same callable; capability declarations live separately
+    # so each gets its own discoverable name, parameter schema, and
+    # content body. ``replace=True`` is set on both registrations so a
+    # registry reload (importlib.reload via load_builtin_ops) re-binds
+    # cleanly rather than crashing on the already-registered names —
+    # important under pytest collection when test ordering triggers the
+    # reload path.
+    register_op("op.wb.drill_tree", drill_tree_op, replace=True)
+    register_op("op.wb.walk", drill_tree_op, replace=True)
 
 
 _register()

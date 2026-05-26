@@ -37,6 +37,8 @@ parents:
 
 Universal tree navigation across registered `TreeDrillable` domains.
 
+`drill_tree` and [`walk`](walk) are the same op — `walk` is the canonical short name. Both are stable; use whichever reads naturally in context.
+
 **When to reach for this vs. other tools**:
 
 - Use **`drill_tree`** when you already have a *node id* and want to navigate its structure. No ranking is performed; the response is the requested view at the chosen depth.
