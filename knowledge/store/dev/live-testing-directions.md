@@ -84,7 +84,7 @@ After the full test:
 - **Don't use synthetic operations when a real one fits.** A test that creates a real task the user wanted saved is better than one that creates a `test_xxx` task they have to clean up.
 - **Don't manually mint grants to work around bugs DURING the test.** If the test reveals a bug, that's the test working. Report the bug; don't paper over it. (Outside the test, when you're trying to unblock the user, manual grants are fine — just don't conflate the two.)
 
-## Example: composable-consent-v1 live test
+## Example: composable workflow consent live test
 
 The exact protocol that validated the workflow-consent pre-flight prompt and the Telegram out-of-band grant-writing:
 

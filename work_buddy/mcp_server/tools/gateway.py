@@ -1338,7 +1338,7 @@ def register_tools(mcp: FastMCP) -> None:
             _t0 = _time.monotonic()
             _wf_session_id = _resolve_session(ctx)
 
-            # Composable consent v1 — pre-flight workflow consent.
+            # Composable workflow consent — pre-flight prompt.
             #
             # Skip the prompt when:
             #   - we are inside a ``user_initiated()`` context (UI click /
