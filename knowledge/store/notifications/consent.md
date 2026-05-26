@@ -33,12 +33,6 @@ dev_notes: |-
 
   **If you add a new dashboard endpoint** that fires a state-entry side effect invoking a `@requires_consent` capability and bypasses `_post_thread_action`, you must add the wrapper yourself. The capability dispatcher running inside `EXECUTING`'s side-effect handler runs synchronously in the same thread as `engine.transition`, so a `user_initiated` context wrapping the transition covers the entire downstream chain.
 
-  ## Workflow-consent orphan reconciliation
-
-  A workflow grants a `__workflow_consent__` blanket into the agent's `consent.db` (on disk, up to a 3h TTL) and pins the run's DAG in `conductor._ACTIVE_RUNS` (in memory). The two have mismatched lifetimes: an MCP-server restart wipes `_ACTIVE_RUNS` but leaves the blanket live, so it would silently authorize every consent-gated call until TTL expiry.
-
-  `conductor.reconcile_workflow_consent(session_id)` re-couples them. It runs from `gateway.py:_register_session` — the single chokepoint all three session-registration paths funnel through (`wb_init` tool, `wb_run` wb_init branch, header-based auto-init), each also a post-restart reconnect point. If the session's DB holds an active blanket but no `_ACTIVE_RUNS` entry has a matching `agent_session_id`, the blanket is orphaned and revoked. A genuinely in-flight workflow keeps its DAG in `_ACTIVE_RUNS` (entries leave only on completion), so a non-restart re-registration finds the run and leaves the blanket intact. `is_workflow_consent_active(session_id=...)` is the per-session check — it delegates to `_is_granted_in_session`, skipping the originating-session fallback so a blanket in another session's DB is not counted. The function is guarded internally and never raises, so it cannot break session registration. Tests: `tests/test_workflow_consent.py`.
-
   ## Modal-fallback message routing
 
   The Obsidian plugin's `ObsidianModal.dispatchConsentGrant` (handlers.ts) posts a `consent_grant` message to the messaging service whenever the user clicks an Allow option. Body shape: `{operation, mode, ttl_minutes, notification_id}`. The `notification_id` is the load-bearing field — without it the sidecar cannot resolve the originating agent's session and falls back to writing the grant in its own session DB (a legacy behavior preserved with a WARN log so an out-of-sync plugin doesn't strand the user, but the routing is broken until the plugin is rebuilt + reloaded).
@@ -50,6 +44,40 @@ dev_notes: |-
   **`grant_consent` and `grant_consent_batch` accept `session_id` as a keyword.** Plumbs through to `ConsentCache.grant(..., session_id=...)` — the same mechanism workflow blanket grants use to write to a different session's DB than the calling process. The audit log includes the truncated session id in the `GRANTED` details column so cross-session writes are auditable post-hoc.
 
   **The bundle key (`bundle:<capability>`) is granted alongside individual ops.** It serves as audit-log readability — `GRANTED | bundle:task_create | once` is more informative than three separate GRANTED rows for the underlying ops. No decorator checks the bundle key, so leaving it in the DB doesn't satisfy any gate by accident.
+
+  ## Response → grant pipeline (finalize_consent_response)
+
+  When a user responds to a consent prompt — on any surface — the system has to do two distinct things:
+
+  1. **Record the response** on the notification (status: `pending` → `responded`, persist the chosen mode and surface).
+  2. **Translate that response into grants** in the right session's `consent.db` (individual op grants for capability bundles; `workflow_class:<name>` grant for workflow-consent prompts).
+
+  The first is `notifications.store.respond_to_notification`. The second is `consent.finalize_consent_response(notification_id)` — extracted from `resolve_consent_request` so any surface can call it after recording the response. Every response-recording path calls them in that order:
+
+  | Surface | Call site | Pattern |
+  |---|---|---|
+  | Telegram inline button | `work_buddy/telegram/handlers.py:on_button` | `respond_to_notification` → `finalize_consent_response` → `dispatch_callback` → `_dismiss_others` |
+  | Telegram `/reply` command | `work_buddy/telegram/handlers.py:on_reply` | same shape as on_button |
+  | Obsidian modal (out-of-band) | sidecar `MessagePoller._handle_consent_grant_message` | routes through `consent.resolve_consent_request` which calls `finalize_consent_response` internally |
+  | Dashboard "Approve" endpoint | `work_buddy/dashboard/service.py` | calls `resolve_consent_request` directly |
+  | MCP `consent_request_resolve` op | gateway op dispatch | same path as dashboard |
+  | Gateway in-window poll | `_auto_consent_request` / `_auto_workflow_consent_request` | writes grants inline via `grant_consent_batch` / `grant_workflow_class` (skips `finalize_consent_response` because the poll has fresher state in hand) |
+
+  The grant-writing logic — bundle unbundle, `workflow_class:<name>` mint for `context.kind == "workflow_consent"`, individual op grants, audit emission — lives in exactly one place (`finalize_consent_response`). Any surface that doesn't go through `resolve_consent_request` (Telegram is the notable one) must call `finalize_consent_response` directly. Tests covering each path live in `tests/unit/test_consent_composable.py`.
+
+  ## Agent-session routing for callback_session_id
+
+  `create_consent_request` accepts a `callback_session_id` parameter — the session whose `consent.db` should receive grants when the response lands. **This must be the agent's session, not the MCP server's bootstrap session.** The two are different processes with different `WORK_BUDDY_SESSION_ID` env vars: the bootstrap session is the long-running MCP server process; the agent session is the Claude Code Desktop session that called `wb_run`.
+
+  Both `_auto_consent_request` and `_auto_workflow_consent_request` in `gateway.py` accept an explicit `session_id` parameter and pass it to `create_consent_request`. The `wb_run` dispatch site threads `_agent_sid` (from `_resolve_session(ctx)`); the retry path threads `record.get("originating_session_id")` (the session that originally requested the op). The env-var fallback inside the helpers exists only for direct Python callers that bypass the gateway surface — production code paths pass the session id explicitly.
+
+  If you add a new helper that creates consent notifications, pass `callback_session_id=<agent_session_id>` explicitly. Reading `os.environ.get("WORK_BUDDY_SESSION_ID")` for this purpose is wrong — it returns the bootstrap session, and out-of-band approvals will route grants to a DB the agent's `is_granted` check never queries.
+
+  ## Listing grants in the agent's session
+
+  `consent_list` (capability `op.wb.consent_list`) accepts `agent_session_id` and routes the SQLite read to that session's `consent.db`. The gateway auto-injects the caller's session id when dispatching the capability via `wb_run`. Direct Python callers (tests, scripts) can pass it explicitly; passing `None` falls back to the cache's default-path resolution (which uses whatever session was first connected — typically the process's bootstrap session, which is rarely what a tool caller wants to see).
+
+  The underlying `ConsentCache.list_all(*, session_id=None)` mirrors the routing pattern used by `grant`, `revoke`, and `_is_granted_in_session`: explicit session id when set, default-path fallback when not.
 ---
 
 Some `work_buddy` functions are protected by a `@requires_consent` decorator. **The gateway handles consent transparently** — when you call `wb_run` on a consent-gated capability, the gateway automatically requests consent from the user, waits for approval, and retries the operation. You do not need to manually orchestrate consent.
@@ -76,11 +104,57 @@ Grants are stored session-scoped in a SQLite database at `data/agents/<session>/
 
 When the sidecar's retry sweep replays a previously-consented operation, the consent check ALSO consults the originating user-session's grants (looked up by reference to the op record's `originating_session_id`). This means a consented operation that hits PWU and gets queued for retry will not fail with `ConsentRequired` on replay. Revocation in the originating session immediately disables future replays.
 
+**Workflow grants do NOT time-travel through the retry queue.** The originating-session fallback considers individual op-grants only — `workflow_class:*` / `workflow_run:*` / legacy `__workflow_consent__` keys are deliberately skipped on the replay path. The rationale: a workflow grant active when an op was queued may have been revoked, or have a class TTL that long expired by the time the sweep replays the op days later; the user's *temporally-bounded* trust in the workflow does not generalize to a *later* replay. Replays succeed only on individual op grants the user explicitly authorized for that op (or that exist in the current replay-time session).
+
 **Cross-session routing on out-of-band approval.** When a user approves a consent prompt on the Obsidian modal *after* the gateway's in-window poll has already returned `{status: "timeout"}`, the plugin posts a `consent_grant` message to the messaging service. The sidecar's MessagePoller picks it up and routes the grant via `resolve_consent_request`, which looks up the notification's `callback_session_id` and writes grants to **that** session's DB — not the sidecar's. The originating agent's subsequent `obsidian_retry` (or fresh capability call) then sees the grant and proceeds. Without this routing, modal-approved grants would land in the sidecar's bootstrap-session DB where no agent could see them.
 
 **Bundle unbundling.** When the gateway requests consent for a multi-op capability, the notification's `operation` field is a label of the form `bundle:<capability_name>` and the underlying ops live in `consent_meta.context.operations`. `resolve_consent_request` writes grants for **each underlying op individually** in addition to the bundle label, because the `@requires_consent` decorators check the individual operation names (e.g. `tasks.create_task`, `obsidian.write_file`), not the bundle. The bundle label survives as audit metadata.
 
-**Workflow-level blanket consent:** Starting a workflow grants blanket consent for all its steps, stored as a `__workflow_consent__` grant in the agent's `consent.db`. The blanket is revoked when the workflow completes; a step can opt out via `requires_individual_consent: true` in the workflow definition, which temporarily suspends the blanket and requires per-step consent; and it is reconciled away on session re-registration when no matching active run exists — the case where an MCP-server restart orphaned a mid-flight workflow (the in-memory run map is wiped, but the on-disk blanket would otherwise survive its TTL and silently authorize calls). The 3-hour default TTL is only a backstop. Agents don't need to manage any of this — the conductor handles it automatically (both auto-run and main-execution steps).
+## Composable workflow consent
+
+Starting a workflow may prompt the user once to authorize the workflow's component operations. Two grant levels live in the session's `consent.db`:
+
+- `workflow_class:<name>` — the "Allow for 15 min" or "Allow always" key. Set by the gateway's pre-flight prompt when the user approves a non-`once` mode. TTL-bounded (15 min for `temporary`, 24h for `always`). While live, future invocations of the same workflow skip the pre-flight prompt.
+- `workflow_run:<name>:<run_id>` — minted by `start_workflow` for every active run. Authorizes the workflow's sub-operations *as constituents of that run*. No TTL; revoked when the run completes (or via cascade when the class grant is explicitly revoked).
+
+The gateway pre-flight prompt fires when ALL of the following hold:
+
+1. The workflow's `workflow_class:<name>` grant is NOT live in this session.
+2. The dispatch is NOT inside a `user_initiated()` context.
+3. The workflow's declared `consent_operations` include at least one moderate- or high-risk op (low-only workflows auto-bypass under the hybrid migration policy — see below).
+
+User choices in the prompt: **Allow once** (no class grant; only the run grant covers this invocation), **Allow for 15 min** (class grant minted with 15-min TTL), **Allow always (this session, 24h)** (class grant minted with 24-h TTL), or **Deny** (the workflow does not start; `start_workflow` is short-circuited and the operation completes with a `consent denied` error).
+
+### Decorator carry path
+
+The `@requires_consent` check inside a workflow run consults, in order:
+
+1. Individual op grant for `operation` (highest priority).
+2. Any live `workflow_run:*` key in this session.
+3. Any live `workflow_class:*` key in this session.
+4. Legacy `__workflow_consent__` (deprecation-logged once per op per process).
+
+Capabilities tagged with `consent_weight="high"` on their `@requires_consent` decorator (and mirrored on the `Capability.consent_weight` field) BYPASS the workflow-grant carry entirely — they always re-prompt individually, even inside an approved workflow run. This mirrors Cursor's destructive-command carve-out and OpenAI's `isConsequential` flag for GPT Actions. The default `consent_weight` mirrors the declared `risk` value, so the legacy behavior of "workflow blanket carries everything" is preserved for low-risk ops while high-risk ops are properly gated.
+
+### `requires_individual_consent: true` step flag
+
+A workflow step can opt out of the run-grant carry via `requires_individual_consent: true` in the workflow definition. The conductor revokes the run grant before dispatching such a step and re-mints it after the step completes (or after the agent advances the workflow for a reasoning step). This lets a workflow author force a per-step prompt for one specific operation without affecting the rest of the DAG.
+
+### Low-weight workflow auto-bypass
+
+Workflows whose constituent capabilities declare only low-weight `consent_operations` (or none at all) auto-bypass the pre-flight prompt. The gateway audit-logs each bypass as `WORKFLOW_AUTO_BYPASS_LOW_WEIGHT | workflow=<name>` so the `scripts/audit_workflow_consent.py` script can enumerate which workflows ride the bypass and which prompt. The bypass keeps read-only routines like `task-search` frictionless while still prompting for any workflow that touches moderate or high-risk operations.
+
+### Orphan reconciliation
+
+A workflow's `workflow_run:<name>:<run_id>` key lives in the agent's `consent.db` while the run is active. An MCP-server restart wipes `_ACTIVE_RUNS` but leaves the on-disk grant; without cleanup, the orphaned key would silently authorize subsequent calls until something else revoked it. `conductor.reconcile_workflow_consent(session_id)` runs at session registration and revokes any `workflow_run:*` keys whose run_id is not present in `_ACTIVE_RUNS` for that session. Class grants are intentionally left alone — their TTL is the bound. The function also still handles the legacy `__workflow_consent__` key for back-compat (preserves the historical return-shape contract: `{"swept": True}` / `{"swept": False, "reason": "active_run_present"}` / `{"swept": False, "reason": "no_blanket"}`).
+
+### Explicit cascade revoke
+
+`conductor.cascade_revoke_workflow(name, session_id=...)` revokes the `workflow_class:<name>` key AND walks `_ACTIVE_RUNS` to revoke every in-flight run grant for that workflow. Used when the user explicitly withdraws trust mid-run — the ocap-CDT model where revoking the parent class grant propagates to all derived run grants. Without this, withdrawing trust would leave the in-flight runs riding their independent run grants until completion.
+
+### Legacy `__workflow_consent__` (deprecated)
+
+The legacy blanket key remains as a **read-side** fallback: `_is_granted_in_session` honors a live legacy blanket when no individual / `workflow_run` / `workflow_class` grant matches, and emits a single `LEGACY_WORKFLOW_BLANKET_USED` audit entry per operation per process so unconverted call sites stay greppable. The **write-side** uses only the new keys; the conductor and gateway no longer write `__workflow_consent__`. The read fallback is scheduled for removal once the audit log shows no LEGACY_WORKFLOW_BLANKET_USED hits in a release cycle.
 
 ## Risk levels
 
@@ -96,7 +170,7 @@ This is the mechanism that lets read-only capabilities (e.g. `daily_briefing`) i
 
 The consent gate exists for **autonomous agent operations** — cron-fired scans, sidecar workflows, LLM-initiated actions where the user isn't watching. UI clicks are the inverse case: **the user already consented by clicking the affordance**. Pre-emptively re-prompting them for the action they explicitly initiated is bureaucratic UX and a known bug pattern.
 
-`work_buddy.consent.user_initiated(operation)` is a context manager for that case. Wrap the critical section of a UI-driven endpoint (Flask handler reached via a button click, slash-command handler, CLI script the user invoked explicitly) and nested `@requires_consent` gates pass through, with audit-log entries (`USER_INITIATED`, `USER_INITIATED_COVERED`) distinguishing UI-driven actions from autonomous ones.
+`work_buddy.consent.user_initiated(operation)` is a context manager for that case. Wrap the critical section of a UI-driven endpoint (Flask handler reached via a button click, slash-command handler, CLI script the user invoked explicitly) and nested `@requires_consent` gates pass through, with audit-log entries (`USER_INITIATED`, `USER_INITIATED_COVERED`) distinguishing UI-driven actions from autonomous ones. The gateway's workflow pre-flight prompt is ALSO suppressed when dispatching inside a `user_initiated()` context.
 
 ```python
 from work_buddy.consent import user_initiated

@@ -1,8 +1,14 @@
 """Regression: workflow steps marked ``requires_individual_consent: true``
-must suspend the workflow blanket when they are handed to the agent (main
-execution path), then re-grant on advance. Prior to this fix, the flag was
-only honored for ``auto_run`` steps, so a main-execution step inside a
-workflow silently bypassed its ``@requires_consent`` gate.
+must suspend the workflow run grant when they are handed to the agent
+(main execution path), then re-grant on advance. Prior to the original
+fix, the flag was only honored for ``auto_run`` steps, so a
+main-execution step inside a workflow silently bypassed its
+``@requires_consent`` gate.
+
+Updated for composable consent: the conductor now mints/revokes
+``workflow_run:<name>:<run_id>`` grants via
+``grant_workflow_run`` / ``revoke_workflow_run`` instead of the legacy
+``__workflow_consent__`` blanket.
 """
 from __future__ import annotations
 
@@ -11,15 +17,15 @@ def test_main_execution_individual_consent_suspends_blanket(monkeypatch):
     from work_buddy import consent as c
     from work_buddy.mcp_server import conductor
 
-    # Capture grant/revoke calls
+    # Capture grant/revoke calls against the new composable primitives.
     calls: list[tuple[str, str]] = []
     monkeypatch.setattr(
-        c, "grant_workflow_consent",
-        lambda run_id, **_: calls.append(("grant", run_id)),
+        c, "grant_workflow_run",
+        lambda wf_name, run_id, **_: calls.append(("grant", run_id)),
     )
     monkeypatch.setattr(
-        c, "revoke_workflow_consent",
-        lambda run_id="", **_: calls.append(("revoke", run_id)),
+        c, "revoke_workflow_run",
+        lambda wf_name="", run_id="", **_: calls.append(("revoke", run_id)),
     )
 
     # Build a minimal fake DAG node with requires_individual_consent set

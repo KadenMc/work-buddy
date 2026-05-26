@@ -19,6 +19,19 @@ work-buddy's functionality is reached through five MCP tools that appear in your
 - **Capability** — a single atomic operation (`task_create`, `agent_docs`, `consent_request`, …). `wb_run` executes it and returns a result.
 - **Workflow** — a multi-step DAG defined in `knowledge/store/workflows.json` (`task-triage`, `morning-routine`, …). `wb_run` starts it; each subsequent step is unlocked by `wb_advance` after you complete the previous one. Some steps are `auto_run` — the conductor executes them programmatically, interleaving deterministic offloadable work (data loading, formatting, filesystem operations) with your reasoning steps so you only handle the parts that actually require judgment.
 
+### Workflow consent (composable)
+
+Starting a workflow may prompt the user once to authorize the workflow's component operations. The prompt offers four affordances: **Allow once** (this invocation only), **Allow for 15 min** (re-invocations of the same workflow within the window reuse the approval without re-prompting), **Allow always (this session, 24h)**, or **Deny**. Two grant keys live in the session's `consent.db`:
+
+- `workflow_class:<name>` — set by **Allow for 15 min** / **Allow always**. Authorizes any *future* run of `<name>` within the TTL window. Re-runs check this key and skip the prompt.
+- `workflow_run:<name>:<run_id>` — set by `start_workflow` for every active run. Authorizes the workflow's sub-operations as constituents of *this* run. Revoked when the run completes.
+
+Inside a workflow run, `@requires_consent`-gated calls check (in order): individual op grant → any live `workflow_run:*` or `workflow_class:*` key → the legacy `__workflow_consent__` blanket (deprecation-logged). Capabilities tagged with `consent_weight="high"` bypass the workflow-grant carry entirely — they always re-prompt individually, even inside an approved workflow.
+
+The pre-flight prompt is **skipped** when (a) the workflow's `workflow_class` grant is already live for this session, or (b) the dispatch happens inside a `user_initiated()` context (UI button click, dashboard endpoint, slash-command handler that wraps its dispatch — the click *is* the consent affordance). Workflows whose declared operations are all low-weight auto-bypass the prompt entirely (the audit script `scripts/audit_workflow_consent.py` lists which workflows are in this set vs. which need the prompt).
+
+Behavior the model deliberately does NOT allow: workflow grants do **not** time-travel through the sidecar retry queue. A queued op replayed days later only sees its individual grant (if any) — the workflow grant active at queue-time has long since been scoped out.
+
 ### Session init (mandatory)
 
 `WORK_BUDDY_SESSION_ID` is set automatically by a SessionStart hook. Read it from your conversation context (or the environment), then:

@@ -254,10 +254,70 @@ _AUTO_CONSENT_TIMEOUT = 90  # seconds to wait for user response
 _MAX_CONSENT_RETRIES = 2   # max sequential ConsentRequired retries per wb_run
 
 
-def _check_missing_consent(operations: list[str]) -> list[str]:
-    """Return operations from the list that lack a valid consent grant."""
-    from work_buddy.consent import _cache
-    return [op for op in operations if not _cache.is_granted(op)]
+def _invoke_with_session(callable_, session_id, /, **kwargs):
+    """Invoke ``callable_`` with the agent's session id pinned on the
+    ``_originating_session`` ContextVar.
+
+    The MCP server process runs under its own ``WORK_BUDDY_SESSION_ID``
+    (typically a sidecar-bootstrap session), distinct from the agent's
+    session. Consent grants that come back via ``callback_session_id``
+    land in the *agent's* session DB. Without this wrapper, the
+    ``@requires_consent`` decorator's ``is_granted`` check resolves to
+    the bootstrap session via ``os.environ`` and never sees the grant.
+
+    Setting ``_originating_session`` to the agent's id makes the
+    decorator's Step-4 originating-session fallback fire against the
+    correct DB. Mirrors the pattern the sidecar's ``retry_sweep`` uses
+    (see ``work_buddy/sidecar/retry_sweep.py``).
+    """
+    if not session_id:
+        return callable_(**kwargs)
+    from work_buddy.agent_session import (
+        set_originating_session, reset_originating_session,
+    )
+    token = set_originating_session(session_id)
+    try:
+        return callable_(**kwargs)
+    finally:
+        reset_originating_session(token)
+
+
+def _check_missing_consent(
+    operations: list[str],
+    agent_session_id: str | None = None,
+) -> list[str]:
+    """Return operations from the list that lack a valid consent grant.
+
+    Each operation's ``consent_weight`` (from its ``@requires_consent``
+    metadata) is consulted so that ``"high"`` weight ops are NOT counted
+    as granted via a workflow blanket — pre-flight must surface them for
+    individual prompting even when a workflow grant is live.
+
+    ``agent_session_id`` pins the originating-session ContextVar around
+    the check so ``is_granted`` resolves to the agent's consent DB
+    rather than the MCP server's bootstrap session DB. Without it the
+    pre-flight re-prompts for grants that already exist in the agent's
+    session.
+    """
+    from work_buddy.consent import _cache, get_consent_metadata
+    if agent_session_id:
+        from work_buddy.agent_session import (
+            set_originating_session, reset_originating_session,
+        )
+        _orig_token = set_originating_session(agent_session_id)
+    else:
+        _orig_token = None
+    try:
+        missing: list[str] = []
+        for op in operations:
+            meta = get_consent_metadata(op) or {}
+            weight = meta.get("consent_weight", "low")
+            if not _cache.is_granted(op, consent_weight=weight):
+                missing.append(op)
+        return missing
+    finally:
+        if _orig_token is not None:
+            reset_originating_session(_orig_token)
 
 
 def _auto_consent_request(
@@ -265,6 +325,7 @@ def _auto_consent_request(
     capability_name: str,
     op_id: str,
     timeout: int = _AUTO_CONSENT_TIMEOUT,
+    session_id: str | None = None,
 ) -> dict[str, Any]:
     """Send a bundled consent request and poll for user response.
 
@@ -321,8 +382,16 @@ def _auto_consent_request(
 
     body = "\n".join(lines)
 
-    # Auto-inject session ID for callback delivery
-    callback_session_id = os.environ.get("WORK_BUDDY_SESSION_ID")
+    # Route to the agent's session DB. When ``session_id`` is None
+    # (legacy callers that haven't been updated to pass it), fall back
+    # to the process's env var — which is the MCP server's bootstrap
+    # session, NOT the agent's. That fallback is the historical
+    # behavior; for out-of-band approval paths (Telegram callback /
+    # Obsidian-modal click after the gateway's poll has exited), it
+    # mis-routes the grant to the bootstrap DB and the agent's session
+    # never sees it. Every wb_run dispatch site passes the agent's
+    # session id explicitly; the env fallback exists for back-compat.
+    callback_session_id = session_id or os.environ.get("WORK_BUDDY_SESSION_ID")
 
     # Create the consent request (uses notification substrate)
     record = create_consent_request(
@@ -447,14 +516,333 @@ def _auto_consent_request(
 
     # Always grant the individual operations.  resolve_consent_request
     # only grants the bundle name (e.g., "bundle:task_toggle"), not the
-    # individual operations the decorators actually check.
-    grant_consent_batch(operations, mode=mode, ttl_minutes=ttl)
+    # individual operations the decorators actually check. Route the
+    # grants to the same session DB the notification's
+    # ``callback_session_id`` targets, so the in-window write and the
+    # out-of-band ``finalize_consent_response`` write land in the same
+    # place. Without the explicit ``session_id``, the cache uses its
+    # default DB — which is whichever session the cache was first
+    # connected against (usually the agent's, but race-dependent).
+    grant_consent_batch(
+        operations, mode=mode, ttl_minutes=ttl,
+        session_id=callback_session_id,
+    )
 
     return {
         "status": "granted",
         "mode": mode,
         "operations": operations,
         "operation_id": op_id,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Workflow consent — pre-flight prompt at workflow start
+# ---------------------------------------------------------------------------
+# The pre-flight fires a single user-facing prompt when a workflow is
+# starting and the user has not previously authorized that workflow (no
+# live ``workflow_class:<name>`` grant in the session). The prompt names
+# the workflow and lists the operations its DAG may invoke; the user
+# picks once / temporary (with TTL) / always / deny.
+#
+# Slash-command invocations (and any other ``user_initiated()`` context)
+# skip the prompt entirely — the UI click IS the consent affordance.
+# Slash-command launchers entering ``user_initiated()`` opt their dispatch
+# into the bypass.
+
+# Class-grant TTLs are sourced from ``work_buddy.consent`` so that the
+# in-window prompt path (this module) and the out-of-band resolve path
+# (``resolve_consent_request``) agree on the window each affordance maps
+# to. Reassigning at module import keeps the prompt-rendering code below
+# tidy without introducing a second source of truth.
+from work_buddy.consent import (
+    WORKFLOW_CLASS_TEMPORARY_TTL_MIN as _WORKFLOW_CLASS_DEFAULT_TTL_MIN,
+    WORKFLOW_CLASS_ALWAYS_TTL_MIN as _WORKFLOW_CLASS_ALWAYS_TTL_MIN,
+)
+
+
+def _is_workflow_class_authorized(
+    workflow_name: str,
+    *,
+    session_id: str | None,
+) -> bool:
+    """Return True when a ``workflow_class:<name>`` grant is live in this
+    session — i.e. the user previously chose 'temporary' or 'always' for
+    this workflow and the grant hasn't expired or been revoked.
+    """
+    from work_buddy.consent import is_workflow_authorized
+    ok, _ = is_workflow_authorized(workflow_name, session_id=session_id)
+    return ok
+
+
+def _collect_workflow_consent_ops(
+    entry: "registry.WorkflowDefinition",
+) -> tuple[list[str], str]:
+    """Walk the workflow's steps and collect the union of
+    ``consent_operations`` declared by invoked capabilities. Returns
+    ``(ops, max_risk)`` where ``ops`` is the deduplicated list and
+    ``max_risk`` is the highest risk level among them
+    (``"low"``/``"moderate"``/``"high"``).
+
+    Best-effort: capabilities not yet in the registry (e.g. inert
+    declarations) contribute no operations. Used for the consent-modal
+    body and for the low-weight auto-bypass decision (workflows whose
+    declared ops are all low-risk skip the prompt).
+    """
+    seen: set[str] = set()
+    ops: list[str] = []
+    risk_order = {"low": 0, "moderate": 1, "high": 2}
+    max_risk = "low"
+
+    invokes_all: set[str] = set()
+    for step in entry.steps:
+        for invokes in step.invokes:
+            invokes_all.add(invokes)
+        if step.auto_run is not None:
+            # The auto_run.callable is a dotted Python path; the
+            # control-graph resolver maps it to a capability when
+            # available. For modal-body purposes we don't need to
+            # resolve — step.invokes is the documented surface.
+            pass
+
+    for cap_name in sorted(invokes_all):
+        cap_entry = registry.get_entry(cap_name)
+        if not isinstance(cap_entry, registry.Capability):
+            continue
+        for op in cap_entry.consent_operations:
+            if op in seen:
+                continue
+            seen.add(op)
+            ops.append(op)
+            # Carry the op's risk up to the workflow-prompt level.
+            try:
+                from work_buddy.consent import get_consent_metadata
+                meta = get_consent_metadata(op)
+            except Exception:
+                meta = None
+            op_risk = (meta or {}).get("risk", "moderate")
+            if risk_order.get(op_risk, 0) > risk_order.get(max_risk, 0):
+                max_risk = op_risk
+
+    return ops, max_risk
+
+
+def _render_workflow_consent_body(
+    workflow_name: str,
+    entry: "registry.WorkflowDefinition",
+    consent_ops: list[str],
+) -> str:
+    """Build the modal body shown to the user when prompting for
+    workflow-level consent. Progressive disclosure: a one-line headline,
+    a short description, then the list of consent-gated operations.
+    """
+    desc = (entry.description or "").strip()
+    lines = [f"**Workflow:** {workflow_name}"]
+    if desc:
+        lines.append(desc)
+    lines.append("")
+    step_count = len(entry.steps)
+    if consent_ops:
+        lines.append(
+            f"This workflow ({step_count} step{'s' if step_count != 1 else ''}) "
+            f"may invoke the following consent-gated operations:"
+        )
+        for op in consent_ops:
+            try:
+                from work_buddy.consent import get_consent_metadata
+                meta = get_consent_metadata(op)
+            except Exception:
+                meta = None
+            risk = (meta or {}).get("risk", "moderate")
+            lines.append(f"- `{op}` ({risk})")
+    else:
+        lines.append(
+            f"This workflow has {step_count} "
+            f"step{'s' if step_count != 1 else ''}. No consent-gated "
+            f"operations were declared by its capabilities."
+        )
+    lines.append("")
+    lines.append(
+        "Approving covers all operations within this workflow's run. "
+        "Choose **Allow for 15 min** to also cover re-invocations of "
+        "the same workflow within that window without re-prompting."
+    )
+    return "\n".join(lines)
+
+
+def _auto_workflow_consent_request(
+    workflow_name: str,
+    entry: "registry.WorkflowDefinition",
+    op_id: str,
+    session_id: str | None,
+    timeout: int = _AUTO_CONSENT_TIMEOUT,
+) -> dict[str, Any]:
+    """Send a workflow-level consent request and poll for the response.
+
+    Returns one of:
+      - ``{"status": "granted", "mode": "<once|temporary|always>", ...}``
+      - ``{"status": "denied", ...}``
+      - ``{"status": "timeout", "request_id": ..., ...}``
+      - ``{"status": "auto_bypass_low_weight", ...}`` — workflows whose
+        declared ops are all low-weight auto-bypass the prompt; the
+        bypass is recorded for audit so unconverted workflows are
+        greppable.
+
+    On ``mode == "temporary"`` / ``"always"``: this function also mints
+    the ``workflow_class:<name>`` grant via the consent layer so future
+    re-invocations within the TTL window skip the prompt. ``"once"``
+    skips the class grant — only the per-run grant minted later by
+    ``start_workflow`` covers the invocation.
+    """
+    from work_buddy.consent import (
+        create_consent_request, resolve_consent_request,
+        grant_workflow_class,
+    )
+    from work_buddy.notifications.store import (
+        get_notification as _get_notif,
+        mark_delivered as _mark_delivered,
+        respond_to_notification,
+    )
+    from work_buddy.notifications.dispatcher import SurfaceDispatcher
+
+    consent_ops, max_risk = _collect_workflow_consent_ops(entry)
+
+    # Low-weight workflow auto-bypass. If no consent-gated ops were
+    # declared, OR all declared ops are low-risk, the workflow runs
+    # without a user-facing prompt. Audit-log the bypass so the
+    # ``audit_workflow_consent.py`` script can find unconverted
+    # workflows that should declare an explicit ``consent_weight``.
+    if max_risk == "low":
+        from work_buddy.consent import _audit_log
+        try:
+            _audit_log(
+                "WORKFLOW_AUTO_BYPASS_LOW_WEIGHT",
+                workflow_name,
+                f"declared_ops={len(consent_ops)} | session={(session_id or '')[:8]}",
+            )
+        except Exception:
+            pass
+        return {
+            "status": "auto_bypass_low_weight",
+            "workflow_name": workflow_name,
+            "operation_id": op_id,
+            "consent_ops": consent_ops,
+        }
+
+    body = _render_workflow_consent_body(workflow_name, entry, consent_ops)
+
+    record = create_consent_request(
+        operation=f"workflow:{workflow_name}",
+        reason=body,
+        risk=max_risk,
+        default_ttl=_WORKFLOW_CLASS_DEFAULT_TTL_MIN,
+        requester=f"gateway:workflow:{workflow_name}",
+        context={
+            "kind": "workflow_consent",
+            "workflow_name": workflow_name,
+            "operation_id": op_id,
+            "consent_ops": consent_ops,
+        },
+        callback_session_id=session_id,
+    )
+    nid = record["notification_id"]
+
+    response = None
+    notif = _get_notif(nid)
+    dispatcher = None
+    if notif:
+        try:
+            dispatcher = SurfaceDispatcher.from_config()
+            dispatcher.deliver(notif, mark_delivered_fn=_mark_delivered)
+        except Exception:
+            pass
+
+        try:
+            response = dispatcher.poll_response(
+                notif, timeout_seconds=timeout, interval_seconds=3,
+            ) if dispatcher else None
+        except Exception:
+            response = None
+
+        if response is not None:
+            try:
+                respond_to_notification(nid, response)
+            except ValueError:
+                pass
+            notif_fresh = _get_notif(nid)
+            if notif_fresh and notif_fresh.delivered_surfaces and dispatcher:
+                try:
+                    dispatcher.dismiss_others(
+                        nid,
+                        responding_surface=response.surface,
+                        delivered_surfaces=notif_fresh.delivered_surfaces,
+                    )
+                except Exception:
+                    pass
+
+    if response is None:
+        retry_hint = (
+            f"mcp__work-buddy__wb_run(\"retry\", "
+            f"{{\"operation_id\": \"{op_id}\"}})"
+        )
+        return {
+            "status": "timeout",
+            "request_id": nid,
+            "operation_id": op_id,
+            "workflow_name": workflow_name,
+            "message": (
+                f"Workflow consent prompt timed out for {workflow_name!r}, "
+                f"but the request is still pending — the user can approve "
+                f"on any surface. Once approved, retry with: {retry_hint}"
+            ),
+        }
+
+    from work_buddy.notifications.models import StandardResponse
+    if isinstance(response, StandardResponse):
+        choice = response.value
+    elif isinstance(response, dict):
+        choice = response.get("value", "deny")
+    else:
+        choice = str(response)
+    if isinstance(choice, dict) and "value" in choice:
+        choice = choice["value"]
+
+    if choice == "deny":
+        try:
+            resolve_consent_request(nid, approved=False)
+        except ValueError:
+            pass
+        return {
+            "status": "denied",
+            "operation_id": op_id,
+            "workflow_name": workflow_name,
+            "message": f"User denied consent for workflow {workflow_name!r}.",
+        }
+
+    mode = choice  # "always", "temporary", or "once"
+    ttl = (
+        _WORKFLOW_CLASS_DEFAULT_TTL_MIN if mode == "temporary"
+        else _WORKFLOW_CLASS_ALWAYS_TTL_MIN if mode == "always"
+        else None
+    )
+    try:
+        resolve_consent_request(nid, approved=True, mode=mode, ttl_minutes=ttl)
+    except ValueError:
+        pass
+
+    # Mint the class grant for temporary / always modes. "once" skips —
+    # only the run grant (minted by start_workflow) covers the invocation.
+    if mode in ("temporary", "always") and ttl is not None:
+        grant_workflow_class(
+            workflow_name, ttl_minutes=ttl, session_id=session_id,
+        )
+
+    return {
+        "status": "granted",
+        "mode": mode,
+        "workflow_name": workflow_name,
+        "operation_id": op_id,
+        "consent_ops": consent_ops,
     }
 
 
@@ -968,12 +1356,56 @@ def register_tools(mcp: FastMCP) -> None:
 
         if isinstance(entry, registry.WorkflowDefinition):
             _t0 = _time.monotonic()
+            _wf_session_id = _resolve_session(ctx)
+
+            # Composable workflow consent — pre-flight prompt.
+            #
+            # Skip the prompt when:
+            #   - we are inside a ``user_initiated()`` context (UI click /
+            #     slash-command launch — the click IS the consent), or
+            #   - the workflow's class grant is already live in this
+            #     session (the user previously chose 'temporary' or
+            #     'always' for this workflow and the TTL hasn't expired).
+            #
+            # Otherwise: send the prompt, wait for the response, mint the
+            # ``workflow_class:<name>`` grant on approval, and either
+            # proceed (granted / auto_bypass_low_weight) or short-circuit
+            # the dispatch (denied / timeout).
+            try:
+                from work_buddy.consent import _consent_ctx as _wf_ctx
+                _is_user_initiated = _wf_ctx.depth > 0
+            except Exception:
+                _is_user_initiated = False
+
+            if not _is_user_initiated and not _is_workflow_class_authorized(
+                capability, session_id=_wf_session_id,
+            ):
+                wf_consent_result = await asyncio.to_thread(
+                    _auto_workflow_consent_request,
+                    capability, entry, op_id, _wf_session_id,
+                )
+                status = wf_consent_result.get("status")
+                if status in ("denied", "timeout"):
+                    _complete_operation(
+                        op_id,
+                        error=f"Workflow consent {status}: {capability}",
+                    )
+                    wf_consent_result["operation_id"] = op_id
+                    return _prepare(wf_consent_result)
+                # On 'granted' / 'auto_bypass_low_weight' / unexpected
+                # status, fall through to start_workflow. The grant
+                # minting has already happened inside the helper for
+                # 'temporary' / 'always' modes; 'once' and the
+                # auto-bypass leave class grants alone — only the run
+                # grant minted inside start_workflow covers the
+                # invocation.
+
             try:
                 result = await asyncio.to_thread(
                     _conductor().start_workflow,
                     capability,
                     parsed_params,
-                    _resolve_session(ctx),
+                    _wf_session_id,
                 )
             except Exception as exc:
                 _complete_operation(op_id, error=f"{type(exc).__name__}: {exc}")
@@ -1017,10 +1449,15 @@ def register_tools(mcp: FastMCP) -> None:
                     "operation_id": op_id,
                 })
 
-        # Inject caller's session ID for capabilities that need it
+        # Inject caller's session ID for capabilities that need it.
+        # ``consent_list`` reads grants out of a session-scoped SQLite
+        # DB; without the injection it returns rows from whichever
+        # session the cache instance was first connected against
+        # (typically the MCP server's bootstrap session), not the
+        # agent's view.
         if capability in (
             "session_activity", "session_summary", "session_wb_activity",
-            "artifact_save",
+            "artifact_save", "consent_list",
         ) and _agent_sid:
             parsed_params.setdefault("agent_session_id", _agent_sid)
 
@@ -1044,13 +1481,17 @@ def register_tools(mcp: FastMCP) -> None:
         # --- Pre-flight consent check ---
         # If the capability declares consent_operations, check upfront
         # and request all missing consents in a single bundled notification.
+        # Pass _agent_sid so the check looks in the agent's session DB
+        # (where grants from prior auto-consent flows landed), not the
+        # MCP server's bootstrap session DB.
         if entry.consent_operations:
             missing = await asyncio.to_thread(
-                _check_missing_consent, entry.consent_operations,
+                _check_missing_consent, entry.consent_operations, _agent_sid,
             )
             if missing:
                 consent_result = await asyncio.to_thread(
                     _auto_consent_request, missing, capability, op_id,
+                    _AUTO_CONSENT_TIMEOUT, _agent_sid,
                 )
                 if consent_result["status"] != "granted":
                     _complete_operation(
@@ -1066,10 +1507,18 @@ def register_tools(mcp: FastMCP) -> None:
                     return _prepare(consent_result)
 
         # --- Execute the callable (with fallback retry on ConsentRequired) ---
+        # Pin the agent's session on the originating-session ContextVar so
+        # the @requires_consent decorator's is_granted check resolves to
+        # the agent's consent.db (where grants from the gateway's
+        # auto-consent flow land) rather than the MCP server process's
+        # bootstrap session.
         _consent_retries = 0
         while True:
             try:
-                result = await asyncio.to_thread(entry.callable, **parsed_params)
+                result = await asyncio.to_thread(
+                    _invoke_with_session, entry.callable, _agent_sid,
+                    **parsed_params,
+                )
                 break  # Success — exit retry loop
             except TypeError as exc:
                 param_help = registry._entry_to_dict(entry).get("parameters", {})
@@ -1099,6 +1548,7 @@ def register_tools(mcp: FastMCP) -> None:
                 # Auto-request consent for this unanticipated gate
                 consent_result = await asyncio.to_thread(
                     _auto_consent_request, [exc.operation], capability, op_id,
+                    _AUTO_CONSENT_TIMEOUT, _agent_sid,
                 )
                 if consent_result["status"] != "granted":
                     _complete_operation(
@@ -1781,10 +2231,20 @@ def retry_operation(operation_id: str) -> dict[str, Any]:
 
     # Pre-flight consent for capabilities with declared operations
     cap_name = record["name"]
+    # Retry path: the original op record carries the agent session id
+    # that requested the work. Route the (re-)prompt to that session so
+    # an out-of-band approval lands grants where the retried operation
+    # will look for them.
+    _retry_session_id = record.get("originating_session_id")
     if record["type"] != "workflow" and isinstance(entry, registry.Capability) and entry.consent_operations:
-        missing = _check_missing_consent(entry.consent_operations)
+        missing = _check_missing_consent(
+            entry.consent_operations, _retry_session_id,
+        )
         if missing:
-            consent_result = _auto_consent_request(missing, cap_name, operation_id)
+            consent_result = _auto_consent_request(
+                missing, cap_name, operation_id,
+                session_id=_retry_session_id,
+            )
             if consent_result["status"] != "granted":
                 _complete_operation(
                     operation_id,
@@ -1803,7 +2263,13 @@ def retry_operation(operation_id: str) -> dict[str, Any]:
                     record.get("originating_session_id"),
                 )
             else:
-                result = entry.callable(**record["params"])
+                # Pin the originating session so the decorator's
+                # is_granted check finds grants in the agent's DB
+                # rather than the MCP server's bootstrap session DB.
+                result = _invoke_with_session(
+                    entry.callable, _retry_session_id,
+                    **record["params"],
+                )
             break
         except ConsentRequired as exc:
             consent_retries += 1
@@ -1813,7 +2279,10 @@ def retry_operation(operation_id: str) -> dict[str, Any]:
                     "error": f"Too many consent gates for {cap_name}. Last: {exc.operation}",
                     "operation_id": operation_id,
                 }
-            consent_result = _auto_consent_request([exc.operation], cap_name, operation_id)
+            consent_result = _auto_consent_request(
+                [exc.operation], cap_name, operation_id,
+                session_id=_retry_session_id,
+            )
             if consent_result["status"] != "granted":
                 _complete_operation(
                     operation_id,

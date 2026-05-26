@@ -201,18 +201,22 @@ def start_workflow(
     # WORK_BUDDY_SESSION_ID from its parent (the MCP server's own session)
     # and consent grants land in a different DB.
     dag.agent_session_id = agent_session_id
+    # Pin the workflow's class name so downstream lifecycle code (revoke
+    # at completion, cascade from class-revoke, orphan reconciliation)
+    # can look it up without parsing dag.name.
+    dag.workflow_name = workflow_name  # type: ignore[attr-defined]
 
     dag.save()
     with _ACTIVE_RUNS_LOCK:
         _ACTIVE_RUNS[run_id] = dag
 
-    # Grant blanket consent for the workflow's lifetime.  Accepting a
-    # workflow implies consent for all its operations unless a step
-    # explicitly opts out via ``requires_individual_consent: true``.
-    # Route the grant to the agent's session DB so auto_run subprocesses
-    # (which also read the agent's DB) can see the blanket.
-    from work_buddy.consent import grant_workflow_consent
-    grant_workflow_consent(run_id, session_id=agent_session_id)
+    # Composable consent: mint the run-level grant for this workflow run.
+    # The class-level grant (if any) is checked/minted by the gateway's
+    # pre-flight branch BEFORE this method is called — the run grant
+    # alone is sufficient to authorize the workflow's sub-operations
+    # via the @requires_consent carry path.
+    from work_buddy.consent import grant_workflow_run
+    grant_workflow_run(workflow_name, run_id, session_id=agent_session_id)
 
     # Build response with workflow context on first step
     response = _build_response(run_id, dag)
@@ -319,17 +323,21 @@ def advance_workflow(
     # silently mutate the response.
     _warn_if_accumulating(dag, current_id)
 
-    # If the completed step opted into individual consent, re-grant the
-    # workflow blanket so subsequent (non-opted-out) steps resume their
-    # covered-by-blanket behavior. Route via the DAG-pinned session.
+    # If the completed step opted into individual consent, re-mint the
+    # run-level workflow grant so subsequent (non-opted-out) steps resume
+    # their carry-via-workflow behavior. Route via the DAG-pinned session.
     if current_meta.get("requires_individual_consent", False):
-        from work_buddy.consent import grant_workflow_consent
-        grant_workflow_consent(
+        from work_buddy.consent import grant_workflow_run
+        wf_name = getattr(dag, "workflow_name", None) or (
+            (getattr(dag, "name", "") or "").split(":", 1)[0] if ":" in (getattr(dag, "name", "") or "") else getattr(dag, "name", "")
+        )
+        grant_workflow_run(
+            wf_name,
             workflow_run_id,
             session_id=getattr(dag, "agent_session_id", None),
         )
         logger.info(
-            "Main-execution step '%s' complete — workflow blanket re-granted",
+            "Main-execution step '%s' complete — workflow run grant re-minted",
             current_id,
         )
 
@@ -389,21 +397,33 @@ def list_active_runs() -> list[dict[str, Any]]:
 
 
 def reconcile_workflow_consent(session_id: str) -> dict[str, Any]:
-    """Revoke an orphaned workflow-consent blanket left by a server restart.
+    """Revoke orphaned workflow-consent grants left by a server restart.
 
-    Called at session registration. A workflow grants a blanket consent
-    (``__workflow_consent__``) into the agent's ``consent.db`` and pins
-    the run's DAG in the in-memory ``_ACTIVE_RUNS`` map. The two have
-    mismatched lifetimes: an MCP-server restart wipes ``_ACTIVE_RUNS``
-    but the on-disk blanket survives its TTL, so it would silently
-    authorize every consent-gated call until expiry.
+    Called at session registration. A workflow mints grants into the
+    agent's ``consent.db`` (``workflow_run:<name>:<run_id>`` keys plus,
+    when v1's pre-flight prompt is taken, ``workflow_class:<name>`` keys)
+    and pins the run's DAG in the in-memory ``_ACTIVE_RUNS`` map. The two
+    have mismatched lifetimes: an MCP-server restart wipes
+    ``_ACTIVE_RUNS`` but the on-disk grants survive — they would silently
+    authorize every consent-gated call until they expire (run grants are
+    untimed; class grants live up to their TTL).
 
-    This sweep re-couples them. If the session's DB holds an active
-    blanket but no run in ``_ACTIVE_RUNS`` belongs to that session, the
-    blanket is orphaned — revoke it. A genuinely in-flight workflow
-    keeps its DAG in ``_ACTIVE_RUNS`` (entries leave only on completion),
-    so a re-registration that is not a post-restart reconnect finds the
-    matching run and leaves the blanket untouched.
+    This sweep re-couples them:
+
+    - ``workflow_run:*`` keys: if no ``_ACTIVE_RUNS`` entry has a matching
+      ``run_id`` for the same session, revoke. Genuinely in-flight runs
+      keep their DAGs in ``_ACTIVE_RUNS`` until completion, so they pass
+      the match check. Cleaned up additively — does not affect the
+      legacy-blanket return-shape contract below.
+    - Legacy ``__workflow_consent__``: revoke when no in-flight run
+      belongs to this session. The return shape preserves the original
+      contract: ``{"swept": True}`` on revoke; ``{"swept": False,
+      "reason": "active_run_present"}`` when an in-flight run protects
+      the blanket; ``{"swept": False, "reason": "no_blanket"}`` when
+      nothing to sweep on the legacy key. Callers (and existing tests)
+      depend on these exact reason strings.
+    - ``workflow_class:*`` keys: left alone — their TTL is the intended
+      lifetime bound, and they outlive the workflow run by design.
 
     Never raises — a failure here must not break session registration.
     """
@@ -412,27 +432,144 @@ def reconcile_workflow_consent(session_id: str) -> dict[str, Any]:
     try:
         from work_buddy.consent import (
             is_workflow_consent_active, revoke_workflow_consent,
+            list_active_workflow_grants, revoke_workflow_run,
         )
+
+        active_run_ids_for_session = {
+            run_id
+            for run_id, dag in _snapshot_active_runs()
+            if getattr(dag, "agent_session_id", None) == session_id
+        }
+
+        # ── New composable keys: orphaned ``workflow_run:*`` keys ─────
+        # Additive cleanup; does not affect return-shape contract below.
+        orphaned_run_keys: list[str] = []
+        try:
+            snapshot = list_active_workflow_grants(session_id=session_id)
+            for run_entry in snapshot.get("run", []):
+                wf_name = run_entry.get("workflow_name", "")
+                run_id = run_entry.get("run_id", "")
+                if run_id and run_id in active_run_ids_for_session:
+                    continue
+                revoke_workflow_run(
+                    wf_name, run_id,
+                    session_id=session_id,
+                    reason="orphan_reconcile",
+                )
+                orphaned_run_keys.append(f"{wf_name}:{run_id}")
+                logger.info(
+                    "Revoked orphaned workflow_run grant %s for session "
+                    "%s (no active run — likely an MCP-server restart)",
+                    f"{wf_name}:{run_id}", session_id[:8],
+                )
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.warning(
+                "reconcile_workflow_consent: workflow_run sweep failed "
+                "for session %s: %s",
+                session_id[:8] if session_id else session_id, exc,
+            )
+
+        # ── Legacy ``__workflow_consent__`` blanket ────────────────────
+        # The return-shape contract below matches what existing callers
+        # and tests expect — do not change without updating them.
         if not is_workflow_consent_active(session_id=session_id):
-            return {"swept": False, "reason": "no_blanket"}
-        with _ACTIVE_RUNS_LOCK:
-            dags = list(_ACTIVE_RUNS.values())
-        for dag in dags:
-            if getattr(dag, "agent_session_id", None) == session_id:
-                return {"swept": False, "reason": "active_run_present"}
+            result: dict[str, Any] = {"swept": False, "reason": "no_blanket"}
+            if orphaned_run_keys:
+                result["orphaned_run_keys"] = orphaned_run_keys
+            return result
+        if active_run_ids_for_session:
+            result = {"swept": False, "reason": "active_run_present"}
+            if orphaned_run_keys:
+                result["orphaned_run_keys"] = orphaned_run_keys
+            return result
         revoke_workflow_consent(session_id=session_id)
         logger.info(
-            "Revoked orphaned workflow-consent blanket for session %s "
+            "Revoked orphaned legacy workflow blanket for session %s "
             "(no active run — likely an MCP-server restart)",
             session_id[:8],
         )
-        return {"swept": True}
+        result = {"swept": True}
+        if orphaned_run_keys:
+            result["orphaned_run_keys"] = orphaned_run_keys
+        return result
     except Exception as exc:  # pragma: no cover — defensive
         logger.warning(
             "reconcile_workflow_consent failed for session %s: %s",
             session_id[:8] if session_id else session_id, exc,
         )
         return {"swept": False, "reason": "error"}
+
+
+def _snapshot_active_runs() -> list[tuple[str, Any]]:
+    """Return a thread-safe snapshot of ``_ACTIVE_RUNS`` as a list of
+    ``(run_id, dag)`` tuples. Used by reconciliation + cascade revoke.
+    """
+    with _ACTIVE_RUNS_LOCK:
+        return list(_ACTIVE_RUNS.items())
+
+
+def cascade_revoke_workflow(
+    workflow_name: str,
+    *,
+    session_id: str | None = None,
+) -> dict[str, Any]:
+    """Revoke a workflow's class grant AND all in-flight run grants.
+
+    The ocap CDT model: revoking the parent (class grant) revokes all
+    derived children (run grants). Used when the user explicitly
+    withdraws trust for a workflow class — in-flight runs should not
+    continue to authorize calls under the now-withdrawn approval.
+
+    Returns ``{"revoked_class": bool, "revoked_runs": [run_id, ...]}``.
+    Never raises — best-effort cleanup.
+    """
+    from work_buddy.consent import (
+        revoke_workflow_class, revoke_workflow_run,
+    )
+
+    revoked_class = False
+    try:
+        revoke_workflow_class(workflow_name, session_id=session_id)
+        revoked_class = True
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.warning(
+            "cascade_revoke_workflow: class revoke failed for %s: %s",
+            workflow_name, exc,
+        )
+
+    revoked_runs: list[str] = []
+    for run_id, dag in _snapshot_active_runs():
+        dag_workflow_name = getattr(dag, "workflow_name", None) or (
+            (getattr(dag, "name", "") or "").split(":", 1)[0]
+            if ":" in (getattr(dag, "name", "") or "")
+            else getattr(dag, "name", "")
+        )
+        if dag_workflow_name != workflow_name:
+            continue
+        # Scope the cascade to the matching session when one is supplied;
+        # otherwise revoke regardless (caller asked for global cleanup).
+        if session_id is not None:
+            if getattr(dag, "agent_session_id", None) != session_id:
+                continue
+        try:
+            revoke_workflow_run(
+                workflow_name,
+                run_id,
+                session_id=getattr(dag, "agent_session_id", session_id),
+                reason="cascade",
+            )
+            revoked_runs.append(run_id)
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.warning(
+                "cascade_revoke_workflow: run revoke failed for %s:%s: %s",
+                workflow_name, run_id, exc,
+            )
+
+    return {
+        "workflow_name": workflow_name,
+        "revoked_class": revoked_class,
+        "revoked_runs": revoked_runs,
+    }
 
 
 def get_step_result(
@@ -751,13 +888,18 @@ def cancel_workflow(
     with _ACTIVE_RUNS_LOCK:
         _ACTIVE_RUNS.pop(workflow_run_id, None)
 
-    # Revoke the workflow consent blanket via the DAG-pinned session, so a
-    # cancelled run never leaves a live blanket behind in the agent's DB.
+    # Revoke the workflow run grant via the DAG-pinned session, so a
+    # cancelled run never leaves a live grant behind in the agent's DB.
     try:
-        from work_buddy.consent import revoke_workflow_consent
-        revoke_workflow_consent(
+        from work_buddy.consent import revoke_workflow_run
+        wf_name = getattr(dag, "workflow_name", None) or (
+            (getattr(dag, "name", "") or "").split(":", 1)[0] if ":" in (getattr(dag, "name", "") or "") else getattr(dag, "name", "")
+        )
+        revoke_workflow_run(
+            wf_name,
             workflow_run_id,
             session_id=getattr(dag, "agent_session_id", None),
+            reason="cancelled",
         )
     except Exception as exc:  # pragma: no cover — defensive
         logger.warning(
@@ -1007,35 +1149,49 @@ def _build_response(
 
         if not auto_run_spec:
             # Normal step — hand to the agent.
-            # If this step opted into individual consent, suspend the workflow
-            # blanket so the agent's @requires_consent-gated calls actually
-            # surface a prompt. The blanket is re-granted in advance_workflow
-            # once the agent completes this step.
+            # If this step opted into individual consent, suspend the
+            # workflow run grant so the agent's @requires_consent-gated
+            # calls actually surface a prompt. The grant is re-minted in
+            # advance_workflow once the agent completes this step.
             if meta.get("requires_individual_consent", False):
-                from work_buddy.consent import revoke_workflow_consent
-                revoke_workflow_consent(
+                from work_buddy.consent import revoke_workflow_run
+                wf_name = getattr(dag, "workflow_name", None) or (
+                    (getattr(dag, "name", "") or "").split(":", 1)[0]
+                    if ":" in (getattr(dag, "name", "") or "")
+                    else getattr(dag, "name", "")
+                )
+                revoke_workflow_run(
+                    wf_name,
                     run_id,
                     session_id=getattr(dag, "agent_session_id", None),
+                    reason="individual_consent",
                 )
                 logger.info(
                     "Main-execution step '%s' requires explicit consent — "
-                    "workflow blanket temporarily suspended", task_id,
+                    "workflow run grant temporarily suspended", task_id,
                 )
             break
 
         # --- Auto-execute this step ---
         # If the step requires explicit consent, temporarily suspend the
-        # workflow blanket so @requires_consent checks are enforced.
+        # workflow run grant so @requires_consent checks are enforced.
         explicit_consent = meta.get("requires_individual_consent", False)
         if explicit_consent:
-            from work_buddy.consent import revoke_workflow_consent
-            revoke_workflow_consent(
+            from work_buddy.consent import revoke_workflow_run
+            wf_name = getattr(dag, "workflow_name", None) or (
+                (getattr(dag, "name", "") or "").split(":", 1)[0]
+                if ":" in (getattr(dag, "name", "") or "")
+                else getattr(dag, "name", "")
+            )
+            revoke_workflow_run(
+                wf_name,
                 run_id,
                 session_id=getattr(dag, "agent_session_id", None),
+                reason="individual_consent",
             )
             logger.info(
                 "Step '%s' requires explicit consent — "
-                "workflow blanket temporarily suspended", task_id,
+                "workflow run grant temporarily suspended", task_id,
             )
 
         dag.start_task(task_id)
@@ -1047,15 +1203,21 @@ def _build_response(
             initial_params=getattr(dag, "initial_params", None),
         )
 
-        # Re-grant workflow consent if we suspended it
+        # Re-mint workflow run grant if we suspended it
         if explicit_consent:
-            from work_buddy.consent import grant_workflow_consent
-            grant_workflow_consent(
+            from work_buddy.consent import grant_workflow_run
+            wf_name = getattr(dag, "workflow_name", None) or (
+                (getattr(dag, "name", "") or "").split(":", 1)[0]
+                if ":" in (getattr(dag, "name", "") or "")
+                else getattr(dag, "name", "")
+            )
+            grant_workflow_run(
+                wf_name,
                 run_id,
                 session_id=getattr(dag, "agent_session_id", None),
             )
             logger.info(
-                "Step '%s' done — workflow blanket re-granted", task_id,
+                "Step '%s' done — workflow run grant re-minted", task_id,
             )
 
         if result.get("success"):
@@ -1365,14 +1527,19 @@ def _build_complete_response(run_id: str, dag: WorkflowDAG) -> dict[str, Any]:
     # the DAG file is empty and all step results are lost.
     dag.save()
 
-    # Revoke workflow blanket consent now that the workflow is done.
+    # Revoke the workflow run grant now that the workflow is done.
     # Route via the DAG-pinned agent session so we undo the grant we
-    # wrote at start_workflow time — otherwise a stale blanket would
+    # wrote at start_workflow time — otherwise a stale grant would
     # linger in the agent's DB.
-    from work_buddy.consent import revoke_workflow_consent
-    revoke_workflow_consent(
+    from work_buddy.consent import revoke_workflow_run
+    wf_name = getattr(dag, "workflow_name", None) or (
+        (getattr(dag, "name", "") or "").split(":", 1)[0] if ":" in (getattr(dag, "name", "") or "") else getattr(dag, "name", "")
+    )
+    revoke_workflow_run(
+        wf_name,
         run_id,
         session_id=getattr(dag, "agent_session_id", None),
+        reason="complete",
     )
 
     total = dag._graph.number_of_nodes()

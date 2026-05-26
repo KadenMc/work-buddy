@@ -67,6 +67,15 @@ class Capability:
     auto_retry: bool = True
     slash_command: str | None = None  # e.g. "wb-journal-update"
     consent_operations: list[str] = field(default_factory=list)  # @requires_consent op IDs this capability may trigger
+    # Carve-out for the workflow-blanket consent model: capabilities tagged
+    # ``"high"`` are NEVER carried by a workflow grant, even inside an
+    # approved workflow run — the per-op consent gate always fires for them.
+    # The default ``"low"`` participates in workflow grants normally;
+    # ``"moderate"`` matches the default risk semantics. Workflows that
+    # invoke any ``"high"`` capability cannot be silently authorized end-to-
+    # end; the workflow's plan/confirm step or an individual consent prompt
+    # is the user's decision point for the high-weight op.
+    consent_weight: str = "low"  # "low" | "moderate" | "high"
     # Effect manifest for multi-effect capabilities — used by
     # ``verify_post_write_effects`` to detect "some effects landed,
     # some didn't" partial states after a PostWriteUncertain. Capabilities

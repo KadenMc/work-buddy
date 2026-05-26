@@ -536,6 +536,7 @@ def obsidian_retry(
 
     capability = record.get("name")
     params = record.get("params") or {}
+    originating_session_id = record.get("originating_session_id")
 
     if not capability:
         return {
@@ -575,7 +576,24 @@ def obsidian_retry(
                 )
 
         try:
-            result = entry.callable(**params)
+            # Pin the originating session on the ContextVar so the
+            # @requires_consent decorator's is_granted check resolves
+            # to the agent's session DB rather than the MCP server's
+            # bootstrap session. Without this, replays of consent-
+            # gated ops can synchronously fail with ConsentRequired
+            # even when the user has approved out-of-band.
+            if originating_session_id:
+                from work_buddy.agent_session import (
+                    set_originating_session, reset_originating_session,
+                )
+                _orig_token = set_originating_session(originating_session_id)
+            else:
+                _orig_token = None
+            try:
+                result = entry.callable(**params)
+            finally:
+                if _orig_token is not None:
+                    reset_originating_session(_orig_token)
         except Exception as exc:
             # CP-A6: ObsidianPostWriteUncertain demands verify-then-decide,
             # not blind retry. Propagate so the gateway's CP5 verify path

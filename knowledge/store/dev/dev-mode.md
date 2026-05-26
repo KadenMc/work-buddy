@@ -148,6 +148,10 @@ mcp__work-buddy__wb_run("capability_name", {...})     # test execution
 mcp__work-buddy__wb_run("service_restart", {"service": "dashboard"})
 ```
 
+### Live testing
+
+Run `/wb-dev-live-testing` to drive an end-to-end test of an in-progress change against the running MCP server + sidecar + surfaces. Distinct from `pytest` — unit tests catch logic bugs; live tests catch wiring bugs (FastMCP tool registration, surface dispatchers, sidecar message routing, session-scoped storage). The protocol (precondition → trigger → user action → verify → cleanup) lives in `dev/live-testing-directions`; the slash command loads it. Use after any change that touches gateway entry points, notification surfaces, or session-scoped behavior.
+
 ### Dependencies
 **Never use `pip install`.** Use Poetry:
 - Production: `poetry add <package>`
