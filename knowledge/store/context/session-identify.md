@@ -57,7 +57,7 @@ Ask for, or extract from their message:
 
 If the user already wrote a structured handoff, use it verbatim — don't re-elicit.
 
-### 2. Coarse-to-fine via `summary_search`
+### 2. Coarse-to-fine via `summary_search` (a.k.a. `find` with `source="summary", drill=true`)
 
 Run `summary_search` with the user's strongest topic phrase. This is the **load-bearing step** — it ranks the cheap compressed layer (per-session TLDRs + topic titles/summaries/keywords) and then drills into the top items' raw spans in one call:
 
@@ -71,6 +71,22 @@ mcp__work-buddy__wb_run("summary_search", {
   "drill_per_item_top_k": 5
 })
 ```
+
+The equivalent under the universal verb name:
+
+```
+mcp__work-buddy__wb_run("find", {
+  "query": "<topic phrase>",
+  "source": "summary",
+  "scope": "conversation_session",
+  "drill": true,
+  "top_k": 12,
+  "drill_top_k": 4,
+  "drill_per_item_top_k": 5
+})
+```
+
+Both ops return the same funnel-shape dict — use whichever name reads naturally.
 
 Returned shape (every key always present):
 - **`stage1_hits`** — per-node summary hits. Each entry has `item_id` (the session id), `level` (0 = root tldr; 1 = topic), `title`, `summary` (preview), `score`, `source_ref` (the span pointer for level-1 topics), `generated_at`, `model`.

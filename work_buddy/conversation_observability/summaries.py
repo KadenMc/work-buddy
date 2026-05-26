@@ -125,12 +125,21 @@ def summarize_session(
 
 
 def query_session_summary(session_id: str) -> dict[str, Any] | None:
-    """Return the legacy `session_summaries` row dict (with `topics`).
+    """Return the `session_summaries` row dict (with `topics`).
+
+    Prefer
+    :func:`work_buddy.conversation_observability.session_summary_row.session_summary_row`
+    in new code — it owns the canonical implementation. This function
+    remains as a back-compat shim for the sidecar job and any out-of-tree
+    caller that imports it directly; both paths return the same dict.
 
     Consumed by:
-    - the dashboard `/api/chats/<id>/topics` endpoint
-    - the `conversation_observability_summary_get` MCP capability
-    - the `claude_session_summary` context collector
+    - the dashboard `/api/chats/<id>/topics` endpoint (via the canonical
+      row helper)
+    - the `claude_session_summary` context collector (via the canonical
+      row helper)
+    - the `session_summary_get` / `conversation_observability_summary_get`
+      MCP capabilities (both bind to the canonical row helper)
     """
     summarizer = get_session_summarizer()
     store = summarizer.store
@@ -165,14 +174,17 @@ def query_session_summary(session_id: str) -> dict[str, Any] | None:
 
 
 def query_topic_summaries(session_id: str) -> list[dict[str, Any]]:
-    """Return the legacy `topic_summaries` row dicts (one per child node).
+    """Return the `topic_summaries` row dicts (one per child node).
+
+    Prefer
+    :func:`work_buddy.conversation_observability.session_summary_row.session_topics`
+    in new code — same return shape, owned by the canonical helper module.
 
     `turn_start` / `turn_end` are computed lazily from `span_start` /
-    `span_end` via `span_range_to_turn_range`. The previous implementation
-    pre-computed and persisted these at save time; the framework's
+    `span_end` via `span_range_to_turn_range`. The framework's
     `SummaryStrategy.parse` doesn't have session context, so computing at
-    read time is cleaner. Cost: one `ConversationSession` load per
-    dashboard topics-tab view.
+    read time is cleaner than persisting these fields. Cost: one
+    `ConversationSession` load per dashboard topics-tab view.
     """
     summarizer = get_session_summarizer()
     node = summarizer.store.load(session_id)

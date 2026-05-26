@@ -1147,20 +1147,20 @@ def api_chat_topics(session_id: str):
     topic-timeline rail entirely when topics is empty.
     """
     try:
-        from work_buddy.conversation_observability.summaries import (
-            query_session_summary,
-            query_topic_summaries,
+        from work_buddy.conversation_observability.session_summary_row import (
+            session_summary_row,
         )
     except ImportError:
         return jsonify({"topics": [], "tldr": None})
 
     try:
-        topics = query_topic_summaries(session_id)
-        summary = query_session_summary(session_id)
+        row = session_summary_row(session_id)
+        if row is None:
+            return jsonify({"topics": [], "tldr": None})
         tldr = None
-        if summary and summary.get("status") == "ok":
-            tldr = summary.get("tldr") or None
-        return jsonify({"topics": topics, "tldr": tldr})
+        if row.get("status") == "ok":
+            tldr = row.get("tldr") or None
+        return jsonify({"topics": row["topics"], "tldr": tldr})
     except Exception as exc:
         logger.exception("chat topics error")
         return jsonify({"error": str(exc)}), 500
