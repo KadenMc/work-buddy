@@ -8,10 +8,11 @@ Two stages:
    `namespace` + `item_id` of its parent summarized item, so candidates can
    be ranked by best-summary-score per item.
 2. **Fine** (optional) — for each top candidate, drill into its raw source.
-   Today this dispatches to `session_search(session_id=item_id, query=...)`
-   for the `conversation_session` namespace. Other namespaces (Chrome page,
-   future doc/event-stream summarizers) can plug a custom drill handler in
-   later — the funnel itself stays the same shape.
+   The drill handler is resolved via `work_buddy.summarization.drill_registry`
+   (keyed by IR source name). The built-in `summary`-source handler
+   dispatches by `namespace` — `conversation_session` routes to
+   `session_search`, other namespaces have no drill (returns `None`),
+   the funnel still surfaces the coarse hits.
 
 The shape of the return preserves both views: per-node summary hits (useful
 for "find the topic about X") and per-item aggregates (useful for "which
@@ -31,18 +32,18 @@ logger = logging.getLogger(__name__)
 DrillHandler = Callable[[str, str, str, str, int], Any]
 
 
-def _default_drill_handler(
+def _summary_namespace_drill_dispatch(
     namespace: str,
     item_id: str,
     query: str,
     method: str,
     top_k: int,
 ) -> Any:
-    """Dispatch the drill stage based on namespace.
+    """Internal namespace dispatcher for the `summary` source's drill handler.
 
     `conversation_session` -> `session_search`. Other namespaces have no
-    registered drill today (returns `None` to indicate "no drill available
-    for this domain"); the funnel still surfaces the coarse hits.
+    registered drill (returns `None` to indicate "no drill available for
+    this domain"); the funnel still surfaces the coarse hits.
     """
     if namespace == "conversation_session":
         from work_buddy.sessions.inspector import session_search
@@ -62,6 +63,24 @@ def _default_drill_handler(
             return None
         return result
     return None
+
+
+def _default_drill_handler(
+    namespace: str,
+    item_id: str,
+    query: str,
+    method: str,
+    top_k: int,
+) -> Any:
+    """Back-compat shim — the original namespace dispatcher.
+
+    Preserved for tests and any out-of-tree consumer that imports it
+    directly. Routes through the new namespace dispatcher so behavior
+    is identical to the pre-registry version.
+    """
+    return _summary_namespace_drill_dispatch(
+        namespace, item_id, query, method, top_k,
+    )
 
 
 def summary_search(
@@ -94,7 +113,9 @@ def summary_search(
             (`"keyword"`, `"semantic"`, or `"keyword,semantic"`).
         ir_search_fn: Override for tests — defaults to `ir.search.search`.
         drill_handler: Override the per-namespace drill dispatcher; defaults
-            to one that routes `conversation_session` to `session_search`.
+            to the handler registered under the `summary` source in
+            `work_buddy.summarization.drill_registry`. Passing this
+            override bypasses the registry entirely (useful for tests).
 
     Returns a dict with three keys (always present, may be empty):
 
@@ -119,7 +140,15 @@ def summary_search(
 
         ir_search_fn = _ir_search
     if drill_handler is None:
-        drill_handler = _default_drill_handler
+        # Lazy resolve from the registry so tests that swap registry state
+        # see their override; falls back to the legacy namespace dispatcher
+        # if the registry is empty (e.g. after _reset_for_tests with no
+        # re-registration).
+        from work_buddy.summarization.drill_registry import get_drill_handler
+
+        drill_handler = (
+            get_drill_handler("summary") or _summary_namespace_drill_dispatch
+        )
 
     out: dict[str, Any] = {
         "query": query,
