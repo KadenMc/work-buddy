@@ -36,7 +36,9 @@ def get_connection(cfg: dict | None = None) -> sqlite3.Connection:
 
     Idempotent: `CREATE TABLE IF NOT EXISTS` re-runs on every connect, so a
     missing file becomes a populated one transparently. WAL mode allows
-    concurrent readers + a single writer.
+    concurrent readers + a single writer. Forward-only `ALTER TABLE` columns
+    are added in `_migrate_schema` for existing DBs that pre-date the
+    column.
     """
     path = db_path(cfg)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -44,4 +46,41 @@ def get_connection(cfg: dict | None = None) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(SCHEMA)
+    _migrate_schema(conn)
     return conn
+
+
+def _migrate_schema(conn: sqlite3.Connection) -> None:
+    """Forward-only column additions on ``summary_items``.
+
+    ``CREATE TABLE IF NOT EXISTS`` cannot add columns to a pre-existing
+    table. Each new column gets its own ``ALTER TABLE`` here; the
+    list-of-tuples shape keeps additions cheap to declare without
+    spawning a versioned migration framework for what's still a small
+    schema. Idempotent: re-running on a fully-migrated DB is a no-op.
+    """
+    cols = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(summary_items)")
+    }
+    # v2 additions (PRD F9 + F14). Order is deliberate so a debugger
+    # reading PRAGMA table_info on a partial-migration DB can tell how
+    # far the migration has progressed.
+    additions = (
+        ("total_turns", "INTEGER"),
+        ("last_finalized_boundary", "INTEGER"),
+        ("truncated", "INTEGER NOT NULL DEFAULT 0"),
+        ("activity_kind", "TEXT"),
+        ("pathway", "TEXT"),
+        ("chunks_used", "INTEGER"),
+        ("model_chain", "TEXT"),
+        ("models_actually_used", "TEXT"),
+        ("escalation_triggered", "INTEGER NOT NULL DEFAULT 0"),
+        ("escalation_reason", "TEXT"),
+    )
+    for col_name, col_decl in additions:
+        if col_name not in cols:
+            conn.execute(
+                f"ALTER TABLE summary_items ADD COLUMN {col_name} {col_decl}"
+            )
+    conn.commit()

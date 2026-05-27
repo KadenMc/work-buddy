@@ -29,6 +29,17 @@ CREATE TABLE IF NOT EXISTS summary_items (
     cache_version           INTEGER NOT NULL,
     status                  TEXT NOT NULL DEFAULT 'ok',
     error                   TEXT,
+    -- v2 additions (PRD F9 + F14)
+    total_turns             INTEGER,
+    last_finalized_boundary INTEGER,
+    truncated               INTEGER NOT NULL DEFAULT 0,
+    activity_kind           TEXT,
+    pathway                 TEXT,             -- "single-call" | "chunked"
+    chunks_used             INTEGER,
+    model_chain             TEXT,             -- JSON array of configured chain
+    models_actually_used    TEXT,             -- JSON array of models that ran
+    escalation_triggered    INTEGER NOT NULL DEFAULT 0,
+    escalation_reason       TEXT,             -- "runtime" | "output_validity" | "context_gating"
     PRIMARY KEY (namespace, item_id)
 );
 

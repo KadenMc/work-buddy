@@ -178,6 +178,112 @@ def test_durable_record_error_no_prior_inserts_status_only(tmp_db):
     assert meta["error"] == "boom"
 
 
+def test_v2_schema_migration_idempotent(tmp_db):
+    """`_migrate_schema` adds v2 columns to an existing v1 DB without
+    breaking existing rows; re-running it is a no-op."""
+    import sqlite3
+    from work_buddy.summarization.db import get_connection, _migrate_schema
+
+    # First connection: creates the table with all current columns
+    # (since CREATE TABLE IF NOT EXISTS uses the new SCHEMA).
+    conn = get_connection()
+    cols_after_init = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(summary_items)")
+    }
+    expected_v2_cols = {
+        "total_turns", "last_finalized_boundary", "truncated",
+        "activity_kind", "pathway", "chunks_used",
+        "model_chain", "models_actually_used",
+        "escalation_triggered", "escalation_reason",
+    }
+    assert expected_v2_cols.issubset(cols_after_init)
+
+    # Insert a v1-shape row (no v2 fields populated).
+    conn.execute(
+        "INSERT INTO summary_items "
+        "(namespace, item_id, freshness_token, generated_at, "
+        " prompt_version, summary_schema_version, "
+        " selection_version, cache_version, status) "
+        "VALUES ('ns', 'i1', 'tok', '2026-01-01T00:00:00', "
+        " 1, 1, 1, 1, 'ok')"
+    )
+    conn.commit()
+
+    # Re-run the migration explicitly — must be a no-op.
+    _migrate_schema(conn)
+
+    cols_after_remigrate = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(summary_items)")
+    }
+    assert cols_after_remigrate == cols_after_init
+
+    # Row is intact and v2 columns are NULL / default.
+    row = conn.execute("SELECT * FROM summary_items WHERE item_id='i1'").fetchone()
+    assert row["truncated"] == 0
+    assert row["escalation_triggered"] == 0
+    assert row["pathway"] is None
+    assert row["total_turns"] is None
+    conn.close()
+
+
+def test_v2_schema_migration_simulated_v1_db(tmp_path, monkeypatch):
+    """Simulate an existing v1 DB (only the original 13 columns) and
+    verify the migration brings it up to v2 cleanly without data loss."""
+    import sqlite3
+    from work_buddy.summarization import db as db_mod
+
+    db_file = tmp_path / "v1-sim.db"
+    monkeypatch.setattr(db_mod, "_default_db_path", lambda: db_file)
+    monkeypatch.setattr(db_mod, "db_path", lambda cfg=None: db_file)
+
+    # Hand-build a v1-shape DB (no v2 columns).
+    conn = sqlite3.connect(str(db_file))
+    conn.execute("""
+        CREATE TABLE summary_items (
+            namespace               TEXT NOT NULL,
+            item_id                 TEXT NOT NULL,
+            freshness_token         TEXT NOT NULL,
+            generated_at            TEXT NOT NULL,
+            model                   TEXT,
+            backend                 TEXT,
+            profile                 TEXT,
+            prompt_version          INTEGER NOT NULL,
+            summary_schema_version  INTEGER NOT NULL,
+            selection_version       INTEGER NOT NULL,
+            cache_version           INTEGER NOT NULL,
+            status                  TEXT NOT NULL DEFAULT 'ok',
+            error                   TEXT,
+            PRIMARY KEY (namespace, item_id)
+        )
+    """)
+    conn.execute(
+        "INSERT INTO summary_items "
+        "(namespace, item_id, freshness_token, generated_at, "
+        " prompt_version, summary_schema_version, "
+        " selection_version, cache_version, status) "
+        "VALUES ('ns', 'i1', 'tok', '2026-01-01T00:00:00', "
+        " 1, 1, 1, 1, 'ok')"
+    )
+    conn.commit()
+    pre_cols = {row[1] for row in conn.execute("PRAGMA table_info(summary_items)")}
+    assert len(pre_cols) == 13  # v1 shape
+    conn.close()
+
+    # Re-open via the production get_connection — migration runs.
+    conn = db_mod.get_connection()
+    post_cols = {row["name"] for row in conn.execute("PRAGMA table_info(summary_items)")}
+    assert len(post_cols) == 23  # v1 + 10 v2 additions
+
+    # Row preserved through migration.
+    row = conn.execute("SELECT * FROM summary_items WHERE item_id='i1'").fetchone()
+    assert row["namespace"] == "ns"
+    assert row["truncated"] == 0  # default fired
+    assert row["pathway"] is None  # nullable
+    conn.close()
+
+
 def test_durable_overwrite_existing_replaces_children(tmp_db):
     store = DurableSummaryStore("ns_a")
     store.set_strategy_versions(1, 1)
