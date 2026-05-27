@@ -538,3 +538,209 @@ def test_coherence_check_incremental_requires_render_from():
     store = DurableSummaryStore("ns_test")
     with pytest.raises(IncoherentComposition, match="render_from"):
         Summarizer(name="t", source=_BadSource(), strategy=strategy, store=store)
+
+
+# ---------------------------------------------------------------------------
+# P3 — pathway selection + chunked pathway
+# ---------------------------------------------------------------------------
+
+
+def test_estimate_tokens_helper():
+    from work_buddy.summarization.incremental import _estimate_tokens
+    assert _estimate_tokens("") == 1  # min-1 floor
+    assert _estimate_tokens("a" * 4) == 1
+    assert _estimate_tokens("a" * 40) == 10
+    assert _estimate_tokens("a" * 400) == 100
+
+
+def test_topic_context_token_estimate():
+    """Each finalized topic ≈ 30 tokens; trailing ≈ 60 tokens; +200 overhead."""
+    from work_buddy.summarization.incremental import (
+        _estimate_topic_context_tokens,
+    )
+    assert _estimate_topic_context_tokens([], None) == 200
+    finalized = [SummaryNode(summary="a"), SummaryNode(summary="b")]
+    assert _estimate_topic_context_tokens(finalized, None) == 260  # 200 + 60
+    trailing = SummaryNode(summary="t")
+    assert (
+        _estimate_topic_context_tokens(finalized, trailing) == 320  # 200 + 60 + 60
+    )
+
+
+class _LongSource:
+    """Source for chunked-pathway tests. Emits fake turn-block text per range."""
+    name = "long_source"
+    capabilities = frozenset()
+
+    def __init__(self, total_turns: int, chars_per_turn: int):
+        self._total = total_turns
+        self._cpt = chars_per_turn
+
+    def discover(self, window):
+        return [("item-1", "tok-1")]
+
+    def render(self, item_id):
+        return self._render_block(0, self._total)
+
+    def render_batch(self, item_ids):
+        return [self.render(i) for i in item_ids]
+
+    def total_turns(self, item_id):
+        return self._total
+
+    def render_from(self, item_id, from_turn):
+        # Mirror the production cap so the probe matches reality.
+        text = self._render_block(from_turn, self._total)
+        # Apply the 40k char cap like the real renderer.
+        if len(text) > 40_000:
+            text = text[:40_000] + "\n[…truncated…]"
+        return text
+
+    def render_range(self, item_id, from_turn, to_turn):
+        return self._render_block(from_turn, to_turn)
+
+    def _render_block(self, fr, to):
+        end = min(to, self._total)
+        parts = []
+        for i in range(fr, end):
+            body = "x" * self._cpt
+            parts.append(f"[turn {i} | user]\n{body}")
+        return "\n\n".join(parts)
+
+
+def test_pathway_selection_single_call_short_session(tmp_db):
+    """Short fresh tail → single-call pathway → 1 chunks_used."""
+    from work_buddy.summarization.summarizer import Summarizer
+
+    # 5 turns × 200 chars each = ~250 tokens fresh — well under 32k budget.
+    source = _LongSource(total_turns=5, chars_per_turn=200)
+    strategy = IncrementalLayeredStrategy()
+    store = DurableSummaryStore("ns_p3")
+    s = Summarizer(name="p3", source=source, strategy=strategy, store=store)
+
+    llm = _stub_llm_returning({
+        "tldr": "short",
+        "activity_kind": "planning",
+        "trailing_and_new_topics": [
+            {"title": "T1", "summary": "s1", "span_range": [0, 4], "keywords": []},
+        ],
+    })
+
+    node = refresh_one_incremental(s, "item-1", freshness_token="tok-1", llm_caller=llm)
+    assert node is not None
+    meta = store.load_item_meta("item-1")
+    assert meta["pathway"] == "single-call"
+    assert meta["chunks_used"] == 1
+
+
+def test_pathway_selection_chunked_long_session(tmp_db):
+    """Long fresh tail exceeding budget → chunked pathway → multiple chunks_used.
+
+    We force the chunked path by setting a tiny budget via monkeypatching the
+    default budget constant.
+    """
+    from work_buddy.summarization.summarizer import Summarizer
+    from work_buddy.summarization import incremental as incr_mod
+
+    # 100 turns × 200 chars = ~5000 chars = ~1250 tokens total.
+    # We'll set a tiny budget so a chunk fits ~10 turns.
+    source = _LongSource(total_turns=100, chars_per_turn=200)
+    strategy = IncrementalLayeredStrategy()
+    store = DurableSummaryStore("ns_p3_chunked")
+    s = Summarizer(name="p3c", source=source, strategy=strategy, store=store)
+
+    # Tiny budget: 500 tokens. fresh_budget = 0.85 * 500 - 200 = 225.
+    # Each turn ≈ 50 tokens; turns_per_chunk = floor(225 / 50) = 4. (min 5)
+    # So chunks of 5 turns; 100 turns = 20 chunks. We'll truncate the
+    # test to a more reasonable number by reducing total_turns.
+    source._total = 20  # 20 turns total
+
+    # Override the default budget constant in the module to force chunking.
+    original_budget = incr_mod._DEFAULT_PER_CALL_BUDGET_TOKENS
+    incr_mod._DEFAULT_PER_CALL_BUDGET_TOKENS = 500
+    try:
+        # Stub LLM returns one new topic per chunk so accumulator advances.
+        call_count = {"n": 0}
+
+        class _AdvancingStub:
+            def call(self, *, system, user, output_schema=None, profile=None,
+                     max_tokens=None, trace_id=None):
+                from work_buddy.summarization.protocol import LLMCallResult
+                call_count["n"] += 1
+                n = call_count["n"]
+                out = {
+                    "tldr": f"after chunk {n}",
+                    "activity_kind": "implementation",
+                    "trailing_and_new_topics": [
+                        {
+                            "title": f"chunk-{n} topic",
+                            "summary": f"summary {n}",
+                            "span_range": [(n - 1) * 5, n * 5 - 1],
+                            "keywords": [],
+                        },
+                    ],
+                }
+                return LLMCallResult(
+                    structured_output=out, content=json.dumps(out),
+                    model="stub", backend="stub",
+                )
+
+        node = refresh_one_incremental(
+            s, "item-1", freshness_token="tok-1",
+            llm_caller=_AdvancingStub(),
+        )
+        assert node is not None
+        meta = store.load_item_meta("item-1")
+        assert meta["pathway"] == "chunked"
+        assert meta["chunks_used"] >= 2  # at least 2 chunks for 20 turns × 5 per chunk
+        assert call_count["n"] == meta["chunks_used"]
+    finally:
+        incr_mod._DEFAULT_PER_CALL_BUDGET_TOKENS = original_budget
+
+
+def test_chunked_pathway_records_model_used(tmp_db):
+    """Chunked pathway records the model that ran each chunk."""
+    from work_buddy.summarization.summarizer import Summarizer
+    from work_buddy.summarization import incremental as incr_mod
+
+    source = _LongSource(total_turns=20, chars_per_turn=200)
+    strategy = IncrementalLayeredStrategy()
+    store = DurableSummaryStore("ns_p3_models")
+    s = Summarizer(name="p3m", source=source, strategy=strategy, store=store)
+
+    original = incr_mod._DEFAULT_PER_CALL_BUDGET_TOKENS
+    incr_mod._DEFAULT_PER_CALL_BUDGET_TOKENS = 500
+    try:
+        out = {
+            "tldr": "x",
+            "activity_kind": "unknown",
+            "trailing_and_new_topics": [
+                {"title": "t", "summary": "s", "span_range": [0, 4], "keywords": []},
+            ],
+        }
+
+        class _ModelLabelingStub:
+            n = 0
+
+            def call(self_inner, **kw):
+                from work_buddy.summarization.protocol import LLMCallResult
+                self_inner.n += 1
+                return LLMCallResult(
+                    structured_output=out,
+                    content=json.dumps(out),
+                    model=f"stub-model-{self_inner.n}",
+                    backend="stub",
+                )
+
+        node = refresh_one_incremental(
+            s, "item-1", freshness_token="tok-1",
+            llm_caller=_ModelLabelingStub(),
+        )
+        assert node is not None
+        meta = store.load_item_meta("item-1")
+        models = json.loads(meta["models_actually_used"])
+        # At least 2 distinct stub names recorded
+        assert len(models) >= 2
+        assert all(m.startswith("stub-model-") for m in models)
+    finally:
+        incr_mod._DEFAULT_PER_CALL_BUDGET_TOKENS = original

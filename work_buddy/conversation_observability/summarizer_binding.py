@@ -137,6 +137,32 @@ class SessionSource:
             session, from_turn=from_turn,
         )
 
+    def render_range(
+        self, session_id: str, from_turn: int, to_turn: int,
+    ) -> str | None:
+        """Render turns in the half-open range [from_turn, to_turn).
+
+        Used by the chunked pathway to slice a long fresh tail into
+        per-call chunks. No char cap applied — the caller is bounding
+        by turn count and is responsible for keeping chunks under budget.
+
+        Returns `None` if the session cannot be loaded or `from_turn >= to_turn`.
+        """
+        if to_turn <= from_turn:
+            return None
+        try:
+            from work_buddy.sessions.inspector import ConversationSession
+
+            session = ConversationSession(session_id)
+            session._ensure_loaded()
+        except FileNotFoundError:
+            return None
+
+        if not getattr(session, "_span_map", None):
+            return None
+
+        return _build_session_prompt_range(session, from_turn, to_turn)
+
     def token_for(self, session_id: str) -> str | None:
         """Return the current freshness token for one session, or `None` if
         the session isn't observed. Used by the `summarize_session` shim to
@@ -156,6 +182,37 @@ class SessionSource:
         if row is None:
             return None
         return str(row["source_mtime"])
+
+
+def _build_session_prompt_range(session: Any, from_turn: int, to_turn: int) -> str:
+    """Render a precise turn range without the char cap.
+
+    Used by chunked pathway. Per-turn 4k char truncation still applies
+    (any single turn over 4k is excessive context anyway), but the
+    total-chars cap that ``_build_session_prompt`` uses to truncate the
+    tail is NOT applied here — the caller is bounding by turn count.
+
+    Turn numbering uses absolute session indices so the LLM's emitted
+    span_range values align with the session's real turn array.
+    """
+    end = min(to_turn, len(session.turns))
+    chunks: list[str] = []
+    for i in range(from_turn, end):
+        turn = session.turns[i]
+        role = turn.get("role", "?")
+        text = (turn.get("text", "") or "")[:4000]
+        tools = turn.get("tools", []) or []
+        line = f"[turn {i} | {role}]"
+        if tools:
+            tool_names = ", ".join(
+                t if isinstance(t, str) else t.get("name", "?")
+                for t in tools
+            )
+            line += f" tools=[{tool_names}]"
+        if text:
+            line += f"\n{text}"
+        chunks.append(line)
+    return "\n\n".join(chunks)
 
 
 def _build_session_prompt(session: Any, from_turn: int = 0) -> str:

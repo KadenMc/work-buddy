@@ -10,19 +10,22 @@ The flow:
 2. Look up `total_turns` from the source.
 3. Compute `finalized_count` — how many existing children are immutable
    (distance-based heuristic from the strategy).
-4. Determine `fresh_from_turn` = `max(span_end of finalized) + 1`.
+4. Determine `fresh_from_turn` = `max(span_end of all prior topics) + 1`.
 5. Render the fresh tail (`source.render_from(item_id, fresh_from_turn)`).
-6. Build the incremental user prompt:
+6. **Pathway selection** (P3): if predicted input tokens fit within
+   `pathway_threshold_ratio × per_call_budget`, single-call. Otherwise
+   chunked (segment fresh tail → per-chunk LLM call → topics accumulate
+   into the next call's context).
+7. Build the incremental user prompt for each call:
    - finalized topics as compressed context (titles + 1-line summaries + keywords)
    - trailing topic (if any) at higher detail
-   - fresh raw turns
-7. Call the LLM with the strategy's incremental schema.
-8. Parse the response into a `SummaryNode` containing `trailing_and_new_topics`.
-9. Merge via `store.apply_incremental(finalized_count=...)`.
-
-Single-call vs chunked pathway selection is HERE in v2 P3+; for P2's first cut,
-we ship single-call only and let the pre-flight check refuse oversize fresh
-tails. (Chunked pathway lands in P3 once model-chain is in.)
+   - fresh raw turns (or this chunk's portion)
+8. Call the LLM with the strategy's incremental schema. Model chain
+   escalation is handled inside the LLMCaller; this module records which
+   model actually produced the output via the `model` field on
+   `LLMCallResult`.
+9. Parse the response into a `SummaryNode` containing `trailing_and_new_topics`.
+10. Merge via `store.apply_incremental(finalized_count=...)`.
 """
 
 from __future__ import annotations
@@ -40,6 +43,24 @@ from work_buddy.summarization.protocol import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+# Default per-tier context budgets (PRD OQ9). Used by pathway selection
+# and (in future) pre-flight gating. Single source of truth.
+_TIER_BUDGETS_TOKENS: dict[str, int] = {
+    # Local tier: conservative; most local models cap ~8-32k native.
+    "local_general": 8_000,
+    "local_fast": 8_000,
+    "local_tool_calling": 8_000,
+    # Haiku-class: 200k native, but we cap at 32k to keep incremental cheap.
+    "frontier_fast": 32_000,
+    # Sonnet/Opus retained for completeness; dropped per PRD OQ9 as defaults.
+    "frontier_balanced": 64_000,
+    "frontier_best": 64_000,
+}
+_DEFAULT_PER_CALL_BUDGET_TOKENS = 32_000  # tracks frontier_fast default
+_PATHWAY_THRESHOLD_RATIO = 0.85  # PRD OQ17
+_CHARS_PER_TOKEN = 4              # rough conversion for content estimation
 
 
 # ---------------------------------------------------------------------------
@@ -125,19 +146,97 @@ def refresh_one_incremental(
         # burn an LLM call.
         return prior_root
 
-    # --- Render fresh tail ----------------------------------------------
-    fresh_text = source.render_from(item_id, fresh_from_turn)
-    if not fresh_text:
-        # Source reports nothing to render — treat as quiet skip.
-        return prior_root
-
-    # --- Build incremental user prompt -----------------------------------
+    # --- Pathway selection (P3) ------------------------------------------
+    # We estimate the prompt size BEFORE rendering the full fresh tail —
+    # the per-turn average from total_turns vs. the session's char span lets
+    # us choose single-call vs. chunked without paying for a full render.
     finalized_topics = prior_topics[:finalized_count]
     trailing_topic = (
         prior_topics[finalized_count]
         if finalized_count < len(prior_topics)
         else None
     )
+    context_token_estimate = _estimate_topic_context_tokens(
+        finalized_topics, trailing_topic,
+    )
+    # Budget: read from config if available; fallback to frontier_fast default.
+    budget_tokens = _resolve_per_call_budget()
+    fresh_budget_tokens = (
+        int(budget_tokens * _PATHWAY_THRESHOLD_RATIO) - context_token_estimate
+    )
+    if fresh_budget_tokens <= 0:
+        # Context is already over budget — fail loudly rather than truncating
+        # the prior-topic context silently.
+        raise SummarizationError(
+            f"Prior-topic context (~{context_token_estimate} tokens) exceeds "
+            f"per-call budget (~{budget_tokens} × {_PATHWAY_THRESHOLD_RATIO}); "
+            f"finalization heuristic may need re-tuning"
+        )
+
+    # Quick fresh-tail size probe via render_from (which respects the 40k
+    # char cap; if a session is much larger we'll chunk regardless).
+    fresh_text_probe = source.render_from(item_id, fresh_from_turn)
+    if not fresh_text_probe:
+        return prior_root
+    fresh_text_tokens = _estimate_tokens(fresh_text_probe)
+
+    if fresh_text_tokens <= fresh_budget_tokens:
+        # SINGLE-CALL pathway: fresh tail fits in one shot.
+        return _refresh_single_call(
+            summarizer=summarizer,
+            item_id=item_id,
+            finalized_count=finalized_count,
+            finalized_topics=finalized_topics,
+            trailing_topic=trailing_topic,
+            fresh_text=fresh_text_probe,
+            fresh_from_turn=fresh_from_turn,
+            last_finalized_end=last_finalized_end,
+            total_turns=total_turns,
+            llm_caller=llm_caller,
+            profile=profile,
+            freshness_token=freshness_token,
+        )
+    # CHUNKED pathway: fresh tail exceeds budget; split into chunks.
+    return _refresh_chunked(
+        summarizer=summarizer,
+        item_id=item_id,
+        finalized_count=finalized_count,
+        finalized_topics=finalized_topics,
+        trailing_topic=trailing_topic,
+        fresh_from_turn=fresh_from_turn,
+        last_finalized_end=last_finalized_end,
+        total_turns=total_turns,
+        fresh_budget_tokens=fresh_budget_tokens,
+        llm_caller=llm_caller,
+        profile=profile,
+        freshness_token=freshness_token,
+    )
+
+
+def _refresh_single_call(
+    *,
+    summarizer,
+    item_id: str,
+    finalized_count: int,
+    finalized_topics: list[SummaryNode],
+    trailing_topic: SummaryNode | None,
+    fresh_text: str,
+    fresh_from_turn: int,
+    last_finalized_end: int,
+    total_turns: int,
+    llm_caller: LLMCaller,
+    profile: str | None,
+    freshness_token: Any,
+) -> SummaryNode | None:
+    """Execute the single-call pathway. One LLM call covers the whole fresh tail."""
+    from work_buddy.summarization.orchestrator import (
+        build_error_provenance,
+        build_provenance,
+    )
+
+    strategy = summarizer.strategy
+    store = summarizer.store
+
     user_prompt = build_incremental_prompt(
         finalized=finalized_topics,
         trailing=trailing_topic,
@@ -146,14 +245,13 @@ def refresh_one_incremental(
         total_turns=total_turns,
     )
 
-    # --- LLM call --------------------------------------------------------
     result = llm_caller.call(
         system=strategy.system_prompt,
         user=user_prompt,
         output_schema=strategy.output_schema,
         profile=profile,
-        max_tokens=2048,  # bump from 1024 to accommodate richer output
-        trace_id=f"summarization.{summarizer.name}.incremental",
+        max_tokens=2048,
+        trace_id=f"summarization.{summarizer.name}.incremental.single",
     )
 
     if result.is_error():
@@ -174,33 +272,286 @@ def refresh_one_incremental(
         )
         return None
 
-    # --- Merge into the store -------------------------------------------
     prov = build_provenance(summarizer, result, profile)
     activity_kind = new_root.extra.get("activity_kind", "unknown")
-    v2_meta = {
-        "total_turns": total_turns,
-        "last_finalized_boundary": last_finalized_end,
-        "truncated": 0,
-        "activity_kind": activity_kind,
-        "pathway": "single-call",  # P3 will set this to chunked when applicable
-        "chunks_used": 1,
-        "model_chain": [prov.model] if prov.model else [],
-        "models_actually_used": [prov.model] if prov.model else [],
-        "escalation_triggered": 0,
-        "escalation_reason": None,
-    }
-
-    store.apply_incremental(
-        item_id,
-        new_root,
-        finalized_count,
-        prov,
-        freshness_token,
-        v2_meta=v2_meta,
+    v2_meta = _build_v2_meta(
+        total_turns=total_turns,
+        last_finalized_boundary=last_finalized_end,
+        activity_kind=activity_kind,
+        pathway="single-call",
+        chunks_used=1,
+        prov=prov,
     )
 
-    # Re-load to return the merged tree (the merge happened in apply_incremental).
+    store.apply_incremental(
+        item_id, new_root, finalized_count, prov, freshness_token,
+        v2_meta=v2_meta,
+    )
     return store.load(item_id)
+
+
+def _refresh_chunked(
+    *,
+    summarizer,
+    item_id: str,
+    finalized_count: int,
+    finalized_topics: list[SummaryNode],
+    trailing_topic: SummaryNode | None,
+    fresh_from_turn: int,
+    last_finalized_end: int,
+    total_turns: int,
+    fresh_budget_tokens: int,
+    llm_caller: LLMCaller,
+    profile: str | None,
+    freshness_token: Any,
+) -> SummaryNode | None:
+    """Execute the chunked pathway. Multiple LLM calls; each chunk's output
+    becomes the next chunk's `trailing_and_new_topics` context.
+
+    Strategy: estimate average tokens per turn over the whole fresh tail,
+    then pick a turn-count per chunk that fits `fresh_budget_tokens`. Loop
+    through chunks calling `render_range` for each; accumulate topics; do
+    a final apply_incremental with the full merged state.
+    """
+    from work_buddy.summarization.orchestrator import (
+        build_error_provenance,
+        build_provenance,
+    )
+
+    strategy = summarizer.strategy
+    source = summarizer.source
+    store = summarizer.store
+
+    fresh_turn_count = total_turns - fresh_from_turn
+    if fresh_turn_count <= 0:
+        return store.load(item_id)
+
+    # Estimate tokens per turn from a probe of the first ~10 turns.
+    probe_to = min(fresh_from_turn + 10, total_turns)
+    probe = source.render_range(item_id, fresh_from_turn, probe_to) or ""
+    probe_turns = probe_to - fresh_from_turn
+    tokens_per_turn = max(50, _estimate_tokens(probe) // max(probe_turns, 1))
+    # Turns per chunk: floor of (budget / tokens-per-turn). Min 5 to avoid
+    # pathological tiny chunks.
+    turns_per_chunk = max(5, fresh_budget_tokens // tokens_per_turn)
+
+    # Walk chunks. Accumulate topics across chunks. The first chunk uses the
+    # real finalized + trailing as context; subsequent chunks use the
+    # accumulator's topics-so-far (none of which are "finalized" mid-loop —
+    # they're all mutable until the last chunk lands).
+    accumulated_root: SummaryNode | None = None
+    chunks_used = 0
+    models_used: list[str] = []
+    escalation_seen = False
+    escalation_reasons: list[str] = []
+
+    chunk_start = fresh_from_turn
+    while chunk_start < total_turns:
+        chunk_end = min(chunk_start + turns_per_chunk, total_turns)
+        chunk_text = source.render_range(item_id, chunk_start, chunk_end)
+        if not chunk_text:
+            # Empty render — skip this chunk, advance.
+            chunk_start = chunk_end
+            continue
+
+        # For the first chunk, use the real prior context.
+        # For subsequent chunks, use the accumulator's children as the new
+        # "trailing + finalized" mix — but since we treat all of them as
+        # mutable mid-loop, feed them as "finalized + trailing" both:
+        # - everything except the last child = "finalized" context
+        # - last child = "trailing" context
+        if accumulated_root is None:
+            chunk_finalized = finalized_topics
+            chunk_trailing = trailing_topic
+        else:
+            kids = list(accumulated_root.children)
+            chunk_finalized = kids[:-1] if len(kids) > 1 else []
+            chunk_trailing = kids[-1] if kids else None
+
+        chunk_prompt = build_incremental_prompt(
+            finalized=chunk_finalized,
+            trailing=chunk_trailing,
+            fresh_text=chunk_text,
+            fresh_from_turn=chunk_start,
+            total_turns=total_turns,
+        )
+
+        result = llm_caller.call(
+            system=strategy.system_prompt,
+            user=chunk_prompt,
+            output_schema=strategy.output_schema,
+            profile=profile,
+            max_tokens=2048,
+            trace_id=(
+                f"summarization.{summarizer.name}.incremental.chunked"
+                f"[{chunks_used}]"
+            ),
+        )
+        chunks_used += 1
+
+        if result.is_error():
+            # Per PRD: on chunked failure mid-way, record an error and
+            # bail. Don't half-update the store with partial state.
+            store.record_error(
+                item_id,
+                f"chunked refresh failed at chunk {chunks_used}: {result.error}",
+                build_error_provenance(summarizer, profile),
+            )
+            return None
+
+        if result.model:
+            models_used.append(result.model)
+
+        try:
+            chunk_root = strategy.parse(result.structured_output, result.content)
+        except Exception as exc:
+            store.record_error(
+                item_id,
+                f"chunked refresh parse error at chunk {chunks_used}: {exc}",
+                build_provenance(summarizer, result, profile),
+            )
+            return None
+
+        # Merge chunk_root.children into accumulator.
+        if accumulated_root is None:
+            # First chunk: use the chunk_root directly. Its tldr is the
+            # session-tldr so far. Its children are the new topics.
+            accumulated_root = SummaryNode(
+                summary=chunk_root.summary,
+                children=[
+                    SummaryNode(
+                        summary=c.summary,
+                        source_ref=c.source_ref,
+                        children=[],
+                        extra=dict(c.extra),
+                    )
+                    for c in chunk_root.children
+                ],
+                extra=dict(chunk_root.extra),
+            )
+        else:
+            # Subsequent chunk: the model emitted "trailing + new" — the
+            # trailing IS the last child of the previous chunk's output.
+            # Replace it (it may have been extended) and append new ones.
+            kids = list(accumulated_root.children)
+            new_kids = list(chunk_root.children)
+            if kids and new_kids:
+                # Drop the prior trailing (which the model just updated).
+                kids = kids[:-1] + [
+                    SummaryNode(
+                        summary=c.summary, source_ref=c.source_ref,
+                        children=[], extra=dict(c.extra),
+                    ) for c in new_kids
+                ]
+            elif new_kids:
+                kids = [
+                    SummaryNode(
+                        summary=c.summary, source_ref=c.source_ref,
+                        children=[], extra=dict(c.extra),
+                    ) for c in new_kids
+                ]
+            accumulated_root = SummaryNode(
+                summary=chunk_root.summary,  # latest tldr wins
+                children=kids,
+                extra=dict(chunk_root.extra),
+            )
+
+        chunk_start = chunk_end
+
+    if accumulated_root is None:
+        # No chunks produced content.
+        return store.load(item_id)
+
+    # Final apply — finalized_count refers to the originally-finalized topics
+    # (they're immutable across the whole loop).
+    prov = build_provenance(summarizer, result, profile)  # noqa: F823 — last `result`
+    activity_kind = accumulated_root.extra.get("activity_kind", "unknown")
+    v2_meta = _build_v2_meta(
+        total_turns=total_turns,
+        last_finalized_boundary=last_finalized_end,
+        activity_kind=activity_kind,
+        pathway="chunked",
+        chunks_used=chunks_used,
+        prov=prov,
+        models_actually_used=models_used,
+    )
+
+    store.apply_incremental(
+        item_id, accumulated_root, finalized_count, prov, freshness_token,
+        v2_meta=v2_meta,
+    )
+    return store.load(item_id)
+
+
+def _build_v2_meta(
+    *,
+    total_turns: int,
+    last_finalized_boundary: int,
+    activity_kind: str,
+    pathway: str,
+    chunks_used: int,
+    prov: Provenance,
+    models_actually_used: list[str] | None = None,
+    escalation_triggered: bool = False,
+    escalation_reason: str | None = None,
+) -> dict[str, Any]:
+    """Assemble the v2 meta dict for `apply_incremental`."""
+    if models_actually_used is None:
+        models_actually_used = [prov.model] if prov.model else []
+    return {
+        "total_turns": total_turns,
+        "last_finalized_boundary": last_finalized_boundary,
+        "truncated": 0,
+        "activity_kind": activity_kind,
+        "pathway": pathway,
+        "chunks_used": chunks_used,
+        "model_chain": [prov.model] if prov.model else [],
+        "models_actually_used": models_actually_used,
+        "escalation_triggered": 1 if escalation_triggered else 0,
+        "escalation_reason": escalation_reason,
+    }
+
+
+def _estimate_tokens(text: str) -> int:
+    """Rough character-based token estimate. Good enough for budgeting."""
+    return max(1, len(text) // _CHARS_PER_TOKEN)
+
+
+def _estimate_topic_context_tokens(
+    finalized: list[SummaryNode],
+    trailing: SummaryNode | None,
+) -> int:
+    """Estimate token count of the prior-topic context block."""
+    # Each finalized topic: ~30 tokens (one line); trailing: ~60 tokens.
+    n = 30 * len(finalized)
+    if trailing is not None:
+        n += 60
+    # Add overhead for the section headers + system prompt.
+    return n + 200
+
+
+def _resolve_per_call_budget() -> int:
+    """Resolve the per-call input token budget from config, falling back to
+    the frontier_fast default. PRD §6 config block:
+
+        conversation_observability:
+          summaries:
+            per_call_budget_tokens: 32000  # NEW
+    """
+    try:
+        from work_buddy.config import load_config
+
+        cfg = load_config()
+        explicit = (
+            (cfg.get("conversation_observability") or {})
+            .get("summaries", {})
+            .get("per_call_budget_tokens")
+        )
+        if isinstance(explicit, int) and explicit > 0:
+            return explicit
+    except Exception:
+        pass
+    return _DEFAULT_PER_CALL_BUDGET_TOKENS
 
 
 # ---------------------------------------------------------------------------
