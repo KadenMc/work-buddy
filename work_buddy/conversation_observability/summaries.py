@@ -68,10 +68,25 @@ def refresh_session_summaries(
 
     Refreshes `observed_sessions` first (legacy behavior — the source of
     candidate ids), then delegates to `Summarizer.refresh`.
+
+    v2: if `conversation_observability.summaries.use_incremental` is True,
+    this entry no-ops — the queue worker handles refresh on its own cadence.
     """
     from work_buddy.conversation_observability.sessions import (
+        _v2_summarization_enabled,
         refresh_observed_sessions,
     )
+
+    # When v2 is on, the queue worker (sidecar job `summarization-worker`)
+    # handles refresh. Don't double-summarize.
+    if _v2_summarization_enabled():
+        # Still refresh observed_sessions so the queue gets new entries.
+        refresh_observed_sessions(days=days, stale_only=True)
+        return {
+            "summarized": 0, "skipped_fresh": 0,
+            "errored": 0, "total_candidates": 0,
+            "v2_mode": True,
+        }
 
     refresh_observed_sessions(days=days, stale_only=True)
 

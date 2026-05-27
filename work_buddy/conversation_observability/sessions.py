@@ -24,6 +24,23 @@ from typing import Any
 from work_buddy.conversation_observability.db import get_connection
 
 
+def _v2_summarization_enabled() -> bool:
+    """Read the feature flag for v2 incremental summarization.
+
+    `conversation_observability.summaries.use_incremental` (default False).
+    Determines whether `refresh_observed_sessions` enqueues into the
+    summarization queue. When False, v1's 2h cron path still works.
+    """
+    try:
+        from work_buddy.config import load_config
+
+        cfg = load_config()
+        summ = (cfg.get("conversation_observability") or {}).get("summaries", {}) or {}
+        return bool(summ.get("use_incremental", False))
+    except Exception:
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Refresh — enrich observed_sessions with ConversationSession metadata
 # ---------------------------------------------------------------------------
@@ -187,6 +204,16 @@ def refresh_observed_sessions(
         finally:
             conn.close()
         observed += 1
+
+        # PRD §6 O1: enqueue for summarization on mtime change.
+        # Gated by the feature flag so v1's 2h cron path doesn't double-enqueue
+        # while v2 is off. Failure here doesn't break observation.
+        try:
+            if _v2_summarization_enabled():
+                from work_buddy.summarization.queue import enqueue as _sum_enqueue
+                _sum_enqueue("conversation_session", sid)
+        except Exception:  # pragma: no cover — defensive
+            pass
 
     # Orphan prune: stat() the source_path for each row, then delete
     # the entire row tree with one short transaction per orphan. We do
