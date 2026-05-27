@@ -152,6 +152,124 @@ def test_collector_groups_by_project(co_env) -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_collector_include_topics_renders_topic_timeline(co_env, tmp_path, monkeypatch) -> None:
+    """v2 P6: with `include_topics=True`, each session bullet nests its topic timeline."""
+    from work_buddy.collectors.claude_session_summary_collector import collect
+
+    # Point summarization DB at a temp file too (separate from conv_obs DB).
+    summ_db = tmp_path / "summarization.db"
+    monkeypatch.setattr(
+        "work_buddy.summarization.db._default_db_path",
+        lambda: summ_db,
+    )
+    monkeypatch.setattr(
+        "work_buddy.summarization.db.db_path",
+        lambda cfg=None: summ_db,
+    )
+
+    # Write one observed session.
+    sid = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+    write_session(
+        co_env["projects"] / "alpha",
+        session_id=sid,
+        entries=[user_turn("hello", "2026-05-27T10:00:00Z"), assistant_text("world", "2026-05-27T10:00:01Z")],
+    )
+
+    # Manually save a v2 summary with topics via the store.
+    from work_buddy.summarization.protocol import Provenance, SummaryNode
+    from work_buddy.summarization.stores import DurableSummaryStore
+
+    store = DurableSummaryStore("conversation_session")
+    store.set_strategy_versions(1, 1)
+    prov = Provenance(
+        model="m", backend="b", profile="p",
+        generated_at=Provenance.now_iso(),
+        prompt_version=1, summary_schema_version=1,
+        selection_version=1, cache_version=1,
+    )
+    tree = SummaryNode(
+        summary="Worked on test feature.",
+        children=[
+            SummaryNode(
+                summary="Started the discussion.",
+                source_ref={"span_start": 0, "span_end": 5},
+                extra={
+                    "title": "Discussion start",
+                    "span_start": 0, "span_end": 5,
+                    "turn_start": 0, "turn_end": 5,
+                    "topic_index": 0,
+                },
+            ),
+            SummaryNode(
+                summary="Implemented it.",
+                source_ref={"span_start": 6, "span_end": 12},
+                extra={
+                    "title": "Implementation",
+                    "span_start": 6, "span_end": 12,
+                    "turn_start": 6, "turn_end": 12,
+                    "topic_index": 1,
+                },
+            ),
+        ],
+        extra={"activity_kind": "implementation"},
+    )
+    store.save(sid, tree, prov, "tok-test")
+
+    out = collect({"days": 7, "include_topics": True})
+
+    # tldr present
+    assert "tldr: Worked on test feature." in out
+    # Topics header present
+    assert "Topics:" in out
+    # Both titles rendered with ranges
+    assert "Discussion start" in out
+    assert "turns 0-5" in out
+    assert "Implementation" in out
+    assert "turns 6-12" in out
+
+
+def test_collector_include_topics_implies_include_tldr(co_env, tmp_path, monkeypatch) -> None:
+    """include_topics=True forces include_tldr=True for rendering consistency."""
+    from work_buddy.collectors import claude_session_summary_collector as mod
+
+    # Sanity: the inside-collect logic flips include_tldr when include_topics is set.
+    # We assert this via behavior: passing include_topics=True (without explicit
+    # include_tldr) still gets us tldr rendering.
+    summ_db = tmp_path / "summarization.db"
+    monkeypatch.setattr(
+        "work_buddy.summarization.db._default_db_path",
+        lambda: summ_db,
+    )
+    monkeypatch.setattr(
+        "work_buddy.summarization.db.db_path",
+        lambda cfg=None: summ_db,
+    )
+
+    sid = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+    write_session(
+        co_env["projects"] / "alpha",
+        session_id=sid,
+        entries=[user_turn("topic-only test", "2026-05-27T10:00:00Z")],
+    )
+
+    from work_buddy.summarization.protocol import Provenance, SummaryNode
+    from work_buddy.summarization.stores import DurableSummaryStore
+
+    store = DurableSummaryStore("conversation_session")
+    store.set_strategy_versions(1, 1)
+    prov = Provenance(
+        model="m", backend="b", profile="p",
+        generated_at=Provenance.now_iso(),
+        prompt_version=1, summary_schema_version=1,
+        selection_version=1, cache_version=1,
+    )
+    store.save(sid, SummaryNode(summary="A tldr line."), prov, "tok-test")
+
+    # include_topics=True; include_tldr unset.
+    out = mod.collect({"days": 7, "include_topics": True})
+    assert "tldr: A tldr line." in out
+
+
 def test_context_source_registered_under_expected_name() -> None:
     from work_buddy.context.registry import get
 

@@ -175,10 +175,19 @@ def _topics_from_node(
         extra = child.extra or {}
         span_start = extra.get("span_start")
         span_end = extra.get("span_end")
-        turn_start: int | None = None
-        turn_end: int | None = None
+        # v2 (P2+): the strategy emits absolute turn indices directly into
+        # extra (`turn_start`, `turn_end`). Prefer those when present; fall
+        # back to the span-to-turn re-derivation for v1-shaped rows.
+        turn_start = extra.get("turn_start")
+        turn_end = extra.get("turn_end")
+        if not isinstance(turn_start, int):
+            turn_start = None
+        if not isinstance(turn_end, int):
+            turn_end = None
         if (
-            session is not None
+            turn_start is None
+            and turn_end is None
+            and session is not None
             and span_to_turn is not None
             and isinstance(span_start, int)
             and isinstance(span_end, int)
