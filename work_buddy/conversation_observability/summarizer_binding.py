@@ -92,6 +92,51 @@ class SessionSource:
         # Protocol surface only.
         return [self.render(iid) for iid in item_ids]
 
+    def total_turns(self, session_id: str) -> int | None:
+        """Return the total number of turns in a session, or `None` if the
+        session cannot be loaded (e.g. missing JSONL).
+
+        Required by INCREMENTAL strategies (PRD §5.1) to compute the
+        finalization boundary and detect "nothing fresh to summarize."
+        """
+        try:
+            from work_buddy.sessions.inspector import ConversationSession
+
+            session = ConversationSession(session_id)
+            session._ensure_loaded()
+        except FileNotFoundError:
+            return None
+
+        turns = getattr(session, "turns", None)
+        if turns is None:
+            return None
+        return len(turns)
+
+    def render_from(self, session_id: str, from_turn: int) -> str | None:
+        """Render only the turns at index ``from_turn`` and after.
+
+        Returns the formatted prompt text (same per-turn / per-total caps as
+        `render`, applied to just the fresh tail) or `None` if the session
+        cannot be loaded.
+
+        If `from_turn >= total_turns`, returns an empty string. The caller
+        is responsible for short-circuiting that case before calling.
+        """
+        try:
+            from work_buddy.sessions.inspector import ConversationSession
+
+            session = ConversationSession(session_id)
+            session._ensure_loaded()
+        except FileNotFoundError:
+            return None
+
+        if not getattr(session, "_span_map", None):
+            return None
+
+        return _build_session_prompt(
+            session, from_turn=from_turn,
+        )
+
     def token_for(self, session_id: str) -> str | None:
         """Return the current freshness token for one session, or `None` if
         the session isn't observed. Used by the `summarize_session` shim to
@@ -113,17 +158,26 @@ class SessionSource:
         return str(row["source_mtime"])
 
 
-def _build_session_prompt(session: Any) -> str:
+def _build_session_prompt(session: Any, from_turn: int = 0) -> str:
     """Render a session's turns into compact prompt text.
 
     Strategy mirrors the previous in-tree `_build_user_prompt`: per-turn
     truncation, total cap. Kept identical so layered-disclosure prompts have
     the same input distribution.
+
+    `from_turn` (v2 addition): start rendering at this absolute turn index.
+    Default 0 (whole session — same as v1). Used by INCREMENTAL strategies
+    via `SessionSource.render_from` to feed only the fresh tail to the LLM.
+    The turn-index prefix in each line is the ABSOLUTE index, so span_range
+    values emitted by the LLM line up with the session's real turn array
+    regardless of whether we sliced or not.
     """
     max_total_chars = 40_000
     chunks: list[str] = []
     used = 0
-    for i, turn in enumerate(session.turns):
+    turns_iter = session.turns[from_turn:] if from_turn > 0 else session.turns
+    for offset, turn in enumerate(turns_iter):
+        i = from_turn + offset  # absolute turn index
         role = turn.get("role", "?")
         text = (turn.get("text", "") or "")[:4000]
         tools = turn.get("tools", []) or []
@@ -139,9 +193,11 @@ def _build_session_prompt(session: Any) -> str:
         chunks.append(line)
         used += len(line)
         if used >= max_total_chars:
-            chunks.append(
-                f"[…{len(session.turns) - i - 1} more turns truncated…]"
-            )
+            remaining = len(session.turns) - i - 1
+            if remaining > 0:
+                chunks.append(
+                    f"[…{remaining} more turns truncated…]"
+                )
             break
     return "\n\n".join(chunks)
 

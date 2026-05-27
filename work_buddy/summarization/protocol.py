@@ -102,6 +102,12 @@ class SummaryCapability(str, Enum):
     # Source + Strategy together: batch path
     BATCHED = "batched"
 
+    # Strategy: incremental refresh (v2). Routes through the orchestrator's
+    # incremental path: load prior topics → re-feed only fresh tail + compressed
+    # prior topics → merge result with finalized topics in the store. Composed
+    # with LAYERED today; could compose with FLAT in the future.
+    INCREMENTAL = "incremental"
+
     # Store: persistence shape
     PERSISTS_TREE = "persists_tree"
     PERSISTS_FLAT = "persists_flat"

@@ -149,6 +149,209 @@ class LayeredDisclosureStrategy:
 
 
 # ===========================================================================
+# Layered disclosure (INCREMENTAL) — v2 conv_obs producer
+# ===========================================================================
+
+
+_INCREMENTAL_SYSTEM_PROMPT = """\
+You are an analyst maintaining a running summary of a Claude Code
+agent-user conversation session as it grows over time.
+
+You will receive THREE inputs:
+
+1. **Existing finalized topics** (provided ONLY as context to anchor your
+   understanding of what's already happened in this session). These are
+   IMMUTABLE — do not re-emit, modify, or reference them in your output.
+   For each, you see: title, one-sentence summary, span_range (turn indices),
+   keywords.
+
+2. **Trailing topic** if any — the most recent topic, still "in flight."
+   This MAY be updated: you can extend its span_range, refine its title,
+   refine its summary, or revise its keywords. If the new turns are a
+   continuation of this topic, do so. If the new turns clearly start a new
+   subject, the trailing topic stays as you received it and you emit one or
+   more NEW topics after it.
+
+3. **New raw turns** to incorporate — turns past the last finalized boundary.
+   Format: `[turn N | role] tools=[...]\\n<text>`, with N being the absolute
+   turn index in the session.
+
+Produce:
+
+1. `tldr`: ONE sentence (≤25 words) capturing what the WHOLE session has been
+   about — including both finalized topics (from context) and the new content.
+   No greetings, no commentary on tone. Concrete enough that the user can
+   recognize the session a week from now.
+
+2. `activity_kind`: best-guess classification — one of `implementation`,
+   `debugging`, `planning`, `research`, `review`, `journal`, `unknown`. Use
+   `unknown` rather than forcing a fit.
+
+3. `trailing_and_new_topics`: ordered list starting with the (possibly
+   modified) trailing topic, followed by any NEW topics emerging from the
+   new turns. If there was no prior trailing topic, this is the full list
+   of topics for the fresh content.
+
+   - If the new turns continue the trailing topic, emit it with an updated
+     `span_range[1]` (and refined title/summary if appropriate).
+   - If the new turns start a new subject, keep the trailing topic as-is
+     (with its existing span_range) and emit new topics after it.
+   - Each topic: `title` (≤8 words), 1-sentence `summary`, `span_range`
+     ([start_turn_index, end_turn_index] — absolute indices in the session),
+     2-5 `keywords`.
+   - Span ranges must be chronological and non-overlapping. The last
+     topic's `span_range[1]` should equal the highest turn index in the
+     new raw turns.
+   - Aim for ~1 topic per 20-40 turns of distinct work. Merge fine-grained
+     sub-topics rather than emitting many near-identical entries.
+
+Be operational. Prefer concrete nouns ("AFK build of conversation
+observability subsystem") over abstract ones ("worked on a feature").
+"""
+
+
+_INCREMENTAL_OUTPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "required": ["tldr", "trailing_and_new_topics"],
+    "properties": {
+        "tldr": {"type": "string"},
+        "activity_kind": {
+            "type": "string",
+            "enum": [
+                "implementation", "debugging", "planning", "research",
+                "review", "journal", "unknown",
+            ],
+        },
+        "trailing_and_new_topics": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["title", "summary", "span_range", "keywords"],
+                "properties": {
+                    "title": {"type": "string"},
+                    "summary": {"type": "string"},
+                    "span_range": {
+                        "type": "array",
+                        "minItems": 2,
+                        "maxItems": 2,
+                        "items": {"type": "integer"},
+                    },
+                    "keywords": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "maxItems": 5,
+                    },
+                },
+            },
+        },
+    },
+}
+
+
+class IncrementalLayeredStrategy:
+    """v2 conv_obs strategy — produces tldr + trailing/new topic stream.
+
+    Used with the orchestrator's incremental path. The returned `SummaryNode`
+    has:
+    - `summary` = tldr
+    - `children` = trailing topic (possibly modified) + new topics, each with
+      `source_ref={"span_start": ..., "span_end": ...}` and extra
+      `{title, topic_index, keywords, span_start, span_end}`
+    - `extra` = `{"activity_kind": ..., "_emitted_count": <N>}` so the store's
+      apply_incremental knows how many of `children` are trailing+new (vs
+      what to keep from finalized history).
+
+    The store's `apply_incremental` is responsible for merging this output
+    with the finalized topics already on disk. This strategy does NOT see
+    the finalized topics on its return path — only the orchestrator does.
+    """
+
+    name = "incremental_layered"
+    prompt_version = 1
+    schema_version = 1
+    capabilities = frozenset({
+        SummaryCapability.LAYERED,
+        SummaryCapability.INCREMENTAL,
+    })
+    system_prompt = _INCREMENTAL_SYSTEM_PROMPT
+    output_schema = _INCREMENTAL_OUTPUT_SCHEMA
+    batch_output_schema: dict[str, Any] | None = None
+
+    # Tunable: how many turns past a topic's span_end before it's finalized.
+    # PRD OQ2 resolution: default 10, configurable.
+    finalization_distance_turns: int = 10
+
+    def is_finalized(self, topic_span_end: int, total_turns: int) -> bool:
+        """A topic is finalized once the live tail has moved on by at least
+        `finalization_distance_turns` turns past its `span_end`. Distance-based,
+        per PRD OQ2."""
+        return (total_turns - 1 - topic_span_end) >= self.finalization_distance_turns
+
+    def parse(
+        self,
+        structured_output: dict[str, Any] | None,
+        raw_content: str,
+    ) -> SummaryNode:
+        if not isinstance(structured_output, dict):
+            raise SummarizationError(
+                "incremental_layered.parse: structured_output is not a dict "
+                f"(got {type(structured_output).__name__})"
+            )
+        if "tldr" not in structured_output:
+            raise SummarizationError(
+                "incremental_layered.parse: missing 'tldr' field"
+            )
+
+        tldr = str(structured_output["tldr"])
+        activity_kind = structured_output.get("activity_kind") or "unknown"
+        topics = structured_output.get("trailing_and_new_topics") or []
+
+        children: list[SummaryNode] = []
+        for i, topic in enumerate(topics):
+            if not isinstance(topic, dict):
+                continue
+            span_range = topic.get("span_range") or [None, None]
+            span_start = span_range[0] if len(span_range) >= 1 else None
+            span_end = span_range[1] if len(span_range) >= 2 else None
+
+            source_ref: dict[str, Any] | None = None
+            if isinstance(span_start, int) and isinstance(span_end, int):
+                source_ref = {
+                    "span_start": span_start,
+                    "span_end": span_end,
+                }
+
+            children.append(SummaryNode(
+                summary=str(topic.get("summary", "")),
+                source_ref=source_ref,
+                children=[],
+                extra={
+                    "title": str(topic.get("title", "")),
+                    # topic_index is RELATIVE to this emitted batch; the
+                    # store's apply_incremental will reassign absolute
+                    # indices after merging with finalized topics.
+                    "topic_index": i,
+                    "keywords": list(topic.get("keywords") or []),
+                    "span_start": span_start,
+                    "span_end": span_end,
+                    # Finalized status is computed at write time by the
+                    # store, based on `is_finalized()` against total_turns.
+                    "finalized": False,
+                },
+            ))
+
+        return SummaryNode(
+            summary=tldr,
+            source_ref=None,
+            children=children,
+            extra={
+                "activity_kind": activity_kind,
+                "_emitted_count": len(children),
+            },
+        )
+
+
+# ===========================================================================
 # Flat extraction — web pages / Chrome tabs
 # ===========================================================================
 

@@ -105,12 +105,59 @@ def run_refresh(
 
     if SummaryCapability.BATCHED in summarizer.capabilities:
         _run_refresh_batch(summarizer, stale_capped, llm_caller, profile, report)
+    elif SummaryCapability.INCREMENTAL in summarizer.strategy.capabilities:
+        _run_refresh_incremental(
+            summarizer, stale_capped, llm_caller, profile, report,
+        )
     else:
         _run_refresh_per_item(
             summarizer, stale_capped, llm_caller, profile, report,
         )
 
     return report
+
+
+def _run_refresh_incremental(
+    summarizer: Summarizer,
+    stale: list[tuple[str, Any]],
+    llm_caller: LLMCaller,
+    profile: str | None,
+    report: RefreshReport,
+) -> None:
+    """Incremental refresh path — delegates per item to the incremental module.
+
+    Errors are isolated per item (the incremental module records errors via
+    `store.record_error`); other items in the same pass continue.
+    """
+    from work_buddy.summarization.incremental import refresh_one_incremental
+
+    for item_id, token in stale:
+        try:
+            node = refresh_one_incremental(
+                summarizer,
+                item_id,
+                freshness_token=token,
+                llm_caller=llm_caller,
+                profile=profile,
+            )
+            if node is not None:
+                report.summarized += 1
+            # else: record_error already called inside refresh_one_incremental
+            # OR there was nothing fresh to do (no error, no count)
+        except Exception as exc:
+            report.errored += 1
+            report.errors.append((item_id, str(exc)))
+            try:
+                summarizer.store.record_error(
+                    item_id,
+                    str(exc),
+                    build_error_provenance(summarizer, profile),
+                )
+            except Exception as inner:
+                logger.warning(
+                    "Failed to record error for %s/%s: %s",
+                    summarizer.name, item_id, inner,
+                )
 
 
 def _run_refresh_per_item(
