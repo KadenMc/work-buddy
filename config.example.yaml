@@ -380,3 +380,39 @@ amplifier_policy:
   irreversible_requires_consent: true
   high_regret_requires_consent: true
   high_inference_uncertainty_requires_consent: true
+
+
+# Conversation summarization (v2). See
+# .data/designs/conversation-summarize/PRD.md for the design rationale.
+conversation_observability:
+  summaries:
+    # v1 master switch — generates the legacy 8-topic single-call summary
+    # via the 2h cron. Set to true to start collecting summaries at all.
+    enabled: false
+    # v2 master switch — when true:
+    # - the queue worker (sidecar_jobs/summarization-worker.md) drains the
+    #   summarization_queue on the 5min cadence
+    # - refresh_observed_sessions enqueues changed sessions
+    # - refresh_session_summaries (v1 legacy entry) no-ops to avoid race
+    # Bump only after the §8 eval pass clears (PRD OQ19).
+    use_incremental: false
+    # Per-session cooldown — the worker skips a session for this many
+    # minutes after its last successful refresh. Default 30; configurable
+    # 15-60.
+    cooldown_minutes: 30
+    # Daily budget circuit-breaker — when today's summarization spend
+    # (computed from agents/*/llm_costs.jsonl with trace_id starting
+    # with "summarization.") exceeds this, the worker pauses until the
+    # next day. Default $1.00 is generous given the ~$0.07/day baseline
+    # at v2 Haiku rates.
+    daily_budget_usd: 1.00
+    # Per-call input token budget for the LLM (PRD OQ9). Default 32k —
+    # tracks frontier_fast (Haiku) per the resolved default chain.
+    per_call_budget_tokens: 32000
+    # Pathway selection threshold (PRD OQ17). Route to chunked when
+    # predicted input > pathway_threshold_ratio × per_call_budget.
+    pathway_threshold_ratio: 0.85
+    # Worker tick cap — max queue entries processed per tick. Bounds
+    # one tick's work; backlogs catch up across many ticks under the
+    # daily budget. Default 20.
+    worker_tick_limit: 20

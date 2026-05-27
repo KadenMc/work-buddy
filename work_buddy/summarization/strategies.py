@@ -267,8 +267,11 @@ class IncrementalLayeredStrategy:
     """
 
     name = "incremental_layered"
-    prompt_version = 1
-    schema_version = 1
+    # PRD OQ10 + P7: v1's (1,1,1,1) triplet rolls forward to v2's (2,2,2,2)
+    # so when `use_incremental` is flipped to True, every existing v1 row
+    # becomes stale on next refresh and the queue refills naturally.
+    prompt_version = 2
+    schema_version = 2
     capabilities = frozenset({
         SummaryCapability.LAYERED,
         SummaryCapability.INCREMENTAL,

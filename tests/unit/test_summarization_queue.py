@@ -202,3 +202,76 @@ def test_v2_feature_flag_default_false():
     # This test just confirms the helper exists and returns a bool.
     result = _v2_summarization_enabled()
     assert isinstance(result, bool)
+
+
+def test_build_session_summarizer_v1_default(monkeypatch, tmp_path):
+    """Default build (use_incremental=False) uses LayeredDisclosureStrategy
+    with version triplet (1,1,1,1)."""
+    from work_buddy.conversation_observability.summarizer_binding import (
+        build_session_summarizer,
+    )
+    from work_buddy.summarization.strategies import LayeredDisclosureStrategy
+    from work_buddy.summarization import db as db_mod
+
+    # Use a tmp DB to keep this isolated.
+    db_file = tmp_path / "s.db"
+    monkeypatch.setattr(db_mod, "_default_db_path", lambda: db_file)
+    monkeypatch.setattr(db_mod, "db_path", lambda cfg=None: db_file)
+
+    s = build_session_summarizer(use_incremental=False)
+    assert isinstance(s.strategy, LayeredDisclosureStrategy)
+    assert s.strategy.prompt_version == 1
+    assert s.strategy.schema_version == 1
+    assert s.store.selection_version == 1
+    assert s.store.cache_version == 1
+
+
+def test_build_session_summarizer_v2_flag(monkeypatch, tmp_path):
+    """When `use_incremental=True`, returns IncrementalLayeredStrategy with
+    version triplet (2,2,2,2)."""
+    from work_buddy.conversation_observability.summarizer_binding import (
+        build_session_summarizer,
+    )
+    from work_buddy.summarization.strategies import IncrementalLayeredStrategy
+    from work_buddy.summarization import db as db_mod
+
+    db_file = tmp_path / "s.db"
+    monkeypatch.setattr(db_mod, "_default_db_path", lambda: db_file)
+    monkeypatch.setattr(db_mod, "db_path", lambda cfg=None: db_file)
+
+    s = build_session_summarizer(use_incremental=True)
+    assert isinstance(s.strategy, IncrementalLayeredStrategy)
+    assert s.strategy.prompt_version == 2
+    assert s.strategy.schema_version == 2
+    assert s.store.selection_version == 2
+    assert s.store.cache_version == 2
+
+
+def test_v2_strategy_version_triplet_invalidates_v1_rows(tmp_db):
+    """Critical regression: when the v2 strategy is constructed with its
+    (2,2,2,2) versions, the store's staleness check fires on existing
+    v1-shape rows."""
+    from work_buddy.summarization.strategies import (
+        IncrementalLayeredStrategy,
+        LayeredDisclosureStrategy,
+    )
+    from work_buddy.summarization.stores import DurableSummaryStore
+
+    # Save a v1-shape row first.
+    v1_store = DurableSummaryStore("conversation_session", selection_version=1, cache_version=1)
+    v1_strategy = LayeredDisclosureStrategy()
+    v1_store.set_strategy_versions(v1_strategy.prompt_version, v1_strategy.schema_version)
+    v1_store.save(
+        "session-1",
+        SummaryNode(summary="v1 row"),
+        _prov(),
+        "tok-1",
+    )
+    # Sanity: v1 store sees it as fresh.
+    assert v1_store.is_fresh("session-1", "tok-1")
+
+    # Now construct v2 strategy + store and check staleness — v1 rows should appear stale.
+    v2_store = DurableSummaryStore("conversation_session", selection_version=2, cache_version=2)
+    v2_strategy = IncrementalLayeredStrategy()
+    v2_store.set_strategy_versions(v2_strategy.prompt_version, v2_strategy.schema_version)
+    assert not v2_store.is_fresh("session-1", "tok-1")

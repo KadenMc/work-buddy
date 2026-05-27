@@ -267,13 +267,48 @@ def _build_session_prompt(session: Any, from_turn: int = 0) -> str:
 _summarizer_singleton: Summarizer | None = None
 
 
-def build_session_summarizer() -> Summarizer:
+def build_session_summarizer(use_incremental: bool | None = None) -> Summarizer:
     """Build a fresh `Summarizer` for conversation sessions.
 
     Tests can call this directly to get an isolated instance (and pair with
     a monkey-patched DB path). Production callers go through
     `get_session_summarizer()` for the lazy singleton.
+
+    `use_incremental` (PRD §10 OQ19 + P7 wiring):
+    - `True` → v2: `IncrementalLayeredStrategy` (prompt_v=2, schema_v=2)
+      + `DurableSummaryStore(selection=2, cache=2)`. The triplet (2,2,2,2)
+      marks all v1-shape rows stale on next refresh, triggering re-
+      summarization via the queue worker.
+    - `False` → v1: `LayeredDisclosureStrategy` (prompt_v=1, schema_v=1)
+      + `DurableSummaryStore(selection=1, cache=1)`. Current production
+      behavior, unchanged.
+    - `None` (default) → read `conversation_observability.summaries.
+      use_incremental` from config. Defaults to False if absent.
     """
+    if use_incremental is None:
+        try:
+            from work_buddy.config import load_config
+
+            cfg = load_config()
+            summ = (cfg.get("conversation_observability") or {}).get("summaries", {}) or {}
+            use_incremental = bool(summ.get("use_incremental", False))
+        except Exception:
+            use_incremental = False
+
+    if use_incremental:
+        from work_buddy.summarization.strategies import IncrementalLayeredStrategy
+
+        return Summarizer(
+            name="conversation_session",
+            source=SessionSource(),
+            strategy=IncrementalLayeredStrategy(),
+            store=DurableSummaryStore(
+                namespace=_NAMESPACE,
+                selection_version=2,
+                cache_version=2,
+            ),
+        )
+
     return Summarizer(
         name="conversation_session",
         source=SessionSource(),
