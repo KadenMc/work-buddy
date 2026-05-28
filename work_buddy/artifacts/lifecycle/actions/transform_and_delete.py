@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from work_buddy.artifacts.protocol import Capability, Ref, Storage
+from work_buddy.artifacts.protocol import StorageTrait, Ref, Storage
 
 
 class TransformAndDelete:
@@ -35,7 +35,7 @@ class TransformAndDelete:
             already has this shape.
     """
 
-    capabilities: frozenset[Capability] = frozenset({Capability.TRANSFORM_ON_EXPIRY})
+    capabilities: frozenset[StorageTrait] = frozenset({StorageTrait.TRANSFORM_ON_EXPIRY})
 
     def __init__(
         self,

@@ -38,7 +38,7 @@ from typing import Any
 
 from work_buddy.artifacts.protocol import (  # noqa: F401  (re-exports)
     Artifact,
-    Capability,
+    StorageTrait,
     ExpiryAction,
     IncoherentComposition,
     Lifecycle,

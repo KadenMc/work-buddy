@@ -29,7 +29,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-from work_buddy.artifacts.protocol import Capability, Ref
+from work_buddy.artifacts.protocol import StorageTrait, Ref
 
 
 class DirShape(str, Enum):
@@ -50,10 +50,10 @@ class DirectoryTreeStorage:
         artifact_name: Name embedded in returned Refs.
     """
 
-    capabilities: frozenset[Capability] = frozenset({
-        Capability.RECORDS,
-        Capability.LISTABLE,
-        Capability.DELETABLE,
+    capabilities: frozenset[StorageTrait] = frozenset({
+        StorageTrait.RECORDS,
+        StorageTrait.LISTABLE,
+        StorageTrait.DELETABLE,
     })
 
     def __init__(

@@ -22,7 +22,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-from work_buddy.artifacts.protocol import Capability, Ref
+from work_buddy.artifacts.protocol import StorageTrait, Ref
 
 
 class SqliteRowsStorage:
@@ -44,12 +44,12 @@ class SqliteRowsStorage:
             messaging-DB pruner's behavior.
     """
 
-    capabilities: frozenset[Capability] = frozenset({
-        Capability.RECORDS,
-        Capability.TYPED_COLUMNS,
-        Capability.LISTABLE,
-        Capability.DELETABLE,
-        Capability.BULK_PRUNEABLE,
+    capabilities: frozenset[StorageTrait] = frozenset({
+        StorageTrait.RECORDS,
+        StorageTrait.TYPED_COLUMNS,
+        StorageTrait.LISTABLE,
+        StorageTrait.DELETABLE,
+        StorageTrait.BULK_PRUNEABLE,
     })
 
     def __init__(

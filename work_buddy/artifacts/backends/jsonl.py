@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from work_buddy.artifacts.io import atomic_write_text
-from work_buddy.artifacts.protocol import Capability, Ref
+from work_buddy.artifacts.protocol import StorageTrait, Ref
 
 
 class JsonlStorage:
@@ -37,10 +37,10 @@ class JsonlStorage:
             only if you actually want to evict garbage.
     """
 
-    capabilities: frozenset[Capability] = frozenset({
-        Capability.RECORDS,
-        Capability.APPEND_ONLY,
-        Capability.BULK_PRUNEABLE,
+    capabilities: frozenset[StorageTrait] = frozenset({
+        StorageTrait.RECORDS,
+        StorageTrait.APPEND_ONLY,
+        StorageTrait.BULK_PRUNEABLE,
     })
 
     def __init__(

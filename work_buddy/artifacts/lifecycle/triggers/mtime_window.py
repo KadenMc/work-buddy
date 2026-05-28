@@ -19,7 +19,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 from work_buddy.artifacts.expiry import _parse_to_utc
-from work_buddy.artifacts.protocol import Capability
+from work_buddy.artifacts.protocol import StorageTrait
 
 
 class MtimeWindow:
@@ -39,7 +39,7 @@ class MtimeWindow:
             agent_sessions: ``lambda r: <_latest_mtime>>= cutoff``.
     """
 
-    capabilities = frozenset({Capability.MTIME_WINDOW})
+    capabilities = frozenset({StorageTrait.MTIME_WINDOW})
 
     def __init__(
         self,

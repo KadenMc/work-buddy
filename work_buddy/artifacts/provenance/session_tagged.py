@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from work_buddy.artifacts.protocol import Capability
+from work_buddy.artifacts.protocol import StorageTrait
 
 
 class SessionTagged:
@@ -36,7 +36,7 @@ class SessionTagged:
             returned.
     """
 
-    capabilities = frozenset({Capability.SESSION_TAGGED})
+    capabilities = frozenset({StorageTrait.SESSION_TAGGED})
 
     def __init__(
         self,
