@@ -77,9 +77,12 @@ def refresh_session_summaries(
         refresh_observed_sessions,
     )
 
-    # When v2 is on, the queue worker (sidecar job `summarization-worker`)
-    # handles refresh. Don't double-summarize.
-    if _v2_summarization_enabled():
+    # When v2 is on AND the caller didn't pass an explicit stub, the
+    # queue worker (sidecar job `summarization-worker`) handles refresh.
+    # Don't double-summarize. Tests passing `llm_call=stub_llm` are
+    # explicitly invoking the v1 path with a controlled response and
+    # should not be short-circuited regardless of the config flag.
+    if llm_call is None and _v2_summarization_enabled():
         # Still refresh observed_sessions so the queue gets new entries.
         refresh_observed_sessions(days=days, stale_only=True)
         return {

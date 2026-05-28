@@ -115,12 +115,12 @@ class SessionSource:
     def render_from(self, session_id: str, from_turn: int) -> str | None:
         """Render only the turns at index ``from_turn`` and after.
 
-        Returns the formatted prompt text (same per-turn / per-total caps as
-        `render`, applied to just the fresh tail) or `None` if the session
-        cannot be loaded.
-
-        If `from_turn >= total_turns`, returns an empty string. The caller
-        is responsible for short-circuiting that case before calling.
+        Returns the formatted prompt text or `None` if the session cannot
+        be loaded. The total-chars cap is DISABLED for v2's incremental
+        path — the chunked pathway handles oversize input explicitly; the
+        v1-style silent truncation here would otherwise mask session size
+        from the pathway-selection logic. Per-turn 4k char truncation still
+        applies (any single turn over 4k is excessive context).
         """
         try:
             from work_buddy.sessions.inspector import ConversationSession
@@ -134,7 +134,7 @@ class SessionSource:
             return None
 
         return _build_session_prompt(
-            session, from_turn=from_turn,
+            session, from_turn=from_turn, max_total_chars=None,
         )
 
     def render_range(
@@ -215,12 +215,16 @@ def _build_session_prompt_range(session: Any, from_turn: int, to_turn: int) -> s
     return "\n\n".join(chunks)
 
 
-def _build_session_prompt(session: Any, from_turn: int = 0) -> str:
+def _build_session_prompt(
+    session: Any,
+    from_turn: int = 0,
+    *,
+    max_total_chars: int | None = 40_000,
+) -> str:
     """Render a session's turns into compact prompt text.
 
     Strategy mirrors the previous in-tree `_build_user_prompt`: per-turn
-    truncation, total cap. Kept identical so layered-disclosure prompts have
-    the same input distribution.
+    truncation, optional total cap.
 
     `from_turn` (v2 addition): start rendering at this absolute turn index.
     Default 0 (whole session — same as v1). Used by INCREMENTAL strategies
@@ -228,8 +232,15 @@ def _build_session_prompt(session: Any, from_turn: int = 0) -> str:
     The turn-index prefix in each line is the ABSOLUTE index, so span_range
     values emitted by the LLM line up with the session's real turn array
     regardless of whether we sliced or not.
+
+    `max_total_chars` (v2 fix, 2026-05-28): None disables the total-chars
+    cap. v1's `render` keeps the 40k default (legacy producer relies on it).
+    v2's `render_from` passes None so the incremental algorithm's pathway-
+    selection logic sees the TRUE input size — without this, a long session
+    would silently truncate to ~40k chars and the model would emit topics
+    over only the visible prefix (the v1 pathology). The chunked pathway
+    handles oversized inputs explicitly.
     """
-    max_total_chars = 40_000
     chunks: list[str] = []
     used = 0
     turns_iter = session.turns[from_turn:] if from_turn > 0 else session.turns
@@ -249,7 +260,7 @@ def _build_session_prompt(session: Any, from_turn: int = 0) -> str:
             line += f"\n{text}"
         chunks.append(line)
         used += len(line)
-        if used >= max_total_chars:
+        if max_total_chars is not None and used >= max_total_chars:
             remaining = len(session.turns) - i - 1
             if remaining > 0:
                 chunks.append(
@@ -267,34 +278,29 @@ def _build_session_prompt(session: Any, from_turn: int = 0) -> str:
 _summarizer_singleton: Summarizer | None = None
 
 
-def build_session_summarizer(use_incremental: bool | None = None) -> Summarizer:
+def build_session_summarizer(use_incremental: bool = False) -> Summarizer:
     """Build a fresh `Summarizer` for conversation sessions.
 
     Tests can call this directly to get an isolated instance (and pair with
     a monkey-patched DB path). Production callers go through
-    `get_session_summarizer()` for the lazy singleton.
+    `get_session_summarizer()` for the lazy singleton (always v1) or
+    `build_session_summarizer(use_incremental=True)` for v2 directly.
 
     `use_incremental` (PRD §10 OQ19 + P7 wiring):
     - `True` → v2: `IncrementalLayeredStrategy` (prompt_v=2, schema_v=2)
       + `DurableSummaryStore(selection=2, cache=2)`. The triplet (2,2,2,2)
       marks all v1-shape rows stale on next refresh, triggering re-
       summarization via the queue worker.
-    - `False` → v1: `LayeredDisclosureStrategy` (prompt_v=1, schema_v=1)
-      + `DurableSummaryStore(selection=1, cache=1)`. Current production
-      behavior, unchanged.
-    - `None` (default) → read `conversation_observability.summaries.
-      use_incremental` from config. Defaults to False if absent.
+    - `False` (default) → v1: `LayeredDisclosureStrategy` (prompt_v=1,
+      schema_v=1) + `DurableSummaryStore(selection=1, cache=1)`. v1-shape
+      legacy callers (tests, query helpers, the v1 cron) always get this.
+
+    The feature flag `conversation_observability.summaries.use_incremental`
+    is consulted by the WORKER directly (see `summarization/worker.py`) and
+    by `refresh_observed_sessions` for the auto-enqueue gate — NOT by this
+    function. This separation prevents the lazy singleton from flipping
+    legacy callers to v2 strategy when the worker flag is enabled.
     """
-    if use_incremental is None:
-        try:
-            from work_buddy.config import load_config
-
-            cfg = load_config()
-            summ = (cfg.get("conversation_observability") or {}).get("summaries", {}) or {}
-            use_incremental = bool(summ.get("use_incremental", False))
-        except Exception:
-            use_incremental = False
-
     if use_incremental:
         from work_buddy.summarization.strategies import IncrementalLayeredStrategy
 

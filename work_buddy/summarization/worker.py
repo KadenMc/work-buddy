@@ -116,12 +116,18 @@ def _resolve_config() -> dict[str, Any]:
 
 
 def _resolve_summarizer(namespace: str):
-    """Return a configured Summarizer for the namespace, or None."""
+    """Return a configured Summarizer for the namespace, or None.
+
+    The worker ALWAYS builds a v2 (incremental) summarizer — its job is
+    the v2 producer. The legacy singleton (`get_session_summarizer()`)
+    stays at v1 for compatibility with v1-shape callers (tests, query
+    helpers, the v1 cron). See PRD OQ19 + the binding's docstring.
+    """
     if namespace == "conversation_session":
         from work_buddy.conversation_observability.summarizer_binding import (
-            get_session_summarizer,
+            build_session_summarizer,
         )
-        return get_session_summarizer()
+        return build_session_summarizer(use_incremental=True)
     # Other namespaces don't go through the worker today.
     return None
 
