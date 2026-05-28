@@ -29,7 +29,9 @@ def _v2_summarization_enabled() -> bool:
 
     `conversation_observability.summaries.use_incremental` (default False).
     Determines whether `refresh_observed_sessions` enqueues into the
-    summarization queue. When False, v1's 2h cron path still works.
+    summarization queue. When False, the enqueue is skipped and the
+    deprecated v1 batch path remains the only LLM producer (callable
+    via `conversation_observability_summarize`).
     """
     try:
         from work_buddy.config import load_config
@@ -63,10 +65,11 @@ def refresh_observed_sessions(
 
     ``prune_orphans`` (default True) drops rows whose ``source_path``
     no longer exists on disk. The artifact's ``post_delete_sql`` hook
-    cascades the cleanup to ``session_commits``, ``session_file_writes``,
-    ``topic_summaries``, and ``session_summaries`` in the same
-    transaction, so a deleted JSONL file fully disappears from the
-    durable store.
+    cascades cleanup to ``session_commits`` and ``session_file_writes``;
+    the corresponding summary in the framework store (`summary_items` +
+    `summary_nodes` in `summarization.db`) is dropped explicitly here
+    as a best-effort follow-up so a deleted JSONL file fully disappears
+    from durable storage.
 
     Returns a summary:
     ``{observed, skipped, errored, total_scanned, orphaned}``.
@@ -205,9 +208,11 @@ def refresh_observed_sessions(
             conn.close()
         observed += 1
 
-        # PRD §6 O1: enqueue for summarization on mtime change.
-        # Gated by the feature flag so v1's 2h cron path doesn't double-enqueue
-        # while v2 is off. Failure here doesn't break observation.
+        # Enqueue for summarization on mtime change. Gated by the
+        # use_incremental feature flag so we only push onto the queue
+        # when there's a v2 worker draining it; with the flag off the
+        # deprecated v1 batch path is the only producer. Failure here
+        # doesn't break observation.
         try:
             if _v2_summarization_enabled():
                 from work_buddy.summarization.queue import enqueue as _sum_enqueue
@@ -251,16 +256,33 @@ def refresh_observed_sessions(
                     "DELETE FROM session_file_writes WHERE session_id = ?",
                     (sid,),
                 )
-                conn.execute(
-                    "DELETE FROM topic_summaries WHERE session_id = ?", (sid,)
-                )
-                conn.execute(
-                    "DELETE FROM session_summaries WHERE session_id = ?",
-                    (sid,),
-                )
                 conn.commit()
             finally:
                 conn.close()
+
+            # Also drop the orphan's summary from the framework DB. Best-effort;
+            # a failure here doesn't undo the conv_obs deletion above.
+            try:
+                from work_buddy.summarization.db import (
+                    get_connection as get_summ_conn,
+                )
+                sconn = get_summ_conn()
+                try:
+                    sconn.execute(
+                        "DELETE FROM summary_nodes "
+                        "WHERE namespace = 'conversation_session' AND item_id = ?",
+                        (sid,),
+                    )
+                    sconn.execute(
+                        "DELETE FROM summary_items "
+                        "WHERE namespace = 'conversation_session' AND item_id = ?",
+                        (sid,),
+                    )
+                    sconn.commit()
+                finally:
+                    sconn.close()
+            except Exception:
+                pass
             orphaned += 1
 
     return {

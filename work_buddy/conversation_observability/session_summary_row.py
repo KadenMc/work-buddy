@@ -1,8 +1,8 @@
-"""Canonical accessor for the `session_summaries` + `topic_summaries`
-row shape.
+"""Canonical accessor for the per-session summary row shape.
 
 Returns one Python dict per session, assembled from the summarization
-framework's per-node store. Consumed by:
+framework's per-node store (`summary_items` + `summary_nodes` in
+`summarization.db`). Consumed by:
 
 - The dashboard `GET /api/chats/<sid>/topics` endpoint.
 - The `claude_session_summary` context collector's `include_tldr` branch.
@@ -175,9 +175,10 @@ def _topics_from_node(
         extra = child.extra or {}
         span_start = extra.get("span_start")
         span_end = extra.get("span_end")
-        # v2 (P2+): the strategy emits absolute turn indices directly into
-        # extra (`turn_start`, `turn_end`). Prefer those when present; fall
-        # back to the span-to-turn re-derivation for v1-shaped rows.
+        # v2-shaped rows: the IncrementalLayeredStrategy emits absolute
+        # turn indices directly into extra (`turn_start`, `turn_end`).
+        # Prefer those when present; fall back to the span-to-turn
+        # re-derivation for v1-shaped rows that only carry span indices.
         turn_start = extra.get("turn_start")
         turn_end = extra.get("turn_end")
         if not isinstance(turn_start, int):
