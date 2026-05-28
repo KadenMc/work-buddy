@@ -6,10 +6,8 @@ summary: Gateway handles consent transparently for wb_run ops. Pre-flight, conte
 trigger: agent calls a capability that touches @requires_consent functions (handled transparently by the gateway)
 capabilities:
 - consent_request
-- consent_request_resolve
-- consent_grant
-- consent_revoke
 - consent_list
+- consent_request_list
 tags:
 - consent
 - requires_consent
@@ -60,7 +58,6 @@ dev_notes: |-
   | Telegram `/reply` command | `work_buddy/telegram/handlers.py:on_reply` | same shape as on_button |
   | Obsidian modal (out-of-band) | sidecar `MessagePoller._handle_consent_grant_message` | routes through `consent.resolve_consent_request` which calls `finalize_consent_response` internally |
   | Dashboard "Approve" endpoint | `work_buddy/dashboard/service.py` | calls `resolve_consent_request` directly |
-  | MCP `consent_request_resolve` op | gateway op dispatch | same path as dashboard |
   | Gateway in-window poll | `_auto_consent_request` / `_auto_workflow_consent_request` | writes grants inline via `grant_consent_batch` / `grant_workflow_class` (skips `finalize_consent_response` because the poll has fresher state in hand) |
 
   The grant-writing logic — bundle unbundle, `workflow_class:<name>` mint for `context.kind == "workflow_consent"`, individual op grants, audit emission — lives in exactly one place (`finalize_consent_response`). Any surface that doesn't go through `resolve_consent_request` (Telegram is the notable one) must call `finalize_consent_response` directly. Tests covering each path live in `tests/unit/test_consent_composable.py`.
@@ -96,7 +93,7 @@ Some `work_buddy` functions are protected by a `@requires_consent` decorator. **
 
 **Do NOT use `AskUserQuestion` for consent.** The notification system is the canonical consent surface — it reaches the user on their phone, in Obsidian, and on the dashboard. `AskUserQuestion` only works when the user is actively watching the terminal.
 
-**Do NOT use `consent_grant` to bypass consent.** `consent_grant` is a low-level primitive for deferred resolution (e.g., user approved on Telegram after the poll timed out). Agents must NEVER self-grant consent.
+**Agents cannot self-grant consent.** The Python functions `consent.grant_consent`, `consent.revoke_consent`, and `consent.resolve_consent_request` are internal — they are called by the sidecar router (Obsidian out-of-band path), Telegram and dashboard handlers, and the gateway's own auto-consent flow. They are not exposed as agent-callable capabilities. The only way an agent gets consent is the user approving on a surface; the gateway handles the rest.
 
 ## Grant scope and lifetime
 

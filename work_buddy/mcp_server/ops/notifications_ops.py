@@ -21,8 +21,11 @@ def _register() -> None:
       - consent_request: one-call consent flow with auto-resolve
       - notification_list_pending: list all pending items
 
-    Lower-level capabilities (consent_grant/revoke/list, consent_request_resolve)
-    remain in _consent_capabilities for direct manipulation and deferred flows.
+    Read-only consent capabilities (consent_list, consent_request_list) are
+    declared in knowledge/store/notifications/consent/. The grant/revoke/resolve
+    Python functions in work_buddy.consent are internal — invoked by the sidecar
+    router, Telegram/dashboard handlers, and gateway auto-consent path; not
+    exposed as agent-callable capabilities.
     """
     import os
     import time

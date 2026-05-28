@@ -43,8 +43,9 @@ Flow:
     4. If found and valid: establish consent context, execute, cleanup
        (once grants auto-revoke after success)
     5. If not found: raises ConsentRequired with operation details
-    6. Caller grants consent via grant_consent() or wb_run("consent_grant", ...)
-    7. Caller retries the function (DB now has valid entry)
+    6. Gateway auto-requests user approval via a surface (Obsidian, Telegram, dashboard)
+    7. Surface handler writes the grant via consent.grant_consent() and the
+       gateway retries the function automatically
 """
 
 import functools
@@ -364,15 +365,16 @@ class ConsentRequired(Exception):
         super().__init__(
             f"ConsentRequired: '{operation}' ({risk} risk)\n"
             f"Reason: {reason}\n"
-            f"Suggested TTL: {default_ttl} minutes\n"
             f"\n"
-            f"To proceed, call:\n"
-            f"  grant_consent('{operation}', mode='always')\n"
-            f"  OR\n"
-            f"  grant_consent('{operation}', mode='temporary', "
-            f"ttl_minutes={default_ttl})\n"
-            f"  OR\n"
-            f"  grant_consent('{operation}', mode='once')"
+            f"This operation is guarded by a consent gate. The gateway handles "
+            f"consent transparently for wb_run calls — if you are seeing this "
+            f"exception, either:\n"
+            f"  (a) the call bypassed the gateway (called the Python function "
+            f"directly); route through wb_run so the gateway can auto-request "
+            f"user approval, OR\n"
+            f"  (b) the gateway's auto-consent retry exhausted without user "
+            f"approval; check sidecar surface availability and retry via "
+            f"wb_run('retry', {{'operation_id': ...}}) once the user has approved."
         )
 
 
