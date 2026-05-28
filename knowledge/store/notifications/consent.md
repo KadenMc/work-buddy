@@ -5,9 +5,7 @@ description: How consent-gated operations work — auto-request in gateway, pre-
 summary: Gateway handles consent transparently for wb_run ops. Pre-flight, context-nesting, and retry-on-timeout all automatic. All grants session-scoped in consent.db.
 trigger: agent calls a capability that touches @requires_consent functions (handled transparently by the gateway)
 capabilities:
-- consent_request
 - consent_list
-- consent_request_list
 tags:
 - consent
 - requires_consent
@@ -89,7 +87,7 @@ Some `work_buddy` functions are protected by a `@requires_consent` decorator. **
 
 ## What not to do
 
-**Do NOT manually call `consent_request`** for `wb_run` operations — the gateway does it for you. You still need manual `consent_request` for sidecar operations not routed through `wb_run` (e.g., `agent_spawn` consent) or custom flows.
+**The gateway handles consent for `wb_run` operations automatically.** There is no agent-facing path that requires manual consent orchestration. Sidecar operations that need consent (e.g., `agent_spawn`) check via internal Python helpers (`work_buddy/sidecar/dispatch/executor.py:_check_agent_spawn_consent`), not through `wb_run`.
 
 **Do NOT use `AskUserQuestion` for consent.** The notification system is the canonical consent surface — it reaches the user on their phone, in Obsidian, and on the dashboard. `AskUserQuestion` only works when the user is actively watching the terminal.
 

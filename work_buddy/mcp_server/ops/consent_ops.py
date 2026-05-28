@@ -13,7 +13,6 @@ def _register() -> None:
     from work_buddy import consent
 
     register_op("op.wb.consent_list", consent.list_consents)
-    register_op("op.wb.consent_request_list", consent.list_pending_requests)
 
 
 _register()
