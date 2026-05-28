@@ -1,6 +1,6 @@
 """SQL schema for the conversation-observability store.
 
-Five tables:
+Three tables (post-2026-05-28 cleanup):
 
 * ``observed_sessions`` — one row per Claude Code JSONL session we've
   scanned. Tracks source path + mtime + observation metadata so a
@@ -9,15 +9,17 @@ Five tables:
 * ``session_file_writes`` — one row per (session, file_path) write
   event. ``currently_dirty`` is a snapshot of the most recent
   observation; treat it as best-effort, not authoritative.
-* ``topic_summaries`` — one row per topic chunk inside a summarised
-  session.
-* ``session_summaries`` — one row per summarised session, carrying
-  tldr + model provenance + cache-versioning fields for stale detection.
 
 Foreign keys cascade-on-parent-delete via the SqliteRowsStorage
 ``post_delete_sql`` hook, not via SQLite's own FK enforcement (which is
 off by default and adds gotchas around connection pragmas). The
 artifact registration is the single source of truth for cleanup.
+
+Summary data (``session_summaries`` + ``topic_summaries``) was migrated
+into ``summarization.db`` on 2026-05-28 and the legacy tables dropped.
+The summarization framework's ``summary_items`` + ``summary_nodes``
+are now the canonical source; dashboard / collectors / adapter read
+from there.
 """
 
 from __future__ import annotations
@@ -87,36 +89,10 @@ CREATE INDEX IF NOT EXISTS idx_session_file_writes_session
     ON session_file_writes(session_id);
 CREATE INDEX IF NOT EXISTS idx_session_file_writes_dirty
     ON session_file_writes(currently_dirty);
-
-CREATE TABLE IF NOT EXISTS topic_summaries (
-    id              TEXT PRIMARY KEY,
-    session_id      TEXT NOT NULL,
-    topic_index     INTEGER NOT NULL,
-    title           TEXT NOT NULL,
-    summary         TEXT NOT NULL,
-    span_start      INTEGER,
-    span_end        INTEGER,
-    turn_start      INTEGER,
-    turn_end        INTEGER,
-    keywords_json   TEXT NOT NULL DEFAULT '[]'
-);
-
-CREATE INDEX IF NOT EXISTS idx_topic_summaries_session
-    ON topic_summaries(session_id);
-
-CREATE TABLE IF NOT EXISTS session_summaries (
-    session_id              TEXT PRIMARY KEY,
-    tldr                    TEXT NOT NULL,
-    topic_count             INTEGER NOT NULL DEFAULT 0,
-    generated_at            TEXT NOT NULL,
-    model                   TEXT,
-    profile                 TEXT,
-    backend                 TEXT,
-    prompt_version          INTEGER NOT NULL,
-    summary_schema_version  INTEGER NOT NULL,
-    selection_version       INTEGER NOT NULL,
-    cache_version           INTEGER NOT NULL,
-    status                  TEXT NOT NULL DEFAULT 'ok',
-    error                   TEXT
-);
 """
+
+# `session_summaries` + `topic_summaries` were dropped on 2026-05-28 after
+# the framework migration. Their data was one-shot-migrated into
+# `summarization.db`'s `summary_items` + `summary_nodes` tables. Don't
+# resurrect the schema here — the dashboard + adapter both read from the
+# framework now.

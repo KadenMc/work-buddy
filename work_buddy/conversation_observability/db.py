@@ -62,13 +62,19 @@ def get_connection(cfg: dict | None = None) -> sqlite3.Connection:
 
 
 def _migrate_schema(conn: sqlite3.Connection) -> None:
-    """Forward-only column additions on ``observed_sessions``.
+    """Forward-only column additions on ``observed_sessions``, plus
+    legacy-table cleanup.
 
     ``CREATE TABLE IF NOT EXISTS`` cannot add columns to a pre-existing
     table. Each new column gets its own ``ALTER TABLE`` here; the
     list-of-strings shape keeps additions cheap to declare without
     spawning a versioned migration framework for what's still a small
     schema.
+
+    Also drops legacy ``session_summaries`` and ``topic_summaries``
+    tables (2026-05-28 ablation). Data was one-shot-migrated into the
+    summarization framework's ``summary_items`` + ``summary_nodes``
+    before the drop. Idempotent: ``DROP TABLE IF EXISTS``.
     """
     cols = {
         row["name"]
@@ -82,4 +88,7 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
             conn.execute(
                 f"ALTER TABLE observed_sessions ADD COLUMN {col_name} {col_decl}"
             )
+    # Drop legacy summary tables (migration completed 2026-05-28).
+    conn.execute("DROP TABLE IF EXISTS topic_summaries")
+    conn.execute("DROP TABLE IF EXISTS session_summaries")
     conn.commit()
