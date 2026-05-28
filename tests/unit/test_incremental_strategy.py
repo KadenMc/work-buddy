@@ -91,6 +91,31 @@ def test_strategy_parse_initial_full_session():
     assert node.children[1].extra["title"] == "Design discussion"
 
 
+def test_strategy_parse_populates_turn_start_end_in_extra():
+    """v2 regression: parse() must populate `turn_start`/`turn_end` in extra,
+    not just `span_start`/`span_end`. v2's semantic treats span_start/end as
+    absolute turn indices, but the adapter (session_summary_row) falls back
+    to span_to_turn re-derivation when turn_* fields are missing — which
+    produces (0, 0) garbage for v2 input. Caught via live-test 2026-05-28
+    on dashboard /api/chats/<sid>/topics."""
+    strat = IncrementalLayeredStrategy()
+    output = {
+        "tldr": "x",
+        "activity_kind": "implementation",
+        "trailing_and_new_topics": [
+            {"title": "T1", "summary": "s1", "span_range": [0, 12], "keywords": []},
+            {"title": "T2", "summary": "s2", "span_range": [13, 30], "keywords": []},
+        ],
+    }
+    node = strat.parse(output, "")
+    assert len(node.children) == 2
+    # Critical assertion: turn_start/turn_end must mirror span_start/span_end.
+    assert node.children[0].extra["turn_start"] == 0
+    assert node.children[0].extra["turn_end"] == 12
+    assert node.children[1].extra["turn_start"] == 13
+    assert node.children[1].extra["turn_end"] == 30
+
+
 def test_strategy_parse_missing_activity_kind_defaults_unknown():
     strat = IncrementalLayeredStrategy()
     output = {

@@ -337,6 +337,17 @@ class IncrementalLayeredStrategy:
                     "keywords": list(topic.get("keywords") or []),
                     "span_start": span_start,
                     "span_end": span_end,
+                    # In v2's semantic, span_start/span_end ARE absolute
+                    # turn indices (the prompt tells the model to emit
+                    # them that way). Populate `turn_start`/`turn_end`
+                    # identically so the adapter (session_summary_row.py)
+                    # uses them directly. Without this, the adapter falls
+                    # back to span_to_turn re-derivation which treats the
+                    # values as IR span indices and produces (0, 0)
+                    # garbage. Caught via live-test 2026-05-28 on the
+                    # dashboard's /api/chats/<sid>/topics endpoint.
+                    "turn_start": span_start,
+                    "turn_end": span_end,
                     # Finalized status is computed at write time by the
                     # store, based on `is_finalized()` against total_turns.
                     "finalized": False,
