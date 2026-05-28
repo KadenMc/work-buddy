@@ -495,9 +495,23 @@ def _build_v2_meta(
     escalation_triggered: bool = False,
     escalation_reason: str | None = None,
 ) -> dict[str, Any]:
-    """Assemble the v2 meta dict for `apply_incremental`."""
+    """Assemble the v2 meta dict for `apply_incremental`.
+
+    `model_chain` records the *configured* chain (operator intent, from
+    config); `models_actually_used` records what the LLM call(s) actually
+    used (LLMRunner may escalate through the chain). The pair lets future
+    audits answer "did escalation fire?" by comparing the two.
+    """
     if models_actually_used is None:
         models_actually_used = [prov.model] if prov.model else []
+    # Record the configured chain as tier-name strings (operator intent).
+    # The resolver lives in orchestrator to keep config-reading concerns
+    # there; import locally to avoid a circular import.
+    try:
+        from work_buddy.summarization.orchestrator import _resolve_model_chain
+        configured = [t.value for t in _resolve_model_chain()]
+    except Exception:
+        configured = []
     return {
         "total_turns": total_turns,
         "last_finalized_boundary": last_finalized_boundary,
@@ -505,7 +519,7 @@ def _build_v2_meta(
         "activity_kind": activity_kind,
         "pathway": pathway,
         "chunks_used": chunks_used,
-        "model_chain": [prov.model] if prov.model else [],
+        "model_chain": configured,
         "models_actually_used": models_actually_used,
         "escalation_triggered": 1 if escalation_triggered else 0,
         "escalation_reason": escalation_reason,
