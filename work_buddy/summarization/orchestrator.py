@@ -424,16 +424,45 @@ def _normalize_stub_response(resp: Any) -> LLMCallResult:
 
 
 def default_llm_caller() -> LLMCaller:
-    """Production LLM caller wrapping `LLMRunner` at
-    `ModelTier.FRONTIER_FAST`.
+    """Production LLM caller wrapping `LLMRunner` with a config-driven
+    model chain.
+
+    Reads `conversation_observability.summaries.model_chain` from config —
+    a list of tier-name strings (e.g. ``["local_fast", "frontier_fast"]``
+    for local-first with Haiku as escalation-only quality floor). The first
+    entry is the primary tier; remaining entries become `escalate_to` and
+    are tried in order on transient errors.
+
+    Defaults to `[frontier_fast]` (Haiku-only) when the config key is
+    absent or empty. Unknown tier names are warned and skipped.
+
+    `escalate_on` is the standard set of transient errors: TIMEOUT,
+    BACKEND_UNAVAILABLE, CONTEXT_EXCEEDED, RATE_LIMITED, MALFORMED_RESPONSE,
+    EMPTY_CONTENT, MODEL_NOT_AVAILABLE — i.e. things where retrying on the
+    next tier is sensible. Permanent errors (BAD_REQUEST, SCHEMA_VIOLATION)
+    do NOT escalate — same prompt on a different model will fail the same
+    way.
 
     The framework's `Store` is responsible for caching — this caller does NOT
     pass `cache_ttl_minutes` to `LLMRunner` to avoid double-caching.
     """
     from work_buddy.llm.runner_v2 import LLMRunner
+    from work_buddy.llm.response import ErrorKind
     from work_buddy.llm.tiers import ModelTier
 
     runner = LLMRunner()
+    chain = _resolve_model_chain()
+    primary_tier = chain[0]
+    escalate_to = chain[1:]
+    escalate_on = [
+        ErrorKind.TIMEOUT,
+        ErrorKind.BACKEND_UNAVAILABLE,
+        ErrorKind.CONTEXT_EXCEEDED,
+        ErrorKind.RATE_LIMITED,
+        ErrorKind.MALFORMED_RESPONSE,
+        ErrorKind.EMPTY_CONTENT,
+        ErrorKind.MODEL_NOT_AVAILABLE,
+    ]
 
     class _Default:
         def call(
@@ -448,7 +477,9 @@ def default_llm_caller() -> LLMCaller:
         ) -> LLMCallResult:
             try:
                 resp = runner.call(
-                    tier=ModelTier.FRONTIER_FAST,
+                    tier=primary_tier,
+                    escalate_to=escalate_to if escalate_to else None,
+                    escalate_on=escalate_on if escalate_to else None,
                     system=system,
                     user=user,
                     output_schema=output_schema,
@@ -467,3 +498,44 @@ def default_llm_caller() -> LLMCaller:
             )
 
     return _Default()
+
+
+def _resolve_model_chain() -> list[Any]:
+    """Resolve the configured model chain into a list of `ModelTier` enums.
+
+    Reads `conversation_observability.summaries.model_chain` from config.
+    Default: `[ModelTier.FRONTIER_FAST]` (Haiku-only). Returns a non-empty
+    list; warns on unknown tier names but doesn't crash.
+    """
+    from work_buddy.llm.tiers import ModelTier
+
+    default_chain = [ModelTier.FRONTIER_FAST]
+    try:
+        from work_buddy.config import load_config
+
+        cfg = load_config()
+        summ = (cfg.get("conversation_observability") or {}).get("summaries", {}) or {}
+        raw = summ.get("model_chain") or []
+    except Exception:
+        return default_chain
+
+    if not raw:
+        return default_chain
+
+    # Map tier-name strings → ModelTier enum.
+    resolved: list[Any] = []
+    for entry in raw:
+        if not isinstance(entry, str):
+            logger.warning(
+                "summarization model_chain: skipping non-string entry %r", entry,
+            )
+            continue
+        try:
+            resolved.append(ModelTier(entry))
+        except ValueError:
+            logger.warning(
+                "summarization model_chain: ignoring unknown tier %r "
+                "(valid tiers: %s)",
+                entry, ", ".join(t.value for t in ModelTier),
+            )
+    return resolved if resolved else default_chain

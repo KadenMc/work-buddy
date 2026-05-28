@@ -396,6 +396,17 @@ conversation_observability:
     # - refresh_session_summaries (v1 legacy entry) no-ops to avoid race
     # Bump only after the §8 eval pass clears (PRD OQ19).
     use_incremental: false
+    # Model chain for v2's LLM calls (PRD F5). First entry is the primary
+    # tier; remaining are tried in order on transient errors (TIMEOUT,
+    # CONTEXT_EXCEEDED, RATE_LIMITED, MALFORMED_RESPONSE, BACKEND_UNAVAILABLE,
+    # EMPTY_CONTENT, MODEL_NOT_AVAILABLE). Valid tier names: local_fast,
+    # local_tool_calling, frontier_fast, frontier_balanced, frontier_best.
+    #
+    # Default (when unset): [frontier_fast]. Haiku-only.
+    # Recommended local-first chain: [local_fast, frontier_fast] —
+    # tries local LLM first (free at inference), escalates to Haiku as
+    # quality floor. Per PRD's long-term local-first target.
+    model_chain: [frontier_fast]
     # Per-session cooldown — the worker skips a session for this many
     # minutes after its last successful refresh. Default 30; configurable
     # 15-60.

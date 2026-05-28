@@ -247,6 +247,81 @@ def test_build_session_summarizer_v2_flag(monkeypatch, tmp_path):
     assert s.store.cache_version == 2
 
 
+def test_resolve_model_chain_default_when_config_missing(monkeypatch):
+    """Without a config key, default chain is [FRONTIER_FAST]."""
+    from work_buddy.summarization.orchestrator import _resolve_model_chain
+    from work_buddy.llm.tiers import ModelTier
+
+    monkeypatch.setattr(
+        "work_buddy.config.load_config", lambda: {},
+    )
+    chain = _resolve_model_chain()
+    assert chain == [ModelTier.FRONTIER_FAST]
+
+
+def test_resolve_model_chain_reads_config(monkeypatch):
+    """Config with a valid chain returns the corresponding ModelTier enums."""
+    from work_buddy.summarization.orchestrator import _resolve_model_chain
+    from work_buddy.llm.tiers import ModelTier
+
+    monkeypatch.setattr(
+        "work_buddy.config.load_config",
+        lambda: {
+            "conversation_observability": {
+                "summaries": {"model_chain": ["local_fast", "frontier_fast"]},
+            },
+        },
+    )
+    chain = _resolve_model_chain()
+    assert chain == [ModelTier.LOCAL_FAST, ModelTier.FRONTIER_FAST]
+
+
+def test_resolve_model_chain_ignores_unknown_tiers(monkeypatch):
+    """Unknown tier names are warned and skipped; valid ones pass through.
+    If everything is unknown, fall back to default."""
+    from work_buddy.summarization.orchestrator import _resolve_model_chain
+    from work_buddy.llm.tiers import ModelTier
+
+    monkeypatch.setattr(
+        "work_buddy.config.load_config",
+        lambda: {
+            "conversation_observability": {
+                "summaries": {"model_chain": ["bogus_tier", "frontier_fast"]},
+            },
+        },
+    )
+    chain = _resolve_model_chain()
+    assert chain == [ModelTier.FRONTIER_FAST]
+
+    # All-bogus → default
+    monkeypatch.setattr(
+        "work_buddy.config.load_config",
+        lambda: {
+            "conversation_observability": {
+                "summaries": {"model_chain": ["bogus_a", "bogus_b"]},
+            },
+        },
+    )
+    chain = _resolve_model_chain()
+    assert chain == [ModelTier.FRONTIER_FAST]
+
+
+def test_resolve_model_chain_empty_list_falls_back_to_default(monkeypatch):
+    """Empty list config → default chain."""
+    from work_buddy.summarization.orchestrator import _resolve_model_chain
+    from work_buddy.llm.tiers import ModelTier
+
+    monkeypatch.setattr(
+        "work_buddy.config.load_config",
+        lambda: {
+            "conversation_observability": {
+                "summaries": {"model_chain": []},
+            },
+        },
+    )
+    assert _resolve_model_chain() == [ModelTier.FRONTIER_FAST]
+
+
 def test_v2_strategy_version_triplet_invalidates_v1_rows(tmp_db):
     """Critical regression: when the v2 strategy is constructed with its
     (2,2,2,2) versions, the store's staleness check fires on existing
