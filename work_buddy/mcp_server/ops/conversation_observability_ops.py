@@ -80,6 +80,30 @@ def conversation_observability_refresh(
     }
 
 
+def summarization_worker_tick(
+    bypass_cooldown: bool = False,
+    bypass_budget: bool = False,
+    limit: int | None = None,
+) -> dict[str, Any]:
+    """Run one tick of the summarization queue worker (PRD §6 O2).
+
+    Piggybacks on the existing 5-minute observability cadence. Drains the
+    `summarization_queue` table FIFO over the cooldown-passed subset,
+    bounded by `daily_budget_usd`.
+
+    `bypass_cooldown` and `bypass_budget` are for explicit user-triggered
+    refresh (e.g. `/wb-summarize-now`); routine sidecar drainage uses the
+    defaults.
+    """
+    from work_buddy.summarization.worker import run_worker_tick
+
+    return run_worker_tick(
+        bypass_cooldown=bypass_cooldown,
+        bypass_budget=bypass_budget,
+        limit=limit,
+    )
+
+
 def _register() -> None:
     from work_buddy.conversation_observability.session_summary_row import (
         session_summary_row,
@@ -100,6 +124,8 @@ def _register() -> None:
     register_op("op.wb.conversation_observability_list", list_observed_sessions)
     register_op("op.wb.conversation_observability_summarize",
                 refresh_session_summaries)
+    register_op("op.wb.summarization_worker_tick",
+                summarization_worker_tick, replace=True)
     # Both op IDs bind the same callable so existing
     # `conversation_observability_summary_get` callers keep working;
     # the capability declaration for the long-namespace name is marked

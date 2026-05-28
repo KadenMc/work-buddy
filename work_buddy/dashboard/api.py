@@ -817,6 +817,53 @@ def _resolve_repo_name(project_slug: str, fallback_name: str) -> str:
         return fallback_name
 
 
+def _load_tldrs_from_framework(sids: list[str]) -> list[dict[str, Any]]:
+    """Batch-load TLDRs for `sids` from the framework's summarization.db.
+
+    Joins `summary_items` (status='ok') with `summary_nodes` (level=0 →
+    root `summary` is the tldr). Covers both v1 (LayeredDisclosureStrategy)
+    and v2 (IncrementalLayeredStrategy) rows identically.
+
+    Returns dicts shaped like the historical legacy query result so the
+    caller iterates `session_id` + `tldr` keys.
+
+    (Legacy `session_summaries` fallback removed after the 2026-05-28
+    one-shot migration moved all legacy rows into the framework DB.)
+    """
+    if not sids:
+        return []
+
+    results: dict[str, str] = {}
+    try:
+        from work_buddy.summarization.db import get_connection as get_summ_conn
+        sconn = get_summ_conn()
+        try:
+            placeholders = ",".join(["?"] * len(sids))
+            rows = sconn.execute(
+                f"""
+                SELECT i.item_id AS session_id, n.summary AS tldr
+                FROM summary_items i
+                JOIN summary_nodes n
+                  ON n.namespace = i.namespace
+                 AND n.item_id   = i.item_id
+                 AND n.level     = 0
+                WHERE i.namespace = 'conversation_session'
+                  AND i.status   = 'ok'
+                  AND i.item_id IN ({placeholders})
+                """,
+                sids,
+            ).fetchall()
+            for r in rows:
+                if r["tldr"]:
+                    results[r["session_id"]] = r["tldr"]
+        finally:
+            sconn.close()
+    except Exception as exc:
+        logger.debug("framework tldr batch load failed: %s", exc)
+
+    return [{"session_id": sid, "tldr": tldr} for sid, tldr in results.items()]
+
+
 def _load_observability_for_sessions(
     session_ids: set[str],
 ) -> dict[str, dict[str, Any]]:
@@ -866,11 +913,10 @@ def _load_observability_for_sessions(
             f"FROM session_file_writes WHERE session_id IN ({placeholders})",
             sids,
         ).fetchall()
-        summary_rows = conn.execute(
-            f"SELECT session_id, tldr FROM session_summaries "
-            f"WHERE session_id IN ({placeholders}) AND status = 'ok'",
-            sids,
-        ).fetchall()
+        # Read tldrs from summarization.db (the framework). Legacy
+        # `session_summaries` table was emptied + dropped on 2026-05-28
+        # after a one-shot migration moved its 94 rows into the framework.
+        summary_rows = _load_tldrs_from_framework(sids)
     finally:
         conn.close()
 

@@ -243,6 +243,99 @@ class DurableSummaryStore:
         finally:
             conn.close()
 
+    def apply_incremental(
+        self,
+        item_id: str,
+        new_root: SummaryNode,
+        finalized_count: int,
+        provenance: Provenance,
+        freshness_token: Any,
+        *,
+        v2_meta: dict[str, Any] | None = None,
+    ) -> None:
+        """Merge an incremental refresh into an existing tree.
+
+        Keeps the first `finalized_count` children of the existing tree
+        (immutable history) and replaces the rest with `new_root.children`
+        (the trailing + new topics emitted by the LLM). The root summary
+        (tldr) is fully replaced with `new_root.summary`.
+
+        If there's no existing tree, behaves like `save` — the new_root IS
+        the full tree.
+
+        `v2_meta` is a dict of v2 schema fields to persist on `summary_items`:
+        `total_turns`, `last_finalized_boundary`, `truncated`, `activity_kind`,
+        `pathway`, `chunks_used`, `model_chain` (JSON-serializable list),
+        `models_actually_used` (JSON-serializable list), `escalation_triggered`,
+        `escalation_reason`. All optional; missing keys default per schema.
+        """
+        existing = self.load(item_id)
+
+        if existing is None or finalized_count <= 0:
+            # No prior tree or nothing finalized — save the new_root whole.
+            merged_root = new_root
+        else:
+            kept = existing.children[:finalized_count]
+            merged_root = SummaryNode(
+                summary=new_root.summary,
+                source_ref=new_root.source_ref,
+                children=kept + list(new_root.children),
+                extra=dict(new_root.extra or {}),
+            )
+
+        # Re-stamp topic_index across all children so they're 0..N-1.
+        for i, child in enumerate(merged_root.children):
+            child.extra["topic_index"] = i
+
+        # Use the normal save path for the tree (which DELETEs + INSERTs
+        # all nodes; correct because finalized topic CONTENT is the same,
+        # just the row identity changes).
+        self.save(item_id, merged_root, provenance, freshness_token)
+
+        # Now update the v2 metadata columns on summary_items. The
+        # save() above already upserted the row; this is a follow-up UPDATE
+        # for the v2-specific fields it didn't touch.
+        if v2_meta:
+            self._update_v2_meta(item_id, v2_meta)
+
+    def _update_v2_meta(self, item_id: str, v2_meta: dict[str, Any]) -> None:
+        """Persist the v2 schema fields on `summary_items`. Idempotent."""
+        # Serialize list-valued fields to JSON. None passes through.
+        def _enc(v: Any) -> Any:
+            if isinstance(v, (list, tuple)):
+                return json.dumps(list(v), ensure_ascii=False)
+            return v
+
+        cols = (
+            "total_turns",
+            "last_finalized_boundary",
+            "truncated",
+            "activity_kind",
+            "pathway",
+            "chunks_used",
+            "model_chain",
+            "models_actually_used",
+            "escalation_triggered",
+            "escalation_reason",
+        )
+        present = [(c, _enc(v2_meta[c])) for c in cols if c in v2_meta]
+        if not present:
+            return
+
+        set_clause = ", ".join(f"{c}=?" for c, _ in present)
+        values = [v for _, v in present] + [self.namespace, item_id]
+
+        conn = self._connect()
+        try:
+            conn.execute(
+                f"UPDATE summary_items SET {set_clause} "
+                f"WHERE namespace = ? AND item_id = ?",
+                values,
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
     def record_error(
         self,
         item_id: str,

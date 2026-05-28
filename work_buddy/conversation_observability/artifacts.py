@@ -54,10 +54,6 @@ def register_conversation_observability_artifact() -> None:
                     "WHERE session_id NOT IN (SELECT session_id FROM observed_sessions)",
                     "DELETE FROM session_file_writes "
                     "WHERE session_id NOT IN (SELECT session_id FROM observed_sessions)",
-                    "DELETE FROM topic_summaries "
-                    "WHERE session_id NOT IN (SELECT session_id FROM observed_sessions)",
-                    "DELETE FROM session_summaries "
-                    "WHERE session_id NOT IN (SELECT session_id FROM observed_sessions)",
                 ],
                 vacuum_on_delete=False,
             ),

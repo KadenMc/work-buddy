@@ -125,6 +125,30 @@ class Summarizer:
                 f"strategy={s_batched}, source={src_batched}."
             )
 
+        # INCREMENTAL strategies require the source to support fresh-tail
+        # rendering (`render_from`) and total-turns lookup (`total_turns`).
+        # These are duck-typed because the framework Source Protocol stays
+        # narrow; the orchestrator's incremental path will assert these
+        # methods exist at runtime, but failing at construction is friendlier.
+        if SummaryCapability.INCREMENTAL in s_caps:
+            missing = [
+                m for m in ("render_from", "total_turns")
+                if not callable(getattr(self.source, m, None))
+            ]
+            if missing:
+                raise IncoherentComposition(
+                    f"Summarizer {self.name!r}: incremental strategy "
+                    f"{self.strategy.name!r} requires source "
+                    f"{self.source.name!r} to provide methods "
+                    f"{missing} (duck-typed)."
+                )
+            # The store must support `apply_incremental` for the merge step.
+            if not callable(getattr(self.store, "apply_incremental", None)):
+                raise IncoherentComposition(
+                    f"Summarizer {self.name!r}: incremental strategy "
+                    f"requires the store to implement `apply_incremental`."
+                )
+
     # ---------------------------------------------------------------- refresh
 
     def refresh(
@@ -182,11 +206,25 @@ class Summarizer:
             if self.store.is_fresh(item_id, freshness_token):
                 return self.store.load(item_id)
 
+        caller = llm_caller if llm_caller is not None else default_llm_caller()
+
+        # v2 INCREMENTAL path routes through a dedicated module.
+        if SummaryCapability.INCREMENTAL in self.strategy.capabilities:
+            from work_buddy.summarization.incremental import (
+                refresh_one_incremental,
+            )
+            return refresh_one_incremental(
+                self,
+                item_id,
+                freshness_token=freshness_token,
+                llm_caller=caller,
+                profile=profile,
+            )
+
         body = self.source.render(item_id)
         if body is None:
             return None
 
-        caller = llm_caller if llm_caller is not None else default_llm_caller()
         result = caller.call(
             system=self.strategy.system_prompt,
             user=body,

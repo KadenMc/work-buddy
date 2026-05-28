@@ -6,9 +6,7 @@ and ``chat_collector`` (raw chat inventory): this collector produces an
 commits, and any files they left uncommitted — sourced from the
 conversation-observability DB.
 
-Output format (markdown, prompt-ready):
-
-::
+Output format (markdown, prompt-ready). Session-level only by default::
 
     ## Claude Session Summary
 
@@ -19,6 +17,19 @@ Output format (markdown, prompt-ready):
 
     ### secondbrain
     - 14:05–14:22 [88a01ab2] 6 turns, no commits, no dirty files
+
+With ``include_topics=True`` (v2 P6 / PRD F15 / OQ5 resolution), each
+session bullet nests a topic-level timeline with absolute span_ranges
+and (when available) timestamps::
+
+    ### work-buddy
+    - 10:42–11:31 [9a4c2d11] 12 turns, 2 commits
+      tldr: Wired the v2 incremental algorithm.
+      Topics:
+        - [0-8] PRD review and OQ resolution
+        - [9-25] Implementation of incremental refresh
+        - [26-44] Tests + commit
+      Commits: ...
 
 Empty output if the DB has no observed sessions for the window.
 Designed to be safe to import when the conversation_observability DB
@@ -49,11 +60,19 @@ def collect(cfg: dict[str, Any]) -> str:
         renders existing rows. Generation is gated on the
         ``conversation_observability.summaries.enabled`` config flag
         and runs from the sidecar refresh job.
+      * ``include_topics`` (bool, default False) — v2 (PRD F15): if set,
+        nest a topic-level timeline under each session bullet using
+        v2's per-topic timestamps + span_ranges. No LLM is invoked
+        here; rendering reads existing rows from `summarization.db`.
+        Implies ``include_tldr=True`` for consistency.
     """
     days = int(cfg.get("days", 7))
     project = cfg.get("project")
     refresh = bool(cfg.get("refresh", True))
     include_tldr = bool(cfg.get("include_tldr", False))
+    include_topics = bool(cfg.get("include_topics", False))
+    if include_topics:
+        include_tldr = True  # topics imply tldr in the rendered output
 
     try:
         from work_buddy.conversation_observability.commits import (
@@ -151,6 +170,30 @@ def collect(cfg: dict[str, Any]) -> str:
                     and summary_row.get("tldr")
                 ):
                     lines.append(f"  tldr: {summary_row['tldr']}")
+                    if include_topics:
+                        topics = summary_row.get("topics") or []
+                        if topics:
+                            lines.append("  Topics:")
+                            for t in topics:
+                                title = t.get("title", "(untitled)")
+                                s_start = t.get("span_start")
+                                s_end = t.get("span_end")
+                                t_start = t.get("turn_start")
+                                t_end = t.get("turn_end")
+                                # Prefer turn-index range; fall back to span_range.
+                                if isinstance(t_start, int) and isinstance(t_end, int):
+                                    range_str = f"turns {t_start}-{t_end}"
+                                elif isinstance(s_start, int) and isinstance(s_end, int):
+                                    range_str = f"spans {s_start}-{s_end}"
+                                else:
+                                    range_str = ""
+                                line = f"    - {title}"
+                                if range_str:
+                                    line += f" ({range_str})"
+                                summary_text = (t.get("summary") or "").strip()
+                                if summary_text:
+                                    line += f" — {summary_text}"
+                                lines.append(line)
 
             if session_commits:
                 summaries = [
