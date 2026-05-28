@@ -325,3 +325,67 @@ class TestDisabledRegistryInvariants:
             )
         finally:
             reg_mod._REGISTRY = None
+
+
+# ---------------------------------------------------------------------------
+# _entry_to_dict — duck-typed shape discrimination
+# ---------------------------------------------------------------------------
+# Across mcp_registry_reload, the Capability / WorkflowDefinition class
+# objects change identity (sys.modules is purged, classes are re-imported).
+# Pre-reload entries cached anywhere outside the registry no longer match
+# isinstance against the post-reload classes; the symptom is an
+# AttributeError on ``.execution`` leaking through error-handling paths
+# (gateway.py:1439, 1524) as ``'Capability' object has no attribute
+# 'execution'``. _entry_to_dict discriminates on shape, not isinstance,
+# to survive that stale-class case.
+
+
+class TestEntryToDictDuckTyping:
+    def test_capability_shape_serialized_correctly(self):
+        """An object with .callable but no .steps must be serialized
+        through the capability branch — even if isinstance fails (e.g.
+        post-reload stale class identity)."""
+        from work_buddy.mcp_server.registry import _entry_to_dict
+
+        class FakeCapability:
+            name = "fake.op"
+            description = "test"
+            category = "test"
+            parameters = {}
+            callable = staticmethod(lambda: None)
+            mutates_state = False
+            retry_policy = "manual"
+            slash_command = None
+
+        d = _entry_to_dict(FakeCapability())
+        assert d["type"] == "function"
+        assert d["name"] == "fake.op"
+        # Did NOT fall into the workflow branch:
+        assert "execution" not in d
+        assert "steps" not in d
+
+    def test_workflow_shape_serialized_correctly(self):
+        """An object with .steps must be serialized through the workflow
+        branch even if isinstance fails."""
+        from work_buddy.mcp_server.registry import _entry_to_dict
+
+        class FakeStep:
+            id = "s1"
+            name = "Step 1"
+            step_type = "reasoning"
+            execution = "main"
+            depends_on = []
+            workflow_file = None
+
+        class FakeWorkflow:
+            name = "fake-workflow"
+            description = "test"
+            execution = "main"
+            steps = [FakeStep()]
+            slash_command = None
+
+        d = _entry_to_dict(FakeWorkflow())
+        assert d["type"] == "workflow"
+        assert d["execution"] == "main"
+        assert len(d["steps"]) == 1
+        assert d["steps"][0]["id"] == "s1"
