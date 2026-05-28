@@ -243,13 +243,29 @@ def test_load_observability_commits_by_repo_aggregates(co_env) -> None:
     assert obs[sid]["latest_committed_at"] == "2026-05-14T10:00:00Z"
 
 
-def test_load_observability_tldr_only_when_status_ok(co_env) -> None:
-    """Errored summaries must not surface their (empty) tldr."""
+def test_load_observability_tldr_only_when_status_ok(co_env, tmp_path, monkeypatch) -> None:
+    """Errored summaries must not surface their (empty) tldr.
+
+    Seeds the summarization framework store (`summary_items` +
+    `summary_nodes` in `summarization.db`) directly — the legacy
+    `session_summaries` table was dropped after the 2026-05-28 migration.
+    """
     from work_buddy.conversation_observability.commits import (
         refresh_session_commits,
     )
-    from work_buddy.conversation_observability.db import get_connection
     from work_buddy.dashboard.api import _load_observability_for_sessions
+
+    # Redirect the summarization framework DB to a tmp file so we don't
+    # touch the user's real `<data_root>/summarization/summarization.db`.
+    summ_db = tmp_path / "summarization.db"
+    monkeypatch.setattr(
+        "work_buddy.summarization.db._default_db_path",
+        lambda: summ_db,
+    )
+    monkeypatch.setattr(
+        "work_buddy.summarization.db.db_path",
+        lambda cfg=None: summ_db,
+    )
 
     sid_ok = "ffffffff-ffff-ffff-ffff-ffffffffffff"
     sid_err = "00000000-0000-0000-0000-000000000001"
@@ -261,26 +277,35 @@ def test_load_observability_tldr_only_when_status_ok(co_env) -> None:
         )
     refresh_session_commits(days=30)
 
-    conn = get_connection()
+    # Seed framework rows directly. `_load_tldrs_from_framework` joins
+    # status='ok' items against their level=0 root node — only the ok
+    # session's tldr should surface.
+    from work_buddy.summarization.db import get_connection as get_summ_conn
+
+    sconn = get_summ_conn()
     try:
-        conn.execute(
-            "INSERT INTO session_summaries "
-            "(session_id, tldr, generated_at, prompt_version, "
-            " summary_schema_version, selection_version, cache_version, "
-            " status) VALUES (?, ?, '2026-05-14', 1, 1, 1, 1, 'ok')",
-            (sid_ok, "Built the thing."),
-        )
-        conn.execute(
-            "INSERT INTO session_summaries "
-            "(session_id, tldr, generated_at, prompt_version, "
-            " summary_schema_version, selection_version, cache_version, "
-            " status, error) VALUES (?, '', '2026-05-14', 1, 1, 1, 1, "
-            "'error', 'llm timeout')",
-            (sid_err,),
-        )
-        conn.commit()
+        for sid, tldr, status, error in (
+            (sid_ok, "Built the thing.", "ok", None),
+            (sid_err, "", "error", "llm timeout"),
+        ):
+            sconn.execute(
+                "INSERT INTO summary_items "
+                "(namespace, item_id, freshness_token, generated_at, "
+                " prompt_version, summary_schema_version, selection_version, "
+                " cache_version, status, error) "
+                "VALUES ('conversation_session', ?, 'tok', '2026-05-14', "
+                "        1, 1, 1, 1, ?, ?)",
+                (sid, status, error),
+            )
+            sconn.execute(
+                "INSERT INTO summary_nodes "
+                "(id, namespace, item_id, parent_id, ordinal, level, summary) "
+                "VALUES (?, 'conversation_session', ?, NULL, 0, 0, ?)",
+                (f"conversation_session:{sid}:0", sid, tldr),
+            )
+        sconn.commit()
     finally:
-        conn.close()
+        sconn.close()
 
     obs = _load_observability_for_sessions({sid_ok, sid_err})
     assert obs[sid_ok]["tldr"] == "Built the thing."

@@ -35,7 +35,11 @@ def tmp_co_db(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_get_connection_creates_all_five_tables(tmp_co_db) -> None:
+def test_get_connection_creates_all_tables(tmp_co_db) -> None:
+    """Schema creates the three conv_obs tables; legacy summary tables
+    (`session_summaries`, `topic_summaries`) were migrated into the
+    summarization framework's store and must NOT be re-created here.
+    """
     from work_buddy.conversation_observability.db import get_connection
 
     conn = get_connection()
@@ -53,9 +57,10 @@ def test_get_connection_creates_all_five_tables(tmp_co_db) -> None:
         "observed_sessions",
         "session_commits",
         "session_file_writes",
-        "topic_summaries",
-        "session_summaries",
     }.issubset(tables)
+    # Legacy summary tables must stay dropped — see schema.py.
+    assert "session_summaries" not in tables
+    assert "topic_summaries" not in tables
 
 
 def test_get_connection_is_idempotent(tmp_co_db) -> None:
@@ -151,19 +156,6 @@ def test_artifact_post_delete_cascades_child_rows(tmp_co_db) -> None:
             "VALUES (?, ?, ?, ?, ?)",
             ("w1", "doomed", "/repo/a.py", "Write", "2026-05-13T00:00:00Z"),
         )
-        conn.execute(
-            "INSERT INTO topic_summaries "
-            "(id, session_id, topic_index, title, summary) "
-            "VALUES (?, ?, ?, ?, ?)",
-            ("t1", "doomed", 0, "topic", "body"),
-        )
-        conn.execute(
-            "INSERT INTO session_summaries "
-            "(session_id, tldr, generated_at, prompt_version, "
-            " summary_schema_version, selection_version, cache_version) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            ("doomed", "tldr text", "2026-05-13T00:00:00Z", 1, 1, 1, 1),
-        )
         conn.commit()
     finally:
         conn.close()
@@ -180,7 +172,9 @@ def test_artifact_post_delete_cascades_child_rows(tmp_co_db) -> None:
     )
     artifact.storage.delete_record(ref)
 
-    # All children should be gone too.
+    # All conv_obs children should be gone too. (Summary cascade lives
+    # in the summarization framework store, not this DB — covered by
+    # the orphan-prune path in refresh_observed_sessions.)
     conn = get_connection()
     try:
         assert conn.execute(
@@ -188,12 +182,6 @@ def test_artifact_post_delete_cascades_child_rows(tmp_co_db) -> None:
         ).fetchone()[0] == 0
         assert conn.execute(
             "SELECT COUNT(*) FROM session_file_writes WHERE session_id='doomed'"
-        ).fetchone()[0] == 0
-        assert conn.execute(
-            "SELECT COUNT(*) FROM topic_summaries WHERE session_id='doomed'"
-        ).fetchone()[0] == 0
-        assert conn.execute(
-            "SELECT COUNT(*) FROM session_summaries WHERE session_id='doomed'"
         ).fetchone()[0] == 0
     finally:
         conn.close()
