@@ -718,10 +718,9 @@ async function selectChat(sessionId) {
         renderChatHeader(msgData.metadata);
     }
 
-    if (commitData && commitData.commits && commitData.commits.length > 0) {
-        chatsState.commits = commitData.commits;
-        renderCommitsBar(commitData.commits);
-    }
+    var _commits = (commitData && commitData.commits) || [];
+    chatsState.commits = _commits;
+    renderCommitsBar(_commits);
 
     // tldr line below the header chips. Hidden when no summary.
     renderChatTldr(topicData);
@@ -1486,10 +1485,9 @@ async function chatsJumpToCommitSearch(sessionId, messageIndex) {
 
     // Load commits bar in background
     fetchJSON('/api/chats/' + sessionId + '/commits').then(function(commitData) {
-        if (commitData && commitData.commits && commitData.commits.length > 0) {
-            chatsState.commits = commitData.commits;
-            renderCommitsBar(commitData.commits);
-        }
+        var _commits = (commitData && commitData.commits) || [];
+        chatsState.commits = _commits;
+        renderCommitsBar(_commits);
     });
 
     renderMessages();
@@ -1578,10 +1576,9 @@ async function chatsJumpToHit(sessionId, spanIndex) {
 
     // Also fetch commits in the background
     fetchJSON('/api/chats/' + sessionId + '/commits').then(function(commitData) {
-        if (commitData && commitData.commits && commitData.commits.length > 0) {
-            chatsState.commits = commitData.commits;
-            renderCommitsBar(commitData.commits);
-        }
+        var _commits = (commitData && commitData.commits) || [];
+        chatsState.commits = _commits;
+        renderCommitsBar(_commits);
     });
 
     setTimeout(function() {
@@ -1731,7 +1728,24 @@ async function chatsFilterRole(role) {
 // ---- Chats: Commits bar ----
 
 function renderCommitsBar(commits) {
+    commits = commits || [];
     var bar = document.getElementById('chats-commits-bar');
+
+    // The detail panel surfaces three session-activity streams: commits,
+    // authored PRs, and assigned tasks. PR/task data rides along on the
+    // listing entry (prs_detail / tasks_detail from get_chats_summary),
+    // so no extra fetch is needed.
+    var listEntry = (chatsState.chats || []).find(function(c) {
+        return c.session_id === chatsState.selectedId;
+    }) || {};
+    var prs = listEntry.prs_detail || [];
+    var tasks = listEntry.tasks_detail || [];
+
+    // Nothing to show → hide the bar entirely (don't leave an empty box).
+    if (commits.length === 0 && prs.length === 0 && tasks.length === 0) {
+        bar.style.display = 'none';
+        return;
+    }
     bar.style.display = 'block';
 
     // Group by message to deduplicate retried/amended commits
@@ -1757,54 +1771,90 @@ function renderCommitsBar(commits) {
     // Sort chronologically (oldest first)
     groups.sort(function(a, b) { return (a.timestamp || '').localeCompare(b.timestamp || ''); });
 
-    var html = '<div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">'
-        + groups.length + ' unique commit' + (groups.length !== 1 ? 's' : '')
-        + (commits.length !== groups.length ? ' (' + commits.length + ' total incl. retries)' : '')
-        + ' during this session</div>';
+    var html = '';
 
-    // Determine the session's primary repo so cross-repo commits get
-    // a "(<repo>) " prefix. The primary is the most-frequent repo in
-    // the listing-side `commits_by_repo` for this session — same data
-    // already cached in chatsState.chats. Falls back to no prefix
-    // when repo info is unavailable.
-    var listEntry = (chatsState.chats || []).find(function(c) {
-        return c.session_id === chatsState.selectedId;
-    }) || {};
-    var primaryRepo = null;
-    var byRepo = listEntry.commits_by_repo || {};
-    Object.keys(byRepo).forEach(function(repo) {
-        if (primaryRepo === null || byRepo[repo] > byRepo[primaryRepo]) {
-            primaryRepo = repo;
-        }
-    });
+    // --- Commits ---
+    if (commits.length > 0) {
+        html += '<div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">'
+            + groups.length + ' unique commit' + (groups.length !== 1 ? 's' : '')
+            + (commits.length !== groups.length ? ' (' + commits.length + ' total incl. retries)' : '')
+            + ' during this session</div>';
 
-    groups.forEach(function(g) {
-        var clickable = g.message_index != null;
-        var clickAttr = clickable
-            ? ' onclick="chatsJumpToCommit(' + g.message_index + ')" title="Jump to this commit in the conversation"'
-            : '';
-        // Per-commit repo only ever set when session_commits.repo_name
-        // is populated (currently NULL for all rows; reserved for a
-        // follow-up that infers per-commit repo from the cwd or
-        // ``git show``). When set and different from the session
-        // primary, prefix the message with the repo name.
-        var commitRepo = g.repo_name || '';
-        var repoPrefix = '';
-        if (commitRepo && commitRepo !== primaryRepo) {
-            repoPrefix = '<span class="commit-repo-tag">' + escapeHtml(commitRepo) + '</span> ';
-        }
-        html += '<div class="chat-commit-marker' + (clickable ? ' clickable' : '') + '"' + clickAttr + '>'
-            + '<code>' + g.hashes[0] + '</code> '
-            + repoPrefix
-            + '<span class="commit-msg">' + escapeHtml(g.message) + '</span>'
-            + '<span class="commit-meta">'
-            + (g.count > 1 ? '<span>(' + g.count + 'x)</span>' : '')
-            + '<span>' + g.branch + '</span>'
-            + (g.files_changed ? '<span>' + g.files_changed + ' files</span>' : '')
-            + '<span>' + formatTimestamp(g.timestamp) + '</span>'
-            + '</span>'
-            + '</div>';
-    });
+        // Determine the session's primary repo so cross-repo commits get
+        // a "(<repo>) " prefix. The primary is the most-frequent repo in
+        // the listing-side `commits_by_repo` for this session. Falls back
+        // to no prefix when repo info is unavailable.
+        var primaryRepo = null;
+        var byRepo = listEntry.commits_by_repo || {};
+        Object.keys(byRepo).forEach(function(repo) {
+            if (primaryRepo === null || byRepo[repo] > byRepo[primaryRepo]) {
+                primaryRepo = repo;
+            }
+        });
+
+        groups.forEach(function(g) {
+            var clickable = g.message_index != null;
+            var clickAttr = clickable
+                ? ' onclick="chatsJumpToCommit(' + g.message_index + ')" title="Jump to this commit in the conversation"'
+                : '';
+            // Per-commit repo only ever set when session_commits.repo_name
+            // is populated (currently NULL for all rows; reserved for a
+            // follow-up that infers per-commit repo from the cwd or
+            // ``git show``). When set and different from the session
+            // primary, prefix the message with the repo name.
+            var commitRepo = g.repo_name || '';
+            var repoPrefix = '';
+            if (commitRepo && commitRepo !== primaryRepo) {
+                repoPrefix = '<span class="commit-repo-tag">' + escapeHtml(commitRepo) + '</span> ';
+            }
+            html += '<div class="chat-commit-marker' + (clickable ? ' clickable' : '') + '"' + clickAttr + '>'
+                + '<code>' + g.hashes[0] + '</code> '
+                + repoPrefix
+                + '<span class="commit-msg">' + escapeHtml(g.message) + '</span>'
+                + '<span class="commit-meta">'
+                + (g.count > 1 ? '<span>(' + g.count + 'x)</span>' : '')
+                + '<span>' + g.branch + '</span>'
+                + (g.files_changed ? '<span>' + g.files_changed + ' files</span>' : '')
+                + '<span>' + formatTimestamp(g.timestamp) + '</span>'
+                + '</span>'
+                + '</div>';
+        });
+    }
+
+    // --- Pull requests authored from this session ---
+    if (prs.length > 0) {
+        html += '<div style="font-size:11px;color:var(--text-muted);margin:8px 0 4px;">'
+            + 'Pull requests (' + prs.length + ')</div>';
+        prs.forEach(function(p) {
+            var when = p.ts ? formatTimestamp(p.ts) : '';
+            html += '<div class="chat-commit-marker">'
+                + '<a href="' + escapeHtml(p.pr_url) + '" target="_blank" rel="noopener"'
+                + ' class="commit-msg" style="text-decoration:none;color:inherit;"'
+                + ' title="Open PR on GitHub">↗ #' + p.pr_number + '</a>'
+                + '<span class="commit-meta">'
+                + '<span>' + escapeHtml(p.action) + '</span>'
+                + (when ? '<span>' + when + '</span>' : '')
+                + '</span>'
+                + '</div>';
+        });
+    }
+
+    // --- Tasks assigned to this session (reverse session→tasks linkage) ---
+    if (tasks.length > 0) {
+        html += '<div style="font-size:11px;color:var(--text-muted);margin:8px 0 4px;">'
+            + 'Tasks (' + tasks.length + ')</div>';
+        tasks.forEach(function(t) {
+            var meta = [t.state, t.urgency].filter(Boolean).join(' · ');
+            var text = t.task_text || '';
+            html += '<div class="chat-commit-marker">'
+                + '<span class="commit-msg">▫ ' + escapeHtml(t.task_id)
+                + (meta ? ' · ' + escapeHtml(meta) : '')
+                + (text ? ' — ' + escapeHtml(text) : '')
+                + '</span>'
+                + '</div>';
+        });
+    }
+
     bar.innerHTML = html;
 }
 
