@@ -202,3 +202,142 @@ def test_takeover_with_no_children_still_kills_daemon(monkeypatch):
     assert sidecar_pid.takeover_existing_daemon(7260, wait_seconds=0.3) is True
     # No children → no force-kill calls during the children-reap step.
     assert fk_calls == []
+
+
+# ---------------------------------------------------------------------------
+# Job Object — OS-enforced kill-time reaping (Windows hard-kill window)
+# ---------------------------------------------------------------------------
+#
+# The takeover sweep above closes the cross-restart orphan window, but only
+# on the *next* startup. The Job Object closes the gap in between: when the
+# daemon is hard-killed (taskkill /F, crash) no signal handler runs, so on
+# Windows children orphan until the next boot. KILL_ON_JOB_CLOSE makes the
+# OS reap them the instant the daemon's process object is destroyed.
+
+
+class _FakeWin32Job:
+    """Minimal stand-in for the ``win32job`` module."""
+
+    JobObjectExtendedLimitInformation = 9
+    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
+
+    def __init__(self):
+        self.created = False
+        self.set_flags = None
+
+    def CreateJobObject(self, sa, name):
+        self.created = True
+        return "JOB_HANDLE"
+
+    def QueryInformationJobObject(self, job, kind):
+        return {"BasicLimitInformation": {"LimitFlags": 0}}
+
+    def SetInformationJobObject(self, job, kind, info):
+        self.set_flags = info["BasicLimitInformation"]["LimitFlags"]
+
+    def AssignProcessToJobObject(self, job, handle):
+        pass
+
+
+def test_create_job_returns_none_on_non_windows(monkeypatch):
+    """Windows-only: on Unix the helper no-ops to None (the cross-platform
+    baseline is the startup orphan sweep, not a Job Object)."""
+    monkeypatch.setattr(compat, "IS_WINDOWS", False)
+    assert compat.create_kill_on_close_job() is None
+
+
+def test_assign_returns_false_on_non_windows(monkeypatch):
+    monkeypatch.setattr(compat, "IS_WINDOWS", False)
+    assert compat.assign_process_to_job("JOB", 1234) is False
+
+
+def test_assign_returns_false_when_job_is_none(monkeypatch):
+    """A None job (creation failed) must make assignment a safe no-op."""
+    monkeypatch.setattr(compat, "IS_WINDOWS", True)
+    assert compat.assign_process_to_job(None, 1234) is False
+
+
+def test_create_job_sets_kill_on_close_flag(monkeypatch):
+    """The job must carry KILL_ON_JOB_CLOSE — that flag is the whole point."""
+    monkeypatch.setattr(compat, "IS_WINDOWS", True)
+    fake = _FakeWin32Job()
+    monkeypatch.setitem(__import__("sys").modules, "win32job", fake)
+
+    job = compat.create_kill_on_close_job()
+    assert job == "JOB_HANDLE"
+    assert fake.created
+    assert fake.set_flags & fake.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+
+
+def test_create_job_swallows_errors_returns_none(monkeypatch):
+    """Job creation must never raise — a failure degrades to None and the
+    startup sweep remains the fallback."""
+    monkeypatch.setattr(compat, "IS_WINDOWS", True)
+
+    class _Boom:
+        JobObjectExtendedLimitInformation = 9
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
+
+        def CreateJobObject(self, *a):
+            raise OSError("access denied")
+
+    monkeypatch.setitem(__import__("sys").modules, "win32job", _Boom())
+    assert compat.create_kill_on_close_job() is None
+
+
+def test_assign_is_best_effort_on_failure(monkeypatch):
+    """Assignment can fail under nested-job restrictions — must return False,
+    never raise, so a child still starts and the sweep covers it."""
+    monkeypatch.setattr(compat, "IS_WINDOWS", True)
+
+    class _BoomJob:
+        def AssignProcessToJobObject(self, job, h):
+            raise OSError("nested job limits")
+
+    class _Api:
+        def OpenProcess(self, *a):
+            return "PROC_HANDLE"
+
+        def CloseHandle(self, h):
+            pass
+
+    class _Con:
+        PROCESS_SET_QUOTA = 0x0100
+        PROCESS_TERMINATE = 0x0001
+
+    import sys as _sys
+    monkeypatch.setitem(_sys.modules, "win32job", _BoomJob())
+    monkeypatch.setitem(_sys.modules, "win32api", _Api())
+    monkeypatch.setitem(_sys.modules, "win32con", _Con())
+
+    assert compat.assign_process_to_job("JOB_HANDLE", 4321) is False
+
+
+def test_assign_closes_process_handle_on_success(monkeypatch):
+    """The *process* handle must be closed after assigning; only the *job*
+    handle stays open (closing the job handle early would kill children)."""
+    monkeypatch.setattr(compat, "IS_WINDOWS", True)
+    closed: list[str] = []
+
+    class _Job:
+        def AssignProcessToJobObject(self, job, h):
+            pass
+
+    class _Api:
+        def OpenProcess(self, *a):
+            return "PROC_HANDLE"
+
+        def CloseHandle(self, h):
+            closed.append(h)
+
+    class _Con:
+        PROCESS_SET_QUOTA = 0x0100
+        PROCESS_TERMINATE = 0x0001
+
+    import sys as _sys
+    monkeypatch.setitem(_sys.modules, "win32job", _Job())
+    monkeypatch.setitem(_sys.modules, "win32api", _Api())
+    monkeypatch.setitem(_sys.modules, "win32con", _Con())
+
+    assert compat.assign_process_to_job("JOB_HANDLE", 4321) is True
+    assert closed == ["PROC_HANDLE"]

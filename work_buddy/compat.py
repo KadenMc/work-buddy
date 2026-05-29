@@ -380,6 +380,84 @@ def _find_child_pids_unix(pid: int) -> set[int]:
     return children
 
 
+def create_kill_on_close_job():
+    """Create a Windows Job Object that kills every assigned process when
+    its last handle closes — i.e. when this daemon dies by ANY means,
+    including a hard kill (``taskkill /F``, ``kill -9``, crash, power loss)
+    where the daemon's own signal handlers and atexit hooks never run.
+
+    Returns the job handle on Windows, or ``None`` on non-Windows / failure.
+
+    THE CALLER MUST KEEP THE RETURNED HANDLE ALIVE for the daemon's whole
+    life: the OS triggers the kill when the job's *last* handle closes, so
+    if the handle is garbage-collected early the children die immediately.
+    Store it in a module global, not a local.
+
+    Why Windows-only: there is no single cross-platform mechanism for
+    OS-automatic kill-time reaping. Linux's ``prctl(PR_SET_PDEATHSIG)``
+    needs an unsafe ``preexec_fn`` in a threaded process and fires on
+    *thread* (not process) death; macOS has no OS guarantee at all (only a
+    cooperative child-side kqueue self-watch). Both are deliberately not
+    implemented here — the cross-platform baseline is the next-startup
+    orphan sweep (``find_child_pids`` + ``kill_process_on_port``), which
+    already exists. Windows is also the only OS this sidecar actually runs
+    on, so this is the layer that executes in practice.
+    """
+    if not IS_WINDOWS:
+        return None
+    import logging
+    log = logging.getLogger(__name__)
+    try:
+        import win32job
+        job = win32job.CreateJobObject(None, "")  # unnamed, not inheritable
+        info = win32job.QueryInformationJobObject(
+            job, win32job.JobObjectExtendedLimitInformation
+        )
+        info["BasicLimitInformation"]["LimitFlags"] |= (
+            win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        )
+        win32job.SetInformationJobObject(
+            job, win32job.JobObjectExtendedLimitInformation, info
+        )
+        return job
+    except Exception as exc:
+        log.warning("Could not create kill-on-close Job Object: %s", exc)
+        return None
+
+
+def assign_process_to_job(job, pid: int) -> bool:
+    """Best-effort: assign a child ``pid`` to ``job`` (from
+    :func:`create_kill_on_close_job`). Returns True on success.
+
+    Returns False (logged, never raises) on non-Windows, a ``None`` job,
+    or assignment failure. Assignment can legitimately fail when the
+    daemon itself is already inside another job with restrictive limits
+    (some VS Code terminals / scheduled-task wrappers nest jobs); that is
+    non-fatal because the next-startup orphan sweep remains the fallback.
+    """
+    if not IS_WINDOWS or job is None:
+        return False
+    import logging
+    log = logging.getLogger(__name__)
+    try:
+        import win32api
+        import win32con
+        import win32job
+        # Need SET_QUOTA | TERMINATE rights to assign. Close the *process*
+        # handle after assigning — only the *job* handle must stay open.
+        h = win32api.OpenProcess(
+            win32con.PROCESS_SET_QUOTA | win32con.PROCESS_TERMINATE, False, pid
+        )
+        try:
+            win32job.AssignProcessToJobObject(job, h)
+        finally:
+            win32api.CloseHandle(h)
+        return True
+    except Exception as exc:
+        log.warning("Could not assign pid %d to Job Object: %s", pid, exc)
+        return False
+
+
 def obsidian_log_path() -> Path:
     """Resolve the Obsidian main process log file path for the current OS."""
     if IS_WINDOWS:

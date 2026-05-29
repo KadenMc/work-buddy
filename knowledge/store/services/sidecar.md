@@ -50,6 +50,18 @@ dev_notes: |-
 
   `compat.find_child_pids`: Windows uses WMIC (~100ms, deprecated but ships) with `Get-CimInstance -NoProfile` fallback (~6-15s cold). Unix uses `pgrep -P`. Best-effort — returns `set()` on enumeration failure; the supervisor's per-port clean-up in `_start_child` (`_kill_process_on_port`) is the secondary backstop.
 
+  ### Defense 1b — OS-enforced kill-time reaping (Windows Job Object)
+
+  Defense 1 only runs on the *next* startup, and every signal-handler / watchdog / `_shutdown` layer only runs if the dying daemon's own code runs. A **hard kill** (`taskkill /F`, `kill -9`, crash, power loss) vaporizes the daemon mid-instruction — no code runs, and on Windows children do **not** die with their parent. That leaves a window (hard-kill → next boot) where an orphan keeps holding its port and serving stale bytecode.
+
+  `compat.create_kill_on_close_job()` creates a Windows Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`; `daemon.py:run()` creates it once (module global `_kill_job`, kept alive for the daemon's whole life) before spawning children, and `_start_child` assigns each child via `compat.assign_process_to_job(_kill_job, pid)` right after `Popen`. When the daemon's process object is destroyed by any means, the **OS** — not our code — kills everything in the job. This is the only mechanism that closes the hard-kill case.
+
+  **Handle lifetime is the rule**: the kill fires when the job's *last* handle closes, so `_kill_job` must be a module global, never a local that can be GC'd. After assigning, the per-child *process* handle is closed (`win32api.CloseHandle`); only the *job* handle stays open.
+
+  **Best-effort assignment**: `AssignProcessToJobObject` can fail when the daemon is itself nested inside another restrictive job (some VS Code terminals / scheduled-task wrappers). A failed assign is logged and non-fatal — Defense 1's startup sweep is the fallback.
+
+  **Windows-only by design, not bias**: there is no cross-platform OS guarantee for kill-time reaping. Linux's `prctl(PR_SET_PDEATHSIG)` needs an unsafe `preexec_fn` in a threaded process and fires on *thread* death; macOS has only a cooperative child-side kqueue self-watch. Both are deliberately not implemented (commented as such next to the Windows code). The cross-platform baseline stays Defense 1. Windows is also the only OS the sidecar actually runs on.
+
   ### Defense 2 — children spawn under a pinned interpreter
 
   `work_buddy/sidecar/daemon.py:_resolve_child_python(cfg)` is the single chokepoint for which Python children get spawned with: `cfg['sidecar']['python_executable']` if set and existing, else `sys.executable`.
