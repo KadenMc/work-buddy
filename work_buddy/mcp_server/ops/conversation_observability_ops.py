@@ -32,6 +32,9 @@ def conversation_observability_refresh(
     from work_buddy.conversation_observability.commits import (
         refresh_session_commits,
     )
+    from work_buddy.conversation_observability.prs import (
+        refresh_session_prs,
+    )
     from work_buddy.conversation_observability.sessions import (
         refresh_observed_sessions,
     )
@@ -44,6 +47,7 @@ def conversation_observability_refresh(
     )
     commits = refresh_session_commits(days=days, max_sessions=max_sessions)
     writes = refresh_session_writes(days=days, max_sessions=max_sessions)
+    prs = refresh_session_prs(days=days, max_sessions=max_sessions)
 
     prewarm_count = 0
     try:
@@ -76,6 +80,7 @@ def conversation_observability_refresh(
         "observed_sessions": observed,
         "session_commits": {"commit_count": commits.get("commit_count", 0)},
         "session_writes": writes,
+        "session_prs": {"pr_count": prs.get("pr_count", 0)},
         "sha_cache": {"prewarmed_sessions": prewarm_count},
     }
 
@@ -102,6 +107,19 @@ def summarization_worker_tick(
         bypass_budget=bypass_budget,
         limit=limit,
     )
+
+
+def session_prs_get(session_id: str) -> dict[str, Any]:
+    """Return the GitHub PR-activity events attributed to one session.
+
+    Read-only; reads the cached ``session_prs`` rows (populated by the
+    observability refresh sweep) without scanning JSONL. Returns
+    ``{"prs": [{pr_number, pr_url, repo, action, ts, message_index}, ...]}``
+    sorted newest-first.
+    """
+    from work_buddy.conversation_observability.prs import query_session_prs
+
+    return {"prs": query_session_prs(session_id=session_id)}
 
 
 def _register() -> None:
@@ -137,6 +155,7 @@ def _register() -> None:
                 session_summary_row, replace=True)
     register_op("op.wb.conversation_observability_summary_get",
                 session_summary_row, replace=True)
+    register_op("op.wb.session_prs_get", session_prs_get, replace=True)
 
 
 _register()

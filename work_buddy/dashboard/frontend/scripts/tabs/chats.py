@@ -584,24 +584,71 @@ function chatsResetFiltersAll() {
 }
 
 /**
- * Render the commit + unfinished-work badge row for a chat card.
- * Only renders when the session demonstrably engages with git
- * (committed something OR wrote files via Write/Edit/NotebookEdit) —
- * keeps cards slim for chat-only sessions where git noise is moot.
+ * Render the activity badge row for a chat card: commits + unfinished
+ * work (gated on git engagement), plus PRs and Tasks (independent of
+ * git — a session can author a PR or be assigned a task without
+ * committing). Empty cells render an em-dash, never a "0".
  */
 function renderChatBadges(c) {
-    if (!c.engages_git) return '';
     var parts = [];
-    if (c.commit_count > 0) {
-        var repoCount = c.commits_by_repo ? Object.keys(c.commits_by_repo).length : 0;
-        var commitsLabel = c.commit_count + ' commit' + (c.commit_count === 1 ? '' : 's');
-        if (repoCount > 1) commitsLabel += ' across ' + repoCount + ' repos';
-        parts.push('<span class="chat-card-badge">' + commitsLabel + '</span>');
+
+    // --- git-engagement badges (commits, unfinished) ---
+    if (c.engages_git) {
+        if (c.commit_count > 0) {
+            var repoCount = c.commits_by_repo ? Object.keys(c.commits_by_repo).length : 0;
+            var commitsLabel = c.commit_count + ' commit' + (c.commit_count === 1 ? '' : 's');
+            if (repoCount > 1) commitsLabel += ' across ' + repoCount + ' repos';
+            parts.push('<span class="chat-card-badge">' + commitsLabel + '</span>');
+        }
+        if (c.unfinished_count > 0) {
+            var unfinishedLabel = c.unfinished_count + ' left uncommitted';
+            parts.push('<span class="chat-card-badge unfinished" title="Files this session wrote that this session did not commit itself.">' + unfinishedLabel + '</span>');
+        }
     }
-    if (c.unfinished_count > 0) {
-        var unfinishedLabel = c.unfinished_count + ' left uncommitted';
-        parts.push('<span class="chat-card-badge unfinished" title="Files this session wrote that this session did not commit itself.">' + unfinishedLabel + '</span>');
+
+    // --- PRs badge: "{authored} · {merged}" ---
+    var prAuthored = c.pr_authored_count || 0;
+    var prMerged = c.pr_merged_count || 0;
+    var prsDetail = c.prs_detail || [];
+    if (prAuthored > 0 || prMerged > 0) {
+        var prTip = prsDetail.map(function(p) {
+            return '↗ #' + p.pr_number + ' · ' + p.action
+                + (p.ts ? ' · ' + formatTimestamp(p.ts) : '');
+        }).join('\n');
+        // Single PR → linkify the whole badge; otherwise the tooltip
+        // lists each event (multiple PRs can't share one href).
+        var prInner = 'PRs ' + prAuthored + ' · ' + prMerged;
+        var prBadge;
+        if (prsDetail.length === 1 && prsDetail[0].pr_url) {
+            prBadge = '<a class="chat-card-badge prs" target="_blank" rel="noopener"'
+                + ' href="' + escapeHtml(prsDetail[0].pr_url) + '"'
+                + ' title="' + escapeHtml(prTip) + '">' + prInner + '</a>';
+        } else {
+            prBadge = '<span class="chat-card-badge prs" title="' + escapeHtml(prTip) + '">'
+                + prInner + '</span>';
+        }
+        parts.push(prBadge);
+    } else {
+        parts.push('<span class="chat-card-badge badge-empty" title="No pull requests authored from this session">PRs —</span>');
     }
+
+    // --- Tasks badge: count ---
+    var taskCount = c.task_count || 0;
+    var tasksDetail = c.tasks_detail || [];
+    if (taskCount > 0) {
+        var taskTip = tasksDetail.map(function(t) {
+            var meta = [t.state, t.urgency].filter(Boolean).join(' · ');
+            var text = (t.task_text || '').slice(0, 80);
+            return '▫ ' + t.task_id + (meta ? ' · ' + meta : '')
+                + (text ? ' — ' + text : '');
+        }).join('\n');
+        var taskLabel = taskCount + ' task' + (taskCount === 1 ? '' : 's');
+        parts.push('<span class="chat-card-badge tasks" title="' + escapeHtml(taskTip) + '">'
+            + taskLabel + '</span>');
+    } else {
+        parts.push('<span class="chat-card-badge badge-empty" title="No tasks assigned to this session">Tasks —</span>');
+    }
+
     if (parts.length === 0) return '';
     return '<div class="chat-card-badges">' + parts.join('') + '</div>';
 }
@@ -671,10 +718,9 @@ async function selectChat(sessionId) {
         renderChatHeader(msgData.metadata);
     }
 
-    if (commitData && commitData.commits && commitData.commits.length > 0) {
-        chatsState.commits = commitData.commits;
-        renderCommitsBar(commitData.commits);
-    }
+    var _commits = (commitData && commitData.commits) || [];
+    chatsState.commits = _commits;
+    renderCommitsBar(_commits);
 
     // tldr line below the header chips. Hidden when no summary.
     renderChatTldr(topicData);
@@ -1439,10 +1485,9 @@ async function chatsJumpToCommitSearch(sessionId, messageIndex) {
 
     // Load commits bar in background
     fetchJSON('/api/chats/' + sessionId + '/commits').then(function(commitData) {
-        if (commitData && commitData.commits && commitData.commits.length > 0) {
-            chatsState.commits = commitData.commits;
-            renderCommitsBar(commitData.commits);
-        }
+        var _commits = (commitData && commitData.commits) || [];
+        chatsState.commits = _commits;
+        renderCommitsBar(_commits);
     });
 
     renderMessages();
@@ -1531,10 +1576,9 @@ async function chatsJumpToHit(sessionId, spanIndex) {
 
     // Also fetch commits in the background
     fetchJSON('/api/chats/' + sessionId + '/commits').then(function(commitData) {
-        if (commitData && commitData.commits && commitData.commits.length > 0) {
-            chatsState.commits = commitData.commits;
-            renderCommitsBar(commitData.commits);
-        }
+        var _commits = (commitData && commitData.commits) || [];
+        chatsState.commits = _commits;
+        renderCommitsBar(_commits);
     });
 
     setTimeout(function() {
@@ -1684,7 +1728,24 @@ async function chatsFilterRole(role) {
 // ---- Chats: Commits bar ----
 
 function renderCommitsBar(commits) {
+    commits = commits || [];
     var bar = document.getElementById('chats-commits-bar');
+
+    // The detail panel surfaces three session-activity streams: commits,
+    // authored PRs, and assigned tasks. PR/task data rides along on the
+    // listing entry (prs_detail / tasks_detail from get_chats_summary),
+    // so no extra fetch is needed.
+    var listEntry = (chatsState.chats || []).find(function(c) {
+        return c.session_id === chatsState.selectedId;
+    }) || {};
+    var prs = listEntry.prs_detail || [];
+    var tasks = listEntry.tasks_detail || [];
+
+    // Nothing to show → hide the bar entirely (don't leave an empty box).
+    if (commits.length === 0 && prs.length === 0 && tasks.length === 0) {
+        bar.style.display = 'none';
+        return;
+    }
     bar.style.display = 'block';
 
     // Group by message to deduplicate retried/amended commits
@@ -1710,54 +1771,99 @@ function renderCommitsBar(commits) {
     // Sort chronologically (oldest first)
     groups.sort(function(a, b) { return (a.timestamp || '').localeCompare(b.timestamp || ''); });
 
-    var html = '<div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">'
-        + groups.length + ' unique commit' + (groups.length !== 1 ? 's' : '')
-        + (commits.length !== groups.length ? ' (' + commits.length + ' total incl. retries)' : '')
-        + ' during this session</div>';
+    var html = '';
 
-    // Determine the session's primary repo so cross-repo commits get
-    // a "(<repo>) " prefix. The primary is the most-frequent repo in
-    // the listing-side `commits_by_repo` for this session — same data
-    // already cached in chatsState.chats. Falls back to no prefix
-    // when repo info is unavailable.
-    var listEntry = (chatsState.chats || []).find(function(c) {
-        return c.session_id === chatsState.selectedId;
-    }) || {};
-    var primaryRepo = null;
-    var byRepo = listEntry.commits_by_repo || {};
-    Object.keys(byRepo).forEach(function(repo) {
-        if (primaryRepo === null || byRepo[repo] > byRepo[primaryRepo]) {
-            primaryRepo = repo;
-        }
-    });
+    // --- Commits ---
+    if (commits.length > 0) {
+        html += '<div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">'
+            + groups.length + ' unique commit' + (groups.length !== 1 ? 's' : '')
+            + (commits.length !== groups.length ? ' (' + commits.length + ' total incl. retries)' : '')
+            + ' during this session</div>';
 
-    groups.forEach(function(g) {
-        var clickable = g.message_index != null;
-        var clickAttr = clickable
-            ? ' onclick="chatsJumpToCommit(' + g.message_index + ')" title="Jump to this commit in the conversation"'
-            : '';
-        // Per-commit repo only ever set when session_commits.repo_name
-        // is populated (currently NULL for all rows; reserved for a
-        // follow-up that infers per-commit repo from the cwd or
-        // ``git show``). When set and different from the session
-        // primary, prefix the message with the repo name.
-        var commitRepo = g.repo_name || '';
-        var repoPrefix = '';
-        if (commitRepo && commitRepo !== primaryRepo) {
-            repoPrefix = '<span class="commit-repo-tag">' + escapeHtml(commitRepo) + '</span> ';
-        }
-        html += '<div class="chat-commit-marker' + (clickable ? ' clickable' : '') + '"' + clickAttr + '>'
-            + '<code>' + g.hashes[0] + '</code> '
-            + repoPrefix
-            + '<span class="commit-msg">' + escapeHtml(g.message) + '</span>'
-            + '<span class="commit-meta">'
-            + (g.count > 1 ? '<span>(' + g.count + 'x)</span>' : '')
-            + '<span>' + g.branch + '</span>'
-            + (g.files_changed ? '<span>' + g.files_changed + ' files</span>' : '')
-            + '<span>' + formatTimestamp(g.timestamp) + '</span>'
-            + '</span>'
-            + '</div>';
-    });
+        // Determine the session's primary repo so cross-repo commits get
+        // a "(<repo>) " prefix. The primary is the most-frequent repo in
+        // the listing-side `commits_by_repo` for this session. Falls back
+        // to no prefix when repo info is unavailable.
+        var primaryRepo = null;
+        var byRepo = listEntry.commits_by_repo || {};
+        Object.keys(byRepo).forEach(function(repo) {
+            if (primaryRepo === null || byRepo[repo] > byRepo[primaryRepo]) {
+                primaryRepo = repo;
+            }
+        });
+
+        groups.forEach(function(g) {
+            var clickable = g.message_index != null;
+            var clickAttr = clickable
+                ? ' onclick="chatsJumpToCommit(' + g.message_index + ')" title="Jump to this commit in the conversation"'
+                : '';
+            // Per-commit repo only ever set when session_commits.repo_name
+            // is populated (currently NULL for all rows; reserved for a
+            // follow-up that infers per-commit repo from the cwd or
+            // ``git show``). When set and different from the session
+            // primary, prefix the message with the repo name.
+            var commitRepo = g.repo_name || '';
+            var repoPrefix = '';
+            if (commitRepo && commitRepo !== primaryRepo) {
+                repoPrefix = '<span class="commit-repo-tag">' + escapeHtml(commitRepo) + '</span> ';
+            }
+            html += '<div class="chat-commit-marker' + (clickable ? ' clickable' : '') + '"' + clickAttr + '>'
+                + '<code>' + g.hashes[0] + '</code> '
+                + repoPrefix
+                + '<span class="commit-msg">' + escapeHtml(g.message) + '</span>'
+                + '<span class="commit-meta">'
+                + (g.count > 1 ? '<span>(' + g.count + 'x)</span>' : '')
+                + '<span>' + g.branch + '</span>'
+                + (g.files_changed ? '<span>' + g.files_changed + ' files</span>' : '')
+                + '<span>' + formatTimestamp(g.timestamp) + '</span>'
+                + '</span>'
+                + '</div>';
+        });
+    }
+
+    // --- Pull requests authored from this session ---
+    if (prs.length > 0) {
+        html += '<div style="font-size:11px;color:var(--text-muted);margin:8px 0 4px;">'
+            + 'Pull requests (' + prs.length + ')</div>';
+        // Oldest first, by creation time — matches the commit list order.
+        var prsSorted = prs.slice().sort(function(a, b) {
+            return (a.ts || '').localeCompare(b.ts || '');
+        });
+        prsSorted.forEach(function(p) {
+            var when = p.ts ? formatTimestamp(p.ts) : '';
+            var title = p.title || '';
+            // Merge state from GitHub (OPEN/MERGED/CLOSED); fall back to
+            // the JSONL-captured action verb when gh enrichment is absent.
+            var state = (p.state || p.action || '').toString().toLowerCase();
+            var stateClass = state.replace(/[^a-z]/g, '');
+            html += '<div class="chat-commit-marker pr-marker">'
+                + '<a href="' + escapeHtml(p.pr_url) + '" target="_blank" rel="noopener"'
+                + ' class="commit-msg pr-num" title="Open PR on GitHub">↗ #' + p.pr_number + '</a> '
+                + (title ? '<span class="commit-msg pr-title">' + escapeHtml(title) + '</span>' : '')
+                + '<span class="commit-meta">'
+                + (state ? '<span class="pr-state pr-state-' + stateClass + '">' + escapeHtml(state) + '</span>' : '')
+                + (when ? '<span>' + when + '</span>' : '')
+                + '</span>'
+                + '</div>';
+        });
+    }
+
+    // --- Tasks assigned to this session (reverse session→tasks linkage) ---
+    if (tasks.length > 0) {
+        html += '<div style="font-size:11px;color:var(--text-muted);margin:8px 0 4px;">'
+            + 'Tasks (' + tasks.length + ')</div>';
+        tasks.forEach(function(t) {
+            var meta = [t.state, t.urgency].filter(Boolean).join(' · ');
+            var text = t.task_text || '';
+            html += '<div class="chat-commit-marker task-marker">'
+                + '<span class="commit-msg">▫ ' + escapeHtml(t.task_id)
+                + (meta ? ' · ' + escapeHtml(meta) : '')
+                + (text ? ' — ' + escapeHtml(text) : '')
+                + '</span>'
+                + '</div>';
+        });
+    }
+
     bar.innerHTML = html;
 }
 

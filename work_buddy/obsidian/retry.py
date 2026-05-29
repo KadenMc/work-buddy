@@ -78,15 +78,17 @@ _TERMINAL_OBSIDIAN_ERROR_KINDS = frozenset({
 def _is_terminal_obsidian_error(exc: BaseException) -> bool:
     """True if the exception represents a state retrying can't fix.
 
-    Imports lazily so this module's import surface stays narrow and
-    doesn't pull obsidian.errors during early bootstrap.
+    Duck-types on the ``error_kind`` attribute rather than gating on
+    ``isinstance(exc, ObsidianError)``. The isinstance gate is fragile
+    under test orderings (and any flow) that reload ``work_buddy.*``
+    modules: the raised exception's class and this module's cached
+    ``ObsidianError`` reference become two different objects, so
+    ``isinstance`` returns False, the terminal short-circuit misfires,
+    and the decorator sleeps + retries a state that can't recover. The
+    ``error_kind`` string membership check is reload-safe and is the
+    actual signal — a non-ObsidianError carrying one of these reserved
+    ``error_kind`` strings doesn't occur in practice.
     """
-    try:
-        from work_buddy.obsidian.errors import ObsidianError
-    except ImportError:
-        return False
-    if not isinstance(exc, ObsidianError):
-        return False
     return getattr(exc, "error_kind", "") in _TERMINAL_OBSIDIAN_ERROR_KINDS
 
 

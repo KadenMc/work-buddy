@@ -391,6 +391,30 @@ class TestBridgeRetryTypedExceptions:
         assert is_bridge_failure(result)
         assert result["error_kind"] == "obsidian_plugin_disabled"
 
+    def test_terminal_classification_survives_stale_class_identity(self):
+        """Reload-safety regression: a terminal error whose class is NOT the
+        same object retry.py would isinstance-check (the stale-class identity
+        that pytest-randomly orderings produce when a prior test reloads
+        work_buddy.* modules) must STILL short-circuit. Classification
+        duck-types on error_kind, not isinstance — without that, this path
+        would retry + sleep (the intermittent CI failure we diagnosed).
+        """
+        class _StaleObsidianPluginMissing(Exception):
+            error_kind = "obsidian_plugin_missing"
+
+        @bridge_retry(max_retries=3, wait_seconds=999)
+        def fails():
+            raise _StaleObsidianPluginMissing()
+
+        with patch("work_buddy.obsidian.bridge.is_available", return_value=True), \
+             patch("work_buddy.obsidian.bridge.get_latency_context", return_value="t"), \
+             patch("work_buddy.obsidian.retry.time.sleep") as sleep_mock:
+            result = fails()
+
+        assert sleep_mock.call_count == 0
+        assert is_bridge_failure(result)
+        assert result["error_kind"] == "obsidian_plugin_missing"
+
     def test_obsidian_startup_race_does_NOT_short_circuit(self):
         """Startup race is a transient state — Obsidian just started,
         plugin not loaded yet. Worth retrying after a wait."""

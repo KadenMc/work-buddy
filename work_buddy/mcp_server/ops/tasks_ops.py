@@ -11,7 +11,33 @@ declaration; the loader threads them onto the resolved capability by op id.
 
 from __future__ import annotations
 
+from typing import Any
+
 from work_buddy.mcp_server.op_registry import register_op, register_op_effects
+
+
+def session_tasks_get(session_id: str) -> dict[str, Any]:
+    """Return the tasks a session was assigned to, with text + state.
+
+    The reverse of task→sessions. Reads the ``task_sessions`` table and
+    enriches each row from the SQLite task store — bridge-independent, so
+    it stays callable when the Obsidian bridge is down (unlike a
+    ``task_read``-based enrichment, which would hang on a downed bridge).
+    Returns ``{"tasks": [{task_id, assigned_at, task_text, state}, ...]}``
+    oldest-first.
+    """
+    from work_buddy.obsidian.tasks import store
+
+    out: list[dict[str, Any]] = []
+    for row in store.get_tasks_for_session(session_id):
+        rec = store.get(row["task_id"])
+        out.append({
+            "task_id": row["task_id"],
+            "assigned_at": row.get("assigned_at"),
+            "task_text": (rec or {}).get("description"),
+            "state": (rec or {}).get("state"),
+        })
+    return {"tasks": out}
 
 
 def _register() -> None:
@@ -48,6 +74,7 @@ def _register() -> None:
     register_op("op.wb.task_sync", task_sync)
     register_op("op.wb.project_sync", reconcile_projects)
     register_op("op.wb.task_scattered", task_scattered)
+    register_op("op.wb.session_tasks_get", session_tasks_get)
     register_op("op.wb.contract_constraints", contracts.get_constraints)
     register_op("op.wb.contract_wip_check", contracts.check_wip_limit)
 

@@ -2443,13 +2443,26 @@ def assign_task(task_id: str) -> dict[str, Any]:
     Composes ``_load_task_payload`` with a session-tracker write. Returns
     everything the agent needs to start working plus the claiming session_id.
     """
-    from work_buddy.agent_session import _get_session_id
+    from work_buddy.agent_session import (
+        _get_session_id,
+        get_originating_session,
+    )
 
     payload = _load_task_payload(task_id)
     if not payload.get("success"):
         return payload
 
-    session_id = _get_session_id()
+    # Record the *agent's* session, not the MCP-server process's bootstrap
+    # session. When dispatched through the gateway, the agent's real id
+    # (the Claude Code JSONL UUID) is pinned on the originating-session
+    # ContextVar by ``_invoke_with_session``; ``_get_session_id`` reads
+    # ``os.environ`` which resolves to the server's bootstrap session
+    # (a synthesized ``sidecar-*``/``mcp-*`` id). Recording the bootstrap
+    # id makes the reverse session→tasks linkage unjoinable against the
+    # JSONL-keyed session_commits / session_prs / dashboard chat rows.
+    # Prefer the pinned originating session; fall back to env for direct
+    # (non-gateway) callers.
+    session_id = get_originating_session() or _get_session_id()
     store.assign_session(task_id, session_id)
 
     # Refresh the session list so the caller sees their own claim

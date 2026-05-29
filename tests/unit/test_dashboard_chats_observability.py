@@ -44,6 +44,14 @@ def co_env(tmp_path, monkeypatch):
     )
     inspector._commit_cache.clear()
 
+    # Redirect the task store to a temp DB so the dashboard's
+    # session→tasks aggregation (and these tests) stay hermetic — the
+    # load_config stub below drops the ``tasks`` key, which would
+    # otherwise fall through to the real tasks DB.
+    from work_buddy.obsidian.tasks import store as _task_store
+
+    monkeypatch.setattr(_task_store, "_db_path", lambda: tmp_path / "tasks.db")
+
     repos_root = tmp_path / "repos"
     repos_root.mkdir()
     repo = repos_root / "alpha"
@@ -56,6 +64,12 @@ def co_env(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "work_buddy.collectors.git_collector._get_status",
         lambda repo_path: "",
+    )
+    # Stub the GitHub PR-title/state enrichment so tests stay hermetic and
+    # offline (no real `gh pr list` subprocess).
+    monkeypatch.setattr(
+        "work_buddy.dashboard.api._load_pr_meta_for_repos",
+        lambda repos: {},
     )
     return {"projects": projects, "db": db_file, "repos_root": repos_root, "repo": repo}
 
@@ -370,3 +384,53 @@ def test_get_chats_summary_appends_observability_fields(co_env, monkeypatch) -> 
     assert chat["first_message"] == "first message"
     assert chat["message_count"] == 4
     assert chat["top_tools"] == ["Bash", "Edit"]
+
+
+def test_load_observability_aggregates_prs_and_tasks(co_env) -> None:
+    """PR-activity counts and task-assignment counts surface per session."""
+    from tests.unit.conversation_observability_fixtures import (
+        assistant_bash,
+        tool_result,
+        user_turn,
+    )
+    from work_buddy.conversation_observability.prs import refresh_session_prs
+    from work_buddy.dashboard.api import _load_observability_for_sessions
+    from work_buddy.obsidian.tasks import store
+
+    sid = "abababab-abab-abab-abab-abababababab"
+    write_session(
+        co_env["projects"] / "alpha",
+        session_id=sid,
+        entries=[
+            user_turn("open then merge", "2026-05-08T23:00:00Z"),
+            assistant_bash(
+                "gh pr create --fill", "tu_c", "2026-05-08T23:00:01Z",
+            ),
+            tool_result(
+                "tu_c",
+                "https://github.com/KadenMc/work-buddy/pull/200",
+                "2026-05-08T23:00:02Z",
+            ),
+            assistant_bash(
+                "gh pr merge https://github.com/KadenMc/work-buddy/pull/200",
+                "tu_m", "2026-05-08T23:05:00Z",
+            ),
+            tool_result("tu_m", "Merged #200", "2026-05-08T23:05:01Z"),
+        ],
+    )
+    refresh_session_prs(days=30)
+
+    # Two task assignments for the same session.
+    store.create(task_id="t-link1", description="First linked task")
+    store.create(task_id="t-link2", description="Second linked task")
+    store.assign_session("t-link1", sid)
+    store.assign_session("t-link2", sid)
+
+    obs = _load_observability_for_sessions({sid})
+    assert obs[sid]["pr_authored_count"] == 1
+    assert obs[sid]["pr_merged_count"] == 1
+    assert {p["action"] for p in obs[sid]["prs_detail"]} == {"created", "merged"}
+    assert obs[sid]["task_count"] == 2
+    assert {t["task_id"] for t in obs[sid]["tasks_detail"]} == {
+        "t-link1", "t-link2",
+    }
