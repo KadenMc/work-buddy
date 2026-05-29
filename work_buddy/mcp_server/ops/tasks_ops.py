@@ -47,7 +47,7 @@ def _register() -> None:
     from work_buddy import contracts
     from work_buddy.mcp_server.context_wrappers import task_scattered
     from work_buddy.obsidian.effects import EffectSpec
-    from work_buddy.obsidian.tasks import manager, mutations
+    from work_buddy.obsidian.tasks import manager, mutations, provenance
     from work_buddy.obsidian.tasks.namespace_suggest import (
         namespace_lookup,
         task_namespace_suggest,
@@ -56,6 +56,7 @@ def _register() -> None:
     from work_buddy.projects.markdown_db import reconcile_projects
 
     register_op("op.wb.task_read", mutations.read_task)
+    register_op("op.wb.task_provenance", provenance.build_task_provenance)
     register_op("op.wb.task_briefing", manager.daily_briefing)
     register_op("op.wb.task_review_inbox", manager.review_inbox)
     register_op("op.wb.task_stale_check", manager.stale_check)

@@ -2447,7 +2447,7 @@ a.chat-card-badge.prs:hover { text-decoration: underline; }
     min-width: 0;
 }
 .chats-topic-rail {
-    flex: 0 0 220px;
+    flex: 0 0 260px;
     overflow-y: auto;
     border: 1px solid var(--border);
     border-radius: 6px;
@@ -2487,6 +2487,59 @@ a.chat-card-badge.prs:hover { text-decoration: underline; }
     font-family: var(--font-mono);
     font-size: 10px;
     float: right;
+}
+/* Activity-rail selector (Topics | Git | Tasks) + switchable panels.
+   Neutral pills (reuse .costs-pill); per-stream colors live in the panel
+   CONTENT — commits green (.chat-commit-marker base), PRs purple
+   (.pr-marker), tasks orange (.task-marker). */
+.chats-rail-selector {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 8px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+}
+.chats-rail-pill {
+    flex: 1;
+    padding: 4px 6px;
+    text-align: center;
+}
+.chats-rail-panel { display: none; }
+.chats-rail-panel.active { display: block; }
+.chats-rail-section-title {
+    font-size: 10px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin: 8px 0 4px;
+}
+.chats-rail-empty {
+    font-size: 12px;
+    color: var(--text-muted);
+    font-style: italic;
+    padding: 8px;
+}
+/* Commit / PR / task markers stack vertically inside the narrow rail
+   (they're a horizontal row in their original commits-bar home). */
+.chats-topic-rail .chat-commit-marker {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 2px;
+    margin: 6px 0;
+    padding: 6px 8px;
+}
+.chats-topic-rail .chat-commit-marker .commit-msg {
+    white-space: normal;
+}
+.chats-topic-rail .chat-commit-marker .commit-meta {
+    flex-wrap: wrap;
+    font-size: 10px;
+}
+.chats-topic-rail .task-roles {
+    text-transform: uppercase;
+    font-size: 10px;
+    letter-spacing: 0.03em;
+    color: var(--orange);
 }
 .chats-span-warning {
     padding: 6px 12px;

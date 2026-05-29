@@ -720,15 +720,19 @@ async function selectChat(sessionId) {
 
     var _commits = (commitData && commitData.commits) || [];
     chatsState.commits = _commits;
-    renderCommitsBar(_commits);
+    chatsState.topicData = topicData;
+    chatsState.tasksData = null;     // lazy-loaded on first switch to Tasks
+    chatsState._tasksLoading = false;
+    chatsState.railPanel = null;     // reset active panel per session
 
     // tldr line below the header chips. Hidden when no summary.
     renderChatTldr(topicData);
 
-    // Topic-timeline rail to the left of the message stream. Hidden
-    // when the session has no topic_summaries (LLM feature off, or
-    // session not yet summarized).
-    renderTopicRail(topicData);
+    // Activity rail (Topics | Git | Tasks selector) to the left of the
+    // message stream. Hosts topic summaries, git activity (commits + PRs),
+    // and this session's task interactions. Hidden when the session has
+    // none of the three.
+    renderActivityRail();
 
     // Uncommitted-files banner above the message stream. Shows files
     // this session wrote that are STILL dirty in git RIGHT NOW —
@@ -753,31 +757,213 @@ function renderChatTldr(topicData) {
     }
 }
 
-function renderTopicRail(topicData) {
+// ---- Chats: activity rail (Topics | Git | Tasks) ----
+// The left rail hosts three switchable panels. Per-stream colors live in
+// the panel CONTENT (commits green, PRs purple, tasks orange — via the
+// .pr-marker / .task-marker classes); the selector pills stay neutral.
+
+function _railTopicsHtml(topicData) {
+    if (!topicData || !topicData.topics || topicData.topics.length === 0) {
+        return '<div class="chats-rail-empty">No topic summary for this session.</div>';
+    }
+    return topicData.topics.map(function(t, i) {
+        var range = (t.turn_start != null && t.turn_end != null)
+            ? ' <span class="topic-range">' + t.turn_start + '–' + t.turn_end + '</span>'
+            : '';
+        return '<div class="chats-topic-item" data-turn="' + (t.turn_start != null ? t.turn_start : '') + '"'
+            + ' onclick="chatsJumpToTopic(' + (t.turn_start != null ? t.turn_start : 'null') + ')"'
+            + ' title="' + escapeHtml(t.summary || '') + '">'
+            + '<span class="topic-index">' + (i + 1) + '.</span> '
+            + escapeHtml(t.title || '(untitled)')
+            + range
+            + '</div>';
+    }).join('');
+}
+
+function _railGitHtml(commits) {
+    commits = commits || [];
+    var listEntry = (chatsState.chats || []).find(function(c) {
+        return c.session_id === chatsState.selectedId;
+    }) || {};
+    var prs = listEntry.prs_detail || [];
+    if (commits.length === 0 && prs.length === 0) {
+        return '<div class="chats-rail-empty">No commits or PRs from this session.</div>';
+    }
+
+    // Group commits by message to dedupe retried/amended commits.
+    var groups = [];
+    var seen = {};
+    commits.forEach(function(c) {
+        var key = (c.message || '').trim();
+        if (seen[key]) {
+            seen[key].hashes.push(c.hash || '');
+            seen[key].count++;
+        } else {
+            var g = {
+                message: key, hashes: [c.hash || ''], branch: c.branch || '',
+                files_changed: c.files_changed, count: 1,
+                message_index: c.message_index != null ? c.message_index : null,
+                timestamp: c.timestamp || '', repo_name: c.repo_name || '',
+            };
+            seen[key] = g;
+            groups.push(g);
+        }
+    });
+    groups.sort(function(a, b) { return (a.timestamp || '').localeCompare(b.timestamp || ''); });
+
+    var html = '';
+    if (commits.length > 0) {
+        html += '<div class="chats-rail-section-title">'
+            + groups.length + ' commit' + (groups.length !== 1 ? 's' : '')
+            + (commits.length !== groups.length ? ' (' + commits.length + ' incl. retries)' : '')
+            + '</div>';
+        var primaryRepo = null;
+        var byRepo = listEntry.commits_by_repo || {};
+        Object.keys(byRepo).forEach(function(repo) {
+            if (primaryRepo === null || byRepo[repo] > byRepo[primaryRepo]) primaryRepo = repo;
+        });
+        groups.forEach(function(g) {
+            var clickable = g.message_index != null;
+            var clickAttr = clickable
+                ? ' onclick="chatsJumpToCommit(' + g.message_index + ')" title="Jump to this commit in the conversation"'
+                : '';
+            var commitRepo = g.repo_name || '';
+            var repoPrefix = (commitRepo && commitRepo !== primaryRepo)
+                ? '<span class="commit-repo-tag">' + escapeHtml(commitRepo) + '</span> ' : '';
+            html += '<div class="chat-commit-marker' + (clickable ? ' clickable' : '') + '"' + clickAttr + '>'
+                + '<code>' + g.hashes[0] + '</code> '
+                + repoPrefix
+                + '<span class="commit-msg">' + escapeHtml(g.message) + '</span>'
+                + '<span class="commit-meta">'
+                + (g.count > 1 ? '<span>(' + g.count + 'x)</span>' : '')
+                + '<span>' + g.branch + '</span>'
+                + (g.files_changed ? '<span>' + g.files_changed + ' files</span>' : '')
+                + '<span>' + formatTimestamp(g.timestamp) + '</span>'
+                + '</span>'
+                + '</div>';
+        });
+    }
+    if (prs.length > 0) {
+        html += '<div class="chats-rail-section-title">Pull requests (' + prs.length + ')</div>';
+        var prsSorted = prs.slice().sort(function(a, b) {
+            return (a.ts || '').localeCompare(b.ts || '');
+        });
+        prsSorted.forEach(function(p) {
+            var when = p.ts ? formatTimestamp(p.ts) : '';
+            var title = p.title || '';
+            var state = (p.state || p.action || '').toString().toLowerCase();
+            var stateClass = state.replace(/[^a-z]/g, '');
+            html += '<div class="chat-commit-marker pr-marker">'
+                + '<a href="' + escapeHtml(p.pr_url) + '" target="_blank" rel="noopener"'
+                + ' class="commit-msg pr-num" title="Open PR on GitHub">↗ #' + p.pr_number + '</a> '
+                + (title ? '<span class="commit-msg pr-title">' + escapeHtml(title) + '</span>' : '')
+                + '<span class="commit-meta">'
+                + (state ? '<span class="pr-state pr-state-' + stateClass + '">' + escapeHtml(state) + '</span>' : '')
+                + (when ? '<span>' + when + '</span>' : '')
+                + '</span>'
+                + '</div>';
+        });
+    }
+    return html;
+}
+
+function _railTasksHtml(tasksData) {
+    if (tasksData == null) {
+        return '<div class="chats-rail-empty">Loading tasks…</div>';
+    }
+    var tasks = (tasksData && tasksData.tasks) || [];
+    if (tasks.length === 0) {
+        return '<div class="chats-rail-empty">No task interactions in this session.</div>';
+    }
+    return tasks.map(function(t) {
+        var roles = (t.roles || []).join(', ');
+        var meta = t.state || '';
+        var text = t.task_text || '';
+        return '<div class="chat-commit-marker task-marker">'
+            + '<span class="commit-msg">▫ ' + escapeHtml(t.task_id)
+            + (meta ? ' · ' + escapeHtml(meta) : '')
+            + (text ? ' — ' + escapeHtml(text) : '')
+            + '</span>'
+            + (roles ? '<span class="commit-meta"><span class="task-roles">' + escapeHtml(roles) + '</span></span>' : '')
+            + '</div>';
+    }).join('');
+}
+
+function _loadRailTasks() {
+    var sid = chatsState.selectedId;
+    if (!sid || chatsState._tasksLoading) return;
+    chatsState._tasksLoading = true;
+    fetchJSON('/api/chats/' + sid + '/tasks').then(function(data) {
+        chatsState._tasksLoading = false;
+        chatsState.tasksData = data || { tasks: [] };
+        var panel = document.getElementById('chats-rail-tasks');
+        if (panel) panel.innerHTML = _railTasksHtml(chatsState.tasksData);
+    });
+}
+
+function chatsRailSwitch(panelId) {
+    chatsState.railPanel = panelId;
+    var rail = document.getElementById('chats-topic-rail');
+    if (!rail) return;
+    rail.querySelectorAll('.chats-rail-pill').forEach(function(b) {
+        b.classList.toggle('active', b.dataset.panel === panelId);
+    });
+    rail.querySelectorAll('.chats-rail-panel').forEach(function(p) {
+        p.classList.toggle('active', p.id === 'chats-rail-' + panelId);
+    });
+    if (panelId === 'tasks' && chatsState.tasksData == null) _loadRailTasks();
+}
+
+function renderActivityRail() {
     var existing = document.getElementById('chats-topic-rail');
     if (existing) existing.remove();
-    if (!topicData || !topicData.topics || topicData.topics.length === 0) return;
-    // Wrap the message stream and rail in a flex container so the
-    // rail sits to the left and the messages flex-grow into the rest.
+    // The horizontal commits bar is superseded by the rail's Git panel.
+    var oldBar = document.getElementById('chats-commits-bar');
+    if (oldBar) oldBar.style.display = 'none';
+
     var messagesEl = document.getElementById('chats-messages');
     if (!messagesEl || !messagesEl.parentNode) return;
+
+    var topicData = chatsState.topicData;
+    var commits = chatsState.commits || [];
+    var listEntry = (chatsState.chats || []).find(function(c) {
+        return c.session_id === chatsState.selectedId;
+    }) || {};
+    var prs = listEntry.prs_detail || [];
+
+    var hasTopics = !!(topicData && topicData.topics && topicData.topics.length);
+    var hasGit = commits.length > 0 || prs.length > 0;
+    // The Tasks panel is fetched lazily; the assigned-tasks hint on the
+    // listing entry tells us cheaply whether to surface the rail for a
+    // tasks-only session (created/developed roles also count, but assigned
+    // is our only pre-fetch signal — Tasks stays reachable whenever a rail
+    // shows).
+    var hasTaskHint = (listEntry.tasks_detail || []).length > 0;
+    if (!hasTopics && !hasGit && !hasTaskHint) return;  // no rail when empty
+
+    var active = chatsState.railPanel
+        || (hasTopics ? 'topics' : (hasGit ? 'git' : 'tasks'));
+    chatsState.railPanel = active;
+
+    function pill(id, label) {
+        return '<button class="costs-pill chats-rail-pill' + (active === id ? ' active' : '')
+            + '" data-panel="' + id + '" onclick="chatsRailSwitch(\'' + id + '\')">' + label + '</button>';
+    }
+    function panel(id, html) {
+        return '<div class="chats-rail-panel' + (active === id ? ' active' : '') + '" id="chats-rail-' + id + '">'
+            + html + '</div>';
+    }
 
     var rail = document.createElement('div');
     rail.id = 'chats-topic-rail';
     rail.className = 'chats-topic-rail';
-    rail.innerHTML = '<div class="chats-topic-rail-title">Topics</div>'
-        + topicData.topics.map(function(t, i) {
-            var range = (t.turn_start != null && t.turn_end != null)
-                ? ' <span class="topic-range">' + t.turn_start + '–' + t.turn_end + '</span>'
-                : '';
-            return '<div class="chats-topic-item" data-turn="' + (t.turn_start != null ? t.turn_start : '') + '"'
-                + ' onclick="chatsJumpToTopic(' + (t.turn_start != null ? t.turn_start : 'null') + ')"'
-                + ' title="' + escapeHtml(t.summary || '') + '">'
-                + '<span class="topic-index">' + (i + 1) + '.</span> '
-                + escapeHtml(t.title || '(untitled)')
-                + range
-                + '</div>';
-        }).join('');
+    rail.innerHTML =
+        '<div class="chats-rail-selector">'
+        + pill('topics', 'Topics') + pill('git', 'Git') + pill('tasks', 'Tasks')
+        + '</div>'
+        + panel('topics', _railTopicsHtml(topicData))
+        + panel('git', _railGitHtml(commits))
+        + panel('tasks', _railTasksHtml(chatsState.tasksData));
 
     // Re-wrap messages with the rail beside it. Look for an existing
     // wrapper to avoid double-nesting on subsequent selectChat calls.
@@ -790,6 +976,9 @@ function renderTopicRail(topicData) {
         wrapper.appendChild(messagesEl);
     }
     wrapper.insertBefore(rail, messagesEl);
+
+    // If we opened straight onto Tasks, kick off its lazy fetch.
+    if (active === 'tasks' && chatsState.tasksData == null) _loadRailTasks();
 }
 
 function chatsJumpToTopic(turnStart) {
@@ -1728,143 +1917,12 @@ async function chatsFilterRole(role) {
 // ---- Chats: Commits bar ----
 
 function renderCommitsBar(commits) {
-    commits = commits || [];
-    var bar = document.getElementById('chats-commits-bar');
-
-    // The detail panel surfaces three session-activity streams: commits,
-    // authored PRs, and assigned tasks. PR/task data rides along on the
-    // listing entry (prs_detail / tasks_detail from get_chats_summary),
-    // so no extra fetch is needed.
-    var listEntry = (chatsState.chats || []).find(function(c) {
-        return c.session_id === chatsState.selectedId;
-    }) || {};
-    var prs = listEntry.prs_detail || [];
-    var tasks = listEntry.tasks_detail || [];
-
-    // Nothing to show → hide the bar entirely (don't leave an empty box).
-    if (commits.length === 0 && prs.length === 0 && tasks.length === 0) {
-        bar.style.display = 'none';
-        return;
-    }
-    bar.style.display = 'block';
-
-    // Group by message to deduplicate retried/amended commits
-    var groups = [];
-    var seen = {};
-    commits.forEach(function(c) {
-        var key = (c.message || '').trim();
-        if (seen[key]) {
-            seen[key].hashes.push(c.hash || '');
-            seen[key].count++;
-        } else {
-            var g = {
-                message: key, hashes: [c.hash || ''], branch: c.branch || '',
-                files_changed: c.files_changed, count: 1,
-                message_index: c.message_index != null ? c.message_index : null,
-                timestamp: c.timestamp || '',
-            };
-            seen[key] = g;
-            groups.push(g);
-        }
-    });
-
-    // Sort chronologically (oldest first)
-    groups.sort(function(a, b) { return (a.timestamp || '').localeCompare(b.timestamp || ''); });
-
-    var html = '';
-
-    // --- Commits ---
-    if (commits.length > 0) {
-        html += '<div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">'
-            + groups.length + ' unique commit' + (groups.length !== 1 ? 's' : '')
-            + (commits.length !== groups.length ? ' (' + commits.length + ' total incl. retries)' : '')
-            + ' during this session</div>';
-
-        // Determine the session's primary repo so cross-repo commits get
-        // a "(<repo>) " prefix. The primary is the most-frequent repo in
-        // the listing-side `commits_by_repo` for this session. Falls back
-        // to no prefix when repo info is unavailable.
-        var primaryRepo = null;
-        var byRepo = listEntry.commits_by_repo || {};
-        Object.keys(byRepo).forEach(function(repo) {
-            if (primaryRepo === null || byRepo[repo] > byRepo[primaryRepo]) {
-                primaryRepo = repo;
-            }
-        });
-
-        groups.forEach(function(g) {
-            var clickable = g.message_index != null;
-            var clickAttr = clickable
-                ? ' onclick="chatsJumpToCommit(' + g.message_index + ')" title="Jump to this commit in the conversation"'
-                : '';
-            // Per-commit repo only ever set when session_commits.repo_name
-            // is populated (currently NULL for all rows; reserved for a
-            // follow-up that infers per-commit repo from the cwd or
-            // ``git show``). When set and different from the session
-            // primary, prefix the message with the repo name.
-            var commitRepo = g.repo_name || '';
-            var repoPrefix = '';
-            if (commitRepo && commitRepo !== primaryRepo) {
-                repoPrefix = '<span class="commit-repo-tag">' + escapeHtml(commitRepo) + '</span> ';
-            }
-            html += '<div class="chat-commit-marker' + (clickable ? ' clickable' : '') + '"' + clickAttr + '>'
-                + '<code>' + g.hashes[0] + '</code> '
-                + repoPrefix
-                + '<span class="commit-msg">' + escapeHtml(g.message) + '</span>'
-                + '<span class="commit-meta">'
-                + (g.count > 1 ? '<span>(' + g.count + 'x)</span>' : '')
-                + '<span>' + g.branch + '</span>'
-                + (g.files_changed ? '<span>' + g.files_changed + ' files</span>' : '')
-                + '<span>' + formatTimestamp(g.timestamp) + '</span>'
-                + '</span>'
-                + '</div>';
-        });
-    }
-
-    // --- Pull requests authored from this session ---
-    if (prs.length > 0) {
-        html += '<div style="font-size:11px;color:var(--text-muted);margin:8px 0 4px;">'
-            + 'Pull requests (' + prs.length + ')</div>';
-        // Oldest first, by creation time — matches the commit list order.
-        var prsSorted = prs.slice().sort(function(a, b) {
-            return (a.ts || '').localeCompare(b.ts || '');
-        });
-        prsSorted.forEach(function(p) {
-            var when = p.ts ? formatTimestamp(p.ts) : '';
-            var title = p.title || '';
-            // Merge state from GitHub (OPEN/MERGED/CLOSED); fall back to
-            // the JSONL-captured action verb when gh enrichment is absent.
-            var state = (p.state || p.action || '').toString().toLowerCase();
-            var stateClass = state.replace(/[^a-z]/g, '');
-            html += '<div class="chat-commit-marker pr-marker">'
-                + '<a href="' + escapeHtml(p.pr_url) + '" target="_blank" rel="noopener"'
-                + ' class="commit-msg pr-num" title="Open PR on GitHub">↗ #' + p.pr_number + '</a> '
-                + (title ? '<span class="commit-msg pr-title">' + escapeHtml(title) + '</span>' : '')
-                + '<span class="commit-meta">'
-                + (state ? '<span class="pr-state pr-state-' + stateClass + '">' + escapeHtml(state) + '</span>' : '')
-                + (when ? '<span>' + when + '</span>' : '')
-                + '</span>'
-                + '</div>';
-        });
-    }
-
-    // --- Tasks assigned to this session (reverse session→tasks linkage) ---
-    if (tasks.length > 0) {
-        html += '<div style="font-size:11px;color:var(--text-muted);margin:8px 0 4px;">'
-            + 'Tasks (' + tasks.length + ')</div>';
-        tasks.forEach(function(t) {
-            var meta = [t.state, t.urgency].filter(Boolean).join(' · ');
-            var text = t.task_text || '';
-            html += '<div class="chat-commit-marker task-marker">'
-                + '<span class="commit-msg">▫ ' + escapeHtml(t.task_id)
-                + (meta ? ' · ' + escapeHtml(meta) : '')
-                + (text ? ' — ' + escapeHtml(text) : '')
-                + '</span>'
-                + '</div>';
-        });
-    }
-
-    bar.innerHTML = html;
+    // Superseded by the activity rail's Git panel. Kept as the entry point
+    // the jump handlers (chatsJumpToCommitSearch / chatsJumpToHit) already
+    // call: store the commits and rebuild the rail, which renders commits +
+    // PRs in its Git panel and hides the old horizontal #chats-commits-bar.
+    chatsState.commits = commits || [];
+    renderActivityRail();
 }
 
 async function chatsJumpToCommit(messageIndex) {
