@@ -40,14 +40,18 @@ def _tables(conn: sqlite3.Connection) -> set[str]:
 def test_task_migration_v10_creates_lww_meta(tmp_path: Path) -> None:
     from work_buddy.obsidian.tasks.migrations import TASK_MIGRATIONS
 
+    # The ladder's latest version, derived so adding later migrations
+    # (v11 created_by_session, …) doesn't re-break this test — it asserts
+    # the full ladder ran, not a fixed count. lww_meta lands at v10.
+    latest = max(m.version for m in TASK_MIGRATIONS.migrations)
     conn = sqlite3.connect(str(tmp_path / "task.db"))
     try:
         TASK_MIGRATIONS.run(conn)
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 10
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == latest
         assert "lww_meta" in _tables(conn)
         # Idempotent: a second run is a clean no-op.
         TASK_MIGRATIONS.run(conn)
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 10
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == latest
     finally:
         conn.close()
 
