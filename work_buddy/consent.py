@@ -1099,6 +1099,12 @@ def grant_consent(
 ) -> None:
     """Grant consent for an operation.
 
+    Side-effect only — returns ``None`` on success.  Verify success by
+    calling ``list_consents()`` (or ``ConsentCache.is_granted()``)
+    against the SAME session DB this grant was routed to.  A ``None``
+    return is the expected shape, not a failure signal; for the
+    cross-process case where this matters, see ``session_id`` below.
+
     Args:
         operation: The operation identifier.
         mode: "always" (permanent), "temporary" (time-limited), or "once" (single-use).
@@ -1109,6 +1115,13 @@ def grant_consent(
             this when an out-of-band ``consent_grant`` message arrives so
             the grant lands in the originating agent's DB, not the
             sidecar's. Mirrors the existing ``ConsentCache.grant`` keyword.
+
+            Same-process callers (writer and ``is_granted`` reader both
+            run in this process under the same ``WORK_BUDDY_SESSION_ID``)
+            can omit this — the cache's default DB is the right one.
+            Cross-process callers MUST pass it; otherwise the grant
+            lands in the writer's session DB while the reader looks at
+            its own.
     """
     _cache.grant(operation, mode, ttl_minutes=ttl_minutes, session_id=session_id)
     details = f"{mode}"
@@ -1128,6 +1141,10 @@ def grant_consent_batch(
 ) -> None:
     """Grant consent for multiple operations at once.
 
+    Side-effect only — returns ``None``.  Same return-shape contract as
+    :func:`grant_consent`; see that function's docstring for the
+    cross-process ``session_id`` rules.
+
     Used by the gateway's auto-consent flow to write grants for all
     operations in a bundled consent request after a single user approval.
 
@@ -1140,7 +1157,14 @@ def grant_consent_batch(
 
 
 def revoke_consent(operation: str) -> None:
-    """Revoke consent for an operation."""
+    """Revoke consent for an operation.
+
+    Side-effect only — returns ``None``.  Same return-shape contract as
+    :func:`grant_consent`: a ``None`` return is success, not a failure
+    signal.  Verify by checking that ``list_consents()`` (or
+    ``is_granted``) no longer reports the operation in the right
+    session DB.
+    """
     _cache.revoke(operation)
     _audit_log("REVOKED", operation)
 

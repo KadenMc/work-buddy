@@ -93,6 +93,10 @@ Some `work_buddy` functions are protected by a `@requires_consent` decorator. **
 
 **Agents cannot self-grant consent.** The Python functions `consent.grant_consent`, `consent.revoke_consent`, and `consent.resolve_consent_request` are internal — they are called by the sidecar router (Obsidian out-of-band path), Telegram and dashboard handlers, and the gateway's own auto-consent flow. They are not exposed as agent-callable capabilities. The only way an agent gets consent is the user approving on a surface; the gateway handles the rest.
 
+**Interpreting Python-side grant/revoke return values.** `consent.grant_consent`, `consent.grant_consent_batch`, and `consent.revoke_consent` are **side-effect functions that return `None`** — the activity ledger will record `result_summary: null` for any call routed through `wb_run` (historically, before those capabilities were un-exposed). A `null` ledger entry is the *expected* return shape; it does NOT signal that the write failed. To verify a grant actually landed, call `list_consents()` (with `agent_session_id` for cross-process callers) — that is the canonical success check.
+
+The historical bubble where 28 agent invocations of the (now-deleted) `consent_grant` capability returned `null` and accomplished nothing was *not* a function-layer bug.  The function ran every time and wrote a grant; the writes landed in the MCP server's bootstrap session DB because the gateway dispatch never injected `agent_session_id` for `consent_grant`.  The agent's later `is_granted` check looked at the agent's session DB and didn't see the grant.  Tests at `tests/unit/test_grant_consent_session_routing.py` characterise this exact pattern.
+
 ## Grant scope and lifetime
 
 Grants are stored session-scoped in a SQLite database at `data/agents/<session>/consent.db`. New sessions start with a clean slate — no grants carry over between user sessions. "Always" means "always within this session" (max 24h TTL).
