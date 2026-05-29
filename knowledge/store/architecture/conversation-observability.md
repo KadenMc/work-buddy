@@ -1,12 +1,13 @@
 ---
 name: Conversation Observability
 kind: system
-description: 'Durable session-attributed activity DB for Claude Code: commits, file writes, uncommitted work, observed-session metadata, and optional LLM topic summaries. Replaces ad-hoc per-call JSONL scans in sessions/inspector.py.'
+description: 'Durable session-attributed activity DB for Claude Code: commits, file writes, GitHub PR activity, uncommitted work, observed-session metadata, and optional LLM topic summaries. Replaces ad-hoc per-call JSONL scans in sessions/inspector.py.'
 tags:
 - conversation_observability
 - sessions
 - commits
 - writes
+- prs
 - summaries
 - durable
 - ir
@@ -21,16 +22,21 @@ parents:
 dev_notes: |-
   ## Schema migrations
 
-  `db._migrate_schema(conn)` runs on every connect and adds new columns via `ALTER TABLE`. The `commits_scanned_mtime` and `writes_scanned_mtime` columns were added after the initial schema; the helper makes upgrade-in-place transparent so existing DBs pick up new columns without intervention.
+  `db._migrate_schema(conn)` runs on every connect and adds new columns via `ALTER TABLE`. The `commits_scanned_mtime`, `writes_scanned_mtime`, and `prs_scanned_mtime` columns were added after the initial schema; the helper makes upgrade-in-place transparent so existing DBs pick up new columns without intervention.
 
-  ## The three scan-mtime columns are NOT interchangeable
+  ## The scan-mtime columns are NOT interchangeable
 
   If you find yourself reading `source_mtime` to decide whether to skip a commit-extraction scan, you're about to recreate the cross-refresher bug we already shipped a fix for. Each refresher reads/writes only its own column:
   - `refresh_observed_sessions` — owns `source_mtime`
   - `refresh_session_commits` — owns `commits_scanned_mtime`
   - `refresh_session_writes` — owns `writes_scanned_mtime`
+  - `refresh_session_prs` — owns `prs_scanned_mtime`
 
   The `INSERT … ON CONFLICT DO UPDATE` statements preserve untouched columns. Never write `source_mtime` from a non-observed-sessions refresh path.
+
+  ## PR detection is structural, and `created` dominates
+
+  `_extract_prs_single_pass` keys on the `gh pr (create|merge|close|review)` *verb* in a Bash tool_use, then pulls the canonical PR URL from command-or-output. `created` is reliably captured (`gh pr create` prints the URL on stdout). `merged`/`closed`/`reviewed` are only captured when the invocation carries the PR *URL* — a merge done via the GitHub UI, or a bare-number `gh pr merge 92`, yields no row (no URL → can't satisfy the NOT-NULL `pr_url`/`repo`). In practice most merges are UI-driven, so the table skews heavily to `created`. This is a known tradeoff of structural detection, not a bug; the alternative (resolving repo from the Bash cwd for bare-number merges) was deliberately left out of scope.
 
   ## LLM summary versioning
 
@@ -67,11 +73,12 @@ A SQLite-backed store of session-derived facts for Claude Code: commits, file wr
 
 ## Surface
 
-Three tables in `<data_root>/conversation_observability/conversation_observability.db` (path overridable via `conversation_observability.db_path`):
+Four tables in `<data_root>/conversation_observability/conversation_observability.db` (path overridable via `conversation_observability.db_path`):
 
-- `observed_sessions` — per-JSONL ledger. Carries metadata (start/end, message_count, span_count, tool_names) plus three per-concern scan-mtime columns: `source_mtime` (metadata load), `commits_scanned_mtime` (commits refresh), `writes_scanned_mtime` (writes refresh). Each refresher owns its column so running them in any order doesn't conflate staleness state.
+- `observed_sessions` — per-JSONL ledger. Carries metadata (start/end, message_count, span_count, tool_names) plus per-concern scan-mtime columns: `source_mtime` (metadata load), `commits_scanned_mtime` (commits refresh), `writes_scanned_mtime` (writes refresh), `prs_scanned_mtime` (PR refresh). Each refresher owns its column so running them in any order doesn't conflate staleness state.
 - `session_commits` — one row per git commit attributed to a session. Keyed by full SHA, indexed on `short_sha` for GitSource lookups.
 - `session_file_writes` — one row per (session, file_path). Carries the tool that wrote it, the latest write timestamp, an optional `committed_sha` cross-reference, and a `currently_dirty` snapshot (best-effort — git state is mutable, so consumers should treat this as not authoritative without a refresh).
+- `session_prs` — one row per (session, PR, action) GitHub pull-request event, attributed by detecting `gh pr create|merge|close|review` Bash invocations in the JSONL (structural detection, not commit-message `Closes #NNN` parsing). Carries `pr_number`, `pr_url`, `repo`, `action`, and the invocation `ts`. `UNIQUE(session_id, pr_number, action, ts)` makes re-ingestion idempotent.
 
 Per-session tldr + ordered topic segments live in the summarization framework's `<data_root>/summarization/summarization.db` under namespace `conversation_session` (see `architecture/summarization-framework`). The legacy read API (`session_summary_get`, plus the deprecated alias `conversation_observability_summary_get`) is preserved via thin shims in `session_summary_row.py` that map between the framework's tree-shaped storage and the flat row shape consumers expect (dashboard `/api/chats/<id>/topics`, the `claude_session_summary` context collector, `/wb-session-identify`'s tldr triage).
 
@@ -81,7 +88,7 @@ Foreign-key cascades use `SqliteRowsStorage.post_delete_sql` rather than SQLite'
 
 Two sidecar crons keep the DB fresh independent of caller demand:
 
-- `conversation-observability-refresh.md` — every 5 minutes (offset from `ir-index-rebuild` by 2 minutes), `max_sessions=5`, `stale_only=true`. Runs all three non-LLM refreshers AND auto-enqueues changed sessions into the summarization queue when `summaries.use_incremental` is on.
+- `conversation-observability-refresh.md` — every 5 minutes (offset from `ir-index-rebuild` by 2 minutes), `max_sessions=5`, `stale_only=true`. Runs all four non-LLM refreshers (observed-sessions, commits, writes, PRs) AND auto-enqueues changed sessions into the summarization queue when `summaries.use_incremental` is on. Because the cron uses a 7-day window, PR (and commit/write) attribution for *older* sessions requires a one-off wide-window backfill (`refresh_session_prs(days=…)`) after the table first lands.
 - `summarization-worker.md` — every 5 minutes (offset 3 minutes from observability-refresh). Drains the summarization queue FIFO over the cooldown-passed subset, bounded by the daily cost budget. Feature-gated on `summaries.use_incremental`.
 
 The `claude_session_summary` context source also triggers a stale-only refresh inline before rendering so bundle collections never read a cold DB. The `/ir/index` endpoint is deliberately NOT hooked — stale-only DB-backed scans are cheap enough that an independent cron is cleaner than embedding-service coupling.
@@ -96,5 +103,6 @@ Summary invalidation lives on the framework side: bumping any of the four versio
 
 - `work_buddy/collectors/claude_session_summary_collector.py` — context source rendering one block per project, listing each session's commits and uncommitted files. With `include_topics=True`, nests a topic-level timeline under each session bullet. Sibling to `chat` (raw inventory) and `session_activity` (current MCP session ledger).
 - `work_buddy/collectors/git_collector.py` — receives `{short_sha: full_session_id}` via `inspector.build_session_map()`, which now reads from the DB instead of computing per-call.
-- MCP capabilities: `conversation_observability_refresh`, `conversation_observability_uncommitted`, `conversation_observability_get`, `conversation_observability_list`, `session_summary_get`, `summarization_worker_tick`. The `conversation_observability_summarize` and `conversation_observability_summary_get` capabilities remain as deprecated aliases routed through legacy shims.
+- MCP capabilities: `conversation_observability_refresh`, `conversation_observability_uncommitted`, `conversation_observability_get`, `conversation_observability_list`, `session_summary_get`, `session_prs_get`, `summarization_worker_tick`. The `conversation_observability_summarize` and `conversation_observability_summary_get` capabilities remain as deprecated aliases routed through legacy shims. The reverse session→tasks linkage is exposed via the tasks-domain `session_tasks_get` capability (reads `task_sessions`, enriched from the SQLite task store — bridge-independent).
+- Dashboard Chats view (`/api/chats` → `_load_observability_for_sessions`): aggregates per-session PR counts (authored/merged) and task-assignment counts into the chat cards' badge row, alongside the existing commit badge.
 - Journal directions (`journal/update-directions`) require `claude_session_summary.md` alongside `git_summary.md` / `chat_summary.md` so multi-hour sessions without commits get logged as exploration rather than silently dropped.

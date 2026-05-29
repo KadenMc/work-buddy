@@ -1,7 +1,7 @@
 ---
 name: Conversation Observability Refresh
 kind: capability
-description: 'Refresh the conversation_observability DB: observed sessions metadata, session-attributed commits, and session-attributed file writes (with dirty-state snapshot). Stale-only by default; pass stale_only=false to force every recent session to re-load.'
+description: 'Refresh the conversation_observability DB: observed sessions metadata, session-attributed commits, session-attributed file writes (with dirty-state snapshot), and session-attributed GitHub PR activity. Stale-only by default; pass stale_only=false to force every recent session to re-load.'
 capability_name: conversation_observability_refresh
 category: conversation_observability
 op: op.wb.conversation_observability_refresh

@@ -2267,6 +2267,20 @@ body {
 .chat-card-badge.unfinished {
     color: var(--text-muted);
 }
+/* PR / task linkage badges. The PR badge links out when there's a
+   single PR; keep the link color inherited so it reads as a badge,
+   not a hyperlink. */
+a.chat-card-badge.prs {
+    text-decoration: none;
+    color: var(--text-muted);
+}
+a.chat-card-badge.prs:hover {
+    text-decoration: underline;
+}
+/* Empty state: a dim em-dash, never a "0". */
+.chat-card-badge.badge-empty {
+    opacity: 0.45;
+}
 
 /* In-card search-match snippets (search-active mode). Renders below
    the badges as a compact list; each row is clickable to jump to that

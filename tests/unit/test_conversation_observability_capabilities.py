@@ -82,6 +82,9 @@ def test_all_capabilities_register_under_observability_category() -> None:
         # `conversation_observability_summary_get`; lives in the same
         # category so the invariant holds.
         "session_summary_get",
+        # PR-activity read — the session→PR linkage counterpart to the
+        # commit attribution surface.
+        "session_prs_get",
     }
     for cap in caps.values():
         assert cap.category == "conversation_observability"

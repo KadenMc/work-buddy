@@ -33,6 +33,8 @@ If no argument provided, ask for the task ID.
 
 Both return the same read payload. Internally, task_assign composes task_read with a session-tracker write, so agents can swap call sites without reshaping downstream code.
 
+The assignment is queryable in both directions: the read payload embeds `assigned_sessions` (task → sessions), and `session_tasks_get(session_id)` returns the reverse (session → tasks, with each task's text + state).
+
 ## Presentation after assignment
 
 1. Task: text and current state/urgency

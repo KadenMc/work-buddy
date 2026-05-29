@@ -584,24 +584,71 @@ function chatsResetFiltersAll() {
 }
 
 /**
- * Render the commit + unfinished-work badge row for a chat card.
- * Only renders when the session demonstrably engages with git
- * (committed something OR wrote files via Write/Edit/NotebookEdit) —
- * keeps cards slim for chat-only sessions where git noise is moot.
+ * Render the activity badge row for a chat card: commits + unfinished
+ * work (gated on git engagement), plus PRs and Tasks (independent of
+ * git — a session can author a PR or be assigned a task without
+ * committing). Empty cells render an em-dash, never a "0".
  */
 function renderChatBadges(c) {
-    if (!c.engages_git) return '';
     var parts = [];
-    if (c.commit_count > 0) {
-        var repoCount = c.commits_by_repo ? Object.keys(c.commits_by_repo).length : 0;
-        var commitsLabel = c.commit_count + ' commit' + (c.commit_count === 1 ? '' : 's');
-        if (repoCount > 1) commitsLabel += ' across ' + repoCount + ' repos';
-        parts.push('<span class="chat-card-badge">' + commitsLabel + '</span>');
+
+    // --- git-engagement badges (commits, unfinished) ---
+    if (c.engages_git) {
+        if (c.commit_count > 0) {
+            var repoCount = c.commits_by_repo ? Object.keys(c.commits_by_repo).length : 0;
+            var commitsLabel = c.commit_count + ' commit' + (c.commit_count === 1 ? '' : 's');
+            if (repoCount > 1) commitsLabel += ' across ' + repoCount + ' repos';
+            parts.push('<span class="chat-card-badge">' + commitsLabel + '</span>');
+        }
+        if (c.unfinished_count > 0) {
+            var unfinishedLabel = c.unfinished_count + ' left uncommitted';
+            parts.push('<span class="chat-card-badge unfinished" title="Files this session wrote that this session did not commit itself.">' + unfinishedLabel + '</span>');
+        }
     }
-    if (c.unfinished_count > 0) {
-        var unfinishedLabel = c.unfinished_count + ' left uncommitted';
-        parts.push('<span class="chat-card-badge unfinished" title="Files this session wrote that this session did not commit itself.">' + unfinishedLabel + '</span>');
+
+    // --- PRs badge: "{authored} · {merged}" ---
+    var prAuthored = c.pr_authored_count || 0;
+    var prMerged = c.pr_merged_count || 0;
+    var prsDetail = c.prs_detail || [];
+    if (prAuthored > 0 || prMerged > 0) {
+        var prTip = prsDetail.map(function(p) {
+            return '↗ #' + p.pr_number + ' · ' + p.action
+                + (p.ts ? ' · ' + formatTimestamp(p.ts) : '');
+        }).join('\n');
+        // Single PR → linkify the whole badge; otherwise the tooltip
+        // lists each event (multiple PRs can't share one href).
+        var prInner = 'PRs ' + prAuthored + ' · ' + prMerged;
+        var prBadge;
+        if (prsDetail.length === 1 && prsDetail[0].pr_url) {
+            prBadge = '<a class="chat-card-badge prs" target="_blank" rel="noopener"'
+                + ' href="' + escapeHtml(prsDetail[0].pr_url) + '"'
+                + ' title="' + escapeHtml(prTip) + '">' + prInner + '</a>';
+        } else {
+            prBadge = '<span class="chat-card-badge prs" title="' + escapeHtml(prTip) + '">'
+                + prInner + '</span>';
+        }
+        parts.push(prBadge);
+    } else {
+        parts.push('<span class="chat-card-badge badge-empty" title="No pull requests authored from this session">PRs —</span>');
     }
+
+    // --- Tasks badge: count ---
+    var taskCount = c.task_count || 0;
+    var tasksDetail = c.tasks_detail || [];
+    if (taskCount > 0) {
+        var taskTip = tasksDetail.map(function(t) {
+            var meta = [t.state, t.urgency].filter(Boolean).join(' · ');
+            var text = (t.task_text || '').slice(0, 80);
+            return '▫ ' + t.task_id + (meta ? ' · ' + meta : '')
+                + (text ? ' — ' + text : '');
+        }).join('\n');
+        var taskLabel = taskCount + ' task' + (taskCount === 1 ? '' : 's');
+        parts.push('<span class="chat-card-badge tasks" title="' + escapeHtml(taskTip) + '">'
+            + taskLabel + '</span>');
+    } else {
+        parts.push('<span class="chat-card-badge badge-empty" title="No tasks assigned to this session">Tasks —</span>');
+    }
+
     if (parts.length === 0) return '';
     return '<div class="chat-card-badges">' + parts.join('') + '</div>';
 }

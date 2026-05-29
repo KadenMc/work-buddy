@@ -538,6 +538,21 @@ _FILES_CHANGED_RE = re.compile(
     r"(\d+)\s+files?\s+changed"
 )
 
+# PR-activity detection. Verb-keyed (not URL-keyed) so ``gh pr view`` /
+# ``gh pr list`` — which print URLs but aren't activity — are naturally
+# excluded. Not start-anchored, so chains like ``git push && gh pr
+# create …`` still match.
+_GH_PR_RE = re.compile(r"\bgh\s+pr\s+(create|merge|close|review)\b")
+_PR_URL_RE = re.compile(
+    r"https://github\.com/([^/\s]+/[^/\s]+)/pull/(\d+)"
+)
+_PR_ACTION_BY_VERB = {
+    "create": "created",
+    "merge": "merged",
+    "close": "closed",
+    "review": "reviewed",
+}
+
 # Per-file commit cache: path_str -> (mtime, commits_list)
 _commit_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 
@@ -755,6 +770,140 @@ def _extract_commits_single_pass(
                     turn_index += 1
 
     return commits
+
+
+def _extract_prs_single_pass(
+    path: Path, session_id: str,
+) -> list[dict[str, Any]]:
+    """Extract GitHub PR-activity events from a JSONL file in one pass.
+
+    Mirrors :func:`_extract_commits_single_pass`: detect ``gh pr
+    create|merge|close|review`` Bash ``tool_use`` blocks, pair each with
+    its ``tool_result`` by ``tool_use_id``, and pull the canonical PR URL
+    (``owner/repo`` + number) from the command-plus-output text.
+
+    The URL is the source of truth: ``gh pr create`` prints it on stdout;
+    ``merge``/``close``/``review`` invocations that reference the PR by
+    URL carry it in the command. An invocation that yields no GitHub PR
+    URL anywhere (a failed create, or a merge/close/review by bare PR
+    number) is skipped — the schema requires a real ``pr_url``/``repo``,
+    and a bare-number merge of a PR created in the same session is still
+    discoverable via that session's ``created`` row.
+
+    Turn counting mirrors ``iter_session_turns`` so ``message_index`` is
+    comparable to the commit table's.
+    """
+    pending: dict[str, dict[str, Any]] = {}  # tool_use_id -> partial event
+    prs: list[dict[str, Any]] = []
+    turn_index = 0
+
+    with open(path, encoding="utf-8", errors="replace") as f:
+        for raw_line in f:
+            if not raw_line.strip():
+                continue
+
+            try:
+                entry = json.loads(raw_line)
+            except json.JSONDecodeError:
+                continue
+
+            entry_type = entry.get("type")
+            timestamp = entry.get("timestamp", "")
+            content = entry.get("message", {}).get("content", [])
+
+            if entry_type == "user":
+                if entry.get("isMeta"):
+                    continue
+                if isinstance(content, list):
+                    has_tool_result = any(
+                        isinstance(c, dict) and c.get("type") == "tool_result"
+                        for c in content
+                    )
+                    if has_tool_result:
+                        for block in content:
+                            if not isinstance(block, dict):
+                                continue
+                            if block.get("type") != "tool_result":
+                                continue
+                            tid = block.get("tool_use_id", "")
+                            if tid not in pending:
+                                continue
+                            partial = pending.pop(tid)
+                            if block.get("is_error"):
+                                continue
+
+                            tur = entry.get("toolUseResult")
+                            stdout = (
+                                tur.get("stdout", "")
+                                if isinstance(tur, dict)
+                                else ""
+                            )
+                            output = stdout or block.get("content", "")
+                            if not isinstance(output, str):
+                                output = ""
+
+                            haystack = f"{partial['command']}\n{output}"
+                            m = _PR_URL_RE.search(haystack)
+                            if not m:
+                                continue
+
+                            repo = m.group(1)
+                            pr_number = int(m.group(2))
+                            prs.append({
+                                "session_id": session_id,
+                                "pr_number": pr_number,
+                                "pr_url": (
+                                    f"https://github.com/{repo}/pull/{pr_number}"
+                                ),
+                                "repo": repo,
+                                "action": partial["action"],
+                                "ts": partial["timestamp"],
+                                "message_index": partial["turn_index"],
+                            })
+                        continue
+
+                    text_parts = [
+                        c.get("text", "")
+                        for c in content
+                        if isinstance(c, dict) and c.get("type") == "text"
+                    ]
+                    if " ".join(text_parts).strip():
+                        turn_index += 1
+                elif isinstance(content, str) and content.strip():
+                    turn_index += 1
+
+            elif entry_type == "assistant":
+                if not isinstance(content, list):
+                    continue
+                has_text = False
+                has_tools = False
+                current_turn_idx = turn_index
+
+                for block in content:
+                    if not isinstance(block, dict):
+                        continue
+                    btype = block.get("type")
+                    if btype == "text" and block.get("text", "").strip():
+                        has_text = True
+                    elif btype == "tool_use":
+                        has_tools = True
+                        if block.get("name") == "Bash":
+                            cmd = block.get("input", {}).get("command", "")
+                            mverb = _GH_PR_RE.search(cmd)
+                            if mverb:
+                                pending[block.get("id", "")] = {
+                                    "action": _PR_ACTION_BY_VERB[
+                                        mverb.group(1)
+                                    ],
+                                    "command": cmd[:1000],
+                                    "timestamp": timestamp,
+                                    "turn_index": current_turn_idx,
+                                }
+
+                if has_text or has_tools:
+                    turn_index += 1
+
+    return prs
 
 
 # ---------------------------------------------------------------------------

@@ -1090,6 +1090,25 @@ def get_sessions(task_id: str) -> list[dict[str, Any]]:
         conn.close()
 
 
+def get_tasks_for_session(session_id: str) -> list[dict[str, Any]]:
+    """Get all tasks a session was assigned to, oldest first.
+
+    The reverse of :func:`get_sessions`. Uses the existing
+    ``idx_task_sessions_session`` index, so this is a cheap lookup.
+    """
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """SELECT task_id, assigned_at
+               FROM task_sessions
+               WHERE session_id = ? ORDER BY assigned_at""",
+            (session_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
 # ── Tag cache (mirrors markdown tags from task lines) ──────────
 #
 # The markdown task line is the source of truth for tags. This table is a

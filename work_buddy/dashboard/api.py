@@ -913,6 +913,12 @@ def _load_observability_for_sessions(
             f"FROM session_file_writes WHERE session_id IN ({placeholders})",
             sids,
         ).fetchall()
+        pr_rows = conn.execute(
+            f"SELECT session_id, pr_number, pr_url, action, ts "
+            f"FROM session_prs WHERE session_id IN ({placeholders}) "
+            f"ORDER BY ts DESC",
+            sids,
+        ).fetchall()
         # Read tldrs from summarization.db (the framework). Legacy
         # `session_summaries` table was emptied + dropped on 2026-05-28
         # after a one-shot migration moved its 94 rows into the framework.
@@ -929,6 +935,15 @@ def _load_observability_for_sessions(
     writes_by_sid: dict[str, set[str]] = {sid: set() for sid in sids}
     for r in write_rows:
         writes_by_sid[r["session_id"]].add(r["file_path"])
+
+    # Aggregate PR activity per session (already ts-desc ordered).
+    prs_by_sid: dict[str, list[dict[str, Any]]] = {sid: [] for sid in sids}
+    for r in pr_rows:
+        prs_by_sid[r["session_id"]].append(dict(r))
+
+    # Aggregate task assignments per session (separate DB — best-effort
+    # so a tasks-store hiccup never blocks chat rendering).
+    tasks_by_sid = _load_tasks_for_sessions(set(sids))
 
     # Resolve committed-files-per-session in one parallel pass.
     # We also need ``repos_root`` later to infer per-session repo
@@ -1008,18 +1023,86 @@ def _load_observability_for_sessions(
             # cardinality the badge needs.
             commits_by_repo = {repo: 0 for repo in inferred_repos}
 
+        session_prs = prs_by_sid.get(sid, [])
+        pr_authored = sum(1 for p in session_prs if p["action"] == "created")
+        pr_merged = sum(1 for p in session_prs if p["action"] == "merged")
+        session_tasks = tasks_by_sid.get(sid, [])
+
         result[sid] = {
             "commit_count": len(commits),
             "unfinished_count": len(unfinished),
             "commits_by_repo": commits_by_repo,
             "latest_committed_at": latest_committed_at,
             "tldr": tldr_by_sid.get(sid),
+            # PR activity (session→PR linkage). authored/merged drive the
+            # badge counts; prs_detail backs the side-panel list.
+            "pr_authored_count": pr_authored,
+            "pr_merged_count": pr_merged,
+            "prs_detail": session_prs,
+            # Reverse session→tasks linkage. task_count drives the badge;
+            # tasks_detail backs the side-panel list.
+            "task_count": len(session_tasks),
+            "tasks_detail": session_tasks,
             # "Engages git" iff the session committed OR wrote any
             # files via Write/Edit/NotebookEdit. Used by the dashboard
             # to gate badge rendering — chat-only sessions stay slim.
             "engages_git": bool(commits) or bool(writes),
         }
     return result
+
+
+def _load_tasks_for_sessions(
+    session_ids: set[str],
+) -> dict[str, list[dict[str, Any]]]:
+    """Batch-load task assignments + text/state for a set of sessions.
+
+    One query against the task store (a different DB than
+    conversation_observability), joining ``task_sessions`` to
+    ``task_metadata`` so the side-panel has text + state without an
+    N+1 per-task lookup. Best-effort: returns ``{}`` if the store is
+    unavailable, so a tasks-store problem never blocks chat rendering.
+    """
+    if not session_ids:
+        return {}
+    try:
+        from work_buddy.obsidian.tasks import store
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.debug("task store unavailable: %s", exc)
+        return {}
+
+    sids = list(session_ids)
+    placeholders = ",".join(["?"] * len(sids))
+    try:
+        conn = store.get_connection()
+    except Exception as exc:
+        logger.debug("task store DB unreachable: %s", exc)
+        return {}
+    try:
+        rows = conn.execute(
+            f"""SELECT ts.session_id, ts.task_id, ts.assigned_at,
+                       tm.state, tm.urgency, tm.description
+                FROM task_sessions ts
+                LEFT JOIN task_metadata tm ON tm.task_id = ts.task_id
+                WHERE ts.session_id IN ({placeholders})
+                ORDER BY ts.assigned_at""",
+            sids,
+        ).fetchall()
+    except Exception as exc:
+        logger.debug("task_sessions join failed: %s", exc)
+        return {}
+    finally:
+        conn.close()
+
+    by_sid: dict[str, list[dict[str, Any]]] = {sid: [] for sid in sids}
+    for r in rows:
+        by_sid[r["session_id"]].append({
+            "task_id": r["task_id"],
+            "state": r["state"],
+            "urgency": r["urgency"],
+            "task_text": r["description"],
+            "assigned_at": r["assigned_at"],
+        })
+    return by_sid
 
 
 def get_chats_summary(days: int = 14) -> dict[str, Any]:
@@ -1081,6 +1164,12 @@ def get_chats_summary(days: int = 14) -> dict[str, Any]:
             "latest_committed_at": obs.get("latest_committed_at"),
             "tldr": obs.get("tldr"),
             "engages_git": obs.get("engages_git", False),
+            # session→PR + reverse session→tasks linkage
+            "pr_authored_count": obs.get("pr_authored_count", 0),
+            "pr_merged_count": obs.get("pr_merged_count", 0),
+            "prs_detail": obs.get("prs_detail", []),
+            "task_count": obs.get("task_count", 0),
+            "tasks_detail": obs.get("tasks_detail", []),
         })
 
     # Sort by most-recent ACTIVITY (end_time = last message timestamp).

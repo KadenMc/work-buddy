@@ -1,6 +1,6 @@
 """SQL schema for the conversation-observability store.
 
-Three tables (post-2026-05-28 cleanup):
+Four tables:
 
 * ``observed_sessions`` — one row per Claude Code JSONL session we've
   scanned. Tracks source path + mtime + observation metadata so a
@@ -9,6 +9,10 @@ Three tables (post-2026-05-28 cleanup):
 * ``session_file_writes`` — one row per (session, file_path) write
   event. ``currently_dirty`` is a snapshot of the most recent
   observation; treat it as best-effort, not authoritative.
+* ``session_prs`` — one row per (session, PR, action) GitHub pull-request
+  event, attributed by detecting ``gh pr create|merge|close|review``
+  Bash invocations in the session JSONL (structural detection, not
+  commit-message parsing).
 
 Foreign keys cascade-on-parent-delete via the SqliteRowsStorage
 ``post_delete_sql`` hook, not via SQLite's own FK enforcement (which is
@@ -72,6 +76,31 @@ CREATE INDEX IF NOT EXISTS idx_session_commits_short_sha
     ON session_commits(short_sha);
 CREATE INDEX IF NOT EXISTS idx_session_commits_committed_at
     ON session_commits(committed_at);
+
+-- One row per (session, PR, action) pull-request event. ``action`` is a
+-- column rather than a table-per-verb because the four verbs share the
+-- same shape (session, PR, time, URL) and the dashboard wants a flat
+-- activity stream. The UNIQUE key includes ``ts`` because the same
+-- session can review the same PR more than once; create/merge timestamps
+-- are stable so re-ingestion is idempotent via ``INSERT OR IGNORE``.
+CREATE TABLE IF NOT EXISTS session_prs (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id      TEXT NOT NULL,
+    pr_number       INTEGER NOT NULL,
+    pr_url          TEXT NOT NULL,
+    repo            TEXT NOT NULL,
+    action          TEXT NOT NULL,
+    ts              TEXT,
+    message_index   INTEGER,
+    source_path     TEXT,
+    observed_at     TEXT NOT NULL,
+    UNIQUE(session_id, pr_number, action, ts)
+);
+
+CREATE INDEX IF NOT EXISTS idx_session_prs_session
+    ON session_prs(session_id);
+CREATE INDEX IF NOT EXISTS idx_session_prs_pr
+    ON session_prs(pr_number);
 
 CREATE TABLE IF NOT EXISTS session_file_writes (
     id              TEXT PRIMARY KEY,
