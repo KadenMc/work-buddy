@@ -1,115 +1,121 @@
-"""Demonstration: ConsentRequired class identity does not survive
-mcp_registry_reload's sys.modules purge.
+"""Demonstration: ``except SomeExceptionClass:`` is identity-based on
+the class object, so two structurally-identical classes with the same
+name don't catch each other's instances.
 
 This is the empirical proof for the bubble-raw bug pattern observed in
-the activity ledger for project_create (and other manually-raised
-ConsentRequired ops): the gateway's typed ``except ConsentRequired:``
-handler at work_buddy/mcp_server/tools/gateway.py:1535 captures the
-class object at module-import time. After mcp_registry_reload purges
-sys.modules and the raising code path re-imports a FRESH
-ConsentRequired class, isinstance against the stale class reference
-returns False, so the typed handler is skipped and the exception
-falls through to the broad ``except Exception:`` clause that produces
-the double-prefix ``"Execution failed: ConsentRequired: ConsentRequired:
-..."`` pattern.
+the activity ledger for ``project_create`` (and other
+manually-raised-ConsentRequired ops): the gateway's typed
+``except ConsentRequired:`` handler at
+work_buddy/mcp_server/tools/gateway.py:1535 captures the class object
+at module-import time.  After ``mcp_registry_reload`` purges
+``sys.modules`` and the raising code path re-imports a FRESH
+``ConsentRequired`` class, ``isinstance`` against the stale class
+reference returns False, the typed handler is skipped, and the
+exception falls through to the broad ``except Exception:`` clause
+that produces the double-prefix ``"Execution failed: ConsentRequired:
+ConsentRequired: ..."`` pattern.
 
 Same root-cause family as the registry's stale-Capability bug
-(fixed defensively in commit 83d595aa for _entry_to_dict). The
-mechanism is general: any captured class reference is invalidated
-by sys.modules purges.
+(fixed defensively for ``_entry_to_dict``).  The mechanism is general:
+any captured class reference is invalidated by ``sys.modules`` purges.
+
+The test demonstrates the mechanism with two locally-defined classes
+named ``ConsentRequired`` — no ``sys.modules`` mutation, no test-
+suite-wide pollution.  An earlier version of this test did purge
+``sys.modules`` to mirror the production trigger; restoring the
+purged modules in a ``finally`` block was insufficient because the
+``@requires_consent`` decorators in dependent modules (e.g.
+``work_buddy.obsidian.bridge``) had already executed against the
+pre-purge consent module and the freshly-imported one started with
+an empty ``_CONSENT_REGISTRY``.  Subsequent tests that asserted on
+that registry then spuriously failed.  The class-identity mechanism
+under test does not require sys.modules mutation to demonstrate.
 """
 
 from __future__ import annotations
 
-import importlib
-import sys
 
+def test_consent_required_isinstance_fails_across_class_redefinition() -> None:
+    """``except ConsentRequired:`` is identity-based on the class object.
+    Two classes with the same name and same shape, defined in different
+    scopes, are different objects — and ``isinstance(exc_from_one,
+    other_class)`` returns False.
 
-def test_consent_required_isinstance_fails_after_module_reload() -> None:
-    """When work_buddy.consent is purged from sys.modules and re-imported,
-    the resulting ConsentRequired class is a DIFFERENT object than any
-    reference captured before the purge. isinstance checks against
-    the stale reference return False, even though the raised exception
-    semantically IS a ConsentRequired.
+    Production trigger: ``mcp_registry_reload`` purges
+    ``sys.modules["work_buddy.consent"]`` and the next call to
+    ``project_create`` (which lazy-imports ``ConsentRequired`` at
+    context_wrappers.py:944) gets a freshly-rebuilt class object,
+    different from the one the gateway captured at gateway.py:27.
+    The gateway's typed handler ``except ConsentRequired:`` no longer
+    matches; the exception falls through to the broad
+    ``except Exception:`` clause that produces the "Execution failed:
+    ConsentRequired: ConsentRequired: ..." text in the activity
+    ledger.  The defensive duck-typed catch at gateway.py:1583 (added
+    in the same commit) keys off ``type(exc).__name__`` instead of
+    isinstance so it survives the stale-class case."""
 
-    This is the mechanism that explains the activity ledger's
-    "Execution failed: ConsentRequired: ConsentRequired:" pattern
-    for project_create: the gateway's captured ``ConsentRequired`` (from
-    its module-level ``from work_buddy.consent import ConsentRequired``
-    on gateway.py:27) is the stale class; project_create's lazy import
-    (context_wrappers.py:944) returns the FRESH class; the raised
-    instance does not match the stale ``except`` clause."""
+    class ConsentRequired(Exception):
+        """Stand-in for the class captured at gateway module-import time."""
 
-    # Capture the pre-reload class reference. This mimics gateway.py's
-    # module-level ``from work_buddy.consent import ConsentRequired``.
-    from work_buddy.consent import ConsentRequired as StaleConsentRequired
+        def __init__(
+            self,
+            operation: str,
+            reason: str,
+            risk: str,
+            default_ttl: int,
+        ) -> None:
+            self.operation = operation
+            self.reason = reason
+            self.risk = risk
+            self.default_ttl = default_ttl
+            super().__init__(f"'{operation}' ({risk} risk)\nReason: {reason}")
 
-    # Purge work_buddy.consent (and dependent submodules) from
-    # sys.modules. This is what mcp_registry_reload does as part of
-    # its invalidate-and-rebuild cycle.
-    purged_modules = [
-        name for name in list(sys.modules)
-        if name == "work_buddy.consent" or name.startswith("work_buddy.consent.")
-    ]
-    for name in purged_modules:
-        del sys.modules[name]
+    StaleConsentRequired = ConsentRequired
 
+    # Re-define a structurally-identical class in a new local scope.
+    # Mirrors what happens when the consent module is freshly re-imported.
+    class ConsentRequired(Exception):  # noqa: F811 — deliberate shadowing
+        """Stand-in for the class produced by the lazy re-import."""
+
+        def __init__(
+            self,
+            operation: str,
+            reason: str,
+            risk: str,
+            default_ttl: int,
+        ) -> None:
+            self.operation = operation
+            self.reason = reason
+            self.risk = risk
+            self.default_ttl = default_ttl
+            super().__init__(f"'{operation}' ({risk} risk)\nReason: {reason}")
+
+    FreshConsentRequired = ConsentRequired
+
+    # The two classes are different objects, but share a __name__.
+    assert StaleConsentRequired is not FreshConsentRequired
+    assert StaleConsentRequired.__name__ == FreshConsentRequired.__name__ == "ConsentRequired"
+
+    # Raise an instance of the fresh class, catch with the stale class —
+    # isinstance fails because it checks class identity, not name.
     try:
-        # Re-import. This mimics project_create's lazy import
-        # (context_wrappers.py:944's ``from work_buddy.consent import
-        # ConsentRequired``) running AFTER the gateway captured its
-        # reference.
-        import work_buddy.consent as fresh_consent_module
-        FreshConsentRequired = fresh_consent_module.ConsentRequired
+        raise FreshConsentRequired(
+            operation="test.op",
+            reason="demonstration",
+            risk="low",
+            default_ttl=30,
+        )
+    except Exception as exc:
+        assert not isinstance(exc, StaleConsentRequired), (
+            "Stale-class hypothesis disproved: the captured reference "
+            "DID match the freshly-defined instance.  Python's `except` "
+            "mechanism must have started recognising same-named classes "
+            "as equivalent — re-investigate."
+        )
 
-        # Raise + catch the fresh class. This is what context_wrappers's
-        # project_create does internally: raise the freshly-imported
-        # ConsentRequired.
-        try:
-            raise FreshConsentRequired(
-                operation="test.op",
-                reason="demonstration",
-                risk="low",
-                default_ttl=30,
-            )
-        except Exception as exc:
-            # The stale class reference fails isinstance against the
-            # fresh class's instance. This is the bubble-raw mechanism:
-            # the gateway's `except StaleConsentRequired:` would NOT
-            # catch this exception. It falls through to the broad
-            # `except Exception:` instead, producing the double-prefix
-            # "Execution failed: ConsentRequired: ConsentRequired:..."
-            # text we see in the activity ledger.
-            assert not isinstance(exc, StaleConsentRequired), (
-                "Stale-class hypothesis disproved: the captured reference "
-                "DID match the freshly-imported instance. The bubble-raw "
-                "pattern for project_create must have a different cause."
-            )
-
-            # And confirm the two classes are not the same object —
-            # the actual class identity mismatch that drives the
-            # isinstance failure.
-            assert StaleConsentRequired is not FreshConsentRequired, (
-                "Classes are the same object — sys.modules purge did "
-                "not actually re-create the class."
-            )
-
-            # Type name is identical between the two class objects —
-            # which is what the gateway's defensive duck-typed catch
-            # (added at gateway.py:1583 broad-except fallback) keys
-            # off of to route the exception correctly when isinstance
-            # fails.
-            assert type(exc).__name__ == "ConsentRequired"
-            # The exception message does NOT self-prefix with the type
-            # name (see test_no_redundant_self_prefix_in_exception_message).
-            assert not str(exc).startswith("ConsentRequired:")
-
-    finally:
-        # Restore module state so this test doesn't poison the rest of
-        # the suite. Re-importing all originally-purged modules.
-        for name in purged_modules:
-            if name not in sys.modules:
-                importlib.import_module(name)
+        # Type name is identical between the two class objects, which is
+        # what the gateway's defensive duck-typed catch keys off of.
+        assert type(exc).__name__ == "ConsentRequired"
 
 
 def test_no_redundant_self_prefix_in_exception_message() -> None:
