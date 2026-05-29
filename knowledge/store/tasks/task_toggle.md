@@ -15,6 +15,10 @@ parameters:
     type: bool
     description: True=complete, False=incomplete, omit=toggle
     required: false
+  done_date:
+    type: str
+    description: ISO YYYY-MM-DD to stamp as the completion date when marking done. Defaults to today. Use for retroactive completion (e.g. the landing-commit date a completeness check uncovered). Ignored when reopening.
+    required: false
 mutates_state: true
 retry_policy: verify_first
 consent_operations:

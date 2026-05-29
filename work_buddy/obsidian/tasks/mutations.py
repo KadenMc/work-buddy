@@ -91,6 +91,16 @@ CHECKBOX_RE = re.compile(r"^(- \[)([ x])(\])")
 URGENCY_EMOJI_RE = re.compile(r"[🔽🔼⏫]")
 TASK_ID_RE = re.compile(r"🆔\s*(t-[0-9a-f]+)")
 
+
+def _is_valid_iso_date(value: str) -> bool:
+    """True iff ``value`` is a real calendar date (catches 2026-13-40)."""
+    try:
+        date.fromisoformat(value)
+        return True
+    except ValueError:
+        return False
+
+
 # User-supplied namespace tags must match this shape (no leading '#').
 # Mirrors sync.TAG_RE but as an anchored full-match pattern.
 NAMESPACE_TAG_RE = re.compile(r"^[a-z0-9][a-z0-9_/-]*$", re.IGNORECASE)
@@ -1876,6 +1886,7 @@ def toggle_task(
     task_id: str,
     done: bool | None = None,
     file_path: str | None = None,
+    done_date: str | None = None,
 ) -> dict[str, Any]:
     """Mark a task complete, incomplete, or toggle its current state.
 
@@ -1888,10 +1899,28 @@ def toggle_task(
         done: If True, mark complete. If False, mark incomplete.
               If None (default), toggle the current state.
         file_path: Vault-relative path. Default: tasks/master-task-list.md.
+        done_date: Optional ISO ``YYYY-MM-DD`` to stamp as the completion
+              date when transitioning to done. Defaults to today. Enables
+              *retroactive* completion — marking a task done with the date
+              it was actually finished (e.g. the landing-commit date a
+              completeness investigation uncovered). Ignored when the
+              transition is to incomplete.
 
     Uses the Tasks plugin API for the checkbox + done date,
     with regex fallback. Updates the store state accordingly.
     """
+    if done_date is not None and (
+        not re.fullmatch(r"\d{4}-\d{2}-\d{2}", done_date)
+        or not _is_valid_iso_date(done_date)
+    ):
+        return {
+            "success": False,
+            "task_id": task_id,
+            "message": (
+                f"Invalid done_date {done_date!r}: expected ISO YYYY-MM-DD"
+            ),
+        }
+
     fp = file_path or MASTER_TASK_FILE
     content = bridge.read_file(fp)
     if content is None:
@@ -1936,6 +1965,17 @@ def toggle_task(
             toggled = CHECKBOX_RE.sub(r"\g<1>x\3", old_line)
             if "✅" not in toggled:
                 toggled = toggled.rstrip() + f" ✅ {date.today().isoformat()}"
+
+    # Retroactive completion: when a done_date is supplied and we are
+    # transitioning *to* done (``not is_done``), rewrite the ✅ stamp to
+    # that date. Both the plugin-API path and the regex fallback stamp
+    # *today*, so we post-process the toggled line uniformly here rather
+    # than in each branch above.
+    if done_date and not is_done:
+        if DONE_DATE_RE.search(toggled):
+            toggled = DONE_DATE_RE.sub(f"✅ {done_date}", toggled)
+        else:
+            toggled = toggled.rstrip() + f" ✅ {done_date}"
 
     lines[idx] = toggled
     # Post-CP6: bridge.write_file raises typed exceptions on failure;

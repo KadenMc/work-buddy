@@ -24,6 +24,7 @@ from typing import Any
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
+from work_buddy.compat import assign_process_to_job, create_kill_on_close_job
 from work_buddy.config import load_config
 from work_buddy.logging_config import get_logger
 from work_buddy.sidecar.pid import (
@@ -500,6 +501,11 @@ def _start_child(svc: ChildService) -> None:
             "Started %s (pid=%d, port=%d, log=%s)",
             svc.name, svc.process.pid, svc.port, log_path.name,
         )
+        # Attach to the kill-on-close Job Object so the OS reaps this child
+        # if the daemon is hard-killed. Best-effort: a failed assignment is
+        # non-fatal (the next-startup orphan sweep is the fallback) and a
+        # no-op on non-Windows / when the job couldn't be created.
+        assign_process_to_job(_kill_job, svc.process.pid)
     except OSError as exc:
         logger.error("Failed to start %s: %s", svc.name, exc)
         if log_fh:
@@ -626,6 +632,12 @@ _shutdown_signal_count = 0
 _shutdown_requested_at: float = 0.0  # set when _shutdown_requested flips to True
 _force_kill_children: list[Any] = []  # populated in run() so the signal handler can reach them
 _SHUTDOWN_WATCHDOG_TIMEOUT = 15.0  # seconds: if graceful shutdown exceeds this, force-exit
+# Windows Job Object (KILL_ON_JOB_CLOSE) created in run(); every child is
+# assigned to it so the OS reaps them when this daemon dies by ANY means —
+# including a hard kill where no signal handler / atexit hook runs. Kept as
+# a module global so the handle outlives the daemon loop (the kill fires
+# when the job's last handle closes). None on non-Windows / creation failure.
+_kill_job: Any = None
 
 
 def _shutdown_watchdog() -> None:
@@ -810,6 +822,15 @@ def run(foreground: bool = True) -> None:
         "Children will spawn with: %s (daemon sys.executable=%s)",
         resolved_python, sys.executable,
     )
+
+    # --- OS-enforced hard-kill reaping (Windows) ---
+    # Create the kill-on-close Job Object before spawning any child so each
+    # child can be assigned to it the instant it starts. This is the only
+    # layer that survives a hard kill of the daemon (taskkill /F, crash):
+    # all the signal-handler / watchdog / takeover-sweep layers only run if
+    # the dying parent's own code runs. No-op on non-Windows.
+    global _kill_job
+    _kill_job = create_kill_on_close_job()
 
     # --- Start all children in parallel ---
     for child in children:
