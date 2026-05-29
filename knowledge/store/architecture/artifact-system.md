@@ -83,11 +83,11 @@ Artifact(
 )
 ```
 
-Construction validates coherence: e.g. `PerRecordTtl` paired with `FilesystemStorage` (no records) raises `IncoherentComposition`; `TransformAndDelete` paired with non-records storage same. Calling a method whose required capability is absent (e.g. `.delete_where()` on filesystem) raises `UnsupportedOperation` naming the artifact and the missing capability.
+Construction validates coherence: e.g. `PerRecordTtl` paired with `FilesystemStorage` (no records) raises `IncoherentComposition`; `TransformAndDelete` paired with non-records storage same. Calling a method whose required `StorageTrait` is absent (e.g. `.delete_where()` on filesystem) raises `UnsupportedOperation` naming the artifact and the missing trait.
 
 ### Storage backends (six)
 
-| Backend | Capabilities | Used by |
+| Backend | StorageTraits | Used by |
 |---|---|---|
 | `FilesystemStorage` | ATOMIC_BLOBS, LISTABLE, DELETABLE | filesystem artifacts (the original 6 types) |
 | `SqliteRowsStorage` | RECORDS, TYPED_COLUMNS, LISTABLE, DELETABLE, BULK_PRUNEABLE | messaging, llm-queue |
@@ -157,7 +157,7 @@ Metadata captures: creating session id, tags, description, expiry, original arti
 * `artifact_get(id)` — filesystem-typed read; metadata + inline content for files <50 KB.
 * `artifact_delete(id)` — filesystem-typed delete.
 * `artifact_cleanup(dry_run?, name?)` — sweep registered artifacts. With no `name`, sweeps all 11. With `name="llm-cache"` etc., scopes to a single artifact. Note: `name` is deliberately distinct from `artifact_save`'s `type` field (which means filesystem subtype).
-* `artifact_registry()` — returns the cross-backend introspection map: every artifact's name, storage_kind, lifecycle_kind, provenance_kind, capabilities, exposed_operations. Replaces grep'ing paths.py for resource definitions.
+* `artifact_registry()` — returns the cross-backend introspection map: every artifact's name, storage_kind, lifecycle_kind, provenance_kind, capabilities (i.e. its declared `StorageTrait` set), exposed_operations. Replaces grep'ing paths.py for resource definitions.
 * `commit_record(...)` — record commit metadata as a filesystem artifact (specialised convenience).
 
 ### Exposure-declaration trajectory
@@ -177,7 +177,7 @@ Every registered Artifact carries an `exposed_operations: frozenset[Operation]` 
 
 ```
 work_buddy/artifacts/
-  protocol.py         Capability/Operation enums, Storage/Lifecycle/Provenance protocols,
+  protocol.py         StorageTrait/Operation enums, Storage/Lifecycle/Provenance protocols,
                       Ref + SweepResult dataclasses, Artifact composer, exceptions.
   registry.py         register_artifact, sweep_all (lazy-imports consumer modules),
                       artifact_registry_dump, _CONSUMER_MODULES tuple.

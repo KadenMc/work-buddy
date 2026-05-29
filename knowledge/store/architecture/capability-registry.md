@@ -26,6 +26,32 @@ aliases:
 - recheck_disabled_capability
 parents:
 - architecture
+dev_notes: |-
+  ## Stale class identity after sys.modules purge
+
+  `mcp_registry_reload` purges `work_buddy.*` from `sys.modules` and rebuilds the registry.  Any code that captured a class reference — most commonly an exception class used in an `except` clause, or a dataclass used for `isinstance` discrimination — holds onto the *pre-reload* class object.  The freshly-imported class is a different object even when its name, base classes, and shape are identical, so `isinstance(post_reload_instance, captured_pre_reload_class)` returns False.
+
+  Symptoms observed in the activity ledger and reproduced in unit tests:
+
+  - `'Capability' object has no attribute 'execution'` leaking through the gateway's parameter-error path (`gateway.py:1439`, `gateway.py:1524`).  Root cause: `_entry_to_dict` at `registry.py:673-705` discriminated via `isinstance(entry, Capability)`.  Post-reload, that isinstance check fails for actual Capability instances cached anywhere outside the live registry; the function fell through to the WorkflowDefinition branch and accessed `.execution` on what was structurally a Capability.
+
+  - `"Execution failed: ConsentRequired: ConsentRequired: ..."` (double-prefix) in operation error_summary fields for capabilities that raise ConsentRequired manually (e.g. `context_wrappers.py:project_create` at line 944, with a lazy `from work_buddy.consent import ConsentRequired`).  Root cause: the gateway's typed `except ConsentRequired:` at `gateway.py:1535` captures the class object at module-import time.  After a sys.modules purge, the raise site re-imports a fresh class.  The captured reference no longer matches; the exception falls through to the broad `except Exception:` at `gateway.py:1583`, which stringifies via `f"{type(exc).__name__}: {exc}"` — producing a double prefix if the exception's own message also includes a leading `"ConsentRequired:"` token.  `ConsentRequired.__init__` deliberately omits the type-name prefix from its message for exactly this reason.
+
+  ## Defensive patterns
+
+  - **Shape-discrimination via `hasattr` instead of isinstance** for serialization-only paths.  Pattern in `_entry_to_dict`: `if hasattr(entry, "callable") and not hasattr(entry, "steps"):` reads as the Capability branch; the workflow branch is `else`.  Survives any class identity drift, including module reload.
+
+  - **Duck-typed fallback in broad-exception handlers** for typed exceptions whose typed `except` clause may catch the stale reference.  Pattern in the gateway's broad `except Exception:` at `gateway.py:1583`: check `type(exc).__name__ == "ConsentRequired"` and route to the same auto-consent flow the typed handler would have taken.
+
+  - **Drop redundant type-name prefixes from exception messages.**  `ConsentRequired.__init__` no longer prepends `"ConsentRequired: "` to its message; callers that stringify via `f"{type(exc).__name__}: {exc}"` now produce a single clean prefix instead of a double-prefix even when the typed catch is bypassed.
+
+  - **Class identity is structurally fragile across sys.modules purges**; any new typed-exception catch or `isinstance` discrimination on a work_buddy class should consciously decide whether to use a shape-based fallback.  The hazard is not specific to the known cases — it applies anywhere a pre-reload reference is held.
+
+  ## Related tests
+
+  - `tests/unit/test_consent_stale_class_identity.py` demonstrates the bare mechanism (two locally-defined classes with the same name, isinstance fails across them).
+  - `tests/unit/test_obsidian_retry_consent.py` covers the consent-propagation behaviour the defensive patterns protect.
+  - `tests/unit/test_registry_invariants.py::TestEntryToDictDuckTyping` covers the shape-discrimination of `_entry_to_dict`.
 ---
 
 ## What
