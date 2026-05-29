@@ -186,3 +186,98 @@ class TestToggleTaskDoneParam:
 
         assert result["success"] is False
         assert is_bridge_failure(result)
+
+
+# ── toggle_task: `done_date` backdating behavior ────────────────
+
+class TestToggleTaskDoneDate:
+    """toggle_task stamps a retroactive completion date when requested."""
+
+    def test_backdate_rewrites_stamp_on_unchecked(self, _patch_bridge_and_store):
+        """done_date on an unchecked->done transition stamps that date, not today."""
+        mock_bridge, _ = _patch_bridge_and_store
+        mock_bridge.read_file.return_value = UNCHECKED_LINE
+
+        with patch.object(mutations, "_run_js", return_value=None):
+            result = mutations.toggle_task(
+                task_id="t-abc123", done=True, done_date="2026-05-05"
+            )
+
+        assert result["success"] is True
+        assert result["new_state"] == "done"
+        assert "✅ 2026-05-05" in result["new_line"]
+        # No second (today's) date stamp leaked in.
+        assert result["new_line"].count("✅") == 1
+        written = mock_bridge.write_file.call_args.args[1]
+        assert "✅ 2026-05-05" in written
+
+    def test_backdate_overrides_plugin_today_stamp(self, _patch_bridge_and_store):
+        """Plugin API stamps today; done_date must override it to the backdate."""
+        mock_bridge, _ = _patch_bridge_and_store
+        mock_bridge.read_file.return_value = UNCHECKED_LINE
+        plugin_today = "- [x] #todo Fix the bug 🆔 t-abc123 ✅ 2026-05-28"
+
+        with patch.object(mutations, "_toggle_via_plugin_api",
+                          return_value=plugin_today):
+            result = mutations.toggle_task(
+                task_id="t-abc123", done=True, done_date="2026-05-05"
+            )
+
+        assert result["success"] is True
+        assert "✅ 2026-05-05" in result["new_line"]
+        assert "2026-05-28" not in result["new_line"]
+        assert result["new_line"].count("✅") == 1
+
+    def test_invalid_format_fails_without_write(self, _patch_bridge_and_store):
+        """A malformed done_date returns a clean failure and writes nothing."""
+        mock_bridge, mock_store = _patch_bridge_and_store
+        mock_bridge.read_file.return_value = UNCHECKED_LINE
+
+        result = mutations.toggle_task(
+            task_id="t-abc123", done=True, done_date="May 5 2026"
+        )
+
+        assert result["success"] is False
+        assert "done_date" in result["message"]
+        mock_bridge.write_file.assert_not_called()
+        mock_store.update.assert_not_called()
+
+    def test_impossible_calendar_date_fails(self, _patch_bridge_and_store):
+        """A well-formatted but impossible date (2026-13-40) is rejected."""
+        mock_bridge, _ = _patch_bridge_and_store
+        mock_bridge.read_file.return_value = UNCHECKED_LINE
+
+        result = mutations.toggle_task(
+            task_id="t-abc123", done=True, done_date="2026-13-40"
+        )
+
+        assert result["success"] is False
+        assert "done_date" in result["message"]
+        mock_bridge.write_file.assert_not_called()
+
+    def test_omitted_done_date_stamps_today(self, _patch_bridge_and_store):
+        """Omitting done_date keeps the default (today) stamp — regression."""
+        from datetime import date
+
+        mock_bridge, _ = _patch_bridge_and_store
+        mock_bridge.read_file.return_value = UNCHECKED_LINE
+
+        with patch.object(mutations, "_run_js", return_value=None):
+            result = mutations.toggle_task(task_id="t-abc123", done=True)
+
+        assert result["success"] is True
+        assert f"✅ {date.today().isoformat()}" in result["new_line"]
+
+    def test_backdate_ignored_when_reopening(self, _patch_bridge_and_store):
+        """done_date is ignored on a done->incomplete transition."""
+        mock_bridge, _ = _patch_bridge_and_store
+        mock_bridge.read_file.return_value = CHECKED_LINE
+
+        with patch.object(mutations, "_run_js", return_value=None):
+            result = mutations.toggle_task(
+                task_id="t-abc123", done=False, done_date="2026-05-05"
+            )
+
+        assert result["success"] is True
+        assert result["new_state"] == "inbox"
+        assert "✅" not in result["new_line"]
