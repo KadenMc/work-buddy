@@ -876,15 +876,20 @@ function _railTasksHtml(tasksData) {
         return '<div class="chats-rail-empty">No task interactions in this session.</div>';
     }
     return tasks.map(function(t) {
-        var roles = (t.roles || []).join(', ');
-        var meta = t.state || '';
-        var text = t.task_text || '';
+        var roleBadges = (t.roles || []).map(function(r) {
+            return '<span class="task-role">' + escapeHtml(r) + '</span>';
+        }).join('');
+        var state = t.state
+            ? '<span class="task-state">' + escapeHtml(t.state) + '</span>' : '';
+        var text = t.task_text
+            ? '<div class="task-text">' + escapeHtml(t.task_text) + '</div>' : '';
         return '<div class="chat-commit-marker task-marker">'
-            + '<span class="commit-msg">▫ ' + escapeHtml(t.task_id)
-            + (meta ? ' · ' + escapeHtml(meta) : '')
-            + (text ? ' — ' + escapeHtml(text) : '')
-            + '</span>'
-            + (roles ? '<span class="commit-meta"><span class="task-roles">' + escapeHtml(roles) + '</span></span>' : '')
+            + '<div class="task-head">'
+            +   '<code class="task-id">' + escapeHtml(t.task_id) + '</code>'
+            +   state
+            + '</div>'
+            + (roleBadges ? '<div class="task-roles-row">' + roleBadges + '</div>' : '')
+            + text
             + '</div>';
     }).join('');
 }
@@ -902,9 +907,11 @@ function _loadRailTasks() {
 }
 
 function chatsRailSwitch(panelId) {
-    chatsState.railPanel = panelId;
     var rail = document.getElementById('chats-topic-rail');
     if (!rail) return;
+    var btn = rail.querySelector('.chats-rail-pill[data-panel="' + panelId + '"]');
+    if (btn && btn.classList.contains('disabled')) return;  // grayed/empty tab
+    chatsState.railPanel = panelId;
     rail.querySelectorAll('.chats-rail-pill').forEach(function(b) {
         b.classList.toggle('active', b.dataset.panel === panelId);
     });
@@ -931,23 +938,36 @@ function renderActivityRail() {
     }) || {};
     var prs = listEntry.prs_detail || [];
 
-    var hasTopics = !!(topicData && topicData.topics && topicData.topics.length);
-    var hasGit = commits.length > 0 || prs.length > 0;
-    // The Tasks panel is fetched lazily; the assigned-tasks hint on the
-    // listing entry tells us cheaply whether to surface the rail for a
-    // tasks-only session (created/developed roles also count, but assigned
-    // is our only pre-fetch signal — Tasks stays reachable whenever a rail
-    // shows).
-    var hasTaskHint = (listEntry.tasks_detail || []).length > 0;
-    if (!hasTopics && !hasGit && !hasTaskHint) return;  // no rail when empty
+    // The rail is PERMANENT for any selected chat. A panel with no content
+    // doesn't hide the rail — it just disables (grays) its own tab. This is
+    // both the intended UX and what keeps the rail from vanishing when you
+    // page through chats that happen to have, say, no topics.
+    var enabled = {
+        topics: !!(topicData && topicData.topics && topicData.topics.length),
+        git: commits.length > 0 || prs.length > 0,
+        // Tasks is lazy: enable on any cheap "might be non-empty" signal —
+        // an assigned-task hint, commits (which may reference tasks →
+        // developed), or an already-loaded non-empty result.
+        tasks: (listEntry.tasks_detail || []).length > 0 || commits.length > 0
+            || !!(chatsState.tasksData && (chatsState.tasksData.tasks || []).length > 0),
+    };
 
-    var active = chatsState.railPanel
-        || (hasTopics ? 'topics' : (hasGit ? 'git' : 'tasks'));
+    // Keep the user's current tab if it's still enabled; else first enabled;
+    // else Topics (the rail still shows, with every tab grayed).
+    var order = ['topics', 'git', 'tasks'];
+    var active = chatsState.railPanel;
+    if (!active || !enabled[active]) {
+        active = order.filter(function(id) { return enabled[id]; })[0] || 'topics';
+    }
     chatsState.railPanel = active;
 
     function pill(id, label) {
-        return '<button class="costs-pill chats-rail-pill' + (active === id ? ' active' : '')
-            + '" data-panel="' + id + '" onclick="chatsRailSwitch(\'' + id + '\')">' + label + '</button>';
+        var off = !enabled[id];
+        return '<button class="costs-pill chats-rail-pill'
+            + (active === id ? ' active' : '') + (off ? ' disabled' : '') + '"'
+            + ' data-panel="' + id + '"'
+            + (off ? ' disabled title="Nothing to show"' : ' onclick="chatsRailSwitch(\'' + id + '\')"')
+            + '>' + label + '</button>';
     }
     function panel(id, html) {
         return '<div class="chats-rail-panel' + (active === id ? ' active' : '') + '" id="chats-rail-' + id + '">'
@@ -965,16 +985,18 @@ function renderActivityRail() {
         + panel('git', _railGitHtml(commits))
         + panel('tasks', _railTasksHtml(chatsState.tasksData));
 
-    // Re-wrap messages with the rail beside it. Look for an existing
-    // wrapper to avoid double-nesting on subsequent selectChat calls.
+    // Wrap the message stream + rail in a flex row. Hardened: always ensure
+    // #chats-messages lives inside the wrapper before inserting the rail —
+    // otherwise a stale wrapper (messages moved out) made insertBefore throw,
+    // which dropped the rail and kept it gone until a full reload.
     var wrapper = document.getElementById('chats-stream-wrapper');
     if (!wrapper) {
         wrapper = document.createElement('div');
         wrapper.id = 'chats-stream-wrapper';
         wrapper.className = 'chats-stream-wrapper';
         messagesEl.parentNode.insertBefore(wrapper, messagesEl);
-        wrapper.appendChild(messagesEl);
     }
+    if (messagesEl.parentNode !== wrapper) wrapper.appendChild(messagesEl);
     wrapper.insertBefore(rail, messagesEl);
 
     // If we opened straight onto Tasks, kick off its lazy fetch.

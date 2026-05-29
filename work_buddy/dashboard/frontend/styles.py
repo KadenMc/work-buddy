@@ -2535,11 +2535,76 @@ a.chat-card-badge.prs:hover { text-decoration: underline; }
     flex-wrap: wrap;
     font-size: 10px;
 }
-.chats-topic-rail .task-roles {
-    text-transform: uppercase;
-    font-size: 10px;
-    letter-spacing: 0.03em;
+/* Disabled (empty) selector tab — grayed, non-interactive. The rail is
+   permanent; a panel with no content just disables its tab. */
+.chats-rail-pill.disabled,
+.chats-rail-pill:disabled {
+    opacity: 0.38;
+    cursor: default;
+    color: var(--text-muted);
+}
+/* Tasks panel — structured rows (id + state header, role pills, wrapped
+   text) so it reads with the same weight as the commit/PR markers rather
+   than as flat text. Stays in the orange/task family per the palette lock. */
+.chats-topic-rail .task-marker { gap: 4px; }
+.chats-topic-rail .task-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+.chats-topic-rail .task-id {
     color: var(--orange);
+    font-weight: 600;
+    font-size: 12px;
+    background: none;
+    padding: 0;
+}
+.chats-topic-rail .task-state {
+    text-transform: uppercase;
+    font-size: 9px;
+    letter-spacing: 0.04em;
+    color: var(--text-muted);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1px 6px;
+}
+.chats-topic-rail .task-roles-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+.chats-topic-rail .task-role {
+    text-transform: uppercase;
+    font-size: 9px;
+    letter-spacing: 0.04em;
+    color: var(--orange);
+    background: #db6d2822;
+    border: 1px solid #db6d2844;
+    border-radius: 8px;
+    padding: 1px 6px;
+}
+.chats-topic-rail .task-text {
+    color: var(--text-secondary);
+    font-size: 11px;
+    line-height: 1.4;
+    margin-top: 2px;
+}
+/* Topics panel — give the items a left accent + card background + a
+   colored index so they're not flat prose. Topics is the rail's 4th
+   stream; it uses the neutral accent (the green/purple/orange lock covers
+   only commits/PRs/tasks). */
+.chats-topic-rail .chats-topic-item {
+    border-left: 2px solid var(--accent);
+    background: var(--bg-tertiary);
+    margin: 4px 0;
+}
+.chats-topic-rail .chats-topic-item:hover {
+    background: var(--accent-subtle);
+}
+.chats-topic-rail .chats-topic-item .topic-index {
+    color: var(--accent);
+    font-weight: 600;
 }
 .chats-span-warning {
     padding: 6px 12px;
