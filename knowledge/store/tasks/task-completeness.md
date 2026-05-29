@@ -27,10 +27,13 @@ steps:
     - evidence
     - completion_date
     - recommended_action
+    - confidence
     key_types:
       disposition: str
       evidence: list
       recommended_action: str
+      confidence: str
+      divergence: str
     min_items:
       evidence: 1
 - id: resolve
@@ -67,40 +70,59 @@ parents:
 
 Investigate whether a task the user is unsure about was ALREADY completed — fully, partially, or differently — and if so, mark it complete with the correct PRIOR date.
 
-Core principle — judge the SPIRIT, not the letter. Tasks are written before the work; designs change, get improved, or a sub-part is deliberately dropped. Something can look undone because it was done a better way, or not done on purpose. Your job is to decide whether what is PRESENT in the codebase/notes satisfies the task's INTENT.
+Core principle — judge the SPIRIT, not the letter. Tasks are written before the work; designs change, get improved, or a sub-part is deliberately dropped. Decide whether what is PRESENT in the codebase/notes satisfies the task's INTENT.
+
+**Provenance-first.** The gather-evidence bundle carries a `provenance` block (created_by / assigned / developed_by). `developed_by` is the structural answer to "who shipped this" — sessions whose commits reference the task id — each tagged with note-read `awareness` and an informed/convergent `classification`. Start there; it replaces hand git-archaeology. `session_search` into a developer's session recovers the design reasoning before you judge.
 
 Disposition rubric (pick one): done / done-differently / partial / consciously-descoped / not-done.
 
-Verification ladder — cheapest signal first, stop when confident: (1) the auto-gathered evidence bundle (task note + per-session commits/writes), (2) git log --grep/-S and gh PR/commit search, (3) reading the actual code and tests, (4) running the targeted test. Inactivity is NOT completion — a quiet task is not a done task.
+**done-differently is a QUALITY judgment, not just intent-coverage.** When the task prescribed a how-to (an approach/design in the note) and the implementation diverged, classify the divergence — better / lateral / worse — and justify it from the developer's rationale + the code. "Intent met by a different, better-reasoned design" and "intent met by a worse shortcut" are both done-differently but very different verdicts; say which.
 
-Dating: the completion date is the date the LANDING COMMIT merged, not today. Always cite the commit SHA as evidence.
+**Informed vs convergent.** Use `awareness`: informed development (read the note / assigned) that diverged is a deliberate design choice; convergent development (no signal) that hits the same intent is independent corroboration, not a footnote. `developed_by` empty + no structural link is the Rung-3 (intent-only) case — judge by reading the code/tests, never by absence of a link.
 
-Always confirm before mutating. The investigate step produces the judgment; the resolve step acts only on explicit user approval. Backdating uses task_toggle's done_date param (ISO YYYY-MM-DD).
+Verification ladder — cheapest first, stop when confident: (1) the provenance block + per-session commits/writes, (2) session_search into the developing session for rationale, plus `git log --grep`/`-S` and `gh` PR/commit search for anything provenance missed, (3) read the actual code and tests, (4) run the targeted test. Inactivity is NOT completion.
+
+Dating: completion date = the date the LANDING COMMIT merged, not today. Cite the SHA.
+
+**Confidence.** Every verdict states a `confidence` (high/medium/low) justified by signal strength — a structural `developed_by` plus read code is high; an intent-only Rung-3 inference is medium-at-best. Be authoritative where the evidence is, honest where it isn't.
+
+Always confirm before mutating. investigate produces the judgment; resolve acts only on explicit user approval. Backdating uses task_toggle's done_date (ISO YYYY-MM-DD).
 
 ## investigate
 
-You are judging whether this task was ALREADY completed — and if so, WHEN.
+You are judging whether this task was ALREADY completed — and if so, WHEN, BY WHOM, and HOW WELL.
 
-Read the evidence bundle in step_results['gather-evidence']: the task text + linked note (the original intent), its current state, and per assigned session the attributed commits/writes. Heed `cache_note` and any per-session `note` — when a session has no transcript (sidecar/pruned) there is no commit linkage, so you must attribute the work yourself.
+Start from `step_results['gather-evidence']`:
+- `task` — text + linked note = the original intent (and any prescribed how-to).
+- `provenance` — created_by / assigned / developed_by / intent_attribution. `developed_by` names the sessions that structurally shipped work (a commit referencing the task id), each with `rung`, note-read `awareness`, and informed/convergent `classification`. This is your starting point — no git archaeology from scratch.
+- `session_evidence` — per session (across created/assigned/developed roles): commits, writes, summary. Heed each `note` and the top-level `cache_note`.
 
-Then investigate ADAPTIVELY, cheapest signal first, stopping as soon as you are confident:
-1. The evidence bundle (commits/writes already attributed).
-2. `git log --grep`/`git log -S` for the task id, symptom, or key symbols; `gh pr list/view` and `gh search prs/commits` for related PRs.
-3. Read the ACTUAL code/tests in the repo to confirm the behavior exists now.
-4. Run the targeted test(s) only if code presence is still ambiguous.
+Investigate ADAPTIVELY, cheapest first, stopping when confident:
+1. The provenance block + session_evidence.
+2. `session_search` into a developer's session id to recover the design reasoning (WHY they built it that way). Plus `git log --grep`/`-S` and `gh` PR/commit search for anything provenance missed.
+3. Read the ACTUAL code/tests to confirm the behavior is present now.
+4. Run the targeted test(s) only if presence is still ambiguous.
 
-Judge the SPIRIT, not the letter — a design may have been improved, replaced, or a sub-part deliberately dropped. Decide whether what is PRESENT satisfies the task's INTENT. Pick exactly one disposition: done | done-differently | partial | consciously-descoped | not-done. Inactivity is NOT completion.
+Judge the SPIRIT, not the letter. Pick exactly one disposition: done | done-differently | partial | consciously-descoped | not-done.
 
-Return ONLY your new findings (a delta) with keys: disposition (one of the five); evidence (a non-empty list of concrete citations — commit SHAs, PR URLs, path:line, test names, note excerpts — each tied to what it proves); completion_date (ISO YYYY-MM-DD of the LANDING COMMIT that satisfied the intent, or null; cite its SHA in evidence); recommended_action (one sentence: mark done backdated / finish remainder / spin off residual / leave open).
+If done-differently AND the note prescribed a how-to: set `divergence` to better | lateral | worse and justify it — does the shipped design beat what was proposed, match it, or cut a corner? Use the developer's rationale (from session_search) + the code. Frame with `awareness`: informed divergence = deliberate; convergent match = independent corroboration. When `developed_by` is empty, that's the Rung-3 intent-only case — judge by reading code/tests, not by the missing link.
+
+Return ONLY your delta:
+- disposition (one of the five)
+- evidence (non-empty list of concrete citations: commit SHAs, PR URLs, path:line, test names, session-id+turn for rationale, note excerpts — each tied to what it proves)
+- completion_date (ISO YYYY-MM-DD of the LANDING COMMIT, or null; cite its SHA in evidence)
+- divergence (better | lateral | worse | na — `na` unless done-differently with a prescribed how-to)
+- confidence (high | medium | low, with a one-clause justification keyed to signal strength)
+- recommended_action (one sentence: mark done backdated / finish remainder / spin off residual / leave open)
 
 ## resolve
 
-Present the disposition from `investigate` with its evidence and completion date, then act ONLY on explicit user confirmation — never mutate first.
+Present the disposition + confidence + divergence + evidence + completion_date, and a one-line provenance summary (who created / developed it, informed vs convergent), then act ONLY on explicit user confirmation — never mutate first.
 
 Recommend by disposition:
-- done / done-differently: offer to mark complete BACKDATED via wb_run('task_toggle', {'task_id': '<id>', 'done': true, 'done_date': '<completion_date>'}). done_date is the landing-commit date from investigate.
-- consciously-descoped: same backdated toggle, and state plainly that the missing part was a deliberate descope.
-- partial: offer BOTH (a) finishing the remainder now and/or (b) spinning the remainder off as a handoff task via wb_run('task_create', {...}); optionally backdate-complete the shipped portion if separable.
+- done / done-differently: offer to mark complete BACKDATED via wb_run('task_toggle', {'task_id': '<id>', 'done': true, 'done_date': '<completion_date>'}). For done-differently, state the divergence verdict (better/lateral/worse) plainly so the user signs off on 'done a different way', not 'done as written'.
+- consciously-descoped: same backdated toggle; state plainly the dropped part was a deliberate descope.
+- partial: use `developed_by` to delineate what SHIPPED vs the remainder. Offer BOTH (a) finishing the remainder now and/or (b) spinning the remainder off as a handoff via wb_run('task_create', {...}); optionally backdate-complete the shipped portion if separable.
 - not-done: recommend leaving it open; optionally offer to narrow the task text to the true remainder.
 
-After the user picks, apply exactly what was approved and report what changed (the new ✅ date, any new task id). If they decline, leave the task untouched and say so.
+After the user picks, apply exactly what was approved and report what changed (the new ✅ date, any new task id). If they decline, leave it untouched and say so.

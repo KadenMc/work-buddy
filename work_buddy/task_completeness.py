@@ -53,10 +53,16 @@ def gather_completeness_evidence(task_id: str) -> dict[str, Any]:
           contract, note_content, …) — empty dict on read failure
         - ``assigned_sessions``: list of ``{task_id, session_id,
           assigned_at}`` rows (the sessions that ever claimed this task)
-        - ``session_evidence``: per-session
-          ``{session_id, assigned_at, commits, writes, summary}``
-        - ``cache_note``: human-readable note on data freshness +
-          guidance (e.g. "no sessions assigned — rely on git/PR search")
+        - ``provenance``: ``build_task_provenance`` output —
+          ``{created_by, assigned, developed_by, intent_attribution}``;
+          ``developed_by`` entries carry rung + note-read ``awareness`` +
+          informed/convergent ``classification``. None on a build failure.
+        - ``session_evidence``: one entry per session in the UNION of all
+          provenance roles —
+          ``{session_id, roles, assigned_at, commits, writes, summary, note}``
+          where ``roles`` ⊆ {created, assigned, developed}
+        - ``cache_note``: human-readable note on provenance + data
+          freshness + guidance (e.g. the Rung-3 intent-only case)
         - ``now_iso``: assembly timestamp
         - ``errors``: list of ``{step, error}`` for any degraded sub-call
     """
@@ -95,31 +101,74 @@ def gather_completeness_evidence(task_id: str) -> dict[str, Any]:
     sessions = payload.get("assigned_sessions") or []
     out["assigned_sessions"] = sessions
 
-    if not sessions:
+    # --- Provenance roles (created-by / assigned / developed-by) --------
+    # The structured "who related to this task, and how" — the investigate
+    # step's starting point. ``developed_by`` gives structural authorship
+    # (a commit referencing the task id) WITH note-read awareness +
+    # informed/convergent classification, so the agent no longer has to
+    # reconstruct "who shipped this" from raw git archaeology. The
+    # ``intent_attribution`` signpost names the Rung-3 (intent-only) case.
+    prov: dict[str, Any] | None = None
+    try:
+        from work_buddy.obsidian.tasks import provenance as _prov
+        prov = _prov.build_task_provenance(task_id, include_awareness=True)
+    except Exception as exc:  # pragma: no cover — best-effort
+        logger.warning("task_completeness: provenance build failed: %s", exc)
+        out["status"] = "degraded"
+        out["errors"].append({"step": "provenance", "error": str(exc)})
+    out["provenance"] = prov
+
+    # Gather evidence for the UNION of every provenance role, not just
+    # assigned. A developed-but-unassigned session — the common case for
+    # work done without /wb-task-assign, or older tasks whose assignment
+    # row was a bootstrap id — is exactly the session whose commits/writes
+    # we most want in front of the investigate step.
+    roles_by_session: dict[str, list[str]] = {}
+
+    def _add_role(sid: str | None, role: str) -> None:
+        if not sid:
+            return
+        roles = roles_by_session.setdefault(sid, [])
+        if role not in roles:
+            roles.append(role)
+
+    for sess in sessions:
+        _add_role(sess.get("session_id"), "assigned")
+    if prov:
+        _add_role(prov.get("created_by"), "created")
+        for dev in prov.get("developed_by") or []:
+            _add_role(dev.get("session_id"), "developed")
+
+    if not roles_by_session:
         out["cache_note"] = (
-            "No sessions are assigned to this task. There is no "
-            "session->commit linkage to lean on — the investigate step "
-            "should rely on native `git log --grep`, `gh` PR/commit "
-            "search, and reading the code/tests directly."
+            "No session is structurally linked to this task — none assigned, "
+            "no commit references the task id, and no recorded creator. There "
+            "is no session->commit linkage to lean on: the investigate step "
+            "must rely on native `git log --grep`/`-S`, `gh` PR/commit search, "
+            "and reading the code/tests. This is the Rung-3 (intent-only) case "
+            "the provenance signpost flags — absence of a structural link is "
+            "NOT evidence the task is undone."
         )
         return out
 
-    # --- Per-session evidence ------------------------------------------
-    # Refresh each assigned session's commits individually: passing an
-    # explicit session_id forces a single-session rescan (bounded work,
-    # so we stay within the auto_run timeout even on a cold cache), and
-    # guarantees a fix that landed today is attributed before we query.
+    # --- Per-session evidence over the role union ----------------------
+    # Refresh each session's commits individually: passing an explicit
+    # session_id forces a single-session rescan (bounded work, so we stay
+    # within the auto_run timeout even on a cold cache), and guarantees a
+    # fix that landed today is attributed before we query.
     from work_buddy.conversation_observability import commits as commits_mod
     from work_buddy.conversation_observability import writes as writes_mod
 
+    assigned_at = {
+        s.get("session_id"): s.get("assigned_at") for s in sessions
+    }
+
     writes_stale = False
-    for sess in sessions:
-        sid = sess.get("session_id")
-        if not sid:
-            continue
+    for sid in roles_by_session:
         entry: dict[str, Any] = {
             "session_id": sid,
-            "assigned_at": sess.get("assigned_at"),
+            "roles": roles_by_session[sid],
+            "assigned_at": assigned_at.get(sid),
             "commits": [],
             "writes": [],
             "summary": None,
@@ -186,9 +235,24 @@ def gather_completeness_evidence(task_id: str) -> dict[str, Any]:
 
         out["session_evidence"].append(entry)
 
-    notes = [
-        "Commit attribution was refreshed per-session before querying.",
-    ]
+    notes: list[str] = []
+    if prov is not None:
+        dev_n = len(prov.get("developed_by") or [])
+        notes.append(
+            "Provenance: created_by=" + (prov.get("created_by") or "unrecorded")
+            + f"; assigned={len(sessions)}; developed_by={dev_n} "
+            "(structural — sessions whose commits reference the task id, each "
+            "carrying note-read awareness + informed/convergent classification)."
+        )
+        if dev_n == 0:
+            notes.append(
+                "developed_by is empty — no commit references the task id; "
+                "treat as the Rung-3 (intent-only) case: judge by reading the "
+                "code/tests, not by absence of a structural link."
+            )
+    notes.append(
+        "Commit attribution was refreshed per-session before querying."
+    )
     if writes_stale:
         notes.append(
             "File-write rows come from the existing cache and may be stale; "
