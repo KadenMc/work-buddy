@@ -73,8 +73,17 @@ def llm_submit(
 
     now = datetime.now(timezone.utc)
     op_id = f"op_{uuid.uuid4().hex[:8]}"
-    originating_session_id = os.environ.get(
-        "WORK_BUDDY_SESSION_ID", "unknown",
+    # Prefer the agent's real session id, pinned on the originating-session
+    # ContextVar by the gateway's _invoke_with_session, over the MCP server
+    # process's own WORK_BUDDY_SESSION_ID env (a synthesized sidecar-*/mcp-*
+    # bootstrap id). Otherwise the deferred cost log replays into the
+    # server's session dir instead of the originating agent's. Same fix
+    # pattern as obsidian/tasks/mutations.py::assign_task.
+    from work_buddy.agent_session import get_originating_session
+
+    originating_session_id = (
+        get_originating_session()
+        or os.environ.get("WORK_BUDDY_SESSION_ID", "unknown")
     )
 
     # Params that retry_sweep._replay() will pass to llm_call().

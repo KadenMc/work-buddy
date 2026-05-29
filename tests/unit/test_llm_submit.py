@@ -83,6 +83,35 @@ def test_llm_submit_writes_record_with_new_fields(tmp_ops_dir):
     assert retry_at <= datetime.now(timezone.utc)
 
 
+def test_llm_submit_prefers_originating_session_over_env(tmp_ops_dir):
+    """When the gateway pinned the agent's real session on the
+    originating-session ContextVar, llm_submit records THAT — not the MCP
+    server's bootstrap WORK_BUDDY_SESSION_ID env — so the deferred cost
+    log replays into the originating agent's dir. Mirrors the assign_task
+    fix. (tmp_ops_dir sets the env to 'test-agent-session', standing in
+    for the bootstrap id.)
+    """
+    from work_buddy.agent_session import (
+        reset_originating_session,
+        set_originating_session,
+    )
+    from work_buddy.llm.submit import llm_submit
+
+    token = set_originating_session("real-agent-uuid")
+    try:
+        response = llm_submit(system="s", user="u", profile="local_general")
+    finally:
+        reset_originating_session(token)
+
+    record = json.loads(
+        (tmp_ops_dir / f"{response['operation_id']}.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert record["originating_session_id"] == "real-agent-uuid"
+    assert record["session_id"] == "real-agent-uuid"
+
+
 def test_llm_submit_rejects_missing_profile(tmp_ops_dir):
     from work_buddy.llm.submit import llm_submit
 
