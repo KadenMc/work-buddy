@@ -73,3 +73,50 @@ def test_session_tasks_get_empty(fresh_db) -> None:
     from work_buddy.mcp_server.ops.tasks_ops import session_tasks_get
 
     assert session_tasks_get("ghost") == {"tasks": []}
+
+
+def test_assign_records_originating_session_not_env(fresh_db, monkeypatch) -> None:
+    """assign_task must record the agent's pinned session (the JSONL UUID
+    the gateway sets on the originating-session ContextVar), not the MCP
+    server process's bootstrap WORK_BUDDY_SESSION_ID. Recording the
+    bootstrap id is what made the reverse linkage unjoinable against the
+    JSONL-keyed commit/PR/chat rows.
+    """
+    from work_buddy.agent_session import (
+        reset_originating_session,
+        set_originating_session,
+    )
+    from work_buddy.obsidian.tasks import mutations
+
+    # Bridge-free: stub the payload loader so no Obsidian read happens.
+    monkeypatch.setattr(mutations, "_load_task_payload", lambda tid: {"success": True})
+    # The process env stands in for the MCP server's bootstrap session.
+    monkeypatch.setenv("WORK_BUDDY_SESSION_ID", "sidecar-bootstrap")
+    store.create(task_id="t-assign-pin")
+
+    token = set_originating_session("real-jsonl-uuid")
+    try:
+        result = mutations.assign_task("t-assign-pin")
+    finally:
+        reset_originating_session(token)
+
+    assert result["session_id"] == "real-jsonl-uuid"
+    # Joinable under the real id; nothing recorded under the bootstrap id.
+    assert [t["task_id"] for t in store.get_tasks_for_session("real-jsonl-uuid")] == [
+        "t-assign-pin"
+    ]
+    assert store.get_tasks_for_session("sidecar-bootstrap") == []
+
+
+def test_assign_falls_back_to_env_without_originating(fresh_db, monkeypatch) -> None:
+    """When no originating session is pinned (direct, non-gateway call),
+    assign_task falls back to the WORK_BUDDY_SESSION_ID env var.
+    """
+    from work_buddy.obsidian.tasks import mutations
+
+    monkeypatch.setattr(mutations, "_load_task_payload", lambda tid: {"success": True})
+    monkeypatch.setenv("WORK_BUDDY_SESSION_ID", "env-session-only")
+    store.create(task_id="t-assign-env")
+
+    result = mutations.assign_task("t-assign-env")
+    assert result["session_id"] == "env-session-only"
