@@ -598,7 +598,7 @@ function renderChatBadges(c) {
             var repoCount = c.commits_by_repo ? Object.keys(c.commits_by_repo).length : 0;
             var commitsLabel = c.commit_count + ' commit' + (c.commit_count === 1 ? '' : 's');
             if (repoCount > 1) commitsLabel += ' across ' + repoCount + ' repos';
-            parts.push('<span class="chat-card-badge">' + commitsLabel + '</span>');
+            parts.push('<span class="chat-card-badge commits">' + commitsLabel + '</span>');
         }
         if (c.unfinished_count > 0) {
             var unfinishedLabel = c.unfinished_count + ' left uncommitted';

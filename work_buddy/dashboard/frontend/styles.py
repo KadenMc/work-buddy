@@ -2269,6 +2269,7 @@ body {
 }
 /* PR / task linkage badges. Standard palette: commits stay neutral on
    the card, PRs purple, tasks orange — matching the detail-panel markers. */
+.chat-card-badge.commits { color: var(--green); }
 .chat-card-badge.prs, a.chat-card-badge.prs { color: var(--purple); }
 .chat-card-badge.tasks { color: var(--orange); }
 a.chat-card-badge.prs { text-decoration: none; }
