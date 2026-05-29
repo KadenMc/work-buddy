@@ -2267,19 +2267,16 @@ body {
 .chat-card-badge.unfinished {
     color: var(--text-muted);
 }
-/* PR / task linkage badges. The PR badge links out when there's a
-   single PR; keep the link color inherited so it reads as a badge,
-   not a hyperlink. */
-a.chat-card-badge.prs {
-    text-decoration: none;
-    color: var(--text-muted);
-}
-a.chat-card-badge.prs:hover {
-    text-decoration: underline;
-}
+/* PR / task linkage badges. Standard palette: commits stay neutral on
+   the card, PRs purple, tasks orange — matching the detail-panel markers. */
+.chat-card-badge.prs, a.chat-card-badge.prs { color: var(--purple); }
+.chat-card-badge.tasks { color: var(--orange); }
+a.chat-card-badge.prs { text-decoration: none; }
+a.chat-card-badge.prs:hover { text-decoration: underline; }
 /* Empty state: a dim em-dash, never a "0". */
 .chat-card-badge.badge-empty {
     opacity: 0.45;
+    color: var(--text-muted);
 }
 
 /* In-card search-match snippets (search-active mode). Renders below
@@ -2643,6 +2640,26 @@ a.chat-card-badge.prs:hover {
     flex-shrink: 0; white-space: nowrap;
     color: var(--text-muted); font-size: 11px;
 }
+/* Distinct palettes per activity stream: commits green (base above),
+   PRs purple, tasks orange — using the standard palette variables. */
+.chat-commit-marker.pr-marker {
+    background: var(--purple-subtle); border-color: #bc8cff33;
+    color: var(--purple);
+}
+.chat-commit-marker.task-marker {
+    background: #db6d2815; border-color: #db6d2833;
+    color: var(--orange);
+}
+.chat-commit-marker .pr-num {
+    flex: 0 0 auto; color: var(--purple); text-decoration: none;
+}
+.chat-commit-marker .pr-num:hover { text-decoration: underline; }
+.chat-commit-marker .pr-state {
+    text-transform: uppercase; font-size: 10px; letter-spacing: 0.03em;
+}
+.chat-commit-marker .pr-state-merged { color: var(--purple); font-weight: 600; }
+.chat-commit-marker .pr-state-open { color: #3fb950; }
+.chat-commit-marker .pr-state-closed { color: var(--text-muted); }
 .chats-load-more-btn {
     display: block; width: 100%; padding: 8px;
     background: var(--bg-secondary); border: 1px solid var(--border);

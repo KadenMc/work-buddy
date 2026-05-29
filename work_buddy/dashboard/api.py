@@ -941,6 +941,22 @@ def _load_observability_for_sessions(
     for r in pr_rows:
         prs_by_sid[r["session_id"]].append(dict(r))
 
+    # Enrich PR rows with title + current state (OPEN/MERGED/CLOSED) from
+    # GitHub. The JSONL only yields number/url/action; title and merge
+    # state live on GitHub. Best-effort + cached per repo — offline or
+    # un-authenticated gh just leaves title/state absent.
+    _pr_repos = {
+        p["repo"] for prs in prs_by_sid.values() for p in prs if p.get("repo")
+    }
+    if _pr_repos:
+        _pr_meta = _load_pr_meta_for_repos(_pr_repos)
+        for prs in prs_by_sid.values():
+            for p in prs:
+                meta = _pr_meta.get((p.get("repo"), p.get("pr_number")))
+                if meta:
+                    p["title"] = meta.get("title")
+                    p["state"] = meta.get("state")
+
     # Aggregate task assignments per session (separate DB — best-effort
     # so a tasks-store hiccup never blocks chat rendering).
     tasks_by_sid = _load_tasks_for_sessions(set(sids))
@@ -1103,6 +1119,59 @@ def _load_tasks_for_sessions(
             "assigned_at": r["assigned_at"],
         })
     return by_sid
+
+
+# PR title/state cache: repo → (fetched_at, {pr_number: {title, state}}).
+# Title is immutable; state (OPEN/MERGED/CLOSED) is mutable, so a short
+# TTL keeps merge status reasonably fresh without a gh call per request.
+_PR_META_CACHE: dict[str, tuple[float, dict[int, dict[str, Any]]]] = {}
+_PR_META_TTL = 120.0
+
+
+def _load_pr_meta_for_repos(
+    repos: set[str],
+) -> dict[tuple[str, int], dict[str, Any]]:
+    """Return ``{(repo, pr_number): {title, state}}`` via ``gh pr list``.
+
+    The session_prs table only carries number/url/action (scraped from
+    JSONL); a PR's title and merge state live on GitHub. One ``gh pr
+    list`` per repo (cached, short TTL) backfills both. Best-effort:
+    missing/un-authenticated ``gh``, offline, or a parse error just
+    yields no enrichment — callers fall back to the captured ``action``.
+    """
+    import subprocess
+
+    out: dict[tuple[str, int], dict[str, Any]] = {}
+    for repo in repos:
+        cached = _PR_META_CACHE.get(repo)
+        if cached and (time.time() - cached[0]) < _PR_META_TTL:
+            by_num = cached[1]
+        else:
+            by_num = {}
+            try:
+                proc = subprocess.run(
+                    [
+                        "gh", "pr", "list", "--repo", repo,
+                        "--state", "all", "--limit", "400",
+                        "--json", "number,title,state",
+                    ],
+                    capture_output=True, text=True, timeout=15,
+                )
+                if proc.returncode == 0:
+                    for pr in json.loads(proc.stdout or "[]"):
+                        by_num[pr["number"]] = {
+                            "title": pr.get("title"),
+                            "state": pr.get("state"),
+                        }
+            except (
+                subprocess.TimeoutExpired, FileNotFoundError,
+                OSError, ValueError,
+            ) as exc:
+                logger.debug("gh pr list failed for %s: %s", repo, exc)
+            _PR_META_CACHE[repo] = (time.time(), by_num)
+        for num, meta in by_num.items():
+            out[(repo, num)] = meta
+    return out
 
 
 def get_chats_summary(days: int = 14) -> dict[str, Any]:

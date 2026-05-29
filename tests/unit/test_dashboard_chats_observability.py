@@ -65,6 +65,12 @@ def co_env(tmp_path, monkeypatch):
         "work_buddy.collectors.git_collector._get_status",
         lambda repo_path: "",
     )
+    # Stub the GitHub PR-title/state enrichment so tests stay hermetic and
+    # offline (no real `gh pr list` subprocess).
+    monkeypatch.setattr(
+        "work_buddy.dashboard.api._load_pr_meta_for_repos",
+        lambda repos: {},
+    )
     return {"projects": projects, "db": db_file, "repos_root": repos_root, "repo": repo}
 
 

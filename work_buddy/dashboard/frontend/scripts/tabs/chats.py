@@ -1825,14 +1825,23 @@ function renderCommitsBar(commits) {
     if (prs.length > 0) {
         html += '<div style="font-size:11px;color:var(--text-muted);margin:8px 0 4px;">'
             + 'Pull requests (' + prs.length + ')</div>';
-        prs.forEach(function(p) {
+        // Oldest first, by creation time — matches the commit list order.
+        var prsSorted = prs.slice().sort(function(a, b) {
+            return (a.ts || '').localeCompare(b.ts || '');
+        });
+        prsSorted.forEach(function(p) {
             var when = p.ts ? formatTimestamp(p.ts) : '';
-            html += '<div class="chat-commit-marker">'
+            var title = p.title || '';
+            // Merge state from GitHub (OPEN/MERGED/CLOSED); fall back to
+            // the JSONL-captured action verb when gh enrichment is absent.
+            var state = (p.state || p.action || '').toString().toLowerCase();
+            var stateClass = state.replace(/[^a-z]/g, '');
+            html += '<div class="chat-commit-marker pr-marker">'
                 + '<a href="' + escapeHtml(p.pr_url) + '" target="_blank" rel="noopener"'
-                + ' class="commit-msg" style="text-decoration:none;color:inherit;"'
-                + ' title="Open PR on GitHub">↗ #' + p.pr_number + '</a>'
+                + ' class="commit-msg pr-num" title="Open PR on GitHub">↗ #' + p.pr_number + '</a> '
+                + (title ? '<span class="commit-msg pr-title">' + escapeHtml(title) + '</span>' : '')
                 + '<span class="commit-meta">'
-                + '<span>' + escapeHtml(p.action) + '</span>'
+                + (state ? '<span class="pr-state pr-state-' + stateClass + '">' + escapeHtml(state) + '</span>' : '')
                 + (when ? '<span>' + when + '</span>' : '')
                 + '</span>'
                 + '</div>';
@@ -1846,7 +1855,7 @@ function renderCommitsBar(commits) {
         tasks.forEach(function(t) {
             var meta = [t.state, t.urgency].filter(Boolean).join(' · ');
             var text = t.task_text || '';
-            html += '<div class="chat-commit-marker">'
+            html += '<div class="chat-commit-marker task-marker">'
                 + '<span class="commit-msg">▫ ' + escapeHtml(t.task_id)
                 + (meta ? ' · ' + escapeHtml(meta) : '')
                 + (text ? ' — ' + escapeHtml(text) : '')
