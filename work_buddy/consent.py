@@ -362,8 +362,17 @@ class ConsentRequired(Exception):
         self.reason = reason
         self.risk = risk
         self.default_ttl = default_ttl
+        # The message does NOT prefix itself with ``ConsentRequired:`` —
+        # the exception class name is always available via ``type(exc)``
+        # for any caller that wants it.  Self-prefixing creates a redundant
+        # ``"ConsentRequired: ConsentRequired: ..."`` double-prefix when a
+        # caller stringifies via ``f"{type(exc).__name__}: {exc}"`` — the
+        # gateway's broad-Exception path does exactly that, and the
+        # activity ledger captured the double-prefix pattern in the
+        # bubble-raw events.  See
+        # ``tests/unit/test_consent_stale_class_identity.py``.
         super().__init__(
-            f"ConsentRequired: '{operation}' ({risk} risk)\n"
+            f"'{operation}' ({risk} risk)\n"
             f"Reason: {reason}\n"
             f"\n"
             f"This operation is guarded by a consent gate. The gateway handles "
