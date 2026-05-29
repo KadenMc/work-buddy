@@ -21,11 +21,11 @@ from enum import Enum
 from typing import Any, Callable, Iterable, Protocol, runtime_checkable
 
 # ---------------------------------------------------------------------------
-# Capability enum — declared by storage / lifecycle / provenance components
+# StorageTrait enum — declared by storage / lifecycle / provenance components
 # ---------------------------------------------------------------------------
 
 
-class Capability(str, Enum):
+class StorageTrait(str, Enum):
     """What a backend declares it supports.
 
     Storage capabilities describe the on-disk shape and what
@@ -103,7 +103,7 @@ class UnsupportedOperation(RuntimeError):
     capability so diagnostics can pinpoint the misconfiguration.
     """
 
-    def __init__(self, artifact_name: str, op: str, missing: Capability) -> None:
+    def __init__(self, artifact_name: str, op: str, missing: StorageTrait) -> None:
         super().__init__(
             f"Artifact {artifact_name!r} does not support {op}() — "
             f"missing capability {missing.value!r}"
@@ -172,7 +172,7 @@ class Storage(Protocol):
     validate coherence and gate operations.
     """
 
-    capabilities: frozenset[Capability]
+    capabilities: frozenset[StorageTrait]
 
     def iter_records(self) -> Iterable[dict[str, Any]]:
         """Yield each record as a dict.
@@ -215,7 +215,7 @@ class Trigger(Protocol):
     booleans/predicates marking expired ones.
     """
 
-    capabilities: frozenset[Capability]
+    capabilities: frozenset[StorageTrait]
 
     def is_expired(self, record: dict[str, Any], now: datetime) -> bool:
         """Return True if ``record`` is past its expiry per this trigger."""
@@ -229,7 +229,7 @@ class ExpiryAction(Protocol):
     (e.g. :class:`TransformAndDelete`) declare additional capabilities.
     """
 
-    capabilities: frozenset[Capability]
+    capabilities: frozenset[StorageTrait]
 
     def apply(
         self,
@@ -254,7 +254,7 @@ class Provenance(Protocol):
     means session-filtered queries aren't supported.
     """
 
-    capabilities: frozenset[Capability]
+    capabilities: frozenset[StorageTrait]
 
     def get_session(self, record: dict[str, Any]) -> str | None:
         """Extract the creating session ID from a record (or None)."""
@@ -285,10 +285,10 @@ class Lifecycle:
     retention_predicate: Callable[[dict[str, Any]], bool] | None = None
 
     @property
-    def capabilities(self) -> frozenset[Capability]:
+    def capabilities(self) -> frozenset[StorageTrait]:
         caps = set(self.trigger.capabilities) | set(self.action.capabilities)
         if self.retention_predicate is not None:
-            caps.add(Capability.CONDITIONAL_RETENTION)
+            caps.add(StorageTrait.CONDITIONAL_RETENTION)
         return frozenset(caps)
 
     def find_expired(self, storage: Storage, now: datetime) -> list[Ref]:
@@ -339,7 +339,7 @@ class Artifact:
     # ------------------------------------------------ public properties
 
     @property
-    def capabilities(self) -> frozenset[Capability]:
+    def capabilities(self) -> frozenset[StorageTrait]:
         """Union of storage, lifecycle, and provenance capabilities."""
         caps = set(self.storage.capabilities) | set(self.lifecycle.capabilities)
         if self.provenance is not None:
@@ -393,7 +393,7 @@ class Artifact:
 
     def delete(self, record_id: str) -> bool:
         """Delete a single record by id. Requires DELETABLE."""
-        self._require(Capability.DELETABLE, "delete")
+        self._require(StorageTrait.DELETABLE, "delete")
         # Construct a minimal Ref; backend resolves it.
         ref = Ref(id=record_id, artifact_name=self.name)
         bytes_freed = self.storage.delete_record(ref)
@@ -401,7 +401,7 @@ class Artifact:
 
     def delete_where(self, predicate: Callable[[dict[str, Any]], bool]) -> int:
         """Bulk-delete matching records. Requires BULK_PRUNEABLE."""
-        self._require(Capability.BULK_PRUNEABLE, "delete_where")
+        self._require(StorageTrait.BULK_PRUNEABLE, "delete_where")
         count, _bytes = self.storage.delete_where(predicate)
         return count
 
@@ -413,7 +413,7 @@ class Artifact:
 
     def list_by_session(self, session_id: str) -> list[Ref]:
         """List refs whose creating session matches. Requires SESSION_TAGGED."""
-        self._require(Capability.SESSION_TAGGED, "list_by_session")
+        self._require(StorageTrait.SESSION_TAGGED, "list_by_session")
         assert self.provenance is not None  # guaranteed by capability check
         results: list[Ref] = []
         for record in self.storage.iter_records():
@@ -445,7 +445,7 @@ class Artifact:
 
     # ------------------------------------------------ internals
 
-    def _require(self, cap: Capability, op_name: str) -> None:
+    def _require(self, cap: StorageTrait, op_name: str) -> None:
         if cap not in self.capabilities:
             raise UnsupportedOperation(self.name, op_name, cap)
 
@@ -453,8 +453,8 @@ class Artifact:
         """Reject incompatible component combinations at construction time."""
         # Per-record TTL needs records, not blobs.
         if (
-            Capability.PER_RECORD_TTL in self.lifecycle.trigger.capabilities
-            and Capability.RECORDS not in self.storage.capabilities
+            StorageTrait.PER_RECORD_TTL in self.lifecycle.trigger.capabilities
+            and StorageTrait.RECORDS not in self.storage.capabilities
         ):
             raise IncoherentComposition(
                 f"Artifact {self.name!r}: PerRecordTtl trigger requires "
@@ -463,8 +463,8 @@ class Artifact:
             )
         # TransformAndDelete needs records (you can't rollup blobs).
         if (
-            Capability.TRANSFORM_ON_EXPIRY in self.lifecycle.action.capabilities
-            and Capability.RECORDS not in self.storage.capabilities
+            StorageTrait.TRANSFORM_ON_EXPIRY in self.lifecycle.action.capabilities
+            and StorageTrait.RECORDS not in self.storage.capabilities
         ):
             raise IncoherentComposition(
                 f"Artifact {self.name!r}: TransformAndDelete action requires "

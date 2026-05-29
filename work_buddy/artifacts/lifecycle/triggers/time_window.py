@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from work_buddy.artifacts.expiry import _parse_to_utc
-from work_buddy.artifacts.protocol import Capability
+from work_buddy.artifacts.protocol import StorageTrait
 
 
 class TimeWindow:
@@ -31,7 +31,7 @@ class TimeWindow:
             ``< now - window_days`` are expired.
     """
 
-    capabilities = frozenset({Capability.TIME_WINDOW})
+    capabilities = frozenset({StorageTrait.TIME_WINDOW})
 
     def __init__(self, *, timestamp_field: str, window_days: float) -> None:
         self._timestamp_field = timestamp_field

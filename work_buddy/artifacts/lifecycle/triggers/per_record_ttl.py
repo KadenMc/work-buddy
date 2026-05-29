@@ -27,7 +27,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from work_buddy.artifacts.expiry import _parse_to_utc, is_expired
-from work_buddy.artifacts.protocol import Capability
+from work_buddy.artifacts.protocol import StorageTrait
 
 
 class PerRecordTtl:
@@ -45,7 +45,7 @@ class PerRecordTtl:
             treats ``ttl_field`` as the absolute ``expires_at``.
     """
 
-    capabilities = frozenset({Capability.PER_RECORD_TTL})
+    capabilities = frozenset({StorageTrait.PER_RECORD_TTL})
 
     def __init__(
         self,

@@ -24,7 +24,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-from work_buddy.artifacts.protocol import Capability, Ref
+from work_buddy.artifacts.protocol import StorageTrait, Ref
 
 
 class SqliteRollupStorage:
@@ -43,10 +43,10 @@ class SqliteRollupStorage:
             ``id``.
     """
 
-    capabilities: frozenset[Capability] = frozenset({
-        Capability.RECORDS,
-        Capability.TYPED_COLUMNS,
-        Capability.BULK_PRUNEABLE,
+    capabilities: frozenset[StorageTrait] = frozenset({
+        StorageTrait.RECORDS,
+        StorageTrait.TYPED_COLUMNS,
+        StorageTrait.BULK_PRUNEABLE,
     })
 
     def __init__(

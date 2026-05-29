@@ -520,6 +520,7 @@ def obsidian_retry(
     from work_buddy.obsidian.bridge import is_available, get_latency_context
     from work_buddy.errors import classify_error
     from work_buddy.mcp_server.tools.gateway import _load_operation
+    from work_buddy.consent import ConsentRequired
 
     if not operation_id:
         return {
@@ -594,6 +595,16 @@ def obsidian_retry(
             finally:
                 if _orig_token is not None:
                     reset_originating_session(_orig_token)
+        except ConsentRequired:
+            # ConsentRequired is a deliberate consent gate, not a transport
+            # failure. Re-raise so the gateway's outer dispatch hits its
+            # typed ConsentRequired handler (gateway.py:1535) and calls
+            # ``_auto_consent_request``. Without this re-raise the broad
+            # ``except Exception`` below would swallow the exception into a
+            # ``{"success": False, "error": str(exc)}`` result dict and the
+            # auto-consent flow would never fire — the bubble-raw pattern
+            # documented in ``tests/unit/test_obsidian_retry_consent.py``.
+            raise
         except Exception as exc:
             # CP-A6: ObsidianPostWriteUncertain demands verify-then-decide,
             # not blind retry. Propagate so the gateway's CP5 verify path

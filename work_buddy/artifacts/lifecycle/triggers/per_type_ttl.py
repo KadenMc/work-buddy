@@ -16,7 +16,7 @@ from datetime import datetime
 from typing import Any
 
 from work_buddy.artifacts.expiry import is_expired
-from work_buddy.artifacts.protocol import Capability
+from work_buddy.artifacts.protocol import StorageTrait
 
 
 class PerTypeTtl:
@@ -32,7 +32,7 @@ class PerTypeTtl:
         expires_field: Field name holding the ISO ``expires_at`` value.
     """
 
-    capabilities = frozenset({Capability.PER_TYPE_TTL})
+    capabilities = frozenset({StorageTrait.PER_TYPE_TTL})
 
     def __init__(
         self,

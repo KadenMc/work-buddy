@@ -671,8 +671,22 @@ def get_entry(name: str) -> Capability | WorkflowDefinition | None:
 # ---------------------------------------------------------------------------
 
 def _entry_to_dict(entry: Capability | WorkflowDefinition) -> dict[str, Any]:
-    """Convert a registry entry to a JSON-friendly dict."""
-    if isinstance(entry, Capability):
+    """Convert a registry entry to a JSON-friendly dict.
+
+    Discriminates on shape (``.callable`` for Capability, ``.steps`` for
+    WorkflowDefinition) rather than ``isinstance``.  Across an
+    ``mcp_registry_reload`` the class identity of ``Capability`` /
+    ``WorkflowDefinition`` changes (``sys.modules`` is purged and the
+    classes are re-imported), so entries created before the reload no
+    longer match ``isinstance`` against the post-reload classes.  When
+    that happens, the workflow branch tries ``entry.execution`` on a
+    Capability and raises ``AttributeError: 'Capability' object has no
+    attribute 'execution'`` — an unhelpful error that leaks through the
+    gateway's parameter-error reporting path.  Duck typing avoids this
+    failure mode regardless of how stale the entry's class identity is.
+    """
+    is_capability = hasattr(entry, "callable") and not hasattr(entry, "steps")
+    if is_capability:
         d = {
             "name": entry.name,
             "description": entry.description,

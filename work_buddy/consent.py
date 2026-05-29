@@ -43,8 +43,9 @@ Flow:
     4. If found and valid: establish consent context, execute, cleanup
        (once grants auto-revoke after success)
     5. If not found: raises ConsentRequired with operation details
-    6. Caller grants consent via grant_consent() or wb_run("consent_grant", ...)
-    7. Caller retries the function (DB now has valid entry)
+    6. Gateway auto-requests user approval via a surface (Obsidian, Telegram, dashboard)
+    7. Surface handler writes the grant via consent.grant_consent() and the
+       gateway retries the function automatically
 """
 
 import functools
@@ -361,18 +362,28 @@ class ConsentRequired(Exception):
         self.reason = reason
         self.risk = risk
         self.default_ttl = default_ttl
+        # The message does NOT prefix itself with ``ConsentRequired:`` —
+        # the exception class name is always available via ``type(exc)``
+        # for any caller that wants it.  Self-prefixing creates a redundant
+        # ``"ConsentRequired: ConsentRequired: ..."`` double-prefix when a
+        # caller stringifies via ``f"{type(exc).__name__}: {exc}"`` — the
+        # gateway's broad-Exception path does exactly that, and the
+        # activity ledger captured the double-prefix pattern in the
+        # bubble-raw events.  See
+        # ``tests/unit/test_consent_stale_class_identity.py``.
         super().__init__(
-            f"ConsentRequired: '{operation}' ({risk} risk)\n"
+            f"'{operation}' ({risk} risk)\n"
             f"Reason: {reason}\n"
-            f"Suggested TTL: {default_ttl} minutes\n"
             f"\n"
-            f"To proceed, call:\n"
-            f"  grant_consent('{operation}', mode='always')\n"
-            f"  OR\n"
-            f"  grant_consent('{operation}', mode='temporary', "
-            f"ttl_minutes={default_ttl})\n"
-            f"  OR\n"
-            f"  grant_consent('{operation}', mode='once')"
+            f"This operation is guarded by a consent gate. The gateway handles "
+            f"consent transparently for wb_run calls — if you are seeing this "
+            f"exception, either:\n"
+            f"  (a) the call bypassed the gateway (called the Python function "
+            f"directly); route through wb_run so the gateway can auto-request "
+            f"user approval, OR\n"
+            f"  (b) the gateway's auto-consent retry exhausted without user "
+            f"approval; check sidecar surface availability and retry via "
+            f"wb_run('retry', {{'operation_id': ...}}) once the user has approved."
         )
 
 
@@ -1088,6 +1099,12 @@ def grant_consent(
 ) -> None:
     """Grant consent for an operation.
 
+    Side-effect only — returns ``None`` on success.  Verify success by
+    calling ``list_consents()`` (or ``ConsentCache.is_granted()``)
+    against the SAME session DB this grant was routed to.  A ``None``
+    return is the expected shape, not a failure signal; for the
+    cross-process case where this matters, see ``session_id`` below.
+
     Args:
         operation: The operation identifier.
         mode: "always" (permanent), "temporary" (time-limited), or "once" (single-use).
@@ -1098,6 +1115,13 @@ def grant_consent(
             this when an out-of-band ``consent_grant`` message arrives so
             the grant lands in the originating agent's DB, not the
             sidecar's. Mirrors the existing ``ConsentCache.grant`` keyword.
+
+            Same-process callers (writer and ``is_granted`` reader both
+            run in this process under the same ``WORK_BUDDY_SESSION_ID``)
+            can omit this — the cache's default DB is the right one.
+            Cross-process callers MUST pass it; otherwise the grant
+            lands in the writer's session DB while the reader looks at
+            its own.
     """
     _cache.grant(operation, mode, ttl_minutes=ttl_minutes, session_id=session_id)
     details = f"{mode}"
@@ -1117,6 +1141,10 @@ def grant_consent_batch(
 ) -> None:
     """Grant consent for multiple operations at once.
 
+    Side-effect only — returns ``None``.  Same return-shape contract as
+    :func:`grant_consent`; see that function's docstring for the
+    cross-process ``session_id`` rules.
+
     Used by the gateway's auto-consent flow to write grants for all
     operations in a bundled consent request after a single user approval.
 
@@ -1129,7 +1157,14 @@ def grant_consent_batch(
 
 
 def revoke_consent(operation: str) -> None:
-    """Revoke consent for an operation."""
+    """Revoke consent for an operation.
+
+    Side-effect only — returns ``None``.  Same return-shape contract as
+    :func:`grant_consent`: a ``None`` return is success, not a failure
+    signal.  Verify by checking that ``list_consents()`` (or
+    ``is_granted``) no longer reports the operation in the right
+    session DB.
+    """
     _cache.revoke(operation)
     _audit_log("REVOKED", operation)
 

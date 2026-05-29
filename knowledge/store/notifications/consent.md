@@ -5,10 +5,6 @@ description: How consent-gated operations work — auto-request in gateway, pre-
 summary: Gateway handles consent transparently for wb_run ops. Pre-flight, context-nesting, and retry-on-timeout all automatic. All grants session-scoped in consent.db.
 trigger: agent calls a capability that touches @requires_consent functions (handled transparently by the gateway)
 capabilities:
-- consent_request
-- consent_request_resolve
-- consent_grant
-- consent_revoke
 - consent_list
 tags:
 - consent
@@ -60,7 +56,6 @@ dev_notes: |-
   | Telegram `/reply` command | `work_buddy/telegram/handlers.py:on_reply` | same shape as on_button |
   | Obsidian modal (out-of-band) | sidecar `MessagePoller._handle_consent_grant_message` | routes through `consent.resolve_consent_request` which calls `finalize_consent_response` internally |
   | Dashboard "Approve" endpoint | `work_buddy/dashboard/service.py` | calls `resolve_consent_request` directly |
-  | MCP `consent_request_resolve` op | gateway op dispatch | same path as dashboard |
   | Gateway in-window poll | `_auto_consent_request` / `_auto_workflow_consent_request` | writes grants inline via `grant_consent_batch` / `grant_workflow_class` (skips `finalize_consent_response` because the poll has fresher state in hand) |
 
   The grant-writing logic — bundle unbundle, `workflow_class:<name>` mint for `context.kind == "workflow_consent"`, individual op grants, audit emission — lives in exactly one place (`finalize_consent_response`). Any surface that doesn't go through `resolve_consent_request` (Telegram is the notable one) must call `finalize_consent_response` directly. Tests covering each path live in `tests/unit/test_consent_composable.py`.
@@ -92,11 +87,15 @@ Some `work_buddy` functions are protected by a `@requires_consent` decorator. **
 
 ## What not to do
 
-**Do NOT manually call `consent_request`** for `wb_run` operations — the gateway does it for you. You still need manual `consent_request` for sidecar operations not routed through `wb_run` (e.g., `agent_spawn` consent) or custom flows.
+**The gateway handles consent for `wb_run` operations automatically.** There is no agent-facing path that requires manual consent orchestration. Sidecar operations that need consent (e.g., `agent_spawn`) check via internal Python helpers (`work_buddy/sidecar/dispatch/executor.py:_check_agent_spawn_consent`), not through `wb_run`.
 
 **Do NOT use `AskUserQuestion` for consent.** The notification system is the canonical consent surface — it reaches the user on their phone, in Obsidian, and on the dashboard. `AskUserQuestion` only works when the user is actively watching the terminal.
 
-**Do NOT use `consent_grant` to bypass consent.** `consent_grant` is a low-level primitive for deferred resolution (e.g., user approved on Telegram after the poll timed out). Agents must NEVER self-grant consent.
+**Agents cannot self-grant consent.** The Python functions `consent.grant_consent`, `consent.revoke_consent`, and `consent.resolve_consent_request` are internal — they are called by the sidecar router (Obsidian out-of-band path), Telegram and dashboard handlers, and the gateway's own auto-consent flow. They are not exposed as agent-callable capabilities. The only way an agent gets consent is the user approving on a surface; the gateway handles the rest.
+
+**Interpreting Python-side grant/revoke return values.** `consent.grant_consent`, `consent.grant_consent_batch`, and `consent.revoke_consent` are **side-effect functions that return `None`** — any call routed through `wb_run` records `result_summary: null` in the activity ledger.  A `null` ledger entry is the *expected* return shape; it does NOT signal that the write failed. To verify a grant actually landed, call `list_consents()` (with `agent_session_id` for cross-process callers) — that is the canonical success check.
+
+The cross-process subtlety: if a writer calls `grant_consent` without `session_id`, the grant lands in the cache's default session DB (typically the process's bootstrap session) and is invisible to a reader checking under a different `agent_session_id`.  Same-process writer/reader pairs are safe because both resolve to the same default; cross-process writers (e.g. an MCP gateway dispatch on behalf of an agent in a different session) MUST pass the explicit `session_id`.  Tests at `tests/unit/test_grant_consent_session_routing.py` characterise both shapes.
 
 ## Grant scope and lifetime
 

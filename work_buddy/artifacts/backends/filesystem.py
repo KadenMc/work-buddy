@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from work_buddy.artifacts.io import atomic_write_bytes
-from work_buddy.artifacts.protocol import Capability, Ref
+from work_buddy.artifacts.protocol import StorageTrait, Ref
 from work_buddy.paths import data_dir
 
 # ---------------------------------------------------------------------------
@@ -138,10 +138,10 @@ class FilesystemStorage:
     so callers that imported the old ``ArtifactStore`` keep working.
     """
 
-    capabilities: frozenset[Capability] = frozenset({
-        Capability.ATOMIC_BLOBS,
-        Capability.LISTABLE,
-        Capability.DELETABLE,
+    capabilities: frozenset[StorageTrait] = frozenset({
+        StorageTrait.ATOMIC_BLOBS,
+        StorageTrait.LISTABLE,
+        StorageTrait.DELETABLE,
     })
 
     def __init__(self, data_root: Path | None = None) -> None:

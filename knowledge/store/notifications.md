@@ -56,20 +56,7 @@ mcp__work-buddy__wb_run("request_send", {
 })
 ```
 
-**Request consent (one-call flow):**
-
-```
-mcp__work-buddy__wb_run("consent_request", {
-    "operation": "task.archive",
-    "reason": "Move 10 completed tasks to archive",
-    "risk": "low",
-    "timeout_seconds": 90
-})
-```
-
-Returns `{status: "granted", mode: "once"}` or `{status: "denied"}` or `{status: "timeout"}`.
-
-Callers can target specific surfaces: `surfaces: ["dashboard"]` or `surfaces: ["telegram", "obsidian"]`.
+**Consent for `wb_run` operations is handled by the gateway automatically** — when a `@requires_consent` gate fires inside a capability you invoke, the gateway delivers the notification, polls for the user's response, and writes the grant on approval. You receive `{status: "granted"}`, `{status: "denied"}`, or `{status: "timeout"}` from your original `wb_run` call. No manual orchestration. See <<wb:notifications/consent>>.
 
 ## TTL and expiry
 

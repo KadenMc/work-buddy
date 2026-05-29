@@ -1581,6 +1581,56 @@ def register_tools(mcp: FastMCP) -> None:
                     ),
                 })
             except Exception as exc:
+                # Defensive ConsentRequired catch — same root-cause family
+                # as the stale-Capability bug fixed in _entry_to_dict.  The
+                # typed ``except ConsentRequired:`` handler above captures
+                # the class object at module-import time; after
+                # ``mcp_registry_reload`` purges ``sys.modules``, code paths
+                # that raise ConsentRequired (e.g. ``project_create``'s
+                # lazy import in context_wrappers.py) re-import a fresh
+                # class object that no longer matches the captured
+                # reference via ``isinstance``.  The typed handler is
+                # skipped and the exception lands here.  This duck-typed
+                # check by class name routes it back to the auto-consent
+                # flow regardless of class identity.  See
+                # ``tests/unit/test_consent_stale_class_identity.py``.
+                if type(exc).__name__ == "ConsentRequired":
+                    operation = getattr(exc, "operation", None) or str(exc)
+                    _consent_retries += 1
+                    if _consent_retries > _MAX_CONSENT_RETRIES:
+                        _complete_operation(
+                            op_id,
+                            error=f"ConsentRequired: {operation} (max retries)",
+                        )
+                        record_capability(
+                            capability, entry.category, op_id, parsed_params,
+                            entry.mutates_state, _t0, None,
+                            f"ConsentRequired: {operation}", True,
+                            operation, **_ledger_kw,
+                        )
+                        return _prepare({
+                            "error": f"Too many consent gates for {capability}. Last: {operation}",
+                            "operation_id": op_id,
+                        })
+                    consent_result = await asyncio.to_thread(
+                        _auto_consent_request, [operation], capability, op_id,
+                        _AUTO_CONSENT_TIMEOUT, _agent_sid,
+                    )
+                    if consent_result["status"] != "granted":
+                        _complete_operation(
+                            op_id,
+                            error=f"Consent {consent_result['status']}: {operation}",
+                        )
+                        record_capability(
+                            capability, entry.category, op_id, parsed_params,
+                            entry.mutates_state, _t0, None,
+                            f"Consent {consent_result['status']}: {operation}",
+                            True, operation, **_ledger_kw,
+                        )
+                        consent_result["operation_id"] = op_id
+                        return _prepare(consent_result)
+                    continue
+
                 # CP5: post-write-verify recovery. ObsidianPostWriteUncertain
                 # signals "PUT body sent then client timeout — vault state
                 # may or may not reflect the write." Read filesystem to

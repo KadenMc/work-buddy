@@ -185,8 +185,7 @@ _MUTATING_CAPABILITIES: frozenset[str] = frozenset({
     "memory_write", "memory_reflect", "memory_prune",
     # Messaging / notifications
     "send_message", "reply_to_message", "update_message_status",
-    "notification_send", "request_send", "consent_request",
-    "consent_request_resolve", "consent_grant", "consent_revoke",
+    "notification_send", "request_send",
     # Conversations (writes; renamed from thread_*)
     "conversation_create", "conversation_send",
     "conversation_ask", "conversation_close",

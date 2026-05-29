@@ -7,7 +7,7 @@ records, identifying expired ones, and acting on them.
 
 Coverage:
     1. Construction-time coherence validation (IncoherentComposition)
-    2. Capability gating (UnsupportedOperation)
+    2. StorageTrait gating (UnsupportedOperation)
     3. UTC datetime handling (boundary-inclusive, naive-as-UTC)
     4. End-to-end prune for each backend × representative lifecycle pair
     5. Conditional retention (predicate skips otherwise-expired records)
@@ -29,7 +29,7 @@ import pytest
 
 from work_buddy.artifacts import (
     Artifact,
-    Capability,
+    StorageTrait,
     Delete,
     DirectoryTreeStorage,
     DirShape,
@@ -158,11 +158,11 @@ def test_filesystem_with_per_type_ttl_is_coherent(tmp_path: Path) -> None:
         action=Delete(),
     )
     a = Artifact(name="filesystem", storage=fs, lifecycle=lifecycle)
-    assert Capability.PER_TYPE_TTL in a.capabilities
+    assert StorageTrait.PER_TYPE_TTL in a.capabilities
 
 
 # ---------------------------------------------------------------------------
-# Capability gating
+# StorageTrait gating
 # ---------------------------------------------------------------------------
 
 
@@ -176,7 +176,7 @@ def test_delete_where_on_filesystem_raises(tmp_path: Path) -> None:
     a = Artifact(name="filesystem", storage=fs, lifecycle=lifecycle)
     with pytest.raises(UnsupportedOperation) as exc_info:
         a.delete_where(lambda r: True)
-    assert exc_info.value.missing == Capability.BULK_PRUNEABLE
+    assert exc_info.value.missing == StorageTrait.BULK_PRUNEABLE
 
 
 def test_list_by_session_without_provenance_raises(tmp_path: Path) -> None:
@@ -271,7 +271,7 @@ def test_prune_sqlite_rows_per_record_ttl_with_retention(tmp_path: Path) -> None
     )
     artifact = Artifact(name="messages", storage=storage, lifecycle=lifecycle)
 
-    assert Capability.CONDITIONAL_RETENTION in artifact.capabilities
+    assert StorageTrait.CONDITIONAL_RETENTION in artifact.capabilities
     result = artifact.prune(dry_run=False)
     # Only 'b' should be deleted: 'a' is pending (retained), 'c' is fresh.
     assert result.pruned == 1
@@ -418,7 +418,7 @@ def test_prune_sqlite_rollup_transform_and_delete(tmp_path: Path) -> None:
         action=TransformAndDelete(transform_fn=fake_rollup),
     )
     artifact = Artifact(name="usage", storage=storage, lifecycle=lifecycle)
-    assert Capability.TRANSFORM_ON_EXPIRY in artifact.capabilities
+    assert StorageTrait.TRANSFORM_ON_EXPIRY in artifact.capabilities
 
     result = artifact.prune(dry_run=False)
     assert result.pruned == 2

@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from work_buddy.artifacts.io import atomic_write_text
-from work_buddy.artifacts.protocol import Capability, Ref
+from work_buddy.artifacts.protocol import StorageTrait, Ref
 
 
 class JsonRecordsShape(str, Enum):
@@ -54,9 +54,9 @@ class JsonRecordsStorage:
             file stem).
     """
 
-    capabilities: frozenset[Capability] = frozenset({
-        Capability.RECORDS,
-        Capability.BULK_PRUNEABLE,
+    capabilities: frozenset[StorageTrait] = frozenset({
+        StorageTrait.RECORDS,
+        StorageTrait.BULK_PRUNEABLE,
     })
 
     def __init__(

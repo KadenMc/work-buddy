@@ -18,11 +18,13 @@ def _register() -> None:
       - notification_send: fire-and-forget notification
       - request_send: create + deliver + optionally poll (one call)
       - request_poll: check/wait on an existing request
-      - consent_request: one-call consent flow with auto-resolve
       - notification_list_pending: list all pending items
 
-    Lower-level capabilities (consent_grant/revoke/list, consent_request_resolve)
-    remain in _consent_capabilities for direct manipulation and deferred flows.
+    The single agent-callable consent capability is consent_list, declared in
+    knowledge/store/notifications/consent/. The grant/revoke/resolve and
+    create-request Python functions in work_buddy.consent are internal —
+    invoked by the sidecar router, Telegram/dashboard handlers, and gateway
+    auto-consent path; not exposed as agent-callable capabilities.
     """
     import os
     import time
@@ -235,113 +237,6 @@ def _register() -> None:
         With timeout_seconds: blocks and polls until response or timeout."""
         return _poll_surfaces(notification_id, timeout_seconds, interval_seconds)
 
-    def consent_request(
-        operation: str,
-        reason: str,
-        risk: str = "moderate",
-        default_ttl: int = 5,
-        requester: str = "unknown",
-        context: dict | None = None,
-        callback: dict | None = None,
-        callback_session_id: str | None = None,
-        timeout_seconds: int | None = None,
-        interval_seconds: int = 3,
-        surfaces: list[str] | None = None,
-    ) -> dict:
-        """One-call consent flow: create request, deliver to surfaces, poll, auto-resolve.
-
-        Without timeout_seconds: creates + delivers, returns immediately (non-blocking).
-          Agent can call request_poll later, then consent_request_resolve.
-        With timeout_seconds: creates + delivers + polls + auto-resolves on response.
-          On approval: grant is written automatically. On deny: no grant.
-          On timeout: request stays pending for later resolution."""
-        from work_buddy.consent import (
-            create_consent_request,
-            resolve_consent_request,
-        )
-
-        # Auto-inject session ID for AgentIngest hook delivery when not
-        # explicitly provided.  This ensures the notification response
-        # gets dispatched with session targeting so PostToolUse / Stop
-        # hooks can surface it mid-turn.
-        if callback_session_id is None:
-            callback_session_id = os.environ.get("WORK_BUDDY_SESSION_ID")
-
-        # 1. Create the consent request (uses notification substrate)
-        record = create_consent_request(
-            operation=operation, reason=reason, risk=risk,
-            default_ttl=default_ttl, requester=requester,
-            context=context, callback=callback,
-            callback_session_id=callback_session_id,
-            surfaces=surfaces,
-        )
-        nid = record["notification_id"]
-
-        # 2. Deliver to surfaces
-        delivered, err = _deliver_to_surfaces(nid)
-        record["delivered"] = delivered
-        if err:
-            record["delivery_error"] = err
-            return record
-
-        # 3. Non-blocking if no timeout
-        if timeout_seconds is None:
-            record["status"] = "pending"
-            return record
-
-        # 4. Poll for response
-        poll_result = _poll_surfaces(nid, timeout_seconds, interval_seconds)
-
-        if poll_result.get("status") != "responded":
-            record["status"] = "timeout"
-            record["poll"] = poll_result
-            return record
-
-        # 5. Auto-resolve based on user's choice.
-        # The response may have already been recorded by a surface handler
-        # (e.g., Telegram's on_button called respond_to_notification directly).
-        # In that case resolve_consent_request raises ValueError — handle gracefully.
-        choice = poll_result["value"]
-        # Dashboard returns {"phase": "generic", "value": "once"} — unwrap
-        if isinstance(choice, dict) and "value" in choice:
-            choice = choice["value"]
-        try:
-            if choice == "deny":
-                resolve_consent_request(nid, approved=False)
-                record["approved"] = False
-                record["status"] = "denied"
-            else:
-                mode = choice  # "always", "temporary", or "once"
-                ttl = default_ttl if mode == "temporary" else None
-                resolve_consent_request(nid, approved=True, mode=mode, ttl_minutes=ttl)
-                record["approved"] = True
-                record["mode"] = mode
-                record["status"] = "granted"
-        except ValueError:
-            # Already resolved by a surface handler — the response was
-            # recorded but grant_consent was NOT called. Write the grant now.
-            resolved = _get_notif(nid)
-            if resolved and resolved.response:
-                final_choice = resolved.response.get("value", choice)
-                record["approved"] = final_choice != "deny"
-                record["mode"] = final_choice if final_choice != "deny" else None
-                if final_choice == "deny":
-                    record["status"] = "denied"
-                else:
-                    # Write the grant that resolve_consent_request would have written
-                    from work_buddy.consent import grant_consent as _grant
-                    _ttl = default_ttl if final_choice == "temporary" else None
-                    _grant(
-                        operation, mode=final_choice,
-                        ttl_minutes=_ttl,
-                    )
-                    record["status"] = "granted"
-            else:
-                record["status"] = "responded"
-                record["approved"] = choice != "deny"
-
-        return record
-
     def list_pending_notifications() -> list[dict]:
         """List all pending notifications/requests."""
         return [n.to_dict() for n in _list_pending()]
@@ -349,7 +244,6 @@ def _register() -> None:
     register_op("op.wb.notification_send", send_notification)
     register_op("op.wb.request_send", request_send)
     register_op("op.wb.request_poll", request_poll)
-    register_op("op.wb.consent_request", consent_request)
     register_op("op.wb.notification_list_pending", list_pending_notifications)
 
 

@@ -12,7 +12,7 @@ import pytest
 
 from work_buddy.artifacts import (
     Artifact,
-    Capability,
+    StorageTrait,
     Delete,
     INFINITE_LIFECYCLE,
     Lifecycle,
@@ -40,10 +40,10 @@ def test_never_expires_advertises_no_trigger_capabilities() -> None:
     # In particular it does not falsely claim any of the other
     # trigger flavours.
     for cap in (
-        Capability.PER_RECORD_TTL,
-        Capability.PER_TYPE_TTL,
-        Capability.TIME_WINDOW,
-        Capability.MTIME_WINDOW,
+        StorageTrait.PER_RECORD_TTL,
+        StorageTrait.PER_TYPE_TTL,
+        StorageTrait.TIME_WINDOW,
+        StorageTrait.MTIME_WINDOW,
     ):
         assert cap not in trigger.capabilities
 
@@ -122,7 +122,7 @@ def test_infinite_lifecycle_artifact_capabilities_omit_trigger_caps(
     )
     caps = artifact.capabilities
     # No trigger advertisements present.
-    assert Capability.PER_RECORD_TTL not in caps
-    assert Capability.PER_TYPE_TTL not in caps
-    assert Capability.TIME_WINDOW not in caps
-    assert Capability.MTIME_WINDOW not in caps
+    assert StorageTrait.PER_RECORD_TTL not in caps
+    assert StorageTrait.PER_TYPE_TTL not in caps
+    assert StorageTrait.TIME_WINDOW not in caps
+    assert StorageTrait.MTIME_WINDOW not in caps

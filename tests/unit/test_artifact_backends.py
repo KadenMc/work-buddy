@@ -20,7 +20,7 @@ from pathlib import Path
 import pytest
 
 from work_buddy.artifacts import (
-    Capability,
+    StorageTrait,
     DirectoryTreeStorage,
     DirShape,
     FilesystemStorage,
@@ -39,10 +39,10 @@ from work_buddy.artifacts import (
 
 def test_filesystem_storage_capabilities() -> None:
     storage = FilesystemStorage(data_root=Path("/tmp/non-existent-test"))
-    assert Capability.ATOMIC_BLOBS in storage.capabilities
-    assert Capability.LISTABLE in storage.capabilities
-    assert Capability.DELETABLE in storage.capabilities
-    assert Capability.RECORDS not in storage.capabilities
+    assert StorageTrait.ATOMIC_BLOBS in storage.capabilities
+    assert StorageTrait.LISTABLE in storage.capabilities
+    assert StorageTrait.DELETABLE in storage.capabilities
+    assert StorageTrait.RECORDS not in storage.capabilities
 
 
 def test_filesystem_storage_iter_and_size(tmp_path: Path) -> None:
@@ -88,9 +88,9 @@ def _make_sqlite_db(path: Path, table: str = "items") -> None:
 def test_sqlite_rows_capabilities(tmp_path: Path) -> None:
     db = tmp_path / "test.db"
     storage = SqliteRowsStorage(db_path=db, table="items")
-    assert Capability.RECORDS in storage.capabilities
-    assert Capability.TYPED_COLUMNS in storage.capabilities
-    assert Capability.BULK_PRUNEABLE in storage.capabilities
+    assert StorageTrait.RECORDS in storage.capabilities
+    assert StorageTrait.TYPED_COLUMNS in storage.capabilities
+    assert StorageTrait.BULK_PRUNEABLE in storage.capabilities
 
 
 def test_sqlite_rows_iter_records(tmp_path: Path) -> None:
@@ -184,9 +184,9 @@ def test_json_records_list_wrapped_requires_key(tmp_path: Path) -> None:
 
 def test_jsonl_capabilities(tmp_path: Path) -> None:
     storage = JsonlStorage(path=tmp_path / "log.jsonl")
-    assert Capability.RECORDS in storage.capabilities
-    assert Capability.APPEND_ONLY in storage.capabilities
-    assert Capability.BULK_PRUNEABLE in storage.capabilities
+    assert StorageTrait.RECORDS in storage.capabilities
+    assert StorageTrait.APPEND_ONLY in storage.capabilities
+    assert StorageTrait.BULK_PRUNEABLE in storage.capabilities
 
 
 def test_jsonl_iter_records(tmp_path: Path) -> None:
@@ -243,9 +243,9 @@ def test_sqlite_rollup_capabilities(tmp_path: Path) -> None:
     storage = SqliteRollupStorage(
         db_path=tmp_path / "x.db", source_table="turns", rollup_table="turns_daily"
     )
-    assert Capability.RECORDS in storage.capabilities
-    assert Capability.TYPED_COLUMNS in storage.capabilities
-    assert Capability.BULK_PRUNEABLE in storage.capabilities
+    assert StorageTrait.RECORDS in storage.capabilities
+    assert StorageTrait.TYPED_COLUMNS in storage.capabilities
+    assert StorageTrait.BULK_PRUNEABLE in storage.capabilities
 
 
 def test_sqlite_rollup_iter_records(tmp_path: Path) -> None:

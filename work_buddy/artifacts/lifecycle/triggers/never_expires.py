@@ -26,7 +26,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from work_buddy.artifacts.protocol import Capability
+from work_buddy.artifacts.protocol import StorageTrait
 
 
 class NeverExpires:
@@ -41,7 +41,7 @@ class NeverExpires:
     that no expiry policy applies.
     """
 
-    capabilities = frozenset[Capability]()
+    capabilities = frozenset[StorageTrait]()
 
     def is_expired(self, record: dict[str, Any], now: datetime) -> bool:
         return False

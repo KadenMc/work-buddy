@@ -48,22 +48,9 @@ Surface rendering:
 
 Requests get a 4-digit short ID (e.g., #4920) for Telegram /reply <short_id> <answer>.
 
-## consent_request — consent-specific
+## Consent — handled automatically by the gateway
 
-Use when you need consent for a protected operation. For the full consent flow (gateway pre-flight, blanket consent, rules), see:
-
-<<wb:notifications/consent-system>>
-
-Quick call pattern:
-
-mcp__work-buddy__wb_run("consent_request", {
-    "operation": "task.archive",
-    "reason": "Move completed tasks to archive",
-    "risk": "low",
-    "timeout_seconds": 90
-})
-
-Returns {status: "granted", mode: "once"} or {status: "denied"} or {status: "timeout"}.
+When a capability you invoke via `wb_run` hits a `@requires_consent` gate, the gateway transparently creates the notification, delivers to surfaces, polls, and writes the grant on approval. Your `wb_run` call returns the operation's normal result on approval, or `{status: "denied"}` / `{status: "timeout"}` otherwise. No agent-facing capability needs to be called manually. See <<wb:notifications/consent>>.
 
 ## Handling responses
 
@@ -72,7 +59,7 @@ Blocking (with timeout_seconds): Call blocks until user responds or timeout. Res
 Non-blocking (no timeout_seconds): Returns immediately with notification_id. Poll later:
 mcp__work-buddy__wb_run("request_poll", {"notification_id": "req_XXXXXXXX", "timeout_seconds": 60})
 
-After timeout: Request stays pending. User can still respond on any surface. Use request_poll to check, or consent_request_resolve for consent.
+After timeout: Request stays pending. User can still respond on any surface. Use request_poll to check.
 
 ## Examples
 

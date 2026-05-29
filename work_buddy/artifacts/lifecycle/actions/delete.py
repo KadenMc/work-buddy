@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from work_buddy.artifacts.protocol import Capability, Ref, Storage
+from work_buddy.artifacts.protocol import StorageTrait, Ref, Storage
 
 
 class Delete:
@@ -27,7 +27,7 @@ class Delete:
     ``delete_where`` keyed on the set of expired ids.
     """
 
-    capabilities: frozenset[Capability] = frozenset()
+    capabilities: frozenset[StorageTrait] = frozenset()
 
     def apply(
         self,
@@ -44,7 +44,7 @@ class Delete:
 
         # Prefer bulk delete when available — avoids N atomic rewrites
         # for record-set storages (JSON files, JSONL, sqlite).
-        if Capability.BULK_PRUNEABLE in storage.capabilities:
+        if StorageTrait.BULK_PRUNEABLE in storage.capabilities:
             victim_ids = {ref.id for ref in expired_refs}
             n, bytes_freed = storage.delete_where(
                 lambda record: _record_id_in(record, victim_ids)
