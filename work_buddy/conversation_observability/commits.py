@@ -224,6 +224,37 @@ def query_session_commits(
     return [_row_to_commit(r) for r in rows]
 
 
+def query_commits_for_task(task_id: str) -> list[dict[str, Any]]:
+    """Read-only: commits whose message references ``task_id``.
+
+    A session is a structural *developer* of a task when one of its
+    commits names the task id (e.g. a ``feat(x): … (t-cb13b794)``
+    subject). This scans the stored commit ``message`` for the literal
+    id substring; task ids (``t-`` + 8 hex) contain no SQL-LIKE
+    wildcards, so the match is exact. Returns commit dicts (oldest first)
+    carrying ``session_id`` so the caller can group developers by session.
+
+    Scope note: ``session_commits`` captures the commit *subject* line,
+    not the full body. Ids that appear only in a commit body (e.g.
+    ``Addresses t-…`` on a later line) or in a PR body are therefore NOT
+    matched here — those cases fall to note-read awareness or to
+    Rung-3 reasoning (``/wb-task-completeness``). Putting the id in the
+    subject is what makes a task structurally developer-attributable.
+    """
+    if not task_id:
+        return []
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM session_commits WHERE message LIKE ? "
+            "ORDER BY committed_at",
+            (f"%{task_id}%",),
+        ).fetchall()
+    finally:
+        conn.close()
+    return [_row_to_commit(r) for r in rows]
+
+
 def get_commit_session_map(days: int = 7) -> dict[str, str]:
     """Return ``{short_sha: full_session_id}`` for commits in the window.
 

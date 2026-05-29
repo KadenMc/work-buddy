@@ -392,6 +392,11 @@ def create(
     agent_required_contexts: str | None = None,
     user_required_contexts: str | None = None,
     required_contexts_source: str | None = None,
+    # Provenance -----------------------------------------------------
+    # The agent session that minted this task (one of the three
+    # first-class session↔task roles: created-by / assigned /
+    # developed-by). NULL = unrecorded (human/plugin/bootstrap/legacy).
+    created_by_session: str | None = None,
 ) -> dict[str, Any]:
     """Create a metadata record for a new task.
 
@@ -440,12 +445,14 @@ def create(
                 description,
                 risk_profile_json, automation_tier_achievable, last_actor,
                 agent_required_contexts, user_required_contexts,
-                required_contexts_source)
+                required_contexts_source,
+                created_by_session)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?,
                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                        ?,
                        ?, ?, ?,
-                       ?, ?, ?)""",
+                       ?, ?, ?,
+                       ?)""",
             (
                 task_id, state, urgency, complexity, contract, note_uuid,
                 now, now,
@@ -458,6 +465,7 @@ def create(
                 risk_profile_json, automation_tier_achievable, last_actor,
                 agent_required_contexts, user_required_contexts,
                 required_contexts_source,
+                created_by_session,
             ),
         )
         conn.execute(
@@ -495,6 +503,37 @@ def get(task_id: str, *, include_deleted: bool = False) -> dict[str, Any] | None
                 (task_id,),
             ).fetchone()
         return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def get_created_by(task_id: str) -> str | None:
+    """Return the session id that created ``task_id``, or None.
+
+    The *created-by* provenance role (see ``created_by_session`` column,
+    migration v11). NULL when unrecorded — a human/plugin/bootstrap
+    creation, or a task that predates the column. Includes soft-deleted
+    rows so provenance lookups still resolve for tombstoned tasks.
+    """
+    row = get(task_id, include_deleted=True)
+    return row.get("created_by_session") if row else None
+
+
+def get_tasks_created_by(session_id: str) -> list[str]:
+    """Return task ids a session created (the reverse of get_created_by).
+
+    Live rows only. Powers the per-session provenance view (which tasks
+    did this chat mint?). Cheap equality scan on ``created_by_session``.
+    """
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT task_id FROM task_metadata "
+            "WHERE created_by_session = ? AND deleted_at IS NULL "
+            "ORDER BY created_at",
+            (session_id,),
+        ).fetchall()
+        return [r["task_id"] for r in rows]
     finally:
         conn.close()
 

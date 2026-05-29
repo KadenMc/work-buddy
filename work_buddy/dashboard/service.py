@@ -1166,6 +1166,25 @@ def api_chat_topics(session_id: str):
         return jsonify({"error": str(exc)}), 500
 
 
+@app.get("/api/chats/<session_id>/tasks")
+def api_chat_tasks(session_id: str):
+    """Per-session task provenance for the chat-detail "Tasks" rail.
+
+    Returns ``{tasks: [{task_id, task_text, state, roles, assigned_at}]}``
+    where ``roles`` ⊆ {created, assigned, developed}. Richer than the
+    listing entry's assigned-only ``tasks_detail``: it also surfaces tasks
+    this session *created* or *developed* (committed referencing). Empty
+    list when the session touched no tasks. Bridge-independent.
+    """
+    try:
+        from work_buddy.obsidian.tasks.provenance import build_session_task_roles
+
+        return jsonify(build_session_task_roles(session_id))
+    except Exception as exc:
+        logger.exception("chat tasks error")
+        return jsonify({"error": str(exc)}), 500
+
+
 @app.get("/api/chats/<session_id>/uncommitted-files")
 def api_chat_uncommitted_files(session_id: str):
     """Files this session wrote that are still dirty in git RIGHT NOW.

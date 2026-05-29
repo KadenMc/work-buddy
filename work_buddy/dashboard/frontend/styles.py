@@ -2269,6 +2269,7 @@ body {
 }
 /* PR / task linkage badges. Standard palette: commits stay neutral on
    the card, PRs purple, tasks orange — matching the detail-panel markers. */
+.chat-card-badge.commits { color: var(--green); }
 .chat-card-badge.prs, a.chat-card-badge.prs { color: var(--purple); }
 .chat-card-badge.tasks { color: var(--orange); }
 a.chat-card-badge.prs { text-decoration: none; }
@@ -2447,7 +2448,7 @@ a.chat-card-badge.prs:hover { text-decoration: underline; }
     min-width: 0;
 }
 .chats-topic-rail {
-    flex: 0 0 220px;
+    flex: 0 0 260px;
     overflow-y: auto;
     border: 1px solid var(--border);
     border-radius: 6px;
@@ -2487,6 +2488,124 @@ a.chat-card-badge.prs:hover { text-decoration: underline; }
     font-family: var(--font-mono);
     font-size: 10px;
     float: right;
+}
+/* Activity-rail selector (Topics | Git | Tasks) + switchable panels.
+   Neutral pills (reuse .costs-pill); per-stream colors live in the panel
+   CONTENT — commits green (.chat-commit-marker base), PRs purple
+   (.pr-marker), tasks orange (.task-marker). */
+.chats-rail-selector {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 8px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+}
+.chats-rail-pill {
+    flex: 1;
+    padding: 4px 6px;
+    text-align: center;
+}
+.chats-rail-panel { display: none; }
+.chats-rail-panel.active { display: block; }
+.chats-rail-section-title {
+    font-size: 10px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin: 8px 0 4px;
+}
+.chats-rail-empty {
+    font-size: 12px;
+    color: var(--text-muted);
+    font-style: italic;
+    padding: 8px;
+}
+/* Commit / PR / task markers stack vertically inside the narrow rail
+   (they're a horizontal row in their original commits-bar home). */
+.chats-topic-rail .chat-commit-marker {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 2px;
+    margin: 6px 0;
+    padding: 6px 8px;
+}
+.chats-topic-rail .chat-commit-marker .commit-msg {
+    white-space: normal;
+}
+.chats-topic-rail .chat-commit-marker .commit-meta {
+    flex-wrap: wrap;
+    font-size: 10px;
+}
+/* Disabled (empty) selector tab — grayed, non-interactive. The rail is
+   permanent; a panel with no content just disables its tab. */
+.chats-rail-pill.disabled,
+.chats-rail-pill:disabled {
+    opacity: 0.38;
+    cursor: default;
+    color: var(--text-muted);
+}
+/* Tasks panel — structured rows (id + state header, role pills, wrapped
+   text) so it reads with the same weight as the commit/PR markers rather
+   than as flat text. Stays in the orange/task family per the palette lock. */
+.chats-topic-rail .task-marker { gap: 4px; }
+.chats-topic-rail .task-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+.chats-topic-rail .task-id {
+    color: var(--orange);
+    font-weight: 600;
+    font-size: 12px;
+    background: none;
+    padding: 0;
+}
+.chats-topic-rail .task-state {
+    text-transform: uppercase;
+    font-size: 9px;
+    letter-spacing: 0.04em;
+    color: var(--text-muted);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1px 6px;
+}
+.chats-topic-rail .task-roles-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+.chats-topic-rail .task-role {
+    text-transform: uppercase;
+    font-size: 9px;
+    letter-spacing: 0.04em;
+    color: var(--orange);
+    background: #db6d2822;
+    border: 1px solid #db6d2844;
+    border-radius: 8px;
+    padding: 1px 6px;
+}
+.chats-topic-rail .task-text {
+    color: var(--text-secondary);
+    font-size: 11px;
+    line-height: 1.4;
+    margin-top: 2px;
+}
+/* Topics panel — give the items a left accent + card background + a
+   colored index so they're not flat prose. Topics is the rail's 4th
+   stream; it uses the neutral accent (the green/purple/orange lock covers
+   only commits/PRs/tasks). */
+.chats-topic-rail .chats-topic-item {
+    border-left: 2px solid var(--accent);
+    background: var(--bg-tertiary);
+    margin: 4px 0;
+}
+.chats-topic-rail .chats-topic-item:hover {
+    background: var(--accent-subtle);
+}
+.chats-topic-rail .chats-topic-item .topic-index {
+    color: var(--accent);
+    font-weight: 600;
 }
 .chats-span-warning {
     padding: 6px 12px;

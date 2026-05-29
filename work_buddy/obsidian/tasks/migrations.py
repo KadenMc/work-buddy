@@ -47,6 +47,9 @@ DBs that pre-date this framework are baseline-stamped to the current
   schema level).
 - v10 — ``lww_meta`` append-only write-provenance sidecar backing the
   MarkdownDB last-write-wins log (see ``architecture/markdown-db``).
+- v11 — ``created_by_session`` column on ``task_metadata`` (the agent
+  session that minted the task; one of the three first-class
+  provenance roles alongside *assigned* and *developed-by*).
 """
 
 from __future__ import annotations
@@ -578,6 +581,28 @@ def _m010_lww_meta(conn: sqlite3.Connection) -> None:
     """)
 
 
+# ─── v11: created_by_session (provenance role) ─────────────────────
+
+
+def _m011_created_by_session(conn: sqlite3.Connection) -> None:
+    """``created_by_session`` column on ``task_metadata``.
+
+    Records the agent session that *minted* the task — the first of
+    three first-class session↔task provenance roles (created-by /
+    assigned / developed-by). Captured at create time from the
+    gateway-pinned originating session (falling back to the env session
+    for direct callers), mirroring how ``assign_task`` records the
+    claiming session.
+
+    Nullable: NULL means "unrecorded" — tasks created by a human via
+    the Obsidian plugin, by server bootstrap, or before this column
+    existed. A separate re-runnable backfill
+    (``backfill_created_by``) can populate historical rows from the
+    "handoff prompt from session X" line in their note bodies.
+    """
+    _add_column_if_missing(conn, "task_metadata", "created_by_session", "TEXT")
+
+
 # ─── Runner ─────────────────────────────────────────────────────────
 
 
@@ -592,4 +617,5 @@ TASK_MIGRATIONS = MigrationRunner("task_metadata", migrations=[
     Migration(8, "soft-delete deleted_at columns",       _m008_soft_delete),
     Migration(9, "drop ON DELETE CASCADE from FKs",      _m009_drop_cascade),
     Migration(10, "lww_meta write-provenance sidecar",   _m010_lww_meta),
+    Migration(11, "created_by_session provenance column", _m011_created_by_session),
 ])

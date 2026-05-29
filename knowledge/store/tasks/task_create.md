@@ -106,3 +106,5 @@ parents:
 requires:
 - obsidian
 ---
+
+The creating agent session is recorded automatically on the task as `created_by_session` — the *created-by* role of the three session↔task provenance roles (created-by / assigned / developed-by; see `tasks/task_provenance`). `create_task` captures the gateway-pinned originating session, falling back to the env session for direct (non-gateway) callers — the same idiom `task_assign` uses to record the claiming session. It is **not a parameter** (never pass it); it is read from context. NULL when unrecorded — a human/plugin/bootstrap creation, or a task predating the column (migration v11). Surfaced via `task_provenance` and as `read_task`'s top-level `created_by` field; historical NULLs can be filled from note prose by the re-runnable `backfill_created_by` pass.

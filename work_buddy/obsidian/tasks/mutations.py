@@ -1754,6 +1754,18 @@ def create_task(
         # now contains, so deriving from it locally is consistent with
         # the file-source-of-truth rule.
         derived_description = extract_description_from_line(task_line)
+        # Provenance: record the agent session that minted this task.
+        # The gateway pins the agent's real Claude Code JSONL UUID on the
+        # originating-session ContextVar (via ``_invoke_with_session``);
+        # ``_get_session_id`` reads env, which under the gateway is the
+        # server's bootstrap session. Prefer the pinned session, fall
+        # back to env for direct (non-gateway) callers — the same idiom
+        # ``assign_task`` uses to record the claiming session.
+        from work_buddy.agent_session import (
+            _get_session_id,
+            get_originating_session,
+        )
+        created_by_session = get_originating_session() or _get_session_id()
         store.create(
             task_id=task_id,
             state="inbox",
@@ -1779,6 +1791,7 @@ def create_task(
             agent_required_contexts=agent_required_contexts,
             user_required_contexts=user_required_contexts,
             required_contexts_source=required_contexts_source,
+            created_by_session=created_by_session,
         )
 
     # --- Seed tag cache ---
@@ -2408,6 +2421,18 @@ def _load_task_payload(task_id: str) -> dict[str, Any]:
                 note_content = fs_path.read_text(encoding="utf-8")
                 logger.info("Read task note via filesystem fallback: %s", note_path)
 
+    # Provenance roles (created-by / assigned / developed-by). Computed
+    # WITHOUT the awareness JSONL scan to keep this read path fast — the
+    # dedicated ``task_provenance`` capability computes the full version
+    # (with note-read awareness). Degrade gracefully: a provenance failure
+    # must never fail a task read.
+    prov = None
+    try:
+        from work_buddy.obsidian.tasks import provenance as _provenance
+        prov = _provenance.build_task_provenance(task_id, include_awareness=False)
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.warning("provenance build failed for %s: %s", task_id, exc)
+
     return {
         "success": True,
         "task_id": task_id,
@@ -2421,7 +2446,10 @@ def _load_task_payload(task_id: str) -> dict[str, Any]:
         "contract": meta.get("contract"),
         "note_path": note_path,
         "note_content": note_content,
-        "assigned_sessions": store.get_sessions(task_id),
+        # Back-compat alias (the completeness gatherer reads this key).
+        "assigned_sessions": prov["assigned"] if prov else store.get_sessions(task_id),
+        "created_by": prov["created_by"] if prov else None,
+        "provenance": prov,
     }
 
 
