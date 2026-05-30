@@ -300,6 +300,49 @@ def _workflow_from_markdown(fm: dict[str, Any], body: str) -> dict[str, Any]:
     return unit_dict
 
 
+def workflow_body_heading_issues(text: str) -> list[str]:
+    """Flag ``## <text>`` body headings that the workflow codec will silently
+    mis-attribute after a hand-edit.
+
+    Per the parser rule (:func:`_workflow_from_markdown`): body text *before*
+    the first step-id heading is the workflow narrative and may carry any
+    ``##`` subheadings — those are legitimate and not flagged. But once a real
+    step section has started, a ``## <text>`` whose text is not a declared step
+    id is appended to the *preceding* step's instructions rather than starting
+    a new section — a silent mis-attribution that typically means a step was
+    renamed in frontmatter but not in the body (or vice versa).
+
+    Returns human-readable issue strings (empty list = clean). Non-workflow
+    files return ``[]``. Operates on raw text because ``markdown_to_unit_dict``
+    has already discarded the mismatch by the time a unit is loaded.
+    """
+    try:
+        fm, body = _split_frontmatter(text)
+    except ValueError:
+        return []
+    if fm.get("kind") != "workflow":
+        return []
+    step_ids = {
+        s["id"] for s in (fm.get("steps") or [])
+        if isinstance(s, dict) and s.get("id")
+    }
+    issues: list[str] = []
+    in_steps = False
+    for line in body.split("\n"):
+        if line.startswith("## "):
+            heading = line[3:].strip()
+            if heading in step_ids:
+                in_steps = True
+            elif in_steps:
+                issues.append(
+                    f"heading '## {heading}' after step sections matches no step "
+                    "id — the codec merges it into the previous step's "
+                    "instructions; rename it to a step id or move it before the "
+                    "first step section"
+                )
+    return issues
+
+
 # ---------------------------------------------------------------------------
 # Path ↔ file mapping
 # ---------------------------------------------------------------------------

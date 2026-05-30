@@ -10,10 +10,13 @@ from __future__ import annotations
 import pytest
 
 from work_buddy.knowledge.capability_loader import SCHEMA_VERSION
-from work_buddy.knowledge.model import CapabilityUnit, DirectionsUnit
+from work_buddy.knowledge.file_store import workflow_body_heading_issues
+from work_buddy.knowledge.model import CapabilityUnit, DirectionsUnit, WorkflowUnit
 from work_buddy.knowledge.validate import (
     _check_capability_op_resolution,
     _check_placeholder_duplicates,
+    _check_workflow_step_consistency,
+    _check_workflow_step_dag,
     validate_store,
 )
 from work_buddy.mcp_server import op_registry
@@ -159,6 +162,120 @@ class TestCapabilityOpResolutionCheck:
         op_registry.register_op("op.wb.sample", sample_op)
         store = {"tasks/sample_cap": self._declaration()}
         assert _check_capability_op_resolution(store) == []
+
+
+def _wf(path: str, steps: list[dict], instructions: dict | None = None) -> WorkflowUnit:
+    return WorkflowUnit(
+        path=path, name=path, description="d", workflow_name=path.replace("/", "-"),
+        steps=steps, step_instructions=instructions or {},
+    )
+
+
+class TestWorkflowStepDagCheck:
+    """``workflow_step_dag`` validates each workflow unit's internal step DAG
+    at author time — the same cycle / dangling-dep failures the conductor only
+    raises at run time (workflow.py add_task)."""
+
+    def test_well_formed_dag_is_clean(self):
+        wf = _wf("ok", [
+            {"id": "a", "step_type": "code", "depends_on": []},
+            {"id": "b", "step_type": "code", "depends_on": ["a"]},
+            {"id": "c", "step_type": "code", "depends_on": ["a", "b"]},
+        ])
+        assert _check_workflow_step_dag({"ok": wf}) == []
+
+    def test_dangling_dependency_flagged(self):
+        wf = _wf("x", [{"id": "a", "step_type": "code", "depends_on": ["ghost"]}])
+        errs = _check_workflow_step_dag({"x": wf})
+        assert len(errs) == 1
+        assert errs[0]["check"] == "workflow_step_dag"
+        assert "ghost" in errs[0]["message"]
+
+    def test_cycle_flagged(self):
+        wf = _wf("x", [
+            {"id": "a", "step_type": "code", "depends_on": ["c"]},
+            {"id": "b", "step_type": "code", "depends_on": ["a"]},
+            {"id": "c", "step_type": "code", "depends_on": ["b"]},
+        ])
+        errs = _check_workflow_step_dag({"x": wf})
+        assert any("cycle" in e["message"] for e in errs)
+
+    def test_duplicate_step_id_flagged(self):
+        wf = _wf("x", [
+            {"id": "a", "step_type": "code", "depends_on": []},
+            {"id": "a", "step_type": "code", "depends_on": []},
+        ])
+        errs = _check_workflow_step_dag({"x": wf})
+        assert any("duplicate" in e["message"] and "'a'" in e["message"] for e in errs)
+
+    def test_non_workflow_units_ignored(self):
+        d = DirectionsUnit(path="d", name="D", description="d")
+        assert _check_workflow_step_dag({"d": d}) == []
+
+
+class TestWorkflowStepConsistencyCheck:
+    """``workflow_step_consistency`` — orphan instruction keys are errors;
+    reasoning steps without instructions are non-blocking warnings."""
+
+    def test_clean_workflow(self):
+        wf = _wf(
+            "ok",
+            [{"id": "a", "step_type": "reasoning", "depends_on": []}],
+            {"a": "do a"},
+        )
+        assert _check_workflow_step_consistency({"ok": wf}) == []
+
+    def test_orphan_instruction_is_error(self):
+        wf = _wf(
+            "x",
+            [{"id": "a", "step_type": "code", "depends_on": []}],
+            {"ghost": "dead text"},
+        )
+        errs = _check_workflow_step_consistency({"x": wf})
+        assert len(errs) == 1
+        assert errs[0]["check"] == "workflow_step_consistency"
+        assert "ghost" in errs[0]["message"]
+        assert errs[0].get("severity", "error") != "warning"
+
+    def test_reasoning_step_without_instructions_is_warning(self):
+        wf = _wf("x", [{"id": "a", "step_type": "reasoning", "depends_on": []}])
+        errs = _check_workflow_step_consistency({"x": wf})
+        assert len(errs) == 1
+        assert errs[0]["severity"] == "warning"
+
+    def test_code_step_without_instructions_is_fine(self):
+        wf = _wf("x", [{"id": "a", "step_type": "code", "depends_on": []}])
+        assert _check_workflow_step_consistency({"x": wf}) == []
+
+
+class TestWorkflowBodyHeadingIssues:
+    """The raw-file heading helper the commit step uses — catches a ``##``
+    heading after the first step section that matches no step id (the codec
+    would silently merge it into the previous step)."""
+
+    _STEPS_FM = (
+        "---\nname: T\nkind: workflow\nworkflow_name: t\nsteps:\n"
+        "- id: one\n  step_type: reasoning\n  depends_on: []\n"
+        "- id: two\n  step_type: reasoning\n  depends_on: [one]\n---\n\n"
+    )
+
+    def test_clean_workflow_body(self):
+        txt = self._STEPS_FM + "Intro.\n\n## one\n\ndo one\n\n## two\n\ndo two\n"
+        assert workflow_body_heading_issues(txt) == []
+
+    def test_narrative_subheading_before_steps_not_flagged(self):
+        txt = self._STEPS_FM + "## Overview\n\nstuff\n\n## one\n\ndo one\n\n## two\n\ndo two\n"
+        assert workflow_body_heading_issues(txt) == []
+
+    def test_typo_heading_after_steps_flagged(self):
+        txt = self._STEPS_FM + "## one\n\ndo one\n\n## twoo\n\noops\n\n## two\n\ndo two\n"
+        issues = workflow_body_heading_issues(txt)
+        assert len(issues) == 1
+        assert "twoo" in issues[0]
+
+    def test_non_workflow_file_returns_empty(self):
+        txt = "---\nname: D\nkind: directions\n---\n\n## any heading\n\nbody\n"
+        assert workflow_body_heading_issues(txt) == []
 
 
 class TestValidateStoreSeverity:

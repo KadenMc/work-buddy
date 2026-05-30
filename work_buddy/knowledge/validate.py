@@ -268,6 +268,119 @@ def _check_parent_child_symmetry(store: dict[str, PromptUnit]) -> list[dict[str,
     return errors
 
 
+def _check_workflow_step_dag(store: dict[str, PromptUnit]) -> list[dict[str, str]]:
+    """Check 10: each workflow unit's internal ``steps`` DAG is well-formed —
+    no duplicate step ids, every ``depends_on`` names an existing step, and
+    no cycles.
+
+    The conductor builds this DAG and raises on cycles / dangling deps, but
+    only when a workflow *runs* (``work_buddy/workflow.py`` ``add_task``). This
+    surfaces the same failures at author / commit time, before a broken steps
+    DAG ever ships. Degrades gracefully (skips cycle detection) when networkx
+    is unavailable, mirroring ``validate_dag``.
+    """
+    errors: list[dict[str, str]] = []
+    try:
+        import networkx as nx
+    except ImportError:
+        nx = None  # type: ignore[assignment]
+
+    for path, unit in sorted(store.items()):
+        if not isinstance(unit, WorkflowUnit):
+            continue
+        steps = unit.steps or []
+
+        ids: list[str] = [
+            s["id"] for s in steps if isinstance(s, dict) and s.get("id")
+        ]
+        seen: set[str] = set()
+        for sid in ids:
+            if sid in seen:
+                errors.append({
+                    "check": "workflow_step_dag",
+                    "path": path,
+                    "message": f"duplicate step id {sid!r}",
+                })
+            seen.add(sid)
+        step_ids = set(ids)
+
+        g = nx.DiGraph() if nx is not None else None
+        if g is not None:
+            for sid in step_ids:
+                g.add_node(sid)
+
+        for s in steps:
+            if not isinstance(s, dict):
+                continue
+            sid = s.get("id")
+            for dep in s.get("depends_on") or []:
+                if dep not in step_ids:
+                    errors.append({
+                        "check": "workflow_step_dag",
+                        "path": path,
+                        "message": f"step {sid!r} depends_on unknown step {dep!r}",
+                    })
+                elif g is not None and sid:
+                    g.add_edge(dep, sid)
+
+        if g is not None and step_ids and not nx.is_directed_acyclic_graph(g):
+            try:
+                cyc = nx.find_cycle(g)
+                chain = " -> ".join(a for a, _ in cyc) + f" -> {cyc[-1][1]}"
+            except Exception:
+                chain = "cycle present"
+            errors.append({
+                "check": "workflow_step_dag",
+                "path": path,
+                "message": f"step DAG has a cycle: {chain}",
+            })
+
+    return errors
+
+
+def _check_workflow_step_consistency(store: dict[str, PromptUnit]) -> list[dict[str, str]]:
+    """Check 11: workflow ``steps`` ↔ ``step_instructions`` consistency.
+
+    - An orphan ``step_instructions`` key (no matching step id) is dead text
+      that will drift into ``content.full`` on the next codec round-trip —
+      flagged as an error.
+    - A ``reasoning`` step with no instructions is usually an authoring miss
+      (the agent reaches the step with only its name) — flagged as a
+      non-blocking warning, since a few self-explanatory steps may omit them.
+    """
+    errors: list[dict[str, str]] = []
+    for path, unit in sorted(store.items()):
+        if not isinstance(unit, WorkflowUnit):
+            continue
+        step_ids = {
+            s["id"] for s in (unit.steps or [])
+            if isinstance(s, dict) and s.get("id")
+        }
+        instructions = unit.step_instructions or {}
+        for key in instructions:
+            if key not in step_ids:
+                errors.append({
+                    "check": "workflow_step_consistency",
+                    "path": path,
+                    "message": (
+                        f"step_instructions has orphan key {key!r} — no such "
+                        "step; it will drift into content.full on round-trip"
+                    ),
+                })
+        for s in unit.steps or []:
+            if not isinstance(s, dict):
+                continue
+            sid = s.get("id")
+            if s.get("step_type") == "reasoning" and sid and sid not in instructions:
+                errors.append({
+                    "check": "workflow_step_consistency",
+                    "path": path,
+                    "message": f"reasoning step {sid!r} has no instructions",
+                    "severity": "warning",
+                })
+    return errors
+
+
 # ---------------------------------------------------------------------------
 # Main validation runner
 # ---------------------------------------------------------------------------
@@ -283,6 +396,8 @@ _CHECKS = [
     ("placeholder_duplicate", _check_placeholder_duplicates),
     ("parent_child_symmetry", _check_parent_child_symmetry),
     ("capability_op_resolution", _check_capability_op_resolution),
+    ("workflow_step_dag", _check_workflow_step_dag),
+    ("workflow_step_consistency", _check_workflow_step_consistency),
 ]
 
 
@@ -369,7 +484,8 @@ def docs_validate(
                  Available: dag_integrity, command_mapping, thinned_commands,
                  store_path_validity, required_fields, directions_fields,
                  kind_specific_fields, placeholder_duplicate,
-                 parent_child_symmetry, capability_op_resolution
+                 parent_child_symmetry, capability_op_resolution,
+                 workflow_step_dag, workflow_step_consistency
     """
     check_list = [c.strip() for c in checks.split(",") if c.strip()] if checks else None
     return validate_store(checks=check_list)
