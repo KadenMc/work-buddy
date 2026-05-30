@@ -23,6 +23,22 @@ parents:
 - notifications
 - notifications
 dev_notes: |-
+  ## The three consent principals
+
+  Consent resolution is **principal-scoped**: every `is_granted` / `get_mode` / `diagnose_carry` check resolves against exactly ONE session's `consent.db`, named by a `ConsentPrincipal` (`work_buddy/consent_principal.py`). There is NO implicit "process-default DB" for an agent's check — relying on one is the bug class this model eliminates (an agent's check resolving against the *sidecar's* DB and riding a stale `workflow_run` blanket that was never the agent's).
+
+  | Principal | Bound by | Resolves against | Workflow-carry |
+  |---|---|---|---|
+  | `human_agent(sid)` | gateway `_invoke_with_session` + `_check_missing_consent` | the agent's own session DB | yes — its own live workflow grants |
+  | `sidecar_self()` | sidecar Role-B self-checks (`agent_spawn`, vault-recon spawn gate) | the sidecar's own session DB | yes |
+  | `replay_of(sid)` | retry sweep, `obsidian_retry`, gateway retry branch | the originating agent's DB | NO — individual grants only (no time-travel) |
+
+  **INVARIANT:** a new consent check or dispatch path MUST bind a principal via `consent_principal(...)`, or the gate cannot resolve correctly. With no principal bound, `is_granted` falls back to the legacy process-default resolution and emits a one-shot `CONSENT_NO_PRINCIPAL` audit line; flip `consent.set_fail_closed_no_principal(True)` to deny instead. Default is off — binding a principal at every production boundary (gateway / sidecar / retry) is what closes the hole; fail-closed is the durable end-state once every caller is confirmed to bind one.
+
+  The carry policy is a property of the principal *kind* (`ConsentPrincipal.allows_workflow_carry`), not a free-form flag — it is what the older `from_originating` boolean encoded for the replay path. The sidecar's synthetic `WORK_BUDDY_SESSION_ID` (set in `work_buddy/sidecar/__main__.py` "for logging") IS the sidecar principal's session; consult it for consent ONLY via `sidecar_self()`, never as an ambient default for an agent's check.
+
+  **Orphan prevention.** Headless (sidecar-scheduled) workflow runs get an isolated per-run session (`<run_id>-srun`) and a TTL-bounded `workflow_run` grant via `conductor.start_workflow(headless=True)`, so a scheduled run can neither carry-authorize a concurrent sidecar op nor orphan forever. `daemon.run()` reconciles the sidecar's own session at boot to sweep any leftover orphan a hard-killed run left behind. (`get_session_dir` keys session directories on `session_id[:8]`, so per-run ids lead with the uuid-based `run_id` to stay unique — a `sidecar-*` prefix would collide.)
+
   **Implied consent for thread approvals.** `work_buddy/dashboard/service.py:_post_thread_action` and `work_buddy/threads/group.py:_run_child_accept` wrap `engine.transition` in `user_initiated()` for user-click triggers. The trigger allowlist `_THREAD_USER_INITIATED_TRIGGERS` lives at the top of service.py. To add a new user-click trigger to the bypass, add it to that set; non-listed triggers (e.g. agent-initiated `begin_inference`, `inference_done`) take the bare `engine.transition` path. Tests live in `tests/unit/test_consent_user_initiated.py` (8 cases covering reentrancy, exception cleanup, USER_INITIATED audit emission). `_consent_ctx` is `threading.local`-backed so cross-thread leaks aren't a concern; the side-effect dispatcher runs side effects in the same thread that called `engine.transition`, so the context propagates naturally through the transition machinery.
 
   **Failure mode the wrapper guards against.** Without `user_initiated`, clicking Approve on a `task_create` action chip fires `ConsentRequired: tasks.create_task (moderate)` and dumps the thread into `AWAITING_REDIRECT` — the user is prompted twice for the same decision (once via the action card showing parameters and risk metadata, again via a fresh consent notification). The action card itself IS the consent surface; the wrapper makes the click count.
