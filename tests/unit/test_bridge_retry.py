@@ -436,6 +436,39 @@ class TestBridgeRetryTypedExceptions:
         assert is_bridge_failure(result)
         assert result["error_kind"] == "obsidian_startup_race"
 
+    def test_startup_race_return_dict_is_retried(self):
+        """Return-dict path (surface #2): a decorated fn that *returns* a
+        startup-race bridge_failure must be RETRIED, not short-circuited.
+
+        The retry decision keys off ``_bridge_terminal`` via
+        ``classify_bridge_result``; a startup race is non-terminal, so the
+        decorator must retry it in-process rather than short-circuit and
+        leave recovery to the sidecar. The realistic
+        get_last_bridge_state classification is covered in
+        ``test_bridge_four_state.test_bridge_failure_startup_race_is_not_terminal``;
+        here we isolate the decorator's retry behavior.
+        """
+        call_count = 0
+
+        @bridge_retry(max_retries=3, wait_seconds=0)
+        def fails():
+            nonlocal call_count
+            call_count += 1
+            return bridge_failure(
+                "Could not read master list",
+                state="obsidian_startup_race",
+                state_detail="port not bound yet",
+            )
+
+        with patch("work_buddy.obsidian.bridge.is_available", return_value=True), \
+             patch("work_buddy.obsidian.bridge.get_latency_context", return_value="t"):
+            result = fails()
+
+        assert call_count == 3  # retried to exhaustion, NOT short-circuited
+        assert is_bridge_failure(result)
+        assert result["_bridge_state"] == "obsidian_startup_race"
+        assert result["_bridge_terminal"] is False
+
     def test_obsidian_timeout_retries_then_translates(self):
         """ObsidianTimeout retries; on exhaustion translates to
         bridge_failure dict (not raised)."""
@@ -639,3 +672,60 @@ class TestObsidianRetryTypedExceptions:
         assert excinfo.value.path == "notes/x.md"
         assert excinfo.value.content_hint == "hi"
         assert excinfo.value.write_mode == "insert"
+
+
+# ---------------------------------------------------------------------------
+# Terminal-set parallelism across representations
+# ---------------------------------------------------------------------------
+
+
+def test_terminal_sets_agree_across_representations():
+    """The three terminal sets must agree on every unreachable leaf.
+
+    Each surface that decides "is this retryable" keys off a different
+    vocabulary for the same condition:
+
+      - ``_TERMINAL_STATES`` (state strings) — the return-dict path via
+        ``_bridge_terminal``.
+      - ``_TERMINAL_OBSIDIAN_ERROR_KINDS`` (error_kinds) — the decorator's
+        exception path via ``_is_terminal_obsidian_error``.
+      - ``resilient_bridge._TERMINAL_OBSIDIAN_ERRORS`` (exception types) —
+        the adapter's ``classify_obsidian_error``.
+
+    A future edit that marks a leaf terminal in one vocabulary but not the
+    others would silently create a classification split (e.g. a startup race
+    treated as terminal by one surface and transient by another). This locks
+    them together.
+    """
+    from work_buddy.obsidian import resilient_bridge as RB
+    from work_buddy.obsidian.errors import (
+        ObsidianNotRunning,
+        ObsidianPluginDisabled,
+        ObsidianPluginMissing,
+        ObsidianStartupRace,
+    )
+    from work_buddy.obsidian.retry import (
+        _TERMINAL_OBSIDIAN_ERROR_KINDS,
+        _TERMINAL_STATES,
+    )
+
+    # (exception type, its get_last_bridge_state string)
+    leaves = [
+        (ObsidianNotRunning, "obsidian_not_running"),
+        (ObsidianPluginMissing, "plugin_not_installed"),
+        (ObsidianPluginDisabled, "plugin_disabled"),
+        (ObsidianStartupRace, "obsidian_startup_race"),
+    ]
+    for cls, state in leaves:
+        by_state = state in _TERMINAL_STATES
+        by_kind = cls.error_kind in _TERMINAL_OBSIDIAN_ERROR_KINDS
+        by_type = cls in RB._TERMINAL_OBSIDIAN_ERRORS
+        assert by_state == by_kind == by_type, (
+            f"{cls.__name__}: terminal disagreement "
+            f"(state={by_state}, kind={by_kind}, type={by_type})"
+        )
+
+    # The startup race specifically must be non-terminal in all three.
+    assert "obsidian_startup_race" not in _TERMINAL_STATES
+    assert ObsidianStartupRace.error_kind not in _TERMINAL_OBSIDIAN_ERROR_KINDS
+    assert ObsidianStartupRace not in RB._TERMINAL_OBSIDIAN_ERRORS
