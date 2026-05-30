@@ -171,3 +171,23 @@ def test_collect_unavailable_when_provider_disabled(monkeypatch):
     monkeypatch.setattr(provider_mod, "get_calendar_provider", _raise)
     out = cc.collect({})
     assert "Calendar data not available" in out
+
+
+@freeze_time("2026-04-04T17:30:00Z")
+def test_collect_coverage_footer_opt_in(monkeypatch):
+    monkeypatch.setattr(config, "USER_TZ", _EDT, raising=False)
+    prov = FakeCalendarProvider()
+    prov.add_calendar("work", "Work")
+    prov.add_calendar("sk", "SickKids")
+    prov.add_events([_timed("Work", "work", "e1", 13, 0, 60, "Lunch")])
+    _use_fake(monkeypatch, prov)
+    # build_coverage_report is imported inside the footer from capabilities,
+    # which calls get_calendar_provider; patch there too.
+    from work_buddy.calendar import capabilities as caps
+    monkeypatch.setattr(caps, "get_calendar_provider", lambda: prov)
+
+    out = cc.collect({"include_coverage": True})
+    assert "## Calendar coverage" in out
+    assert "Subscribed: 2 calendar(s)" in out
+    # and the footer is absent when not requested
+    assert "## Calendar coverage" not in cc.collect({})
