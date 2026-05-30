@@ -1254,6 +1254,25 @@ def _build_response(
 
         if result.get("success"):
             serialized = _safe_serialize(result["value"])
+            # An auto_run step runs in an isolated subprocess and so cannot
+            # reach this process's in-memory knowledge-store cache or search
+            # index. A step that mutated the on-disk store (e.g. the docs_edit
+            # commit) returns a ``__reconcile_store__`` sentinel to ask the
+            # main process to invalidate + lazily rebuild — that is the only
+            # path by which a subprocess-side edit becomes visible to live
+            # agent_docs / knowledge queries.
+            if isinstance(serialized, dict) and serialized.pop("__reconcile_store__", False):
+                try:
+                    from work_buddy.knowledge.store import invalidate_store
+                    invalidate_store()
+                    logger.info(
+                        "auto_run[%s]: reconciled knowledge store cache + index",
+                        task_id,
+                    )
+                except Exception as exc:  # never let reconcile failure abort the run
+                    logger.warning(
+                        "auto_run[%s]: store reconcile failed: %s", task_id, exc,
+                    )
             dag.complete_task(task_id, result=serialized)
             # ``auto_ran`` is a status ledger ({id, name} on success;
             # {id, name, error} on failure; {id, name, skipped, reason}

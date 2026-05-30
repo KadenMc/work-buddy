@@ -569,8 +569,9 @@ def scan_changes(base_ref: str = "HEAD") -> dict[str, Any]:
         )
     if classified["knowledge"]:
         warnings.append(
-            "Direct edits to knowledge/store/*.md detected. "
-            "Prefer docs_create/docs_update/docs_delete — hand-edits bypass DAG validation."
+            "Direct edits to knowledge/store/*.md detected — make sure each one "
+            "went through the docs_edit workflow (or that you ran docs_validate + "
+            "agent_docs_rebuild) so the store and search index reflect the change."
         )
 
     return {

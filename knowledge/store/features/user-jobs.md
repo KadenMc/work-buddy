@@ -135,16 +135,17 @@ For `type: workflow` jobs, the `params` dict is forwarded to the workflow at sta
 
 Workflows that don't declare a `params_schema` reject any non-empty `params` at start. Workflows that do declare one reject calls with required keys missing or with unknown keys. Validation policy is strict on purpose — a typo silently doing nothing is worse than an upfront error.
 
-Declare a schema on a workflow via `wb_run("workflow_create", ...)` or `wb_run("workflow_update", ...)` with the `params_schema` argument:
+Declare a schema by adding a `params_schema` block to the workflow unit's YAML frontmatter (edit the unit via the `docs_edit` workflow):
 
-```
-mcp__work-buddy__wb_run("workflow_update", {
-    "path": "my/workflow",
-    "params_schema": {
-        "project_id": {"type": "str", "description": "Project slug", "required": true},
-        "depth":      {"type": "int", "description": "How many levels to walk"}
-    }
-})
+```yaml
+params_schema:
+  project_id:
+    type: str
+    description: Project slug
+    required: true
+  depth:
+    type: int
+    description: How many levels to walk
 ```
 
 ## Collision policy

@@ -2,7 +2,7 @@
 name: Knowledge System
 kind: concept
 description: Unified agent self-documentation — typed units, DAG hierarchy, full-content search index with BM25 + dense embeddings
-summary: Two parallel stores (system JSON + personal vault) sharing one KnowledgeUnit schema; DAG hierarchy; progressive disclosure; inline <<wb:path>> placeholders.
+summary: Two parallel stores (system Markdown + personal vault) sharing one KnowledgeUnit schema; DAG hierarchy; progressive disclosure; inline <<wb:path>> placeholders.
 tags:
 - knowledge
 - documentation
@@ -93,7 +93,7 @@ Each cap emits a distinct visible marker so the reader sees exactly what was eli
 
 ### Authoring guardrails
 
-- **Write-time hint (informational).** `docs_create` / `docs_update` return a `hints` field flagging plain placeholders that target units with their own placeholders — the case where the author probably wanted `--recursive` but forgot. Never blocks an edit.
+- **Write-time hint (informational).** The internal `create_unit` / `update_unit` write primitives return a `hints` field flagging plain placeholders that target units with their own placeholders — the case where the author probably wanted `--recursive` but forgot. Never blocks an edit.
 - **Write-time hard reject (error).** The same write path rejects content with **duplicate placeholders within a single unit**: the same target appearing more than once contributes zero readable content (the per-unit-occurrence cap renders subsequent references as back-ref markers), so it's never the right authorial choice. The editor returns `{"error": "placeholder_duplicate", "duplicates": [...]}` and does not persist.
 - **Validator parity.** `docs_validate` runs a `placeholder_duplicate` check corpus-wide so direct-file bypasses are still caught.
 
@@ -118,4 +118,6 @@ A persistent BM25 + dense vector index over full unit content is warmed eagerly 
 - `dev_mode_toggle` — toggle dev mode for the session
 - `knowledge_index_rebuild` — force rebuild knowledge search index with full embeddings
 - `knowledge_index_status` — check index health
-- `docs_create` / `docs_update` / `docs_delete` / `docs_move` / `docs_validate` — structured editing. `docs_update` accepts a `kind` parameter for reclassifying existing units.
+- `docs_edit` — the workflow for editing or creating **any** unit kind: it returns the unit's `.md` path, the agent edits it natively, and the commit step validates (kind-aware) and reconciles the store cache + index.
+- `docs_delete` / `docs_move` — structural operations (remove / relocate a unit and reconcile parent references).
+- `docs_validate` — kind-aware structural validation over the store (DAG, placeholder duplicates, capability op-resolution, workflow step-DAG).

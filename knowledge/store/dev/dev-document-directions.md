@@ -1,17 +1,15 @@
 ---
 name: Dev Doc Update Directions
 kind: directions
-description: How to run /wb-dev-document — scan current changes, propose knowledge-store edits, confirm, apply via docs_*/workflow_* capabilities, validate store integrity, report. Rules for what to check and what not to clobber.
+description: How to run /wb-dev-document — scan current changes, propose knowledge-store edits, confirm, apply by editing each unit's Markdown file (docs_edit / native Edit) plus docs_delete, validate store integrity, report. Rules for what to check and what not to clobber.
 trigger: When the user invokes /wb-dev-document, or as a mandatory step inside /wb-dev-pr, or after a dev change that might have made existing knowledge units stale
 command: wb-dev-document
 workflow: dev/dev-document
 capabilities:
 - agent_docs
-- docs_create
-- docs_update
 - docs_delete
-- workflow_create
-- workflow_update
+- agent_docs_rebuild
+- docs_validate
 tags:
 - dev
 - document
@@ -55,8 +53,8 @@ Before creating a new unit, decide its kind. The decision affects how it renders
 Apply this decision flow in order; first match wins:
 
 1. **Behavioral guide loaded by a slash command (`/wb-...`)** → `directions`.
-2. **Callable from MCP via `wb_run`** → `capability`. Auto-generated from `registry.py`; never hand-create.
-3. **Multi-step DAG the conductor advances** → `workflow`. Hand-authored in `workflows.json`; create via `workflow_create`.
+2. **Callable from MCP via `wb_run`** → `capability`. An Op (a callable in `work_buddy/mcp_server/ops/`) plus a `kind: capability` declaration unit; author the declaration via `docs_edit`.
+3. **Multi-step DAG the conductor advances** → `workflow`. A `kind: workflow` unit (one Markdown file; `steps` DAG in frontmatter); author via `docs_edit`.
 4. **Personal/user-authored knowledge (Obsidian-vault-backed)** → `personal`. Create via `knowledge_mint`.
 5. **Runs on a network port internal to work-buddy** → `service`. Examples: dashboard (5127), embedding service (5124), messaging (5123). Has `ports`.
 6. **Primarily documents a connection to an **external** system** → `integration`. Obsidian, Thunderbird, Tailscale, Hindsight, an Obsidian plugin, etc. Even if work-buddy runs a local bridge for it, the bridge is the mechanism; the external thing is the unit's identity. Has `external_system`, `bridge_module`.
@@ -144,13 +142,13 @@ Both `content_full` and `dev_notes` are durable surfaces re-read by future agent
 
 ## Apply dispatch
 
-Proposals route by unit kind:
-- `directions` / `system` / `service` / `integration` / `reference` / `concept` → `docs_create` / `docs_update` / `docs_delete`
-- `workflow` → `workflow_create` / `workflow_update` (the DAG fields don't fit the prose schema).
+Every unit kind is applied the same way — by editing its Markdown file:
+- `create` / `update` (any kind, including `workflow` and `capability`) → edit `knowledge/store/<path>.md` with your native `Edit` / `Write` tool (or drive the `docs_edit` workflow). Frontmatter holds structured fields; the body is `content_full`; a workflow's `steps` DAG lives in frontmatter with `## <step-id>` body sections.
+- `delete` → `docs_delete(path)`.
 
-`docs_update` accepts a `kind` parameter for reclassifying an existing unit. Use it when an audit reveals a misclassification (e.g., reference → concept), not for routine field edits.
+After the file edits, call `agent_docs_rebuild()` once so the store cache + search index reflect them (the `docs_edit` workflow does this per unit automatically).
 
-Capability units are auto-generated from `registry.py` by `python -m work_buddy.knowledge.build --write` — don't try to create/update them via `docs_*`. Instead, rebuild.
+To reclassify a unit (e.g. reference → concept), change its `kind` field in the frontmatter — a deliberate audit decision, not a routine field edit.
 
 ## Validate
 
@@ -162,12 +160,12 @@ After `apply` lands, the workflow auto-runs `docs_validate` over the whole store
 - Dangling path references.
 - **Placeholder duplicates** — the same `<<wb:X>>` target appearing more than once within a single unit. Hard error: duplicates render as back-reference markers at read time and contribute zero readable content, so they're never the right authorial choice. The editor pre-rejects them at write time; this corpus-wide check catches direct-JSON bypasses.
 
-The `report` step surfaces any failures. Fix them **in the same run** with a follow-up `docs_update` or `workflow_update` — don't commit with a broken store.
+The `report` step surfaces any failures. Fix them **in the same run** with a follow-up edit to the offending unit's `.md` (via `docs_edit`, or a native `Edit` + `agent_docs_rebuild`) — don't commit with a broken store.
 
 ## Rules
 
 - **No clobbering** — `update` only changes the fields that are stale.
 - **No recency bias** — a unit describes its whole feature, not just your latest edit.
 - **Empty proposals are valid** — don't invent work if nothing is stale. But "I can't find anything" ≠ "I didn't look"; you must have loaded the top candidate_units and done semantic searches first.
-- **Never hand-edit `knowledge/store/*.json`** — the `apply` step uses the sanctioned capabilities for a reason (DAG validation, parent-child reconciliation, cache invalidation, and the placeholder-duplicate pre-write reject).
+- **Reconcile every edit** — applying a change means editing the unit's `.md`; always validate (the `docs_edit` commit step, or `docs_validate`) and `agent_docs_rebuild` afterward so the store cache and search index stay in sync. An unreconciled file edit is invisible to live queries until the next rebuild.
 - **Validation failures block the commit** — not prescribed by a machine gate (`validate` is auto_run, not halting), but treat them as blocking: a broken store misleads every future agent.

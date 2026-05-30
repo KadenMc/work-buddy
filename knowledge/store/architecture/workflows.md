@@ -2,7 +2,7 @@
 name: Workflow System
 kind: concept
 description: Workflow execution — DAG, execution policy, auto-run steps, conductor, step result visibility
-summary: Workflow definitions live in knowledge/store/workflows.json as WorkflowUnit entries. DAG enforces dependency ordering. auto_run steps execute deterministic code automatically. Steps can declare a visibility spec (full/summary/none/auto) controlling what agents see inline vs on-demand via wb_step_result.
+summary: A workflow is a kind:workflow knowledge unit — one Markdown file per workflow under knowledge/store/, with the steps DAG in frontmatter and per-step prose under ## step-id body sections. DAG enforces dependency ordering. auto_run steps execute deterministic code automatically. Steps can declare a visibility spec (full/summary/none/auto) controlling what agents see inline vs on-demand via wb_step_result.
 tags:
 - workflows
 - DAG
@@ -35,7 +35,7 @@ dev_notes: |-
   `work_buddy/sidecar/dispatch/executor.py::_execute_workflow(name, params)` forwards to `start_workflow(name, params=params or None)`. Job files (.md frontmatter) carry `params: {...}` under either capability or workflow types; `create_user_job_file` writes it for both. The whole pipeline is exercised by `tests/unit/test_workflow_params.py`.
 ---
 
-Workflow definitions live in knowledge/store/workflows.json as WorkflowUnit entries. Each contains:
+A workflow is a `kind: workflow` knowledge unit — one Markdown file per workflow under `knowledge/store/`, with the `steps` DAG in YAML frontmatter and each step's prose under a `## <step-id>` body section. Each unit carries:
 - workflow_name: registry slug
 - execution: main | subagent (default policy)
 - steps: [{id, name, step_type, depends_on, auto_run, optional, execution, ...}]
@@ -47,7 +47,7 @@ The conductor reads these at runtime via _discover_workflows_from_store(). Workf
 
 ## Auto-Run Steps
 
-Workflow steps can be marked `auto_run` in `workflows.json`. The conductor executes these transparently — the agent never sees them as "current." Results are stored in the DAG and delivered to the agent in `step_results`.
+Workflow steps can be marked `auto_run` in the unit's frontmatter. The conductor executes these transparently in a subprocess — the agent never sees them as "current." Results are stored in the DAG and delivered to the agent in `step_results`.
 
 ```yaml
 steps:
@@ -130,7 +130,7 @@ Validated params reach steps via two paths:
   ```
 - **Reasoning steps via the first-step response** — the response includes an `initial_params` field alongside `workflow_context`, so the agent reading the first instruction can inspect what was passed in. There is no `{{params.foo}}` template substitution into instruction text — agents read params from the response payload.
 
-Workflows are authored / updated through `workflow_create` / `workflow_update`, both of which accept the `params_schema` field. Never hand-edit `knowledge/store/workflows.json`.
+Workflows are authored / edited through the `docs_edit` workflow — you edit the unit's `.md` directly (frontmatter `steps` and `params_schema`, plus the `## <step-id>` body sections), and the commit step validates the step DAG (cycles, dangling deps) and reconciles the store + index.
 
 ## Workflow-level blanket consent
 
@@ -144,7 +144,7 @@ Starting a workflow grants blanket consent for all its steps (grant_workflow_con
 
 ## Slash commands
 
-All 34 slash commands (.claude/commands/wb-*.md) are thin launchers that load behavioral directions from the knowledge store via agent_docs. The slash command is the entry point; the knowledge store directions unit contains the behavioral content; the workflows.json WorkflowUnit contains the DAG structure.
+All slash commands (.claude/commands/wb-*.md) are thin launchers that load behavioral directions from the knowledge store via agent_docs. The slash command is the entry point; the knowledge store directions unit contains the behavioral content; the `kind: workflow` unit contains the DAG structure.
 
 ## Step result visibility
 
@@ -159,7 +159,7 @@ Steps can declare a `visibility` spec that controls what agents see inline vs on
 
 Agents retrieve elided data on demand via `wb_step_result(workflow_run_id, step_id, key?)`. When a step result shows `_manifest: true`, data is available on demand without cluttering the response.
 
-Declare visibility in the step's dict in `workflows.json`:
+Declare visibility in the step's dict in the workflow unit's frontmatter:
 
 ```
 "visibility": {"mode": "none"}

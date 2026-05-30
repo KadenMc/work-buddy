@@ -46,7 +46,7 @@ Every user-facing capability must have a corresponding slash command in `.claude
 
 Python code blocks in operational workflow instructions are a **priming hazard**: they teach agents to bypass the gateway even when CLAUDE.md says not to. If a workflow step shows `from work_buddy.contracts import ...`, the agent will use that import. If it shows `wb_run("contract_health")`, it will use the gateway. **Agents follow what they read.**
 
-The gateway-first rule is about how we **instruct** operational agents, not about developing agents. Dev agents use gateway tools AND write/execute Python. But `workflows.json` step instructions that operational agents follow at runtime must route through the gateway.
+The gateway-first rule is about how we **instruct** operational agents, not about developing agents. Dev agents use gateway tools AND write/execute Python. But workflow-unit step instructions that operational agents follow at runtime must route through the gateway.
 
 The only acceptable Python in workflow step instructions is:
 - **Pure formatting** (e.g., `format_briefing()`) — transforms data already in memory, could become auto_run
@@ -60,7 +60,7 @@ For `step_type: reasoning` steps in workflow definitions, keep instructions mini
 
 This works because slash commands load directions into the agent's context as first-class instructions via `agent_docs`. Workflow step instructions arrive as MCP tool results, which carry less instructional weight. Put quality bars, synthesis rules, tone guidance, and don’ts in the directions unit, not in step instructions.
 
-### What goes in workflow step instructions (workflows.json)
+### What goes in workflow step instructions
 - MCP call signatures and sequences
 - Data contracts between steps (structured dicts, not free text)
 - DAG structure (steps, deps, auto_run)

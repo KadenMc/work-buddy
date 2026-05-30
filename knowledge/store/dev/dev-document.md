@@ -45,7 +45,7 @@ steps:
       final_proposals: list
   invokes: []
 - id: apply
-  name: Apply accepted edits via docs_* / workflow_* capabilities
+  name: Apply accepted edits (native Edit for content, docs_delete for removals, then reconcile)
   step_type: code
   depends_on:
   - confirm
@@ -57,11 +57,8 @@ steps:
     - skipped
     - message
   invokes:
-  - docs_create
-  - docs_update
   - docs_delete
-  - workflow_create
-  - workflow_update
+  - agent_docs_rebuild
 - id: validate
   name: Validate store integrity after edits
   step_type: code
@@ -127,7 +124,7 @@ The workflow's intelligence is in the agent, not the scan. Specifically:
 - *What* new units (if any) should be created for subsystems the scan cannot know are new.
 - *Which body field* each new fact belongs in — `content_full` (every agent) vs `dev_notes` (dev-mode-only). Conscious routing between the two is the structural mechanism for the operational/developmental separation; the `propose` step's instruction enforces it inline, and `dev/dev-document-directions` carries the full criteria.
 - *Whether* CLAUDE.md or similar top-level instruction surfaces need manual updates — those live outside the knowledge store.
-- *How* to resolve any validation failures surfaced by the `validate` step — typically with a follow-up `docs_update` or `workflow_update` to fix the referenced path.
+- *How* to resolve any validation failures surfaced by the `validate` step — typically a follow-up edit to the referenced unit's `.md` (via `docs_edit`, or native `Edit` + `agent_docs_rebuild`).
 
 ## What this workflow is NOT
 
@@ -195,7 +192,7 @@ This isn't ceremony — it's the same orientation discipline `/wb-dev` enforces 
       "rationale": "<one-sentence why>",
       "fields": {
         /* for update: only the fields changing */
-        /* for create: all fields needed by docs_create or workflow_create */
+        /* for create: all fields needed to author the unit (frontmatter + content_full) */
         "content_full": "...",
         "dev_notes": "...",
         "description": "...",
@@ -251,14 +248,14 @@ Code step. The proposals to apply come from one of two places:
 
 If `step_results.confirm.confirmed` is `false`, skip everything and return `{applied: [], failed: [], skipped: [<all paths from propose.proposals>], message: "User declined; no edits applied."}`.
 
-Otherwise, iterate the proposals. For each:
+Otherwise, iterate the proposals. Each unit is one Markdown file at `knowledge/store/<path>.md` — applying an edit is editing that file. For each:
 
-- `action: "update"` + `kind` in {directions, system} → `docs_update(path=..., **fields)`
-- `action: "create"` + `kind` in {directions, system} → `docs_create(path=..., kind=..., name=..., description=..., **fields)`
-- `action: "update"` + `kind == "workflow"` → `workflow_update(path=..., **fields)` (serialize `steps` and `step_instructions` as JSON strings)
-- `action: "create"` + `kind == "workflow"` → `workflow_create(path=..., name=..., description=..., workflow_name=..., steps=..., **fields)`
-- `action: "delete"` → `docs_delete(path=...)`
+- `action: "update"` (any kind) → open `knowledge/store/<path>.md` and apply the proposal's `fields` with your native `Edit` tool. YAML frontmatter carries the structured fields (`description`, `dev_notes`, `parents`, and for workflow units the `steps` DAG); the Markdown body is `content_full`. For a workflow unit, keep the frontmatter `steps` ids and the `## <step-id>` body sections in sync.
+- `action: "create"` (any kind) → write a new `knowledge/store/<path>.md` with native `Write`: YAML frontmatter (`name`, `kind`, `description`, kind-specific fields such as `trigger` / `workflow_name` / `capability_name`, `parents`, optional `dev_notes`) followed by the `content_full` body. Copy the shape from a sibling unit of the same kind.
+- `action: "delete"` → `docs_delete(path=...)`.
 - `action: "no_op"` → skip.
+
+After all file edits, call `agent_docs_rebuild()` **once** to reconcile the store cache + search index so the `validate` step (and later queries) see your changes. For a single unit you can instead drive the whole open → edit → commit through the `docs_edit` workflow (`wb_run("docs-edit", {path, ...})`), which validates and reconciles per unit.
 
 **Fault tolerance**: one failure does not abort the loop. Collect results as `{applied: [path, ...], failed: [{path, error}, ...], skipped: [path, ...]}` and return them.
 
@@ -267,7 +264,7 @@ Otherwise, iterate the proposals. For each:
 
 ## validate
 
-Auto-run. After edits land, the conductor calls `work_buddy.knowledge.validate.docs_validate()` with no args (all checks: dag_integrity, command_mapping, thinned_commands, store_path_validity, required_fields, directions_fields, kind_specific_fields, parent_child_symmetry). Returns:
+Auto-run. After edits land, the conductor calls `work_buddy.knowledge.validate.docs_validate()` with no args (all checks: dag_integrity, command_mapping, thinned_commands, store_path_validity, required_fields, directions_fields, kind_specific_fields, placeholder_duplicate, parent_child_symmetry, capability_op_resolution, workflow_step_dag, workflow_step_consistency). Returns:
 - `passed` (bool): true iff every check found zero errors.
 - `failed` (int): total error count across all checks.
 - `summary` ({check_name: count}): errors per check type.
@@ -285,7 +282,7 @@ Reasoning step. Short summary of what changed:
 - **Validation outcome** (from `validate`): if `passed: false`, enumerate the errors by check type and path. These are structural problems you introduced and need to resolve before committing — they are not stylistic warnings.
 - For any CLAUDE.md or similar non-store files the user still needs to edit manually, flag them explicitly (the store capabilities don't touch CLAUDE.md).
 
-If validation failed, recommend concrete next actions to the user: typically a follow-up `docs_update` or `workflow_update` to fix the referenced path/field. Do NOT treat validation failures as cosmetic; they indicate the store is in a broken state.
+If validation failed, recommend concrete next actions to the user: typically a follow-up edit to the referenced unit's `.md` (via `docs_edit`, or native `Edit` + `agent_docs_rebuild`) to fix the path/field. Do NOT treat validation failures as cosmetic; they indicate the store is in a broken state.
 
 Do NOT re-summarize the code change itself — the user already knows what they did. Focus on doc hygiene + validation outcomes.
 

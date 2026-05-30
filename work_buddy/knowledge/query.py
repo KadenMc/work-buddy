@@ -192,10 +192,15 @@ def agent_docs(
 
 
 def agent_docs_rebuild(*, force: bool = False) -> dict[str, Any]:
-    """Reload the knowledge store from disk and rebuild the search index.
+    """Reconcile the knowledge store: reload every unit from disk and rebuild
+    the search index.
 
-    Use after editing store JSON files or after registry changes
-    that should be reflected in the unified index.
+    This is the propagation primitive behind a direct ``Edit`` of a unit's
+    ``.md`` file — it invalidates the in-memory store cache and the BM25 +
+    dense search index, reloads from disk, and rebuilds the index (cache-aware:
+    only units whose content changed are re-embedded, so a warm rebuild is
+    sub-second). The ``docs_edit`` workflow's commit step calls this; run it
+    standalone after a manual hand-edit so queries and search see the change.
     """
     from work_buddy.knowledge.store import load_store, invalidate_store
 

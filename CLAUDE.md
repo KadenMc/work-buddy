@@ -17,7 +17,7 @@ work-buddy's functionality is reached through five MCP tools that appear in your
 ### Capability vs workflow
 
 - **Capability** — a single atomic operation (`task_create`, `agent_docs`, `consent_request`, …). `wb_run` executes it and returns a result.
-- **Workflow** — a multi-step DAG defined in `knowledge/store/workflows.json` (`task-triage`, `morning-routine`, …). `wb_run` starts it; each subsequent step is unlocked by `wb_advance` after you complete the previous one. Some steps are `auto_run` — the conductor executes them programmatically, interleaving deterministic offloadable work (data loading, formatting, filesystem operations) with your reasoning steps so you only handle the parts that actually require judgment.
+- **Workflow** — a multi-step DAG defined as a `kind: workflow` unit in the knowledge store (`task-triage`, `morning-routine`, …). `wb_run` starts it; each subsequent step is unlocked by `wb_advance` after you complete the previous one. Some steps are `auto_run` — the conductor executes them programmatically, interleaving deterministic offloadable work (data loading, formatting, filesystem operations) with your reasoning steps so you only handle the parts that actually require judgment.
 
 ### Workflow consent (composable)
 

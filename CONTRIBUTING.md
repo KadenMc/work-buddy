@@ -77,26 +77,26 @@ work-buddy is designed to be extended through three main patterns. You don't nee
 
 ### Adding a Capability
 
-Capabilities are single functions exposed through the MCP gateway. To add one:
+A capability is an **Op** (a Python callable) plus a **declaration unit** (a `kind: capability` knowledge unit naming the Op). To add one:
 
-1. Write your function in the appropriate `work_buddy/` submodule
-2. Register it in `work_buddy/mcp_server/registry.py` using the `@capability` pattern
-3. Add a knowledge store unit (or let `build.py` generate one)
-4. Add tests
+1. Write the callable in the appropriate `work_buddy/` submodule.
+2. Register it as an Op in `work_buddy/mcp_server/ops/<domain>_ops.py` with `register_op("op.wb.<name>", fn)`.
+3. Author the declaration unit (`kind: capability` with `op`, `capability_name`, `category`, `parameters`) via the `docs_edit` workflow.
+4. Add tests, then restart the MCP server so the new capability registers.
 
-Your capability becomes discoverable via `wb_search` and executable via `wb_run` — no other wiring needed.
+Your capability becomes discoverable via `wb_search` and executable via `wb_run`.
 
 ### Adding a Workflow
 
-Workflows are multi-step DAGs stored as `WorkflowUnit` entries in the knowledge store. The conductor handles dependency ordering, state persistence, and step execution — you describe the steps and their instructions, and the framework runs them.
+Workflows are multi-step DAGs — each is a `kind: workflow` unit (one Markdown file) in the knowledge store, with its `steps` DAG in frontmatter and per-step prose under `## <step-id>` body sections. The conductor handles dependency ordering, state persistence, and step execution — you describe the steps and their instructions, and the framework runs them.
 
-A `WorkflowUnit` contains:
+A workflow unit contains:
 - **Steps** — a DAG of `{id, name, depends_on}` entries that define execution order
 - **Step instructions** — per-step text that the agent receives when executing each step
 - **Execution policy** — whether steps run in the main session or delegate to subagents
 - **Auto-run specs** — steps that execute deterministic code automatically (no agent reasoning needed)
 
-**The easiest way to add a workflow:** describe what you want to your agent and let it use the knowledge store editor to create the `WorkflowUnit`. The store handles validation, DAG integrity checks, and discoverability. Add a thin slash command in `.claude/commands/wb-your-workflow.md` and it's accessible via `/wb-` autocomplete.
+**The easiest way to add a workflow:** describe what you want to your agent and let it author the unit via the `docs_edit` workflow (`wb_run("docs-edit", {"path": ..., "create": true, "kind": "workflow"})`). The commit step validates the step DAG and reconciles; restart the MCP server so the new workflow name is callable. Add a thin slash command in `.claude/commands/wb-your-workflow.md` and it's accessible via `/wb-` autocomplete.
 
 Browse existing workflows via `wb_search("workflow")` or `agent_docs` to see real-world patterns including auto-run steps, subagent delegation, sub-workflow chaining, and conditional branching.
 
