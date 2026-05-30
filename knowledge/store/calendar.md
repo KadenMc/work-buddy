@@ -8,7 +8,9 @@ entry_points:
 - work_buddy.calendar.models
 - work_buddy.calendar.identity
 - work_buddy.calendar.providers.obsidian_bridge
+- work_buddy.calendar.providers.google_native
 - work_buddy.calendar.providers.fake
+- work_buddy.calendar.google_auth
 - work_buddy.calendar.capabilities
 - work_buddy.collectors.calendar_collector
 tags:
@@ -42,11 +44,13 @@ ObsidianBridgeCalendarProvider  (transitional bootstrap adapter)
 Obsidian google-calendar plugin → Google Calendar API
 ```
 
-Consumers depend on `work_buddy.calendar.provider` + `work_buddy.calendar.models`, never on `env.py`. A future `google_native` (own-OAuth) adapter replaces the bridge and retires it at read+write parity. Graph / CalDAV / ICS adapters are first-class product goals sequenced by demand — provider neutrality is a product requirement (work-buddy is multi-user), not YAGNI.
+Consumers depend on `work_buddy.calendar.provider` + `work_buddy.calendar.models`, never on `env.py`. The `google_native` (own-OAuth) adapter reads and writes Google Calendar directly (no Obsidian dependency) and is the path that retires the bridge for Google at read+write parity. Graph / CalDAV / ICS adapters are first-class product goals sequenced by demand — provider neutrality is a product requirement (work-buddy is multi-user), not YAGNI.
 
 ## Provider abstraction
 
-`CalendarProvider` is a `@runtime_checkable` Protocol; backends live under `work_buddy.calendar.providers.*`. `get_calendar_provider()` reads `calendar.provider` from config (default `obsidian_bridge`); `fake` selects an in-memory provider for tests; `calendar.enabled: false` short-circuits with `CalendarProviderDisabled`. The protocol declares the full surface (reads + writes) so the contract is stable across PRs; there is no `ensure_calendar` / provisioning method — WB writes to the user's real calendars, not a sandbox.
+`CalendarProvider` is a `@runtime_checkable` Protocol; backends live under `work_buddy.calendar.providers.*`. `get_calendar_provider()` reads `calendar.provider` from config (default `obsidian_bridge`; `google_native` for direct own-OAuth; `fake` in-memory for tests); `calendar.enabled: false` short-circuits with `CalendarProviderDisabled`. The protocol declares the full surface (reads + writes); there is no `ensure_calendar` / provisioning method — WB writes to the user's real calendars, not a sandbox.
+
+`google_native` auth lives in `work_buddy.calendar.google_auth`: a persisted OAuth token (under the data root) refreshed silently via `google-auth`; the interactive consent flow (`google-auth-oauthlib`) is a setup-time step surfaced through the `google_calendar_native` health component (`/wb-setup`). Least-privilege scope `calendar.events`; publish the OAuth consent screen to Production so the refresh token does not expire.
 
 ## Canonical models
 
@@ -56,18 +60,20 @@ Consumers depend on `work_buddy.calendar.provider` + `work_buddy.calendar.models
 
 `stable_key_for` (`work_buddy.calendar.identity`) returns `ical:<uid>` when an RFC 5545 iCalUID is present, else `loc:<provider>:<calendar_id>:<event_id>`. The bridge payload lacks iCalUID, so bridge events use the `loc:` form; the native adapter supplies real UIDs and dedups the same meeting across calendars.
 
-## Capabilities (reads)
+## Capabilities
 
+Reads:
 - `calendar_health` — provider readiness probe.
 - `calendar_list_events` — events in a date window (optionally per calendar).
-- `calendar_get_event` — one event by id (windowed lookup; the plugin's getEvent is broken).
+- `calendar_get_event` — one event by id (windowed lookup on the bridge; a real `events.get` on native).
 - `calendar_coverage` — which calendars are visible / blacklisted / errored, with per-calendar event counts.
 
-Write capabilities (heavy-consent mutation) live one layer up from the adapter so every provider inherits identical consent gating; they arrive in a later PR.
+Writes (heavy, per-change consent — see `obsidian/calendar` and the capability layer):
+- `create_calendar_event`, `update_calendar_event`, `delete_calendar_event` — mutate the user's real calendars. Consent lives one layer up from the adapter (in `capabilities.py`) so every provider inherits identical gating: per-write `consent_weight="high"`, a change-specific prompt body (target calendar, title, start–end in `USER_TZ`, before→after diff), `default_ttl=0` on update/delete (always re-prompt), and a shared-calendar escalation.
 
 ## Degradation
 
-Gated by the `google_calendar` tool probe: when Obsidian / the plugin isn't reachable the `calendar_*` capabilities are filtered out of the live registry. The collector degrades to a clear 'not available' report rather than crashing the morning bundle.
+The bridge `calendar_*` capabilities are gated by the `google_calendar` tool probe (which needs Obsidian); the `google_native` provider has its own `google_calendar_native` health component and needs no Obsidian. Either way the collector degrades to a clear 'not available' report rather than crashing the morning bundle.
 
 ## Related
 
