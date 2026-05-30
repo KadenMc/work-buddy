@@ -5,8 +5,9 @@ loading workflow definitions from the knowledge store. It powers the
 ``wb_search`` gateway tool.
 
 Workflow DAG structure, step instructions, auto_run specs, and execution
-policy are stored in ``knowledge/store/workflows.json`` as WorkflowUnit
-entries. The conductor reads these at runtime via
+policy live in ``kind: workflow`` units — one Markdown file per workflow under
+``knowledge/store/`` (``steps`` in frontmatter, per-step prose in
+``## <step-id>`` body sections). The conductor reads these at runtime via
 ``_discover_workflows_from_store()``.
 """
 
@@ -86,13 +87,11 @@ class Capability:
     # the partial-state recovery path retries the full capability.
     effects: list[Any] = field(default_factory=list)  # list[EffectSpec]
 
-    # Set when this Capability was resolved from an inert capability
-    # *declaration* (a ``kind: "capability"`` knowledge-store unit with an
-    # ``op`` field) rather than instantiated directly in this module. Holds
-    # the ``op.<namespace>.<name>`` ID the capability resolved against. None
-    # for the legacy ``Capability(...)`` registration path. The build script
-    # uses it to keep declaration-sourced capabilities out of the generated
-    # ``_generated_capabilities.json`` (they are already inert data).
+    # The ``op.<namespace>.<name>`` ID this Capability resolved against, when it
+    # was loaded from an inert *declaration* (a ``kind: "capability"`` knowledge
+    # unit with an ``op`` field) by
+    # ``capability_loader.load_declared_capabilities`` — the standard path. None
+    # for a Capability constructed directly (e.g. in tests).
     op_id: str | None = None
 
     # ---------------- Action Catalog fields (defaults are the legacy non-action shape) ----
@@ -194,8 +193,8 @@ class WorkflowStep:
     # Capability names this step calls. For auto_run steps, this is typically
     # a single capability owning the callable; for reasoning steps it's the
     # capabilities the agent is instructed to invoke. Populated via
-    # `invokes: [...]` in workflows.json. The control-graph capability
-    # resolver walks this to compute transitive component dependencies.
+    # `invokes: [...]` in the workflow unit's step frontmatter. The control-graph
+    # capability resolver walks this to compute transitive component dependencies.
     invokes: list[str] = field(default_factory=list)
     auto_run: AutoRun | None = None  # conductor auto-executes this step
     result_schema: dict[str, Any] | None = None  # validate agent output before storing

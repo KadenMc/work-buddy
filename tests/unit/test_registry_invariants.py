@@ -136,7 +136,7 @@ def test_workflow_requires_matches_one_hop_union(registry):
     """WorkflowDefinition.requires should equal the one-hop step.requires ∪
     step.invokes-resolved .requires union.
 
-    Guards against hand-edits to workflows.json that try to set
+    Guards against hand-edits to a workflow unit that try to set
     workflow-level `requires` directly — the field is supposed to be
     computed, so any hand-authored value would be silently overwritten
     at the next registry rebuild.
@@ -196,7 +196,7 @@ def test_workflow_requires_matches_one_hop_union(registry):
 def test_morning_routine_requires_includes_core_components(registry):
     """Defense against accidental removal of morning-routine's invokes lists.
 
-    If someone edits workflows.json and breaks the flagship backfill,
+    If someone edits a workflow unit and breaks the flagship backfill,
     this test surfaces it immediately rather than silently at runtime.
     """
     wf = registry.get("morning-routine")

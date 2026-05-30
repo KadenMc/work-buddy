@@ -1,7 +1,7 @@
 ---
 name: Agent Docs Rebuild
 kind: capability
-description: Reload the knowledge store from disk. Use after editing store JSON files or after registry changes.
+description: Reload the knowledge store from disk and reindex. Use after a direct edit to a unit's .md file, or after registry changes, so the store cache and search index reflect them.
 capability_name: agent_docs_rebuild
 category: context
 op: op.wb.agent_docs_rebuild

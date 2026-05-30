@@ -2,7 +2,7 @@
 name: Knowledge System
 kind: concept
 description: Unified agent self-documentation — typed units, DAG hierarchy, full-content search index with BM25 + dense embeddings
-summary: Two parallel stores (system JSON + personal vault) sharing one KnowledgeUnit schema; DAG hierarchy; progressive disclosure; inline <<wb:path>> placeholders.
+summary: Two parallel stores (system Markdown + personal vault) sharing one KnowledgeUnit schema; DAG hierarchy; progressive disclosure; inline <<wb:path>> placeholders.
 tags:
 - knowledge
 - documentation

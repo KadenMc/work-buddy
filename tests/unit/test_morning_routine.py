@@ -139,12 +139,12 @@ class TestResolvePhases:
 
 
 # ---------------------------------------------------------------------------
-# workflows.json structure
+# workflow-unit structure
 # ---------------------------------------------------------------------------
 
 
 class TestWorkflowDefinition:
-    """The morning-routine workflow in workflows.json has the expected shape."""
+    """The morning-routine workflow unit has the expected shape."""
 
     def test_workflow_name_is_morning_routine(self, morning_workflow):
         assert morning_workflow["workflow_name"] == "morning-routine"
