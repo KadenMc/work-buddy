@@ -12,10 +12,11 @@ from datetime import timedelta, timezone
 import httpx
 import pytest
 
+import json as _json
+
 from work_buddy.calendar.errors import (
     CalendarEventNotFound,
     CalendarProviderError,
-    CalendarWriteUnsupported,
 )
 from work_buddy.calendar.provider import CalendarProvider
 from work_buddy.calendar.providers import google_native as gn
@@ -195,16 +196,107 @@ def test_health_ready_and_unready():
     assert unready["ready"] is False and "reason" in unready
 
 
-# --- writes are not yet supported -------------------------------------------
+# --- writes -----------------------------------------------------------------
 
 
-def test_writes_raise_unsupported():
-    p = _provider(lambda req: httpx.Response(200, json=_CALS))
-    for fn in (lambda: p.create_event(summary="x", start="a", end="b"),
-               lambda: p.update_event(calendar_id="c", event_id="e", changes={}),
-               lambda: p.delete_event(calendar_id="c", event_id="e")):
-        with pytest.raises(CalendarWriteUnsupported):
-            fn()
+def test_create_event_builds_body():
+    captured: dict = {}
+
+    def handler(req):
+        captured["method"] = req.method
+        captured["body"] = _json.loads(req.content)
+        return httpx.Response(200, json={"id": "newid", "summary": "Lunch", "htmlLink": "http://x/new"})
+
+    res = _provider(handler).create_event(
+        summary="Lunch", start="2026-06-01T12:00:00", end="2026-06-01T13:00:00",
+        calendar_id="primary@x", timezone="America/Toronto",
+    )
+    assert res["success"] and res["id"] == "newid"
+    body = captured["body"]
+    assert captured["method"] == "POST"
+    assert body["summary"] == "Lunch"
+    assert body["start"] == {"dateTime": "2026-06-01T12:00:00", "timeZone": "America/Toronto"}
+    assert body["extendedProperties"]["private"]["wb_origin"] == "1"   # WB marker
+
+
+def test_create_all_day_uses_date():
+    captured: dict = {}
+
+    def handler(req):
+        captured["body"] = _json.loads(req.content)
+        return httpx.Response(200, json={"id": "d1"})
+
+    _provider(handler).create_event(
+        summary="Trip", start="2026-06-01", end="2026-06-02", calendar_id="c", all_day=True,
+    )
+    assert captured["body"]["start"] == {"date": "2026-06-01"}
+    assert captured["body"]["end"] == {"date": "2026-06-02"}
+
+
+def test_update_event_patches_only_changed_fields(monkeypatch):
+    from work_buddy import config
+    monkeypatch.setattr(config, "USER_TZ", _EDT, raising=False)
+    captured: dict = {}
+
+    def handler(req):
+        captured["method"] = req.method
+        captured["sendUpdates"] = req.url.params.get("sendUpdates")
+        captured["body"] = _json.loads(req.content)
+        return httpx.Response(200, json={"id": "e1", "summary": "New"})
+
+    res = _provider(handler).update_event(
+        calendar_id="c", event_id="e1",
+        changes={"summary": "New", "start": "2026-06-01T14:00:00"}, notify=True,
+    )
+    assert res["success"] and captured["method"] == "PATCH"
+    assert captured["sendUpdates"] == "all"          # notify=True
+    assert captured["body"]["summary"] == "New"
+    assert "dateTime" in captured["body"]["start"]
+    assert "end" not in captured["body"]             # only the changed fields
+
+
+def test_delete_event_calls_delete():
+    captured: dict = {}
+
+    def handler(req):
+        captured["method"] = req.method
+        captured["sendUpdates"] = req.url.params.get("sendUpdates")
+        return httpx.Response(204)
+
+    res = _provider(handler).delete_event(calendar_id="c", event_id="e1", notify=False)
+    assert res["success"] and res["deleted_id"] == "e1"
+    assert captured["method"] == "DELETE" and captured["sendUpdates"] == "none"
+
+
+def test_write_capability_composes_over_google_native(monkeypatch, tmp_path):
+    """The provider-agnostic heavy-consent capability layer drives native writes
+    end-to-end: consent gate → google_native → POST with the wb_origin marker."""
+    from work_buddy import config
+    from work_buddy import consent as c
+    from work_buddy.calendar import capabilities as caps
+
+    cache = c.ConsentCache()
+    cache._db_path = tmp_path / "consent.db"
+    cache._initialized = True
+    c._cache = cache
+    monkeypatch.setattr(config, "USER_TZ", _EDT, raising=False)
+
+    captured: dict = {}
+
+    def handler(req):
+        if req.url.path.endswith("/calendarList"):
+            return httpx.Response(200, json=_CALS)
+        captured["body"] = _json.loads(req.content)
+        return httpx.Response(200, json={"id": "newid", "summary": "Lunch"})
+
+    monkeypatch.setattr(caps, "get_calendar_provider", lambda: _provider(handler))
+    c._cache.grant("calendar.create_event", "always")
+    res = caps.create_calendar_event(
+        summary="Lunch", start="2026-06-01T12:00:00", end="2026-06-01T13:00:00",
+        calendar_id="primary@x",
+    )
+    assert res["ok"]
+    assert captured["body"]["extendedProperties"]["private"]["wb_origin"] == "1"
 
 
 # --- factory ----------------------------------------------------------------

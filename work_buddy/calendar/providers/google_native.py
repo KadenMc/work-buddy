@@ -16,7 +16,10 @@ disambiguate on ``error.errors[].reason``, not the status code. The repo's
 asyncio resilience framework is off-limits (these methods are sync), so the retry
 logic here is hand-rolled.
 
-Writes raise :class:`CalendarWriteUnsupported` until the write half lands.
+Writes (``events.insert`` / ``patch`` / ``delete``) mark WB-created events with
+an ``extendedProperties.private.wb_origin`` flag; the heavy per-change consent
+that gates them lives in :mod:`work_buddy.calendar.capabilities`, one layer up,
+so this adapter is a dumb mechanism like the bridge.
 """
 
 from __future__ import annotations
@@ -33,7 +36,6 @@ from work_buddy.calendar.errors import (
     CalendarError,
     CalendarEventNotFound,
     CalendarProviderError,
-    CalendarWriteUnsupported,
 )
 from work_buddy.calendar.identity import stable_key_for
 from work_buddy.calendar.models import CalendarEvent, CalendarRef, EventTime
@@ -286,13 +288,106 @@ class GoogleNativeCalendarProvider:
             wb_origin=wb_origin,
         )
 
-    # --- writes (implemented in the write half) ----------------------------
+    # --- writes ------------------------------------------------------------
 
-    def create_event(self, **kwargs) -> dict:
-        raise CalendarWriteUnsupported("google_native: writes not yet implemented")
+    def _default_timezone(self) -> str:
+        from work_buddy import config
 
-    def update_event(self, **kwargs) -> dict:
-        raise CalendarWriteUnsupported("google_native: writes not yet implemented")
+        return str(config.USER_TZ)
 
-    def delete_event(self, **kwargs) -> dict:
-        raise CalendarWriteUnsupported("google_native: writes not yet implemented")
+    @staticmethod
+    def _time_body(value: str, all_day: bool, tz: str) -> dict:
+        """Build a Google start/end node from an ISO string."""
+        if all_day or (value and "T" not in value):
+            return {"date": value}
+        return {"dateTime": value, "timeZone": tz}
+
+    def _primary_id(self) -> str:
+        primary = next((r for r in self.list_calendars() if r.is_primary), None)
+        if primary is None:
+            raise CalendarProviderError("google_native: no primary calendar found")
+        return primary.id
+
+    def create_event(
+        self,
+        *,
+        summary: str,
+        start: str,
+        end: str,
+        calendar_id: str | None = None,
+        description: str = "",
+        location: str = "",
+        all_day: bool = False,
+        timezone: str | None = None,
+    ) -> dict:
+        from urllib.parse import quote
+
+        cal = calendar_id or self._primary_id()
+        tz = timezone or self._default_timezone()
+        body: dict[str, Any] = {
+            "summary": summary,
+            "start": self._time_body(start, all_day, tz),
+            "end": self._time_body(end, all_day, tz),
+            # Marker so WB-created events stay filterable later.
+            "extendedProperties": {"private": {"wb_origin": "1"}},
+        }
+        if description:
+            body["description"] = description
+        if location:
+            body["location"] = location
+        path = f"/calendars/{quote(cal, safe='')}/events"
+        ev = self._request("POST", path, json_body=body)
+        return {
+            "success": True,
+            "id": ev.get("id"),
+            "summary": ev.get("summary", summary),
+            "htmlLink": ev.get("htmlLink"),
+            "calendarId": cal,
+        }
+
+    def update_event(
+        self,
+        *,
+        calendar_id: str,
+        event_id: str,
+        changes: dict,
+        notify: bool = False,
+    ) -> dict:
+        from urllib.parse import quote
+
+        tz = self._default_timezone()
+        body: dict[str, Any] = {}
+        for key in ("summary", "location", "description"):
+            if key in changes:
+                body[key] = changes[key]
+        if "start" in changes:
+            body["start"] = self._time_body(changes["start"], False, tz)
+        if "end" in changes:
+            body["end"] = self._time_body(changes["end"], False, tz)
+        path = f"/calendars/{quote(calendar_id, safe='')}/events/{quote(event_id, safe='')}"
+        # patch = merge (only the sent fields change), not a full replace.
+        ev = self._request(
+            "PATCH", path, params={"sendUpdates": "all" if notify else "none"}, json_body=body,
+        )
+        return {
+            "success": True,
+            "id": ev.get("id", event_id),
+            "summary": ev.get("summary"),
+            "htmlLink": ev.get("htmlLink"),
+            "notified": notify,
+        }
+
+    def delete_event(
+        self,
+        *,
+        calendar_id: str,
+        event_id: str,
+        notify: bool = False,
+    ) -> dict:
+        from urllib.parse import quote
+
+        path = f"/calendars/{quote(calendar_id, safe='')}/events/{quote(event_id, safe='')}"
+        self._request(
+            "DELETE", path, params={"sendUpdates": "all" if notify else "none"},
+        )
+        return {"success": True, "deleted_id": event_id, "notified": notify}
