@@ -24,6 +24,7 @@ import platform
 import subprocess
 import time
 import urllib.parse
+from dataclasses import dataclass
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -102,9 +103,14 @@ def get_last_bridge_state() -> dict[str, Any]:
     * ``state``: one of ``"ok"`` (no recent failure), ``"timeout"`` (state
       2 — bridge responding slowly), ``"obsidian_not_running"`` (state
       1), ``"plugin_not_installed"`` (state 3),
-      ``"plugin_disabled"`` (state 4), ``"http_error"`` (non-2xx /
-      non-409 response from the bridge), or ``"unknown"`` (filesystem
-      check couldn't resolve the vault).
+      ``"plugin_disabled"`` (state 4), ``"obsidian_startup_race"``
+      (Obsidian + plugin up but the port hasn't bound yet — non-terminal,
+      worth retrying), ``"http_error"`` (non-2xx / non-409 response from
+      the bridge), or ``"unknown"`` (filesystem check couldn't resolve the
+      vault). The terminal states (retrying won't help) are
+      ``obsidian_not_running`` / ``plugin_not_installed`` /
+      ``plugin_disabled``; ``obsidian_startup_race`` is explicitly NOT
+      terminal.
     * ``detail``: human-readable one-liner explaining the state.
     * ``status``: HTTP status code if state is ``"http_error"``, else
       ``None``.
@@ -138,73 +144,13 @@ def get_last_bridge_state() -> dict[str, Any]:
         }
 
     # _last_failure_kind == "unreachable" — connection refused / DNS /
-    # host down. Disambiguate state 1 vs 3 vs 4 via the filesystem
-    # check. Keep it cheap: process check first (state 1), fall through
-    # to plugin state.
-    if not is_obsidian_running():
-        return {
-            "state": "obsidian_not_running",
-            "detail": "Obsidian is not running (port 27125 unreachable, Obsidian.exe not found).",
-            "status": None,
-            "reason": _last_failure_reason,
-        }
-
-    try:
-        from work_buddy.health.requirement_checks import get_work_buddy_plugin_state
-        plugin_state, plugin_detail = get_work_buddy_plugin_state()
-    except Exception as exc:
-        return {
-            "state": "unknown",
-            "detail": f"Unable to inspect plugin state: {exc}",
-            "status": None,
-            "reason": _last_failure_reason,
-        }
-
-    if plugin_state == "not_installed":
-        return {
-            "state": "plugin_not_installed",
-            "detail": (
-                "Obsidian is running but the work-buddy plugin is not "
-                f"installed ({plugin_detail}). Install from "
-                "https://github.com/KadenMc/obsidian-work-buddy."
-            ),
-            "status": None,
-            "reason": _last_failure_reason,
-        }
-
-    if plugin_state == "disabled":
-        return {
-            "state": "plugin_disabled",
-            "detail": (
-                "Obsidian is running and the plugin is installed but not "
-                f"enabled ({plugin_detail}). Open Obsidian → Settings → "
-                "Community Plugins and toggle 'Work Buddy' on."
-            ),
-            "status": None,
-            "reason": _last_failure_reason,
-        }
-
-    # plugin_state == "ok" — plugin enabled but port still unreachable.
-    # This is the ambiguous case: state 1 process check said "running",
-    # plugin is on, yet TCP refused. Most likely a race (Obsidian just
-    # started, plugin not loaded yet) or a port binding error.
-    if plugin_state == "unknown":
-        return {
-            "state": "unknown",
-            "detail": (
-                f"Bridge unreachable; plugin state could not be resolved: "
-                f"{plugin_detail}."
-            ),
-            "status": None,
-            "reason": _last_failure_reason,
-        }
+    # host down. Delegate the state-1/3/4 + startup-race disambiguation to
+    # the single source of truth shared with _refine_unreachable_kind, so
+    # the string-state and typed-exception representations can never drift.
+    leaf = _classify_unreachable()
     return {
-        "state": "obsidian_not_running",
-        "detail": (
-            "Bridge port refused connection despite Obsidian appearing "
-            "to be running with the plugin enabled — Obsidian may still "
-            "be starting up, or the plugin failed to bind to port 27125."
-        ),
+        "state": leaf.state,
+        "detail": leaf.detail,
         "status": None,
         "reason": _last_failure_reason,
     }
@@ -549,39 +495,122 @@ def _http_status_to_exception_type(status: int) -> type[ObsidianHTTPError]:
     return ObsidianHTTPError
 
 
-def _refine_unreachable_kind() -> type[ObsidianUnreachable]:
-    """Pick the most specific ObsidianUnreachable subclass for the current state.
+@dataclass(frozen=True)
+class _UnreachableLeaf:
+    """One leaf of the 'why is the bridge unreachable' decision tree.
 
-    Mirrors the disambiguation in :func:`get_last_bridge_state` (state
-    1/3/4 + startup race). The cost of process + filesystem checks is
-    paid only on connection failures, so the slow-path is fine.
+    Carries all three representations so the string-state classifier
+    (:func:`get_last_bridge_state`) and the typed-exception classifier
+    (:func:`_refine_unreachable_kind`) derive from a single decision and
+    can never drift:
 
-    Returns the base ``ObsidianUnreachable`` if the disambiguation
-    helpers themselves error — better to raise a less-specific type
-    than to mask the original failure with a secondary one.
+    * ``exc_type`` — the ObsidianUnreachable subclass to raise.
+    * ``state`` — the legacy four-state-taxonomy string.
+    * ``detail`` — the rendered human-readable one-liner.
+    """
+
+    exc_type: type[ObsidianUnreachable]
+    state: str
+    detail: str
+
+
+def _classify_unreachable() -> _UnreachableLeaf:
+    """Single source of truth for 'why is the bridge unreachable'.
+
+    Runs the process check (``is_obsidian_running``) and, if needed, the
+    filesystem plugin-state check (``get_work_buddy_plugin_state``) once,
+    and maps the result to a leaf carrying the exception type, the
+    four-state-taxonomy string, and a human-readable detail. Both
+    :func:`get_last_bridge_state` (string + detail) and
+    :func:`_refine_unreachable_kind` (exception type) derive from this, so
+    the two representations stay in lock-step.
+
+    Only reached on ``_last_failure_kind == "unreachable"`` (TCP refused).
+    The cost of the process + filesystem checks is paid only on connection
+    failures, so the slow-path is fine. Returns the base
+    ``ObsidianUnreachable`` / ``"unknown"`` if a check itself errors —
+    better a less-specific classification than masking the original
+    failure with a secondary one.
     """
     try:
-        if not is_obsidian_running():
-            return ObsidianNotRunning
+        running = is_obsidian_running()
     except Exception:
-        return ObsidianUnreachable
+        return _UnreachableLeaf(
+            ObsidianUnreachable,
+            "unknown",
+            "Bridge unreachable; could not determine whether Obsidian is running.",
+        )
+
+    if not running:
+        return _UnreachableLeaf(
+            ObsidianNotRunning,
+            "obsidian_not_running",
+            "Obsidian is not running (port 27125 unreachable, Obsidian.exe not found).",
+        )
 
     try:
         from work_buddy.health.requirement_checks import get_work_buddy_plugin_state
-        plugin_state, _detail = get_work_buddy_plugin_state()
-    except Exception:
-        return ObsidianUnreachable
+        plugin_state, plugin_detail = get_work_buddy_plugin_state()
+    except Exception as exc:
+        return _UnreachableLeaf(
+            ObsidianUnreachable,
+            "unknown",
+            f"Unable to inspect plugin state: {exc}",
+        )
 
     if plugin_state == "not_installed":
-        return ObsidianPluginMissing
+        return _UnreachableLeaf(
+            ObsidianPluginMissing,
+            "plugin_not_installed",
+            (
+                "Obsidian is running but the work-buddy plugin is not "
+                f"installed ({plugin_detail}). Install from "
+                "https://github.com/KadenMc/obsidian-work-buddy."
+            ),
+        )
+
     if plugin_state == "disabled":
-        return ObsidianPluginDisabled
+        return _UnreachableLeaf(
+            ObsidianPluginDisabled,
+            "plugin_disabled",
+            (
+                "Obsidian is running and the plugin is installed but not "
+                f"enabled ({plugin_detail}). Open Obsidian → Settings → "
+                "Community Plugins and toggle 'Work Buddy' on."
+            ),
+        )
+
     if plugin_state == "ok":
-        # Plugin enabled but port still refused — startup race window
-        # (Obsidian just started, plugin not loaded yet) or a bind error.
-        return ObsidianStartupRace
+        # Plugin enabled but port still refused — the startup-race window
+        # (Obsidian just started, the plugin's HTTP listener hasn't bound
+        # yet) or a port-binding error. Non-terminal: worth a retry.
+        return _UnreachableLeaf(
+            ObsidianStartupRace,
+            "obsidian_startup_race",
+            (
+                "Bridge port refused connection despite Obsidian appearing "
+                "to be running with the plugin enabled — Obsidian may still "
+                "be starting up, or the plugin failed to bind to port 27125."
+            ),
+        )
+
     # plugin_state == "unknown" or anything else — generic unreachable.
-    return ObsidianUnreachable
+    return _UnreachableLeaf(
+        ObsidianUnreachable,
+        "unknown",
+        f"Bridge unreachable; plugin state could not be resolved: {plugin_detail}.",
+    )
+
+
+def _refine_unreachable_kind() -> type[ObsidianUnreachable]:
+    """Pick the most specific ObsidianUnreachable subclass for the current state.
+
+    Thin derivation over :func:`_classify_unreachable` (the single source
+    of truth shared with :func:`get_last_bridge_state`), so the typed and
+    string-state representations cannot diverge. Returns the base
+    ``ObsidianUnreachable`` if the disambiguation helpers themselves error.
+    """
+    return _classify_unreachable().exc_type
 
 
 def _make_content_hint(content: str, write_mode: str) -> str:

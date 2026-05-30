@@ -18,6 +18,12 @@ from pathlib import Path
 import pytest
 
 import work_buddy.obsidian.bridge as bridge_mod
+from work_buddy.obsidian.errors import (
+    ObsidianNotRunning,
+    ObsidianPluginDisabled,
+    ObsidianPluginMissing,
+    ObsidianStartupRace,
+)
 from work_buddy.obsidian.retry import (
     bridge_failure,
     bridge_retry,
@@ -47,6 +53,44 @@ def _write_plugin_manifest(config_dir: Path) -> None:
 
 def _write_community_plugins(config_dir: Path, enabled: list[str]) -> None:
     (config_dir / "community-plugins.json").write_text(json.dumps(enabled), encoding="utf-8")
+
+
+# The four deterministic leaves of the "why is the bridge unreachable"
+# decision tree, with the typed-exception and string-state representations
+# that must stay in agreement. The startup-race leaf is the one historically
+# mislabelled as the terminal ``obsidian_not_running``.
+_UNREACHABLE_LEAVES = [
+    ("not_running", ObsidianNotRunning, "obsidian_not_running"),
+    ("not_installed", ObsidianPluginMissing, "plugin_not_installed"),
+    ("disabled", ObsidianPluginDisabled, "plugin_disabled"),
+    ("startup_race", ObsidianStartupRace, "obsidian_startup_race"),
+]
+
+
+def _setup_unreachable_leaf(scenario: str, monkeypatch, tmp_path) -> None:
+    """Configure mocks so the unreachable classifier produces ``scenario``."""
+    monkeypatch.setattr(bridge_mod, "_last_failure_kind", "unreachable", raising=False)
+    if scenario == "not_running":
+        monkeypatch.setattr(bridge_mod, "is_obsidian_running", lambda: False)
+        return
+
+    monkeypatch.setattr(bridge_mod, "is_obsidian_running", lambda: True)
+    vault = tmp_path / "vault"
+    config_dir = vault / ".obsidian"
+    if scenario == "not_installed":
+        config_dir.mkdir(parents=True)
+    elif scenario == "disabled":
+        _write_plugin_manifest(config_dir)
+        _write_community_plugins(config_dir, enabled=["some-other-plugin"])
+    elif scenario == "startup_race":
+        _write_plugin_manifest(config_dir)
+        _write_community_plugins(config_dir, enabled=["work-buddy"])
+    else:  # pragma: no cover - guard against typos in parametrization
+        raise ValueError(f"unknown scenario: {scenario}")
+
+    import work_buddy.health.requirement_checks as rq
+    monkeypatch.setattr(rq, "_vault_root", lambda: vault)
+    monkeypatch.setattr(rq, "_obsidian_config_dir", lambda _v: config_dir)
 
 
 # ---------------------------------------------------------------------------
@@ -119,24 +163,36 @@ def test_state_plugin_disabled(monkeypatch, tmp_path):
 
 
 def test_state_plugin_ok_but_port_refused(monkeypatch, tmp_path):
-    """Rare race: plugin is enabled on disk but port still refuses."""
-    monkeypatch.setattr(bridge_mod, "_last_failure_kind", "unreachable", raising=False)
-    monkeypatch.setattr(bridge_mod, "is_obsidian_running", lambda: True)
+    """Startup race: plugin enabled on disk but the port hasn't bound yet.
 
-    vault = tmp_path / "vault"
-    config_dir = vault / ".obsidian"
-    _write_plugin_manifest(config_dir)
-    _write_community_plugins(config_dir, enabled=["work-buddy"])
-
-    import work_buddy.health.requirement_checks as rq
-    monkeypatch.setattr(rq, "_vault_root", lambda: vault)
-    monkeypatch.setattr(rq, "_obsidian_config_dir", lambda _v: config_dir)
+    Classified as the non-terminal ``obsidian_startup_race`` — NOT the
+    terminal ``obsidian_not_running`` — so the return-dict retry path
+    treats it as transient, mirroring the typed ``ObsidianStartupRace``
+    the exception path raises for the identical condition.
+    """
+    _setup_unreachable_leaf("startup_race", monkeypatch, tmp_path)
 
     info = bridge_mod.get_last_bridge_state()
-    # Falls back to "obsidian_not_running" state with the race-disclaimer
-    # detail — see get_last_bridge_state's trailing branch.
-    assert info["state"] == "obsidian_not_running"
+    assert info["state"] == "obsidian_startup_race"
     assert "starting up" in info["detail"] or "failed to bind" in info["detail"]
+
+
+@pytest.mark.parametrize(
+    "scenario, expected_type, expected_state", _UNREACHABLE_LEAVES
+)
+def test_unreachable_classifiers_agree(
+    scenario, expected_type, expected_state, monkeypatch, tmp_path
+):
+    """Anti-drift invariant: the typed-exception classifier
+    (``_refine_unreachable_kind``) and the string-state classifier
+    (``get_last_bridge_state``) both derive from ``_classify_unreachable``,
+    so they must agree on every leaf. Guards against the two classifiers
+    diverging — e.g. a startup race classified terminal in one and
+    transient in the other.
+    """
+    _setup_unreachable_leaf(scenario, monkeypatch, tmp_path)
+    assert bridge_mod._refine_unreachable_kind() is expected_type
+    assert bridge_mod.get_last_bridge_state()["state"] == expected_state
 
 
 # ---------------------------------------------------------------------------
@@ -170,6 +226,22 @@ def test_bridge_failure_marks_plugin_disabled_terminal(monkeypatch, tmp_path):
     assert result["_bridge_state"] == "plugin_disabled"
     assert result["_bridge_terminal"] is True
     assert is_terminal_bridge_failure(result)
+
+
+def test_bridge_failure_startup_race_is_not_terminal(monkeypatch, tmp_path):
+    """A startup race must NOT be flagged terminal.
+
+    The return-dict retry path (``classify_bridge_result`` →
+    ``is_terminal_bridge_failure``) keys off ``_bridge_terminal``; a false
+    terminal here suppresses the in-process retries that let the bridge
+    recover once the port binds.
+    """
+    _setup_unreachable_leaf("startup_race", monkeypatch, tmp_path)
+
+    result = bridge_failure("task_create couldn't read master list")
+    assert result["_bridge_state"] == "obsidian_startup_race"
+    assert result["_bridge_terminal"] is False
+    assert is_terminal_bridge_failure(result) is False
 
 
 def test_bridge_failure_explicit_state_overrides_auto(monkeypatch):
