@@ -22,7 +22,7 @@ parents:
 - architecture
 - architecture
 dev_notes: |-
-  Authoring a declaration-based capability: (1) register the callable as an Op in a module under `work_buddy/mcp_server/ops/` (one module per category; `load_builtin_ops` discovers them via `pkgutil.iter_modules`); (2) create the capability unit with `docs_create(kind="capability", op="op.wb.<name>", schema_version="wb-capability/v1", capability_name=..., category=..., parameters=<JSON string>, requires=..., ...)`.
+  Authoring a declaration-based capability: (1) register the callable as an Op in a module under `work_buddy/mcp_server/ops/` (one module per category; `load_builtin_ops` discovers them via `pkgutil.iter_modules`); (2) author the capability declaration unit (`kind: capability`, with `op: op.wb.<name>`, `schema_version: wb-capability/v1`, `capability_name`, `category`, a `parameters` schema, `requires`, …) via the `docs_edit` workflow — it is an ordinary Markdown unit.
 
   For a capability with an effect manifest (only `task_create` today), the ops module also calls `register_op_effects("op.wb.<name>", [EffectSpec(...)])` — effects are code (the EffectSpec carries a `resolver` callable) so they cannot live in a data declaration.
 
@@ -30,7 +30,7 @@ dev_notes: |-
 
   `validate_signature` introspects with `follow_wrapped=True`; a callable that accepts `**kwargs` is treated as accepting any declared parameter name, and a callable whose signature cannot be introspected is treated as matching.
 
-  A new op or a new declaration needs a full registry rebuild to go live. `mcp_registry_reload` rebuilds the registry, but a running gateway can still hold a stale capability *schema* for editor capabilities (e.g. `docs_create`) until a server restart.
+  A new op or a new declaration needs a full registry rebuild to go live. `mcp_registry_reload` rebuilds the registry, but a running gateway can still hold a stale capability *schema* for editor capabilities (e.g. `docs_delete`) until a server restart.
 ---
 
 ## What
@@ -63,4 +63,4 @@ Resolution failures (missing op, unknown schema version, signature mismatch) are
 
 ## Why the split exists
 
-Welding prose to Python source blocks three things: editing a capability's description through gateway tools, shipping capabilities as inert shareable artifacts, and letting an agent synthesize a capability without writing Python. A declaration has none of those limits — its prose is editable via `docs_update`, it is inert data safe to share, and an agent can author one. This is the executable/inert seam recorded as commitment C1 in the ecosystem architecture.
+Welding prose to Python source blocks three things: editing a capability's description through gateway tools, shipping capabilities as inert shareable artifacts, and letting an agent synthesize a capability without writing Python. A declaration has none of those limits — its prose is editable via the `docs_edit` workflow, it is inert data safe to share, and an agent can author one. This is the executable/inert seam recorded as commitment C1 in the ecosystem architecture.

@@ -58,8 +58,8 @@ If any list you advance with is empty or trivial, you have not oriented yet — 
 Three core constructs, with design heuristics for deciding between them:
 
 - **Capabilities** — atomic Python functions registered in `registry.py`. Single operation, reusable from anywhere. Invoked via `wb_run("name", params)`, executes immediately.
-- **Workflows** — DAG definitions in `knowledge/store/workflows.json` as `WorkflowUnit` entries. Multi-step procedures requiring ordering, user decisions, or state threading. Started via `wb_run("name")`, advanced via `wb_advance(run_id, result)`.
-- **Auto-run steps** — workflow steps marked `auto_run` in `workflows.json`. The conductor executes these transparently; the agent never sees them. Use for deterministic code (config loading, data formatting) that needs no agent reasoning.
+- **Workflows** — `kind: workflow` units, one Markdown file per workflow under `knowledge/store/`. Multi-step procedures requiring ordering, user decisions, or state threading. Started via `wb_run("name")`, advanced via `wb_advance(run_id, result)`.
+- **Auto-run steps** — workflow steps marked `auto_run` in the unit's frontmatter. The conductor executes these transparently in a subprocess; the agent never sees them. Use for deterministic code (config loading, data formatting) that needs no agent reasoning.
 
 **Decision heuristic.** Can you write a unit test with a fixed expected output? → Capability. Does the "correct" output depend on interpretation, user input, or synthesis? → Workflow step. Is the step itself deterministic with no side effects? → Auto-run step.
 
@@ -69,31 +69,31 @@ For the MCP import discipline (asyncio deadlock hazard), see `architecture/mcp-i
 
 ## Key locations
 
-### MCP capability registry
-`work_buddy/mcp_server/registry.py` — **all** MCP capabilities are registered here. Each category has a builder function (`_task_capabilities()`, `_sidecar_capabilities()`, etc.) returning a list of `Capability` dataclass instances.
+### MCP capabilities (Op + declaration)
+A capability is an **Op** (a Python callable) plus a **declaration unit** (a `kind: capability` Markdown unit that names the Op). At build time the registry resolves declarations against the Op registry via `load_declared_capabilities` — there is no `registry.py` `Capability(...)` builder anymore. See `architecture/data-first-capabilities`.
 
 **To add a capability:**
-1. Write the function inside the relevant `_*_capabilities()` builder.
-2. Add a `Capability(name=..., callable=..., ...)` to the returned list.
-3. **Restart the MCP server** to register the new entry in the tool dispatcher. `mcp_registry_reload` alone picks up code changes inside *existing* capability callables but does NOT register new `Capability` entries — the gateway holds a stale reference to the registry module.
+1. Write the callable and register it in the relevant `work_buddy/mcp_server/ops/<domain>_ops.py` with `register_op("op.wb.<name>", fn)`.
+2. Author a declaration unit at `knowledge/store/<domain>/<name>.md` (`kind: capability`, with `capability_name`, `op`, `category`, and a `parameters` schema) — via the `docs_edit` workflow.
+3. **Restart the MCP server** to register the new entry in the tool dispatcher. `mcp_registry_reload` picks up code changes inside *existing* callables but does NOT register a newly added capability.
 4. Verify: `mcp__work-buddy__wb_search("your_capability")`.
 
 ### Workflows
-Workflow units live in `knowledge/store/workflows.json`. The conductor (`work_buddy/mcp_server/conductor.py`) loads them at runtime via `_discover_workflows_from_store()`, which scans every store file for `kind == "workflow"` — colocation in `workflows.json` is convention, not a requirement, but `workflow_create` routes there automatically.
+A workflow is a `kind: workflow` unit — one Markdown file per workflow under `knowledge/store/`. The conductor (`work_buddy/mcp_server/conductor.py`) discovers them at runtime via `_discover_workflows_from_store()`, which scans every store file for `kind == "workflow"`. The `steps` DAG lives in the unit's YAML frontmatter; each step's prose lives under a `## <step-id>` body section.
 
 **To add a workflow:**
-1. Use `mcp__work-buddy__wb_run("workflow_create", {path, name, description, workflow_name, steps, step_instructions, ...})` — pass `steps` and `step_instructions` as JSON strings. Do NOT hand-edit `workflows.json`; DAG validation, parent-child reconciliation, and cache invalidation live inside the capability.
-2. Create a matching slash command in `.claude/commands/wb-<name>.md` (thin launcher).
-3. Create a behavioral directions unit via `docs_create` (kind="directions"), loaded by the slash command.
+1. Scaffold and author the unit with the `docs_edit` workflow: `mcp__work-buddy__wb_run("docs-edit", {"path": "<domain>/<name>", "create": true, "kind": "workflow"})`, then edit the scaffold's frontmatter `steps` and the `## <step-id>` body sections with your native `Edit` tool. The commit step validates the step DAG (cycles, dangling deps, heading↔step-id consistency) and reconciles.
+2. Create a matching slash command in `.claude/commands/wb-<name>.md` (thin launcher) if it's user-facing.
+3. Create a behavioral directions unit (`kind: directions`) via `docs_edit`, loaded by the slash command.
 4. Update CLAUDE.md if the workflow belongs in a user-facing table.
 5. **Restart the MCP server** — new workflow names require a full restart to be callable via `wb_run`; `mcp_registry_reload` does not suffice.
 
-**To edit an existing workflow:** use `workflow_update`. Pass only the fields that change. `steps` replaces the DAG; `step_instructions` merges (keys you pass overwrite, keys you omit are preserved — pass the whole dict to replace cleanly).
+**To edit an existing workflow:** use `docs_edit` and edit the unit's `.md` directly — frontmatter `steps` (the DAG) and the `## <step-id>` body sections. The commit step re-validates the DAG.
 
-### Knowledge units (prose: directions, system)
-Use `docs_create` / `docs_update` / `docs_delete`. Never hand-edit `knowledge/store/*.json` — those capabilities run DAG validation, maintain parent-child symmetry, and invalidate the cache. `dev_notes` is a first-class parameter on both `docs_create` and `docs_update` (and `workflow_create` / `workflow_update`) — use that, not a direct JSON edit.
+### Knowledge units (any kind)
+The system store is one Markdown file per unit (`knowledge/store/<path>.md`) — editing a unit is editing its file. Use the **`docs_edit` workflow** (`wb_run("docs-edit", {"path": ...})`): it returns the file path, you edit it with your native `Edit` tool, and the commit step validates (kind-aware) and reconciles the store cache + search index. `create: true` + `kind` scaffolds a new unit. `dev_notes` is just a frontmatter field — edit it inline.
 
-**Capability units** in `_generated_capabilities.json` are auto-generated from `registry.py` by `python -m work_buddy.knowledge.build --write`. Do not try to `docs_create`/`docs_update` them.
+A direct `Edit` of a unit's `.md` is equally valid; if you bypass the workflow, run `agent_docs_rebuild` afterward so the store and index reflect the change. Structural operations that aren't content edits — deleting or moving a unit — use the `docs_delete` / `docs_move` capabilities. **Capability units** (`kind: capability`) are authored the same way (see "MCP capabilities" above for the Op + declaration pair).
 
 ### Health system (preferences / requirements / components / fixers)
 
@@ -167,7 +167,7 @@ work-buddy enforces a Developer Certificate of Origin: **every commit must be si
 - **Don't guess at imports** — `mcp__work-buddy__wb_search()` first, then check the code.
 - **Don't add features without slash commands** — every user-facing capability needs one.
 - **Don't double-run doc hygiene** — `/wb-dev-pr` already runs `/wb-dev-document` as a chained step, so never tell the user (or yourself) to "run /wb-dev-document then /wb-dev-pr." Run `/wb-dev-document` standalone only to *preview* doc edits before the PR flow.
-- **Don't hand-edit `knowledge/store/*.json`** — use `docs_*` / `workflow_*` / the auto-generator for capability units.
+- **Reconcile after a direct file edit** — a raw `Edit` of a unit's `.md` is fine, but run `agent_docs_rebuild` (or use the `docs_edit` workflow, which does it for you) so the store cache and search index pick up the change.
 - **Don't commit unrelated files** — stage only what you changed.
 - **Don't commit without `-s`** — work-buddy enforces a DCO; an unsigned commit fails the required `DCO` check and blocks the PR.
 - **Don't ship transient narrative in durable surfaces.** See `<<wb:dev/durable-surfaces>>`.

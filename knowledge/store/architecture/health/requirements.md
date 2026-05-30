@@ -22,7 +22,7 @@ aliases:
 parents:
 - architecture/health
 - architecture/health
-dev_notes: 'When adding a new requirement: (1) pick the right domain prefix (core / obsidian / services / integrations); (2) write the check_fn in requirement_checks.py with the no-HTTP rule — if you need a runtime probe, delegate to checks.py via the lmstudio pattern; (3) decide fix_kind early — most should be at least programmatic or agent_handoff, only use ''none'' when there''s genuinely no automated path. Never hand-edit knowledge/store/*.json — use docs_create / docs_update.'
+dev_notes: 'When adding a new requirement: (1) pick the right domain prefix (core / obsidian / services / integrations); (2) write the check_fn in requirement_checks.py with the no-HTTP rule — if you need a runtime probe, delegate to checks.py via the lmstudio pattern; (3) decide fix_kind early — most should be at least programmatic or agent_handoff, only use ''none'' when there''s genuinely no automated path. Author/edit the requirement''s knowledge unit via the docs_edit workflow (or a direct .md edit + agent_docs_rebuild).'
 ---
 
 Configuration-time validation. Answers "is the environment set up correctly for this subsystem to work?" — distinct from health checks ("is the service running right now?"). Requirements check stable, one-shot setup state: a plugin is installed, a config file exists, a directory was created, a secret is reachable.
