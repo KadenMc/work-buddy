@@ -1004,6 +1004,55 @@ _register(RequirementDef(
     ),
 ))
 
+# --- Google Calendar (native OAuth) ---
+# Recommended, not required: the default calendar provider is the Obsidian
+# bridge. These only surface for users who opt into provider: "google_native".
+
+_register(RequirementDef(
+    id="integrations/google-calendar-native/client-secret",
+    component="google_calendar_native",
+    description="Google OAuth client secret (client_secret.json) is configured",
+    check_fn="work_buddy.health.requirement_checks.check_google_oauth_client_secret",
+    severity="recommended",
+    fix_hint=(
+        "Create a Google Cloud project, enable the Calendar API, configure the "
+        "OAuth consent screen and PUBLISH IT TO 'Production' (so the refresh "
+        "token does not expire), create a 'Desktop app' OAuth client, download "
+        "its client_secret.json, and point GOOGLE_OAUTH_CLIENT_SECRET at it."
+    ),
+    setup_group="credentials",
+    fix_kind="input_required",
+    fix_fn="work_buddy.health.fixers.fix_google_oauth_client_secret",
+    fix_params={
+        "client_secret_path": {
+            "type": "path",
+            "label": "Path to client_secret.json",
+            "hint": "The Desktop-app OAuth client file downloaded from Google Cloud Console",
+            "required": True,
+        },
+    },
+    fix_preview="Writes GOOGLE_OAUTH_CLIENT_SECRET=<path> to the repo .env file.",
+))
+
+_register(RequirementDef(
+    id="integrations/google-calendar-native/token",
+    component="google_calendar_native",
+    description="Google OAuth token is present (the consent flow has been run)",
+    check_fn="work_buddy.health.requirement_checks.check_google_oauth_token",
+    severity="recommended",
+    fix_hint=(
+        "Run the Google Calendar OAuth consent flow (opens a browser). Requires "
+        "the client secret to be configured first."
+    ),
+    setup_group="credentials",
+    fix_kind="programmatic",
+    fix_fn="work_buddy.health.fixers.fix_google_oauth_token",
+    fix_preview=(
+        "Opens a browser for Google consent and saves the refresh token under "
+        "the data root (.data/credentials/google_oauth_token.json)."
+    ),
+))
+
 
 # ---------------------------------------------------------------------------
 # RequirementChecker

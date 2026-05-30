@@ -80,6 +80,9 @@ RESOURCES: dict[str, str] = {
 
     # Telegram
     "runtime/telegram-chat-id":  "runtime/telegram_chat_id",
+
+    # Credentials — persistent secrets (gitignored under the data root)
+    "credentials/google-oauth":  "credentials/google_oauth_token.json",
 }
 
 

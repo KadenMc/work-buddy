@@ -764,3 +764,47 @@ def fix_projects_markdown_dir(*, path: str) -> dict[str, Any]:
     ok, detail, side = _set_config_value("projects.markdown_dir", rel)
     side = list(side) + [f"created directory {target}"]
     return {"ok": ok, "detail": detail, "side_effects": side}
+
+
+# ---------------------------------------------------------------------------
+# Google Calendar — native OAuth
+# ---------------------------------------------------------------------------
+
+
+def fix_google_oauth_client_secret(*, client_secret_path: str) -> dict[str, Any]:
+    """Point GOOGLE_OAUTH_CLIENT_SECRET at your downloaded client_secret.json."""
+    path = (client_secret_path or "").strip().strip('"')
+    if not path:
+        return {"ok": False, "detail": "Path cannot be empty.", "side_effects": []}
+    if not Path(path).is_file():
+        return {
+            "ok": False,
+            "detail": (
+                f"No file at {path}. Download the Desktop-app OAuth client's "
+                "client_secret.json from Google Cloud Console first."
+            ),
+            "side_effects": [],
+        }
+    ok, detail, side = _set_env_var("GOOGLE_OAUTH_CLIENT_SECRET", path)
+    return {"ok": ok, "detail": detail, "side_effects": side}
+
+
+def fix_google_oauth_token() -> dict[str, Any]:
+    """Run the interactive Google OAuth consent flow and persist the token.
+
+    Opens a browser and round-trips to a localhost loopback port — requires a
+    user-present desktop session and the client secret already configured.
+    """
+    try:
+        from work_buddy.calendar import google_auth
+        from work_buddy.config import load_config
+
+        cfg = ((load_config() or {}).get("calendar", {}) or {}).get("google_native", {}) or {}
+        token_path = google_auth.run_oauth_flow(cfg)
+        return {
+            "ok": True,
+            "detail": f"OAuth consent complete — refresh token saved to {token_path}.",
+            "side_effects": [f"wrote {token_path}"],
+        }
+    except Exception as exc:
+        return {"ok": False, "detail": f"OAuth flow failed: {exc}", "side_effects": []}

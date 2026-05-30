@@ -134,6 +134,11 @@ def get_calendar_provider() -> CalendarProvider:
             ObsidianBridgeCalendarProvider,
         )
         return ObsidianBridgeCalendarProvider()
+    if name in ("google_native", "google", "native"):
+        from work_buddy.calendar.providers.google_native import (
+            GoogleNativeCalendarProvider,
+        )
+        return GoogleNativeCalendarProvider(cfg.get("google_native", {}))
     if name == "fake":
         from work_buddy.calendar.providers.fake import FakeCalendarProvider
         return FakeCalendarProvider()
