@@ -156,7 +156,7 @@ def create_event(
     description: str = "",
     location: str = "",
     all_day: bool = False,
-    timezone: str = "America/Toronto",
+    timezone: str | None = None,
 ) -> dict[str, Any]:
     """Create a new Google Calendar event.
 
@@ -169,11 +169,18 @@ def create_event(
         description: Event description (optional).
         location: Event location (optional).
         all_day: If True, create an all-day event (start/end are dates, not datetimes).
-        timezone: IANA timezone for timed events (default: America/Toronto).
+        timezone: IANA timezone for timed events. When omitted, defaults to the
+            user's configured timezone (``config.USER_TZ``) — the single source
+            of truth — read here in the body so the process-cached value is
+            picked up at call time rather than frozen at import.
 
     Returns:
         Dict with: success, id, summary, start, end, htmlLink, calendarId.
     """
+    if timezone is None:
+        from work_buddy import config
+        timezone = str(config.USER_TZ)
+
     if calendar_id is None:
         calendars = get_calendars()
         primary = next((c for c in calendars if c.get("primary")), None)

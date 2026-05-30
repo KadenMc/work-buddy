@@ -8,18 +8,31 @@ Requires Obsidian running with the Google Calendar plugin authenticated.
 Degrades gracefully if unavailable.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
 
+from work_buddy import config
 from work_buddy.logging_config import get_logger
 
 logger = get_logger(__name__)
 
 
+def _today_str() -> str:
+    """Today's date (YYYY-MM-DD) in the user's configured timezone.
+
+    Reads ``config.USER_TZ`` at call time (it is a process-cached ``ZoneInfo``
+    that only refreshes on restart). Using a tz-aware ``now`` here fixes a
+    latent DST/travel bug: a naive ``datetime.now()`` computes "today" in the
+    *process* zone, which can disagree with the user's calendar day.
+    """
+    return datetime.now(config.USER_TZ).strftime("%Y-%m-%d")
+
+
 def _resolve_date_range(cfg: dict[str, Any]) -> tuple[str, str]:
     """Derive start/end date strings (YYYY-MM-DD) from config overrides.
 
-    Falls back to today's date when no overrides are present.
+    Falls back to today's date (in the user's timezone) when no overrides
+    are present.
     """
     range_since = cfg.get("since")
     range_until = cfg.get("until")
@@ -27,12 +40,12 @@ def _resolve_date_range(cfg: dict[str, Any]) -> tuple[str, str]:
     if range_since:
         start_date = datetime.fromisoformat(range_since).strftime("%Y-%m-%d")
     else:
-        start_date = datetime.now().strftime("%Y-%m-%d")
+        start_date = _today_str()
 
     if range_until:
         end_date = datetime.fromisoformat(range_until).strftime("%Y-%m-%d")
     else:
-        end_date = datetime.now().strftime("%Y-%m-%d")
+        end_date = _today_str()
 
     return start_date, end_date
 
@@ -71,7 +84,7 @@ def collect(cfg: dict[str, Any]) -> str:
         return _unavailable_report(f"check_ready error: {e}")
 
     start_date, end_date = _resolve_date_range(cfg)
-    today_str = datetime.now().strftime("%Y-%m-%d")
+    today_str = _today_str()
     is_today_only = start_date == today_str and end_date == today_str
 
     try:
