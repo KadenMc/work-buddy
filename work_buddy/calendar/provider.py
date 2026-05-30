@@ -1,16 +1,16 @@
 """Provider protocol + factory.
 
-Consumers (the collector, the coverage capability, the day planner's calendar
-feed) depend on this protocol; the concrete backend is selected via
-``calendar.provider`` in config. Test code registers
+Consumers (the calendar collector, the coverage capability) depend on this
+protocol; the concrete backend is selected via ``calendar.provider`` in config.
+Test code registers
 :class:`work_buddy.calendar.providers.fake.FakeCalendarProvider` and exercises
 the full pipeline without Obsidian.
 
 The protocol declares the **full** surface — reads *and* writes — so the
-contract is stable across PRs even though PR #1 only exposes reads through the
-gateway. There is deliberately **no** ``ensure_calendar`` / provisioning method:
-WB writes to the user's real calendars, it does not create a sandbox calendar
-(DECISIONS D2/D3). Mirrors :func:`work_buddy.email.provider.get_email_provider`.
+contract is stable even though only reads are wired through the gateway today.
+There is deliberately **no** ``ensure_calendar`` / provisioning method: WB
+writes to the user's real calendars, it does not create a sandbox calendar.
+Mirrors :func:`work_buddy.email.provider.get_email_provider`.
 """
 
 from __future__ import annotations
@@ -62,7 +62,7 @@ class CalendarProvider(Protocol):
         """Fetch a single event by its provider-local id. Raises
         :class:`CalendarEventNotFound` when absent."""
 
-    # --- Write (declared now; exposed in a later PR) -----------------------
+    # --- Write (declared for contract stability; not gateway-exposed) ------
 
     def create_event(
         self,

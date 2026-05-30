@@ -3,21 +3,22 @@
 Wraps the existing eval_js path in :mod:`work_buddy.calendar.env` (the Obsidian
 google-calendar plugin) behind the provider-neutral :class:`CalendarProvider`
 protocol. ``env.py`` and its ``_js/`` snippets are **not** modified — this
-adapter is a mapping layer above them, so the working path stays intact while
-the seam goes in on top (DECISIONS D3).
+adapter is a mapping layer above them, so the working path stays intact beneath
+the seam.
 
 Plugin gotchas honored here:
 * ``getEvent`` is **broken** — :meth:`get_event` filters a windowed
   :meth:`list_events` by id instead of calling it.
 * ``get_events`` payload has **no iCalUID** — bridge events fall back to the
-  ``loc:`` stable key; a native adapter supplies real UIDs later.
+  ``loc:`` stable key; a native adapter supplies real UIDs.
 * ``getCalendars`` exposes no ``timeZone`` and the bridge can't introspect the
-  plugin's ``calendarBlackList`` without new JS (frozen for PR #1), so
+  plugin's ``calendarBlackList`` without a new ``_js`` snippet, so
   :meth:`blacklisted_calendar_ids` approximates it from the ``selected`` flag.
 
 Write methods are thin wraps of ``env.py``'s existing consent-gated writers.
 They satisfy the protocol's ``isinstance`` contract but are **not** exposed
-through the gateway in PR #1; ``env.py``'s ``@requires_consent`` stays dormant.
+through the gateway; ``env.py``'s ``@requires_consent`` stays dormant until a
+capability-layer write surface reaches them.
 """
 
 from __future__ import annotations
@@ -138,9 +139,9 @@ class ObsidianBridgeCalendarProvider:
 
     def blacklisted_calendar_ids(self) -> list[str]:
         """Approximate the plugin's ``calendarBlackList`` from the ``selected``
-        flag — a deselected calendar is hidden from event fetches. This is an
-        approximation (the authoritative list needs plugin-settings JS, frozen
-        for PR #1); flagged in AFK-DECISIONS."""
+        flag — a deselected calendar is hidden from event fetches. Reading the
+        authoritative list would need a plugin-settings ``_js`` snippet; this
+        flag-based approximation avoids one."""
         try:
             raw = env.get_calendars()
         except RuntimeError as exc:
@@ -195,7 +196,7 @@ class ObsidianBridgeCalendarProvider:
             f"{start}..{end}"
         )
 
-    # --- Write (thin wraps; NOT gateway-exposed in PR #1) ------------------
+    # --- Write (thin wraps; NOT gateway-exposed) ---------------------------
 
     def create_event(
         self,

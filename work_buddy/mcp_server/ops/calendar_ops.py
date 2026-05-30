@@ -6,8 +6,8 @@ knowledge-store unit carrying a matching ``op`` field) under
 ``google_calendar`` tool probe (``requires: [google_calendar]``), so they're
 filtered out of the registry when Obsidian / the plugin isn't reachable.
 
-PR #1 exposes **reads only**. Write capabilities (heavy-consent mutation) arrive
-in a later PR and register here alongside these.
+This module registers the **read-only** calendar capabilities. Write
+capabilities (heavy-consent mutation) register here alongside them when added.
 """
 
 from __future__ import annotations

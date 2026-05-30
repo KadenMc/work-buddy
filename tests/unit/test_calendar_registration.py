@@ -1,4 +1,4 @@
-"""R8 — calendar read ops register, declarations resolve, config block loads."""
+"""Calendar read ops register, declarations resolve, config block loads."""
 
 from __future__ import annotations
 

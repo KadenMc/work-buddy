@@ -1,9 +1,9 @@
 """Tests for the calendar collector.
 
-R0 (this file's first section) pins the timezone-correctness fix: "today" must
-resolve in the user's configured zone (``config.USER_TZ``), not the process zone.
-R6 (second section) drives ``collect()`` over the fake provider and checks the
-rendered markdown stays byte-similar to the pre-cutover output.
+The first section pins timezone correctness: "today" must resolve in the user's
+configured zone (``config.USER_TZ``), not the process zone. The second section
+drives ``collect()`` over the fake provider and checks the rendered markdown
+(today schedule + grouped range + coverage footer).
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from work_buddy.collectors import calendar_collector as cc
 
 
 # ---------------------------------------------------------------------------
-# R0 — timezone-aware "today"
+# Timezone-aware "today"
 # ---------------------------------------------------------------------------
 
 
@@ -54,7 +54,7 @@ def test_resolve_date_range_honors_explicit_overrides(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# R6 — collector renders over the provider seam (driven by the fake)
+# Collector renders over the provider seam (driven by the fake)
 # ---------------------------------------------------------------------------
 
 from datetime import datetime, timedelta

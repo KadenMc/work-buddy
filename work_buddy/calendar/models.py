@@ -2,8 +2,8 @@
 
 Designed so a Google-native / Microsoft Graph / CalDAV / ICS backend could
 replace the Obsidian-bridge adapter without changing any consumer of these
-dataclasses (the morning bundle, the day planner's calendar feed, coverage
-reporting). Mirrors the structure of :mod:`work_buddy.email.models`.
+dataclasses (the calendar collector / morning bundle, coverage reporting).
+Mirrors the structure of :mod:`work_buddy.email.models`.
 
 Timezone discipline
 -------------------

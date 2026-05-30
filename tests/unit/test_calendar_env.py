@@ -1,8 +1,9 @@
 """Tests for ``work_buddy.calendar.env`` low-level eval_js wrappers.
 
-R0 pins the timezone fix in ``create_event``: when the caller omits ``timezone``,
-it must default to the user's configured zone (``config.USER_TZ``) rather than a
-hardcoded ``"America/Toronto"`` — a layering violation regardless of value.
+Pins the timezone behavior of ``create_event``: when the caller omits
+``timezone``, it must default to the user's configured zone (``config.USER_TZ``)
+rather than a hardcoded ``"America/Toronto"`` — a layering violation regardless
+of value.
 
 We call ``create_event.__wrapped__`` (functools.wraps exposes the undecorated
 function) to bypass the ``@requires_consent`` gate, and stub ``_run_js`` to

@@ -141,6 +141,7 @@ Every scope below is browsable with `mcp__work-buddy__wb_run("agent_docs", {"sco
 | `obsidian/` | Bridge, vault writer, tasks plugin, datacore, smart ecosystem |
 | `vault/` | Vault-recon collector, investigation-agent directions, accept-loop |
 | `email/` | Thunderbird bridge, provider abstraction, email triage adapter |
+| `calendar/` | Calendar reads via provider seam (canonical models, protocol + factory, Obsidian-bridge adapter), coverage |
 | `browser/` | Chrome tab triage |
 | `threads/` | Multi-turn agent-user threads |
 | `notifications/` | Notify, request, consent, surfaces |
@@ -191,6 +192,7 @@ work_buddy/                            # Python package
   conversation_observability/          # Durable session-derived activity DB (commits, writes, summaries)
   obsidian/                            # Bridge + plugin integrations
   email/                               # Email provider abstraction + Thunderbird bridge client
+  calendar/                            # Calendar provider abstraction + Obsidian-bridge adapter
   notifications/                       # Human-in-the-loop surfaces
   messaging/ memory/ telegram/         # Sidecar services
   dashboard/                           # Flask dashboard (localhost:5127)

@@ -5,14 +5,15 @@ as ``kind: capability`` knowledge units (gated by the ``google_calendar`` tool
 probe). All callables instantiate the configured provider on demand and return
 JSON-serialisable dicts, mirroring :mod:`work_buddy.email.capabilities`.
 
-Surface (PR #1 — reads only):
+Read-only surface:
   - ``calendar_health``       Provider readiness payload.
   - ``calendar_list_events``  Events in a date window (optionally per calendar).
   - ``calendar_get_event``    One event by id.
   - ``calendar_coverage``     Which calendars are visible / blacklisted / errored.
 
-Write capabilities (heavy-consent mutation) arrive in a later PR; they live one
-layer up from the adapter so every provider inherits identical consent gating.
+Write capabilities (heavy-consent mutation) belong one layer up from the adapter
+so every provider inherits identical consent gating; they are not part of this
+read-only surface.
 """
 
 from __future__ import annotations
