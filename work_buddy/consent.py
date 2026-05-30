@@ -61,9 +61,51 @@ from work_buddy.agent_session import (
     get_session_consent_db_path,
     get_session_audit_path,
 )
+from work_buddy.consent_principal import current_principal
 
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# No-principal policy
+# ---------------------------------------------------------------------------
+# Every security-critical consent check runs under a bound principal (the
+# gateway binds ``human_agent``, the sidecar binds ``sidecar_self``, the retry
+# sweep binds ``replay_of``). A check with NO bound principal — a direct
+# ``is_granted`` call from a test, an admin read, or a not-yet-migrated path —
+# falls back to the legacy process-default resolution, emitting a one-shot
+# ``CONSENT_NO_PRINCIPAL`` audit line so stragglers stay greppable.
+#
+# Hard fail-closed (deny when no principal is bound) is the durable target and
+# is fully implemented; it is gated behind this flag so the fallback can be
+# flipped off in one place once every caller is confirmed to bind a principal.
+_FAIL_CLOSED_NO_PRINCIPAL = False
+
+_NO_PRINCIPAL_LOGGED: set[str] = set()
+
+
+def set_fail_closed_no_principal(enabled: bool) -> None:
+    """Flip the no-principal policy. When ``True``, a consent check with no
+    bound principal denies (fail-closed) instead of falling back to the
+    legacy process-default resolution. Default ``False``."""
+    global _FAIL_CLOSED_NO_PRINCIPAL
+    _FAIL_CLOSED_NO_PRINCIPAL = enabled
+
+
+def _warn_no_principal_once(operation: str) -> None:
+    if operation in _NO_PRINCIPAL_LOGGED:
+        return
+    _NO_PRINCIPAL_LOGGED.add(operation)
+    _audit_log(
+        "CONSENT_NO_PRINCIPAL", operation,
+        "no active consent principal — legacy default-DB resolution",
+    )
+    logger.info(
+        "consent: is_granted(%r) ran with no bound ConsentPrincipal — "
+        "falling back to legacy process-default resolution. Bind a principal "
+        "via consent_principal(...) at the dispatch boundary.",
+        operation,
+    )
 
 # One-shot deprecation logger for legacy ``__workflow_consent__`` carries.
 # A workflow that still relies on the legacy blanket key (rather than the
@@ -454,10 +496,22 @@ class ConsentCache:
         operation: str,
         *,
         consent_weight: str = "low",
+        principal: "ConsentPrincipal | None" = None,
     ) -> bool:
         """Check if a valid consent exists for the operation.
 
-        Checks in order:
+        Resolution is **principal-scoped**. A principal (explicit ``principal=``
+        or the one bound via ``consent_principal()`` in the current context)
+        names exactly one session DB to resolve against — no process-default is
+        consulted. ``REPLAY`` principals suppress workflow-grant carry so a
+        queued grant cannot time-travel to authorize a replay; ``HUMAN_AGENT``
+        and ``SIDECAR`` ride their own workflow grants.
+
+        With NO principal bound, the check falls back to the legacy resolution
+        below (or denies when ``_FAIL_CLOSED_NO_PRINCIPAL`` is set), emitting a
+        one-shot ``CONSENT_NO_PRINCIPAL`` audit line.
+
+        Legacy resolution (no-principal path only), in order:
         1. Per-operation grant (explicit consent for this exact operation)
            in the CURRENT session's DB
         2. (When ``consent_weight != "high"``) composable workflow grants:
@@ -485,6 +539,22 @@ class ConsentCache:
         in their session, the originating-session lookup also finds
         nothing → returns False → caller gets ConsentRequired.
         """
+        # ── Principal-scoped resolution (the sanctioned path) ──
+        p = principal if principal is not None else current_principal()
+        if p is not None:
+            return self._is_granted_in_session(
+                operation,
+                session_id=p.session_id,
+                consent_weight=consent_weight,
+                from_originating=not p.allows_workflow_carry,
+            )
+
+        # ── No principal bound ──
+        _warn_no_principal_once(operation)
+        if _FAIL_CLOSED_NO_PRINCIPAL:
+            _audit_log("BLOCKED", operation, "no_active_principal (fail-closed)")
+            return False
+
         # Step 1+2+3: current session.
         if self._is_granted_in_session(
             operation, session_id=None, consent_weight=consent_weight,
@@ -620,6 +690,7 @@ class ConsentCache:
         operation: str,
         *,
         session_id: str | None = None,
+        principal: "ConsentPrincipal | None" = None,
     ) -> tuple[str, str | None]:
         """Identify which kind of grant currently carries ``operation``.
 
@@ -632,7 +703,15 @@ class ConsentCache:
         Used by the decorator's audit-log emission to record *why* a
         call was authorized (``via=workflow_run:task-new:wf_abc``,
         etc.).  Strict best-effort — never raises.
+
+        Resolves the same session the gate used: an explicit ``session_id``
+        wins; otherwise the bound principal's session; otherwise the legacy
+        process default.
         """
+        if session_id is None:
+            _p = principal if principal is not None else current_principal()
+            if _p is not None:
+                session_id = _p.session_id
         try:
             conn = self._connect(session_id=session_id)
         except Exception:  # pragma: no cover — defensive
@@ -684,14 +763,23 @@ class ConsentCache:
             except Exception:  # pragma: no cover — defensive
                 pass
 
-    def get_mode(self, operation: str) -> str | None:
+    def get_mode(
+        self,
+        operation: str,
+        *,
+        principal: "ConsentPrincipal | None" = None,
+    ) -> str | None:
         """Return the mode of a grant, or None if not found/expired.
 
-        Mirrors :meth:`is_granted`'s originating-session fallback so the
-        retry-replay path can correctly distinguish ``"once"`` /
-        ``"temporary"`` / ``"always"`` modes when the grant lives in
-        the originating session's DB.
+        Principal-scoped like :meth:`is_granted`: with a principal bound,
+        resolves against that principal's DB only. With none bound, mirrors
+        the legacy default-then-originating fallback so the retry-replay path
+        can still distinguish ``"once"`` / ``"temporary"`` / ``"always"``.
         """
+        p = principal if principal is not None else current_principal()
+        if p is not None:
+            return self._get_mode_in_session(operation, session_id=p.session_id)
+
         mode = self._get_mode_in_session(operation, session_id=None)
         if mode is not None:
             return mode
@@ -1061,12 +1149,17 @@ def requires_consent(
                 # so they should be revoked together.  This ensures the
                 # next call triggers a full bundled notification again.
                 if is_once:
-                    _cache.revoke(operation)
+                    # Revoke against the principal's own DB — that's where the
+                    # grant lives under the principal model (falls back to the
+                    # process default when no principal is bound).
+                    _rp = current_principal()
+                    _rp_sid = _rp.session_id if _rp is not None else None
+                    _cache.revoke(operation, session_id=_rp_sid)
                     _audit_log("AUTO_REVOKED", operation, "once_grant_consumed")
                     for inner_op in covered:
                         inner_mode = _cache.get_mode(inner_op)
                         if inner_mode == "once":
-                            _cache.revoke(inner_op)
+                            _cache.revoke(inner_op, session_id=_rp_sid)
                             _audit_log(
                                 "AUTO_REVOKED", inner_op,
                                 f"covered_by_once:{operation}",
@@ -1339,24 +1432,41 @@ def grant_workflow_run(
     run_id: str,
     *,
     session_id: str | None = None,
+    ttl_minutes: int | None = None,
 ) -> None:
     """Grant run-level consent for an in-flight workflow run.
 
-    No TTL — revoked when the run completes (``revoke_workflow_run`` with
-    ``reason="complete"``) or when the user explicitly revokes the class
-    grant with cascade. Stored with ``mode="once"`` as a marker that says
-    "expect explicit revocation"; the lazy-expiry path does not affect it.
+    Default (``ttl_minutes=None``): no TTL, ``mode="once"`` — revoked when the
+    run completes (``revoke_workflow_run`` with ``reason="complete"``) or when
+    the user revokes the class grant with cascade. The ``once`` mode is a
+    marker meaning "expect explicit revocation"; lazy-expiry does not touch it.
+
+    When ``ttl_minutes`` is given, the grant is minted as a time-bounded
+    ``temporary`` grant instead — a **safety ceiling** so a run that ends
+    abnormally (grant never revoked, e.g. a server restart mid-run) self-heals
+    at expiry rather than lingering forever and authorizing later operations.
+    Normal completion still revokes early. The sidecar passes a ceiling for
+    headless scheduled runs, which are the ones most prone to orphaning.
     """
-    _cache.grant(
-        _workflow_run_key(workflow_name, run_id),
-        mode="once",
-        session_id=session_id,
-    )
+    if ttl_minutes is not None:
+        _cache.grant(
+            _workflow_run_key(workflow_name, run_id),
+            mode="temporary",
+            ttl_minutes=ttl_minutes,
+            session_id=session_id,
+        )
+    else:
+        _cache.grant(
+            _workflow_run_key(workflow_name, run_id),
+            mode="once",
+            session_id=session_id,
+        )
     sid_tag = f" | session={session_id[:8]}" if session_id else ""
+    ttl_tag = f" | ttl={ttl_minutes}m" if ttl_minutes is not None else ""
     _audit_log(
         "WORKFLOW_RUN_GRANTED",
         _workflow_run_key(workflow_name, run_id),
-        f"workflow={workflow_name} | run={run_id}{sid_tag}",
+        f"workflow={workflow_name} | run={run_id}{sid_tag}{ttl_tag}",
     )
 
 
