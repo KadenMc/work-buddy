@@ -97,12 +97,13 @@ You are judging whether this task was ALREADY completed — and if so, WHEN, BY 
 Start from `step_results['gather-evidence']`:
 - `task` — text + linked `note_content` = the original intent (and any prescribed how-to).
 - `provenance` — created_by / assigned / developed_by / intent_attribution. `developed_by` names the sessions that structurally shipped work (a commit referencing the task id), each with `rung`, note-read `awareness`, and informed/convergent `classification`. This is your starting point — no git archaeology from scratch.
-- `session_evidence` — per session (across created/assigned/developed roles): commits, writes, summary. Heed each `note` and the top-level `cache_note`.
+- `session_evidence` — per session (across created/assigned/developed/**note_reader** roles): commits, writes, summary. Heed each `note` and the top-level `cache_note`. A `note_reader` role means the session demonstrably READ the task note (native `Read` of the note file, or a `task_read`/`task_assign` call) — the Rung-3 surface for "read it, did the work, never referenced the task id in a commit." Pure-triage reads (read, but no commits/writes) are pruned; the ones that survive carry work.
 
 **Step 0 — restate the INTENT (do this FIRST).** From `task.note_content`, name (a) what the task actually asked for and (b) any prescribed how-to (a "Suggested Approach"/design in the note, possibly with a v1-vs-follow-up split). Judge the implementation against THIS intent — NOT the commit subject, which may bundle unrelated work or mis-state scope. The prescribed how-to is what makes the divergence judgment possible: did the impl follow it, improve on it, or cut a corner? Skipping Step 0 is how a shallow "looks done" pass slips through.
 
 Then investigate ADAPTIVELY, cheapest first, stopping when confident:
 1. The provenance block + session_evidence.
+1.5. Inspect `session_evidence` for `note_reader`-role entries that ALSO carry commits or writes — the strongest *Rung-3 developer candidates* (read the note + made changes but never referenced the task id in a commit, i.e. the classic "forgot to toggle"). When `developed_by` is empty, these are your best leads; `session_search` into them for rationale before judging.
 2. `session_search` into a developer's session id to recover the design reasoning (WHY they built it that way). Plus `git log --grep`/`-S` and `gh` PR/commit search for anything provenance missed.
 3. Read the ACTUAL code/tests to confirm the behavior is present now and matches (or diverges from) the prescribed how-to.
 4. Run the targeted test(s) only if presence is still ambiguous.

@@ -84,6 +84,7 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
         ("commits_scanned_mtime", "REAL"),
         ("writes_scanned_mtime", "REAL"),
         ("prs_scanned_mtime", "REAL"),
+        ("note_reads_scanned_mtime", "REAL"),
     ):
         if col_name not in cols:
             conn.execute(

@@ -94,6 +94,35 @@ def assistant_write(
     }
 
 
+def assistant_mcp_call(
+    capability: str,
+    params: dict[str, Any],
+    tool_use_id: str,
+    timestamp: str,
+) -> dict[str, Any]:
+    """An assistant turn issuing an ``mcp__work-buddy__wb_run`` tool call.
+
+    Matches the live shape the gateway records — ``input`` carries
+    ``capability`` + ``params`` — so detectors that scan for
+    ``task_read`` / ``task_assign`` MCP calls (provenance note-read
+    awareness) see a realistic block.
+    """
+    return {
+        "type": "assistant",
+        "timestamp": timestamp,
+        "message": {
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": tool_use_id,
+                    "name": "mcp__work-buddy__wb_run",
+                    "input": {"capability": capability, "params": params},
+                }
+            ],
+        },
+    }
+
+
 def tool_result(
     tool_use_id: str,
     stdout: str,

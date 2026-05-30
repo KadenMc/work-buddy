@@ -38,6 +38,9 @@ def conversation_observability_refresh(
     from work_buddy.conversation_observability.sessions import (
         refresh_observed_sessions,
     )
+    from work_buddy.conversation_observability.note_reads import (
+        refresh_session_note_reads,
+    )
     from work_buddy.conversation_observability.writes import (
         refresh_session_writes,
     )
@@ -48,6 +51,9 @@ def conversation_observability_refresh(
     commits = refresh_session_commits(days=days, max_sessions=max_sessions)
     writes = refresh_session_writes(days=days, max_sessions=max_sessions)
     prs = refresh_session_prs(days=days, max_sessions=max_sessions)
+    note_reads = refresh_session_note_reads(
+        days=days, max_sessions=max_sessions, stale_only=stale_only,
+    )
 
     prewarm_count = 0
     try:
@@ -81,6 +87,10 @@ def conversation_observability_refresh(
         "session_commits": {"commit_count": commits.get("commit_count", 0)},
         "session_writes": writes,
         "session_prs": {"pr_count": prs.get("pr_count", 0)},
+        "session_note_reads": {
+            "rows_written": note_reads.get("rows_written", 0),
+            "scanned_sessions": note_reads.get("scanned_sessions", 0),
+        },
         "sha_cache": {"prewarmed_sessions": prewarm_count},
     }
 

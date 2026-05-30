@@ -592,6 +592,36 @@ def _recent_sessions(
     return results
 
 
+def _all_sessions(project: str | None = None) -> list[tuple[Path, str]]:
+    """Every non-subagent session JSONL, with **no** recency cutoff.
+
+    The recency-free counterpart of :func:`_recent_sessions` — used when
+    the question is "did *any* session ever do X with this object" and the
+    object can be arbitrarily old (e.g. a task created months ago whose
+    note was read across many sessions). Same project-filter semantics.
+    """
+    from work_buddy.collectors.chat_collector import project_name_from_slug
+
+    results: list[tuple[Path, str]] = []
+    if not _CLAUDE_PROJECTS.is_dir():
+        return results
+
+    if project:
+        dirs = [
+            d for d in _CLAUDE_PROJECTS.iterdir()
+            if d.is_dir() and project_name_from_slug(d.name) == project
+        ]
+    else:
+        dirs = [d for d in _CLAUDE_PROJECTS.iterdir() if d.is_dir()]
+
+    for project_dir in dirs:
+        for jsonl in project_dir.glob("*.jsonl"):
+            if "subagents" in str(jsonl):
+                continue
+            results.append((jsonl, jsonl.stem))
+    return results
+
+
 def _extract_commits_parallel(
     paths: list[tuple[Path, str]],
 ) -> list[dict[str, Any]]:

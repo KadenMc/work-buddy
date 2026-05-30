@@ -139,6 +139,32 @@ def gather_completeness_evidence(task_id: str) -> dict[str, Any]:
         for dev in prov.get("developed_by") or []:
             _add_role(dev.get("session_id"), "developed")
 
+    # Note-readers: sessions whose JSONL shows they READ the task's note
+    # but that committed without referencing the task id — invisible to
+    # developed_by, yet the exact Rung-3 "read it, did the work, forgot to
+    # toggle" developer. Adding the role here (before the empty-check) means
+    # a task with readers-but-no-commits no longer falls into the
+    # no-structural-link early return — its readers get full evidence.
+    try:
+        from work_buddy.obsidian.tasks import store as _store
+        from work_buddy.obsidian.tasks.provenance import (
+            sessions_who_read_task,
+        )
+        # note_uuid from the authoritative store row (read_task's payload
+        # exposes note_path, not a bare uuid); matches build_task_provenance.
+        _row = _store.get(task_id, include_deleted=True) or {}
+        note_uuid = _row.get("note_uuid")
+        for r in sessions_who_read_task(
+            task_id, note_uuid=note_uuid, include_saw_id=False
+        ):
+            _add_role(r.get("session_id"), "note_reader")
+    except Exception as exc:  # pragma: no cover — best-effort
+        logger.warning(
+            "task_completeness: note-reader scan failed: %s", exc
+        )
+        out["status"] = "degraded"
+        out["errors"].append({"step": "note_readers", "error": str(exc)})
+
     if not roles_by_session:
         out["cache_note"] = (
             "No session is structurally linked to this task — none assigned, "
@@ -235,6 +261,16 @@ def gather_completeness_evidence(task_id: str) -> dict[str, Any]:
 
         out["session_evidence"].append(entry)
 
+    # Prune pure-triage note-reads: a session that ONLY read the note (no
+    # commits, no writes, no other role) is a morning-routine / triage /
+    # weekly-review read sweep, not a developer signal — such sessions read
+    # many task notes without doing the work. Keep note_readers that also
+    # carry work — those are the strongest Rung-3 developer candidates.
+    out["session_evidence"] = [
+        e for e in out["session_evidence"]
+        if e["roles"] != ["note_reader"] or e["commits"] or e["writes"]
+    ]
+
     notes: list[str] = []
     if prov is not None:
         dev_n = len(prov.get("developed_by") or [])
@@ -250,6 +286,16 @@ def gather_completeness_evidence(task_id: str) -> dict[str, Any]:
                 "treat as the Rung-3 (intent-only) case: judge by reading the "
                 "code/tests, not by absence of a structural link."
             )
+    readers = [
+        e for e in out["session_evidence"] if "note_reader" in e["roles"]
+    ]
+    if readers:
+        with_work = [e for e in readers if e["commits"] or e["writes"]]
+        notes.append(
+            f"Note-read awareness: {len(readers)} session(s) read the note "
+            f"({len(with_work)} also have commits/writes — the strongest "
+            "Rung-3 developer candidates; session_search them for rationale)."
+        )
     notes.append(
         "Commit attribution was refreshed per-session before querying."
     )

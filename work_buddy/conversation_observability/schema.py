@@ -118,6 +118,34 @@ CREATE INDEX IF NOT EXISTS idx_session_file_writes_session
     ON session_file_writes(session_id);
 CREATE INDEX IF NOT EXISTS idx_session_file_writes_dirty
     ON session_file_writes(currently_dirty);
+
+-- One row per (session, task, source) note-read event. ``source`` is one
+-- of the three explicit "the session pulled this task's content" actions:
+-- ``read_tool`` (native Read of tasks/notes/<uuid>.md), ``task_read_mcp``,
+-- ``task_assign_mcp``. The weaker ``saw_id`` signal (id text without a
+-- read) is deliberately NOT persisted — it would write a row for every
+-- commit-with-id / search hit / printed task list and bloat the table;
+-- ad-hoc callers can still get it via
+-- ``sessions_who_read_task(..., include_saw_id=True)`` (live JSONL scan).
+-- This is the durable, O(1)-query surface behind the Rung-3 note-reader
+-- role in /wb-task-completeness.
+CREATE TABLE IF NOT EXISTS session_task_note_reads (
+    id               TEXT PRIMARY KEY,   -- f"{session_id}:{task_id}:{source}"
+    session_id       TEXT NOT NULL,
+    task_id          TEXT NOT NULL,
+    note_uuid        TEXT,
+    source           TEXT NOT NULL,
+    first_seen_at    TEXT,
+    last_seen_at     TEXT,
+    occurrence_count INTEGER NOT NULL DEFAULT 1,
+    observed_at      TEXT NOT NULL,
+    UNIQUE(session_id, task_id, source)
+);
+
+CREATE INDEX IF NOT EXISTS idx_stnr_task
+    ON session_task_note_reads(task_id);
+CREATE INDEX IF NOT EXISTS idx_stnr_session
+    ON session_task_note_reads(session_id);
 """
 
 # `session_summaries` + `topic_summaries` were dropped on 2026-05-28 after
