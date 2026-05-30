@@ -863,6 +863,25 @@ def run(foreground: bool = True) -> None:
 
     event_log = EventLog(max_size=200)
 
+    # --- Reconcile the sidecar's own consent session (orphan sweep) ---
+    # The sidecar process runs under a synthetic ``sidecar-<hex>`` session.
+    # reconcile_workflow_consent revokes any ``workflow_run:*`` grant in that
+    # session's consent.db with no matching in-flight run; at boot _ACTIVE_RUNS
+    # is empty, so every orphan left by a previously hard-killed run is swept.
+    # New headless runs use isolated per-run sessions (``sidecar-run-*``), so
+    # this never touches a live run. Must run before the scheduler ticks.
+    # Guarded — never blocks boot.
+    try:
+        from work_buddy.consent_principal import sidecar_self
+        from work_buddy.mcp_server.conductor import reconcile_workflow_consent
+        _recon = reconcile_workflow_consent(sidecar_self().session_id)
+        logger.info("Sidecar consent reconcile at boot: %s", _recon)
+    except Exception as _recon_exc:
+        logger.warning(
+            "Sidecar boot consent reconcile failed (non-fatal): %s",
+            _recon_exc,
+        )
+
     # --- Initialize scheduler ---
     from work_buddy.sidecar.scheduler.engine import Scheduler
 

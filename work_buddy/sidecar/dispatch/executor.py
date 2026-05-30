@@ -141,8 +141,11 @@ def _execute_workflow(name: str, params: dict[str, Any] | None = None) -> dict[s
         if not entry.steps:
             return {"status": "error", "error": f"Workflow '{name}' has no steps defined."}
 
-        # Start the workflow DAG
-        response = start_workflow(name, params=params or None)
+        # Start the workflow DAG. headless=True: this is a sidecar-scheduled
+        # run with no interactive agent, so it gets an isolated per-run
+        # consent session + TTL-bounded run grant (no orphan, no cross-op
+        # carry into the sidecar's standing grants).
+        response = start_workflow(name, params=params or None, headless=True)
         if "error" in response:
             return {"status": "error", "error": response["error"]}
 
@@ -962,8 +965,13 @@ def _check_agent_spawn_consent() -> bool:
     """
     try:
         from work_buddy.consent import ConsentCache
+        from work_buddy.consent_principal import sidecar_self
         cache = ConsentCache()
-        return cache.is_granted(AGENT_SPAWN_CONSENT_OP)
+        # Role B: the sidecar checking its OWN standing consent — resolve
+        # explicitly against the sidecar's session DB.
+        return cache.is_granted(
+            AGENT_SPAWN_CONSENT_OP, principal=sidecar_self(),
+        )
     except Exception as exc:
         logger.warning("Consent check failed: %s — defaulting to deny.", exc)
         return False

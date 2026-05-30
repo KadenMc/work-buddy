@@ -585,15 +585,26 @@ def obsidian_retry(
             # bootstrap session. Without this, replays of consent-
             # gated ops can synchronously fail with ConsentRequired
             # even when the user has approved out-of-band.
+            from contextlib import nullcontext
             if originating_session_id:
                 from work_buddy.agent_session import (
                     set_originating_session, reset_originating_session,
                 )
+                from work_buddy.consent_principal import (
+                    consent_principal, replay_of,
+                )
                 _orig_token = set_originating_session(originating_session_id)
+                # REPLAY principal: resolve against the originating agent's DB,
+                # individual grants only (no workflow time-travel on replay).
+                _principal_ctx = consent_principal(
+                    replay_of(originating_session_id),
+                )
             else:
                 _orig_token = None
+                _principal_ctx = nullcontext()
             try:
-                result = entry.callable(**params)
+                with _principal_ctx:
+                    result = entry.callable(**params)
             finally:
                 if _orig_token is not None:
                     reset_originating_session(_orig_token)

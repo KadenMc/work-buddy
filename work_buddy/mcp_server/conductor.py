@@ -61,6 +61,12 @@ _ACTIVE_RUNS_LOCK = threading.Lock()
 # workflows.run_lifecycle.idle_timeout_hours (see config.yaml).
 _DEFAULT_IDLE_TIMEOUT_HOURS = 24.0
 
+# TTL ceiling for a headless (sidecar-scheduled) run's workflow_run grant.
+# Normal completion revokes it early; this bounds how long an abnormally-
+# terminated headless run's grant can linger before lazy-expiry reaps it.
+# Generous relative to any real scheduled job, tight relative to "forever".
+_SIDECAR_RUN_GRANT_TTL_MINUTES = 6 * 60
+
 
 def _validate_workflow_params(
     entry: WorkflowDefinition,
@@ -132,6 +138,8 @@ def start_workflow(
     workflow_name: str,
     params: dict[str, Any] | None = None,
     agent_session_id: str | None = None,
+    *,
+    headless: bool = False,
 ) -> dict[str, Any]:
     """Start a workflow and return its first available step.
 
@@ -140,6 +148,14 @@ def start_workflow(
       - workflow_context (philosophy, "What NOT to do" — first step only)
       - current_step (with instruction, workflow_file if applicable)
       - diagram (Mermaid flowchart)
+
+    ``headless=True`` marks a run with no interactive agent behind it (a
+    sidecar-scheduled cron job). When set and no ``agent_session_id`` was
+    given, the run is minted under a dedicated, isolated per-run session
+    (``sidecar-run-<run_id>``) so its ``workflow_run`` grant cannot carry-
+    authorize any operation outside this run (e.g. a concurrent sidecar
+    ``agent_spawn``), and the grant is given a finite TTL ceiling so an
+    abnormally-terminated run self-heals instead of orphaning forever.
     """
     entry = get_entry(workflow_name)
     if entry is None:
@@ -154,6 +170,16 @@ def start_workflow(
         return {"error": err}
 
     run_id = f"wf_{uuid.uuid4().hex[:8]}"
+
+    # Headless (sidecar-scheduled) runs with no caller session get a
+    # dedicated, isolated session so their run grant is quarantined from the
+    # sidecar's standing-grant DB (and every agent DB). The id leads with the
+    # uuid-based run_id so its 8-char short id (which get_session_dir uses to
+    # key the on-disk session directory) is unique per run — a "sidecar-run-*"
+    # prefix would collide on the shared short id "sidecar-" and defeat the
+    # isolation.
+    if headless and not agent_session_id:
+        agent_session_id = f"{run_id}-srun"
 
     dag = WorkflowDAG(
         name=f"{workflow_name}:{run_id}",
@@ -216,7 +242,13 @@ def start_workflow(
     # alone is sufficient to authorize the workflow's sub-operations
     # via the @requires_consent carry path.
     from work_buddy.consent import grant_workflow_run
-    grant_workflow_run(workflow_name, run_id, session_id=agent_session_id)
+    # Headless runs get a TTL ceiling on the run grant (defense in depth):
+    # normal completion still revokes early, but an abnormally-terminated
+    # headless run self-heals at expiry instead of lingering forever.
+    grant_workflow_run(
+        workflow_name, run_id, session_id=agent_session_id,
+        ttl_minutes=_SIDECAR_RUN_GRANT_TTL_MINUTES if headless else None,
+    )
 
     # Build response with workflow context on first step
     response = _build_response(run_id, dag)

@@ -623,7 +623,12 @@ def _agent_spawn_consent_granted() -> bool:
     """Check whether sidecar:agent_spawn is currently granted."""
     try:
         from work_buddy.consent import ConsentCache
-        return ConsentCache().is_granted("sidecar:agent_spawn")
+        from work_buddy.consent_principal import sidecar_self
+        # Same op the sidecar's own agent_spawn gate checks; the grant lives
+        # in the sidecar's session DB (Role B), so resolve against it.
+        return ConsentCache().is_granted(
+            "sidecar:agent_spawn", principal=sidecar_self(),
+        )
     except Exception as e:
         logger.warning("agent_spawn consent check failed: %s — denying", e)
         return False
