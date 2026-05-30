@@ -324,6 +324,15 @@ thunderbird:
   # tighten if a slow IMAP folder sync is hanging requests.
   timeout_seconds: 10
 
+# Calendar integration. Default provider is "obsidian_bridge" (reads Google
+# Calendar via the Obsidian google-calendar plugin over the eval_js bridge).
+# Use "fake" to exercise the Python pipeline without Obsidian. The capabilities
+# are additionally gated by the `google_calendar` tool probe, so they're hidden
+# when Obsidian / the plugin isn't reachable regardless of this flag.
+calendar:
+  enabled: true
+  provider: "obsidian_bridge"
+
 # Tool-availability probes used to gate capability dispatch. Set the
 # matching `enabled` flag to false to skip a probe entirely (the
 # capabilities that depend on it move into DISABLED_CAPABILITIES with
