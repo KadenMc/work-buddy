@@ -356,3 +356,119 @@ def test_session_roles_multi(fresh_db, co_env) -> None:
 
 def test_session_roles_empty_for_unknown(fresh_db, co_env) -> None:
     assert provenance.build_session_task_roles("nobody")["tasks"] == []
+
+
+# ── shared detector: per-source breakdown ───────────────────────────
+
+
+def test_scan_distinguishes_sources(co_env) -> None:
+    """_scan_session_for_task reports each explicit-read source separately."""
+    from tests.unit.conversation_observability_fixtures import assistant_mcp_call
+
+    tid = "t-aaaaaaaa"
+    note_uuid = "uuid-multi"
+    path = write_session(
+        co_env["projects"] / "p", "s-multi",
+        [
+            assistant_write("Read", f"tasks/notes/{note_uuid}.md", "tu1",
+                            "2026-05-13T10:00:01Z"),
+            assistant_mcp_call("task_read", {"task_id": tid}, "tu2",
+                               "2026-05-13T10:05:00Z"),
+        ],
+    )
+    scan = provenance._scan_session_for_task(path, tid, note_uuid)
+    assert set(scan["sources"]) == {"read_tool", "task_read_mcp"}
+    assert scan["sources"]["read_tool"]["first"] == "2026-05-13T10:00:01Z"
+    assert scan["sources"]["task_read_mcp"]["count"] == 1
+    assert scan["saw_id"] is True
+
+
+def test_scan_empty_when_unmentioned(co_env) -> None:
+    path = write_session(
+        co_env["projects"] / "p", "s-empty",
+        [assistant_text("unrelated", "2026-05-13T10:00:00Z")],
+    )
+    scan = provenance._scan_session_for_task(path, "t-aaaaaaaa", "uuid-z")
+    assert scan == {"sources": {}, "saw_id": False}
+
+
+def test_session_awareness_still_collapses(co_env) -> None:
+    """Regression guard: the public grade is unchanged by the refactor."""
+    from tests.unit.conversation_observability_fixtures import assistant_mcp_call
+
+    # read_note via MCP call
+    write_session(co_env["projects"] / "p", "s-rn",
+                  [assistant_mcp_call("task_assign", {"task_id": "t-aaaaaaaa"},
+                                      "tu", "2026-05-13T10:00:00Z")])
+    assert provenance.session_awareness_of_task("s-rn", "t-aaaaaaaa", "u") == "read_note"
+    # saw_id only
+    write_session(co_env["projects"] / "p", "s-saw",
+                  [user_turn("touch t-bbbbbbbb", "2026-05-13T10:00:00Z")])
+    assert provenance.session_awareness_of_task("s-saw", "t-bbbbbbbb", "u") == "saw_id"
+    # none
+    write_session(co_env["projects"] / "p", "s-none",
+                  [assistant_text("nope", "2026-05-13T10:00:00Z")])
+    assert provenance.session_awareness_of_task("s-none", "t-cccccccc", "u") == "none"
+    # no_transcript
+    assert provenance.session_awareness_of_task("ghost", "t-dddddddd", "u") == "no_transcript"
+
+
+# ── inverse enumeration: sessions_who_read_task ─────────────────────
+
+
+def _clear_reader_cache():
+    provenance._jsonl_reader_scan.cache_clear()
+
+
+def test_sessions_who_read_task_finds_readers(co_env) -> None:
+    from tests.unit.conversation_observability_fixtures import assistant_mcp_call
+    _clear_reader_cache()
+    tid, note_uuid = "t-aaaaaaaa", "uuid-r"
+    write_session(co_env["projects"] / "p", "s-reader",
+                  [assistant_write("Read", f"tasks/notes/{note_uuid}.md", "tu",
+                                   "2026-05-13T10:00:00Z")])
+    write_session(co_env["projects"] / "p", "s-other",
+                  [assistant_text("unrelated", "2026-05-13T10:00:00Z")])
+    out = provenance.sessions_who_read_task(tid, note_uuid)
+    ids = [r["session_id"] for r in out]
+    assert ids == ["s-reader"]
+    assert out[0]["awareness"] == "read_note"
+    assert "read_tool" in out[0]["sources"]
+
+
+def test_sessions_who_read_task_excludes_saw_id_by_default(co_env) -> None:
+    _clear_reader_cache()
+    tid = "t-aaaaaaaa"
+    write_session(co_env["projects"] / "p", "s-saw",
+                  [user_turn(f"glance at {tid}", "2026-05-13T10:00:00Z")])
+    assert provenance.sessions_who_read_task(tid, "uuid-x") == []
+    _clear_reader_cache()
+    out = provenance.sessions_who_read_task(tid, "uuid-x", include_saw_id=True)
+    assert [r["session_id"] for r in out] == ["s-saw"]
+    assert out[0]["awareness"] == "saw_id"
+
+
+def test_sessions_who_read_task_excludes_own_session(co_env) -> None:
+    from tests.unit.conversation_observability_fixtures import assistant_mcp_call
+    _clear_reader_cache()
+    tid, note_uuid = "t-aaaaaaaa", "uuid-self"
+    write_session(co_env["projects"] / "p", "s-self",
+                  [assistant_mcp_call("task_read", {"task_id": tid}, "tu",
+                                      "2026-05-13T10:00:00Z")])
+    out = provenance.sessions_who_read_task(
+        tid, note_uuid, exclude_session_id="s-self")
+    assert out == []
+
+
+def test_sessions_who_read_task_ranks_read_note_first(co_env) -> None:
+    from tests.unit.conversation_observability_fixtures import assistant_mcp_call
+    _clear_reader_cache()
+    tid, note_uuid = "t-aaaaaaaa", "uuid-rank"
+    write_session(co_env["projects"] / "p", "s-saw",
+                  [user_turn(f"mention {tid}", "2026-05-20T10:00:00Z")])
+    write_session(co_env["projects"] / "p", "s-read",
+                  [assistant_mcp_call("task_read", {"task_id": tid}, "tu",
+                                      "2026-05-13T10:00:00Z")])
+    out = provenance.sessions_who_read_task(tid, note_uuid, include_saw_id=True)
+    # read_note ranks before saw_id even though saw_id session is more recent.
+    assert [r["awareness"] for r in out] == ["read_note", "saw_id"]

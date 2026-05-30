@@ -57,6 +57,7 @@ def _register() -> None:
 
     register_op("op.wb.task_read", mutations.read_task)
     register_op("op.wb.task_provenance", provenance.build_task_provenance)
+    register_op("op.wb.task_note_readers", provenance.sessions_who_read_task)
     register_op("op.wb.task_briefing", manager.daily_briefing)
     register_op("op.wb.task_review_inbox", manager.review_inbox)
     register_op("op.wb.task_stale_check", manager.stale_check)

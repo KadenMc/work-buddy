@@ -40,10 +40,29 @@ def _prov(created_by=None, assigned=None, developed_by=None):
 
 @contextlib.contextmanager
 def _patched(payload, *, prov=None, commits=None, writes=None, summary=None,
-             refresh_exc=None, commits_exc=None, writes_exc=None, prov_exc=None):
-    """Patch every dependency the gatherer touches once a task reads OK."""
+             refresh_exc=None, commits_exc=None, writes_exc=None, prov_exc=None,
+             note_readers=None, note_uuid="note-1", readers_exc=None,
+             commits_by_sid=None, writes_by_sid=None):
+    """Patch every dependency the gatherer touches once a task reads OK.
+
+    ``note_readers`` stubs ``sessions_who_read_task`` (default: none) and
+    ``note_uuid`` stubs the store row the gatherer reads to drive it — so
+    tests never touch the real ~/.claude/projects tree or task DB.
+
+    ``commits_by_sid`` / ``writes_by_sid`` (dicts keyed by session_id) give
+    per-session control — needed to test the note-reader prune, where one
+    session has work and another doesn't. When unset, the flat
+    ``commits`` / ``writes`` return-value applies to every session.
+    """
     def _rv(value, exc):
         return {"side_effect": exc} if exc else {"return_value": value}
+
+    def _by_sid(mapping, flat, exc):
+        if exc:
+            return {"side_effect": exc}
+        if mapping is not None:
+            return {"side_effect": lambda session_id=None, **kw: mapping.get(session_id, [])}
+        return {"return_value": flat or []}
 
     stack = contextlib.ExitStack()
     stack.enter_context(patch(
@@ -52,14 +71,20 @@ def _patched(payload, *, prov=None, commits=None, writes=None, summary=None,
         "work_buddy.obsidian.tasks.provenance.build_task_provenance",
         **_rv(prov, prov_exc)))
     stack.enter_context(patch(
+        "work_buddy.obsidian.tasks.store.get",
+        return_value={"note_uuid": note_uuid}))
+    stack.enter_context(patch(
+        "work_buddy.obsidian.tasks.provenance.sessions_who_read_task",
+        **_rv(note_readers or [], readers_exc)))
+    stack.enter_context(patch(
         "work_buddy.conversation_observability.commits.refresh_session_commits",
         **_rv(None, refresh_exc)))
     stack.enter_context(patch(
         "work_buddy.conversation_observability.commits.query_session_commits",
-        **_rv(commits or [], commits_exc)))
+        **_by_sid(commits_by_sid, commits, commits_exc)))
     stack.enter_context(patch(
         "work_buddy.conversation_observability.writes.query_session_writes",
-        **_rv(writes or [], writes_exc)))
+        **_by_sid(writes_by_sid, writes, writes_exc)))
     stack.enter_context(patch(
         "work_buddy.conversation_observability.session_summary_row"
         ".session_summary_row", return_value=summary))
@@ -215,3 +240,84 @@ class TestGatherEvidenceDegradation:
 
         assert out["status"] == "degraded"
         assert any(e["step"].startswith("query_writes:") for e in out["errors"])
+
+
+class TestGatherEvidenceNoteReaders:
+    """The note_reader role surfaces Rung-3 'read it, forgot to toggle' devs."""
+
+    def _reader(self, sid):
+        return {"session_id": sid, "awareness": "read_note",
+                "sources": {"read_tool": {"first": None, "last": None, "count": 1}},
+                "first_seen": None, "last_seen": None}
+
+    def test_note_reader_with_commit_surfaced(self):
+        """A reader that ALSO committed (unrelated to the task id) is the
+        strongest Rung-3 candidate — surfaced with the note_reader role."""
+        with _patched(
+            _ok_payload([]), prov=_prov(),
+            note_readers=[self._reader("s-reader")],
+            commits_by_sid={"s-reader": [{"sha": "deadbee"}]},
+        ):
+            out = tc.gather_completeness_evidence("t-abc123")
+
+        by_sid = {e["session_id"]: e for e in out["session_evidence"]}
+        assert "s-reader" in by_sid
+        assert by_sid["s-reader"]["roles"] == ["note_reader"]
+        assert by_sid["s-reader"]["commits"] == [{"sha": "deadbee"}]
+
+    def test_pure_triage_read_pruned(self):
+        """A reader with no commits and no writes is a triage sweep — pruned."""
+        with _patched(
+            _ok_payload([]), prov=_prov(),
+            note_readers=[self._reader("s-triage")],
+            commits_by_sid={}, writes_by_sid={},
+        ):
+            out = tc.gather_completeness_evidence("t-abc123")
+
+        assert [e["session_id"] for e in out["session_evidence"]] == []
+
+    def test_note_reader_with_writes_survives(self):
+        with _patched(
+            _ok_payload([]), prov=_prov(),
+            note_readers=[self._reader("s-writer")],
+            commits_by_sid={}, writes_by_sid={"s-writer": [{"path": "x.py"}]},
+        ):
+            out = tc.gather_completeness_evidence("t-abc123")
+
+        by_sid = {e["session_id"]: e for e in out["session_evidence"]}
+        assert by_sid["s-writer"]["writes"] == [{"path": "x.py"}]
+
+    def test_reader_merges_with_developed_role(self):
+        """A session that is BOTH developed-by and a note-reader keeps both
+        roles (de-duped)."""
+        prov = _prov(developed_by=[{"session_id": "s-1", "rung": 2,
+                                    "awareness": "read_note",
+                                    "classification": "informed"}])
+        with _patched(
+            _ok_payload([]), prov=prov,
+            note_readers=[self._reader("s-1")],
+            commits_by_sid={"s-1": [{"sha": "abc"}]},
+        ):
+            out = tc.gather_completeness_evidence("t-abc123")
+
+        roles = out["session_evidence"][0]["roles"]
+        assert set(roles) == {"developed", "note_reader"}
+
+    def test_cache_note_reports_readers(self):
+        with _patched(
+            _ok_payload([]), prov=_prov(),
+            note_readers=[self._reader("s-reader")],
+            commits_by_sid={"s-reader": [{"sha": "abc"}]},
+        ):
+            out = tc.gather_completeness_evidence("t-abc123")
+
+        assert "note-read awareness" in out["cache_note"].lower()
+        assert "1 session" in out["cache_note"].lower()
+
+    def test_readers_scan_failure_degrades(self):
+        with _patched(_ok_payload([]), prov=_prov(),
+                      readers_exc=RuntimeError("scan boom")):
+            out = tc.gather_completeness_evidence("t-abc123")
+
+        assert out["status"] == "degraded"
+        assert any(e["step"] == "note_readers" for e in out["errors"])
