@@ -141,8 +141,11 @@ def _execute_workflow(name: str, params: dict[str, Any] | None = None) -> dict[s
         if not entry.steps:
             return {"status": "error", "error": f"Workflow '{name}' has no steps defined."}
 
-        # Start the workflow DAG
-        response = start_workflow(name, params=params or None)
+        # Start the workflow DAG. headless=True: this is a sidecar-scheduled
+        # run with no interactive agent, so it gets an isolated per-run
+        # consent session + TTL-bounded run grant (no orphan, no cross-op
+        # carry into the sidecar's standing grants).
+        response = start_workflow(name, params=params or None, headless=True)
         if "error" in response:
             return {"status": "error", "error": response["error"]}
 

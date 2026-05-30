@@ -101,10 +101,14 @@ def get_session_dir(session_id: str | None = None) -> Path:
     """
     global _cached_session_dir
 
-    # Only use the cache when no explicit session_id is requested —
-    # the MCP gateway calls with explicit agent session IDs that differ
-    # from the server's own session.
-    if session_id is None:
+    # Only use AND populate the cache when no explicit session_id is
+    # requested. The MCP gateway / conductor call with explicit session IDs
+    # (agent sessions, per-run sidecar sessions) that differ from this
+    # process's own session — caching one of those as the process default
+    # would misroute subsequent default-session lookups to it. The cache
+    # must track only the process's own (env-derived) session.
+    is_default = session_id is None
+    if is_default:
         if _cached_session_dir is not None and _cached_session_dir.exists():
             return _cached_session_dir
         session_id = _get_session_id()
@@ -115,7 +119,8 @@ def get_session_dir(session_id: str | None = None) -> Path:
     # Check if a directory already exists for this session
     for existing in agents_dir.iterdir():
         if existing.is_dir() and existing.name.endswith(f"_{short_id}"):
-            _cached_session_dir = existing
+            if is_default:
+                _cached_session_dir = existing
             return existing
 
     # Create new session directory
@@ -136,7 +141,8 @@ def get_session_dir(session_id: str | None = None) -> Path:
     manifest_path = session_dir / "manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
-    _cached_session_dir = session_dir
+    if is_default:
+        _cached_session_dir = session_dir
     return session_dir
 
 

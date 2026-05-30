@@ -6,6 +6,8 @@ capability_name: task_archive
 category: tasks
 op: op.wb.task_archive
 schema_version: wb-capability/v1
+mutates_state: true
+retry_policy: manual
 parameters:
   older_than_days:
     type: int

@@ -200,3 +200,67 @@ def test_reconcile_revokes_orphaned_workflow_run_key(cache, stub_workflow):
     snap_after = list_active_workflow_grants()
     run_names_after = {(e["workflow_name"], e["run_id"]) for e in snap_after["run"]}
     assert ("test-wf", "wf_orphaned") not in run_names_after
+
+
+# ---------------------------------------------------------------------------
+# Headless (sidecar-scheduled) runs: isolated session + TTL ceiling
+# ---------------------------------------------------------------------------
+
+
+def _read_grant_row(session_id, operation):
+    """Return (mode, expires_at) for a grant in a session's DB, or None."""
+    import sqlite3
+    from work_buddy.agent_session import (
+        get_session_dir, get_session_consent_db_path,
+    )
+    db = get_session_consent_db_path(get_session_dir(session_id))
+    conn = sqlite3.connect(str(db))
+    try:
+        return conn.execute(
+            "SELECT mode, expires_at FROM grants WHERE operation = ?",
+            (operation,),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        # No grants table at all — the session DB was never written to,
+        # which for our purposes is equivalent to "no such grant".
+        return None
+    finally:
+        conn.close()
+
+
+def test_headless_run_uses_isolated_session_with_ttl(cache, stub_workflow):
+    """A headless run is pinned to a dedicated ``sidecar-run-<id>`` session and
+    its run grant is TTL-bounded — never landing in the sidecar standing DB."""
+    from work_buddy.mcp_server import conductor
+    from work_buddy.consent import _workflow_run_key
+
+    result = conductor.start_workflow("test-wf", params=None, headless=True)
+    run_id = result["workflow_run_id"]
+
+    with conductor._ACTIVE_RUNS_LOCK:
+        dag = conductor._ACTIVE_RUNS[run_id]
+    assert dag.agent_session_id == f"{run_id}-srun"
+
+    op = _workflow_run_key("test-wf", run_id)
+    # Lives in the isolated per-run session, TTL-bounded ("temporary").
+    row = _read_grant_row(dag.agent_session_id, op)
+    assert row is not None, "run grant missing from the isolated run session"
+    mode, expires_at = row
+    assert mode == "temporary"
+    assert expires_at is not None  # finite ceiling, not a forever grant
+
+    # And NOT in the sidecar's standing (default) session DB.
+    assert _read_grant_row(None, op) is None
+
+
+def test_non_headless_run_grant_is_untimed_in_caller_session(cache, stub_workflow):
+    """A normal (non-headless) run keeps the untimed mode=once run grant in the
+    caller's session — unchanged behavior."""
+    from work_buddy.mcp_server import conductor
+    from work_buddy.consent import _workflow_run_key
+
+    result = conductor.start_workflow("test-wf", params=None)
+    run_id = result["workflow_run_id"]
+
+    row = _read_grant_row(None, _workflow_run_key("test-wf", run_id))
+    assert row == ("once", None)
