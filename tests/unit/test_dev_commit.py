@@ -59,12 +59,12 @@ def test_assess_state_on_main_warns(fake_git):
 
 def test_assess_state_knowledge_edits_warn(fake_git):
     fake_git["branch"] = "feat/x"
-    fake_git["tracked"] = ["knowledge/store/tasks.json"]
+    fake_git["tracked"] = ["knowledge/store/tasks.md"]
     fake_git["untracked"] = []
 
     result = dev_commit.assess_state()
     assert any(
-        "docs_create" in w or "hand" in w.lower() for w in result["warnings"]
+        "docs_edit" in w or "reconcil" in w.lower() for w in result["warnings"]
     ), result["warnings"]
 
 
