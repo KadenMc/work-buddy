@@ -109,7 +109,7 @@ Quick map:
 The Settings tab UI picks up new components automatically via the control graph; you don't need to touch the dashboard frontend. After registering: `mcp_registry_reload` is sufficient (no new `Capability` is added). For the unified view-model + cascade rules + endpoint surface, see [architecture/control-graph](architecture/control-graph).
 
 ### Doc hygiene after changes
-Run `/wb-dev-document` before committing. It scans current changes against the knowledge store, proposes edits for stale units (and creates new ones where needed), and applies them via the sanctioned capabilities. Doc drift is a recurring failure mode; this workflow makes the check a DAG step that cannot be silently skipped.
+`/wb-dev-pr` runs `/wb-dev-document` as a **mandatory chained step** (doc-update sits between the test and PII-scan steps in the `dev-pr` workflow). So committing through `/wb-dev-pr` already keeps the knowledge store in sync — do NOT run `/wb-dev-document` as a separate step first. Run `/wb-dev-document` standalone only when you want to *preview* the proposed doc edits outside the commit flow. It scans current changes against the knowledge store, proposes edits for stale units (and creates new ones where needed), and applies them via the sanctioned capabilities. Doc drift is a recurring failure mode; chaining it into `/wb-dev-pr` makes the check a DAG step that cannot be silently skipped.
 
 ### Slash commands
 `.claude/commands/wb-*.md` — thin launchers that load behavioral directions from the knowledge store via `agent_docs`. Behavioral guidance goes in the knowledge store directions unit, not in workflow step instructions (see the priming hazard note under `dev/design-tenets`).
@@ -166,7 +166,7 @@ work-buddy enforces a Developer Certificate of Origin: **every commit must be si
 - **Don't run operational workflows** — you're here to build, not to operate.
 - **Don't guess at imports** — `mcp__work-buddy__wb_search()` first, then check the code.
 - **Don't add features without slash commands** — every user-facing capability needs one.
-- **Don't forget doc hygiene** — run `/wb-dev-document` before `/wb-dev-pr`.
+- **Don't double-run doc hygiene** — `/wb-dev-pr` already runs `/wb-dev-document` as a chained step, so never tell the user (or yourself) to "run /wb-dev-document then /wb-dev-pr." Run `/wb-dev-document` standalone only to *preview* doc edits before the PR flow.
 - **Don't hand-edit `knowledge/store/*.json`** — use `docs_*` / `workflow_*` / the auto-generator for capability units.
 - **Don't commit unrelated files** — stage only what you changed.
 - **Don't commit without `-s`** — work-buddy enforces a DCO; an unsigned commit fails the required `DCO` check and blocks the PR.
