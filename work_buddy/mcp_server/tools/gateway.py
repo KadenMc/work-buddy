@@ -254,30 +254,38 @@ _AUTO_CONSENT_TIMEOUT = 90  # seconds to wait for user response
 _MAX_CONSENT_RETRIES = 2   # max sequential ConsentRequired retries per wb_run
 
 
-def _invoke_with_session(callable_, session_id, /, **kwargs):
-    """Invoke ``callable_`` with the agent's session id pinned on the
-    ``_originating_session`` ContextVar.
+def _invoke_with_session(callable_, session_id, /, *, _wb_replay=False, **kwargs):
+    """Invoke ``callable_`` bound to the agent's consent principal.
 
     The MCP server process runs under its own ``WORK_BUDDY_SESSION_ID``
     (typically a sidecar-bootstrap session), distinct from the agent's
     session. Consent grants that come back via ``callback_session_id``
     land in the *agent's* session DB. Without this wrapper, the
-    ``@requires_consent`` decorator's ``is_granted`` check resolves to
-    the bootstrap session via ``os.environ`` and never sees the grant.
+    ``@requires_consent`` decorator's ``is_granted`` check would resolve
+    against the bootstrap (sidecar) session and could ride a stale grant
+    that isn't the agent's.
 
-    Setting ``_originating_session`` to the agent's id makes the
-    decorator's Step-4 originating-session fallback fire against the
-    correct DB. Mirrors the pattern the sidecar's ``retry_sweep`` uses
-    (see ``work_buddy/sidecar/retry_sweep.py``).
+    Binding a ``ConsentPrincipal`` for the duration of the call makes the
+    decorator's ``is_granted`` resolve against the agent's own DB and only
+    that DB. ``_wb_replay`` selects the principal kind: a live dispatch
+    binds ``human_agent`` (its own workflow grants may carry); a retry-queue
+    replay binds ``replay_of`` (individual grants only — no workflow
+    time-travel). ``_originating_session`` is still set for non-consent
+    session attribution (llm cost, task ``created_by``, etc.).
     """
     if not session_id:
         return callable_(**kwargs)
     from work_buddy.agent_session import (
         set_originating_session, reset_originating_session,
     )
+    from work_buddy.consent_principal import (
+        consent_principal, human_agent, replay_of,
+    )
+    principal = replay_of(session_id) if _wb_replay else human_agent(session_id)
     token = set_originating_session(session_id)
     try:
-        return callable_(**kwargs)
+        with consent_principal(principal):
+            return callable_(**kwargs)
     finally:
         reset_originating_session(token)
 
@@ -285,6 +293,8 @@ def _invoke_with_session(callable_, session_id, /, **kwargs):
 def _check_missing_consent(
     operations: list[str],
     agent_session_id: str | None = None,
+    *,
+    replay: bool = False,
 ) -> list[str]:
     """Return operations from the list that lack a valid consent grant.
 
@@ -293,21 +303,26 @@ def _check_missing_consent(
     as granted via a workflow blanket — pre-flight must surface them for
     individual prompting even when a workflow grant is live.
 
-    ``agent_session_id`` pins the originating-session ContextVar around
-    the check so ``is_granted`` resolves to the agent's consent DB
-    rather than the MCP server's bootstrap session DB. Without it the
-    pre-flight re-prompts for grants that already exist in the agent's
-    session.
+    ``agent_session_id`` binds the consent principal around the check so
+    ``is_granted`` resolves to the agent's own consent DB rather than the
+    MCP server's bootstrap (sidecar) session DB. ``replay`` selects the
+    principal kind (``replay_of`` suppresses workflow-carry, matching the
+    retry-queue isolation the decorator enforces at execution time).
     """
+    from contextlib import nullcontext
     from work_buddy.consent import _cache, get_consent_metadata
     if agent_session_id:
-        from work_buddy.agent_session import (
-            set_originating_session, reset_originating_session,
+        from work_buddy.consent_principal import (
+            consent_principal, human_agent, replay_of,
         )
-        _orig_token = set_originating_session(agent_session_id)
+        principal = (
+            replay_of(agent_session_id) if replay
+            else human_agent(agent_session_id)
+        )
+        ctx = consent_principal(principal)
     else:
-        _orig_token = None
-    try:
+        ctx = nullcontext()
+    with ctx:
         missing: list[str] = []
         for op in operations:
             meta = get_consent_metadata(op) or {}
@@ -315,9 +330,6 @@ def _check_missing_consent(
             if not _cache.is_granted(op, consent_weight=weight):
                 missing.append(op)
         return missing
-    finally:
-        if _orig_token is not None:
-            reset_originating_session(_orig_token)
 
 
 def _auto_consent_request(
@@ -2288,7 +2300,7 @@ def retry_operation(operation_id: str) -> dict[str, Any]:
     _retry_session_id = record.get("originating_session_id")
     if record["type"] != "workflow" and isinstance(entry, registry.Capability) and entry.consent_operations:
         missing = _check_missing_consent(
-            entry.consent_operations, _retry_session_id,
+            entry.consent_operations, _retry_session_id, replay=True,
         )
         if missing:
             consent_result = _auto_consent_request(
@@ -2313,11 +2325,12 @@ def retry_operation(operation_id: str) -> dict[str, Any]:
                     record.get("originating_session_id"),
                 )
             else:
-                # Pin the originating session so the decorator's
-                # is_granted check finds grants in the agent's DB
-                # rather than the MCP server's bootstrap session DB.
+                # Bind a REPLAY principal so the decorator's is_granted
+                # check resolves against the originating agent's DB and
+                # rides individual grants only (no workflow time-travel).
                 result = _invoke_with_session(
                     entry.callable, _retry_session_id,
+                    _wb_replay=True,
                     **record["params"],
                 )
             break

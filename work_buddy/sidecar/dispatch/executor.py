@@ -962,8 +962,13 @@ def _check_agent_spawn_consent() -> bool:
     """
     try:
         from work_buddy.consent import ConsentCache
+        from work_buddy.consent_principal import sidecar_self
         cache = ConsentCache()
-        return cache.is_granted(AGENT_SPAWN_CONSENT_OP)
+        # Role B: the sidecar checking its OWN standing consent — resolve
+        # explicitly against the sidecar's session DB.
+        return cache.is_granted(
+            AGENT_SPAWN_CONSENT_OP, principal=sidecar_self(),
+        )
     except Exception as exc:
         logger.warning("Consent check failed: %s — defaulting to deny.", exc)
         return False

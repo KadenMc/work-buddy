@@ -445,8 +445,21 @@ class RetrySweep:
 
             originating = record.get("originating_session_id")
             token = set_originating_session(originating) if originating else None
+            # Bind a REPLAY consent principal: the decorator's is_granted
+            # resolves against the originating agent's DB and rides individual
+            # grants only — a workflow grant that was live when this op was
+            # queued must not time-travel to authorize a later replay.
+            from contextlib import nullcontext
+            if originating:
+                from work_buddy.consent_principal import (
+                    consent_principal, replay_of,
+                )
+                _principal_ctx = consent_principal(replay_of(originating))
+            else:
+                _principal_ctx = nullcontext()
             try:
-                result = entry.callable(**record.get("params", {}))
+                with _principal_ctx:
+                    result = entry.callable(**record.get("params", {}))
             finally:
                 if token is not None:
                     reset_originating_session(token)
