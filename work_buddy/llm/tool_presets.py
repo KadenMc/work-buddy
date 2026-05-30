@@ -195,8 +195,9 @@ _MUTATING_CAPABILITIES: frozenset[str] = frozenset({
     "dev_mode_toggle",
     # Admin
     "service_restart", "mcp_registry_reload", "obsidian_retry",
-    # Docs edits
-    "docs_create", "docs_update", "docs_delete", "docs_move",
+    # Docs edits (content authoring/creation is the docs_edit workflow, not a
+    # capability; these are the structural + reconcile capabilities)
+    "docs_delete", "docs_move", "docs_validate",
     "agent_docs_rebuild", "knowledge_mint", "knowledge_index_rebuild",
     # Artifacts
     "artifact_save", "artifact_delete", "artifact_cleanup",

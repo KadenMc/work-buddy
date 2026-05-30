@@ -6,8 +6,8 @@ mode when agents edit the store. The dev-document workflow runs
 `docs_validate` as an auto_run step right after `apply` so breakage is
 caught in the same edit pass, not the next unrelated commit.
 
-These tests pin the wiring so a future workflow_update can't silently
-drop the gate.
+These tests pin the wiring so a future edit to the dev-document workflow
+can't silently drop the gate.
 """
 
 from __future__ import annotations

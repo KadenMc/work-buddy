@@ -1,14 +1,11 @@
-"""docs_create / docs_update must support dev_notes and entry_points.
+"""create_unit / update_unit must preserve dev_notes and entry_points.
 
-Background: the knowledge-store data model has long supported
-``dev_notes`` (surfaced only in dev mode) and ``entry_points`` (dotted
-module paths for navigation on ``system`` units), but neither
-capability exposed them as parameters. Agents trying to create a new
-system unit with dev notes had to fall back to direct JSON editing,
-which bypasses ``create_unit``'s validation and parent/child bookkeeping.
-
-This test pins the fix so a future refactor doesn't silently drop
-these parameters again.
+``dev_notes`` (surfaced only in dev mode) and ``entry_points`` (dotted module
+paths for navigation on ``system`` / ``reference`` units) round-trip through the
+file-per-unit codec. These tests pin that the internal write primitives carry
+both fields through create and update so a future refactor can't silently drop
+them. (Agents author content through the ``docs_edit`` workflow's native-Edit
+flow; ``create_unit`` / ``update_unit`` are the validated write primitives.)
 """
 
 from __future__ import annotations
@@ -80,53 +77,33 @@ def test_create_unit_accepts_dev_notes_and_entry_points(tmp_store):
     ]
 
 
-def test_docs_create_mcp_wrapper_passes_dev_notes_through(tmp_store):
-    """The MCP-facing wrapper (str args) must plumb dev_notes all the
-    way to the stored unit, not silently drop it."""
-    result = editor.docs_create(
-        path="architecture/mcp-test",
-        kind="reference",
-        name="MCP Test",
-        description="Round-trip test through the MCP wrapper",
-        content_full="body",
-        parents="architecture",
-        dev_notes="Landmine: W comes before X here.",
-        entry_points="work_buddy.a, work_buddy.b",
-    )
-    assert result.get("status") == "created"
-
-    unit = editor.load_store()["architecture/mcp-test"]
-    assert unit.dev_notes == "Landmine: W comes before X here."
-    assert unit.entry_points == ["work_buddy.a", "work_buddy.b"]
-
-
-def test_docs_update_replaces_dev_notes(tmp_store):
-    editor.docs_create(
+def test_update_unit_replaces_dev_notes(tmp_store):
+    editor.create_unit(
         path="architecture/updatable",
         kind="system",
         name="U",
         description="d",
         dev_notes="OLD warning",
     )
-    editor.docs_update(
-        path="architecture/updatable",
-        dev_notes="NEW warning with more nuance",
+    editor.update_unit(
+        "architecture/updatable",
+        {"dev_notes": "NEW warning with more nuance"},
     )
     unit = editor.load_store()["architecture/updatable"]
     assert unit.dev_notes == "NEW warning with more nuance"
 
 
-def test_docs_update_replaces_entry_points(tmp_store):
-    editor.docs_create(
+def test_update_unit_replaces_entry_points(tmp_store):
+    editor.create_unit(
         path="architecture/entry-upd",
         kind="reference",
         name="E",
         description="d",
-        entry_points="work_buddy.old",
+        entry_points=["work_buddy.old"],
     )
-    editor.docs_update(
-        path="architecture/entry-upd",
-        entry_points="work_buddy.new.a, work_buddy.new.b",
+    editor.update_unit(
+        "architecture/entry-upd",
+        {"entry_points": ["work_buddy.new.a", "work_buddy.new.b"]},
     )
     unit = editor.load_store()["architecture/entry-upd"]
     assert unit.entry_points == ["work_buddy.new.a", "work_buddy.new.b"]

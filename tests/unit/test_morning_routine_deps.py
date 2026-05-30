@@ -8,7 +8,7 @@ the expected set of tool/component IDs.
 
 This test exercises the REAL registry — no mocks. If it fails, either:
 
-    1. ``workflows.json`` lost the ``invokes`` entries we added in Phase B.
+    1. The workflow units lost the ``invokes`` entries on their steps.
     2. ``Capability.requires`` on one of the invoked capabilities changed
        (rare — would indicate a real refactor).
     3. The resolver logic regressed.

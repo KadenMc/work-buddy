@@ -61,20 +61,36 @@ nav:
 - Architecture:
   - Architecture & Repo Structure: handbook/architecture.md
   - Artifact System: handbook/architecture_artifact-system.md
+  - Data Backups: handbook/architecture_backups.md
+  - Backup Now Directions: handbook/architecture_backups_wb-backup-now-directions.md
+  - Backup Restore Directions: handbook/architecture_backups_wb-backup-restore-directions.md
   - Capability Registry: handbook/architecture_capability-registry.md
   - Context Pipeline: handbook/architecture_context-pipeline.md
   - Contracts: handbook/architecture_contracts.md
   - Control Graph: handbook/architecture_control-graph.md
+  - Conversation Observability: handbook/architecture_conversation-observability.md
+  - Data-First Capabilities: handbook/architecture_data-first-capabilities.md
   - Embedding Service: handbook/architecture_embedding-service.md
   - Dashboard Event Bus: handbook/architecture_event-bus.md
+  - Feature Cards: handbook/architecture_feature-cards.md
+  - Health System (mental model): handbook/architecture_health.md
+  - Components & health checks layer: handbook/architecture_health_components.md
+  - Fixers layer: handbook/architecture_health_fixers.md
+  - Requirements layer: handbook/architecture_health_requirements.md
   - Inference: handbook/architecture_inference.md
   - Local Inference Broker: handbook/architecture_inference_broker.md
   - Knowledge System: handbook/architecture_knowledge-system.md
   - LLM Runner: handbook/architecture_llm-runner.md
   - Local LLM With Tools: handbook/architecture_llm-with-tools.md
+  - MarkdownDB: handbook/architecture_markdown-db.md
   - MCP Server Import Discipline: handbook/architecture_mcp-import-discipline.md
+  - Schema Migration Ladder: handbook/architecture_migrations.md
   - Repository Structure: handbook/architecture_repo-structure.md
+  - Resilience Framework: handbook/architecture_resilience.md
   - Async Execution Queue: handbook/architecture_retry-queue.md
+  - Summarization Framework: handbook/architecture_summarization-framework.md
+  - Workflow Cancel Directions: handbook/architecture_wb-workflow-cancel-directions.md
+  - Workflow Run Lifecycle: handbook/architecture_workflow-run-lifecycle.md
   - Workflow System: handbook/architecture_workflows.md
 - Artifacts:
   - Artifacts: handbook/artifacts.md
@@ -82,6 +98,7 @@ nav:
   - Artifact Delete: handbook/artifacts_artifact_delete.md
   - Artifact Get: handbook/artifacts_artifact_get.md
   - Artifact List: handbook/artifacts_artifact_list.md
+  - Artifact Registry: handbook/artifacts_artifact_registry.md
   - Artifact Save: handbook/artifacts_artifact_save.md
   - Commit Record: handbook/artifacts_commit_record.md
 - Automation:
@@ -89,15 +106,23 @@ nav:
   - Action contexts (Slice 5a): handbook/automation_contexts.md
   - Pickup-time readiness (Slice 7): handbook/automation_pickup.md
   - Risk model + automation tiers + dynamic resurfacing: handbook/automation_risk.md
+- Backups:
+  - Backups: handbook/backups.md
+  - Data Backup: handbook/backups_data_backup.md
+  - Data Backup List: handbook/backups_data_backup_list.md
+  - Data Restore: handbook/backups_data_restore.md
 - Browser:
   - Browser: handbook/browser.md
   - Chrome Triage: handbook/browser_chrome-triage.md
   - Chrome Triage Directions: handbook/browser_chrome-triage-directions.md
+- Calendar:
+  - Calendar subsystem (provider-neutral): handbook/calendar.md
+  - Calendar Coverage: handbook/calendar_calendar_coverage.md
+  - Calendar Get Event: handbook/calendar_calendar_get_event.md
+  - Calendar Health: handbook/calendar_calendar_health.md
+  - Calendar List Events: handbook/calendar_calendar_list_events.md
 - Clarify:
-  - Clarify: handbook/clarify.md
-  - Deadline + dependency extraction (Slice 3): handbook/clarify_deadline-extract.md
-  - Multi-record verdict schema (Slice 3): handbook/clarify_multi-record-schema.md
-  - Reference filing pipeline (Slice 6): handbook/clarify_reference-filing.md
+  - Text-segmenter SubCall: handbook/clarify_text-segmenter.md
 - Context:
   - Context: handbook/context.md
   - Agent Docs: handbook/context_agent_docs.md
@@ -137,13 +162,12 @@ nav:
   - Datacore Status: handbook/context_datacore_status.md
   - Datacore Validate: handbook/context_datacore_validate.md
   - Dev Mode Toggle: handbook/context_dev_mode_toggle.md
-  - Docs Create: handbook/context_docs_create.md
+  - Docs Edit: handbook/context_docs-edit.md
   - Docs Delete: handbook/context_docs_delete.md
   - Docs Get: handbook/context_docs_get.md
   - Docs Index: handbook/context_docs_index.md
   - Docs Move: handbook/context_docs_move.md
   - Docs Query: handbook/context_docs_query.md
-  - Docs Update: handbook/context_docs_update.md
   - Docs Validate: handbook/context_docs_validate.md
   - Ir Index: handbook/context_ir_index.md
   - Knowledge: handbook/context_knowledge.md
@@ -151,7 +175,6 @@ nav:
   - Knowledge Index Status: handbook/context_knowledge_index_status.md
   - Knowledge Mint: handbook/context_knowledge_mint.md
   - Knowledge Personal: handbook/context_knowledge_personal.md
-  - Resolution Surface Pool: handbook/context_resolution_surface_pool.md
   - Review Latest Bundle: handbook/context_review-latest-bundle.md
   - Session Find Uncommitted: handbook/context_session-find-uncommitted.md
   - Session Identify: handbook/context_session-identify.md
@@ -163,16 +186,10 @@ nav:
   - Session Uncommitted: handbook/context_session_uncommitted.md
   - Session Wb Activity: handbook/context_session_wb_activity.md
   - Session Inspection: handbook/context_sessions.md
-  - Triage Execute: handbook/context_triage_execute.md
-  - Triage Item Detail: handbook/context_triage_item_detail.md
-  - Triage Pool Quarantine Entry: handbook/context_triage_pool_quarantine_entry.md
-  - Triage Pool Sweep: handbook/context_triage_pool_sweep.md
-  - Triage Review Pool: handbook/context_triage_review_pool.md
-  - Triage Submit: handbook/context_triage_submit.md
   - Vault Recon: handbook/context_vault_recon.md
   - Vault Recon Collect: handbook/context_vault_recon_collect.md
-  - Workflow Create: handbook/context_workflow_create.md
-  - Workflow Update: handbook/context_workflow_update.md
+  - Workflow Cancel: handbook/context_workflow_cancel.md
+  - Workflow Sweep Idle: handbook/context_workflow_sweep_idle.md
 - Contracts:
   - Contracts: handbook/contracts.md
   - Active Contracts: handbook/contracts_active_contracts.md
@@ -186,6 +203,16 @@ nav:
   - Create Contract: handbook/contracts_create-contract.md
   - Overdue Contracts: handbook/contracts_overdue_contracts.md
   - Stale Contracts: handbook/contracts_stale_contracts.md
+- Conversation Observability:
+  - Conversation Observability: handbook/conversation_observability.md
+  - Conversation Observability Get: handbook/conversation_observability_conversation_observability_get.md
+  - Conversation Observability List: handbook/conversation_observability_conversation_observability_list.md
+  - Conversation Observability Refresh: handbook/conversation_observability_conversation_observability_refresh.md
+  - Conversation Observability Summarize: handbook/conversation_observability_conversation_observability_summarize.md
+  - Conversation Observability Summary Get: handbook/conversation_observability_conversation_observability_summary_get.md
+  - Conversation Observability Uncommitted: handbook/conversation_observability_conversation_observability_uncommitted.md
+  - Session PRs Get: handbook/conversation_observability_session_prs_get.md
+  - Session Summary Get: handbook/conversation_observability_session_summary_get.md
 - Conversations:
   - Conversations: handbook/conversations.md
   - Conversation Management Directions: handbook/conversations_conversation-directions.md
@@ -204,20 +231,52 @@ nav:
 - Dev:
   - Development: handbook/dev.md
   - MCP Gateway Design Tenets: handbook/dev_design-tenets.md
-  - Dev Commit: handbook/dev_dev-commit.md
-  - Dev Commit Directions: handbook/dev_dev-commit-directions.md
   - Dev Doc Update: handbook/dev_dev-document.md
   - Dev Doc Update Directions: handbook/dev_dev-document-directions.md
   - Development Mode: handbook/dev_dev-mode.md
   - Dev-Mode Orientation: handbook/dev_dev-orient.md
+  - Dev PR: handbook/dev_dev-pr.md
+  - Dev PR Directions: handbook/dev_dev-pr-directions.md
   - Documentation Architecture: handbook/dev_documentation-architecture.md
+  - "Durable surfaces \u2014 no transient narrative": handbook/dev_durable-surfaces.md
+  - Live Testing Directions: handbook/dev_live-testing-directions.md
   - MCP Registry Reload: handbook/dev_mcp-reload.md
   - Obsidian Plugin Integration: handbook/dev_plugin-integration.md
   - Session Retrospective: handbook/dev_retro.md
   - Stress Test: handbook/dev_stress-test.md
+- Disclosure:
+  - Progressive Disclosure: handbook/disclosure.md
+  - Drill Tree: handbook/disclosure_drill_tree.md
+  - Walk: handbook/disclosure_walk.md
 - Email:
   - Email integration (Thunderbird bridge): handbook/email.md
+  - Email Triage: handbook/email_email-triage.md
+  - Email Accounts: handbook/email_email_accounts.md
+  - Email Close: handbook/email_email_close.md
+  - Email Create Tasks: handbook/email_email_create_tasks.md
+  - Email Create Umbrella Task: handbook/email_email_create_umbrella_task.md
+  - Email Display: handbook/email_email_display.md
+  - Email Get: handbook/email_email_get.md
+  - Email Health: handbook/email_email_health.md
+  - Email Record Into Task: handbook/email_email_record_into_task.md
   - Email triage directions: handbook/email_triage-directions.md
+- Entities:
+  - Entities: handbook/entities.md
+  - Editing an Entity: handbook/entities_entity-edit-directions.md
+  - Listing Entities: handbook/entities_entity-list-directions.md
+  - Creating an Entity: handbook/entities_entity-new-directions.md
+  - Resolving an Entity: handbook/entities_entity-resolve-directions.md
+  - Entity Add Alias: handbook/entities_entity_add_alias.md
+  - Entity Add Reference: handbook/entities_entity_add_reference.md
+  - Entity Create: handbook/entities_entity_create.md
+  - Entity Delete: handbook/entities_entity_delete.md
+  - Entity Get: handbook/entities_entity_get.md
+  - Entity List: handbook/entities_entity_list.md
+  - Entity List References: handbook/entities_entity_list_references.md
+  - Entity Remove Alias: handbook/entities_entity_remove_alias.md
+  - Entity Resolve: handbook/entities_entity_resolve.md
+  - Entity Set Tags: handbook/entities_entity_set_tags.md
+  - Entity Update: handbook/entities_entity_update.md
 - Features:
   - Features: handbook/features.md
   - LM Studio Embedding Offload Setup: handbook/features_lmstudio-offload-setup.md
@@ -227,6 +286,13 @@ nav:
   - Inline Commands: handbook/inline.md
   - Inline Consume Modes: handbook/inline_consume-modes.md
   - Inline Commands Directions: handbook/inline_directions.md
+  - Inline Cancel Watcher: handbook/inline_inline_cancel_watcher.md
+  - Inline Invoke: handbook/inline_inline_invoke.md
+  - Inline List Commands: handbook/inline_inline_list_commands.md
+  - Inline List Watchers: handbook/inline_inline_list_watchers.md
+  - Inline Menu Manifest: handbook/inline_inline_menu_manifest.md
+  - Inline Sync: handbook/inline_inline_sync.md
+  - Inline Tag Removed: handbook/inline_inline_tag_removed.md
   - Inline Commands Overview: handbook/inline_overview.md
   - Inline Persistent Watchers: handbook/inline_persistence.md
 - Journal:
@@ -240,7 +306,6 @@ nav:
   - Journal Route To Tasks: handbook/journal_journal_route_to_tasks.md
   - Journal Sign In: handbook/journal_journal_sign_in.md
   - Journal State: handbook/journal_journal_state.md
-  - Journal Triage Scan: handbook/journal_journal_triage_scan.md
   - Journal Write: handbook/journal_journal_write.md
   - Running Notes: handbook/journal_running_notes.md
   - Journal Update Directions: handbook/journal_update-directions.md
@@ -248,6 +313,10 @@ nav:
 - Memory:
   - Memory: handbook/memory.md
   - Hindsight Memory Server: handbook/memory_hindsight.md
+  - Memory Prune: handbook/memory_memory_prune.md
+  - Memory Read: handbook/memory_memory_read.md
+  - Memory Reflect: handbook/memory_memory_reflect.md
+  - Memory Write: handbook/memory_memory_write.md
 - Messaging:
   - Messaging: handbook/messaging.md
   - Get Thread: handbook/messaging_get_thread.md
@@ -266,12 +335,7 @@ nav:
 - Notifications:
   - Notification & Consent System: handbook/notifications.md
   - Consent System: handbook/notifications_consent.md
-  - Consent Grant: handbook/notifications_consent_consent_grant.md
   - Consent List: handbook/notifications_consent_consent_list.md
-  - Consent Request: handbook/notifications_consent_consent_request.md
-  - Consent Request List: handbook/notifications_consent_consent_request_list.md
-  - Consent Request Resolve: handbook/notifications_consent_consent_request_resolve.md
-  - Consent Revoke: handbook/notifications_consent_consent_revoke.md
   - Notification List Pending: handbook/notifications_notification_list_pending.md
   - Notification Send: handbook/notifications_notification_send.md
   - Sending Notifications: handbook/notifications_notify-directions.md
@@ -307,6 +371,9 @@ nav:
   - Listing Projects: handbook/projects_project-list-directions.md
   - Creating a Project: handbook/projects_project-new-directions.md
   - Recording Project Observations: handbook/projects_project-observe-directions.md
+  - Project Add Alias: handbook/projects_project_add_alias.md
+  - Project Add Folder: handbook/projects_project_add_folder.md
+  - Project Confirm Description: handbook/projects_project_confirm_description.md
   - Project Create: handbook/projects_project_create.md
   - Project Delete: handbook/projects_project_delete.md
   - Project Discover: handbook/projects_project_discover.md
@@ -314,10 +381,19 @@ nav:
   - Project List: handbook/projects_project_list.md
   - Project Memory: handbook/projects_project_memory.md
   - Project Observe: handbook/projects_project_observe.md
+  - Project Remove Alias: handbook/projects_project_remove_alias.md
+  - Project Remove Folder: handbook/projects_project_remove_folder.md
+  - Project Revisions List: handbook/projects_project_revisions_list.md
+  - Project Set Folder Archived: handbook/projects_project_set_folder_archived.md
+  - Project State At: handbook/projects_project_state_at.md
+  - Project Sync: handbook/projects_project_sync.md
   - Project Update: handbook/projects_project_update.md
 - Routing:
   - Routing: handbook/routing.md
   - Route Information: handbook/routing_route-information.md
+- Search:
+  - Search: handbook/search.md
+  - Find: handbook/search_find.md
 - Services:
   - Services & Infrastructure: handbook/services.md
   - Dashboard: handbook/services_dashboard.md
@@ -355,15 +431,21 @@ nav:
   - Tailscale Status Directions: handbook/status_tailscale-status-directions.md
   - Tailscale Status: handbook/status_tailscale_status.md
   - User Job Create: handbook/status_user_job_create.md
+- Summarization:
+  - Summarization: handbook/summarization.md
+  - Summarization Worker Tick: handbook/summarization_summarization_worker_tick.md
+  - Summary Search: handbook/summarization_summary_search.md
 - Tasks:
   - Tasks: handbook/tasks.md
-  - Task action items (Slice 7): handbook/tasks_action-items.md
+  - Task action items: handbook/tasks_action-items.md
   - Task Assign Directions: handbook/tasks_assign-directions.md
   - Task Briefing Directions: handbook/tasks_briefing-directions.md
   - Task Handoff Directions: handbook/tasks_handoff-directions.md
   - Inline Todos: handbook/tasks_inline-todos.md
   - Inline TODOs Directions: handbook/tasks_inline-todos-directions.md
   - Namespace Lookup: handbook/tasks_namespace_lookup.md
+  - Session Tasks Get: handbook/tasks_session_tasks_get.md
+  - Task Completeness: handbook/tasks_task-completeness.md
   - "Task Me \u2014 what should I do right now?": handbook/tasks_task-me.md
   - Task Me Directions: handbook/tasks_task-me-directions.md
   - Task New: handbook/tasks_task-new.md
@@ -380,6 +462,7 @@ nav:
   - Task Create: handbook/tasks_task_create.md
   - Task Delete: handbook/tasks_task_delete.md
   - Task Namespace Suggest: handbook/tasks_task_namespace_suggest.md
+  - Task Provenance: handbook/tasks_task_provenance.md
   - Task Read: handbook/tasks_task_read.md
   - Task Review Inbox: handbook/tasks_task_review_inbox.md
   - Task Scattered: handbook/tasks_task_scattered.md
@@ -396,20 +479,16 @@ nav:
 - Threads:
   - "Threads \u2014 universal-entity primitive": handbook/threads.md
   - Action Catalog (typed lens over capability + workflow registries): handbook/threads_action-catalog.md
-  - "Aggregator \u2014 read-only synthesis of legacy entities as Threads": handbook/threads_aggregator.md
   - Autonomy policy (composed, not enum): handbook/threads_autonomy.md
   - Thread event log (canonical state): handbook/threads_event-log.md
   - Thread FSM (resolution phase): handbook/threads_fsm.md
-  - "Threads \u2014 group-relationship pattern": handbook/threads_grouping.md
+  - "Threads \u2014 parent-child relationship patterns (decompose / group / singular)": handbook/threads_grouping.md
   - LLM-call priority queue (lives in work_buddy/llm/, not threads/): handbook/threads_llm-call-queue.md
   - Resolution phase (vs. execution): handbook/threads_resolution-phase.md
-- Triage:
-  - Triage: handbook/triage.md
-  - Triage card actions (open-in-app seam): handbook/triage_card-actions.md
-  - Inline Triage Scan: handbook/triage_inline_triage_scan.md
-  - PoolEntry Lifecycle: handbook/triage_pool-entry-lifecycle.md
-  - Resolution Surface (Slice 1.5): handbook/triage_resolution-surface.md
-  - Source Descriptors (Triage Pool): handbook/triage_source-descriptors.md
+  - Run Source Pipeline: handbook/threads_run_source_pipeline.md
+  - Thread Defer: handbook/threads_thread_defer.md
+  - Thread Dismiss: handbook/threads_thread_dismiss.md
+  - Thread Rename: handbook/threads_thread_rename.md
 - Vault:
   - Vault Health Namespace: handbook/vault.md
   - Vault Investigation Agent Directions: handbook/vault_investigation-directions.md

@@ -20,11 +20,10 @@ partial state with a status field so the engage step can render
 "calendar unavailable, working with task-only context."  Downstream
 reactive-contexts code consumes these health flags in turn.
 
-The workflow JSON definition lives in
-``knowledge/store/workflows.json`` under ``tasks/task-me``; the
-slash-command launcher in ``.claude/commands/wb-task-me.md``; and
-the user-facing recipe in
-``knowledge/store/tasks.json`` under ``tasks/task-me-directions``.
+The workflow definition lives in the ``tasks/task-me`` unit
+(``knowledge/store/tasks/task-me.md``); the slash-command launcher in
+``.claude/commands/wb-task-me.md``; and the user-facing recipe in the
+``tasks/task-me-directions`` unit (``knowledge/store/tasks/task-me-directions.md``).
 """
 
 from __future__ import annotations

@@ -1,7 +1,7 @@
 """Phase 0 schema tests — `invokes` fields and computed workflow requires.
 
 These tests exercise the registry dataclasses directly, without loading
-the full MCP registry. They are fast and do not depend on workflows.json.
+the full MCP registry. They are fast and do not depend on the workflow units.
 """
 
 from __future__ import annotations
@@ -129,7 +129,7 @@ def test_workflow_step_invokes_parsed_from_store_dict():
     """`_discover_workflows_from_store` reads `invokes` from step dicts.
 
     This test fakes the store load to exercise the parsing path without
-    depending on the real workflows.json shape.
+    depending on the real workflow-unit shape.
     """
     from work_buddy.mcp_server import registry as reg_mod
     from work_buddy.knowledge.model import WorkflowUnit

@@ -24,12 +24,12 @@ def _register() -> None:
     register_op("op.wb.knowledge_index_rebuild", query.knowledge_index_rebuild)
     register_op("op.wb.knowledge_index_status", query.knowledge_index_status)
     register_op("op.wb.docs_validate", validate.docs_validate)
-    register_op("op.wb.docs_create", editor.docs_create)
-    register_op("op.wb.docs_update", editor.docs_update)
+    # Structural edits only. Content authoring/creation (every unit kind,
+    # including workflow units) goes through the docs_edit workflow — the agent
+    # edits the unit's .md file directly and the commit step validates +
+    # reconciles. There is no docs_create / docs_update / workflow_* capability.
     register_op("op.wb.docs_delete", editor.docs_delete)
     register_op("op.wb.docs_move", editor.docs_move)
-    register_op("op.wb.workflow_create", editor.workflow_create)
-    register_op("op.wb.workflow_update", editor.workflow_update)
     register_op("op.wb.knowledge_mint", mint_personal_unit)
     register_op("op.wb.dev_mode_toggle", _dev_mode_toggle)
 

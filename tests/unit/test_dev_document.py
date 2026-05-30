@@ -96,18 +96,18 @@ def test_scan_changes_empty_returns_warning(fake_git):
 def test_scan_changes_classifies_mixed_input(fake_git):
     fake_git["tracked"] = [
         "work_buddy/dev/document.py",
-        "knowledge/store/dev.json",
+        "knowledge/store/dev.md",
         "tests/unit/test_foo.py",
     ]
     fake_git["untracked"] = [".claude/commands/wb-dev-document.md"]
 
     result = dev_document.scan_changes()
     assert "work_buddy/dev/document.py" in result["classified"]["module"]
-    assert "knowledge/store/dev.json" in result["classified"]["knowledge"]
+    assert "knowledge/store/dev.md" in result["classified"]["knowledge"]
     assert "tests/unit/test_foo.py" in result["classified"]["tests"]
     assert ".claude/commands/wb-dev-document.md" in result["classified"]["slash"]
-    # Hand-edit warning fires when knowledge/ bucket is non-empty
-    assert any("hand-edit" in w.lower() or "docs_create" in w for w in result["warnings"])
+    # Knowledge-store edit reminder fires when the knowledge/ bucket is non-empty
+    assert any("docs_edit" in w or "reconcil" in w.lower() for w in result["warnings"])
 
 
 def test_scan_candidates_shape_is_slimmed(fake_git):

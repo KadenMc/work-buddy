@@ -23,7 +23,7 @@ and appends to ``errors`` rather than aborting the whole gather, so the
 investigate step always gets *something* to reason against.
 
 The workflow definition lives in the knowledge store under
-``tasks/task-completeness`` (authored via ``workflow_create``); the
+``tasks/task-completeness`` (a ``kind: workflow`` unit); the
 slash-command launcher in ``.claude/commands/wb-task-completeness.md``.
 """
 
