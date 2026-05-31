@@ -50,7 +50,7 @@ Consumers depend on `work_buddy.calendar.provider` + `work_buddy.calendar.models
 
 `CalendarProvider` is a `@runtime_checkable` Protocol; backends live under `work_buddy.calendar.providers.*`. `get_calendar_provider()` reads `calendar.provider` from config (default `obsidian_bridge`; `google_native` for direct own-OAuth; `fake` in-memory for tests); `calendar.enabled: false` short-circuits with `CalendarProviderDisabled`. The protocol declares the full surface (reads + writes); there is no `ensure_calendar` / provisioning method — WB writes to the user's real calendars, not a sandbox.
 
-`google_native` auth lives in `work_buddy.calendar.google_auth`: a persisted OAuth token (under the data root) refreshed silently via `google-auth`; the interactive consent flow (`google-auth-oauthlib`) is a setup-time step surfaced through the `google_calendar_native` health component (`/wb-setup`). Least-privilege scope `calendar.events`; publish the OAuth consent screen to Production so the refresh token does not expire.
+`google_native` auth lives in `work_buddy.calendar.google_auth`: a persisted OAuth token (under the data root) refreshed silently via `google-auth`; the interactive consent flow (`google-auth-oauthlib`) is a setup-time step surfaced through the `google_calendar_native` health component (`/wb-setup`). Least-privilege scopes `calendar.events` + `calendar.calendarlist.readonly` (listing calendars is a separate Google permission from event CRUD); publish the OAuth consent screen to Production so the refresh token does not expire.
 
 ## Canonical models
 
@@ -73,7 +73,7 @@ Writes (heavy, per-change consent — see `obsidian/calendar` and the capability
 
 ## Degradation
 
-The bridge `calendar_*` capabilities are gated by the `google_calendar` tool probe (which needs Obsidian); the `google_native` provider has its own `google_calendar_native` health component and needs no Obsidian. Either way the collector degrades to a clear 'not available' report rather than crashing the morning bundle.
+The `calendar_*` capabilities are gated by the provider-aware `calendar` tool probe, which dispatches on `calendar.provider`: bridge → the cached Obsidian plugin check; `google_native` → the OAuth token is present (no Obsidian); `fake` → always. So the capabilities follow whichever provider is configured rather than hard-depending on Obsidian. Deep native API health is a separate `google_calendar_native` health component (diagnose-only). Either way the collector degrades to a clear 'not available' report rather than crashing the morning bundle.
 
 ## Related
 
