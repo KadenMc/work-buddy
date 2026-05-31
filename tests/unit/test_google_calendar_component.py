@@ -41,7 +41,7 @@ def test_check_client_secret(monkeypatch):
                                           "client_secret_path": None,
                                           "token_present": False, "token_path": "/x/t.json"})
     res = rc.check_google_oauth_client_secret()
-    assert res["ok"] is False and "GOOGLE_OAUTH_CLIENT_SECRET" in res["detail"]
+    assert res["ok"] is False and "google_client_secret.json" in res["detail"]
 
 
 def test_check_token(monkeypatch):
@@ -81,19 +81,30 @@ def test_runtime_check_uses_provider_health(monkeypatch):
 
 
 def test_fix_client_secret(monkeypatch, tmp_path):
+    from work_buddy import paths
     from work_buddy.health import fixers
 
-    # Don't touch the real .env.
-    monkeypatch.setattr(fixers, "_set_env_var",
-                        lambda name, value: (True, f"set {name}", [f"wrote {name}"]))
-    # Missing path → not ok.
+    # Redirect the convention destination into tmp so we don't touch .data/.
+    dest = tmp_path / "dest" / "google_client_secret.json"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    orig_resolve = paths.resolve
+    monkeypatch.setattr(
+        paths, "resolve",
+        lambda rid: dest if rid == "credentials/google-client-secret" else orig_resolve(rid),
+    )
+
+    # Missing / nonexistent path → not ok.
     assert fixers.fix_google_oauth_client_secret(client_secret_path="")["ok"] is False
     assert fixers.fix_google_oauth_client_secret(client_secret_path=str(tmp_path / "nope.json"))["ok"] is False
-    # Real file → ok.
-    cs = tmp_path / "client_secret.json"
-    cs.write_text("{}", encoding="utf-8")
-    res = fixers.fix_google_oauth_client_secret(client_secret_path=str(cs))
-    assert res["ok"] is True
+    # Wrong shape (no 'installed' object) → rejected.
+    bad = tmp_path / "bad.json"
+    bad.write_text("{}", encoding="utf-8")
+    assert fixers.fix_google_oauth_client_secret(client_secret_path=str(bad))["ok"] is False
+    # Valid Desktop-app secret → copied to the convention destination.
+    good = tmp_path / "client_secret.json"
+    good.write_text('{"installed": {"client_id": "x", "client_secret": "y"}}', encoding="utf-8")
+    res = fixers.fix_google_oauth_client_secret(client_secret_path=str(good))
+    assert res["ok"] is True and dest.exists()
 
 
 def test_fix_token_reports_flow_failure(monkeypatch):

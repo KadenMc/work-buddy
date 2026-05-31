@@ -44,7 +44,20 @@ def _scopes(cfg: dict[str, Any] | None) -> list[str]:
 
 
 def _client_secret_path(cfg: dict[str, Any] | None) -> Path | None:
+    """Resolve the OAuth client_secret.json.
+
+    Precedence:
+    1. The convention path ``<data_root>/credentials/google_client_secret.json``
+       — auto-discovered, no config needed. Just drop the file there.
+    2. An explicit override: the ``client_secret_env`` env var (a path) or a
+       ``client_secret_path`` config key. For CI / custom locations.
+    """
+    from work_buddy import paths
+
     cfg = cfg or {}
+    convention = Path(paths.resolve("credentials/google-client-secret"))
+    if convention.exists():
+        return convention
     env_name = cfg.get("client_secret_env", DEFAULT_CLIENT_SECRET_ENV)
     raw = os.environ.get(env_name) or cfg.get("client_secret_path")
     return Path(raw) if raw else None

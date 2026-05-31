@@ -936,12 +936,12 @@ def check_google_oauth_client_secret() -> dict[str, Any]:
     st = google_auth.token_status(cfg)
     if st["client_secret_present"]:
         return {"ok": True, "detail": f"Client secret at {st['client_secret_path']}"}
-    env_name = cfg.get("client_secret_env", google_auth.DEFAULT_CLIENT_SECRET_ENV)
     return {
         "ok": False,
         "detail": (
-            f"Client secret not found — set {env_name} to the path of your "
-            "Desktop-app client_secret.json (Google Cloud Console)."
+            "Client secret not found — download your Desktop-app OAuth client "
+            "JSON from Google Cloud Console and save it as "
+            "<data_root>/credentials/google_client_secret.json (or run the Fix)."
         ),
     }
 

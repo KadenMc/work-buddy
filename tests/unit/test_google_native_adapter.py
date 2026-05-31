@@ -330,3 +330,22 @@ def test_auth_token_status(monkeypatch, tmp_path):
     assert ga.token_status({})["token_present"] is False
     tp.write_text("{}", encoding="utf-8")
     assert ga.token_status({})["token_present"] is True
+
+
+def test_client_secret_convention_discovery(monkeypatch, tmp_path):
+    from work_buddy import paths
+    from work_buddy.calendar import google_auth as ga
+
+    conv = tmp_path / "google_client_secret.json"
+    orig = paths.resolve
+    monkeypatch.setattr(
+        paths, "resolve",
+        lambda rid: conv if rid == "credentials/google-client-secret" else orig(rid),
+    )
+    monkeypatch.delenv("GOOGLE_OAUTH_CLIENT_SECRET", raising=False)
+
+    # Absent at convention and no override → None.
+    assert ga._client_secret_path({}) is None
+    # Present at the convention path → auto-discovered (no env/config needed).
+    conv.write_text("{}", encoding="utf-8")
+    assert ga._client_secret_path({}) == conv

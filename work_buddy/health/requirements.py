@@ -1017,8 +1017,10 @@ _register(RequirementDef(
     fix_hint=(
         "Create a Google Cloud project, enable the Calendar API, configure the "
         "OAuth consent screen and PUBLISH IT TO 'Production' (so the refresh "
-        "token does not expire), create a 'Desktop app' OAuth client, download "
-        "its client_secret.json, and point GOOGLE_OAUTH_CLIENT_SECRET at it."
+        "token does not expire), create a 'Desktop app' OAuth client, and "
+        "download its JSON. Save it as "
+        "<data_root>/credentials/google_client_secret.json (or use the Fix to "
+        "copy it there from wherever you downloaded it)."
     ),
     setup_group="credentials",
     fix_kind="input_required",
@@ -1026,12 +1028,15 @@ _register(RequirementDef(
     fix_params={
         "client_secret_path": {
             "type": "path",
-            "label": "Path to client_secret.json",
-            "hint": "The Desktop-app OAuth client file downloaded from Google Cloud Console",
+            "label": "Path to the downloaded client_secret JSON",
+            "hint": "The Desktop-app OAuth client file from Google Cloud Console (e.g. in your Downloads)",
             "required": True,
         },
     },
-    fix_preview="Writes GOOGLE_OAUTH_CLIENT_SECRET=<path> to the repo .env file.",
+    fix_preview=(
+        "Copies your downloaded client_secret JSON to "
+        "<data_root>/credentials/google_client_secret.json (auto-discovered)."
+    ),
 ))
 
 _register(RequirementDef(
