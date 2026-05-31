@@ -25,9 +25,28 @@ The default provider stays `obsidian_bridge` until you've validated native and
 flip it deliberately.
 
 Two files live under the gitignored data root (`<repo>/.data/credentials/`) —
-**never commit either**:
-- `google_client_secret.json` — your app's OAuth client secret (you download it).
-- `google_oauth_token.json` — your refresh token (the consent flow writes it).
+**never commit either**. They are different things, and conflating them is the
+#1 point of confusion:
+
+- **`google_client_secret.json`** — the app's **"ID badge."** It identifies *the
+  work-buddy app* to Google. You download it once from Google Cloud. It **never
+  expires**, and Testing-vs-Production has nothing to do with it.
+- **`google_oauth_token.json`** — *your* **"signed permission slip"** ("I let
+  this app see/edit my calendar"). The **browser consent pop-up** creates it.
+  This is the only file whose durability depends on Testing vs Production (below).
+
+## Gotchas this guide exists to prevent
+
+- **Two permissions, not one.** Listing your calendars is a *separate* Google
+  permission from reading/writing events, so the consent screen asks for **two**
+  scopes (`calendar.events` + `calendar.calendarlist.readonly`). A token with
+  only `calendar.events` fails with "insufficient authentication scopes" the
+  moment it tries to list calendars.
+- **The "Publish" button is hidden** under the **Audience** sub-tab (step 2).
+- **`poetry install` won't update the conda env** by default (step 5).
+- **The badge doesn't expire; only the permission slip can** — and only if you
+  consented while the app was still in "Testing" (step 2). Publish to Production
+  *before* you run the consent flow.
 
 ## 1. Google Cloud project + Calendar API
 
