@@ -49,17 +49,22 @@ def test_calendar_ops_resolve_via_loader(loaded_ops):
         assert loaded_ops.get_op(f"op.wb.{cap_name}") is not None
 
 
-def test_calendar_capabilities_require_google_calendar(loaded_ops):
+def test_calendar_capabilities_require_provider_aware_probe(loaded_ops):
+    """Capabilities gate on the provider-aware ``calendar`` probe, not the
+    Obsidian-bound ``google_calendar`` one — so they stay available under any
+    configured provider (e.g. google_native with Obsidian closed)."""
     try:
         from work_buddy.knowledge.capability_loader import load_declared_capabilities
     except Exception:
         pytest.skip("capability_loader unavailable in this environment")
     declared, _ = load_declared_capabilities()
     by_name = {c.name: c for c in declared}
-    for cap_name in ("calendar_list_events", "calendar_coverage"):
+    for cap_name in ("calendar_list_events", "calendar_coverage",
+                     "create_calendar_event", "delete_calendar_event"):
         cap = by_name.get(cap_name)
         assert cap is not None
-        assert "google_calendar" in (cap.requires or [])
+        assert "calendar" in (cap.requires or [])
+        assert "google_calendar" not in (cap.requires or [])
 
 
 def test_example_config_has_calendar_block():

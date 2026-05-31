@@ -26,5 +26,5 @@ aliases:
 parents:
 - calendar
 requires:
-- google_calendar
+- calendar
 ---

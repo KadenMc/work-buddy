@@ -515,3 +515,25 @@ def check_github_backup_freshness() -> dict[str, Any]:
             f"snapshot {last.get('snapshot_id', '?')})"
         ),
     }
+
+
+def check_google_calendar_native_api() -> dict[str, Any]:
+    """Runtime probe: the Google Calendar API answers with the stored native
+    OAuth token. Resolves only on diagnose (the component is ``health_source``
+    ``custom`` — no continuous polling)."""
+    try:
+        from work_buddy.calendar.providers.google_native import (
+            GoogleNativeCalendarProvider,
+        )
+        from work_buddy.config import load_config
+
+        cfg = ((load_config() or {}).get("calendar", {}) or {}).get("google_native", {}) or {}
+        health = GoogleNativeCalendarProvider(cfg).health()
+        if health.get("ready"):
+            return {
+                "ok": True,
+                "detail": f"Calendar API reachable; {health.get('calendar_count', 0)} calendars.",
+            }
+        return {"ok": False, "detail": health.get("reason", "Calendar API not ready")}
+    except Exception as exc:  # pragma: no cover — defensive
+        return {"ok": False, "detail": f"Native Calendar probe failed: {exc}"}

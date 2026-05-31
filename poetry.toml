@@ -1,0 +1,14 @@
+# Project-local Poetry config.
+#
+# `virtualenvs.create = false` makes `poetry install` / `poetry run` use the
+# *currently active* Python environment instead of creating a separate
+# Poetry-managed virtualenv. This repo runs inside a conda env (see README), so
+# this makes `conda activate work-buddy && poetry install` land dependencies in
+# the conda env where work-buddy actually runs — closing the gap where Poetry
+# would otherwise install into its own venv that the sidecar/tests never use.
+#
+# ALWAYS activate the conda env first, or Poetry will install into the base
+# interpreter. CI overrides this with the POETRY_VIRTUALENVS_CREATE=true env var
+# (higher precedence than this file) so it keeps using a cached, managed venv.
+[virtualenvs]
+create = false

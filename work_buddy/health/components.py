@@ -576,3 +576,28 @@ _register(ComponentDef(
         ),
     ],
 ))
+
+_register(ComponentDef(
+    id="google_calendar_native",
+    display_name="Google Calendar (native OAuth)",
+    category="integration",
+    # No Obsidian dependency — this is the direct own-OAuth path, distinct from
+    # the bridge-bound `google_calendar` tool probe. `custom` health_source: no
+    # continuous polling; status resolves when the user runs diagnose.
+    health_source="custom",
+    requirements=[
+        "integrations/google-calendar-native/client-secret",
+        "integrations/google-calendar-native/token",
+    ],
+    check_sequence=[
+        CheckStep(
+            description="Google Calendar API answers with the stored OAuth token",
+            check_fn="work_buddy.health.checks.check_google_calendar_native_api",
+            on_fail=(
+                "Set up Google Calendar native access: configure the OAuth client "
+                "secret and run the consent flow via /wb-setup. If already set up, "
+                "the token may have been revoked — re-run the consent flow."
+            ),
+        ),
+    ],
+))

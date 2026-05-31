@@ -16,7 +16,7 @@ aliases:
 parents:
 - architecture
 - architecture
-dev_notes: 'The entities/ package mirrors projects/ structurally (store.py CRUD + migrations.py versioned ladder via storage.MigrationRunner) but is deliberately leaner: no revision-history tables, no soft-delete, no markdown-canonical sync. entities.db is in the architecture/backups VITAL_DBS set.'
+dev_notes: 'The entities/ package mirrors projects/ structurally (store.py CRUD + migrations.py versioned ladder via storage.MigrationRunner) but is deliberately leaner: no revision-history tables, no soft-delete, no markdown-canonical sync. entities.db is in the architecture/backups VITAL_DBS set. Dependency install (conda + Poetry): the committed poetry.toml sets virtualenvs.create=false, so `poetry install` / `poetry add` install into the *currently active* environment rather than a separate Poetry-managed venv — always `conda activate work-buddy` first, or deps land in the base interpreter. This is why a lockfile dep can be present yet missing from the conda runtime if Poetry was run from the wrong shell (e.g. an un-activated terminal falls back to the Poetry-managed venv). CI sets POETRY_VIRTUALENVS_CREATE=true (env var > project poetry.toml) to keep a cached, managed venv.'
 ---
 
 work_buddy/ = Python package. Key top-level modules: agent_session.py (identity), artifacts.py (centralized store), paths.py (path resolution), tools.py (feature toggles), config.py (config.yaml + config.local.yaml overlay), consent.py (SQLite-backed), workflow.py (DAG engine).

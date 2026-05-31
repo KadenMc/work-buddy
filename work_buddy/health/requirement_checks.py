@@ -917,3 +917,43 @@ def check_projects_markdown_dir() -> dict[str, Any]:
         "ok": False,
         "detail": f"project-notes directory missing: {p} (click Fix to create it)",
     }
+
+
+# ---------------------------------------------------------------------------
+# Google Calendar — native OAuth (config-time, no HTTP)
+# ---------------------------------------------------------------------------
+
+
+def _google_native_cfg() -> dict[str, Any]:
+    return (_cfg().get("calendar", {}) or {}).get("google_native", {}) or {}
+
+
+def check_google_oauth_client_secret() -> dict[str, Any]:
+    """The Google OAuth client secret (client_secret.json) is configured."""
+    from work_buddy.calendar import google_auth
+
+    cfg = _google_native_cfg()
+    st = google_auth.token_status(cfg)
+    if st["client_secret_present"]:
+        return {"ok": True, "detail": f"Client secret at {st['client_secret_path']}"}
+    return {
+        "ok": False,
+        "detail": (
+            "Client secret not found — download your Desktop-app OAuth client "
+            "JSON from Google Cloud Console and save it as "
+            "<data_root>/credentials/google_client_secret.json (or run the Fix)."
+        ),
+    }
+
+
+def check_google_oauth_token() -> dict[str, Any]:
+    """The Google OAuth token is present (the consent flow has been run)."""
+    from work_buddy.calendar import google_auth
+
+    st = google_auth.token_status(_google_native_cfg())
+    if st["token_present"]:
+        return {"ok": True, "detail": f"OAuth token at {st['token_path']}"}
+    return {
+        "ok": False,
+        "detail": "No OAuth token yet — run the Google Calendar consent flow.",
+    }

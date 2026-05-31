@@ -764,3 +764,78 @@ def fix_projects_markdown_dir(*, path: str) -> dict[str, Any]:
     ok, detail, side = _set_config_value("projects.markdown_dir", rel)
     side = list(side) + [f"created directory {target}"]
     return {"ok": ok, "detail": detail, "side_effects": side}
+
+
+# ---------------------------------------------------------------------------
+# Google Calendar — native OAuth
+# ---------------------------------------------------------------------------
+
+
+def fix_google_oauth_client_secret(*, client_secret_path: str) -> dict[str, Any]:
+    """Copy your downloaded client_secret.json into the convention location
+    (``<data_root>/credentials/google_client_secret.json``) where it is
+    auto-discovered — no env var needed."""
+    import json
+    import shutil
+
+    from work_buddy import paths
+
+    path = (client_secret_path or "").strip().strip('"')
+    if not path:
+        return {"ok": False, "detail": "Path cannot be empty.", "side_effects": []}
+    src = Path(path)
+    if not src.is_file():
+        return {
+            "ok": False,
+            "detail": (
+                f"No file at {src}. Download the Desktop-app OAuth client's "
+                "client_secret.json from Google Cloud Console first."
+            ),
+            "side_effects": [],
+        }
+    # Validate it's actually a Desktop-app client secret before copying.
+    try:
+        data = json.loads(src.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        return {"ok": False, "detail": f"Could not read {src} as JSON: {exc}", "side_effects": []}
+    if "installed" not in data or "client_id" not in data.get("installed", {}):
+        return {
+            "ok": False,
+            "detail": (
+                "That file isn't a Desktop-app OAuth client secret (no "
+                "'installed' object). In Google Cloud Console create an OAuth "
+                "client of type 'Desktop app' and download its JSON."
+            ),
+            "side_effects": [],
+        }
+    dest = paths.resolve("credentials/google-client-secret")
+    try:
+        shutil.copyfile(src, dest)
+    except OSError as exc:
+        return {"ok": False, "detail": f"Could not copy to {dest}: {exc}", "side_effects": []}
+    return {
+        "ok": True,
+        "detail": f"Client secret installed at {dest} (auto-discovered).",
+        "side_effects": [f"wrote {dest}"],
+    }
+
+
+def fix_google_oauth_token() -> dict[str, Any]:
+    """Run the interactive Google OAuth consent flow and persist the token.
+
+    Opens a browser and round-trips to a localhost loopback port — requires a
+    user-present desktop session and the client secret already configured.
+    """
+    try:
+        from work_buddy.calendar import google_auth
+        from work_buddy.config import load_config
+
+        cfg = ((load_config() or {}).get("calendar", {}) or {}).get("google_native", {}) or {}
+        token_path = google_auth.run_oauth_flow(cfg)
+        return {
+            "ok": True,
+            "detail": f"OAuth consent complete — refresh token saved to {token_path}.",
+            "side_effects": [f"wrote {token_path}"],
+        }
+    except Exception as exc:
+        return {"ok": False, "detail": f"OAuth flow failed: {exc}", "side_effects": []}

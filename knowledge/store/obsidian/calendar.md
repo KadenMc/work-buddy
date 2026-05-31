@@ -38,7 +38,7 @@ Google Calendar API v3 schema plus a `parent` field: id, summary, status, htmlLi
 
 ## Gateway surface
 
-**Reads are exposed** through the `calendar` subsystem capabilities (`calendar_health`, `calendar_list_events`, `calendar_get_event`, `calendar_coverage`), gated by the `google_calendar` tool probe. **Writes are not gateway-exposed**: `env.create_event/update_event/delete_event` carry `@requires_consent(risk="high")` decorators but no agent-callable op reaches them yet — the heavy-consent write surface lands in a later PR, one layer up in `capabilities.py` so every provider inherits identical gating.
+Reads **and writes** are exposed through the `calendar` subsystem capabilities (`calendar_health`, `calendar_list_events`, `calendar_get_event`, `calendar_coverage`, and `create`/`update`/`delete_calendar_event`), gated by the provider-aware `calendar` tool probe (not `google_calendar`). The write capabilities carry heavy per-change consent in `capabilities.py` (one layer up, so every provider inherits identical gating). `env.create_event/update_event/delete_event` no longer carry their own `@requires_consent` — the semantic gate moved up to the capability layer, and the writers now carry `@reduces_risk_for("obsidian.eval_js", "low")` so their internal eval_js passes without a second prompt.
 
 ## Degradation
 

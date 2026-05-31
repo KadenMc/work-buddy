@@ -15,6 +15,10 @@ jobs:
 
     env:
       WORK_BUDDY_SESSION_ID: docs-ci
+      # Override the committed poetry.toml (virtualenvs.create=false, for local
+      # conda-based dev) so CI keeps building a cached, managed venv. The env
+      # var has higher precedence than the project poetry.toml.
+      POETRY_VIRTUALENVS_CREATE: "true"
 
     steps:
       - uses: actions/checkout@v4

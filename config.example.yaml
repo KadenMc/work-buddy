@@ -326,12 +326,26 @@ thunderbird:
 
 # Calendar integration. Default provider is "obsidian_bridge" (reads Google
 # Calendar via the Obsidian google-calendar plugin over the eval_js bridge).
-# Use "fake" to exercise the Python pipeline without Obsidian. The capabilities
-# are additionally gated by the `google_calendar` tool probe, so they're hidden
-# when Obsidian / the plugin isn't reachable regardless of this flag.
+# Use "fake" to exercise the Python pipeline without Obsidian, or "google_native"
+# for direct own-OAuth access (no Obsidian dependency). The bridge capabilities
+# are additionally gated by the `google_calendar` tool probe.
 calendar:
   enabled: true
   provider: "obsidian_bridge"
+  # Direct Google Calendar access via own OAuth (provider: "google_native").
+  # Setup: create a Google Cloud project, enable the Calendar API, configure the
+  # OAuth consent screen and PUBLISH IT TO "Production" (so the refresh token does
+  # not expire), create a "Desktop app" OAuth client, and download its JSON.
+  # Then place that file at  <data_root>/credentials/google_client_secret.json
+  # (rename it) — it is auto-discovered, no config needed. The refresh token is
+  # persisted next to it at credentials/google_oauth_token.json. Both live under
+  # the gitignored data root — never commit them.
+  google_native:
+    # Optional override only — leave unset to use the convention path above.
+    # client_secret_env: "GOOGLE_OAUTH_CLIENT_SECRET"   # env var → path to client_secret.json
+    scopes:  # least-privilege: CRUD events + list calendars
+      - "https://www.googleapis.com/auth/calendar.events"
+      - "https://www.googleapis.com/auth/calendar.calendarlist.readonly"
 
 # Tool-availability probes used to gate capability dispatch. Set the
 # matching `enabled` flag to false to skip a probe entirely (the

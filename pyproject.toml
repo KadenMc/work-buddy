@@ -44,6 +44,7 @@ python-telegram-bot = {version = "^22.7", optional = true}
 # Or all at once: pip install work-buddy[all]
 httpx = "^0.28.1"
 watchdog = "^6.0.0"
+google-auth-oauthlib = "^1.4.0"
 [tool.poetry.extras]
 memory = ["hindsight-api-slim", "hindsight-client"]
 telegram = ["python-telegram-bot"]
