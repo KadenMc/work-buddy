@@ -119,6 +119,16 @@ def repo_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
+# Memoized (cache_key, value) for the resolved data root. The parse is
+# keyed on the config files' (repo_root, mtime) identity so a runtime edit
+# — or a test that rewrites config under a monkeypatched ``repo_root`` —
+# still invalidates, while the common case skips the YAML parse entirely.
+# This matters because ``resolve()`` / ``data_dir()`` run on every DB
+# connection open across the app; an uncached parse put ~60ms of YAML on
+# every query (≈10s across a single dashboard list endpoint).
+_data_root_cache: tuple[tuple[str, ...], str] | None = None
+
+
 def _load_data_root_from_config() -> str:
     """Read ``paths.data_root`` from config without importing config.py eagerly.
 
@@ -128,17 +138,37 @@ def _load_data_root_from_config() -> str:
     ``paths``, so a future change there could otherwise create a cycle).
 
     Falls back to ``"data"`` when nothing is set or PyYAML is missing.
+
+    The result is memoized on the config files' mtimes (see
+    ``_data_root_cache``) — repeated calls in a hot path stat two files
+    instead of re-parsing YAML.
     """
+    global _data_root_cache
     try:
         import yaml
     except ImportError:
         return "data"
 
     root = repo_root()
-    paths_section: dict[str, Any] = {}
+    files: list[tuple[Path, int | None]] = []
+    key_parts: list[str] = [str(root)]
     for name in ("config.yaml", "config.local.yaml"):
         path = root / name
-        if not path.exists():
+        try:
+            mtime: int | None = path.stat().st_mtime_ns
+        except OSError:
+            mtime = None
+        files.append((path, mtime))
+        key_parts.append(f"{name}:{mtime}")
+    cache_key = tuple(key_parts)
+
+    cached = _data_root_cache
+    if cached is not None and cached[0] == cache_key:
+        return cached[1]
+
+    paths_section: dict[str, Any] = {}
+    for path, mtime in files:
+        if mtime is None:
             continue
         try:
             with open(path) as f:
@@ -148,7 +178,9 @@ def _load_data_root_from_config() -> str:
         local_paths = cfg.get("paths") or {}
         if isinstance(local_paths, dict):
             paths_section.update(local_paths)
-    return paths_section.get("data_root", "data")
+    value = paths_section.get("data_root", "data")
+    _data_root_cache = (cache_key, value)
+    return value
 
 
 def data_dir(category: str = "") -> Path:

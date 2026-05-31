@@ -73,12 +73,20 @@ import hashlib
 import inspect
 import sqlite3
 import textwrap
+import weakref
 from dataclasses import dataclass
 from typing import Callable
 
 from work_buddy.logging_config import get_logger
 
 logger = get_logger(__name__)
+
+# Memoized per-callable audit hashes — see ``MigrationRunner._hash_callable``.
+# A migration callable's source is immutable for the process lifetime, so its
+# AST hash never changes; the audit otherwise re-derived it on every
+# connection open. Weak-keyed so test-compiled / throwaway callables are
+# garbage-collected normally instead of leaking.
+_HASH_CACHE: "weakref.WeakKeyDictionary[Callable, str]" = weakref.WeakKeyDictionary()
 
 
 # Identifier baked into every newly-stamped hash. Bumping this string
@@ -331,6 +339,32 @@ class MigrationRunner:
 
     @staticmethod
     def _hash_callable(fn: Callable) -> str:
+        """Audit hash for a migration callable (memoized wrapper).
+
+        The hash is a pure function of the callable's source, which is
+        immutable for the process lifetime — yet ``_verify_history_hashes``
+        re-derives it for every migration on every connection open
+        (projects/entities/tasks stores). Memoizing on the callable object
+        removes that repeated AST parse/unparse. Weak-keyed so throwaway
+        callables (e.g. test-compiled functions) don't leak. The
+        computation is unchanged — see ``_compute_callable_hash``.
+        """
+        try:
+            cached = _HASH_CACHE.get(fn)
+        except TypeError:
+            # Unhashable / non-weakreffable callable — compute uncached.
+            return MigrationRunner._compute_callable_hash(fn)
+        if cached is not None:
+            return cached
+        result = MigrationRunner._compute_callable_hash(fn)
+        try:
+            _HASH_CACHE[fn] = result
+        except TypeError:
+            pass
+        return result
+
+    @staticmethod
+    def _compute_callable_hash(fn: Callable) -> str:
         """Hash a migration callable from its source AST.
 
         ``inspect.getsource`` returns the function text; ``ast.parse``

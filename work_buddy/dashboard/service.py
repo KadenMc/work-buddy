@@ -2819,17 +2819,26 @@ def api_threads_list():
         )
         total = count_threads(q, **filter_kwargs)
         threads = []
-        for t in threads_models:
-            data = build_render_data(t.thread_id)
-            if data is None:
-                continue
-            # Post-query filters — neither has a SQL index, but the
-            # cardinality at this point (post search) is small.
-            if urgency and data.get("urgency") != urgency:
-                continue
-            if has_cleanup_only and not data.get("can_clean_up"):
-                continue
-            threads.append(data)
+        # Share one DB connection across the whole render batch — each
+        # build_render_data otherwise opens + closes its own (×3 reads),
+        # and that connection churn was the dominant cost after the
+        # config-parse fix.
+        from work_buddy.threads import store as _threads_store
+        _conn = _threads_store.get_connection()
+        try:
+            for t in threads_models:
+                data = build_render_data(t.thread_id, conn=_conn)
+                if data is None:
+                    continue
+                # Post-query filters — neither has a SQL index, but the
+                # cardinality at this point (post search) is small.
+                if urgency and data.get("urgency") != urgency:
+                    continue
+                if has_cleanup_only and not data.get("can_clean_up"):
+                    continue
+                threads.append(data)
+        finally:
+            _conn.close()
         return jsonify({
             "threads": threads,
             "total": total,
@@ -4569,6 +4578,43 @@ def main():
 
     from work_buddy.web.access_log_filter import install_probe_log_filter
     install_probe_log_filter(["/health"])
+
+    # Pre-warm the /api/state cache on a background thread. The first
+    # build runs a requirement sweep + probe reads and takes 10s+; doing
+    # it at startup (rather than lazily on the first Jobs-tab load) means
+    # the user never eats that cold-build stall. get_system_state's build
+    # lock makes this single-flight — a request that races the warm-up
+    # blocks on the lock, then gets the cached result.
+    #
+    # Skip in the dev reloader's watcher process: with debug=True Werkzeug
+    # runs main() in both the watcher and the reloaded child, and the
+    # watcher's cache is discarded on every reload — warming it there is a
+    # wasted 10s+ build. WERKZEUG_RUN_MAIN is set only in the child; in
+    # prod (debug=False) it's unset but there's no watcher, so `not dev`
+    # lets the single process warm normally.
+    import os as _os
+    import threading as _threading
+
+    if not dev or _os.environ.get("WERKZEUG_RUN_MAIN") == "true":
+        def _prewarm() -> None:
+            try:
+                get_system_state()
+            except Exception as exc:  # pragma: no cover - best-effort warm-up
+                logger.warning("System-state pre-warm failed: %s", exc)
+            # Warm the per-folder git-activity cache so the first
+            # Projects-tab load doesn't eat the cold git walk. Scores are
+            # discarded; the side effect (populated _GIT_CACHE) is the point.
+            try:
+                from work_buddy.projects.activity import sort_active_by_activity
+                from work_buddy.projects.store import list_projects
+                sort_active_by_activity(list_projects())
+            except Exception as exc:  # pragma: no cover - best-effort warm-up
+                logger.warning("Projects activity pre-warm failed: %s", exc)
+
+        _threading.Thread(
+            target=_prewarm, name="dashboard-prewarm", daemon=True,
+        ).start()
+
     logger.info("Dashboard starting on http://%s:%d%s", host, port, " (dev mode)" if dev else "")
     app.run(host=host, port=port, debug=dev)
 

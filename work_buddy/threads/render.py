@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sqlite3
 from typing import Any, Optional
 
 from work_buddy.threads import cleanup, store
@@ -26,16 +27,40 @@ from work_buddy.threads.models import Thread
 logger = logging.getLogger(__name__)
 
 
-def build_render_data(thread_id: str) -> Optional[dict[str, Any]]:
+def build_render_data(
+    thread_id: str, *, conn: Optional["sqlite3.Connection"] = None,
+) -> Optional[dict[str, Any]]:
     """Return the JSON shape consumed by ``renderConfirmationCard``.
 
     Returns None if the Thread doesn't exist.
+
+    ``conn`` lets a caller rendering many threads (e.g. the Threads-list
+    endpoint) share one DB connection across the whole batch instead of
+    each ``build_render_data`` opening + closing its own — opening a
+    connection runs WAL/FK pragmas and a path resolve, so per-thread
+    churn dominated the list endpoint's latency. When omitted, a private
+    connection is opened and closed here, preserving the old behaviour
+    for single-thread callers.
     """
-    thread = store.get_thread(thread_id)
+    own_conn = conn is None
+    if own_conn:
+        conn = store.get_connection()
+    try:
+        return _render_thread(thread_id, conn)
+    finally:
+        if own_conn:
+            conn.close()
+
+
+def _render_thread(
+    thread_id: str, conn: "sqlite3.Connection",
+) -> Optional[dict[str, Any]]:
+    """Build one thread's render data using the supplied connection."""
+    thread = store.get_thread(thread_id, conn=conn)
     if thread is None:
         return None
 
-    events = store.list_events(thread_id)
+    events = store.list_events(thread_id, conn=conn)
 
     # Inciting summary → for title fallback
     inciting = thread.inciting_event_summary or {}
@@ -151,7 +176,7 @@ def build_render_data(thread_id: str) -> Optional[dict[str, Any]]:
     # hoist (below) and for sub_thread_count / state-aggregation badges
     # (further below). `list_threads(parent_id=...)` orders by
     # `order_index ASC`, so iteration here is in spawn order.
-    sub_threads = store.list_threads(parent_id=thread_id)
+    sub_threads = store.list_threads(parent_id=thread_id, conn=conn)
 
     # Singular-pattern hoist: when this thread is a `parent_relationship='singular'`
     # umbrella (created by `pipelines/inline.py:_spawn_inline_umbrella` for inline
@@ -167,7 +192,7 @@ def build_render_data(thread_id: str) -> Optional[dict[str, Any]]:
         and not actions  # Umbrella shouldn't have its own action; defensive.
     ):
         for _child in sub_threads:
-            _child_render = build_render_data(_child.thread_id)
+            _child_render = _render_thread(_child.thread_id, conn)
             if _child_render is None:
                 continue
             _child_state = _per_action_state_from_fsm(_child.fsm_state.value)
@@ -441,26 +466,30 @@ def list_render_data(
     For top-level (parent_id=None), filters out future-resurface
     Threads unless ``include_resurface_future=True``.
     """
-    threads = store.list_threads(parent_id=parent_id)
-    # store.list_threads with parent_id=None returns ALL threads;
-    # for "top-level only" we filter post-query.
-    if parent_id is None:
-        threads = [t for t in threads if t.parent_id is None]
-    out: list[dict[str, Any]] = []
-    from datetime import datetime, timezone
-    now = datetime.now(timezone.utc).isoformat()
-    for t in threads:
-        if (parent_id is None
-                and not include_resurface_future
-                and getattr(t, "resurface_at", None)
-                and t.resurface_at > now):
-            continue
-        rd = build_render_data(t.thread_id)
-        if rd is not None:
-            out.append(rd)
-        if len(out) >= limit:
-            break
-    return out
+    conn = store.get_connection()
+    try:
+        threads = store.list_threads(parent_id=parent_id, conn=conn)
+        # store.list_threads with parent_id=None returns ALL threads;
+        # for "top-level only" we filter post-query.
+        if parent_id is None:
+            threads = [t for t in threads if t.parent_id is None]
+        out: list[dict[str, Any]] = []
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
+        for t in threads:
+            if (parent_id is None
+                    and not include_resurface_future
+                    and getattr(t, "resurface_at", None)
+                    and t.resurface_at > now):
+                continue
+            rd = _render_thread(t.thread_id, conn)
+            if rd is not None:
+                out.append(rd)
+            if len(out) >= limit:
+                break
+        return out
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------------------------------
