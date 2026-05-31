@@ -29,7 +29,14 @@ from work_buddy.calendar.errors import (
     CalendarProviderError,
 )
 
-DEFAULT_SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
+# Least-privilege scope set for the adapter:
+#   calendar.events              — read + create/update/delete events
+#   calendar.calendarlist.readonly — list the user's calendars (calendarList.list);
+#                                    calendar.events alone does NOT grant this.
+DEFAULT_SCOPES = [
+    "https://www.googleapis.com/auth/calendar.events",
+    "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
+]
 DEFAULT_CLIENT_SECRET_ENV = "GOOGLE_OAUTH_CLIENT_SECRET"
 
 
