@@ -769,6 +769,50 @@ def _probe_google_calendar() -> bool:
     return _bridge_plugin_available("google-calendar")
 
 
+def _probe_calendar() -> tuple[bool, str]:
+    """Provider-aware availability gate for the calendar subsystem.
+
+    Unlike the other probes, this one reads ``calendar.provider`` from config and
+    checks *whichever* backend is configured — so the ``calendar_*`` capabilities
+    are gated on the provider actually in use, not on a single hard-coded tool.
+    There is deliberately **no** static ``depends_on``: the Obsidian dependency
+    applies only to the bridge provider, so it's resolved inside the dispatch
+    rather than declared. Keep each branch cheap (config/file/cache inspection,
+    no event fetches) — deep API health lives in the ``google_calendar_native``
+    health component, which runs only on diagnose.
+    """
+    from work_buddy.config import load_config
+
+    cfg = (load_config() or {}).get("calendar", {}) or {}
+    provider = (cfg.get("provider") or "obsidian_bridge").lower()
+
+    if provider in ("obsidian_bridge", "obsidian", "bridge"):
+        # Bridge path needs Obsidian's plugin batch. Read the cache; populate it
+        # once if this sweep hasn't probed Obsidian yet (robust against probe
+        # ordering since we carry no depends_on).
+        if _OBSIDIAN_PLUGINS is None:
+            _probe_obsidian()
+        ok = _bridge_plugin_available("google-calendar")
+        return ok, "" if ok else (
+            "Obsidian Google Calendar plugin not available (provider: obsidian_bridge)"
+        )
+
+    if provider in ("google_native", "google", "native"):
+        try:
+            from work_buddy.calendar import google_auth
+            present = bool(google_auth.token_status(cfg.get("google_native", {})).get("token_present"))
+        except Exception as exc:  # pragma: no cover — defensive
+            return False, f"google_native token check failed: {exc}"
+        return present, "" if present else (
+            "No Google OAuth token — run the native setup (provider: google_native)"
+        )
+
+    if provider == "fake":
+        return True, ""
+
+    return False, f"Unknown calendar.provider: {provider!r}"
+
+
 def _probe_thunderbird() -> tuple[bool, str]:
     """Check the thunderbird-work-buddy bridge is reachable.
 
@@ -881,6 +925,15 @@ def _register_default_probes() -> None:
             config_key="tools.google_calendar.enabled",
             depends_on=["obsidian"],
             reason_when_missing="Google Calendar plugin not available in Obsidian",
+        ),
+        ToolProbe(
+            id="calendar",
+            display_name="Calendar (configured provider)",
+            probe_fn=_probe_calendar,
+            config_key="calendar.enabled",
+            # No static depends_on — the probe dispatches on calendar.provider
+            # (the bridge path's Obsidian dependency is resolved inside it).
+            reason_when_missing="The configured calendar provider isn't available",
         ),
         ToolProbe(
             id="thunderbird",

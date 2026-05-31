@@ -38,7 +38,7 @@ aliases:
 parents:
 - calendar
 requires:
-- google_calendar
+- calendar
 ---
 
 Modifies an event through the provider seam. Consent is gated in the capability

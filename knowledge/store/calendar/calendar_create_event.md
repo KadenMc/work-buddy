@@ -54,7 +54,7 @@ aliases:
 parents:
 - calendar
 requires:
-- google_calendar
+- calendar
 ---
 
 Creates an event on a real calendar through the provider seam. Consent is gated

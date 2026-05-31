@@ -33,7 +33,7 @@ aliases:
 parents:
 - calendar
 requires:
-- google_calendar
+- calendar
 ---
 
 Deletes an event through the provider seam. Consent is gated in the capability
