@@ -184,6 +184,16 @@ def test_get_event_404_maps(monkeypatch):
         p.get_event(calendar_id="primary@x", event_id="missing")
 
 
+def test_get_event_cancelled_tombstone_is_not_found():
+    # Google returns a deleted event as status="cancelled" (HTTP 200), not a 404.
+    cancelled = {"id": "e9", "status": "cancelled", "summary": "gone",
+                 "start": {"dateTime": "2026-06-03T22:00:00-04:00"},
+                 "end": {"dateTime": "2026-06-03T22:30:00-04:00"}}
+    p = _provider(lambda req: httpx.Response(200, json=cancelled))
+    with pytest.raises(CalendarEventNotFound):
+        p.get_event(calendar_id="primary@x", event_id="e9")
+
+
 # --- health -----------------------------------------------------------------
 
 

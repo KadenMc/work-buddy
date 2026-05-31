@@ -246,6 +246,14 @@ class GoogleNativeCalendarProvider:
 
         path = f"/calendars/{quote(calendar_id, safe='')}/events/{quote(event_id, safe='')}"
         ev = self._request("GET", path)
+        # Google returns a deleted event as a "cancelled" tombstone (HTTP 200,
+        # status="cancelled") rather than a 404. Treat that as not-found so
+        # get_event matches list_events (which filters cancelled) and the
+        # intuitive "is this event still on my calendar?".
+        if ev.get("status") == "cancelled":
+            raise CalendarEventNotFound(
+                f"google_native: event {event_id!r} is cancelled (deleted)"
+            )
         name = next((r.name for r in self.list_calendars() if r.id == calendar_id), "")
         return self._to_event(ev, calendar_id, name)
 
