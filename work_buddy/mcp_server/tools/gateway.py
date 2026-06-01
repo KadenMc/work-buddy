@@ -2306,6 +2306,24 @@ def _system_overview() -> dict[str, Any]:
     except Exception:
         overview["retry_queue"] = {"error": "Could not read retry queue"}
 
+    # Dispatch resilience telemetry — guarded-call metrics + bridge breaker.
+    try:
+        from work_buddy.mcp_server.dispatch_resilience import (
+            get_dispatch_metrics,
+            obsidian_breaker_state,
+        )
+        snap = get_dispatch_metrics().snapshot()
+        overview["dispatch_resilience"] = {
+            "call_count": snap["call_count"],
+            "duration_s": snap["duration_s"],
+            "counts_by_operation_outcome": snap["counts_by_operation_outcome"],
+            "circuit_transitions": snap["circuit_transitions"],
+            "shed_by_reason": snap["shed_by_reason"],
+            "obsidian_bridge_circuit": obsidian_breaker_state(),
+        }
+    except Exception:
+        overview["dispatch_resilience"] = {"error": "Could not read dispatch telemetry"}
+
     return overview
 
 
