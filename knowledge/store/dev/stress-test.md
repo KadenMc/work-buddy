@@ -31,3 +31,7 @@ parents:
 - dev
 - dev
 ---
+
+## verify-result
+
+Inspect the `compute-primes` result. Confirm the subprocess returned without error and `prime_count` is plausible for the limit (π(1,000,000) = 78,498). Report pass/fail and `elapsed_seconds`. This validates that the gateway's subprocess-isolation path completed end-to-end and the server stayed responsive — not merely that primes were computed.

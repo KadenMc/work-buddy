@@ -146,6 +146,16 @@ Starting a workflow grants blanket consent for all its steps (grant_workflow_con
 
 All slash commands (.claude/commands/wb-*.md) are thin launchers that load behavioral directions from the knowledge store via agent_docs. The slash command is the entry point; the knowledge store directions unit contains the behavioral content; the `kind: workflow` unit contains the DAG structure.
 
+## Reasoning-step instructions and directions binding
+
+A `reasoning` step's behavioral prose normally lives in the **bound directions unit** — the `kind: directions` unit whose `workflow:` frontmatter field targets this workflow — not in the step body. This keeps a single source: the directions unit (loaded by the slash command) is what the agent reads at runtime, so duplicating that prose into `## <step-id>` body sections only invites drift.
+
+A reasoning step is therefore well-formed when it is either (a) covered by such a bound directions unit, or (b) carries its own `## <step-id>` instruction in the workflow body. There is no legitimate *bare* reasoning step: if it has neither, it is either undocumented (write the `## <step-id>` prose) or miscategorized (the work is deterministic → make it a `code`/`auto_run` step).
+
+Two `docs_validate` checks enforce this:
+- `workflow_step_consistency` warns on a bare reasoning step **only** when no directions unit binds the workflow (a bound workflow's empty reasoning steps are intentional).
+- `directions_workflow_resolution` errors when a directions unit's `workflow:` does not resolve to a real `kind: workflow` unit — a dangling binding would silently defeat the suppression above, so the link must always point somewhere real (full path, e.g. `tasks/task-me`, not the bare slug).
+
 ## Step result visibility
 
 Steps can declare a `visibility` spec that controls what agents see inline vs on-demand. Full results are always in the DAG on disk — visibility only affects the MCP response.
