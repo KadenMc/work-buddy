@@ -1,11 +1,10 @@
 """Regression guard: every raw log directory is governed by a LOG_FILES artifact.
 
-This locks in the fix for t-f54ef1ac. The 160 MB ``messaging.1.log`` and the
-104 MB ``telegram.log.2`` orphans both accumulated because a raw-log directory
-was written continuously but registered with *no* reaping artifact. If a future
-change adds a new raw-log directory (or drops one of these registrations),
-extend ``RAW_LOG_DIRS`` and keep the invariant: the directory is covered by a
-``DirShape.LOG_FILES`` artifact with an ``MtimeWindow`` trigger.
+Orphaned logs accumulate when a raw-log directory is written continuously but
+registered with *no* reaping artifact — the failure mode this guards against.
+If a future change adds a new raw-log directory (or drops one of these
+registrations), extend ``RAW_LOG_DIRS`` and keep the invariant: the directory
+is covered by a ``DirShape.LOG_FILES`` artifact with an ``MtimeWindow`` trigger.
 
 (`logs-global` is included as the pre-existing exemplar; it intentionally has no
 live-log pin because nothing keeps a live handle on `.data/logs/`.)

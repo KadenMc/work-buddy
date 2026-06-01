@@ -177,11 +177,11 @@ def register_agents_logs_artifact() -> None:
     Governs ``.data/agents/logs/`` — the shared in-process log directory the
     Telegram service (and similar non-session loggers) write to via
     ``RotatingFileHandler``. That handler bounds the *live* file's growth but
-    only ages rotated backups out slowly via its backup-count shuffle, so a
-    pre-cap oversized backup (e.g. a 104 MB ``telegram.log.2``) can linger for
-    weeks. This artifact age-reaps those backups; the live ``telegram.log`` is
-    pinned. Disjoint from ``agent-sessions`` (which only treats manifest-bearing
-    session *directories* as records, never the ``logs/`` subdir).
+    only ages rotated backups out slowly via its backup-count shuffle, so an
+    oversized backup can linger for weeks. This artifact age-reaps those
+    backups by mtime; the live ``telegram.log`` is pinned. Disjoint from
+    ``agent-sessions`` (which only treats manifest-bearing session
+    *directories* as records, never the ``logs/`` subdir).
     """
     try:
         from work_buddy.paths import data_dir

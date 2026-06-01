@@ -425,13 +425,13 @@ def _print_startup_banner(
 # artifact-lifecycle reaper, which registers ``.data/runtime/service_logs/``
 # as the ``service-logs`` artifact (see
 # ``work_buddy/artifacts/default_registrations.py``) and deletes aged backups
-# on its twice-daily sweep. Splitting the two concerns is deliberate: the
-# previous implementation fused a count-based backup shuffle into this
-# startup pass, which only ever weighed the *live* file and never enforced a
-# size or age bound on already-rolled backups — so a low-volume service's
-# oversized backup (e.g. a pre-fix 160 MB ``messaging.1.log``) persisted
-# indefinitely. Rolling to a timestamped name + age-reaping elsewhere
-# mirrors logrotate's ``dateext`` + ``maxage`` model.
+# on its twice-daily sweep. Splitting the two concerns is deliberate: a roll
+# that also managed a backup *count* would only ever weigh the live file at
+# startup and never bound an already-rolled oversized backup, so a low-volume
+# service's backup could persist indefinitely. Keeping this roller purely
+# size-triggered and delegating age/retention to the reaper avoids that.
+# Rolling to a timestamped name + age-reaping elsewhere mirrors logrotate's
+# ``dateext`` + ``maxage`` model.
 
 _SERVICE_LOG_CAP_BYTES = 16 * 1024 * 1024
 

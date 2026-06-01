@@ -174,7 +174,7 @@ def test_prune_reaps_rotating_handler_backups(tmp_path):
     aged_b1 = tmp_path / "telegram.log.1"
     aged_b1.write_text("x" * 1000)
     _age(aged_b1, 30)
-    aged_b2 = tmp_path / "telegram.log.2"  # the 104 MB-style pre-cap orphan
+    aged_b2 = tmp_path / "telegram.log.2"  # a large rotated backup
     aged_b2.write_text("x" * 5000)
     _age(aged_b2, 30)
 
