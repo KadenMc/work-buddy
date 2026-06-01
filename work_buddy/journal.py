@@ -20,6 +20,7 @@ from typing import Any
 from work_buddy.config import load_config
 from work_buddy.consent import requires_consent
 from work_buddy.logging_config import get_logger
+from work_buddy.obsidian.errors import ObsidianError
 from work_buddy.utils.git import get_wb_commit_hash
 
 logger = get_logger(__name__)
@@ -113,7 +114,7 @@ def ensure_journal_exists(
                         f"for {date_str} was not created. Check Obsidian."
                     ),
                 }
-        except RuntimeError as e:
+        except (RuntimeError, ObsidianError) as e:
             return {
                 "exists": False,
                 "file": str(journal_file),

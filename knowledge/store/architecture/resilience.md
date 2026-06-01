@@ -62,6 +62,8 @@ Six composable strategies in `strategies.py`: `TimeoutStrategy`, `RetryStrategy`
 
 Existing systems *participate* without being rewritten at their call sites: `work_buddy/inference/resilient_broker.py` (`guarded_broker_call`) and `work_buddy/obsidian/resilient_bridge.py` (`guarded_bridge_call`, `build_obsidian_pipeline`) map broker / Obsidian errors onto the taxonomy, propagate the deadline, and emit unified `guard.*` telemetry. The `@bridge_retry` decorator (`work_buddy/obsidian/retry.py`) is itself a thin framework consumer — each decorated call runs a `RetryStrategy → _BridgeHealthGate → call` chain via `guarded_call_sync`, so decorated capabilities share the same foundation as ad-hoc adapter calls. There is one retry loop in the codebase for the Obsidian failure domain (the one-retry-layer rule, structurally).
 
+The **MCP gateway** is a framework consumer too: every `wb_run` capability dispatch runs through `guarded_call` under a `wb_run:<capability>` operation key (`work_buddy/mcp_server/dispatch_resilience.py`). It composes an operation-derived `TimeoutStrategy` (capabilities declare a `timeout_seconds` scalar or a `(params) -> seconds` policy; bridge-dependent capabilities run unbounded) and, for capabilities requiring any bridge-backed tool (the Obsidian bridge or an in-Obsidian plugin that depends on it — `datacore`, `smart_connections`, `google_calendar`; see `tools.obsidian_backed_tools()`), a shared `obsidian_bridge` `CircuitBreakerStrategy`. The gateway registers the process's telemetry listeners at startup (an `InMemoryMetrics` recorder plus a logging listener), so every guarded call — gateway dispatch and `@bridge_retry` alike — records metrics and logs a `guard.*` line.
+
 ## Telemetry
 
 `guarded_call` emits `CallCompleted`; strategies emit `CircuitStateChanged` and `LoadShed`. Listeners registered via `register_listener` receive every event; `InMemoryMetrics` is the default in-process recorder.
@@ -72,7 +74,6 @@ The framework is **fault mitigation only**. Durable execution and human-in-the-l
 
 ## State
 
-The framework, strategy library, pipeline/registry, both adapters, and `@bridge_retry`'s live wiring are built and verified (unit-tested plus a live integration smoke test against the real Obsidian bridge). The remaining live migrations are:
+The framework, strategy library, pipeline/registry, both adapters, `@bridge_retry`'s live wiring, and the MCP gateway dispatch (timeout + telemetry + Obsidian circuit breaker) are built and verified (unit-tested plus a live integration smoke test against the real Obsidian bridge). The Obsidian bridge is now governed at runtime by the gateway's `obsidian_bridge` breaker rather than by a build-time `DISABLED_CAPABILITIES` flip; that set still hard-disables capabilities whose *genuinely-absent* dependencies (calendar, hindsight, thunderbird, ...) cannot appear within the session.
 
-- The broker's synchronous LM Studio call-sites (embedding provider + LLM backends) — gated on a sync→async conversion of the inference path.
-- `DISABLED_CAPABILITIES` → a `CircuitBreakerStrategy` on the capability registry.
+The remaining live migration is the broker's synchronous LM Studio call-sites (embedding provider + LLM backends) onto `guarded_broker_call` — gated on a sync→async conversion of the inference path.

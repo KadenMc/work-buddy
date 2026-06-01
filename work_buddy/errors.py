@@ -46,11 +46,8 @@ _TRANSIENT_PATTERNS: tuple[str, ...] = (
 # the request will never succeed without changing).
 _TRANSIENT_OBSIDIAN_KINDS: frozenset[str] = frozenset({
     "obsidian_unknown",            # generic — assume transient
-    "obsidian_unreachable",
-    "obsidian_not_running",
-    "obsidian_plugin_missing",
-    "obsidian_plugin_disabled",
-    "obsidian_startup_race",
+    "obsidian_unreachable",        # ambiguous connectivity — assume transient
+    "obsidian_startup_race",       # plugin still binding the port — will clear
     "obsidian_timeout",
     "obsidian_post_write_uncertain",
     "obsidian_http_error",         # generic — assume transient
@@ -58,8 +55,17 @@ _TRANSIENT_OBSIDIAN_KINDS: frozenset[str] = frozenset({
     "obsidian_server_error",
 })
 
+# "User must act out of band" failures: retrying without the user doing
+# something (open Obsidian, install / enable the plugin, fix a 4xx-refused
+# request) never succeeds. They are NOT auto-enqueued — a deliberately-closed
+# Obsidian fails fast instead of churning 5 futile retries and emitting an
+# exhaustion notification. A *transiently* unavailable bridge (startup race,
+# timeout, 5xx) stays transient above and still auto-recovers via the queue.
 _PERMANENT_OBSIDIAN_KINDS: frozenset[str] = frozenset({
-    "obsidian_refused",  # 4xx other than 409 — structural refusal
+    "obsidian_refused",          # 4xx other than 409 — structural refusal
+    "obsidian_not_running",      # Obsidian app closed — user must open it
+    "obsidian_plugin_missing",   # plugin not installed — user must install
+    "obsidian_plugin_disabled",  # plugin disabled — user must enable
 })
 
 # Exception class names (not types) that are always transient. The
@@ -124,13 +130,15 @@ def classify_error(exc: Exception) -> str:
       3. Name-based: TRANSIENT_EXCEPTION_NAMES / PERMANENT_EXCEPTION_NAMES
       4. Message-pattern matching (legacy fallback)
     """
-    # Fast path: typed ObsidianError. ObsidianRefused is the only
-    # permanent kind; everything else under ObsidianError is transient.
-    ObsidianError, ObsidianRefused = _load_obsidian_error_types()
+    # Fast path: typed ObsidianError. Classify by the canonical ``error_kind``
+    # — the same signal the result-dict path (is_transient_result) keys on, so
+    # a raised exception and a ``bridge_failure`` return classify identically.
+    # "User must act" kinds (Obsidian closed, plugin missing/disabled, 4xx
+    # refused) are permanent — no auto-retry; everything else is transient.
+    ObsidianError, _ = _load_obsidian_error_types()
     if ObsidianError is not None and isinstance(exc, ObsidianError):
-        if ObsidianRefused is not None and isinstance(exc, ObsidianRefused):
-            return "permanent"
-        return "transient"
+        kind = getattr(exc, "error_kind", "obsidian_unknown")
+        return "permanent" if kind in _PERMANENT_OBSIDIAN_KINDS else "transient"
 
     # Check exception type first
     if isinstance(exc, _TRANSIENT_EXCEPTION_TYPES):

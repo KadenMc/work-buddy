@@ -126,24 +126,36 @@ class TestClassifyError:
 
 
 class TestClassifyTypedObsidianErrors:
-    """CP3: typed ObsidianError subclasses get isinstance fast-path
-    classification, bypassing string-pattern matching entirely.
+    """Typed ObsidianError subclasses are classified by their ``error_kind``,
+    bypassing string-pattern matching entirely.
 
-    Permanent: ObsidianRefused (4xx other than 409 — structural).
-    Transient: everything else under ObsidianError.
+    Permanent ("user must act out of band" — retrying without user action
+    never succeeds, so the op is NOT auto-enqueued): ObsidianRefused (4xx
+    other than 409), ObsidianNotRunning (app closed), ObsidianPluginMissing,
+    ObsidianPluginDisabled.
+    Transient (a temporarily-unavailable bridge that auto-recovers via the
+    retry queue): startup race, timeout, server error, editor conflict, etc.
     """
 
-    def test_obsidian_not_running_is_transient(self):
+    def test_obsidian_not_running_is_permanent(self):
+        """Co-migrated from transient: a deliberately-closed Obsidian is a
+        user-must-act condition. Auto-retrying it 5x just churns and emits an
+        exhaustion notification; fail fast instead. (A *booting* bridge is
+        ObsidianStartupRace, which stays transient and still auto-recovers.)"""
         from work_buddy.obsidian.errors import ObsidianNotRunning
-        assert classify_error(ObsidianNotRunning()) == "transient"
+        assert classify_error(ObsidianNotRunning()) == "permanent"
 
-    def test_obsidian_plugin_missing_is_transient(self):
+    def test_obsidian_plugin_missing_is_permanent(self):
+        """Co-migrated from transient: the user must install the plugin —
+        retrying never helps."""
         from work_buddy.obsidian.errors import ObsidianPluginMissing
-        assert classify_error(ObsidianPluginMissing()) == "transient"
+        assert classify_error(ObsidianPluginMissing()) == "permanent"
 
-    def test_obsidian_plugin_disabled_is_transient(self):
+    def test_obsidian_plugin_disabled_is_permanent(self):
+        """Co-migrated from transient: the user must enable the plugin —
+        retrying never helps."""
         from work_buddy.obsidian.errors import ObsidianPluginDisabled
-        assert classify_error(ObsidianPluginDisabled()) == "transient"
+        assert classify_error(ObsidianPluginDisabled()) == "permanent"
 
     def test_obsidian_startup_race_is_transient(self):
         from work_buddy.obsidian.errors import ObsidianStartupRace
@@ -266,9 +278,6 @@ class TestIsTransientResultErrorKind:
 
     @pytest.mark.parametrize("error_kind", [
         "obsidian_unreachable",
-        "obsidian_not_running",
-        "obsidian_plugin_missing",
-        "obsidian_plugin_disabled",
         "obsidian_startup_race",
         "obsidian_timeout",
         "obsidian_post_write_uncertain",
@@ -281,9 +290,19 @@ class TestIsTransientResultErrorKind:
         result = {"error": "anything", "error_kind": error_kind}
         assert is_transient_result(result) is True
 
-    def test_obsidian_refused_is_permanent_via_kind(self):
-        """The one Obsidian failure that should NOT retry."""
-        result = {"error": "Bad Request", "error_kind": "obsidian_refused"}
+    @pytest.mark.parametrize("error_kind", [
+        "obsidian_refused",          # 4xx other than 409 — structural refusal
+        "obsidian_not_running",      # app closed — user must open it
+        "obsidian_plugin_missing",   # plugin not installed — user must install
+        "obsidian_plugin_disabled",  # plugin disabled — user must enable
+    ])
+    def test_permanent_obsidian_kinds(self, error_kind):
+        """"User must act out of band" kinds are NOT retried: a result dict
+        carrying one of these is permanent, so the gateway won't auto-enqueue
+        it (no 5x churn + exhaustion notification on a deliberately-closed
+        bridge). Co-migrated: not_running / plugin_missing / plugin_disabled
+        moved here from the transient set."""
+        result = {"error": "anything", "error_kind": error_kind}
         assert is_transient_result(result) is False
 
     def test_error_kind_wins_over_transient_message(self):

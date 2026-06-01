@@ -27,6 +27,15 @@ from mcp.server.fastmcp import Context, FastMCP
 from work_buddy.consent import ConsentRequired
 from work_buddy.tools import ToolUnavailable
 from work_buddy.mcp_server import registry
+from work_buddy.resilience import guarded_call, OutcomeKind
+from work_buddy.mcp_server.dispatch_resilience import (
+    build_dispatch_deadline,
+    build_dispatch_strategies,
+    dispatch_classifiers,
+    dispatch_passthrough,
+    ensure_listeners_registered,
+    resolve_timeout_budget,
+)
 
 
 def _conductor():
@@ -1045,6 +1054,10 @@ def _prune_old_operations() -> None:
 def register_tools(mcp: FastMCP) -> None:
     """Register the gateway tools on the given FastMCP server."""
 
+    # Wire the resilience telemetry listeners once, so every guarded dispatch
+    # (and every @bridge_retry call) records metrics and logs a grep-able line.
+    ensure_listeners_registered()
+
     @mcp.tool()
     async def wb_init(session_id: str, ctx: Context = None) -> dict:
         """Initialize this connection for work-buddy. MUST be called once
@@ -1527,9 +1540,107 @@ def register_tools(mcp: FastMCP) -> None:
         _consent_retries = 0
         while True:
             try:
-                result = await asyncio.to_thread(
-                    _invoke_with_session, entry.callable, _agent_sid,
-                    **parsed_params,
+                # The capability dispatch runs through the resilience seam so
+                # the gateway emits dispatch-timing telemetry under the
+                # ``wb_run:<capability>`` operation key and enforces an
+                # operation-appropriate wall-time budget. The budget is owned
+                # by the operation (resolved from the capability, never the
+                # caller); self-managing capabilities (Obsidian-bridge work,
+                # which retries internally) run unbounded. A classified
+                # failure comes back as an Outcome carrying the original
+                # exception; re-raise it so the consent-retry / recovery
+                # handlers below run exactly as before.
+                _budget = resolve_timeout_budget(entry, parsed_params)
+                _classify, _result_classify = dispatch_classifiers(entry)
+                outcome = await guarded_call(
+                    f"wb_run:{capability}",
+                    lambda: asyncio.to_thread(
+                        _invoke_with_session, entry.callable, _agent_sid,
+                        **parsed_params,
+                    ),
+                    deadline=build_dispatch_deadline(_budget),
+                    strategies=build_dispatch_strategies(entry, _budget),
+                    classify=_classify,
+                    result_classifier=_result_classify,
+                    passthrough_exceptions=dispatch_passthrough(entry),
+                )
+                if outcome.kind is OutcomeKind.REJECTED:
+                    # The Obsidian-bridge circuit breaker shed this call — the
+                    # bridge has failed enough consecutive times that hammering
+                    # it further is pointless. Surface a clear, retryable error;
+                    # the breaker admits a probe again after its cooldown.
+                    shed_err = (
+                        f"Obsidian bridge unavailable: {capability} was shed "
+                        f"because the bridge circuit is open (too many recent "
+                        f"failures)"
+                    )
+                    _complete_operation(
+                        op_id, error=shed_err,
+                        error_kind="obsidian_bridge_circuit_open",
+                    )
+                    record_capability(
+                        capability, entry.category, op_id, parsed_params,
+                        entry.mutates_state, _t0, None, shed_err, False,
+                        **_ledger_kw,
+                    )
+                    shed_response: dict[str, Any] = {
+                        "error": shed_err,
+                        "operation_id": op_id,
+                        "error_kind": "obsidian_bridge_circuit_open",
+                        "bridge_circuit_open": True,
+                        "hint": (
+                            "The Obsidian bridge is failing repeatedly; calls "
+                            "are being shed until it recovers (a probe is "
+                            "admitted automatically after a short cooldown). "
+                            "Check that Obsidian is running with the bridge "
+                            "plugin enabled."
+                        ),
+                    }
+                    if _registry_auto_recovered:
+                        shed_response["registry_auto_recovered"] = True
+                    return _prepare(shed_response)
+                if outcome.kind is OutcomeKind.TIMEOUT and outcome.error is None:
+                    # A gateway-budget timeout (TimeoutStrategy fired) — it
+                    # carries no exception. A classified ObsidianTimeout, by
+                    # contrast, carries its exception and is re-raised below to
+                    # the existing transient-enqueue / verify handlers.
+                    # asyncio.timeout frees the event loop but cannot kill the
+                    # worker thread, so the call is NOT enqueued for retry
+                    # (re-dispatch could double-run an op still running in the
+                    # background). The caller / LLM-side interpreter handles
+                    # mcp_gateway_timeout.
+                    timeout_err = (
+                        f"Gateway timeout: {capability} exceeded its "
+                        f"{_budget:.0f}s dispatch budget"
+                    )
+                    _complete_operation(
+                        op_id, error=timeout_err,
+                        error_kind="mcp_gateway_timeout",
+                    )
+                    record_capability(
+                        capability, entry.category, op_id, parsed_params,
+                        entry.mutates_state, _t0, None, timeout_err, False,
+                        **_ledger_kw,
+                    )
+                    timeout_response: dict[str, Any] = {
+                        "error": timeout_err,
+                        "operation_id": op_id,
+                        "error_kind": "mcp_gateway_timeout",
+                        "hint": (
+                            "The capability did not return within its dispatch "
+                            "budget. The work may still be running in the "
+                            "background; do not assume it failed or succeeded. "
+                            "Retry only if the operation is idempotent."
+                        ),
+                    }
+                    if _registry_auto_recovered:
+                        timeout_response["registry_auto_recovered"] = True
+                    return _prepare(timeout_response)
+                if outcome.error is not None:
+                    raise outcome.error
+                result = (
+                    outcome.value if outcome.is_success
+                    else outcome.metadata.get("result")
                 )
                 break  # Success — exit retry loop
             except TypeError as exc:
@@ -2194,6 +2305,24 @@ def _system_overview() -> dict[str, Any]:
         overview["retry_queue"] = _retry_queue_summary()
     except Exception:
         overview["retry_queue"] = {"error": "Could not read retry queue"}
+
+    # Dispatch resilience telemetry — guarded-call metrics + bridge breaker.
+    try:
+        from work_buddy.mcp_server.dispatch_resilience import (
+            get_dispatch_metrics,
+            obsidian_breaker_state,
+        )
+        snap = get_dispatch_metrics().snapshot()
+        overview["dispatch_resilience"] = {
+            "call_count": snap["call_count"],
+            "duration_s": snap["duration_s"],
+            "counts_by_operation_outcome": snap["counts_by_operation_outcome"],
+            "circuit_transitions": snap["circuit_transitions"],
+            "shed_by_reason": snap["shed_by_reason"],
+            "obsidian_bridge_circuit": obsidian_breaker_state(),
+        }
+    except Exception:
+        overview["dispatch_resilience"] = {"error": "Could not read dispatch telemetry"}
 
     return overview
 

@@ -233,21 +233,29 @@ class TestDisabledRegistryInvariants:
             reg = reg_mod.get_registry()
         return reg, reg_mod
 
-    def test_disabled_keys_match_when_obsidian_unavailable(self):
-        """Forcing obsidian unavailable: every disabled cap appears in BOTH
-        DISABLED_CAPABILITIES and _DISABLED_REGISTRY with matching keys."""
+    def test_disabled_keys_match_when_dep_unavailable(self):
+        """Forcing a genuinely-missing dep unavailable: every disabled cap
+        appears in BOTH DISABLED_CAPABILITIES and _DISABLED_REGISTRY with
+        matching keys.
+
+        Co-migrated from an obsidian example to ``hindsight``: a missing
+        Obsidian bridge no longer build-time disables its capabilities (the
+        gateway's circuit breaker governs them at runtime), so the build-time-
+        disable invariant is now exercised against a genuinely-absent
+        dependency. Same invariant, different (still-valid) example dep.
+        """
         from work_buddy.tools import DISABLED_CAPABILITIES
 
         try:
-            _, reg_mod = self._build_with_unavailable(["obsidian"])
+            _, reg_mod = self._build_with_unavailable(["hindsight"])
             assert set(reg_mod._DISABLED_REGISTRY.keys()) == set(DISABLED_CAPABILITIES.keys()), (
                 "_DISABLED_REGISTRY keys diverged from DISABLED_CAPABILITIES"
             )
             # And the set should be non-empty for the test to be meaningful.
             assert DISABLED_CAPABILITIES, (
-                "Test setup expected at least one obsidian-requiring capability "
+                "Test setup expected at least one hindsight-requiring capability "
                 "to land in DISABLED_CAPABILITIES — none did. Did the registry "
-                "change such that no capability requires obsidian?"
+                "change such that no capability requires hindsight?"
             )
         finally:
             reg_mod._REGISTRY = None
@@ -255,7 +263,7 @@ class TestDisabledRegistryInvariants:
     def test_disabled_and_live_registries_disjoint(self):
         """A capability cannot simultaneously be in _REGISTRY and _DISABLED_REGISTRY."""
         try:
-            reg, reg_mod = self._build_with_unavailable(["obsidian"])
+            reg, reg_mod = self._build_with_unavailable(["hindsight"])
             overlap = set(reg.keys()) & set(reg_mod._DISABLED_REGISTRY.keys())
             assert not overlap, (
                 f"Capability(ies) appear in both _REGISTRY and _DISABLED_REGISTRY: {overlap}"
@@ -269,7 +277,7 @@ class TestDisabledRegistryInvariants:
         from work_buddy.mcp_server.registry import Capability
 
         try:
-            _, reg_mod = self._build_with_unavailable(["obsidian"])
+            _, reg_mod = self._build_with_unavailable(["hindsight"])
             for name, entry in reg_mod._DISABLED_REGISTRY.items():
                 assert isinstance(entry, Capability), (
                     f"_DISABLED_REGISTRY[{name!r}] is {type(entry).__name__}, "
@@ -289,7 +297,7 @@ class TestDisabledRegistryInvariants:
 
         try:
             # Build 1: obsidian unavailable -> populate stash.
-            _, reg_mod = self._build_with_unavailable(["obsidian"])
+            _, reg_mod = self._build_with_unavailable(["hindsight"])
             stash_after_build_1 = dict(reg_mod._DISABLED_REGISTRY)
             assert stash_after_build_1, "Test setup needs at least one stash entry"
 
@@ -316,7 +324,7 @@ class TestDisabledRegistryInvariants:
         from work_buddy.mcp_server.registry import get_disabled_registry
 
         try:
-            _, reg_mod = self._build_with_unavailable(["obsidian"])
+            _, reg_mod = self._build_with_unavailable(["hindsight"])
             view = get_disabled_registry()
             assert view is reg_mod._DISABLED_REGISTRY, (
                 "get_disabled_registry() returned a different dict than the "

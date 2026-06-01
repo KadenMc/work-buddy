@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 from work_buddy.frontmatter import parse_frontmatter
 
@@ -136,6 +136,19 @@ class Capability:
     # produce output the user must validate (drafts, summaries,
     # decompositions) opt in by setting True.
     requires_post_review: bool = False
+
+    # Wall-time budget for one gateway dispatch of this capability, owned by
+    # the operation (never supplied by the caller). The gateway resolves it
+    # to a concrete budget per dispatch, most-specific-wins:
+    #   - a callable ``(params) -> float | None`` derives the budget from the
+    #     actual invocation (for operations whose runtime scales with input);
+    #   - a ``float`` is a fixed ceiling in seconds;
+    #   - ``None`` (the default) means "unset" — the gateway applies the
+    #     domain default (capabilities requiring the Obsidian bridge are
+    #     self-retrying and run unbounded; everything else gets 30s).
+    # A resolved budget of ``math.inf`` (or a callable/scalar that yields it)
+    # means no gateway timeout. See ``mcp_server.dispatch_resilience``.
+    timeout_seconds: "float | None | Callable[[Mapping[str, Any]], float | None]" = None
 
 
 @dataclass
@@ -811,7 +824,7 @@ def _build_registry() -> dict[str, Capability | WorkflowDefinition]:
     from work_buddy.mcp_server.search import _log_to_file, _get_search_log
     from work_buddy.tools import (
         _register_default_probes, probe_all, is_tool_available,
-        DISABLED_CAPABILITIES,
+        obsidian_backed_tools, DISABLED_CAPABILITIES,
     )
     _lf = _get_search_log()
     _log_to_file(_lf, "Registry build starting...")
@@ -874,10 +887,27 @@ def _build_registry() -> dict[str, Capability | WorkflowDefinition]:
     # sys.modules); a Capability stashed during the previous build
     # would dereference a now-dead module if it survived.
     _DISABLED_REGISTRY.clear()
+    bridge_tools = obsidian_backed_tools()
+    bridge_down = not is_tool_available("obsidian")
     for name in list(registry):
         entry = registry[name]
         if isinstance(entry, Capability) and entry.requires:
             missing = [t_id for t_id in entry.requires if not is_tool_available(t_id)]
+            # Obsidian-bridge availability is governed at runtime by a circuit
+            # breaker on the gateway dispatch, not by this build-time flip. A
+            # transient bridge probe failure must not disable every bridge-
+            # dependent capability (the bridge itself AND its in-Obsidian
+            # plugins: datacore, smart_connections, ...) for the whole session;
+            # an admitted capability whose bridge is down fails fast per call
+            # and recovers the instant the bridge returns (no registry reload).
+            # Transitive-only: we only skip the hard-disable when the bridge
+            # ITSELF is down (so the plugin is unavailable *because of* the
+            # bridge). If the bridge is up but a plugin is genuinely missing —
+            # or a non-bridge dep (calendar, hindsight, thunderbird, ...) is
+            # absent — keep the hard-disable; a breaker is wrong for a
+            # dependency that will not appear within the session.
+            if bridge_down:
+                missing = [t_id for t_id in missing if t_id not in bridge_tools]
             if missing:
                 DISABLED_CAPABILITIES[name] = missing
                 # CP-A1: stash the full Capability object so the recovery

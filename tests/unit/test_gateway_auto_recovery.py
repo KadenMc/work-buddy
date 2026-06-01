@@ -78,7 +78,17 @@ class TestRecoveryFlowEndToEnd:
 
     @pytest.fixture
     def fresh_registry(self):
-        """Force a registry rebuild with obsidian unavailable."""
+        """Force a registry rebuild with a genuinely-missing dep unavailable.
+
+        Uses ``hindsight`` (a real optional dependency with several single-dep
+        capabilities) as the example missing tool. Obsidian is deliberately
+        NOT used here: a missing Obsidian bridge no longer hard-disables its
+        dependent capabilities — that is governed at runtime by the gateway's
+        circuit breaker, not the build-time filter (see
+        ``test_obsidian_caps_stay_admitted_when_bridge_unavailable``). The
+        CP-A1/A2/A3 build-time-disable + lazy-recovery chain this class
+        exercises still applies to every genuinely-absent dependency.
+        """
         from work_buddy.mcp_server import registry as reg_mod
         from work_buddy.tools import DISABLED_CAPABILITIES
 
@@ -86,9 +96,9 @@ class TestRecoveryFlowEndToEnd:
         reg_mod._DISABLED_REGISTRY.clear()
         DISABLED_CAPABILITIES.clear()
 
-        # Build with obsidian unavailable.
+        # Build with hindsight unavailable (a genuinely-absent dependency).
         with patch("work_buddy.tools.is_tool_available") as mock_avail:
-            mock_avail.side_effect = lambda t: t != "obsidian"
+            mock_avail.side_effect = lambda t: t != "hindsight"
             reg_mod.get_registry()
 
         yield reg_mod
@@ -98,25 +108,30 @@ class TestRecoveryFlowEndToEnd:
         reg_mod._DISABLED_REGISTRY.clear()
         DISABLED_CAPABILITIES.clear()
 
-    def test_recheck_restores_real_obsidian_capability(self, fresh_registry):
-        """Pick a real obsidian-requiring capability from the live
-        DISABLED_CAPABILITIES, simulate obsidian recovering, and verify
-        recheck_disabled_capability restores it to _REGISTRY."""
+    def test_recheck_restores_real_disabled_capability(self, fresh_registry):
+        """Pick a real hindsight-requiring capability from the live
+        DISABLED_CAPABILITIES, simulate the dep recovering, and verify
+        recheck_disabled_capability restores it to _REGISTRY.
+
+        Co-migrated from an obsidian example: obsidian caps are no longer
+        build-time disabled, so this exercises the (dep-agnostic) recovery
+        primitive against a genuinely-absent dependency instead.
+        """
         from work_buddy.recovery import recheck_disabled_capability
         from work_buddy.tools import DISABLED_CAPABILITIES
 
-        # Find a real obsidian-disabled capability (the registry has many).
+        # Find a real hindsight-disabled capability (the registry has several).
         candidates = [
             n for n, deps in DISABLED_CAPABILITIES.items()
-            if "obsidian" in deps and len(deps) == 1
+            if "hindsight" in deps and len(deps) == 1
         ]
         assert candidates, (
-            "Registry has no single-obsidian-dep capabilities — test "
+            "Registry has no single-hindsight-dep capabilities — test "
             "needs a different capability to exercise."
         )
         cap_name = candidates[0]
 
-        # Simulate obsidian recovering.
+        # Simulate hindsight recovering.
         with patch("work_buddy.tools.reprobe_one"), \
              patch("work_buddy.tools.is_tool_available", return_value=True):
             recovered = recheck_disabled_capability(cap_name)
@@ -140,7 +155,7 @@ class TestRecoveryFlowEndToEnd:
 
         candidates = [
             n for n, deps in DISABLED_CAPABILITIES.items()
-            if "obsidian" in deps and len(deps) == 1
+            if "hindsight" in deps and len(deps) == 1
         ]
         assert candidates
         cap_name = candidates[0]
@@ -152,3 +167,41 @@ class TestRecoveryFlowEndToEnd:
         assert recovered is False
         assert cap_name in DISABLED_CAPABILITIES
         assert cap_name not in fresh_registry.get_registry()
+
+    def test_obsidian_caps_stay_admitted_when_bridge_unavailable(self):
+        """A missing Obsidian bridge does NOT build-time disable its
+        dependent capabilities. They stay in the live registry (governed at
+        runtime by the gateway's circuit breaker) rather than vanishing from
+        it for the whole session on a single probe failure."""
+        from work_buddy.mcp_server import registry as reg_mod
+        from work_buddy.tools import DISABLED_CAPABILITIES
+
+        reg_mod._REGISTRY = None
+        reg_mod._DISABLED_REGISTRY.clear()
+        DISABLED_CAPABILITIES.clear()
+        try:
+            with patch("work_buddy.tools.is_tool_available") as mock_avail:
+                mock_avail.side_effect = lambda t: t != "obsidian"
+                reg = reg_mod.get_registry()
+
+            # No capability was disabled SOLELY because obsidian was missing.
+            obsidian_only_disabled = [
+                n for n, deps in DISABLED_CAPABILITIES.items() if deps == ["obsidian"]
+            ]
+            assert not obsidian_only_disabled, (
+                "obsidian-only capabilities were build-time disabled; the "
+                f"runtime breaker should govern them instead: {obsidian_only_disabled}"
+            )
+            # And a known obsidian-requiring capability is still callable.
+            obsidian_caps_live = [
+                n for n, e in reg.items()
+                if "obsidian" in (getattr(e, "requires", None) or [])
+            ]
+            assert obsidian_caps_live, (
+                "expected obsidian-requiring capabilities to remain in the "
+                "live registry when the bridge probes unavailable"
+            )
+        finally:
+            reg_mod._REGISTRY = None
+            reg_mod._DISABLED_REGISTRY.clear()
+            DISABLED_CAPABILITIES.clear()

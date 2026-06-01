@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from work_buddy.obsidian import bridge
+from work_buddy.obsidian.errors import ObsidianError
 from work_buddy.consent import reduces_risk_for
 from work_buddy.logging_config import get_logger
 
@@ -309,7 +310,7 @@ def get_workspace_context(semantic_limit: int = 5) -> dict[str, Any]:
     if active:
         try:
             related = find_related(active, limit=semantic_limit, collection="smart_blocks")
-        except RuntimeError:
+        except (RuntimeError, ObsidianError):
             logger.debug("Could not find related items for active file: %s", active)
 
     return {"workspace": workspace, "related": related}

@@ -381,17 +381,22 @@ def require_available() -> None:
     3. Plugin version is within supported range (>= MIN, < MAX)
     """
     global _bridge_confirmed
+    # Bridge unreachable — raise the precise typed ``ObsidianUnreachable``
+    # subclass via the same disambiguator (`_classify_unreachable`) the
+    # request-time failure path uses. This is what lets the resilience breaker
+    # and the retry-queue classify a precheck failure identically to a
+    # request-time failure: process-down -> ObsidianNotRunning (terminal),
+    # plugin missing/disabled -> terminal, plugin-up-but-port-not-bound ->
+    # ObsidianStartupRace (transient). Previously this raised a plain
+    # RuntimeError, which the breaker mis-classified as transient.
     if not is_obsidian_running():
-        raise RuntimeError(
-            "Obsidian is not running. Please open Obsidian."
-        )
+        leaf = _classify_unreachable()
+        raise leaf.exc_type(leaf.detail)
 
     health = _get_health()
     if health is None or health.get("status") != "ok":
-        raise RuntimeError(
-            "Obsidian is running but the Work Buddy bridge is not responding. "
-            "Check that the Work Buddy plugin is enabled in Obsidian settings."
-        )
+        leaf = _classify_unreachable()
+        raise leaf.exc_type(leaf.detail)
 
     # Version compatibility check (range: >= PLUGIN_VERSION_MIN, < PLUGIN_VERSION_MAX)
     plugin_version = health.get("version", "0.0.0")
