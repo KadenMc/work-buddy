@@ -136,10 +136,23 @@ def get_dispatch_metrics() -> InMemoryMetrics:
 
 
 def _domain_default(entry: Any) -> float:
-    """The budget for a capability that declares none, by operation type."""
-    if _requires_bridge(entry):
-        return math.inf  # bridge work self-retries; gateway does not time it
-    return DEFAULT_DISPATCH_TIMEOUT_S
+    """The budget for a capability that declares no ``timeout_seconds``.
+
+    The gateway timeout is **opt-in**: an undeclared budget is unbounded
+    (``math.inf``), so the gateway imposes no wall-time cap unless a capability
+    explicitly asks for one. A flat default is deliberately NOT auto-applied —
+    a too-low default silently breaks the whole class of capabilities that
+    legitimately run long: human-in-the-loop prompts that poll for a response
+    (``request_send`` / ``request_poll``), synchronous retry wrappers
+    (``obsidian_retry`` / ``retry``), and LLM submission (``llm_submit``). A
+    real default must be calibrated from observed dispatch p99 (the telemetry
+    this module records) AND paired with explicit exemptions for those
+    long-runners. ``DEFAULT_DISPATCH_TIMEOUT_S`` is the candidate value for that
+    future calibration; it is intentionally not applied yet. An un-capped
+    capability that hangs leaks only a worker thread — it does not stall the
+    gateway event loop — so opt-in is safe.
+    """
+    return math.inf
 
 
 def _coerce_budget(value: Any, *, fallback: float) -> float:
@@ -162,10 +175,11 @@ def _coerce_budget(value: Any, *, fallback: float) -> float:
 def resolve_timeout_budget(entry: Any, params: Mapping[str, Any]) -> float:
     """Resolve the wall-time budget (seconds; ``inf`` = no gateway timeout).
 
-    Operation-derived, most-specific-wins: a ``timeout_seconds`` policy
-    callable derives from the actual params; a scalar is a fixed ceiling;
-    ``None`` (unset) falls to the domain default. Never raises — a policy that
-    raises falls back to the domain default.
+    Operation-derived and opt-in: a ``timeout_seconds`` policy callable derives
+    the budget from the actual params; a scalar is a fixed ceiling; ``None``
+    (unset) is unbounded (the gateway imposes no timeout — see
+    ``_domain_default``). Never raises — a policy that raises falls back to
+    unbounded.
     """
     declared = getattr(entry, "timeout_seconds", None)
     domain_default = _domain_default(entry)
