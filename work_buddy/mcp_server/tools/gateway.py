@@ -27,6 +27,8 @@ from mcp.server.fastmcp import Context, FastMCP
 from work_buddy.consent import ConsentRequired
 from work_buddy.tools import ToolUnavailable
 from work_buddy.mcp_server import registry
+from work_buddy.resilience import guarded_call
+from work_buddy.mcp_server.dispatch_resilience import ensure_listeners_registered
 
 
 def _conductor():
@@ -1045,6 +1047,10 @@ def _prune_old_operations() -> None:
 def register_tools(mcp: FastMCP) -> None:
     """Register the gateway tools on the given FastMCP server."""
 
+    # Wire the resilience telemetry listeners once, so every guarded dispatch
+    # (and every @bridge_retry call) records metrics and logs a grep-able line.
+    ensure_listeners_registered()
+
     @mcp.tool()
     async def wb_init(session_id: str, ctx: Context = None) -> dict:
         """Initialize this connection for work-buddy. MUST be called once
@@ -1527,9 +1533,24 @@ def register_tools(mcp: FastMCP) -> None:
         _consent_retries = 0
         while True:
             try:
-                result = await asyncio.to_thread(
-                    _invoke_with_session, entry.callable, _agent_sid,
-                    **parsed_params,
+                # The capability dispatch runs through the resilience seam so
+                # the gateway emits dispatch-timing telemetry under the
+                # ``wb_run:<capability>`` operation key. A classified failure
+                # comes back as an Outcome carrying the original exception;
+                # re-raise it so the consent-retry / recovery handlers below
+                # run exactly as they did before the seam was introduced.
+                outcome = await guarded_call(
+                    f"wb_run:{capability}",
+                    lambda: asyncio.to_thread(
+                        _invoke_with_session, entry.callable, _agent_sid,
+                        **parsed_params,
+                    ),
+                )
+                if outcome.error is not None:
+                    raise outcome.error
+                result = (
+                    outcome.value if outcome.is_success
+                    else outcome.metadata.get("result")
                 )
                 break  # Success — exit retry loop
             except TypeError as exc:
