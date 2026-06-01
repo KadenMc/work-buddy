@@ -8,10 +8,14 @@ ObsidianNotRunning → terminal → no trip). This locks in the unified contract
 ``require_available()`` raises the same typed exception the request-time path
 does, via the shared ``_classify_unreachable`` disambiguator.
 
-Design note: a down bridge is deliberately classified two ways, by horizon —
-TERMINAL for the resilience breaker / inner retry (a cheap process check; no
-point short-retrying or shedding), but TRANSIENT for the retry QUEUE (the op
-will succeed once the user opens Obsidian). Both are honored here.
+Classification of a down bridge, by error kind:
+- ``ObsidianNotRunning`` / plugin missing / disabled — "user must act out of
+  band". Terminal for the breaker (no trip on a cheap clean-absence) AND
+  permanent for the retry queue (no auto-enqueue) → the call fails fast with a
+  clear message instead of churning 5 futile retries + an exhaustion alert.
+- ``ObsidianStartupRace`` / ``ObsidianTimeout`` — a *temporarily*-unavailable
+  bridge: transient → trips the breaker (sheds churn) AND enqueues (auto-
+  recovers once the bridge is back). See ``work_buddy.errors.classify_error``.
 """
 
 from __future__ import annotations
@@ -49,15 +53,17 @@ class TestRequireAvailableTyped:
         # Breaker horizon: terminal — a cheap clean-absence, nothing to shed.
         assert classify_obsidian_error(excinfo.value) is OutcomeKind.TERMINAL_FAILURE
 
-    def test_typed_down_classifies_transient_for_retry_queue(self):
+    def test_typed_down_classifies_permanent_for_retry_queue(self):
         from work_buddy.errors import classify_error
 
         with patch.object(bridge, "is_obsidian_running", return_value=False):
             with pytest.raises(ObsidianNotRunning) as excinfo:
                 bridge.require_available()
-        # Retry-queue horizon: transient — the op completes when the user
-        # opens Obsidian (the queued retry replays successfully).
-        assert classify_error(excinfo.value) == "transient"
+        # Retry-queue horizon: permanent — a deliberately-closed Obsidian is a
+        # "user must act" condition, so it is NOT auto-enqueued (no 5x churn +
+        # exhaustion notification). A transiently-unavailable bridge
+        # (ObsidianStartupRace / ObsidianTimeout) stays transient and enqueues.
+        assert classify_error(excinfo.value) == "permanent"
 
 
 class TestCalendarProviderMapsTypedUnreachable:
