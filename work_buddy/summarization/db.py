@@ -31,22 +31,33 @@ def db_path(cfg: dict | None = None) -> Path:
     return _default_db_path()
 
 
+# DB paths whose schema has already been ensured this process. The schema
+# + ALTER migration pass is idempotent but not free (executescript + a
+# PRAGMA table_info per connect); running it on every open put that cost on
+# every summarization read (e.g. the Chats-tab tldr batch). Keyed on the
+# resolved path so a test pointing at a fresh DB still migrates it once.
+# Process-lifetime; assumes the DB file is not externally deleted.
+_schema_ready: set[str] = set()
+
+
 def get_connection(cfg: dict | None = None) -> sqlite3.Connection:
     """Open (or create) the summarization DB.
 
-    Idempotent: `CREATE TABLE IF NOT EXISTS` re-runs on every connect, so a
-    missing file becomes a populated one transparently. WAL mode allows
-    concurrent readers + a single writer. Forward-only `ALTER TABLE` columns
-    are added in `_migrate_schema` for existing DBs that pre-date the
-    column.
+    The schema + forward-only ALTER migrations are ensured once per DB path
+    per process (see ``_schema_ready``); a missing file becomes a populated
+    one on first open. WAL mode allows concurrent readers + a single writer;
+    the per-connection WAL pragma always runs.
     """
     path = db_path(cfg)
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path), timeout=30)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
-    conn.executescript(SCHEMA)
-    _migrate_schema(conn)
+    key = str(path)
+    if key not in _schema_ready:
+        conn.executescript(SCHEMA)
+        _migrate_schema(conn)
+        _schema_ready.add(key)
     return conn
 
 

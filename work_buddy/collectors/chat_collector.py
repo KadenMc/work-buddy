@@ -12,11 +12,35 @@ from typing import Any
 _CACHE_PATH = Path.home() / ".claude" / "projects" / "work_buddy_chat_cache.json"
 _CACHE_VERSION = 2  # v2: added user_messages, all_assistant_text
 
+# In-process memo of the parsed cache file, keyed on its (mtime, size). The
+# file holds hundreds of parsed-session summaries and json.load of it cost
+# ~400ms on every Chats-tab load; this keeps the parse off warm requests.
+# _save_cache rewrites the file (changing mtime/size), so a save naturally
+# invalidates this memo on the next read.
+_parsed_cache: dict[str, Any] | None = None
+_parsed_cache_state: tuple[float, int] | None = None
+
 
 def _load_cache() -> dict[str, Any]:
-    """Load the conversation summary cache, discarding if version mismatches."""
+    """Load the conversation summary cache, discarding if version mismatches.
+
+    Memoized on the cache file's (mtime, size); returns a shallow copy so a
+    caller adding newly-parsed entries (then saving) doesn't mutate the memo.
+    """
+    global _parsed_cache, _parsed_cache_state
     if not _CACHE_PATH.exists():
         return {}
+    try:
+        st = _CACHE_PATH.stat()
+        state: tuple[float, int] | None = (st.st_mtime, st.st_size)
+    except OSError:
+        state = None
+    if (
+        state is not None
+        and state == _parsed_cache_state
+        and _parsed_cache is not None
+    ):
+        return dict(_parsed_cache)
     try:
         with open(_CACHE_PATH, encoding="utf-8") as f:
             data = json.load(f)
@@ -24,7 +48,9 @@ def _load_cache() -> dict[str, Any]:
         return {}
     if data.get("_version") != _CACHE_VERSION:
         return {}
-    return data
+    _parsed_cache = data
+    _parsed_cache_state = state
+    return dict(data)
 
 
 def _save_cache(cache: dict[str, Any]) -> None:
