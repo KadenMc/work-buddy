@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 from work_buddy.frontmatter import parse_frontmatter
 
@@ -136,6 +136,19 @@ class Capability:
     # produce output the user must validate (drafts, summaries,
     # decompositions) opt in by setting True.
     requires_post_review: bool = False
+
+    # Wall-time budget for one gateway dispatch of this capability, owned by
+    # the operation (never supplied by the caller). The gateway resolves it
+    # to a concrete budget per dispatch, most-specific-wins:
+    #   - a callable ``(params) -> float | None`` derives the budget from the
+    #     actual invocation (for operations whose runtime scales with input);
+    #   - a ``float`` is a fixed ceiling in seconds;
+    #   - ``None`` (the default) means "unset" — the gateway applies the
+    #     domain default (capabilities requiring the Obsidian bridge are
+    #     self-retrying and run unbounded; everything else gets 30s).
+    # A resolved budget of ``math.inf`` (or a callable/scalar that yields it)
+    # means no gateway timeout. See ``mcp_server.dispatch_resilience``.
+    timeout_seconds: "float | None | Callable[[Mapping[str, Any]], float | None]" = None
 
 
 @dataclass

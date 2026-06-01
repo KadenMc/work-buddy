@@ -27,8 +27,13 @@ from mcp.server.fastmcp import Context, FastMCP
 from work_buddy.consent import ConsentRequired
 from work_buddy.tools import ToolUnavailable
 from work_buddy.mcp_server import registry
-from work_buddy.resilience import guarded_call
-from work_buddy.mcp_server.dispatch_resilience import ensure_listeners_registered
+from work_buddy.resilience import guarded_call, OutcomeKind
+from work_buddy.mcp_server.dispatch_resilience import (
+    build_dispatch_deadline,
+    build_dispatch_strategies,
+    ensure_listeners_registered,
+    resolve_timeout_budget,
+)
 
 
 def _conductor():
@@ -1535,17 +1540,57 @@ def register_tools(mcp: FastMCP) -> None:
             try:
                 # The capability dispatch runs through the resilience seam so
                 # the gateway emits dispatch-timing telemetry under the
-                # ``wb_run:<capability>`` operation key. A classified failure
-                # comes back as an Outcome carrying the original exception;
-                # re-raise it so the consent-retry / recovery handlers below
-                # run exactly as they did before the seam was introduced.
+                # ``wb_run:<capability>`` operation key and enforces an
+                # operation-appropriate wall-time budget. The budget is owned
+                # by the operation (resolved from the capability, never the
+                # caller); self-managing capabilities (Obsidian-bridge work,
+                # which retries internally) run unbounded. A classified
+                # failure comes back as an Outcome carrying the original
+                # exception; re-raise it so the consent-retry / recovery
+                # handlers below run exactly as before.
+                _budget = resolve_timeout_budget(entry, parsed_params)
                 outcome = await guarded_call(
                     f"wb_run:{capability}",
                     lambda: asyncio.to_thread(
                         _invoke_with_session, entry.callable, _agent_sid,
                         **parsed_params,
                     ),
+                    deadline=build_dispatch_deadline(_budget),
+                    strategies=build_dispatch_strategies(entry, _budget),
                 )
+                if outcome.kind is OutcomeKind.TIMEOUT:
+                    # The dispatch exceeded its budget. asyncio.timeout frees
+                    # the event loop but cannot kill the worker thread, so the
+                    # call is NOT enqueued for retry (re-dispatch could
+                    # double-run an op still running in the background). The
+                    # caller / LLM-side interpreter handles mcp_gateway_timeout.
+                    timeout_err = (
+                        f"Gateway timeout: {capability} exceeded its "
+                        f"{_budget:.0f}s dispatch budget"
+                    )
+                    _complete_operation(
+                        op_id, error=timeout_err,
+                        error_kind="mcp_gateway_timeout",
+                    )
+                    record_capability(
+                        capability, entry.category, op_id, parsed_params,
+                        entry.mutates_state, _t0, None, timeout_err, False,
+                        **_ledger_kw,
+                    )
+                    timeout_response: dict[str, Any] = {
+                        "error": timeout_err,
+                        "operation_id": op_id,
+                        "error_kind": "mcp_gateway_timeout",
+                        "hint": (
+                            "The capability did not return within its dispatch "
+                            "budget. The work may still be running in the "
+                            "background; do not assume it failed or succeeded. "
+                            "Retry only if the operation is idempotent."
+                        ),
+                    }
+                    if _registry_auto_recovered:
+                        timeout_response["registry_auto_recovered"] = True
+                    return _prepare(timeout_response)
                 if outcome.error is not None:
                     raise outcome.error
                 result = (
