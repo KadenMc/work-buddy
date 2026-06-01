@@ -25,7 +25,7 @@ from work_buddy.artifacts import (
     MtimeWindow,
 )
 from work_buddy.artifacts.default_registrations import (
-    _is_live_service_log,
+    _is_live_log_file,
     register_default_artifacts,
 )
 
@@ -47,7 +47,7 @@ def _service_logs_artifact(root) -> Artifact:
         lifecycle=Lifecycle(
             trigger=MtimeWindow(mtime_field="_mtime", max_age_days=7),
             action=Delete(),
-            retention_predicate=_is_live_service_log,
+            retention_predicate=_is_live_log_file,
         ),
     )
 
@@ -59,15 +59,21 @@ def _service_logs_artifact(root) -> Artifact:
 
 def test_pin_predicate_pins_live_logs_only():
     pinned = {
+        # service_logs convention (suffix before .log)
         "messaging.log": True,        # live → pinned
         "mcp_gateway.log": True,      # underscore name, still live → pinned
         "messaging.1.log": False,     # legacy numbered backup → reapable
         "messaging.20260601T120000123456.log": False,  # dateext backup → reapable
         "messaging.20260601T120000123456-1.log": False,  # collision-suffixed → reapable
+        # agents/logs RotatingFileHandler convention (suffix after .log)
+        "telegram.log": True,         # live → pinned
+        "telegram.log.1": False,      # rotated backup → reapable
+        "telegram.log.2": False,      # rotated backup → reapable
+        "work_buddy.log.4": False,    # rotated backup → reapable
         "notalog.txt": False,         # not a .log → not pinned
     }
     for name, expected in pinned.items():
-        assert _is_live_service_log({"_file_name": name}) is expected, name
+        assert _is_live_log_file({"_file_name": name}) is expected, name
 
 
 # --------------------------------------------------------------------------
@@ -141,3 +147,40 @@ def test_service_logs_registered_and_swept():
     assert len(results) == 1
     assert results[0].artifact_name == "service-logs"
     assert results[0].error is None
+
+
+def test_agents_logs_registered_and_swept():
+    """The agents/logs RotatingFileHandler dir is also governed."""
+    from work_buddy.artifacts.registry import get_artifact, sweep_all
+
+    register_default_artifacts()  # idempotent by name
+    art = get_artifact("agents-logs")
+    assert art is not None
+    # root is .data/agents/logs
+    assert art.storage._root.name == "logs"
+    assert art.storage._root.parent.name == "agents"
+
+    results = sweep_all(dry_run=True, name="agents-logs")
+    assert len(results) == 1
+    assert results[0].artifact_name == "agents-logs"
+    assert results[0].error is None
+
+
+def test_prune_reaps_rotating_handler_backups(tmp_path):
+    """RotatingFileHandler naming (``telegram.log.N``): live pinned, backups reaped by age."""
+    live = tmp_path / "telegram.log"
+    live.write_text("live telegram output")  # fresh → pinned
+
+    aged_b1 = tmp_path / "telegram.log.1"
+    aged_b1.write_text("x" * 1000)
+    _age(aged_b1, 30)
+    aged_b2 = tmp_path / "telegram.log.2"  # the 104 MB-style pre-cap orphan
+    aged_b2.write_text("x" * 5000)
+    _age(aged_b2, 30)
+
+    result = _service_logs_artifact(tmp_path).prune(dry_run=False)
+
+    assert result.pruned == 2, result
+    assert not aged_b1.exists()
+    assert not aged_b2.exists()
+    assert live.exists()  # live log pinned by name despite sharing the dir

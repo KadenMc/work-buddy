@@ -100,21 +100,56 @@ def register_logs_global_artifact() -> None:
         logger.warning("Failed to register logs-global artifact: %s", exc)
 
 
-def _is_live_service_log(record: dict) -> bool:
-    """True for a service's canonical live log (``<name>.log``).
+def _is_live_log_file(record: dict) -> bool:
+    """True for a directory's canonical live log file (``<name>.log``).
 
-    Used as the ``service-logs`` retention predicate so the *live* log is
-    never reaped — only rolled-aside backups are age-eligible. A live log has
-    no rotation suffix, so its stem contains no dot (``messaging`` →pinned),
-    whereas backups carry a dotted stem (``messaging.20260601T…`` or the
-    legacy ``messaging.1``). This is **name-based, not process-state-based**:
-    a crashed/stopped service's last log is preserved too, matching
-    logrotate's rule that ``maxage`` applies only to rotated files.
+    Shared retention predicate for the log-directory artifacts so the *live*
+    log is never reaped — only rotated/rolled-aside backups are age-eligible.
+    A live log has no rotation suffix, so it ends in ``.log`` with a dot-free
+    stem (``messaging`` / ``telegram`` → pinned). Backups carry an extra
+    segment either before the suffix (``messaging.20260601T…log``, legacy
+    ``messaging.1.log``) or after it (``telegram.log.1`` from
+    ``RotatingFileHandler``) — both → reapable. This is **name-based, not
+    process-state-based**: a crashed/stopped service's last log is preserved
+    too, matching logrotate's rule that ``maxage`` applies only to rotated
+    files.
     """
     from pathlib import Path
 
     name = str(record.get("_file_name", ""))
     return name.endswith(".log") and "." not in Path(name).stem
+
+
+def _register_log_dir_artifact(*, name: str, root, max_age_days: int = 7) -> None:
+    """Register one log-directory artifact: age-reap rotated backups, pin live logs.
+
+    Shared shape for ``service-logs`` and ``agents-logs`` (and any future raw
+    log directory): a flat tree of ``.log`` files whose rotated backups are
+    deleted past ``max_age_days`` while the live ``<name>.log`` is pinned by
+    ``_is_live_log_file``. Retention only — rotation of the live file is owned
+    by whatever writes it (the daemon's startup roll, or a RotatingFileHandler).
+    """
+    from work_buddy.artifacts.backends.directory_tree import (
+        DirectoryTreeStorage,
+        DirShape,
+    )
+    from work_buddy.artifacts.lifecycle.actions import Delete
+    from work_buddy.artifacts.lifecycle.triggers import MtimeWindow
+    from work_buddy.artifacts.protocol import Artifact, Lifecycle, Operation
+    from work_buddy.artifacts.registry import register_artifact
+
+    register_artifact(Artifact(
+        name=name,
+        storage=DirectoryTreeStorage(
+            root=root, shape=DirShape.LOG_FILES, artifact_name=name,
+        ),
+        lifecycle=Lifecycle(
+            trigger=MtimeWindow(mtime_field="_mtime", max_age_days=max_age_days),
+            action=Delete(),
+            retention_predicate=_is_live_log_file,
+        ),
+        exposed_operations=frozenset({Operation.CLEANUP}),
+    ))
 
 
 def register_service_logs_artifact() -> None:
@@ -127,41 +162,35 @@ def register_service_logs_artifact() -> None:
     service's live log. Mirrors ``logs-global`` but for a different directory.
     """
     try:
-        from work_buddy.artifacts.backends.directory_tree import (
-            DirectoryTreeStorage,
-            DirShape,
-        )
-        from work_buddy.artifacts.lifecycle.actions import Delete
-        from work_buddy.artifacts.lifecycle.triggers import MtimeWindow
-        from work_buddy.artifacts.protocol import (
-            Artifact,
-            Lifecycle,
-            Operation,
-        )
-        from work_buddy.artifacts.registry import register_artifact
         from work_buddy.paths import data_dir
 
-        service_logs_dir = data_dir("runtime/service_logs")
-
-        register_artifact(Artifact(
-            name="service-logs",
-            storage=DirectoryTreeStorage(
-                root=service_logs_dir,
-                shape=DirShape.LOG_FILES,
-                artifact_name="service-logs",
-            ),
-            lifecycle=Lifecycle(
-                trigger=MtimeWindow(
-                    mtime_field="_mtime",
-                    max_age_days=7,
-                ),
-                action=Delete(),
-                retention_predicate=_is_live_service_log,
-            ),
-            exposed_operations=frozenset({Operation.CLEANUP}),
-        ))
+        _register_log_dir_artifact(
+            name="service-logs", root=data_dir("runtime/service_logs"),
+        )
     except Exception as exc:  # pragma: no cover — defensive
         logger.warning("Failed to register service-logs artifact: %s", exc)
+
+
+def register_agents_logs_artifact() -> None:
+    """Register the agents-logs artifact (in-process RotatingFileHandler logs).
+
+    Governs ``.data/agents/logs/`` — the shared in-process log directory the
+    Telegram service (and similar non-session loggers) write to via
+    ``RotatingFileHandler``. That handler bounds the *live* file's growth but
+    only ages rotated backups out slowly via its backup-count shuffle, so a
+    pre-cap oversized backup (e.g. a 104 MB ``telegram.log.2``) can linger for
+    weeks. This artifact age-reaps those backups; the live ``telegram.log`` is
+    pinned. Disjoint from ``agent-sessions`` (which only treats manifest-bearing
+    session *directories* as records, never the ``logs/`` subdir).
+    """
+    try:
+        from work_buddy.paths import data_dir
+
+        _register_log_dir_artifact(
+            name="agents-logs", root=data_dir("agents/logs"),
+        )
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.warning("Failed to register agents-logs artifact: %s", exc)
 
 
 def register_default_artifacts() -> None:
@@ -169,3 +198,4 @@ def register_default_artifacts() -> None:
     register_filesystem_artifact()
     register_logs_global_artifact()
     register_service_logs_artifact()
+    register_agents_logs_artifact()
