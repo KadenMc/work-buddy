@@ -39,6 +39,13 @@ def _new_thread_id() -> str:
     return f"th-{uuid.uuid4().hex[:8]}"
 
 
+def _new_task_id() -> str:
+    """Stable opaque Task ID — same ``t-<hex8>`` shape as the live task
+    system's ``obsidian.tasks.mutations.generate_task_id`` (mirrored here
+    to avoid importing the heavy obsidian.tasks package at models load)."""
+    return f"t-{uuid.uuid4().hex[:8]}"
+
+
 def _new_event_id() -> int:
     """Event IDs come from the DB ``AUTOINCREMENT`` column. This helper
     exists for tests that need a deterministic shape; the canonical
@@ -337,38 +344,73 @@ class Thread(WorkItem):
 
 
 @dataclass
-class Task(Thread):
-    """A Thread with the master-task-list contract.
+class Task(WorkItem):
+    """The master-list-contract subtype of :class:`WorkItem`.
 
-    See DESIGN.md §5.3. Adds:
-    - markdown sync to the master task list
-    - persistence across terminal state (does not auto-archive)
-    - surface in the Tasks dashboard tab
+    A Task is a **sibling** of :class:`Thread` on ``WorkItem`` — NOT a
+    ``Thread`` subclass. This is the WorkItem inversion (design 08 §1):
+    the heavy resolution FSM stays on ``Thread``; ``Task`` has **no FSM**.
+    Its lifecycle is the task system's own state vocab (inbox / mit /
+    focused / snoozed / done) and it persists in the ``obsidian/tasks``
+    task_metadata store + the markdown master list — **never** in the
+    ``threads`` table.
 
-    Subtype is fixed at ``'task'``; do not mutate.
+    Phase 3 is a *transitional strangler facade*: this type wraps existing
+    task rows and reads through the live task store; the markdown sync
+    adapter + write-delegation are extracted in Phase 5. Field-ownership
+    follows ``TaskMarkdownDB.FIELDS`` — the Obsidian Tasks plugin owns its
+    in-markdown markers (checkbox / dates / recurrence / priority); this
+    facade never fights the plugin.
 
-    type only. Stage 2 wires the methods.
+    Subtype is fixed ``'task'`` and never mutated.
     """
 
     subtype: str = "task"
+    # ``t-`` prefix (overrides WorkItem's generic ``wi-``); matches the
+    # live task store's id shape so a Task wraps its existing row 1:1.
+    thread_id: str = field(default_factory=_new_task_id)
 
-    def sync_to_markdown(self) -> None:
-        """Write this Task's representation to the master task list.
+    @classmethod
+    def from_store_row(cls, row: dict[str, Any]) -> "Task":
+        """Build a Task facade from a live ``task_metadata`` row dict (the
+        shape returned by ``obsidian.tasks.store.get`` / ``.query``).
 
-        Stage 2 work; bridge integration lands then.
+        Maps the store's columns onto the WorkItem universal slots. Task
+        content with no WorkItem slot (state, urgency, contract, the
+        plugin-owned markers, …) stays in the store and is read live via
+        :meth:`live_row` — the facade does not duplicate it.
         """
-        raise NotImplementedError(
-            "Task.sync_to_markdown is wired in Stage 2.",
+
+        def _load_json(value: Any, default: Any) -> Any:
+            if value is None:
+                return default
+            if isinstance(value, (dict, list)):
+                return value
+            try:
+                return json.loads(value)
+            except (TypeError, ValueError):
+                return default
+
+        return cls(
+            thread_id=row["task_id"],
+            parent_id=row.get("parent_id"),
+            risk_profile=_load_json(row.get("risk_profile_json"), {}),
+            created_at=row.get("created_at") or _now_iso(),
+            updated_at=row.get("updated_at") or _now_iso(),
+            archived_at=row.get("archived_at"),
         )
 
-    def master_list_position(self) -> int:
-        """Return the 1-based position of this Task in the master list.
+    def live_row(self) -> Optional[dict[str, Any]]:
+        """Read this Task's authoritative row from the live task store.
 
-        Stage 2 work.
+        The markdown-backed store is the source of truth for task content
+        + state; the facade never caches it. Lazily imports the task store
+        so ``threads.models`` stays decoupled from ``obsidian.tasks`` at
+        import time. Returns ``None`` if the task is absent / deleted.
         """
-        raise NotImplementedError(
-            "Task.master_list_position is wired in Stage 2.",
-        )
+        from work_buddy.obsidian.tasks import store as _task_store
+
+        return _task_store.get(self.thread_id)
 
 
 # ---------------------------------------------------------------------------

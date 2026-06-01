@@ -105,6 +105,12 @@ class WorkItem:
         branch on it; the base itself never does."""
         return self.subtype == "task"
 
+    def to_dict(self) -> dict[str, Any]:
+        """Default serialization = the universal projection. Subtypes with
+        extra fields (e.g. ``Thread``) override this and merge their keys
+        on top of ``_universal_dict()``."""
+        return self._universal_dict()
+
     def _universal_dict(self) -> dict[str, Any]:
         """The universal-field projection shared by every subtype's
         ``to_dict``. Subtypes call this and merge their own keys, so the

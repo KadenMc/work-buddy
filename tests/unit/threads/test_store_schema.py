@@ -169,11 +169,25 @@ class TestThreadCRUD:
         assert fetched.autonomy_policy.inference_confidence_floor == 0.7
 
     def test_subtype_column_persists(self, fresh_db):
+        # The threads.subtype column still round-trips (kept for future
+        # Thread subtypes). Post-WorkItem-inversion, Task no longer lives
+        # in the threads table — see test_task_not_threads_citizen.
+        t = Thread(subtype="probe")
+        store.insert_thread(t)
+        fetched = store.get_thread(t.thread_id)
+        assert fetched.subtype == "probe"
+
+    def test_task_not_threads_citizen(self):
+        # WorkItem inversion guard (plan Integration Risk #2): a Task is a
+        # WorkItem sibling of Thread — NOT a Thread — and is persisted in
+        # the obsidian/tasks task_metadata store, never the threads table.
+        # It has no fsm_state, so the threads-table loader path (which
+        # constructs Thread.from_row) does not apply to it.
+        from work_buddy.threads.workitem import WorkItem
         task = Task()
-        store.insert_thread(task)
-        fetched = store.get_thread(task.thread_id)
-        assert fetched.subtype == "task"
-        assert fetched.is_task
+        assert isinstance(task, WorkItem)
+        assert not isinstance(task, Thread)
+        assert not hasattr(task, "fsm_state")
 
     def test_parent_id_chain(self, fresh_db):
         parent = Thread()
@@ -194,13 +208,16 @@ class TestThreadCRUD:
         assert {r.thread_id for r in rows} == {b.thread_id, c.thread_id}
 
     def test_list_threads_filters_by_subtype(self, fresh_db):
+        # Subtype filtering on the threads table (exercised with a generic
+        # Thread subtype value; Task is no longer a threads citizen post
+        # WorkItem inversion).
         plain = Thread()
-        task = Task()
+        tagged = Thread(subtype="probe")
         store.insert_thread(plain)
-        store.insert_thread(task)
+        store.insert_thread(tagged)
 
-        rows = store.list_threads(subtype="task")
-        assert [r.thread_id for r in rows] == [task.thread_id]
+        rows = store.list_threads(subtype="probe")
+        assert [r.thread_id for r in rows] == [tagged.thread_id]
 
     def test_list_threads_filters_by_parent(self, fresh_db):
         parent = Thread()
