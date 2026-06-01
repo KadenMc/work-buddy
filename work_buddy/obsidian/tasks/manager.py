@@ -226,8 +226,9 @@ def stale_check() -> dict[str, Any]:
     focused_no_date: list[dict] = []
     focused_overdue: list[dict] = []
 
+    store_meta = _store_meta_for_tasks(tasks)
     for t in tasks:
-        meta = _get_task_meta(t)
+        meta = _get_task_meta(t, store_meta)
         state = meta["state"]
         due = t.get("due_date")
         due_dt = _parse_date(due) if due else None
@@ -315,8 +316,9 @@ def suggest_focus(max_suggestions: int = 3) -> list[dict[str, Any]]:
 
     scored: list[tuple[int, dict]] = []
 
+    store_meta = _store_meta_for_tasks(tasks)
     for t in tasks:
-        meta = _get_task_meta(t)
+        meta = _get_task_meta(t, store_meta)
         state = meta["state"]
         urgency = meta["urgency"]
         contract = meta.get("contract")
@@ -435,8 +437,9 @@ def get_tasks_by_state(target_state: str) -> list[dict[str, Any]]:
     tasks = result.get("tasks", [])
 
     matched = []
+    store_meta = _store_meta_for_tasks(tasks)
     for t in tasks:
-        meta = _get_task_meta(t)
+        meta = _get_task_meta(t, store_meta)
         if meta["state"] == target_state:
             matched.append({
                 **t,
@@ -529,10 +532,35 @@ def _extract_tag_value(tags: list[str], prefix: str) -> str | None:
     return None
 
 
-def _get_task_meta(task: dict[str, Any]) -> dict[str, str | None]:
+def _store_meta_for_tasks(
+    tasks: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Batch-resolve store metadata for a list of markdown tasks.
+
+    Extracts each task's ID from its description and fetches all rows in a
+    single store query, so the per-task enrichment loops below don't open
+    one DB connection per task (the N+1 that dominated the daily briefing).
+    Pass the result as ``store_meta`` to :func:`_get_task_meta`.
+    """
+    ids: list[str] = []
+    for t in tasks:
+        m = TASK_ID_RE.search(t.get("description", ""))
+        if m:
+            ids.append(m.group(1))
+    return store.get_many(ids) if ids else {}
+
+
+def _get_task_meta(
+    task: dict[str, Any],
+    store_meta: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, str | None]:
     """Get state and urgency for a task, checking store first then inline tags.
 
     Returns dict with 'state', 'urgency', 'task_id', 'contract'.
+
+    ``store_meta`` is an optional pre-fetched ``{task_id: row}`` map (see
+    :func:`_store_meta_for_tasks`); when supplied, the store lookup is a
+    dict hit instead of a per-task DB connection.
     """
     tags = task.get("tags", [])
     desc = task.get("description", "")
@@ -545,7 +573,10 @@ def _get_task_meta(task: dict[str, Any]) -> dict[str, str | None]:
 
     # Check store first (if task has an ID)
     if task_id:
-        meta = store.get(task_id)
+        meta = (
+            store_meta.get(task_id) if store_meta is not None
+            else store.get(task_id)
+        )
         if meta:
             return {
                 "state": meta["state"],
