@@ -405,6 +405,31 @@ def is_tool_available(tool_id: str) -> bool:
     return entry["available"]
 
 
+def obsidian_backed_tools() -> set[str]:
+    """Tool ids that ARE the Obsidian bridge or transitively depend on it.
+
+    Computed from the probe ``depends_on`` graph: ``obsidian`` plus every tool
+    whose dependency chain reaches it (e.g. ``datacore``, ``smart_connections``,
+    ``google_calendar`` — the in-Obsidian plugins). These share one failure
+    domain — when the bridge is down they all go unavailable together via the
+    probe short-circuit — so the gateway governs them with a single circuit
+    breaker rather than the build-time disable, and only when the bridge itself
+    is the reason they are down.
+    """
+    _register_default_probes()
+    backed: set[str] = {"obsidian"}
+    changed = True
+    while changed:  # fixed point over transitive depends_on
+        changed = False
+        for probe in _TOOL_PROBES.values():
+            if probe.id not in backed and any(
+                dep in backed for dep in probe.depends_on
+            ):
+                backed.add(probe.id)
+                changed = True
+    return backed
+
+
 def invalidate_tool_status() -> None:
     """Clear cached tool status so next ``probe_all()`` re-runs probes."""
     global _TOOL_STATUS, _OBSIDIAN_PLUGINS

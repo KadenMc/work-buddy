@@ -126,6 +126,69 @@ class TestBreakerTripAndShed:
         assert reset_breaker.state is CircuitState.CLOSED
 
 
+class TestBridgeFamily:
+    """The bridge failure domain is the Obsidian bridge AND its in-Obsidian
+    plugins (datacore, smart_connections, google_calendar) — they go down
+    together when the bridge is down. All are breaker-governed, and carved out
+    of the build-time disable only when the bridge ITSELF is the cause."""
+
+    def test_obsidian_backed_tools_includes_plugins(self):
+        from work_buddy.tools import obsidian_backed_tools
+
+        backed = obsidian_backed_tools()
+        assert {"obsidian", "datacore", "smart_connections"} <= backed
+
+    def test_plugin_cap_is_breaker_governed_and_unbounded(self):
+        # A datacore-requiring cap (NOT directly requiring obsidian) still gets
+        # the bridge breaker + obsidian classifiers + unbounded budget.
+        cap = _cap(requires=["datacore"])
+        assert dr.resolve_timeout_budget(cap, {}) == math.inf
+        assert [type(s).__name__ for s in dr.build_dispatch_strategies(cap, math.inf)] == [
+            "CircuitBreakerStrategy"
+        ]
+        classify, result_classify = dr.dispatch_classifiers(cap)
+        assert classify.__name__ == "classify_obsidian_error"
+        assert result_classify.__name__ == "classify_bridge_result"
+
+    def test_plugin_cap_admitted_when_bridge_down_disabled_when_genuinely_missing(self):
+        """Transitive-only: a datacore cap stays admitted when the bridge is
+        down (breaker governs), but is hard-disabled when the bridge is up and
+        the plugin itself is genuinely missing."""
+        from unittest.mock import patch
+        from work_buddy.mcp_server import registry as reg_mod
+        from work_buddy.tools import DISABLED_CAPABILITIES
+
+        def build(unavailable: set[str]):
+            reg_mod._REGISTRY = None
+            reg_mod._DISABLED_REGISTRY.clear()
+            DISABLED_CAPABILITIES.clear()
+            with patch(
+                "work_buddy.tools.is_tool_available",
+                side_effect=lambda t: t not in unavailable,
+            ):
+                reg_mod.get_registry()
+            return dict(DISABLED_CAPABILITIES)
+
+        try:
+            # Bridge down → obsidian + all its plugins unavailable transitively.
+            bridge_down = build(
+                {"obsidian", "datacore", "smart_connections", "google_calendar"}
+            )
+            assert "datacore_query" not in bridge_down, (
+                "datacore_query should stay admitted when the bridge is down"
+            )
+            # Bridge up, datacore plugin genuinely missing → hard-disable.
+            plugin_missing = build({"datacore"})
+            assert "datacore_query" in plugin_missing, (
+                "datacore_query should hard-disable when the plugin is genuinely "
+                "missing (bridge up)"
+            )
+        finally:
+            reg_mod._REGISTRY = None
+            reg_mod._DISABLED_REGISTRY.clear()
+            DISABLED_CAPABILITIES.clear()
+
+
 class TestGatewayWiringSmoke:
     def test_gateway_handles_rejected_shed(self):
         source = (
@@ -148,8 +211,8 @@ class TestGatewayWiringSmoke:
             Path(__file__).parent.parent.parent
             / "work_buddy" / "mcp_server" / "registry.py"
         ).read_text(encoding="utf-8")
-        assert 't_id != "obsidian"' in source, (
-            "registry.py no longer excludes obsidian from the build-time "
-            "disable filter — a transient bridge probe failure would again "
-            "disable every bridge-dependent capability for the session."
+        assert "obsidian_backed_tools" in source and "bridge_down" in source, (
+            "registry.py no longer excludes the bridge-backed tool family from "
+            "the build-time disable filter — a transient bridge probe failure "
+            "would again disable every bridge-dependent capability for the session."
         )

@@ -42,6 +42,19 @@ DEFAULT_DISPATCH_TIMEOUT_S: float = 30.0
 # their own time budget — the gateway does not impose a timeout on them.
 _OBSIDIAN_TOOL_ID = "obsidian"
 
+# Cache of the bridge-backed tool family (obsidian + its in-Obsidian plugin
+# tools: datacore, smart_connections, ...). Static from the probe graph for the
+# process lifetime; recomputed on the first call after a module reload.
+_BRIDGE_TOOLS: set[str] | None = None
+
+
+def _bridge_tools() -> set[str]:
+    global _BRIDGE_TOOLS
+    if _BRIDGE_TOOLS is None:
+        from work_buddy.tools import obsidian_backed_tools
+        _BRIDGE_TOOLS = obsidian_backed_tools()
+    return _BRIDGE_TOOLS
+
 # One process-global circuit breaker shared by every Obsidian-bridge-dependent
 # dispatch. The bridge is a single shared dependency, so one breaker models its
 # health: after enough consecutive transient/timeout failures it opens and sheds
@@ -64,8 +77,11 @@ _CONTROL_FLOW_PASSTHROUGH: tuple[type[BaseException], ...] = (
 )
 
 
-def _requires_obsidian(entry: Any) -> bool:
-    return _OBSIDIAN_TOOL_ID in (getattr(entry, "requires", None) or [])
+def _requires_bridge(entry: Any) -> bool:
+    """True if the capability requires any bridge-backed tool (the Obsidian
+    bridge itself or an in-Obsidian plugin that depends on it)."""
+    requires = getattr(entry, "requires", None) or []
+    return bool(set(requires) & _bridge_tools())
 
 # In-process recorder of guarded-call telemetry. A status surface or a live
 # verification script can snapshot it via :func:`get_dispatch_metrics`.
@@ -121,8 +137,7 @@ def get_dispatch_metrics() -> InMemoryMetrics:
 
 def _domain_default(entry: Any) -> float:
     """The budget for a capability that declares none, by operation type."""
-    requires = getattr(entry, "requires", None) or []
-    if _OBSIDIAN_TOOL_ID in requires:
+    if _requires_bridge(entry):
         return math.inf  # bridge work self-retries; gateway does not time it
     return DEFAULT_DISPATCH_TIMEOUT_S
 
@@ -186,7 +201,7 @@ def build_dispatch_strategies(entry: Any, budget: float) -> list:
     strategies: list = []
     if budget != math.inf:
         strategies.append(TimeoutStrategy(budget))
-    if _requires_obsidian(entry):
+    if _requires_bridge(entry):
         strategies.append(_OBSIDIAN_BREAKER)
     return strategies
 
@@ -199,7 +214,7 @@ def dispatch_classifiers(entry: Any):
     the outcome taxonomy that the circuit breaker counts. Everything else uses
     the framework default (and has no result classifier).
     """
-    if _requires_obsidian(entry):
+    if _requires_bridge(entry):
         from work_buddy.obsidian.resilient_bridge import (
             classify_bridge_result,
             classify_obsidian_error,
@@ -216,7 +231,7 @@ def dispatch_passthrough(entry: Any) -> tuple[type[BaseException], ...]:
     through the seam to its handlers and never count toward the breaker.
     """
     passthrough = _CONTROL_FLOW_PASSTHROUGH
-    if _requires_obsidian(entry):
+    if _requires_bridge(entry):
         from work_buddy.obsidian.resilient_bridge import OBSIDIAN_PASSTHROUGH
         passthrough = passthrough + OBSIDIAN_PASSTHROUGH
     return passthrough

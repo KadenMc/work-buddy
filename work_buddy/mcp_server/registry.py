@@ -824,7 +824,7 @@ def _build_registry() -> dict[str, Capability | WorkflowDefinition]:
     from work_buddy.mcp_server.search import _log_to_file, _get_search_log
     from work_buddy.tools import (
         _register_default_probes, probe_all, is_tool_available,
-        DISABLED_CAPABILITIES,
+        obsidian_backed_tools, DISABLED_CAPABILITIES,
     )
     _lf = _get_search_log()
     _log_to_file(_lf, "Registry build starting...")
@@ -887,6 +887,8 @@ def _build_registry() -> dict[str, Capability | WorkflowDefinition]:
     # sys.modules); a Capability stashed during the previous build
     # would dereference a now-dead module if it survived.
     _DISABLED_REGISTRY.clear()
+    bridge_tools = obsidian_backed_tools()
+    bridge_down = not is_tool_available("obsidian")
     for name in list(registry):
         entry = registry[name]
         if isinstance(entry, Capability) and entry.requires:
@@ -894,13 +896,18 @@ def _build_registry() -> dict[str, Capability | WorkflowDefinition]:
             # Obsidian-bridge availability is governed at runtime by a circuit
             # breaker on the gateway dispatch, not by this build-time flip. A
             # transient bridge probe failure must not disable every bridge-
-            # dependent capability for the whole session; an admitted
-            # capability whose bridge is down fails fast per call and recovers
-            # the instant the bridge returns (no registry reload). Genuinely-
-            # missing deps (calendar, hindsight, thunderbird, ...) still hard-
-            # disable here — a breaker is wrong for a dependency that will
-            # never appear within the session.
-            missing = [t_id for t_id in missing if t_id != "obsidian"]
+            # dependent capability (the bridge itself AND its in-Obsidian
+            # plugins: datacore, smart_connections, ...) for the whole session;
+            # an admitted capability whose bridge is down fails fast per call
+            # and recovers the instant the bridge returns (no registry reload).
+            # Transitive-only: we only skip the hard-disable when the bridge
+            # ITSELF is down (so the plugin is unavailable *because of* the
+            # bridge). If the bridge is up but a plugin is genuinely missing —
+            # or a non-bridge dep (calendar, hindsight, thunderbird, ...) is
+            # absent — keep the hard-disable; a breaker is wrong for a
+            # dependency that will not appear within the session.
+            if bridge_down:
+                missing = [t_id for t_id in missing if t_id not in bridge_tools]
             if missing:
                 DISABLED_CAPABILITIES[name] = missing
                 # CP-A1: stash the full Capability object so the recovery
