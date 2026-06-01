@@ -2,7 +2,7 @@
 name: Artifact System
 kind: reference
 description: Shared lifecycle infrastructure for any persisted resource — pluggable Storage × Lifecycle × Provenance composition with capability declarations.
-summary: 'Shared lifecycle infrastructure for every persisted resource. Composition-based: Storage × Lifecycle (Trigger + ExpiryAction + retention_predicate?) × Provenance, with construction-time coherence validation. 13 registered artifacts (filesystem, messaging, llm-queue, llm-cache, segmentation-cache, chrome-ledger, escalations-log, claude-code-usage, agent-sessions, notifications, logs-global, service-logs, agents-logs). Single cleanup tick drives off the registry; paths.PRUNERS deprecated. MCP: artifact_save/list/get/delete/cleanup (filesystem-typed) + artifact_cleanup(name?) (cross-backend) + artifact_registry (cross-backend introspection).'
+summary: 'Shared lifecycle infrastructure for every persisted resource. Composition-based: Storage × Lifecycle (Trigger + ExpiryAction + retention_predicate?) × Provenance, with construction-time coherence validation. 15 registered artifacts (filesystem, messaging, llm-queue, llm-cache, segmentation-cache, chrome-ledger, escalations-log, claude-code-usage, agent-sessions, notifications, logs-global, conversation-observability, summarization, service-logs, agents-logs). Single cleanup tick drives off the registry; paths.PRUNERS deprecated. MCP: artifact_save/list/get/delete/cleanup (filesystem-typed) + artifact_cleanup(name?) (cross-backend) + artifact_registry (cross-backend introspection).'
 entry_points:
 - work_buddy.artifacts
 - work_buddy.paths
@@ -110,7 +110,7 @@ The lifecycle is itself composed of three orthogonal pieces — separating them 
 
 `SessionTagged` extracts the creating session id from a record. Accepts either a single field name (filesystem `session_id`, agent-sessions) or an ordered list of candidate columns (messaging `sender_session` / `recipient_session`, first non-null wins). Justifies the `list_by_session(sid)` operation on the Artifact composer.
 
-## Thirteen registered artifacts
+## Fifteen registered artifacts
 
 Each consumer registers one `Artifact` from its own module at import time (or in `work_buddy.artifacts.default_registrations` for the four backends without a natural consumer module: filesystem, logs-global, service-logs, agents-logs). `sweep_all` and `artifact_registry_dump` lazily import all consumer modules so the registry is fully populated by the first cleanup tick.
 
@@ -127,6 +127,8 @@ Each consumer registers one `Artifact` from its own module at import time (or in
 | `logs-global` | DirectoryTreeStorage(LOG_FILES) | MtimeWindow(_mtime, 7d) + Delete | — | Default registration. `.data/logs/`. |
 | `notifications` | DirectoryTreeStorage(JSON_FILES) | PerRecordTtl(expires_at) + Delete + retention(keep PENDING/DELIVERED) | — | NEW: previously had no scheduled pruner; ~370 expired records were piling up. |
 | `llm-queue` | SqliteRowsStorage | PerRecordTtl(completed_at, 30d) + Delete + retention(keep pending/in_flight) | — | NEW: previously had no DELETE path at all; rows accumulated indefinitely. |
+| `conversation-observability` | SqliteRowsStorage | NeverExpires + Delete | — | Durable session-derived activity (commits / writes / summaries); retained indefinitely, manual delete only. |
+| `summarization` | SqliteRowsStorage | NeverExpires + Delete | — | Content-summary store; retained indefinitely, manual delete only. |
 | `service-logs` | DirectoryTreeStorage(LOG_FILES) | MtimeWindow(_mtime, 7d) + Delete + retention(pin live `<name>.log`) | — | Default registration. `.data/runtime/service_logs/` (sidecar child stdout/stderr). The daemon rolls the oversized *live* log at startup (`_roll_oversize_log`, dateext naming); this artifact reaps the rolled backups. Replaced the buggy count-based shift that let a 160 MB `messaging.1.log` persist. |
 | `agents-logs` | DirectoryTreeStorage(LOG_FILES) | MtimeWindow(_mtime, 7d) + Delete + retention(pin live `<name>.log`) | — | Default registration. `.data/agents/logs/` (in-process `RotatingFileHandler` dir — Telegram). RFH bounds the live file but ages backups out only slowly; this reaps them by age (handles RFH's `<name>.log.N` naming too). |
 
@@ -158,7 +160,7 @@ Metadata captures: creating session id, tags, description, expiry, original arti
 * `artifact_list(type?, since?, tags?, session?, include_expired?, limit?)` — filesystem-typed list with filters.
 * `artifact_get(id)` — filesystem-typed read; metadata + inline content for files <50 KB.
 * `artifact_delete(id)` — filesystem-typed delete.
-* `artifact_cleanup(dry_run?, name?)` — sweep registered artifacts. With no `name`, sweeps all 13. With `name="llm-cache"` etc., scopes to a single artifact. Note: `name` is deliberately distinct from `artifact_save`'s `type` field (which means filesystem subtype).
+* `artifact_cleanup(dry_run?, name?)` — sweep registered artifacts. With no `name`, sweeps all 15. With `name="llm-cache"` etc., scopes to a single artifact. Note: `name` is deliberately distinct from `artifact_save`'s `type` field (which means filesystem subtype).
 * `artifact_registry()` — returns the cross-backend introspection map: every artifact's name, storage_kind, lifecycle_kind, provenance_kind, capabilities (i.e. its declared `StorageTrait` set), exposed_operations. Replaces grep'ing paths.py for resource definitions.
 * `commit_record(...)` — record commit metadata as a filesystem artifact (specialised convenience).
 
