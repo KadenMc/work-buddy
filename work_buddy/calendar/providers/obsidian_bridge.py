@@ -33,19 +33,23 @@ from work_buddy.calendar.errors import (
 )
 from work_buddy.calendar.identity import stable_key_for
 from work_buddy.calendar.models import CalendarEvent, CalendarRef, EventTime
+from work_buddy.obsidian.errors import ObsidianUnreachable
 
 _PROVIDER = "obsidian_bridge"
 _SHARED_ROLES = {"reader", "writer", "freeBusyReader"}
 
 
-def _map_runtime_error(exc: RuntimeError) -> Exception:
-    """Translate ``env``/bridge ``RuntimeError`` into a typed CalendarError.
+def _map_runtime_error(exc: Exception) -> Exception:
+    """Translate an ``env``/bridge failure into a typed CalendarError.
 
-    ``env._run_js`` raises ``RuntimeError`` for two distinct failure classes:
-    bridge-unreachable (from ``bridge.require_available``) and plugin/eval
-    errors (``"Google Calendar error: ..."`` / ``"Eval error: ..."``). Map
-    them so callers can ``isinstance``-classify.
+    ``env`` surfaces bridge failure two ways: a typed ``ObsidianUnreachable``
+    (raised by ``bridge.require_available`` when the bridge is down) and a
+    plain ``RuntimeError`` for plugin/eval errors (``"Google Calendar
+    error: ..."`` / ``"Eval error: ..."``). Map both so callers can
+    ``isinstance``-classify.
     """
+    if isinstance(exc, ObsidianUnreachable):
+        return CalendarBridgeUnreachable(str(exc))
     msg = str(exc)
     if "Google Calendar error" in msg or "Eval error" in msg:
         return CalendarProviderError(msg)
@@ -114,13 +118,13 @@ class ObsidianBridgeCalendarProvider:
     def health(self) -> dict:
         try:
             return env.check_ready()
-        except RuntimeError as exc:
+        except (RuntimeError, ObsidianUnreachable) as exc:
             raise _map_runtime_error(exc) from exc
 
     def list_calendars(self) -> list[CalendarRef]:
         try:
             raw = env.get_calendars()
-        except RuntimeError as exc:
+        except (RuntimeError, ObsidianUnreachable) as exc:
             raise _map_runtime_error(exc) from exc
         refs: list[CalendarRef] = []
         for c in raw or []:
@@ -144,7 +148,7 @@ class ObsidianBridgeCalendarProvider:
         flag-based approximation avoids one."""
         try:
             raw = env.get_calendars()
-        except RuntimeError as exc:
+        except (RuntimeError, ObsidianUnreachable) as exc:
             raise _map_runtime_error(exc) from exc
         return [c.get("id") or "" for c in (raw or []) if c.get("selected") is False]
 
@@ -159,7 +163,7 @@ class ObsidianBridgeCalendarProvider:
     ) -> list[CalendarEvent]:
         try:
             result = env.get_events(start, end)
-        except RuntimeError as exc:
+        except (RuntimeError, ObsidianUnreachable) as exc:
             raise _map_runtime_error(exc) from exc
         events = [_event_from_bridge(e) for e in (result or {}).get("events", [])]
         if calendar_ids is not None:
@@ -216,7 +220,7 @@ class ObsidianBridgeCalendarProvider:
                 description=description, location=location, all_day=all_day,
                 timezone=timezone,
             )
-        except RuntimeError as exc:
+        except (RuntimeError, ObsidianUnreachable) as exc:
             raise _map_runtime_error(exc) from exc
 
     def update_event(
@@ -230,7 +234,7 @@ class ObsidianBridgeCalendarProvider:
         event = {"id": event_id, "parent": {"id": calendar_id}, **(changes or {})}
         try:
             return env.update_event(event, notify=notify)
-        except RuntimeError as exc:
+        except (RuntimeError, ObsidianUnreachable) as exc:
             raise _map_runtime_error(exc) from exc
 
     def delete_event(
@@ -243,5 +247,5 @@ class ObsidianBridgeCalendarProvider:
         event = {"id": event_id, "parent": {"id": calendar_id}}
         try:
             return env.delete_event(event, notify=notify)
-        except RuntimeError as exc:
+        except (RuntimeError, ObsidianUnreachable) as exc:
             raise _map_runtime_error(exc) from exc

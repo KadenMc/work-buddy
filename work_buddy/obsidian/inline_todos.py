@@ -95,7 +95,7 @@ def discover_inline_todos(limit: int = 100) -> dict[str, Any]:
         # Step 2: Get line-level tag positions
         try:
             file_tags = get_file_tags(path)
-        except RuntimeError:
+        except (RuntimeError, ObsidianError):
             logger.warning("Could not get tags for %s, skipping", path)
             continue
 
