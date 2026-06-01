@@ -253,12 +253,34 @@ class TestTask:
         assert task.subtype == "task"
         assert task.is_task
 
-    def test_methods_stub_in_stage_1(self):
+    def test_is_workitem_sibling_not_thread_subclass(self):
+        # The WorkItem inversion: Task is a sibling of Thread on WorkItem,
+        # NOT a Thread subclass, and carries no resolution FSM.
+        from work_buddy.threads.workitem import WorkItem
         task = Task()
-        with pytest.raises(NotImplementedError):
-            task.sync_to_markdown()
-        with pytest.raises(NotImplementedError):
-            task.master_list_position()
+        assert isinstance(task, WorkItem)
+        assert not isinstance(task, Thread)
+        assert not hasattr(task, "fsm_state")
+
+    def test_task_id_prefix(self):
+        assert Task().thread_id.startswith("t-")
+
+    def test_from_store_row_wraps_live_row(self):
+        # Phase-3 facade: a Task is built from a live task_metadata row;
+        # universal slots map across, the rest is read live from the store.
+        row = {
+            "task_id": "t-deadbeef",
+            "created_at": "2026-05-01T00:00:00+00:00",
+            "updated_at": "2026-05-02T00:00:00+00:00",
+            "risk_profile_json": None,
+            "archived_at": None,
+            "parent_id": None,
+        }
+        task = Task.from_store_row(row)
+        assert task.thread_id == "t-deadbeef"
+        assert task.subtype == "task"
+        assert task.risk_profile == {}
+        assert task.created_at == "2026-05-01T00:00:00+00:00"
 
 
 # ---------------------------------------------------------------------------

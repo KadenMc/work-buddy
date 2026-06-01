@@ -69,6 +69,31 @@ def _publish_task_event(event_type: str, payload: dict[str, Any]) -> None:
     except Exception:
         logger.exception("tasks: event publish for %r failed", event_type)
 
+    # WorkItem base event log (additive, durable, best-effort). A Task is a
+    # WorkItem; recording its lifecycle here makes the backlog auditable —
+    # the fix for the "agent forgot to toggle" blind spot (every create /
+    # state-change / toggle / description edit lands a WorkItem event). The
+    # markdown master list stays the source of truth for task *content*;
+    # this log is provenance/history only. Never raises — a missed audit
+    # event must not break a task mutation.
+    task_id = payload.get("task_id")
+    if task_id:
+        try:
+            from work_buddy.threads import work_item_events
+
+            work_item_events.emit(
+                task_id,
+                event_type,
+                subtype="task",
+                actor=_detect_last_actor(),
+                origin="task_mutation",
+                data=payload,
+            )
+        except Exception:
+            logger.exception(
+                "tasks: work_item_events emit for %r failed", event_type,
+            )
+
 
 # ── Constants ───────────────────────────────────────────────────
 

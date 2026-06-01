@@ -21,6 +21,7 @@ from work_buddy.threads.enums import (
     ReasoningTier,
     SurfaceUrgency,
 )
+from work_buddy.threads.workitem import WorkItem
 
 
 # ---------------------------------------------------------------------------
@@ -36,6 +37,13 @@ def _new_thread_id() -> str:
     """Stable opaque ID. The ``th-`` prefix lets a glance distinguish
     Threads from Tasks (``t-``) and ContextItems (``ctx-``)."""
     return f"th-{uuid.uuid4().hex[:8]}"
+
+
+def _new_task_id() -> str:
+    """Stable opaque Task ID — same ``t-<hex8>`` shape as the live task
+    system's ``obsidian.tasks.mutations.generate_task_id`` (mirrored here
+    to avoid importing the heavy obsidian.tasks package at models load)."""
+    return f"t-{uuid.uuid4().hex[:8]}"
 
 
 def _new_event_id() -> int:
@@ -201,51 +209,38 @@ class AutonomyPolicy:
 
 
 @dataclass
-class Thread:
-    """The universal entity for "context that may need an action."
+class Thread(WorkItem):
+    """The FSM-resolution subtype of :class:`WorkItem`.
 
-    Subtype is set at creation, never mutated; the only named
-    subtype is ``Task``.
+    Inherits the universal fields from ``WorkItem`` (id, lineage,
+    autonomy policy, context, risk profile, lifecycle timestamps,
+    resurface/order/search) and adds the resolution-FSM machinery
+    below. Subtype is set at creation, never mutated; the only named
+    subtype is ``Task`` (a sibling on ``WorkItem``, not a child of
+    ``Thread``).
     """
 
+    # Re-declared only to pin the ``th-`` id prefix — WorkItem's own
+    # default is the generic ``wi-``. The field keeps its (first)
+    # position from the base; only the default factory changes.
     thread_id: str = field(default_factory=_new_thread_id)
-    parent_id: Optional[str] = None
-    subtype: Optional[str] = None  # 'task' | None; never mutated
+
+    # --- Thread-specific (resolution-FSM) fields -----------------------
+    # The universal fields (parent_id, subtype, autonomy_policy,
+    # context_items, risk_profile, inciting_event_summary, created_at,
+    # updated_at, archived_at, resurface_at, order_index, search_blob)
+    # are inherited from WorkItem unchanged.
+
     fsm_state: FSMState = FSMState.PROPOSED
 
     # Last-known FSM-event id — used as the optimistic-lock target on
     # the next state transition. None for never-transitioned threads.
     parent_event_id: Optional[int] = None
 
-    autonomy_policy: AutonomyPolicy = field(default_factory=AutonomyPolicy)
-
-    # Attached ContextItems (live in their source; this is just a
-    # reference list).
-    context_items: tuple[ContextItem, ...] = ()
-
-    # Risk profile — per DESIGN.md §10.4 the thread carries
-    # contextual risk dimensions; intrinsic amplifiers live on the
-    # action template and are composed at execution time.
-    risk_profile: dict[str, Any] = field(default_factory=dict)
-
-    # Inciting-event metadata: what brought this Thread into being.
-    # Just a dict; canonical full-fidelity record lives in the event
-    # log's ``inciting_event`` row.
-    inciting_event_summary: dict[str, Any] = field(default_factory=dict)
-
-    created_at: str = field(default_factory=_now_iso)
-    updated_at: str = field(default_factory=_now_iso)
-    archived_at: Optional[str] = None
-
     # If this Thread had its current_action_item-equivalent set by a
     # parent (legacy ``current_action_item_id`` semantics, surfaced in
     # the bridge). Stored as a Thread ID pointing at a sub-Thread.
     current_focus_thread_id: Optional[str] = None
-
-    # Stage 4 fields (UX.md §8.2 + §10.2 + §13).
-    resurface_at: Optional[str] = None        # Later mechanic
-    order_index: int = 0                       # write-time linearization
-    search_blob: str = ""                      # denormalized search
 
     # parent-child relationship discriminator. 'decompose' is
     # the canonical fanout pattern (parent → action → N children, each
@@ -270,9 +265,7 @@ class Thread:
     def is_terminal(self) -> bool:
         return self.fsm_state.is_terminal
 
-    @property
-    def is_task(self) -> bool:
-        return self.subtype == "task"
+    # ``is_task`` is inherited from WorkItem (reads ``subtype`` only).
 
     @property
     def is_group_parent(self) -> bool:
@@ -288,26 +281,19 @@ class Thread:
         return self.parent_relationship == "group"
 
     def to_dict(self) -> dict[str, Any]:
-        return {
-            "thread_id": self.thread_id,
-            "parent_id": self.parent_id,
-            "subtype": self.subtype,
+        # Universal fields come from the base projection; Thread adds its
+        # resolution-FSM keys. The combined output is the same 18-key dict
+        # as before the WorkItem extraction (key order is irrelevant to
+        # equality; the golden master asserts this).
+        d = self._universal_dict()
+        d.update({
             "fsm_state": self.fsm_state.value,
             "parent_event_id": self.parent_event_id,
-            "autonomy_policy": self.autonomy_policy.to_dict(),
-            "context_items": [c.to_dict() for c in self.context_items],
-            "risk_profile": self.risk_profile,
-            "inciting_event_summary": self.inciting_event_summary,
-            "created_at": self.created_at,
-            "updated_at": self.updated_at,
-            "archived_at": self.archived_at,
             "current_focus_thread_id": self.current_focus_thread_id,
-            "resurface_at": self.resurface_at,
-            "order_index": self.order_index,
-            "search_blob": self.search_blob,
             "parent_relationship": self.parent_relationship,
             "originating_scrape_id": self.originating_scrape_id,
-        }
+        })
+        return d
 
     @classmethod
     def from_row(cls, row: dict[str, Any]) -> Thread:
@@ -358,38 +344,74 @@ class Thread:
 
 
 @dataclass
-class Task(Thread):
-    """A Thread with the master-task-list contract.
+class Task(WorkItem):
+    """The master-list-contract subtype of :class:`WorkItem`.
 
-    See DESIGN.md §5.3. Adds:
-    - markdown sync to the master task list
-    - persistence across terminal state (does not auto-archive)
-    - surface in the Tasks dashboard tab
+    A Task is a **sibling** of :class:`Thread` on ``WorkItem`` — NOT a
+    ``Thread`` subclass. This is the WorkItem inversion: the heavy
+    resolution FSM stays on ``Thread``; ``Task`` has **no FSM**.
+    Its lifecycle is the task system's own state vocab (inbox / mit /
+    focused / snoozed / done) and it persists in the ``obsidian/tasks``
+    task_metadata store + the markdown master list — **never** in the
+    ``threads`` table.
 
-    Subtype is fixed at ``'task'``; do not mutate.
+    This type is a *transitional facade*: it wraps existing task rows and
+    reads through the live task store; the markdown sync adapter +
+    write-delegation are extracted when the facade is later collapsed onto
+    an owned adapter. Field-ownership
+    follows ``TaskMarkdownDB.FIELDS`` — the Obsidian Tasks plugin owns its
+    in-markdown markers (checkbox / dates / recurrence / priority); this
+    facade never fights the plugin.
 
-    type only. Stage 2 wires the methods.
+    Subtype is fixed ``'task'`` and never mutated.
     """
 
     subtype: str = "task"
+    # ``t-`` prefix (overrides WorkItem's generic ``wi-``); matches the
+    # live task store's id shape so a Task wraps its existing row 1:1.
+    thread_id: str = field(default_factory=_new_task_id)
 
-    def sync_to_markdown(self) -> None:
-        """Write this Task's representation to the master task list.
+    @classmethod
+    def from_store_row(cls, row: dict[str, Any]) -> "Task":
+        """Build a Task facade from a live ``task_metadata`` row dict (the
+        shape returned by ``obsidian.tasks.store.get`` / ``.query``).
 
-        Stage 2 work; bridge integration lands then.
+        Maps the store's columns onto the WorkItem universal slots. Task
+        content with no WorkItem slot (state, urgency, contract, the
+        plugin-owned markers, …) stays in the store and is read live via
+        :meth:`live_row` — the facade does not duplicate it.
         """
-        raise NotImplementedError(
-            "Task.sync_to_markdown is wired in Stage 2.",
+
+        def _load_json(value: Any, default: Any) -> Any:
+            if value is None:
+                return default
+            if isinstance(value, (dict, list)):
+                return value
+            try:
+                return json.loads(value)
+            except (TypeError, ValueError):
+                return default
+
+        return cls(
+            thread_id=row["task_id"],
+            parent_id=row.get("parent_id"),
+            risk_profile=_load_json(row.get("risk_profile_json"), {}),
+            created_at=row.get("created_at") or _now_iso(),
+            updated_at=row.get("updated_at") or _now_iso(),
+            archived_at=row.get("archived_at"),
         )
 
-    def master_list_position(self) -> int:
-        """Return the 1-based position of this Task in the master list.
+    def live_row(self) -> Optional[dict[str, Any]]:
+        """Read this Task's authoritative row from the live task store.
 
-        Stage 2 work.
+        The markdown-backed store is the source of truth for task content
+        + state; the facade never caches it. Lazily imports the task store
+        so ``threads.models`` stays decoupled from ``obsidian.tasks`` at
+        import time. Returns ``None`` if the task is absent / deleted.
         """
-        raise NotImplementedError(
-            "Task.master_list_position is wired in Stage 2.",
-        )
+        from work_buddy.obsidian.tasks import store as _task_store
+
+        return _task_store.get(self.thread_id)
 
 
 # ---------------------------------------------------------------------------

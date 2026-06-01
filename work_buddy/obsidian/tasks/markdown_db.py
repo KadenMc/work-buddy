@@ -270,6 +270,52 @@ class TaskMarkdownDB(MarkdownDB):
         except Exception as exc:
             logger.warning("TaskMarkdownDB: set_sync_status failed: %s", exc)
 
+        # Ingest external (markdown-origin) edits into the WorkItem audit
+        # log so hand-edits in Obsidian are recorded, not just agent
+        # mutations. Best-effort.
+        self._emit_ingest_events(report)
+
+    def _emit_ingest_events(self, report: ReconcileReport) -> None:
+        """Emit WorkItem audit events for markdown-origin changes the
+        reconciler just applied — i.e. edits the user made directly in
+        Obsidian, *outside* work-buddy's mutation path.
+
+        Agent/code mutations go through ``mutations.py``, which writes both
+        surfaces atomically (so they leave no drift) and emits their own
+        ``origin='task_mutation'`` event. A *drift* therefore means the
+        markdown changed without a matching store write — an external edit —
+        so these events carry ``actor='user', origin='external_markdown'``.
+        This closes the audit gap for hand-edits.
+        Best-effort: a missed audit event must never undo a reconcile.
+        """
+        try:
+            from work_buddy.threads import work_item_events
+
+            for pk in report.created:
+                work_item_events.emit(
+                    pk, "task.ingested_created", subtype="task",
+                    actor="user", origin="external_markdown",
+                )
+            for pk in report.deleted:
+                work_item_events.emit(
+                    pk, "task.ingested_deleted", subtype="task",
+                    actor="user", origin="external_markdown",
+                )
+            for field, entries in report.drift.items():
+                for d in entries:
+                    if d.get("winner") == "markdown":
+                        work_item_events.emit(
+                            d["pk"], "task.ingested_changed", subtype="task",
+                            actor="user", origin="external_markdown",
+                            data={
+                                "field": field,
+                                "old": d.get("old"),
+                                "new": d.get("new"),
+                            },
+                        )
+        except Exception:
+            logger.exception("TaskMarkdownDB: ingest event emission failed")
+
 
 def reconcile_tasks() -> dict[str, Any]:
     """Reconcile the master task list against the SQLite store.
