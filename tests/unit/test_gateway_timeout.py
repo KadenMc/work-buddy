@@ -1,4 +1,4 @@
-"""Tests for the gateway's per-capability dispatch timeout (Gap 1).
+"""Tests for the gateway's per-capability dispatch timeout.
 
 The dispatch budget is owned by the operation, resolved most-specific-wins:
 a ``timeout_seconds`` policy callable derives from the actual params, a scalar

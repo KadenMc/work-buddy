@@ -65,15 +65,19 @@ The shorthand exists because `ObsidianPostWriteUncertain` is one of the most-ref
 - `inline_todos.cleanup_handled_todos` catches `ObsidianError` per-file because it's a best-effort batch operation that aggregates per-file errors.
 - `obsidian/tasks/mutations.py::delete_task` catches `ObsidianError` to record partial-state in its `removed` dict.
 
-**Gateway classifies once** at the top of `wb_run` dispatch (`mcp_server/tools/gateway.py`). `classify_error` uses `isinstance(exc, ObsidianError)` first; `is_transient_result` checks `error_kind` in result dicts before falling back to legacy string matching. The retry sweep (`sidecar/retry_sweep.py::_replay`) does the same.
+**Gateway classifies once** at the top of `wb_run` dispatch (`mcp_server/tools/gateway.py`). `classify_error` keys on the exception's `error_kind` (the same signal `is_transient_result` uses for result dicts), so a raised exception and a `bridge_failure` return-dict classify identically. The retry sweep (`sidecar/retry_sweep.py::_replay`) does the same.
+
+`bridge.require_available()` — the precondition guard most bridge capabilities call first — raises these typed exceptions too (via the shared `_classify_unreachable()` disambiguator), so a precondition failure and a request-time failure for the same condition classify identically.
 
 ## Policy table
 
+`classify_error` is **permanent** for the "user must act out of band" kinds (open Obsidian, install / enable the plugin, fix a structural 4xx) — retrying without user action never succeeds, so they are NOT auto-enqueued. A *temporarily*-unavailable bridge (startup race, timeout, 5xx) is transient and auto-recovers via the retry queue.
+
 | Kind | classify_error | bridge_retry | Vault fallback safe? |
 |---|---|---|---|
-| obsidian_not_running | transient | SHORT-CIRCUIT (terminal) | yes (body not sent) |
-| obsidian_plugin_missing | transient | SHORT-CIRCUIT (terminal) | yes |
-| obsidian_plugin_disabled | transient | SHORT-CIRCUIT (terminal) | yes |
+| obsidian_not_running | PERMANENT | SHORT-CIRCUIT (terminal) | yes (body not sent) |
+| obsidian_plugin_missing | PERMANENT | SHORT-CIRCUIT (terminal) | yes |
+| obsidian_plugin_disabled | PERMANENT | SHORT-CIRCUIT (terminal) | yes |
 | obsidian_startup_race | transient | retry then exhaust | yes |
 | obsidian_unreachable (base) | transient | retry | yes |
 | obsidian_timeout | transient | retry | NO (writes; reads ok) |

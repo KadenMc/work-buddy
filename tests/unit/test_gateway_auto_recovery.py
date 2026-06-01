@@ -169,7 +169,7 @@ class TestRecoveryFlowEndToEnd:
         assert cap_name not in fresh_registry.get_registry()
 
     def test_obsidian_caps_stay_admitted_when_bridge_unavailable(self):
-        """Gap 3: a missing Obsidian bridge does NOT build-time disable its
+        """A missing Obsidian bridge does NOT build-time disable its
         dependent capabilities. They stay in the live registry (governed at
         runtime by the gateway's circuit breaker) rather than vanishing from
         it for the whole session on a single probe failure."""

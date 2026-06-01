@@ -1,4 +1,4 @@
-"""Tests for the Obsidian-bridge circuit breaker on the gateway dispatch (Gap 3).
+"""Tests for the Obsidian-bridge circuit breaker on the gateway dispatch.
 
 A missing Obsidian bridge no longer build-time disables its dependent
 capabilities (covered in ``test_gateway_auto_recovery`` and
