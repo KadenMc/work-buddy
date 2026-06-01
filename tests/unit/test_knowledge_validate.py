@@ -14,6 +14,7 @@ from work_buddy.knowledge.file_store import workflow_body_heading_issues
 from work_buddy.knowledge.model import CapabilityUnit, DirectionsUnit, WorkflowUnit
 from work_buddy.knowledge.validate import (
     _check_capability_op_resolution,
+    _check_directions_workflow_resolution,
     _check_placeholder_duplicates,
     _check_workflow_step_consistency,
     _check_workflow_step_dag,
@@ -243,9 +244,85 @@ class TestWorkflowStepConsistencyCheck:
         assert len(errs) == 1
         assert errs[0]["severity"] == "warning"
 
+    def test_bare_reasoning_step_suppressed_when_directions_unit_binds(self):
+        # House convention: a reasoning step's behavior may live in the bound
+        # directions unit (whose ``workflow`` targets this workflow), not the
+        # step body — so a bare reasoning step there is intentional, not a miss.
+        wf = _wf("x", [{"id": "a", "step_type": "reasoning", "depends_on": []}])
+        directions = DirectionsUnit(
+            path="x-dir", name="X", description="d", workflow="x",
+        )
+        store = {"x": wf, "x-dir": directions}
+        assert _check_workflow_step_consistency(store) == []
+
+    def test_suppression_is_scoped_to_the_bound_workflow(self):
+        # A directions unit binding workflow "x" must NOT silence a bare
+        # reasoning step in an unrelated, unbound workflow "y".
+        wf_x = _wf("x", [{"id": "a", "step_type": "reasoning", "depends_on": []}])
+        wf_y = _wf("y", [{"id": "b", "step_type": "reasoning", "depends_on": []}])
+        directions = DirectionsUnit(
+            path="x-dir", name="X", description="d", workflow="x",
+        )
+        errs = _check_workflow_step_consistency(
+            {"x": wf_x, "y": wf_y, "x-dir": directions}
+        )
+        assert len(errs) == 1
+        assert errs[0]["path"] == "y"
+        assert errs[0]["severity"] == "warning"
+
+    def test_orphan_key_still_errors_even_when_directions_bound(self):
+        # Suppression only covers the bare-reasoning warning; an orphan
+        # ``step_instructions`` key is still dead text and must error.
+        wf = _wf(
+            "x",
+            [{"id": "a", "step_type": "reasoning", "depends_on": []}],
+            {"a": "do a", "ghost": "dead"},
+        )
+        directions = DirectionsUnit(
+            path="x-dir", name="X", description="d", workflow="x",
+        )
+        errs = _check_workflow_step_consistency({"x": wf, "x-dir": directions})
+        assert len(errs) == 1
+        assert "ghost" in errs[0]["message"]
+        assert errs[0].get("severity", "error") != "warning"
+
     def test_code_step_without_instructions_is_fine(self):
         wf = _wf("x", [{"id": "a", "step_type": "code", "depends_on": []}])
         assert _check_workflow_step_consistency({"x": wf}) == []
+
+
+class TestDirectionsWorkflowResolutionCheck:
+    """``directions_workflow_resolution`` — a directions unit's ``workflow``
+    field must resolve to a real ``kind: workflow`` unit; a dangling binding
+    is an error (it silently defeats the consistency-check suppression)."""
+
+    def test_resolved_binding_is_clean(self):
+        wf = _wf("tasks/task-me", [{"id": "a", "step_type": "code", "depends_on": []}])
+        directions = DirectionsUnit(
+            path="tasks/task-me-directions", name="D", description="d",
+            workflow="tasks/task-me",
+        )
+        store = {"tasks/task-me": wf, "tasks/task-me-directions": directions}
+        assert _check_directions_workflow_resolution(store) == []
+
+    def test_dangling_binding_is_error(self):
+        # The real bug this guards against: the bare slug instead of the path.
+        directions = DirectionsUnit(
+            path="tasks/task-me-directions", name="D", description="d",
+            workflow="task-me",  # missing the "tasks/" prefix → resolves to nothing
+        )
+        wf = _wf("tasks/task-me", [{"id": "a", "step_type": "code", "depends_on": []}])
+        errs = _check_directions_workflow_resolution(
+            {"tasks/task-me": wf, "tasks/task-me-directions": directions}
+        )
+        assert len(errs) == 1
+        assert errs[0]["check"] == "directions_workflow_resolution"
+        assert errs[0]["path"] == "tasks/task-me-directions"
+        assert errs[0].get("severity", "error") != "warning"
+
+    def test_directions_without_workflow_field_is_ignored(self):
+        directions = DirectionsUnit(path="d", name="D", description="d")
+        assert _check_directions_workflow_resolution({"d": directions}) == []
 
 
 class TestWorkflowBodyHeadingIssues:

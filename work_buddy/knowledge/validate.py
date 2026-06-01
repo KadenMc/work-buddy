@@ -344,10 +344,21 @@ def _check_workflow_step_consistency(store: dict[str, PromptUnit]) -> list[dict[
     - An orphan ``step_instructions`` key (no matching step id) is dead text
       that will drift into ``content.full`` on the next codec round-trip —
       flagged as an error.
-    - A ``reasoning`` step with no instructions is usually an authoring miss
-      (the agent reaches the step with only its name) — flagged as a
-      non-blocking warning, since a few self-explanatory steps may omit them.
+    - A ``reasoning`` step with no instructions is flagged as a non-blocking
+      warning — *unless* the workflow has a bound directions unit. By the house
+      convention a reasoning step's behavioral prose lives in the directions
+      unit whose ``workflow`` field targets this workflow (the single source),
+      not the step body; those steps are intentionally instruction-less and
+      must not warn. A workflow with no bound directions unit and a bare
+      reasoning step is the real defect this check exists to surface: either
+      the instruction was never written, or the step is miscategorized and
+      should be a ``code`` step. (See ``architecture/workflows`` for the rule.)
     """
+    documented_workflows = {
+        u.workflow
+        for u in store.values()
+        if isinstance(u, DirectionsUnit) and u.workflow
+    }
     errors: list[dict[str, str]] = []
     for path, unit in sorted(store.items()):
         if not isinstance(unit, WorkflowUnit):
@@ -367,6 +378,10 @@ def _check_workflow_step_consistency(store: dict[str, PromptUnit]) -> list[dict[
                         "step; it will drift into content.full on round-trip"
                     ),
                 })
+        # A bound directions unit is the documented home for this workflow's
+        # reasoning-step behavior — its bare reasoning steps are intentional.
+        if path in documented_workflows:
+            continue
         for s in unit.steps or []:
             if not isinstance(s, dict):
                 continue
@@ -378,6 +393,39 @@ def _check_workflow_step_consistency(store: dict[str, PromptUnit]) -> list[dict[
                     "message": f"reasoning step {sid!r} has no instructions",
                     "severity": "warning",
                 })
+    return errors
+
+
+def _check_directions_workflow_resolution(store: dict[str, PromptUnit]) -> list[dict[str, str]]:
+    """Check 13: a directions unit's ``workflow`` field resolves to a real workflow.
+
+    ``DirectionsUnit.workflow`` names the workflow whose behavioral prose the
+    directions unit owns — it is the single source the
+    ``workflow_step_consistency`` suppression trusts. A value that does not
+    resolve to a ``kind: workflow`` unit in the store is a dangling reference:
+    the "Linked workflow" link renders to nothing in generated docs, and the
+    consistency suppression silently fails to recognise the binding (so the
+    bound workflow's bare reasoning steps would wrongly warn). Flagged as an
+    error — like ``parent_child_symmetry``, a broken cross-reference is not a
+    matter of degree.
+    """
+    workflow_paths = {
+        p for p, u in store.items() if isinstance(u, WorkflowUnit)
+    }
+    errors: list[dict[str, str]] = []
+    for path, unit in sorted(store.items()):
+        if not isinstance(unit, DirectionsUnit):
+            continue
+        target = unit.workflow
+        if target and target not in workflow_paths:
+            errors.append({
+                "check": "directions_workflow_resolution",
+                "path": path,
+                "message": (
+                    f"workflow {target!r} does not resolve to a kind:workflow "
+                    "unit in the store — dangling directions→workflow binding"
+                ),
+            })
     return errors
 
 
@@ -398,6 +446,7 @@ _CHECKS = [
     ("capability_op_resolution", _check_capability_op_resolution),
     ("workflow_step_dag", _check_workflow_step_dag),
     ("workflow_step_consistency", _check_workflow_step_consistency),
+    ("directions_workflow_resolution", _check_directions_workflow_resolution),
 ]
 
 
@@ -485,7 +534,8 @@ def docs_validate(
                  store_path_validity, required_fields, directions_fields,
                  kind_specific_fields, placeholder_duplicate,
                  parent_child_symmetry, capability_op_resolution,
-                 workflow_step_dag, workflow_step_consistency
+                 workflow_step_dag, workflow_step_consistency,
+                 directions_workflow_resolution
     """
     check_list = [c.strip() for c in checks.split(",") if c.strip()] if checks else None
     return validate_store(checks=check_list)

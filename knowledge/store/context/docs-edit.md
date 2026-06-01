@@ -77,4 +77,4 @@ Edit the unit file at the `file` path the `resolve` step returned, using your na
 
 ## commit
 
-Auto-run. Re-reads the file and runs the kind-aware validation suite — DAG integrity, duplicate placeholders, required and kind-specific fields, capability op-resolution, and (for workflow units) step-DAG cycles / dangling dependencies and `## heading` ↔ step-id consistency — then reconciles the store cache and search index. If it returns `status: "error"`, fix the reported issues in the file and run `docs_edit` again; the reported `unit_errors` are scoped to the unit you edited.
+Auto-run. Re-reads the file and runs the kind-aware validation suite — DAG integrity, duplicate placeholders, required and kind-specific fields, capability op-resolution, directions→workflow binding resolution, and (for workflow units) step-DAG cycles / dangling dependencies and `## heading` ↔ step-id consistency — then reconciles the store cache and search index. If it returns `status: "error"`, fix the reported issues in the file and run `docs_edit` again; the reported `unit_errors` are scoped to the unit you edited.

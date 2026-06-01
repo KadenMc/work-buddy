@@ -5,7 +5,7 @@ description: How to run /wb-task-me — the re-runnable engage flow that answers
 summary: 'Re-runnable. Loads context, builds a clamp-to-now plan, presents top 1-2 recommendations. Slice-5a context-aware: skips tasks the agent and user both can''t satisfy now.'
 trigger: user runs /wb-task-me or asks what to work on right now
 command: wb-task-me
-workflow: task-me
+workflow: tasks/task-me
 capabilities:
 - task_me
 tags:

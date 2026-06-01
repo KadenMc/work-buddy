@@ -203,6 +203,7 @@ def commit_edit(
         "capability_op_resolution",
         "workflow_step_dag",
         "workflow_step_consistency",
+        "directions_workflow_resolution",
     ])
     reloaded = load_store()
 
