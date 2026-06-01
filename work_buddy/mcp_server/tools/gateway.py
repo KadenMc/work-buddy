@@ -31,6 +31,8 @@ from work_buddy.resilience import guarded_call, OutcomeKind
 from work_buddy.mcp_server.dispatch_resilience import (
     build_dispatch_deadline,
     build_dispatch_strategies,
+    dispatch_classifiers,
+    dispatch_passthrough,
     ensure_listeners_registered,
     resolve_timeout_budget,
 )
@@ -1549,6 +1551,7 @@ def register_tools(mcp: FastMCP) -> None:
                 # exception; re-raise it so the consent-retry / recovery
                 # handlers below run exactly as before.
                 _budget = resolve_timeout_budget(entry, parsed_params)
+                _classify, _result_classify = dispatch_classifiers(entry)
                 outcome = await guarded_call(
                     f"wb_run:{capability}",
                     lambda: asyncio.to_thread(
@@ -1557,13 +1560,55 @@ def register_tools(mcp: FastMCP) -> None:
                     ),
                     deadline=build_dispatch_deadline(_budget),
                     strategies=build_dispatch_strategies(entry, _budget),
+                    classify=_classify,
+                    result_classifier=_result_classify,
+                    passthrough_exceptions=dispatch_passthrough(entry),
                 )
-                if outcome.kind is OutcomeKind.TIMEOUT:
-                    # The dispatch exceeded its budget. asyncio.timeout frees
-                    # the event loop but cannot kill the worker thread, so the
-                    # call is NOT enqueued for retry (re-dispatch could
-                    # double-run an op still running in the background). The
-                    # caller / LLM-side interpreter handles mcp_gateway_timeout.
+                if outcome.kind is OutcomeKind.REJECTED:
+                    # The Obsidian-bridge circuit breaker shed this call — the
+                    # bridge has failed enough consecutive times that hammering
+                    # it further is pointless. Surface a clear, retryable error;
+                    # the breaker admits a probe again after its cooldown.
+                    shed_err = (
+                        f"Obsidian bridge unavailable: {capability} was shed "
+                        f"because the bridge circuit is open (too many recent "
+                        f"failures)"
+                    )
+                    _complete_operation(
+                        op_id, error=shed_err,
+                        error_kind="obsidian_bridge_circuit_open",
+                    )
+                    record_capability(
+                        capability, entry.category, op_id, parsed_params,
+                        entry.mutates_state, _t0, None, shed_err, False,
+                        **_ledger_kw,
+                    )
+                    shed_response: dict[str, Any] = {
+                        "error": shed_err,
+                        "operation_id": op_id,
+                        "error_kind": "obsidian_bridge_circuit_open",
+                        "bridge_circuit_open": True,
+                        "hint": (
+                            "The Obsidian bridge is failing repeatedly; calls "
+                            "are being shed until it recovers (a probe is "
+                            "admitted automatically after a short cooldown). "
+                            "Check that Obsidian is running with the bridge "
+                            "plugin enabled."
+                        ),
+                    }
+                    if _registry_auto_recovered:
+                        shed_response["registry_auto_recovered"] = True
+                    return _prepare(shed_response)
+                if outcome.kind is OutcomeKind.TIMEOUT and outcome.error is None:
+                    # A gateway-budget timeout (TimeoutStrategy fired) — it
+                    # carries no exception. A classified ObsidianTimeout, by
+                    # contrast, carries its exception and is re-raised below to
+                    # the existing transient-enqueue / verify handlers.
+                    # asyncio.timeout frees the event loop but cannot kill the
+                    # worker thread, so the call is NOT enqueued for retry
+                    # (re-dispatch could double-run an op still running in the
+                    # background). The caller / LLM-side interpreter handles
+                    # mcp_gateway_timeout.
                     timeout_err = (
                         f"Gateway timeout: {capability} exceeded its "
                         f"{_budget:.0f}s dispatch budget"

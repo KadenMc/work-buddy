@@ -891,6 +891,16 @@ def _build_registry() -> dict[str, Capability | WorkflowDefinition]:
         entry = registry[name]
         if isinstance(entry, Capability) and entry.requires:
             missing = [t_id for t_id in entry.requires if not is_tool_available(t_id)]
+            # Obsidian-bridge availability is governed at runtime by a circuit
+            # breaker on the gateway dispatch, not by this build-time flip. A
+            # transient bridge probe failure must not disable every bridge-
+            # dependent capability for the whole session; an admitted
+            # capability whose bridge is down fails fast per call and recovers
+            # the instant the bridge returns (no registry reload). Genuinely-
+            # missing deps (calendar, hindsight, thunderbird, ...) still hard-
+            # disable here — a breaker is wrong for a dependency that will
+            # never appear within the session.
+            missing = [t_id for t_id in missing if t_id != "obsidian"]
             if missing:
                 DISABLED_CAPABILITIES[name] = missing
                 # CP-A1: stash the full Capability object so the recovery

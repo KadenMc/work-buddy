@@ -15,12 +15,16 @@ import logging
 import math
 from typing import Any, Mapping
 
+from work_buddy.consent import ConsentRequired
 from work_buddy.resilience import (
+    CircuitBreakerStrategy,
     Deadline,
     InMemoryMetrics,
     TimeoutStrategy,
+    default_classify,
     register_listener,
 )
+from work_buddy.tools import ToolUnavailable
 from work_buddy.resilience.telemetry import (
     CallCompleted,
     CircuitStateChanged,
@@ -37,6 +41,31 @@ DEFAULT_DISPATCH_TIMEOUT_S: float = 30.0
 # Tool id whose dependent capabilities self-retry (via @bridge_retry) and own
 # their own time budget — the gateway does not impose a timeout on them.
 _OBSIDIAN_TOOL_ID = "obsidian"
+
+# One process-global circuit breaker shared by every Obsidian-bridge-dependent
+# dispatch. The bridge is a single shared dependency, so one breaker models its
+# health: after enough consecutive transient/timeout failures it opens and sheds
+# bridge work (REJECTED) instead of hammering a struggling bridge, then admits a
+# single probe after the cooldown and closes on success. Terminal failures
+# (Obsidian not running, plugin missing) do not count toward the trip — those
+# fail fast per call with an actionable error and recover the moment the bridge
+# returns. Stateful and reused across calls; never rebuilt per dispatch.
+_OBSIDIAN_BREAKER = CircuitBreakerStrategy(
+    name="obsidian_bridge", failure_threshold=5, reset_timeout_s=30.0,
+)
+
+# Control-flow exceptions the gateway's dispatch loop handles itself. They must
+# reach those handlers untouched (re-raised by the seam, not classified), and
+# must never count as a bridge failure toward the circuit breaker.
+_CONTROL_FLOW_PASSTHROUGH: tuple[type[BaseException], ...] = (
+    ConsentRequired,
+    ToolUnavailable,
+    TypeError,
+)
+
+
+def _requires_obsidian(entry: Any) -> bool:
+    return _OBSIDIAN_TOOL_ID in (getattr(entry, "requires", None) or [])
 
 # In-process recorder of guarded-call telemetry. A status surface or a live
 # verification script can snapshot it via :func:`get_dispatch_metrics`.
@@ -148,11 +177,51 @@ def build_dispatch_deadline(budget: float) -> Deadline:
 def build_dispatch_strategies(entry: Any, budget: float) -> list:
     """The resilience strategy chain for one capability dispatch.
 
-    A bounded budget adds a ``TimeoutStrategy``; an unbounded one adds none.
-    No retry strategy is added here — the one-retry-layer rule reserves retry
-    for the inner chain (``@bridge_retry``-decorated capabilities).
+    Canonical order (outermost first): ``TimeoutStrategy`` (only when the
+    budget is bounded) then the shared Obsidian ``CircuitBreakerStrategy``
+    (only for bridge-dependent capabilities). No retry strategy is added here
+    — the one-retry-layer rule reserves retry for the inner chain
+    (``@bridge_retry``-decorated capabilities).
     """
     strategies: list = []
     if budget != math.inf:
         strategies.append(TimeoutStrategy(budget))
+    if _requires_obsidian(entry):
+        strategies.append(_OBSIDIAN_BREAKER)
     return strategies
+
+
+def dispatch_classifiers(entry: Any):
+    """The (exception classifier, result classifier) for a dispatch.
+
+    Obsidian-bridge capabilities use the bridge classifiers so a raised
+    ``ObsidianError`` and a legacy ``bridge_failure`` return-dict both map onto
+    the outcome taxonomy that the circuit breaker counts. Everything else uses
+    the framework default (and has no result classifier).
+    """
+    if _requires_obsidian(entry):
+        from work_buddy.obsidian.resilient_bridge import (
+            classify_bridge_result,
+            classify_obsidian_error,
+        )
+        return classify_obsidian_error, classify_bridge_result
+    return default_classify, None
+
+
+def dispatch_passthrough(entry: Any) -> tuple[type[BaseException], ...]:
+    """Exceptions the seam must re-raise untouched (not classify).
+
+    The gateway's dispatch loop owns the consent-retry / param-error / tool-
+    unavailable / post-write-verify control flow, so those exceptions pass
+    through the seam to its handlers and never count toward the breaker.
+    """
+    passthrough = _CONTROL_FLOW_PASSTHROUGH
+    if _requires_obsidian(entry):
+        from work_buddy.obsidian.resilient_bridge import OBSIDIAN_PASSTHROUGH
+        passthrough = passthrough + OBSIDIAN_PASSTHROUGH
+    return passthrough
+
+
+def obsidian_breaker_state() -> str:
+    """Current state of the shared Obsidian bridge breaker (status / tests)."""
+    return _OBSIDIAN_BREAKER.state.value
