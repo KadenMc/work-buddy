@@ -24,6 +24,25 @@ def _set_session_env(monkeypatch):
     monkeypatch.setenv("WORK_BUDDY_SESSION_ID", "test-session-00000000")
 
 
+@pytest.fixture(autouse=True)
+def _isolate_work_item_events(tmp_path, monkeypatch):
+    """Redirect the WorkItem base event log to a per-test temp DB.
+
+    Task mutations fire ``_publish_task_event`` which best-effort emits into
+    ``work_buddy.threads.work_item_events``. Without this, any test that
+    creates/toggles a task would write rows into the real
+    ``.data/db/work_item_events.db``. Autouse keeps every test's emission
+    isolated. Best-effort import so this never breaks collection.
+    """
+    try:
+        import work_buddy.threads.work_item_events as wie
+    except Exception:  # pragma: no cover - defensive
+        return
+    monkeypatch.setattr(
+        wie, "_db_path", lambda: tmp_path / "work_item_events.db",
+    )
+
+
 @pytest.fixture
 def tmp_agents_dir(tmp_path, monkeypatch):
     """Redirect agent_session to write into a temp directory.
