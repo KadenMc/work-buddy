@@ -1,7 +1,7 @@
 ---
 name: Threads — universal-entity primitive
 kind: system
-description: The Thread is the FSM-resolution subtype of the WorkItem base (2026-05-31 inversion). Replaces the older split between PoolEntry (now folded into states) and ActionItem (now folded into sub-Threads). Task is a sibling subtype on the shared WorkItem base — Task(WorkItem), NOT a Thread subclass.
+description: The Thread is the FSM-resolution subtype of the WorkItem base. Replaces the older split between PoolEntry (now folded into states) and ActionItem (now folded into sub-Threads). Task is a sibling subtype on the shared WorkItem base — Task(WorkItem), NOT a Thread subclass.
 summary: 'v5 collapses v4''s overlapping entities into one primitive: Thread. A Thread has FSM state, an event log, an autonomy policy, optional parent_id (for sub-threads), optional subtype (''task'' for the master-list contract). Stage 1: types frozen, schemas migrated, scaffolding in place. Stage 2 wires the engine. Stage 3 migrates v4 data. Stage 4 redesigns surfaces.'
 tags:
 - threads
@@ -10,7 +10,7 @@ tags:
 - core
 ---
 
-## WorkItem inversion (2026-05-31) — read this first
+## WorkItem inversion — read this first
 
 The original framing below ("Thread is THE universal entity; Task is a Thread
 subclass") is **superseded**. A thin **`WorkItem`** base
@@ -24,8 +24,8 @@ and **`Task`** are its two *sibling* subtypes (neither subclasses the other):
   the ``threads`` table. It is a real type (a facade reading the live task store),
   **not** the old ``NotImplementedError`` stub and **not** a Thread subclass.
 
-Rationale + plan: ``.data/designs/workflow-induction/design/07-roadmap.md`` §2 (the
-locked inversion) and ``08``/``09`` (implementation + Phase-5 design). The sections
+Rationale + plan live in the workflow-induction design dossier (the roadmap's
+locked-inversion decision, plus the implementation + cutover design). The sections
 below predate the inversion — read "Thread = universal entity" as "Thread = the
 FSM-resolution subtype of WorkItem."
 

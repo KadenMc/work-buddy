@@ -1,8 +1,7 @@
 """WorkItem base event log — durable, append-only audit of WorkItem
 lifecycle events, spanning subtypes.
 
-Phase 4 of the WorkItem foundation (design 08 §Phase 4). The base owns
-provenance/history for any WorkItem. ``Thread`` already has its rich
+The base owns provenance/history for any WorkItem. ``Thread`` already has its rich
 ``thread_events`` log — but that table's ``thread_id`` foreign-keys
 ``threads(thread_id)``, and a ``Task`` does not live in the threads table.
 So this is the **additive** log for the other subtypes (today: ``Task``),
@@ -14,7 +13,8 @@ a shadow threads row.
 Why it matters: it makes the task backlog auditable — every create / state
 change / toggle becomes a recorded WorkItem event, which is exactly what
 was missing when agents shipped work but "forgot to toggle" the task
-(the blind spot surfaced in the 2026-05-30 completeness audit).
+(the "agent forgot to toggle" blind spot, where work shipped but the task
+record was never closed).
 
 Design rules:
 - **Additive + best-effort.** ``emit()`` never raises into its caller — a

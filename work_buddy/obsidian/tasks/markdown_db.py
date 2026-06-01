@@ -285,7 +285,7 @@ class TaskMarkdownDB(MarkdownDB):
         ``origin='task_mutation'`` event. A *drift* therefore means the
         markdown changed without a matching store write — an external edit —
         so these events carry ``actor='user', origin='external_markdown'``.
-        This closes the audit gap for hand-edits (the deferred Phase-4 half).
+        This closes the audit gap for hand-edits.
         Best-effort: a missed audit event must never undo a reconcile.
         """
         try:

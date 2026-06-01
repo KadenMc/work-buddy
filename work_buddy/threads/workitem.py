@@ -1,12 +1,13 @@
 """WorkItem — the thin universal base for system-managed work units.
 
-See ``.data/designs/workflow-induction/design/08-workitem-implementation-plan.md`` §1.
+The universal base of the Thread/Task hierarchy: ``Thread`` and ``Task`` are
+its two sibling subtypes (neither subclasses the other).
 WorkItem carries only the *universal* slots — identity, lineage, attached
 context, lifecycle timestamps, and governance metadata (autonomy policy,
 risk profile) — and crucially **no resolution FSM**. Its two subtypes are:
 
 * ``Thread(WorkItem)`` — the FSM-resolution subtype (``threads/models.py``);
-* ``Task(WorkItem)``   — the master-list-contract subtype (Phase 3).
+* ``Task(WorkItem)``   — the master-list-contract subtype.
 
 Design rules this module must honour:
 

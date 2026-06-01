@@ -217,7 +217,7 @@ class Thread(WorkItem):
     resurface/order/search) and adds the resolution-FSM machinery
     below. Subtype is set at creation, never mutated; the only named
     subtype is ``Task`` (a sibling on ``WorkItem``, not a child of
-    ``Thread`` — see Phase 3 of the WorkItem plan).
+    ``Thread``).
     """
 
     # Re-declared only to pin the ``th-`` id prefix — WorkItem's own
@@ -348,16 +348,17 @@ class Task(WorkItem):
     """The master-list-contract subtype of :class:`WorkItem`.
 
     A Task is a **sibling** of :class:`Thread` on ``WorkItem`` — NOT a
-    ``Thread`` subclass. This is the WorkItem inversion (design 08 §1):
-    the heavy resolution FSM stays on ``Thread``; ``Task`` has **no FSM**.
+    ``Thread`` subclass. This is the WorkItem inversion: the heavy
+    resolution FSM stays on ``Thread``; ``Task`` has **no FSM**.
     Its lifecycle is the task system's own state vocab (inbox / mit /
     focused / snoozed / done) and it persists in the ``obsidian/tasks``
     task_metadata store + the markdown master list — **never** in the
     ``threads`` table.
 
-    Phase 3 is a *transitional strangler facade*: this type wraps existing
-    task rows and reads through the live task store; the markdown sync
-    adapter + write-delegation are extracted in Phase 5. Field-ownership
+    This type is a *transitional facade*: it wraps existing task rows and
+    reads through the live task store; the markdown sync adapter +
+    write-delegation are extracted when the facade is later collapsed onto
+    an owned adapter. Field-ownership
     follows ``TaskMarkdownDB.FIELDS`` — the Obsidian Tasks plugin owns its
     in-markdown markers (checkbox / dates / recurrence / priority); this
     facade never fights the plugin.
