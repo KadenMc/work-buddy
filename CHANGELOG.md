@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/). During the `0.x` series, minor versions may contain breaking changes.
 
+## [Unreleased]
+
+### Fixed
+
+- Service logs no longer grow unbounded. The sidecar's per-service stdout/stderr rotation was a count-based shift that only weighed the live file and never bounded already-rotated backups, so a low-volume service's oversized backup persisted indefinitely (a 160 MB `messaging.1.log` survived three weeks). Replaced with a roll-at-startup to a timestamped backup (`_roll_oversize_log`) plus a new `service-logs` artifact that age-reaps rolled backups (7-day window, pinning each service's live log). (t-f54ef1ac)
+- The Telegram in-process log directory (`.data/agents/logs/`) was governed by no artifact — `agent-sessions` only sweeps manifest-bearing session directories — letting a pre-cap 104 MB `RotatingFileHandler` backup linger. Registered a new `agents-logs` artifact with the same age-reap pattern. Together these reclaimed ~460 MB of orphaned logs.
+- The sidecar daemon leaked its copy of each child's log file handle (one per restart); it is now closed after spawn.
+
 ## [0.2.0] - 2026-05-20
 
 Second release (pre-release). ~95 merged PRs since 0.1.0. Relicenses work-buddy to GPL-3.0-only, redesigns the task pipeline around *Getting Things Done*, adds local model inference, migrates the knowledge store to a file-per-unit substrate, and reworks the dashboard.
