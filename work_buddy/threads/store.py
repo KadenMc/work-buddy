@@ -262,12 +262,26 @@ def _migrate_stage_5(conn: sqlite3.Connection) -> None:
     )
 
 
+# DB paths whose schema has already been ensured this process. The
+# migration + ``executescript(_SCHEMA)`` pass is idempotent but not free
+# (DDL + PRAGMA table_info per column); running it on every connection
+# open put the schema-ensure cost on every query. Keyed on the DB path so
+# tests (which monkeypatch ``_db_path`` to a fresh tmp file each) still
+# migrate every distinct DB exactly once. Process-lifetime; assumes the
+# DB file is not externally deleted out from under a live process (no
+# runtime code does this — only test teardown, which uses fresh paths).
+_schema_ready: set[str] = set()
+
+
 def get_connection() -> sqlite3.Connection:
     """Open the threads DB with WAL + FK enforcement; ensure schema.
 
     Order matters: pre-existing tables get Stage-4 / Stage-5 columns
     added before the index-creation pass, so the index DDL doesn't
     fail on missing columns.
+
+    The schema-ensure pass runs once per DB path per process (see
+    ``_schema_ready``); the per-connection WAL/FK pragmas always run.
     """
     path = _db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -275,10 +289,13 @@ def get_connection() -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
-    _migrate_stage_4(conn)
-    _migrate_stage_5(conn)
-    conn.executescript(_SCHEMA)
-    conn.commit()
+    key = str(path)
+    if key not in _schema_ready:
+        _migrate_stage_4(conn)
+        _migrate_stage_5(conn)
+        conn.executescript(_SCHEMA)
+        conn.commit()
+        _schema_ready.add(key)
     return conn
 
 

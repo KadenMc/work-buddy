@@ -953,6 +953,48 @@ def list_revisions(
         conn.close()
 
 
+def list_revision_times(
+    project_id: int, *, limit: int | None = None,
+    conn: sqlite3.Connection | None = None,
+) -> list[str]:
+    """Return just the ``created_at`` timestamps for a project's
+    revisions, newest first.
+
+    Lightweight counterpart to :func:`list_revisions` for callers that
+    only need recency (e.g. activity scoring). ``list_revisions`` joins
+    ``project_folders_history`` + ``project_aliases_history`` per row —
+    an N+1 that's pure waste when the caller never reads ``folders`` /
+    ``aliases``. This is a single indexed query
+    (``idx_pr_project_id_created``) returning only the timestamp column.
+
+    ``conn`` lets a caller scoring many projects share one connection
+    across the batch — opening one runs ``MigrationRunner.run`` (a
+    write-locked hash-audit pass, ~80ms), so per-project opens dominated
+    the activity-sort cost. When omitted, a private connection is opened
+    and closed here.
+    """
+    own_conn = conn is None
+    if own_conn:
+        conn = get_connection()
+    try:
+        sql = (
+            "SELECT created_at FROM project_revisions WHERE project_id = ? "
+            "ORDER BY created_at DESC"
+        )
+        params: tuple[Any, ...] = (project_id,)
+        if limit is not None:
+            sql += " LIMIT ?"
+            params = (project_id, limit)
+        return [
+            r["created_at"]
+            for r in conn.execute(sql, params).fetchall()
+            if r["created_at"]
+        ]
+    finally:
+        if own_conn:
+            conn.close()
+
+
 def get_state_at(
     project_id: int, timestamp: str,
 ) -> dict[str, Any] | None:

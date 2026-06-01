@@ -507,6 +507,42 @@ def get(task_id: str, *, include_deleted: bool = False) -> dict[str, Any] | None
         conn.close()
 
 
+def get_many(
+    task_ids: list[str], *, include_deleted: bool = False,
+    conn: "sqlite3.Connection | None" = None,
+) -> dict[str, dict[str, Any]]:
+    """Batch form of :func:`get` — resolve many task IDs in one query.
+
+    Returns ``{task_id: row_dict}`` for the IDs that exist (missing IDs are
+    simply absent). Lets a per-task enrichment loop fetch all store rows in
+    a single connection + query instead of opening one connection per task
+    (the N+1 that dominated the daily briefing). Soft-deleted rows are
+    excluded unless ``include_deleted=True``.
+    """
+    ids = [t for t in dict.fromkeys(task_ids) if t]  # dedupe, drop falsy
+    if not ids:
+        return {}
+    own_conn = conn is None
+    if own_conn:
+        conn = get_connection()
+    try:
+        out: dict[str, dict[str, Any]] = {}
+        # Chunk under SQLite's parameter limit (999).
+        for start in range(0, len(ids), 900):
+            chunk = ids[start:start + 900]
+            placeholders = ",".join("?" * len(chunk))
+            sql = f"SELECT * FROM task_metadata WHERE task_id IN ({placeholders})"
+            if not include_deleted:
+                sql += " AND deleted_at IS NULL"
+            for row in conn.execute(sql, chunk):
+                d = dict(row)
+                out[d["task_id"]] = d
+        return out
+    finally:
+        if own_conn:
+            conn.close()
+
+
 def get_created_by(task_id: str) -> str | None:
     """Return the session id that created ``task_id``, or None.
 

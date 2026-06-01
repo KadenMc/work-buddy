@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 from pathlib import Path
 
@@ -783,24 +784,79 @@ def api_dashboard_cards(mount_point: str):
         return jsonify({"error": str(exc)}), 500
 
 
+# Background-refreshed cache for the full requirements snapshot. The
+# requirement sweep spawns subprocesses (scheduled-task / gh / tailscale
+# checks) that take 10s+, so — like /api/state — we serve a possibly-stale
+# snapshot and refresh on a background thread, keeping the cost off every
+# request after the first.
+_REQ_CACHE_TTL = 30.0
+_req_cache: dict[str, Any] | None = None
+_req_cache_ts: float = 0.0
+_req_cache_lock = threading.Lock()
+_req_refreshing = False
+
+
+def _build_requirements_snapshot() -> dict[str, Any]:
+    from work_buddy.health.requirements import RequirementChecker
+    checker = RequirementChecker()
+    bootstrap = checker.check_bootstrap()
+    all_reqs = checker.check_all(include_unwanted=False)
+    return {
+        "bootstrap": {
+            "summary": checker.summarize(bootstrap),
+            "results": [r.to_dict() for r in bootstrap],
+        },
+        "all": {
+            "summary": checker.summarize(all_reqs),
+            "results": [r.to_dict() for r in all_reqs],
+        },
+    }
+
+
+def _kick_requirements_refresh() -> None:
+    global _req_refreshing
+    with _req_cache_lock:
+        if _req_refreshing:
+            return
+        _req_refreshing = True
+
+    def _refresh() -> None:
+        global _req_cache, _req_cache_ts, _req_refreshing
+        try:
+            fresh = _build_requirements_snapshot()
+            _req_cache = fresh
+            _req_cache_ts = time.time()
+        except Exception as exc:
+            logger.warning("Background requirements refresh failed: %s", exc)
+        finally:
+            _req_refreshing = False
+
+    threading.Thread(
+        target=_refresh, name="requirements-refresh", daemon=True,
+    ).start()
+
+
+def get_requirements_snapshot() -> dict[str, Any]:
+    """Requirements snapshot, served from a background-refreshed cache."""
+    global _req_cache, _req_cache_ts
+    cache = _req_cache
+    if cache is not None:
+        if time.time() - _req_cache_ts >= _REQ_CACHE_TTL:
+            _kick_requirements_refresh()
+        return cache
+    with _req_cache_lock:
+        if _req_cache is not None:
+            return _req_cache
+        _req_cache = _build_requirements_snapshot()
+        _req_cache_ts = time.time()
+        return _req_cache
+
+
 @app.get("/api/requirements")
 def api_requirements():
-    """Full requirements validation results."""
+    """Full requirements validation results (background-cached)."""
     try:
-        from work_buddy.health.requirements import RequirementChecker
-        checker = RequirementChecker()
-        bootstrap = checker.check_bootstrap()
-        all_reqs = checker.check_all(include_unwanted=False)
-        return jsonify({
-            "bootstrap": {
-                "summary": checker.summarize(bootstrap),
-                "results": [r.to_dict() for r in bootstrap],
-            },
-            "all": {
-                "summary": checker.summarize(all_reqs),
-                "results": [r.to_dict() for r in all_reqs],
-            },
-        })
+        return jsonify(get_requirements_snapshot())
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
 
@@ -2819,17 +2875,26 @@ def api_threads_list():
         )
         total = count_threads(q, **filter_kwargs)
         threads = []
-        for t in threads_models:
-            data = build_render_data(t.thread_id)
-            if data is None:
-                continue
-            # Post-query filters — neither has a SQL index, but the
-            # cardinality at this point (post search) is small.
-            if urgency and data.get("urgency") != urgency:
-                continue
-            if has_cleanup_only and not data.get("can_clean_up"):
-                continue
-            threads.append(data)
+        # Share one DB connection across the whole render batch — each
+        # build_render_data otherwise opens + closes its own (×3 reads),
+        # and that connection churn was the dominant cost after the
+        # config-parse fix.
+        from work_buddy.threads import store as _threads_store
+        _conn = _threads_store.get_connection()
+        try:
+            for t in threads_models:
+                data = build_render_data(t.thread_id, conn=_conn)
+                if data is None:
+                    continue
+                # Post-query filters — neither has a SQL index, but the
+                # cardinality at this point (post search) is small.
+                if urgency and data.get("urgency") != urgency:
+                    continue
+                if has_cleanup_only and not data.get("can_clean_up"):
+                    continue
+                threads.append(data)
+        finally:
+            _conn.close()
         return jsonify({
             "threads": threads,
             "total": total,
@@ -4523,6 +4588,31 @@ def _start_acknowledge_poller():
     logger.info("Acknowledge poller started")
 
 
+def _prewarm_control_graph() -> None:
+    """Build the control-graph snapshot once so the first Settings load
+    doesn't block on the cold health + requirement sweep."""
+    from work_buddy.control.graph import build_graph
+    build_graph()
+
+
+def _prewarm_projects_activity() -> None:
+    """Warm the per-folder git-activity cache so the first Projects-tab
+    load doesn't eat the cold git walk. Scores are discarded; the
+    populated ``_GIT_CACHE`` side effect is the point."""
+    from work_buddy.projects.activity import sort_active_by_activity
+    from work_buddy.projects.store import list_projects
+    sort_active_by_activity(list_projects())
+
+
+def _prewarm_costs() -> None:
+    """Warm the default Claude-Code-usage summary so the first Costs-tab
+    load doesn't eat the multi-second aggregation over all usage turns."""
+    from work_buddy.dashboard.costs_claude_code_usage import (
+        get_claude_code_usage_summary,
+    )
+    get_claude_code_usage_summary()
+
+
 def main():
     import sys
 
@@ -4569,6 +4659,42 @@ def main():
 
     from work_buddy.web.access_log_filter import install_probe_log_filter
     install_probe_log_filter(["/health"])
+
+    # Pre-warm the /api/state cache on a background thread. The first
+    # build runs a requirement sweep + probe reads and takes 10s+; doing
+    # it at startup (rather than lazily on the first Jobs-tab load) means
+    # the user never eats that cold-build stall. get_system_state's build
+    # lock makes this single-flight — a request that races the warm-up
+    # blocks on the lock, then gets the cached result.
+    #
+    # Skip in the dev reloader's watcher process: with debug=True Werkzeug
+    # runs main() in both the watcher and the reloaded child, and the
+    # watcher's cache is discarded on every reload — warming it there is a
+    # wasted 10s+ build. WERKZEUG_RUN_MAIN is set only in the child; in
+    # prod (debug=False) it's unset but there's no watcher, so `not dev`
+    # lets the single process warm normally.
+    import os as _os
+
+    if not dev or _os.environ.get("WERKZEUG_RUN_MAIN") == "true":
+        def _prewarm() -> None:
+            # Each warm-up is independent and best-effort: a failure in one
+            # must not skip the others, and none should crash startup.
+            for label, fn in (
+                ("system-state", get_system_state),
+                ("requirements", get_requirements_snapshot),
+                ("control-graph", _prewarm_control_graph),
+                ("projects-activity", _prewarm_projects_activity),
+                ("costs", _prewarm_costs),
+            ):
+                try:
+                    fn()
+                except Exception as exc:  # pragma: no cover - best-effort
+                    logger.warning("%s pre-warm failed: %s", label, exc)
+
+        threading.Thread(
+            target=_prewarm, name="dashboard-prewarm", daemon=True,
+        ).start()
+
     logger.info("Dashboard starting on http://%s:%d%s", host, port, " (dev mode)" if dev else "")
     app.run(host=host, port=port, debug=dev)
 

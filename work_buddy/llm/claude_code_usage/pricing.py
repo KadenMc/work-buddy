@@ -25,6 +25,7 @@ data needed to apply cache rates retroactively.
 
 from __future__ import annotations
 
+import functools
 
 PRICING: dict[str, dict[str, float]] = {
     "claude-opus-4-7":   {"input": 5.00,  "output": 25.00, "cache_write": 6.25, "cache_read": 0.50},
@@ -39,8 +40,13 @@ PRICING: dict[str, dict[str, float]] = {
 }
 
 
+@functools.lru_cache(maxsize=None)
 def get_pricing(model: str | None) -> dict[str, float] | None:
     """Resolve a pricing dict for ``model`` using the upstream strategy.
+
+    Memoized: pure function of ``model``, called once per usage turn
+    (hundreds of thousands of times) when aggregating the cost read model.
+    The model vocabulary is tiny, so an unbounded cache is safe.
 
     1. Exact match.
     2. Prefix match (e.g. ``claude-sonnet-4-6-extended-context`` falls
@@ -66,8 +72,12 @@ def get_pricing(model: str | None) -> dict[str, float] | None:
     return None
 
 
+@functools.lru_cache(maxsize=None)
 def is_billable(model: str | None) -> bool:
-    """A model is billable if its name suggests an Anthropic frontier family."""
+    """A model is billable if its name suggests an Anthropic frontier family.
+
+    Memoized (pure, called once per usage turn during cost aggregation).
+    """
     if not model:
         return False
     m = model.lower()

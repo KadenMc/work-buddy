@@ -1,5 +1,6 @@
 """Configuration loading for work-buddy context bundle collector."""
 
+import copy
 import logging
 from pathlib import Path
 from typing import Any
@@ -8,6 +9,40 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import yaml
 
 logger = logging.getLogger(__name__)
+
+# Memoized parsed YAML, keyed on file path → (mtime_ns, parsed dict). The
+# config files don't change for the life of a process (except via
+# ``write_config_local``, which bumps the mtime and so invalidates the
+# entry). ``load_config`` runs on the hot path of every store's
+# ``get_connection`` via ``_db_path``; an unmemoized parse put ~45ms of
+# PyYAML on every DB open across the app. A runtime edit is picked up
+# because the cache key is the file mtime.
+_PARSED_YAML_CACHE: dict[str, tuple[int, dict[str, Any]]] = {}
+
+
+def _read_yaml_memoized(path: Path) -> dict[str, Any]:
+    """Parse ``path`` as YAML, memoized on its mtime.
+
+    Returns a deep copy so neither callers nor ``_deep_merge`` (which
+    shares override leaves by reference) can mutate the cached parse.
+    Missing or unreadable files yield ``{}``.
+    """
+    try:
+        mtime = path.stat().st_mtime_ns
+    except OSError:
+        return {}
+    cached = _PARSED_YAML_CACHE.get(str(path))
+    if cached is None or cached[0] != mtime:
+        try:
+            with open(path) as f:
+                parsed = yaml.safe_load(f) or {}
+        except Exception:
+            parsed = {}
+        if not isinstance(parsed, dict):
+            parsed = {}
+        cached = (mtime, parsed)
+        _PARSED_YAML_CACHE[str(path)] = cached
+    return copy.deepcopy(cached[1])
 
 
 DEFAULTS = {
@@ -165,16 +200,15 @@ def load_config(config_path: Path | None = None) -> dict[str, Any]:
         # Look relative to the repo root (parent of work_buddy/)
         config_path = Path(__file__).parent.parent / "config.yaml"
 
-    if config_path.exists():
-        with open(config_path) as f:
-            user_cfg = yaml.safe_load(f) or {}
+    # Parses are memoized on file mtime (see ``_read_yaml_memoized``);
+    # the merge itself is cheap and still produces a fresh dict per call.
+    user_cfg = _read_yaml_memoized(config_path)
+    if user_cfg:
         cfg = _deep_merge(cfg, user_cfg)
 
     # Local overrides (gitignored, machine-specific)
-    local_path = config_path.with_name("config.local.yaml")
-    if local_path.exists():
-        with open(local_path) as f:
-            local_cfg = yaml.safe_load(f) or {}
+    local_cfg = _read_yaml_memoized(config_path.with_name("config.local.yaml"))
+    if local_cfg:
         cfg = _deep_merge(cfg, local_cfg)
 
     return cfg

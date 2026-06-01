@@ -27,6 +27,8 @@ a single dashboard auto-refresh cycle don't pay the cost twice.
 from __future__ import annotations
 
 import math
+import sqlite3
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -58,6 +60,12 @@ _DEFAULT_HALF_LIFE_DAYS = 14.0
 _GIT_CACHE: dict[str, tuple[float, dict[str, Any] | None]] = {}
 _GIT_CACHE_TTL_SECONDS = 300.0
 
+# Single-flight guard for background git-activity refreshes. Keyed on the
+# same resolved-path key as ``_GIT_CACHE`` so a stale entry kicks at most
+# one refresh thread at a time.
+_GIT_REFRESHING: set[str] = set()
+_GIT_REFRESH_LOCK = threading.Lock()
+
 
 def _parse_iso_utc(s: str) -> datetime | None:
     """Parse an ISO 8601 timestamp into a UTC-aware datetime, or None."""
@@ -79,6 +87,37 @@ def _age_days(event_time: datetime, now: datetime) -> float:
     return (now - event_time).total_seconds() / 86400.0
 
 
+def _read_git_activity(repo_path: Path, window_days: int) -> dict[str, Any] | None:
+    """Read git activity for one folder (the ~300ms-per-repo call)."""
+    # Import lazily to avoid pulling sync's module-level dependencies
+    # into every caller of activity scoring.
+    from work_buddy.projects.sync import _read_git_repo_activity
+    try:
+        return _read_git_repo_activity(repo_path, score_window_days=window_days)
+    except Exception:
+        logger.debug("Git activity read failed for %s", repo_path, exc_info=True)
+        return None
+
+
+def _kick_git_refresh(repo_path: Path, key: str, window_days: int) -> None:
+    """Refresh one folder's git activity on a background thread (single-flight)."""
+    with _GIT_REFRESH_LOCK:
+        if key in _GIT_REFRESHING:
+            return
+        _GIT_REFRESHING.add(key)
+
+    def _refresh() -> None:
+        try:
+            _GIT_CACHE[key] = (time.time(), _read_git_activity(repo_path, window_days))
+        finally:
+            with _GIT_REFRESH_LOCK:
+                _GIT_REFRESHING.discard(key)
+
+    threading.Thread(
+        target=_refresh, name="git-activity-refresh", daemon=True,
+    ).start()
+
+
 def _get_git_activity_cached(
     repo_path: Path,
     *,
@@ -87,9 +126,15 @@ def _get_git_activity_cached(
 ) -> dict[str, Any] | None:
     """Read git activity for a folder with a short-lived in-process cache.
 
-    Wraps :func:`work_buddy.projects.sync._read_git_repo_activity`. The
-    cache key is the resolved absolute path so symlink and case-normal
-    paths share entries.
+    Wraps :func:`work_buddy.projects.sync._read_git_repo_activity` (~300ms
+    per repo). The cache key is the resolved absolute path so symlink and
+    case-normal paths share entries.
+
+    Stale-while-revalidate: a present-but-expired entry is returned
+    immediately while a single background thread refreshes it, so the
+    ~300ms/repo git walk never lands on the request path once the cache is
+    warm (the dashboard pre-warms it at startup). Only a genuinely cold
+    entry (never read this process) is fetched synchronously.
     """
     try:
         key = str(repo_path.resolve())
@@ -98,19 +143,16 @@ def _get_git_activity_cached(
 
     now = time.time()
     cached = _GIT_CACHE.get(key)
-    if cached and (now - cached[0]) < ttl_seconds:
+    if cached is not None:
+        if (now - cached[0]) < ttl_seconds:
+            return cached[1]  # fresh
+        # Stale: serve the old value now, refresh for next time.
+        _kick_git_refresh(repo_path, key, window_days)
         return cached[1]
 
-    # Import lazily to avoid pulling sync's module-level dependencies
-    # into every caller of activity scoring.
-    from work_buddy.projects.sync import _read_git_repo_activity
-    try:
-        activity = _read_git_repo_activity(
-            repo_path, score_window_days=window_days,
-        )
-    except Exception:
-        logger.debug("Git activity read failed for %s", repo_path, exc_info=True)
-        activity = None
+    # Cold: no entry yet. Read synchronously so the first-ever score is
+    # correct; the startup pre-warm makes this rare during a real request.
+    activity = _read_git_activity(repo_path, window_days)
     _GIT_CACHE[key] = (now, activity)
     return activity
 
@@ -121,6 +163,7 @@ def compute_activity_score(
     half_life_days: float = _DEFAULT_HALF_LIFE_DAYS,
     window_days: int = _DEFAULT_WINDOW_DAYS,
     now: datetime | None = None,
+    conn: "sqlite3.Connection | None" = None,
 ) -> float:
     """Return a non-negative activity score for ``project``.
 
@@ -136,12 +179,15 @@ def compute_activity_score(
     now = now or datetime.now(timezone.utc)
     score = 0.0
 
-    # 1. Project revisions — cheap SQL query.
+    # 1. Project revisions — only the timestamps matter here, so use the
+    # lightweight query that skips list_revisions' per-row folders/aliases
+    # enrichment (an N+1 that dominated this endpoint's warm-cache cost).
     try:
         from work_buddy.projects import store
-        revs = store.list_revisions(project["id"], limit=200)
-        for r in revs:
-            rev_time = _parse_iso_utc(r.get("created_at", ""))
+        for created in store.list_revision_times(
+            project["id"], limit=200, conn=conn,
+        ):
+            rev_time = _parse_iso_utc(created)
             if rev_time is None:
                 continue
             age = _age_days(rev_time, now)
@@ -205,11 +251,19 @@ def sort_active_by_activity(
     other = [p for p in projects if p.get("status") != "active"]
 
     now = datetime.now(timezone.utc)
-    for p in active:
-        p["activity_score"] = compute_activity_score(
-            p, half_life_days=half_life_days,
-            window_days=window_days, now=now,
-        )
+    # Share one DB connection across the batch — each list_revision_times
+    # open otherwise runs MigrationRunner's write-locked hash audit
+    # (~80ms), which dominated the warm-cache cost at N active projects.
+    from work_buddy.projects import store
+    conn = store.get_connection()
+    try:
+        for p in active:
+            p["activity_score"] = compute_activity_score(
+                p, half_life_days=half_life_days,
+                window_days=window_days, now=now, conn=conn,
+            )
+    finally:
+        conn.close()
     active.sort(
         key=lambda p: (-p.get("activity_score", 0.0), p.get("slug", "")),
     )

@@ -75,7 +75,59 @@ def _project_matches(cwd: str, project_filter: str | None) -> bool:
     return pf in canonical or pf in sp or pf in last
 
 
+# Memoized summary read models, keyed on (db path, db mtime, filters).
+# The aggregation scans every usage turn (100k+ rows) in Python and is a
+# pure function of the cache DB's contents — which change only when the
+# scanner rescans. So a rescan bumps the file mtime and drops every stale
+# entry; until then the multi-second aggregation is computed once per
+# filter combination instead of on every /api/costs load.
+_summary_cache: dict[tuple[Any, ...], dict[str, Any]] = {}
+_summary_cache_mtime: int | None = None
+
+
 def get_claude_code_usage_summary(
+    *,
+    db_path: Path | None = None,
+    project: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    models: list[str] | set[str] | tuple[str, ...] | None = None,
+) -> dict[str, Any]:
+    """Cached entry point for the Claude-Code-usage read model.
+
+    Memoizes :func:`_compute_claude_code_usage_summary` on the cache DB's
+    mtime + filter params (see ``_summary_cache``). Falls through to a
+    fresh compute when the DB is missing/unreadable (that "unavailable"
+    shape is not cached).
+    """
+    global _summary_cache, _summary_cache_mtime
+    p = db_path or _scanner.get_db_path()
+    try:
+        mtime = p.stat().st_mtime_ns
+    except OSError:
+        mtime = None
+    if mtime is None:
+        return _compute_claude_code_usage_summary(
+            db_path=db_path, project=project, start_date=start_date,
+            end_date=end_date, models=models,
+        )
+    if mtime != _summary_cache_mtime:
+        _summary_cache = {}  # rescan changed the DB — stale entries are useless
+        _summary_cache_mtime = mtime
+    model_key = tuple(sorted(set(models))) if models is not None else None
+    key = (str(p), project, start_date, end_date, model_key)
+    cached = _summary_cache.get(key)
+    if cached is not None:
+        return cached
+    result = _compute_claude_code_usage_summary(
+        db_path=db_path, project=project, start_date=start_date,
+        end_date=end_date, models=models,
+    )
+    _summary_cache[key] = result
+    return result
+
+
+def _compute_claude_code_usage_summary(
     *,
     db_path: Path | None = None,
     project: str | None = None,

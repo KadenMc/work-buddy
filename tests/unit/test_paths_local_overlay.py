@@ -91,3 +91,51 @@ def test_data_dir_picks_up_overlay(fake_repo, monkeypatch):
     result = pmod.data_dir()
     assert result == fake_repo / ".data"
     assert result.exists() and result.is_dir()
+
+
+def test_result_is_memoized_on_unchanged_mtime(fake_repo, monkeypatch):
+    """Regression guard: a second call with unchanged config files must
+    NOT re-parse YAML.
+
+    ``_load_data_root_from_config`` runs on every DB connection open
+    app-wide; an uncached parse put ~60ms of YAML on every query. The
+    cache (keyed on config-file mtimes) is what keeps that off the hot
+    path — assert it actually short-circuits.
+    """
+    import yaml
+
+    _write(fake_repo / "config.yaml", "paths:\n  data_root: '.data'\n")
+    monkeypatch.setattr(pmod, "_data_root_cache", None)
+
+    calls = {"n": 0}
+    real_safe_load = yaml.safe_load
+
+    def counting_safe_load(*a, **k):
+        calls["n"] += 1
+        return real_safe_load(*a, **k)
+
+    monkeypatch.setattr(yaml, "safe_load", counting_safe_load)
+
+    assert pmod._load_data_root_from_config() == ".data"
+    after_first = calls["n"]
+    assert after_first >= 1  # first call parses
+
+    assert pmod._load_data_root_from_config() == ".data"
+    assert calls["n"] == after_first  # second call: cache hit, no re-parse
+
+
+def test_mtime_change_invalidates_cache(fake_repo, monkeypatch):
+    """A config edit (new mtime) must invalidate the cache and re-read."""
+    import os
+
+    cfg = fake_repo / "config.yaml"
+    _write(cfg, "paths:\n  data_root: '.data'\n")
+    monkeypatch.setattr(pmod, "_data_root_cache", None)
+    assert pmod._load_data_root_from_config() == ".data"
+
+    # Rewrite with a different value and force a distinct mtime so the
+    # cache key changes deterministically (avoids same-tick coalescing).
+    _write(cfg, "paths:\n  data_root: 'other'\n")
+    st = cfg.stat()
+    os.utime(cfg, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
+    assert pmod._load_data_root_from_config() == "other"
