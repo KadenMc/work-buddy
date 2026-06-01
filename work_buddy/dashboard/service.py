@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 from pathlib import Path
 
@@ -783,24 +784,79 @@ def api_dashboard_cards(mount_point: str):
         return jsonify({"error": str(exc)}), 500
 
 
+# Background-refreshed cache for the full requirements snapshot. The
+# requirement sweep spawns subprocesses (scheduled-task / gh / tailscale
+# checks) that take 10s+, so — like /api/state — we serve a possibly-stale
+# snapshot and refresh on a background thread, keeping the cost off every
+# request after the first.
+_REQ_CACHE_TTL = 30.0
+_req_cache: dict[str, Any] | None = None
+_req_cache_ts: float = 0.0
+_req_cache_lock = threading.Lock()
+_req_refreshing = False
+
+
+def _build_requirements_snapshot() -> dict[str, Any]:
+    from work_buddy.health.requirements import RequirementChecker
+    checker = RequirementChecker()
+    bootstrap = checker.check_bootstrap()
+    all_reqs = checker.check_all(include_unwanted=False)
+    return {
+        "bootstrap": {
+            "summary": checker.summarize(bootstrap),
+            "results": [r.to_dict() for r in bootstrap],
+        },
+        "all": {
+            "summary": checker.summarize(all_reqs),
+            "results": [r.to_dict() for r in all_reqs],
+        },
+    }
+
+
+def _kick_requirements_refresh() -> None:
+    global _req_refreshing
+    with _req_cache_lock:
+        if _req_refreshing:
+            return
+        _req_refreshing = True
+
+    def _refresh() -> None:
+        global _req_cache, _req_cache_ts, _req_refreshing
+        try:
+            fresh = _build_requirements_snapshot()
+            _req_cache = fresh
+            _req_cache_ts = time.time()
+        except Exception as exc:
+            logger.warning("Background requirements refresh failed: %s", exc)
+        finally:
+            _req_refreshing = False
+
+    threading.Thread(
+        target=_refresh, name="requirements-refresh", daemon=True,
+    ).start()
+
+
+def get_requirements_snapshot() -> dict[str, Any]:
+    """Requirements snapshot, served from a background-refreshed cache."""
+    global _req_cache, _req_cache_ts
+    cache = _req_cache
+    if cache is not None:
+        if time.time() - _req_cache_ts >= _REQ_CACHE_TTL:
+            _kick_requirements_refresh()
+        return cache
+    with _req_cache_lock:
+        if _req_cache is not None:
+            return _req_cache
+        _req_cache = _build_requirements_snapshot()
+        _req_cache_ts = time.time()
+        return _req_cache
+
+
 @app.get("/api/requirements")
 def api_requirements():
-    """Full requirements validation results."""
+    """Full requirements validation results (background-cached)."""
     try:
-        from work_buddy.health.requirements import RequirementChecker
-        checker = RequirementChecker()
-        bootstrap = checker.check_bootstrap()
-        all_reqs = checker.check_all(include_unwanted=False)
-        return jsonify({
-            "bootstrap": {
-                "summary": checker.summarize(bootstrap),
-                "results": [r.to_dict() for r in bootstrap],
-            },
-            "all": {
-                "summary": checker.summarize(all_reqs),
-                "results": [r.to_dict() for r in all_reqs],
-            },
-        })
+        return jsonify(get_requirements_snapshot())
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
 
@@ -4532,6 +4588,22 @@ def _start_acknowledge_poller():
     logger.info("Acknowledge poller started")
 
 
+def _prewarm_control_graph() -> None:
+    """Build the control-graph snapshot once so the first Settings load
+    doesn't block on the cold health + requirement sweep."""
+    from work_buddy.control.graph import build_graph
+    build_graph()
+
+
+def _prewarm_projects_activity() -> None:
+    """Warm the per-folder git-activity cache so the first Projects-tab
+    load doesn't eat the cold git walk. Scores are discarded; the
+    populated ``_GIT_CACHE`` side effect is the point."""
+    from work_buddy.projects.activity import sort_active_by_activity
+    from work_buddy.projects.store import list_projects
+    sort_active_by_activity(list_projects())
+
+
 def main():
     import sys
 
@@ -4593,25 +4665,23 @@ def main():
     # prod (debug=False) it's unset but there's no watcher, so `not dev`
     # lets the single process warm normally.
     import os as _os
-    import threading as _threading
 
     if not dev or _os.environ.get("WERKZEUG_RUN_MAIN") == "true":
         def _prewarm() -> None:
-            try:
-                get_system_state()
-            except Exception as exc:  # pragma: no cover - best-effort warm-up
-                logger.warning("System-state pre-warm failed: %s", exc)
-            # Warm the per-folder git-activity cache so the first
-            # Projects-tab load doesn't eat the cold git walk. Scores are
-            # discarded; the side effect (populated _GIT_CACHE) is the point.
-            try:
-                from work_buddy.projects.activity import sort_active_by_activity
-                from work_buddy.projects.store import list_projects
-                sort_active_by_activity(list_projects())
-            except Exception as exc:  # pragma: no cover - best-effort warm-up
-                logger.warning("Projects activity pre-warm failed: %s", exc)
+            # Each warm-up is independent and best-effort: a failure in one
+            # must not skip the others, and none should crash startup.
+            for label, fn in (
+                ("system-state", get_system_state),
+                ("requirements", get_requirements_snapshot),
+                ("control-graph", _prewarm_control_graph),
+                ("projects-activity", _prewarm_projects_activity),
+            ):
+                try:
+                    fn()
+                except Exception as exc:  # pragma: no cover - best-effort
+                    logger.warning("%s pre-warm failed: %s", label, exc)
 
-        _threading.Thread(
+        threading.Thread(
             target=_prewarm, name="dashboard-prewarm", daemon=True,
         ).start()
 

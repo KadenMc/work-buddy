@@ -37,6 +37,7 @@ log = logging.getLogger(__name__)
 _GRAPH_TTL_SECONDS = 45.0
 _cache: NodeCache | None = None
 _cache_lock = threading.Lock()
+_refreshing = False
 
 
 # ---------------------------------------------------------------------------
@@ -46,20 +47,58 @@ _cache_lock = threading.Lock()
 def build_graph(force: bool = False) -> dict[str, ControlNode]:
     """Return the current control graph.
 
-    ``force=True`` bypasses the TTL cache and rebuilds from scratch.
+    Served from a background-refreshed cache. ``_assemble`` runs a full
+    health + requirement sweep (subprocess-heavy: scheduled-task, gh,
+    tailscale checks) that can take 10s+, so a stale snapshot is served
+    immediately while a background thread refreshes it — the cost never
+    lands on a request after the first build. ``force=True`` (the Reprobe
+    button) rebuilds synchronously and replaces the cache.
     """
     global _cache
+    if force:
+        nodes = _assemble()
+        with _cache_lock:
+            _cache = NodeCache(nodes=nodes, built_at=time.time())
+        return nodes
+
+    cache = _cache
+    if cache is not None:
+        if (time.time() - cache.built_at) >= _GRAPH_TTL_SECONDS:
+            _kick_graph_refresh()  # stale — refresh for next time
+        return cache.nodes
+
+    # Cold start: build once synchronously. The lock makes concurrent
+    # first-callers wait for the single build rather than each starting
+    # their own. The dashboard pre-warms this at startup.
     with _cache_lock:
-        now = time.time()
-        if (
-            not force
-            and _cache is not None
-            and (now - _cache.built_at) < _GRAPH_TTL_SECONDS
-        ):
+        if _cache is not None:
             return _cache.nodes
         nodes = _assemble()
-        _cache = NodeCache(nodes=nodes, built_at=now)
-        return nodes
+        _cache = NodeCache(nodes=nodes, built_at=time.time())
+        return _cache.nodes
+
+
+def _kick_graph_refresh() -> None:
+    """Rebuild the control-graph snapshot on a background thread (single-flight)."""
+    global _refreshing
+    with _cache_lock:
+        if _refreshing:
+            return
+        _refreshing = True
+
+    def _refresh() -> None:
+        global _cache, _refreshing
+        try:
+            nodes = _assemble()
+            _cache = NodeCache(nodes=nodes, built_at=time.time())
+        except Exception:
+            log.warning("Background control-graph refresh failed", exc_info=True)
+        finally:
+            _refreshing = False
+
+    threading.Thread(
+        target=_refresh, name="control-graph-refresh", daemon=True,
+    ).start()
 
 
 def invalidate_graph() -> None:
