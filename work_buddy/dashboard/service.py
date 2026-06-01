@@ -4604,6 +4604,15 @@ def _prewarm_projects_activity() -> None:
     sort_active_by_activity(list_projects())
 
 
+def _prewarm_costs() -> None:
+    """Warm the default Claude-Code-usage summary so the first Costs-tab
+    load doesn't eat the multi-second aggregation over all usage turns."""
+    from work_buddy.dashboard.costs_claude_code_usage import (
+        get_claude_code_usage_summary,
+    )
+    get_claude_code_usage_summary()
+
+
 def main():
     import sys
 
@@ -4675,6 +4684,7 @@ def main():
                 ("requirements", get_requirements_snapshot),
                 ("control-graph", _prewarm_control_graph),
                 ("projects-activity", _prewarm_projects_activity),
+                ("costs", _prewarm_costs),
             ):
                 try:
                     fn()

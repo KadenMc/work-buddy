@@ -19,6 +19,7 @@ spend" separately from "model usage."
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 from collections import defaultdict
@@ -177,8 +178,13 @@ def _round_cost(bucket: dict[str, Any]) -> dict[str, Any]:
     return bucket
 
 
+@functools.lru_cache(maxsize=8192)
 def _resolve_project_name(path_or_slug: str) -> str:
     """Canonical project name for a cwd / project path.
+
+    Memoized: pure mapping from a cwd/slug to a canonical name, called
+    once per usage turn during cost aggregation (the same handful of
+    project paths recur across hundreds of thousands of rows).
 
     Reuses :func:`work_buddy.collectors.chat_collector.project_name_from_slug`
     so the Costs tab matches the Chats tab — worktrees and nested
