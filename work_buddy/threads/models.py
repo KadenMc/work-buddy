@@ -21,6 +21,7 @@ from work_buddy.threads.enums import (
     ReasoningTier,
     SurfaceUrgency,
 )
+from work_buddy.threads.workitem import WorkItem
 
 
 # ---------------------------------------------------------------------------
@@ -201,51 +202,38 @@ class AutonomyPolicy:
 
 
 @dataclass
-class Thread:
-    """The universal entity for "context that may need an action."
+class Thread(WorkItem):
+    """The FSM-resolution subtype of :class:`WorkItem`.
 
-    Subtype is set at creation, never mutated; the only named
-    subtype is ``Task``.
+    Inherits the universal fields from ``WorkItem`` (id, lineage,
+    autonomy policy, context, risk profile, lifecycle timestamps,
+    resurface/order/search) and adds the resolution-FSM machinery
+    below. Subtype is set at creation, never mutated; the only named
+    subtype is ``Task`` (a sibling on ``WorkItem``, not a child of
+    ``Thread`` — see Phase 3 of the WorkItem plan).
     """
 
+    # Re-declared only to pin the ``th-`` id prefix — WorkItem's own
+    # default is the generic ``wi-``. The field keeps its (first)
+    # position from the base; only the default factory changes.
     thread_id: str = field(default_factory=_new_thread_id)
-    parent_id: Optional[str] = None
-    subtype: Optional[str] = None  # 'task' | None; never mutated
+
+    # --- Thread-specific (resolution-FSM) fields -----------------------
+    # The universal fields (parent_id, subtype, autonomy_policy,
+    # context_items, risk_profile, inciting_event_summary, created_at,
+    # updated_at, archived_at, resurface_at, order_index, search_blob)
+    # are inherited from WorkItem unchanged.
+
     fsm_state: FSMState = FSMState.PROPOSED
 
     # Last-known FSM-event id — used as the optimistic-lock target on
     # the next state transition. None for never-transitioned threads.
     parent_event_id: Optional[int] = None
 
-    autonomy_policy: AutonomyPolicy = field(default_factory=AutonomyPolicy)
-
-    # Attached ContextItems (live in their source; this is just a
-    # reference list).
-    context_items: tuple[ContextItem, ...] = ()
-
-    # Risk profile — per DESIGN.md §10.4 the thread carries
-    # contextual risk dimensions; intrinsic amplifiers live on the
-    # action template and are composed at execution time.
-    risk_profile: dict[str, Any] = field(default_factory=dict)
-
-    # Inciting-event metadata: what brought this Thread into being.
-    # Just a dict; canonical full-fidelity record lives in the event
-    # log's ``inciting_event`` row.
-    inciting_event_summary: dict[str, Any] = field(default_factory=dict)
-
-    created_at: str = field(default_factory=_now_iso)
-    updated_at: str = field(default_factory=_now_iso)
-    archived_at: Optional[str] = None
-
     # If this Thread had its current_action_item-equivalent set by a
     # parent (legacy ``current_action_item_id`` semantics, surfaced in
     # the bridge). Stored as a Thread ID pointing at a sub-Thread.
     current_focus_thread_id: Optional[str] = None
-
-    # Stage 4 fields (UX.md §8.2 + §10.2 + §13).
-    resurface_at: Optional[str] = None        # Later mechanic
-    order_index: int = 0                       # write-time linearization
-    search_blob: str = ""                      # denormalized search
 
     # parent-child relationship discriminator. 'decompose' is
     # the canonical fanout pattern (parent → action → N children, each
@@ -270,9 +258,7 @@ class Thread:
     def is_terminal(self) -> bool:
         return self.fsm_state.is_terminal
 
-    @property
-    def is_task(self) -> bool:
-        return self.subtype == "task"
+    # ``is_task`` is inherited from WorkItem (reads ``subtype`` only).
 
     @property
     def is_group_parent(self) -> bool:
@@ -288,26 +274,19 @@ class Thread:
         return self.parent_relationship == "group"
 
     def to_dict(self) -> dict[str, Any]:
-        return {
-            "thread_id": self.thread_id,
-            "parent_id": self.parent_id,
-            "subtype": self.subtype,
+        # Universal fields come from the base projection; Thread adds its
+        # resolution-FSM keys. The combined output is the same 18-key dict
+        # as before the WorkItem extraction (key order is irrelevant to
+        # equality; the golden master asserts this).
+        d = self._universal_dict()
+        d.update({
             "fsm_state": self.fsm_state.value,
             "parent_event_id": self.parent_event_id,
-            "autonomy_policy": self.autonomy_policy.to_dict(),
-            "context_items": [c.to_dict() for c in self.context_items],
-            "risk_profile": self.risk_profile,
-            "inciting_event_summary": self.inciting_event_summary,
-            "created_at": self.created_at,
-            "updated_at": self.updated_at,
-            "archived_at": self.archived_at,
             "current_focus_thread_id": self.current_focus_thread_id,
-            "resurface_at": self.resurface_at,
-            "order_index": self.order_index,
-            "search_blob": self.search_blob,
             "parent_relationship": self.parent_relationship,
             "originating_scrape_id": self.originating_scrape_id,
-        }
+        })
+        return d
 
     @classmethod
     def from_row(cls, row: dict[str, Any]) -> Thread:
