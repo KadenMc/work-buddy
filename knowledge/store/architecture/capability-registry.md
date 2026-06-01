@@ -58,7 +58,9 @@ dev_notes: |-
 
 The capability registry (`work_buddy/mcp_server/registry.py`) holds two maps: `_REGISTRY` (active capabilities, directly callable via the MCP gateway) and `_DISABLED_REGISTRY` (capabilities whose `requires=[...]` tool probe failed at build time, stashed but not callable). At build-time, the registry filter pass moves any capability whose tool probe failed from `_REGISTRY` to `_DISABLED_REGISTRY` and adds a row to `work_buddy.tools.DISABLED_CAPABILITIES` listing the missing tools.
 
-Disabled state is cached. A capability disabled by a transient probe failure (e.g. obsidian unreachable for 200ms during sidecar startup) stays disabled until something explicitly re-probes it.
+**The Obsidian bridge is the one exception** — the filter deliberately skips `obsidian`, so a bridge probe failure never build-time disables bridge-dependent capabilities. The bridge is a transiently-flaky shared dependency (not a genuinely-absent one), so it is governed at runtime by a circuit breaker on the gateway dispatch (see `architecture/resilience` and `work_buddy/mcp_server/dispatch_resilience.py`): bridge calls stay admitted, fail fast per call while the bridge is down, and recover the instant it returns — no session-long disable, no reload. The build-time disable below therefore applies only to *genuinely-absent* dependencies (calendar, hindsight, thunderbird, ...).
+
+Disabled state is cached. A capability disabled by a transient probe failure (e.g. the hindsight memory service unreachable for 200ms during sidecar startup) stays disabled until something explicitly re-probes it.
 
 ## Capability schema (selected fields)
 
@@ -68,6 +70,7 @@ Disabled state is cached. A capability disabled by a transient probe failure (e.
 - `consent_operations: list[str]` — declarations for the gateway's pre-flight consent bundling.
 - `op_id: str | None` — set when the capability was resolved from an inert declaration rather than instantiated directly (see "Declaration-based capabilities" below); None for directly-registered capabilities.
 - `effects: list[EffectSpec]` — manifest of externally-visible effects for capabilities that produce more than one. When non-empty, the post-write-verify recovery path uses `verify_post_write_effects` (walks every declared effect; can return `partial`) instead of single-effect verify. Capabilities with declared effects MUST be idempotent under retry. Schema lives at `work_buddy.obsidian.effects.EffectSpec`; recovery semantics in `architecture/retry-queue`.
+- `timeout_seconds: float | None | Callable[[params], float | None]` — the wall-time budget for one gateway dispatch, owned by the operation (never the caller). A scalar is a fixed ceiling; a callable derives the budget from the actual params (for operations whose runtime scales with input); unset (`None`) means the gateway applies the domain default — Obsidian-bridge capabilities run unbounded (they self-retry), everything else gets 30s. Resolved at dispatch in `work_buddy/mcp_server/dispatch_resilience.py`; a timed-out dispatch returns `error_kind="mcp_gateway_timeout"`.
 
 ## Two recovery paths — use the right one
 

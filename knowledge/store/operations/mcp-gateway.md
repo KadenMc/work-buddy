@@ -86,6 +86,15 @@ Diagnose and fix via these steps:
 
 If a capability is registered in the gateway, `wb_run` is the only valid way to invoke it — even when MCP is connected and working. Calling the underlying Python directly bypasses session tracking, consent gates, operation logging, and retry policy. The operation is **not equivalent** even if the outcome looks the same.
 
+## Dispatch reliability — timeouts and the bridge circuit breaker
+
+Every `wb_run` dispatch runs under an operation-appropriate wall-time budget and emits timing telemetry. Two failure responses you may see carry a distinct `error_kind`:
+
+- **`mcp_gateway_timeout`** — the capability did not return within its dispatch budget (most local capabilities: 30s; some declare their own). The work may still be running in the background, so treat the outcome as unknown rather than failed; retry only if the operation is idempotent. The budget is a property of the operation, not something you set per call.
+- **`obsidian_bridge_circuit_open`** (also `bridge_circuit_open: true`) — Obsidian-bridge capabilities are governed by a shared circuit breaker. After repeated bridge failures the breaker opens and sheds further bridge calls instead of hammering a struggling bridge; it admits a probe again automatically after a short cooldown. If you see this, the bridge is unhealthy (check that Obsidian is running with the bridge plugin enabled) — wait and retry rather than looping immediately.
+
+A capability whose bridge is momentarily down fails fast per call with an actionable error and recovers the instant the bridge returns — no registry reload needed.
+
 ## Gaps are OK to surface
 
 Not everything is in the gateway yet. If `wb_search` returns nothing relevant, then using the Python package directly (or raising a gap to the user) is acceptable — but check first.
