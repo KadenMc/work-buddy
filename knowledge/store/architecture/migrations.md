@@ -42,6 +42,10 @@ dev_notes: |-
   ## Test helper requirement
 
   `inspect.getsource` is the source-extraction mechanism, so migrations defined inside `exec`-d strings are invisible to it. Tests that need to compile functions dynamically must register source in `linecache` under a unique synthetic filename before `exec` -- see `tests/unit/test_storage_migrations.py::_compile_fn` for the pattern.
+
+  ## Audit-hash memoization
+
+  `_hash_callable` memoizes its result, weak-keyed on the migration callable. `MigrationRunner.run()` runs on the hot path of every projects / entities / tasks store `get_connection`, and a callable's source-AST hash is invariant across a process lifetime, so re-deriving it (`inspect.getsource` + `ast.parse` + `ast.unparse` + SHA-256) on every open was wasted work. The weak key lets test-compiled throwaway callables be garbage-collected. See `architecture/hot-path-discipline`.
 ---
 
 Per-DB versioned migration framework built on `PRAGMA user_version` plus a `_migration_history` audit table. Lives in `work_buddy/storage/migrations.py`. Used by every vital DB store module and by the `data_restore` pipeline to forward-roll a staged snapshot to current schema.

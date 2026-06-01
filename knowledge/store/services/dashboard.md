@@ -121,3 +121,4 @@ Triage runs through the unified source pipeline (``run_source_pipeline`` capabil
 * **Same-origin only** for any fetch from the frontend.
 * **Silent conversation create for sidebar-bound chats** — call ``conversations.store.create_conversation`` directly, NOT the ``conversation_create`` capability, so ``_notify_conversation_created`` does not double-mount the conversation as both a CHAT toast/workflow-view tab and a sidebar.
 * **Do not subscribe to ``dashboard.form.*`` events directly** from per-tab JS. The ``wbFormBridge`` (``core/form_bridge.py``) owns that event family; tab modules register handlers via ``window.wbFormBridge.register(form_id, ...)``.
+* **Keep request handlers off the hot-path anti-patterns** — no per-request config parse, per-open schema work, N+1 store opens, or unbounded synchronous bridge/subprocess calls. Serve expensive reads from a background-refreshed cache and pre-warm at startup. See ``architecture/hot-path-discipline``.
