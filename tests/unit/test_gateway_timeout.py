@@ -65,11 +65,16 @@ class TestStrategyComposition:
 
     def test_unbounded_budget_adds_no_timeout_strategy(self):
         # A self-managing capability is wrapped for telemetry but carries NO
-        # TimeoutStrategy, so the gateway cannot falsely kill it.
+        # TimeoutStrategy, so the gateway cannot falsely kill it. (Use a
+        # non-obsidian cap forced unbounded to isolate the timeout behaviour
+        # from the obsidian circuit breaker, which is covered separately in
+        # test_gateway_circuit_breaker.)
         strategies = dr.build_dispatch_strategies(
-            _cap(requires=["obsidian"]), math.inf,
+            _cap(timeout_seconds=math.inf), math.inf,
         )
-        assert strategies == []
+        assert all(
+            type(s).__name__ != "TimeoutStrategy" for s in strategies
+        )
 
     def test_unbounded_deadline_is_never(self):
         assert dr.build_dispatch_deadline(math.inf).at == math.inf
