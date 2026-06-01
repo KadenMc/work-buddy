@@ -415,37 +415,73 @@ def _print_startup_banner(
 # ---------------------------------------------------------------------------
 # Subprocess stdout/stderr lands in raw OS file handles (see _start_child),
 # not Python's logging framework, so RotatingFileHandler can't bound their
-# size. We emulate its policy explicitly: at child start, if the existing
-# log is over the cap, age out older rotations (.4 → drop, .3 → .4, …,
-# .1 → .2) and rename the current file to .1, then start fresh.
+# size — and because the child holds the handle open for its whole lifetime,
+# the file can only be safely renamed at child *startup*, before that handle
+# exists (on Windows, renaming a file with an open handle raises a sharing
+# violation). So this module owns exactly one job: roll an oversized live
+# log out of the way at startup so the child starts fresh.
 #
-# 16 MiB × 4 rotations = 80 MB ceiling per service. Naming mirrors what
-# RotatingFileHandler produces for the per-session and telegram logs we
-# already rotate, keeping the layout consistent across the whole repo.
+# RETENTION of the rolled-out backups is NOT handled here. It is owned by the
+# artifact-lifecycle reaper, which registers ``.data/runtime/service_logs/``
+# as the ``service-logs`` artifact (see
+# ``work_buddy/artifacts/default_registrations.py``) and deletes aged backups
+# on its twice-daily sweep. Splitting the two concerns is deliberate: a roll
+# that also managed a backup *count* would only ever weigh the live file at
+# startup and never bound an already-rolled oversized backup, so a low-volume
+# service's backup could persist indefinitely. Keeping this roller purely
+# size-triggered and delegating age/retention to the reaper avoids that.
+# Rolling to a timestamped name + age-reaping elsewhere mirrors logrotate's
+# ``dateext`` + ``maxage`` model.
 
 _SERVICE_LOG_CAP_BYTES = 16 * 1024 * 1024
-_SERVICE_LOG_BACKUP_COUNT = 4
 
 
-def _rotate_if_oversize(log_path: Path) -> None:
-    """Rotate ``log_path`` if it exists and exceeds the size cap.
+def _roll_oversize_log(log_path: Path) -> Path | None:
+    """Roll ``log_path`` aside if it exists and exceeds the size cap.
 
-    No-op if the file is missing or below the cap. Idempotent.
+    Renames an oversized live log to a unique timestamped backup
+    (``<stem>.<UTC-timestamp>.log``) in the same directory so the caller
+    can open a fresh empty live log. No-op (returns ``None``) when the file
+    is missing or at/below the cap. Returns the backup path when a roll
+    happened. Idempotent; never deletes — retention is the reaper's job.
     """
     if not log_path.exists() or log_path.stat().st_size <= _SERVICE_LOG_CAP_BYTES:
-        return
-    # Drop the oldest rotation if we already have N
-    oldest = log_path.with_suffix(f".{_SERVICE_LOG_BACKUP_COUNT}.log")
-    if oldest.exists():
-        oldest.unlink(missing_ok=True)
-    # Shift .N-1 → .N, ..., .1 → .2
-    for i in range(_SERVICE_LOG_BACKUP_COUNT - 1, 0, -1):
-        src = log_path.with_suffix(f".{i}.log")
-        dst = log_path.with_suffix(f".{i+1}.log")
-        if src.exists():
-            src.replace(dst)
-    # Move current to .1
-    log_path.replace(log_path.with_suffix(".1.log"))
+        return None
+
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc)
+    stem = log_path.stem  # e.g. "messaging" for "messaging.log"
+    ts = now.strftime("%Y%m%dT%H%M%S") + f"{now.microsecond:06d}"
+    backup = log_path.with_name(f"{stem}.{ts}.log")
+    # Microsecond resolution makes a same-name collision near-impossible,
+    # but guard anyway: a crash-restart loop must never clobber a backup.
+    counter = 0
+    while backup.exists():
+        counter += 1
+        backup = log_path.with_name(f"{stem}.{ts}-{counter}.log")
+    log_path.replace(backup)
+    return backup
+
+
+def _oversize_service_logs(log_dir: Path) -> list[tuple[Path, int]]:
+    """Return ``(path, size_bytes)`` for every ``*.log`` in ``log_dir`` over the cap.
+
+    Pure inspection helper used by the startup self-check (and tests). Reports
+    both live and rolled files; callers decide what to warn about. Missing
+    directory → empty list.
+    """
+    out: list[tuple[Path, int]] = []
+    if not log_dir.is_dir():
+        return out
+    for f in log_dir.glob("*.log"):
+        try:
+            size = f.stat().st_size
+        except OSError:
+            continue
+        if size > _SERVICE_LOG_CAP_BYTES:
+            out.append((f, size))
+    return out
 
 
 def _start_child(svc: ChildService) -> None:
@@ -479,7 +515,29 @@ def _start_child(svc: ChildService) -> None:
     from work_buddy.paths import data_dir
     log_dir = data_dir("runtime/service_logs")
     log_path = log_dir / f"{svc.name}.log"
-    _rotate_if_oversize(log_path)
+    rolled = _roll_oversize_log(log_path)
+    if rolled is not None:
+        logger.info(
+            "Rolled oversized %s aside to %s before %s restart",
+            log_path.name, rolled.name, svc.name,
+        )
+    # Startup self-check: surface any of this service's oversized logs still
+    # on disk (e.g. a backup grown past the cap by mid-run writes) so an
+    # unbounded-growth regression is visible immediately rather than only
+    # caught silently by the reaper. The service-logs artifact deletes aged
+    # backups on its twice-daily sweep.
+    oversize = [
+        (p, n) for p, n in _oversize_service_logs(log_dir)
+        if p.name.startswith(f"{svc.name}.")
+    ]
+    if oversize:
+        cap_mib = _SERVICE_LOG_CAP_BYTES // (1024 * 1024)
+        logger.warning(
+            "service_logs over %d MiB cap: %s — will be reaped by the "
+            "service-logs artifact sweep",
+            cap_mib,
+            ", ".join(f"{p.name}={n // (1024 * 1024)}MiB" for p, n in oversize),
+        )
     try:
         log_fh = open(log_path, "a", encoding="utf-8", buffering=1)
         log_fh.write(f"\n--- {svc.name} starting at {time.strftime('%Y-%m-%d %H:%M:%S')} ---\n")
@@ -508,6 +566,11 @@ def _start_child(svc: ChildService) -> None:
         assign_process_to_job(_kill_job, svc.process.pid)
     except OSError as exc:
         logger.error("Failed to start %s: %s", svc.name, exc)
+    finally:
+        # Close the daemon's copy of the child's log handle. The child holds
+        # its own inherited dup, so this does not affect its logging; leaving
+        # the parent copy open leaks a handle per restart and, on Windows,
+        # pins the file against the next startup roll's rename.
         if log_fh:
             log_fh.close()
 

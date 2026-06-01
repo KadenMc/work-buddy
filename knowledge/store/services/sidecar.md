@@ -21,18 +21,20 @@ parents:
 - services
 - services
 dev_notes: |-
-  ## Service-log rotation pattern
+  ## Service-log rotation pattern (roll-at-startup + artifact reaper)
 
-  Subprocess stdout/stderr lands in raw OS file handles, not Python's logging framework — `RotatingFileHandler` doesn't apply. The daemon emulates RotatingFileHandler's policy explicitly via `_rotate_if_oversize(log_path)` called immediately before `_start_child` opens its append-mode handle:
+  Subprocess stdout/stderr lands in raw OS file handles, not Python's logging framework — `RotatingFileHandler` doesn't apply. The child also holds that handle open for its whole lifetime, so the file can only be safely renamed at child *startup*, before the handle exists (on Windows, renaming a file with an open handle is a sharing violation). The daemon therefore owns exactly **one** job: roll an oversized live log out of the way at startup. **Retention of the rolled-out backups is owned by the artifact reaper, not the daemon** — see the `service-logs` artifact in `architecture/artifact-system`.
 
-  - if the file is missing or below the cap, no-op;
-  - otherwise rotate by renaming `<name>.<N>.log` → drop, `<name>.<N-1>.log` → `<name>.<N>.log`, …, `<name>.<1>.log` → `<name>.<2>.log`, current `<name>.log` → `<name>.<1>.log`.
+  `_roll_oversize_log(log_path)` runs in `_start_child` immediately before the append-mode handle opens:
 
-  `_SERVICE_LOG_CAP_BYTES` (16 MiB) and `_SERVICE_LOG_BACKUP_COUNT` (4) are module-level constants in `sidecar/daemon.py`. The fresh `<name>.log` is created by the next `open(..., "a")` call.
+  - if the file is missing or at/below `_SERVICE_LOG_CAP_BYTES` (16 MiB), no-op (returns `None`);
+  - otherwise rename the live `<name>.log` → `<name>.<UTC-timestamp+micros>.log` (with a `-<n>` tiebreaker against same-microsecond collisions) and return the backup path. The fresh `<name>.log` is created by the next `open(..., "a")`.
 
-  The rotation only fires at child start. A child that streams output continuously between restarts can exceed the cap mid-run; that's acceptable in practice because typical restart cadence is "once or twice a week" and the cap × backup-count = 80 MB ceiling per service is well within disk budget. If you need stricter bounding, switch to piping child stdout through a Python logger thread per child — but that loses the "captured stdout always observable in a raw file" property the original design preserves.
+  Retention of the rolled-out backups is owned by the `service-logs` artifact (`MtimeWindow(7d)` + `Delete`, pinning the live `<name>.log`), not by this roll — mirroring logrotate's `dateext` + `maxage` split. The split is deliberate: a roll that also manages a backup *count* weighs only the live file at startup and never bounds an already-rolled oversized backup, so a low-volume service's backup can persist indefinitely. Keeping the roller purely size-triggered and delegating age/retention to the reaper avoids that.
 
-  The naming `<name>.1.log` mirrors what `RotatingFileHandler` produces for the per-session and telegram logs, keeping the layout consistent across the whole repo.
+  The roll still only fires at child start, so a child streaming continuously between restarts can exceed the cap mid-run. Accepted in practice: restart cadence is "once or twice a week", the access-log filter already throttles the dominant write source, and the live log self-heals on the next restart. Stricter mid-run bounding would require piping child stdout through a per-child reader thread — rejected as over-engineering for disposable logs, since it adds failure surface to the startup path and loses the "captured stdout always observable in a raw file" property. A startup self-check (`_oversize_service_logs`) logs a WARNING if any of a service's logs exceed the cap, so a regression is visible immediately.
+
+  Note the daemon now closes its *own* copy of the child log handle after `Popen` (in a `finally`); the child keeps its inherited dup. Leaving the parent copy open leaked a handle per restart and, on Windows, would pin the file against the next startup roll.
 
   ## Child-process insulation: takeover + interpreter pin
 
@@ -136,7 +138,7 @@ Three subsystems:
 
 Shutdown: First Ctrl+C / SIGTERM requests graceful shutdown; a watchdog thread force-exits after 15s if the main thread is stuck in a blocking syscall, so shutdown is always bounded. A second Ctrl+C force-kills children immediately. The `JobsWatcher` observer thread is stopped and joined alongside the HealthMonitor in the cleanup path.
 
-Child stdout/stderr: redirected to `<data_root>/runtime/service_logs/<service>.log` so a silent or crashing child is always observable — Popen inheritance with CREATE_NO_WINDOW can otherwise drop output on Windows. Each log is size-capped at 16 MiB × 4 rotations (80 MB ceiling per service) via rotate-on-startup; oversized logs are renamed to `<service>.1.log` (.2, .3, .4, dropping the oldest) when the daemon launches the child.
+Child stdout/stderr: redirected to `<data_root>/runtime/service_logs/<service>.log` so a silent or crashing child is always observable — Popen inheritance with CREATE_NO_WINDOW can otherwise drop output on Windows. At child launch the daemon rolls an oversized live log (>16 MiB) aside to a timestamped backup (`_roll_oversize_log`); the `service-logs` artifact then reaps rolled backups older than 7 days on the twice-daily cleanup tick (pinning the live log). See the rotation dev-note above.
 
 Job file format: .md files in either jobs directory with YAML frontmatter (schedule, recurring, type, capability/params, enabled, spawn_mode, optional jitter_seconds). Each loaded `Job` carries a `source` field (`"system"` or `"user"`) that propagates through `JobState` into `sidecar_state.json` and is used by the dashboard's Jobs tab to group entries.
 
