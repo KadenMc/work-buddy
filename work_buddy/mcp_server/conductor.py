@@ -1305,13 +1305,35 @@ def _build_response(
     instruction = meta.get("instruction", "")
     step_type = meta.get("step_type", "unknown")
 
+    # A reasoning step may legitimately carry no inline instruction: by the
+    # house convention its behavioral prose lives in the workflow's bound
+    # directions unit (the kind:directions unit whose `workflow:` targets this
+    # workflow). The slash command loads that unit on the front-door path —
+    # but a nested or headless invocation never does, leaving the agent blind
+    # at the bare step. Deliver the bound directions content here so the
+    # convention holds on every entry path. Only when there is genuinely no
+    # bound directions to deliver is an empty reasoning instruction the real
+    # defect the validator's workflow_step_consistency check flags.
+    directions_source: str | None = None
     if not instruction and step_type == "reasoning":
-        logger.warning(
-            "Reasoning step '%s' has empty instruction — the agent will "
-            "receive no procedure. Check that the workflow body has a "
-            "matching section (### Task: `%s` or ### N. %s).",
-            task_id, task_id, next_task["name"],
-        )
+        delivered, src = _resolve_bound_directions(dag)
+        if delivered:
+            instruction = (
+                f"The behavioral procedure for this step lives in its bound "
+                f"directions unit `{src}`, delivered below so it is available "
+                f"regardless of how this workflow was entered (slash command "
+                f"or nested invocation). If you already loaded it this session, "
+                f"this re-anchors it at the point of use:\n\n---\n\n{delivered}"
+            )
+            directions_source = src
+        else:
+            logger.warning(
+                "Reasoning step '%s' has empty instruction and no bound "
+                "directions unit — the agent will receive no procedure. Either "
+                "write the workflow body section (### Task: `%s` / ### N. %s) "
+                "or bind a kind:directions unit (workflow: <this workflow path>).",
+                task_id, task_id, next_task["name"],
+            )
 
     current_step: dict[str, Any] = {
         "id": task_id,
@@ -1320,6 +1342,9 @@ def _build_response(
         "step_type": step_type,
         "execution": next_task.get("execution", "main"),
     }
+
+    if directions_source:
+        current_step["directions_source"] = directions_source
 
     if next_task.get("workflow_file"):
         current_step["workflow_file"] = next_task["workflow_file"]
@@ -1824,6 +1849,45 @@ def _get_wf_def(dag: WorkflowDAG) -> WorkflowDefinition | None:
     wf_name = dag.name.split(":")[0] if ":" in dag.name else dag.name
     entry = get_entry(wf_name)
     return entry if isinstance(entry, WorkflowDefinition) else None
+
+
+def _resolve_bound_directions(dag: WorkflowDAG) -> tuple[str | None, str | None]:
+    """Render the workflow's bound directions unit for delivery to a bare step.
+
+    Returns ``(rendered_full_content, source_path)`` when the running
+    workflow has a bound directions unit (``WorkflowDefinition.bound_directions_path``,
+    precomputed at registry-build time), or ``(None, None)`` when there is no
+    binding or it cannot be rendered.
+
+    The content is rendered exactly as ``agent_docs`` delivers it at
+    ``depth="full"`` — via the unit's public ``tier()`` renderer with
+    ``recursive_mode="default"`` — so conductor delivery is byte-for-byte what
+    the slash command would have loaded. ``load_store()`` is memoized, so this
+    is cheap; it runs only for instruction-less reasoning steps.
+
+    Never raises: any failure degrades to ``(None, None)``, which routes the
+    caller back to the empty-instruction warning (status quo before delivery).
+    """
+    wf_def = _get_wf_def(dag)
+    path = getattr(wf_def, "bound_directions_path", None) if wf_def else None
+    if not path:
+        return None, None
+    try:
+        from work_buddy.knowledge.store import load_store
+
+        store = load_store()
+        unit = store.get(path)
+        if unit is None:
+            return None, None
+        rendered = unit.tier(
+            depth="full", store=store, recursive_mode="default",
+        ).get("content")
+        return (rendered, path) if rendered else (None, None)
+    except Exception as exc:  # pragma: no cover — defensive; never break a step
+        logger.warning(
+            "bound-directions delivery failed for %r: %s", path, exc,
+        )
+        return None, None
 
 
 def _relevant_step_results(
