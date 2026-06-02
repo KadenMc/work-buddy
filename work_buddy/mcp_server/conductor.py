@@ -1104,6 +1104,14 @@ def _build_response(
     """
     auto_ran: list[dict[str, Any]] = []  # track what was auto-executed
     wf_def = _get_wf_def(dag)  # for visibility lookups
+    # Top-level params this workflow declares optional (required is falsy).
+    # An auto_run step whose input_map wires such a param via __params__.<key>
+    # may legitimately find it absent; the resolver skips the kwarg so the
+    # callable's own default applies, instead of failing the step.
+    optional_params = {
+        k for k, spec in (getattr(wf_def, "params_schema", None) or {}).items()
+        if not (isinstance(spec, dict) and spec.get("required"))
+    }
 
     while True:
         available = dag.next_available()
@@ -1233,6 +1241,7 @@ def _build_response(
             dag.get_all_results(),
             agent_session_id=getattr(dag, "agent_session_id", None),
             initial_params=getattr(dag, "initial_params", None),
+            optional_params=optional_params,
         )
 
         # Re-mint workflow run grant if we suspended it
@@ -1410,6 +1419,56 @@ def _build_response(
     return response
 
 
+def _resolve_input_map(
+    input_map: dict[str, str],
+    step_results: dict[str, Any],
+    initial_params: dict[str, Any] | None,
+    optional_params: set[str] | None = None,
+) -> tuple[dict[str, Any], str | None]:
+    """Resolve an auto_run step's ``input_map`` into kwargs.
+
+    Returns ``(kwargs_updates, error)`` — ``error`` is None on success.
+
+    Sources beginning with ``__params__`` resolve from the workflow's
+    caller-provided initial params (``__params__`` → whole dict;
+    ``__params__.foo`` → ``initial_params["foo"]``; ``__params__.a.b`` →
+    nested). Every other source names a prior step whose result is wired in.
+
+    Optionality: when a **top-level** ``__params__.<key>`` source is absent but
+    ``<key>`` is declared ``required: false`` in the workflow's params_schema
+    (passed as ``optional_params``), the kwarg is **skipped** so the callable's
+    own default applies — the schema's ``required: false`` is authoritative
+    here, matching the start-gate (`_validate_workflow_params`). A missing
+    source that is not a declared-optional top-level param — a typo, a nested
+    (`a.b`) miss, or a required key — still errors (fail-loud preserved).
+    """
+    optional_params = optional_params or set()
+    kwargs: dict[str, Any] = {}
+    for kwarg_name, source in input_map.items():
+        if isinstance(source, str) and source.startswith("__params__"):
+            found, value = _resolve_params_source(source, initial_params)
+            if found:
+                kwargs[kwarg_name] = value
+                continue
+            parts = source.split(".")
+            if len(parts) == 2 and parts[1] in optional_params:
+                # Declared-optional param the caller omitted → let the
+                # callable's default apply; do not wire the kwarg.
+                continue
+            return {}, (
+                f"input_map references {source!r} for kwarg {kwarg_name!r}, "
+                "but the workflow's initial_params has no such key"
+            )
+        if source in step_results:
+            kwargs[kwarg_name] = step_results[source]
+        else:
+            return {}, (
+                f"input_map references step {source!r} for kwarg "
+                f"{kwarg_name!r}, but that step has no result yet"
+            )
+    return kwargs, None
+
+
 def _execute_auto_run(
     step_id: str,
     spec: dict[str, Any],
@@ -1417,6 +1476,7 @@ def _execute_auto_run(
     *,
     agent_session_id: str | None = None,
     initial_params: dict[str, Any] | None = None,
+    optional_params: set[str] | None = None,
 ) -> dict[str, Any]:
     """Execute an auto_run callable in an isolated subprocess.
 
@@ -1467,36 +1527,18 @@ def _execute_auto_run(
     # --- Strip None values from kwargs (YAML `null` → Python None) ---
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
 
-    # --- Resolve input_map: wire prior step results into kwargs ---
-    # Sources beginning with ``__params__`` resolve from the workflow's
-    # caller-provided initial params instead of step_results. Supports
-    # dotted-key walks: ``__params__`` → whole dict; ``__params__.foo``
-    # → initial_params["foo"]; ``__params__.a.b`` → nested.
-    input_map = spec.get("input_map") or {}
-    for kwarg_name, source_step_id in input_map.items():
-        if isinstance(source_step_id, str) and source_step_id.startswith("__params__"):
-            found, value = _resolve_params_source(source_step_id, initial_params)
-            if not found:
-                return {
-                    "success": False,
-                    "error": (
-                        f"input_map references {source_step_id!r} for kwarg "
-                        f"{kwarg_name!r}, but the workflow's initial_params has no "
-                        "such key"
-                    ),
-                }
-            kwargs[kwarg_name] = value
-            continue
-        if source_step_id in step_results:
-            kwargs[kwarg_name] = step_results[source_step_id]
-        else:
-            return {
-                "success": False,
-                "error": (
-                    f"input_map references step {source_step_id!r} for kwarg "
-                    f"{kwarg_name!r}, but that step has no result yet"
-                ),
-            }
+    # --- Resolve input_map: wire prior step results / caller params into kwargs ---
+    # Delegated to the pure _resolve_input_map helper (unit-tested in isolation),
+    # which also applies the declared-optional skip for absent __params__.<key>.
+    resolved, im_error = _resolve_input_map(
+        spec.get("input_map") or {},
+        step_results,
+        initial_params,
+        optional_params,
+    )
+    if im_error:
+        return {"success": False, "error": im_error}
+    kwargs.update(resolved)
 
     # --- Build subprocess payload ---
     # Prefer the workflow-pinned agent session so consent checks hit the
