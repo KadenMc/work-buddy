@@ -58,6 +58,12 @@ dev_notes: |-
   ## Why op-record `originating_session_id` is the consent reference
 
   The op record already carries `originating_session_id` (set by `_save_operation` from `WORK_BUDDY_SESSION_ID`). The sidecar's `_replay` binds a `replay_of(originating_session_id)` consent principal (and sets the `set_originating_session` contextvar for cost/artifact attribution). The consent layer resolves against the principal's session at check time, riding individual grants only. Net: zero schema changes, zero new persistence, full cross-session inheritance for replays with no workflow-grant time-travel.
+
+  ## Out-of-band enqueue seam (`enqueue_capability_for_retry`)
+
+  `work_buddy.mcp_server.tools.gateway.enqueue_capability_for_retry(capability, params, *, error, error_kind=None, originating_session_id=None) -> str | None` is the public seam for callers that do NOT dispatch through `wb_run` but still want transient-failure recovery — e.g. the Telegram capture handler, which runs in a separate sidecar process and calls the capability function directly. It creates a failed op record via `_save_operation` (carrying the capability's declared `retry_policy`, default `verify_first`) and enqueues it via `_enqueue_for_retry` with `error_class='transient'`, so the sidecar sweep replays the capability from the registry on backoff and re-reads vault state fresh each attempt.
+
+  The caller is responsible for only enqueuing genuinely transient failures — gate on `work_buddy.errors.classify_error(exc) == 'transient'` before calling. Returns the op_id, or `None` if persistence failed (the caller should then surface the original error rather than claim a queued retry). `originating_session_id` defaults to the op record's `session_id` (`WORK_BUDDY_SESSION_ID`), bound by the sweep as the `replay_of` consent principal — so a grant held by that session authorizes the replay without re-prompting. Consumer: `work_buddy/telegram/handlers.py::_do_capture`.
 ---
 
 ## Agent-facing quick rules

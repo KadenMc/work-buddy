@@ -28,7 +28,7 @@ Work-buddy has two ways to write a vault file from Python. They look similar; pi
 
 | Helper | Behavior on bridge down | Use for |
 |---|---|---|
-| `work_buddy.obsidian.vault_writer.vault_write(path, abs_path, content, *, write_mode='replace', content_hint=None)` | Catches `ObsidianUnreachable`, falls back to atomic direct filesystem write. Re-raises `ObsidianEditorConflict`, `ObsidianPostWriteUncertain`, `ObsidianRefused`, `ObsidianServerError`. | Journals, knowledge units, capture, generic content the user typed (no plugin owns state for these files) |
+| `work_buddy.obsidian.vault_writer.vault_write(path, abs_path, content, *, write_mode='replace', content_hint=None)` | Direct filesystem fallback **only when the Obsidian process is down** (`ObsidianNotRunning` / `is_obsidian_running()` is False). Re-raises every other failure — other `ObsidianUnreachable` subclasses (`ObsidianStartupRace`, plugin missing / disabled), `ObsidianEditorConflict`, `ObsidianPostWriteUncertain`, `ObsidianRefused`, `ObsidianServerError`. | Journals, knowledge units, capture, generic content the user typed (no plugin owns state for these files) |
 | `work_buddy.obsidian.bridge.write_file_raw(path, content, *, write_mode='replace', content_hint=None)` | Raises typed `ObsidianError` subclasses; no fallback | Master task list (`tasks/master-task-list.md`), task notes, archives, contract files — anything the Obsidian Tasks plugin has live cache state for |
 
 ## Why the split is principled
@@ -37,8 +37,12 @@ The Tasks plugin maintains a runtime cache of every task in the vault. Mutations
 
 A direct `Path.write_text()` to the master task list bypasses ALL of that. The file on disk would be correct momentarily, but the plugin's in-memory cache would be stale until the next vault rescan, and any mutation the plugin then applied would be against pre-write state. Recurring tasks would lose their schedule, done-dates would be wrong, and so on.
 
-Non-task files have no equivalent plugin invariant, so falling back to a direct write is safe — the bridge is just a delivery mechanism. BUT: even for non-task files, the fallback only fires for `ObsidianUnreachable` (bridge can't even be reached, body not sent). For other failure types we re-raise:
+Non-task files have no equivalent plugin invariant, so a direct write is safe — **as long as no editor is holding the file**. The deciding predicate is the Obsidian **process** state, not bridge reachability: `vault_write` direct-writes only when `is_obsidian_running()` is False (`ObsidianNotRunning`). If Obsidian is running but the bridge is transiently unreachable (startup race / port not yet bound) or otherwise failing, an editor may have the note open. A direct write would update disk while the open editor keeps its old buffer, leaving the two diverged — and Obsidian then reports the file dirty on every subsequent bridge write, wedging it with a persistent `409 editor_dirty` until the user reloads the note. So those cases re-raise (transient) and the gateway / retry queue replays once the bridge recovers, rather than direct-writing.
 
+Per failure type:
+
+- `ObsidianNotRunning` → process is down, no editor can be open. Direct filesystem fallback is safe. FALL BACK.
+- `ObsidianStartupRace` / `ObsidianPluginMissing` / `ObsidianPluginDisabled` (other `ObsidianUnreachable`) → Obsidian is running; an editor may hold the note. RE-RAISE — don't diverge it.
 - `ObsidianPostWriteUncertain` → RE-RAISE. Body MAY have been sent; the gateway-side post-write-verify reads the file and decides. Filesystem fallback would risk overwriting a successful write.
 - `ObsidianEditorConflict` → RE-RAISE. The user has unsaved typing; a filesystem write would clobber it.
 - `ObsidianRefused` → RE-RAISE. Structural refusal (4xx other than 409). No retry will help; falling back to filesystem doesn't change the rejection reason.
@@ -63,7 +67,7 @@ Callers that do section-aware inserts (e.g. `vault_write_at_location`) should pa
 
 Both helpers route through `bridge.write_file_raw` when the bridge is up. That function raises `ObsidianEditorConflict` **immediately** on the first `409` from the plugin's pre-flight dirty-editor check. There is no in-bridge retry: retrying the same payload bytes after the user's typing auto-saves to disk would silently clobber those saved keystrokes. Re-reading + re-computing the payload is the *caller's* job — in practice, the gateway's retry queue (`architecture/retry-queue`).
 
-Capabilities with `retry_policy="verify_first"` or `"replay"` auto-enqueue on transient errors; the sidecar sweep re-invokes the whole capability from scratch on adaptive backoff (10 / 20 / 45 / 90 / 120s), so each attempt reads the file fresh. `vault_write_at_location`, `journal_write`, and the task mutation family all carry `verify_first` for this reason.
+Capabilities with `retry_policy="verify_first"` or `"replay"` auto-enqueue on transient errors; the sidecar sweep re-invokes the whole capability from scratch on adaptive backoff (10 / 20 / 45 / 90 / 120s), so each attempt reads the file fresh. `vault_write_at_location`, `journal_write`, and the task mutation family all carry `verify_first` for this reason. Out-of-band callers that don't dispatch through `wb_run` (e.g. the Telegram capture handler in the sidecar) enqueue the same way via `enqueue_capability_for_retry` (see `architecture/retry-queue`).
 
 `vault_write` deliberately does NOT fall back to a direct disk write on `ObsidianEditorConflict` — such a write would still be clobbered the moment the user saves. The conflict signal exists precisely to prevent that.
 
@@ -77,6 +81,7 @@ The legacy `EditorConflict` alias was removed in CP9. Callers must import `Obsid
 
 ## Anti-patterns
 
+- **Falling back to a direct write while Obsidian is running.** Even on a transient bridge flap (startup race / timeout), the note may be open in an editor; a direct disk write diverges the editor buffer from disk and wedges the note with a persistent 409 editor_dirty. Direct-write only when `is_obsidian_running()` is False.
 - **Retrying a write with the same payload after the user has been typing.** The whole reason `ObsidianEditorConflict` is raised at the first 409 is that a later retry with the original payload would clobber whatever the user auto-saved in the interim. Retry must go through the gateway / sidecar so each attempt re-computes the payload.
 - **Falling back to direct write on `ObsidianEditorConflict`.** The conflict signal exists precisely to prevent the disk-clobbers-editor scenario. Bypassing it re-introduces the bug.
 - **Falling back to direct write on `ObsidianPostWriteUncertain`.** Risks overwriting a successful-but-unacknowledged plugin write. Let the gateway's verify path decide.

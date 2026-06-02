@@ -49,9 +49,12 @@ def test_append_preserves_order_across_midnight(tmp_path, monkeypatch):
     # Neutralize the consent decorator and bridge write so we exercise pure logic
     from work_buddy import journal as jmod
 
-    # Force the direct-write path (no bridge)
+    # Force the safe direct-write path: bridge unavailable AND Obsidian
+    # genuinely down (so vault_write's process guard permits the filesystem
+    # write rather than re-raising to protect a possibly-open editor).
     import work_buddy.obsidian.bridge as bridge_mod
     monkeypatch.setattr(bridge_mod, "is_available", lambda: False, raising=False)
+    monkeypatch.setattr(bridge_mod, "is_obsidian_running", lambda: False, raising=False)
 
     journal_file = _make_journal(tmp_path)
     entries = [
@@ -80,3 +83,32 @@ def test_append_preserves_order_across_midnight(tmp_path, monkeypatch):
     assert arrived_pos < meeting_pos < pm_one_pos < pm_late_pos
     # Post-midnight lands after PM late
     assert pm_late_pos < pm1_pos < pm2_pos
+
+
+def test_append_refuses_direct_write_when_obsidian_running(tmp_path, monkeypatch):
+    """Regression: a transient bridge outage while Obsidian is RUNNING must not
+    fall back to a direct filesystem write. A direct write would diverge an
+    open editor's buffer from disk and wedge the note with a persistent 409
+    editor_dirty. The write must raise (transient) so the retry queue replays
+    it; the file on disk must stay untouched (no divergence created).
+    """
+    from work_buddy.obsidian.errors import ObsidianStartupRace
+    import work_buddy.obsidian.bridge as bridge_mod
+
+    # Bridge reports unavailable (startup race / port flap) but the Obsidian
+    # process IS up — an editor may be holding the note.
+    monkeypatch.setattr(bridge_mod, "is_available", lambda: False, raising=False)
+    monkeypatch.setattr(bridge_mod, "is_obsidian_running", lambda: True, raising=False)
+
+    journal_file = _make_journal(tmp_path)
+    before = journal_file.read_text(encoding="utf-8")
+
+    with pytest.raises(ObsidianStartupRace):
+        _append_to_journal_locked(
+            [("2:15 PM", "must not land via direct write")],
+            journal_file,
+            "2026-04-16",
+        )
+
+    # Disk untouched — the open editor cannot have diverged.
+    assert journal_file.read_text(encoding="utf-8") == before
