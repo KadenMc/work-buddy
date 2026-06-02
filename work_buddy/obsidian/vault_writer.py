@@ -308,15 +308,29 @@ def vault_write(
     the ``obsidian/vault-write-decision`` knowledge unit for the picking
     rule.
 
-    Post-CP6 fallback policy
-    ------------------------
+    Fallback safety predicate
+    -------------------------
+    A direct filesystem write is only safe when the Obsidian **process is
+    genuinely down** (``bridge.is_obsidian_running()`` is False) — then no
+    editor can be holding the note. If Obsidian is running, an open editor's
+    in-memory buffer would diverge from the freshly-written disk content (the
+    bridge's ``syncOpenEditorsToDisk`` only fires on writes *through* the
+    plugin), wedging the note with a persistent ``409 editor_dirty`` on every
+    later bridge write. So a transient bridge failure while Obsidian is up
+    must NOT direct-write — it re-raises so the gateway / retry queue replays.
+
     The bridge layer raises typed exceptions per the
     ``work_buddy.obsidian.errors`` hierarchy. Different failure types
     take different recovery paths:
 
-      ObsidianUnreachable (and subclasses)
-          Bridge can't be reached — body was NOT sent. Filesystem
-          fallback is safe (no double-write risk). FALL BACK.
+      ObsidianNotRunning
+          Obsidian process is down — no editor can hold the note, so a
+          direct filesystem write cannot diverge an open editor. FALL BACK.
+      ObsidianUnreachable (other subclasses: startup race, plugin
+      missing / disabled)
+          Obsidian IS running but the bridge is transiently/structurally
+          unreachable. An editor may hold the note. RE-RAISE — direct-writing
+          would diverge it. The retry queue replays once the bridge recovers.
       ObsidianPostWriteUncertain
           Body MAY have been sent and the plugin MAY have committed.
           Filesystem fallback would overwrite the plugin's write if
@@ -341,9 +355,11 @@ def vault_write(
     from work_buddy.consent import ConsentRequired
     from work_buddy.obsidian.errors import (
         ObsidianEditorConflict,
+        ObsidianNotRunning,
         ObsidianPostWriteUncertain,
         ObsidianRefused,
         ObsidianServerError,
+        ObsidianStartupRace,
         ObsidianUnreachable,
     )
 
@@ -351,7 +367,11 @@ def vault_write(
     vault_rel_path = vault_rel_path.replace("\\", "/")
 
     try:
-        from work_buddy.obsidian.bridge import write_file_raw, is_available
+        from work_buddy.obsidian.bridge import (
+            is_available,
+            is_obsidian_running,
+            write_file_raw,
+        )
         if is_available():
             log.info("Writing via bridge: %s", vault_rel_path)
             result = write_file_raw(
@@ -361,7 +381,7 @@ def vault_write(
             log.info("Bridge write result: %s", result)
             return result
         else:
-            log.info("Bridge not available, falling back to direct write")
+            log.info("Bridge not available; deciding fallback by process state")
     except ConsentRequired:
         raise
     except ObsidianEditorConflict:
@@ -372,16 +392,40 @@ def vault_write(
         raise  # Structural refusal — no point falling back.
     except ObsidianServerError:
         raise  # Plugin-side fault — filesystem would bypass plugin state.
-    except ObsidianUnreachable as exc:
-        # Body not sent (port refused / Obsidian not running). Filesystem
-        # fallback is safe — no double-write risk.
+    except ObsidianNotRunning:
+        # Obsidian process is genuinely down — no editor can be holding the
+        # note, so a direct filesystem write cannot diverge an open editor.
+        # Fall through to the safe direct write below.
         log.warning(
-            "Bridge unreachable (%s); falling back to direct filesystem write",
-            exc.error_kind,
+            "Obsidian not running; falling back to direct filesystem write: %s",
+            vault_rel_path,
+        )
+    except ObsidianUnreachable as exc:
+        # Obsidian IS running but the bridge is transiently unreachable
+        # (startup race / port not yet bound, plugin missing or disabled).
+        # An editor may be holding this note: a direct filesystem write would
+        # diverge its buffer from disk and wedge the bridge with a persistent
+        # 409 editor_dirty. Re-raise (transient) so the gateway / retry queue
+        # replays once the bridge recovers — do NOT direct-write.
+        log.warning(
+            "Bridge unreachable but Obsidian is running (%s); re-raising "
+            "instead of direct write to avoid diverging an open editor: %s",
+            exc.error_kind, vault_rel_path,
+        )
+        raise
+
+    # Reached only when is_available() returned False, OR ObsidianNotRunning
+    # was caught above. Guard the is_available()==False-but-process-up case:
+    # a startup race / port flap reports unavailable even though Obsidian is
+    # running with the note open, and direct-writing there would diverge the
+    # open editor. Only the genuine process-down case is safe to direct-write.
+    if is_obsidian_running():
+        raise ObsidianStartupRace(
+            f"bridge unavailable but Obsidian is running; refusing direct "
+            f"write to {vault_rel_path} (would diverge an open editor)"
         )
 
-    # Direct fallback (atomic). Reached only when bridge.is_available()
-    # returned False at the top, OR ObsidianUnreachable was caught above.
+    # Direct fallback (atomic). Reached only when Obsidian is down.
     try:
         log.info("Direct write: %s", abs_path)
         tmp = abs_path.with_suffix(".tmp")

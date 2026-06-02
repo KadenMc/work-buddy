@@ -426,13 +426,60 @@ async def _do_capture(update: Update, text: str, state: "BotState") -> None:
         logger.info("Capture: note=%s section=%s position=%s text=%s",
                      note, section, position, text[:40])
 
-        result = write_at_location(
-            content=block,
-            note=note,
-            section=section,
-            position=position,
-            source=None,  # tag is already in the block header
-        )
+        try:
+            result = write_at_location(
+                content=block,
+                note=note,
+                section=section,
+                position=position,
+                source=None,  # tag is already in the block header
+            )
+        except Exception as exc:
+            # A transient bridge failure — a busy editor (409 editor_dirty), a
+            # startup race, a timeout — must not drop the capture. Enqueue it
+            # for the sidecar retry sweep, which replays vault_write_at_location
+            # on backoff and lands it once the bridge frees up. Anything
+            # non-transient falls through to the outer handler below.
+            from work_buddy.errors import classify_error
+            if classify_error(exc) != "transient":
+                raise
+            from work_buddy.mcp_server.tools.gateway import (
+                enqueue_capability_for_retry,
+            )
+            op_id = enqueue_capability_for_retry(
+                "vault_write_at_location",
+                {
+                    "content": block,
+                    "note": note,
+                    "section": section,
+                    "position": position,
+                    "source": None,
+                },
+                error=str(exc),
+                error_kind=getattr(exc, "error_kind", None),
+            )
+            # Lead the reply with the resolved note path (parallel to the
+            # success "Captured to <note>" line) for scannability. The typed
+            # ObsidianError carries the resolved vault-relative path; fall back
+            # to the resolver token if it doesn't.
+            target = getattr(exc, "path", None) or note
+            if op_id:
+                logger.info("Capture enqueued for retry (op=%s): %s", op_id, exc)
+                await _reply(
+                    update,
+                    f"Attempted capture to {target} — queued (Obsidian busy "
+                    "with unsaved edits). It'll land automatically once the "
+                    "note is free; no need to resend.",
+                )
+            else:
+                logger.error("Capture enqueue failed: %s", exc, exc_info=True)
+                await _reply(
+                    update,
+                    f"Attempted capture to {target} — couldn't queue it "
+                    f"({exc}). Reopen the note in Obsidian (or start today's), "
+                    "then resend.",
+                )
+            return
 
         logger.info("Capture result: status=%s note=%s",
                      result.get("status"), result.get("note"))

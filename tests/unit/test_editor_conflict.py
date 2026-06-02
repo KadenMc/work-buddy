@@ -156,3 +156,86 @@ class TestVaultWriteDoesNotFallBackOnConflict:
                 vault_writer.vault_write(
                     "x.md", Path("/tmp/x.md"), "new content"
                 )
+
+
+class TestVaultWriteProcessGatedFallback:
+    """vault_write may only direct-write when Obsidian is genuinely DOWN.
+
+    When Obsidian is running but the bridge is transiently unavailable
+    (startup race / port flap), a direct filesystem write would diverge an
+    open editor's buffer from disk and wedge the note with a persistent 409
+    editor_dirty. The write must raise (transient) instead, so the retry queue
+    replays once the bridge recovers. The safety predicate is the pure process
+    check ``is_obsidian_running()`` — NOT ``is_available()`` (which reports
+    False during a startup race even though Obsidian is up).
+    """
+
+    def test_direct_write_when_obsidian_down(self, tmp_path):
+        from work_buddy.obsidian import vault_writer
+
+        p = tmp_path / "note.md"
+        with patch(
+            "work_buddy.obsidian.bridge.is_available", return_value=False
+        ), patch(
+            "work_buddy.obsidian.bridge.is_obsidian_running", return_value=False
+        ):
+            ok = vault_writer.vault_write("note.md", p, "fresh content")
+        assert ok is True
+        assert p.read_text(encoding="utf-8") == "fresh content"
+
+    def test_refuses_direct_write_when_unavailable_but_obsidian_running(self, tmp_path):
+        """Core regression: is_available()==False during a startup race while
+        Obsidian is up must NOT direct-write — it raises and leaves disk
+        untouched (no divergence created)."""
+        from work_buddy.obsidian import vault_writer
+        from work_buddy.obsidian.errors import ObsidianStartupRace
+
+        p = tmp_path / "note.md"
+        p.write_text("original", encoding="utf-8")
+        with patch(
+            "work_buddy.obsidian.bridge.is_available", return_value=False
+        ), patch(
+            "work_buddy.obsidian.bridge.is_obsidian_running", return_value=True
+        ):
+            with pytest.raises(ObsidianStartupRace):
+                vault_writer.vault_write("note.md", p, "should not land")
+        assert p.read_text(encoding="utf-8") == "original"
+
+    def test_startup_race_from_write_reraises(self, tmp_path):
+        """A non-NotRunning ObsidianUnreachable raised by write_file_raw
+        (startup race: Obsidian up, port not bound) re-raises rather than
+        direct-writing."""
+        from work_buddy.obsidian import vault_writer
+        from work_buddy.obsidian.errors import ObsidianStartupRace
+
+        p = tmp_path / "note.md"
+        p.write_text("original", encoding="utf-8")
+        with patch(
+            "work_buddy.obsidian.bridge.is_available", return_value=True
+        ), patch(
+            "work_buddy.obsidian.bridge.is_obsidian_running", return_value=True
+        ), patch(
+            "work_buddy.obsidian.bridge.write_file_raw",
+            side_effect=ObsidianStartupRace("port not bound"),
+        ):
+            with pytest.raises(ObsidianStartupRace):
+                vault_writer.vault_write("note.md", p, "should not land")
+        assert p.read_text(encoding="utf-8") == "original"
+
+    def test_not_running_from_write_falls_back(self, tmp_path):
+        """ObsidianNotRunning (process genuinely down) from write_file_raw is
+        safe to fall back: no editor can be open."""
+        from work_buddy.obsidian import vault_writer
+
+        p = tmp_path / "note.md"
+        with patch(
+            "work_buddy.obsidian.bridge.is_available", return_value=True
+        ), patch(
+            "work_buddy.obsidian.bridge.is_obsidian_running", return_value=False
+        ), patch(
+            "work_buddy.obsidian.bridge.write_file_raw",
+            side_effect=ObsidianNotRunning(),
+        ):
+            ok = vault_writer.vault_write("note.md", p, "fresh content")
+        assert ok is True
+        assert p.read_text(encoding="utf-8") == "fresh content"

@@ -1026,6 +1026,61 @@ def _enqueue_for_retry(
     _update_operation(record)
 
 
+def enqueue_capability_for_retry(
+    capability: str,
+    params: dict[str, Any],
+    *,
+    error: str,
+    error_kind: str | None = None,
+    originating_session_id: str | None = None,
+) -> str | None:
+    """Persist a failed-op record for ``capability`` + ``params`` and enqueue
+    it for the sidecar retry sweep.
+
+    Public seam for callers that do NOT dispatch through ``wb_run`` (e.g. the
+    Telegram sidecar's capture handler) but still want transient-failure
+    recovery. The sweep replays the capability from the registry on backoff,
+    re-reading vault state fresh each attempt, so a transient bridge failure
+    (a busy editor, a startup race) lands the operation once the bridge frees
+    up instead of dropping it.
+
+    The op is enqueued with ``error_class="transient"`` unconditionally — the
+    caller is responsible for only invoking this for transient failures (see
+    ``work_buddy.errors.classify_error``). Returns the op_id, or ``None`` if
+    persistence failed (the caller should then surface the original error).
+    """
+    import logging
+
+    # Carry the capability's declared retry policy onto the record so the
+    # sweep's replay semantics match a normal gateway dispatch. Default to
+    # verify_first (re-read + verify) when the registry can't be consulted.
+    retry_policy = "verify_first"
+    try:
+        from work_buddy.mcp_server.registry import get_registry
+        entry = get_registry().get(capability)
+        if entry is not None and getattr(entry, "retry_policy", None):
+            retry_policy = entry.retry_policy
+    except Exception:
+        pass
+
+    try:
+        op_id = _save_operation(capability, params, retry_policy)
+        _enqueue_for_retry(
+            op_id,
+            error,
+            "transient",
+            originating_session_id=originating_session_id,
+            error_kind=error_kind,
+        )
+        return op_id
+    except Exception as exc:  # persistence is best-effort
+        logging.getLogger(__name__).warning(
+            "enqueue_capability_for_retry(%s) failed to persist: %s",
+            capability, exc,
+        )
+        return None
+
+
 def _is_queued(record: dict[str, Any]) -> bool:
     """Canonical read for 'is this op sitting in the sweep queue?'.
 
