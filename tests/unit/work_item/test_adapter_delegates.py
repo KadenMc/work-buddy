@@ -54,9 +54,11 @@ def test_update_delegates_to_update_task_with_task_id_kwarg():
     with patch.object(mutations, "update_task", return_value=sentinel) as m:
         result = task_adapter.update("t-abc123", urgency="low", reason="re-triage")
     assert result is sentinel
-    # update_task is fully keyword-only — task_id forwarded as a kwarg.
+    # update_task is fully keyword-only — task_id forwarded as a kwarg, and the
+    # description_match fallback is carried through (None when unused).
     m.assert_called_once_with(
         task_id="t-abc123",
+        description_match=None,
         state=None,
         urgency="low",
         complexity=None,

@@ -77,8 +77,9 @@ def toggle(
 
 
 def update(
-    task_id: str,
+    task_id: str | None = None,
     *,
+    description_match: str | None = None,
     state: str | None = None,
     urgency: str | None = None,
     complexity: str | None = None,
@@ -90,13 +91,17 @@ def update(
 ) -> dict[str, Any]:
     """Update task metadata. Forwards to ``mutations.update_task``.
 
-    Cannot set ``state='done'`` — ``mutations.update_task`` rejects it; use
-    :func:`toggle` for completion.
+    ``description_match`` (a substring fallback for tasks without an id) is
+    carried for full parity with the underlying mutation — instance callers
+    always have an id and pass ``task_id``, but the ``task_change_state`` op
+    exposes the fallback. Cannot set ``state='done'`` — ``mutations.update_task``
+    rejects it; use :func:`toggle` for completion.
     """
     from work_buddy.obsidian.tasks import mutations
 
     return mutations.update_task(
         task_id=task_id,
+        description_match=description_match,
         state=state,
         urgency=urgency,
         complexity=complexity,
