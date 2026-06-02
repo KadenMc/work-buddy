@@ -353,6 +353,14 @@ def _check_workflow_step_consistency(store: dict[str, PromptUnit]) -> list[dict[
       reasoning step is the real defect this check exists to surface: either
       the instruction was never written, or the step is miscategorized and
       should be a ``code`` step. (See ``architecture/workflows`` for the rule.)
+
+    The suppression is safe because the binding is a runtime delivery contract,
+    not merely documentation: the conductor delivers the bound directions unit's
+    rendered content to an instruction-less reasoning step on every entry path
+    (slash command, nested ``wb_run`` delegation, headless), so a bound bare
+    step is never reached blind. ``directions_workflow_resolution`` guards that
+    the binding resolves to a real workflow — a dangling binding would both
+    silence this warning and leave the conductor nothing to deliver.
     """
     documented_workflows = {
         u.workflow

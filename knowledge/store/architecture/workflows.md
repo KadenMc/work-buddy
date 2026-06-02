@@ -148,13 +148,16 @@ All slash commands (.claude/commands/wb-*.md) are thin launchers that load behav
 
 ## Reasoning-step instructions and directions binding
 
-A `reasoning` step's behavioral prose normally lives in the **bound directions unit** — the `kind: directions` unit whose `workflow:` frontmatter field targets this workflow — not in the step body. This keeps a single source: the directions unit (loaded by the slash command) is what the agent reads at runtime, so duplicating that prose into `## <step-id>` body sections only invites drift.
+A `reasoning` step's behavioral prose normally lives in the **bound directions unit** — the `kind: directions` unit whose `workflow:` frontmatter field targets this workflow — not in the step body. This keeps a single source, so duplicating that prose into `## <step-id>` body sections only invites drift.
 
 A reasoning step is therefore well-formed when it is either (a) covered by such a bound directions unit, or (b) carries its own `## <step-id>` instruction in the workflow body. There is no legitimate *bare* reasoning step: if it has neither, it is either undocumented (write the `## <step-id>` prose) or miscategorized (the work is deterministic → make it a `code`/`auto_run` step).
 
-Two `docs_validate` checks enforce this:
-- `workflow_step_consistency` warns on a bare reasoning step **only** when no directions unit binds the workflow (a bound workflow's empty reasoning steps are intentional).
-- `directions_workflow_resolution` errors when a directions unit's `workflow:` does not resolve to a real `kind: workflow` unit — a dangling binding would silently defeat the suppression above, so the link must always point somewhere real (full path, e.g. `tasks/task-me`, not the bare slug).
+**The binding is a runtime delivery contract, not just a doc link.** When the conductor serves an instruction-less reasoning step, it resolves the workflow's bound directions unit and delivers that unit's rendered full content as the step's instruction — the same content (and renderer) `agent_docs` produces at `depth="full"`. So form (a) holds on *every* entry path: the slash command, a nested `wb_run("<workflow>")` delegation from inside another workflow, and headless/sidecar runs all reach the bare step with the directions in hand — not only the slash-command path. The binding is precomputed once at registry-build time (`WorkflowDefinition.bound_directions_path`), and the served step carries a `directions_source` pointer naming the delivered unit. Delivery degrades safely: if the unit cannot be rendered, the step falls back to the empty-instruction warning. (Mechanism: `_resolve_bound_directions` in `conductor.py`, `_index_directions_by_workflow` in `registry.py`.)
+
+Three `docs_validate` checks back this contract:
+- `workflow_step_consistency` warns on a bare reasoning step **only** when no directions unit binds the workflow (a bound workflow's empty reasoning steps are intentional — their content is delivered at runtime).
+- `directions_workflow_resolution` errors when a directions unit's `workflow:` does not resolve to a real `kind: workflow` unit. A dangling binding both defeats the suppression above and leaves the conductor with nothing to deliver, so the link must always point somewhere real (full path, e.g. `tasks/task-me`, not the bare slug).
+- `workflow_delegation_resolution` checks nested `wb_run("<workflow>")` delegations between workflows: it errors on a delegation to a non-existent workflow, and flags a delegation into a workflow whose reasoning steps are bare *and* unbound (runtime delivery cannot rescue what has no bound directions).
 
 ## Step result visibility
 
