@@ -25,7 +25,11 @@ def loaded_ops():
     op_registry.clear_ops()
     op_registry.load_builtin_ops()
     yield op_registry
+    # Restore a *loaded* registry rather than leaving it empty: some tests
+    # assume the built-in ops are already registered and don't reload them
+    # themselves, so an empty-registry teardown is a cross-test landmine.
     op_registry.clear_ops()
+    op_registry.load_builtin_ops()
 
 
 def test_mutator_ops_route_through_the_work_item_port(loaded_ops):
