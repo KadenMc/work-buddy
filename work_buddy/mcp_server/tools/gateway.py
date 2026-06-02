@@ -493,23 +493,28 @@ def _auto_consent_request(
                 f"mcp__work-buddy__wb_run(\"retry\", "
                 f"{{\"operation_id\": \"{op_id}\"}})"
             )
-        wait_hint = (
-            f"To wait for the user's decision from a shell watcher (e.g. the "
-            f"Monitor tool) instead of polling manually, run: "
-            f"bash /tmp/wb/status consent wait {nid} --timeout 300 "
-            f"(exit 0=granted, 1=denied, 2=timeout, 3=not found). On exit 0, "
-            f"run the retry above. See the operations/status-cli knowledge unit."
-        )
         return {
             "status": "timeout",
             "request_id": nid,
             "operation_id": op_id,
             "message": (
-                f"Consent request timed out, but still pending — "
-                f"the user can approve on any surface. Once approved, retry with: "
-                f"{retry_hint}"
+                f"Consent request timed out but is still pending — the user can "
+                f"approve on any surface (the request expires in ~2h). Before "
+                f"waiting, first do anything else you can and should safely do "
+                f"now. Then poll for their decision with a shell watcher (e.g. "
+                f"the Monitor tool): bash /tmp/wb/status consent wait {nid} "
+                f"--timeout <seconds> (exit 0=granted, 1=denied, 2=timed out or "
+                f"expired, 3=not found). Recommended: run it in the background "
+                f"with --timeout -1 — that waits at no token cost (the model "
+                f"isn't billed while it sleeps) until the request is "
+                f"granted/denied or self-expires at its ~2h TTL, so it never "
+                f"hangs forever. Use a finite --timeout instead if you want to "
+                f"bound the wait (you're not backgrounding it, you have your own "
+                f"deadline, or you'd rather re-check later). On exit 0, retry "
+                f"with: {retry_hint.rstrip('.')}. Or, once the user tells you "
+                f"they approved, just retry. See the operations/status-cli "
+                f"knowledge unit."
             ),
-            "wait_hint": wait_hint,
         }
 
     # Extract choice from StandardResponse

@@ -84,19 +84,28 @@ The verb may be omitted — `consent <id>` is shorthand for
 The loop the gateway timeout hands off to:
 
 1. A `wb_run` call returns `{"status":"timeout","request_id":…,"operation_id":…}`.
-2. Arm `Monitor` (or a bash loop) on `bash /tmp/wb/status consent wait <request_id> --timeout 300`.
-3. On exit 0 (granted), complete the sanctioned retry — `wb_run("retry", {"operation_id": …})` (or `obsidian_retry` for bridge ops). On exit 1 (denied) abort; on 2 (timeout) re-prompt or escalate.
+2. First do anything else you can safely do now — then arm `Monitor` (or a bash loop) on `bash /tmp/wb/status consent wait <request_id> --timeout -1`.
+3. On exit 0 (granted), complete the sanctioned retry — `wb_run("retry", {"operation_id": …})` (or `obsidian_retry` for bridge ops). On exit 1 (denied) abort; on 2 (expired) re-prompt or escalate.
 
 ```bash
-bash /tmp/wb/status consent wait "$REQUEST_ID" --timeout 300
+bash /tmp/wb/status consent wait "$REQUEST_ID" --timeout -1
 case $? in
   0) echo "granted — retry now" ;;
   1) echo "denied — abort" ;;
-  2) echo "timed out — re-prompt or escalate" ;;
+  2) echo "expired — re-prompt or escalate" ;;
   3) echo "unknown request id" ;;
   *) echo "error" ;;
 esac
 ```
+
+### How long to wait, and what it costs
+
+Waiting is **free** and **self-bounding**, so prefer a generous (or indefinite) timeout over a short one:
+
+- **Free:** run the `wait` in the background (the `Monitor` tool or `run_in_background` bash). Billing is per-token, not per-wall-clock-time — while the watcher sleeps between polls the model isn't invoked, so a wait of minutes or hours costs **zero tokens** until it resolves and re-invokes you. (Keep it silent — do not pass `--verbose` under the `Monitor` tool, or each progress line becomes a billed turn.)
+- **Self-bounding:** `--timeout -1` does not actually hang forever — a consent request carries a ~2h TTL, and `expired` is a terminal state, so the wait exits (code 2) when the request expires. So `-1` means "until the user decides or the request lapses," not "until the heat death of the universe."
+- Because it's free and self-bounding, the only reason to keep working instead of waiting is that you have other useful work in hand. Do that first, then wait.
+- **When a finite `--timeout` is the better choice:** `-1`'s free/self-bounding properties depend on running in the **background** (Monitor / `run_in_background`), where the model idles. Use a bounded `--timeout <seconds>` if you're running it in the **foreground** (where `-1` would tie up the turn for up to the full TTL), if you have your own deadline/SLA, or if you'd rather poll briefly and re-check later (the reschedule pattern) — e.g. escalate to another approver after N minutes.
 
 ## Guarantees and limits
 

@@ -1,9 +1,11 @@
-"""The gateway consent-timeout result advertises the shell `wait` command.
+"""The gateway consent-timeout message advertises the shell `wait` command.
 
-When ``_auto_consent_request`` times out, its result must carry a
-``wait_hint`` telling the agent how to wait for the user's decision from a
-shell watcher (the Monitor tool) and then retry — the discovery hook that
-makes the status CLI usable in the loop the gateway half-builds.
+When ``_auto_consent_request`` times out, its ``message`` must tell the
+agent how to wait for the user's decision from a shell watcher (the Monitor
+tool) and then retry — the discovery hook that makes the status CLI usable
+in the loop the gateway half-builds. The guidance lives in ``message``
+itself (not a separate field) so an agent acting on the message can't miss
+it.
 """
 
 from __future__ import annotations
@@ -23,7 +25,7 @@ class _FakeDispatcher:
         return None
 
 
-def test_timeout_result_includes_wait_hint(tmp_agents_dir, monkeypatch):
+def test_timeout_message_advertises_shell_wait(tmp_agents_dir, monkeypatch):
     from work_buddy.mcp_server.tools import gateway
     from work_buddy.notifications import dispatcher as disp
 
@@ -37,8 +39,10 @@ def test_timeout_result_includes_wait_hint(tmp_agents_dir, monkeypatch):
     )
 
     assert result["status"] == "timeout"
-    assert "request_id" in result and result["request_id"]
-    assert "wait_hint" in result
-    hint = result["wait_hint"]
-    assert result["request_id"] in hint
-    assert "/tmp/wb/status consent wait" in hint
+    assert result.get("request_id")
+    msg = result["message"]
+    # Wait guidance is folded into the message itself, with the request id,
+    # the free indefinite-wait suggestion, and the retry handoff.
+    assert "/tmp/wb/status consent wait" in msg
+    assert result["request_id"] in msg
+    assert "--timeout -1" in msg
