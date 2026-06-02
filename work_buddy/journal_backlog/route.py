@@ -13,8 +13,6 @@ from typing import Any
 
 from work_buddy.consent import requires_consent
 from work_buddy.logging_config import get_logger
-from work_buddy.obsidian.tasks.mutations import generate_task_id
-from work_buddy.obsidian.tasks import store as task_store
 
 logger = get_logger(__name__)
 
@@ -40,60 +38,45 @@ def _create_task_impl(
     project: str | None = None,
     due_date: str | None = None,
 ) -> dict[str, Any]:
-    """Create a task in the master task list. No consent gate."""
+    """Create a task in the master task list. No consent gate.
+
+    Routes through the WorkItem write port (``Task.create`` → the task mutation
+    layer) so the task gets the atomic dual-surface (markdown + store) write, a
+    full store record, and a ``task.created`` audit event — the same path every
+    other task-creation entry point uses, and the reason a journal-routed task
+    is no longer invisible to the WorkItem event log. ``vault_root`` is advisory:
+    the mutation layer resolves the master list (and any note) from config, not
+    from this argument.
+    """
     if urgency not in VALID_URGENCIES:
         raise ValueError(
             f"Invalid urgency {urgency!r}; must be one of {VALID_URGENCIES}"
         )
 
-    task_file = vault_root / "tasks" / "master-task-list.md"
-    if not task_file.exists():
+    from work_buddy.threads.models import Task
+
+    result = Task.create(
+        task_text=task_text,
+        urgency=urgency,
+        project=project,
+        due_date=due_date,
+        creation_provenance="agent_inferred_from_journal",
+        user_involvement="medium",
+    )
+
+    if not result.get("success"):
         return {
             "success": False,
-            "message": f"Task file not found: {task_file}",
+            "message": result.get("message", "task creation failed"),
         }
 
-    # Build clean task line — metadata goes to SQLite store, not inline tags
-    task_id = generate_task_id()
-    parts = [f"- [ ] #todo {task_text}"]
-
-    if project:
-        parts.append(f"#projects/{project}")
-
-    # ID before any plugin emojis (plugin parses from end of line)
-    parts.append(f"🆔 {task_id}")
-
-    if due_date:
-        parts.append(f"📅 {due_date}")
-
-    task_line = " ".join(parts)
-
-    try:
-        content = task_file.read_text(encoding="utf-8")
-        if content and not content.endswith("\n"):
-            content += "\n"
-        content += task_line + "\n"
-        task_file.write_text(content, encoding="utf-8")
-    except OSError as e:
-        return {"success": False, "message": f"File write error: {e}"}
-
-    # Create metadata record in the store
-    try:
-        task_store.create(
-            task_id=task_id,
-            state="inbox",
-            urgency=urgency,
-        )
-    except Exception as e:
-        logger.warning("Failed to create store record for %s: %s", task_id, e)
-
-    logger.info("Created task: %s (id=%s)", task_text[:60], task_id)
+    logger.info("Created task: %s (id=%s)", task_text[:60], result.get("task_id"))
     return {
         "success": True,
-        "task_line": task_line,
-        "task_id": task_id,
-        "file": str(task_file),
-        "message": f"Task created in {task_file.name}",
+        "task_line": result.get("task_line"),
+        "task_id": result.get("task_id"),
+        "file": result.get("file"),
+        "message": "Task created in master-task-list.md",
     }
 
 
