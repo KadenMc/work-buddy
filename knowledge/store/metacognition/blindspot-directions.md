@@ -48,8 +48,6 @@ mcp__work-buddy__wb_run("task_briefing")
 mcp__work-buddy__wb_run("contract_health")
 ```
 
-Or run the full workflow: `mcp__work-buddy__wb_run("detect-blindspots")`.
-
 ## Step 3 — Name what's active
 
 Use only pattern names the user has documented. Be specific with evidence: "This looks like <pattern>. In the last session you <observable signal> — <concrete count or example>."
