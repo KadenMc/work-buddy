@@ -493,6 +493,13 @@ def _auto_consent_request(
                 f"mcp__work-buddy__wb_run(\"retry\", "
                 f"{{\"operation_id\": \"{op_id}\"}})"
             )
+        wait_hint = (
+            f"To wait for the user's decision from a shell watcher (e.g. the "
+            f"Monitor tool) instead of polling manually, run: "
+            f"bash /tmp/wb/status consent wait {nid} --timeout 300 "
+            f"(exit 0=granted, 1=denied, 2=timeout, 3=not found). On exit 0, "
+            f"run the retry above. See the operations/status-cli knowledge unit."
+        )
         return {
             "status": "timeout",
             "request_id": nid,
@@ -502,6 +509,7 @@ def _auto_consent_request(
                 f"the user can approve on any surface. Once approved, retry with: "
                 f"{retry_hint}"
             ),
+            "wait_hint": wait_hint,
         }
 
     # Extract choice from StandardResponse
