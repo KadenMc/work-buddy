@@ -76,5 +76,5 @@ def test_toggle_op_dispatches_through_to_mutations(loaded_ops):
         result = op(task_id="t-route01", done=True)
     assert result == {"success": True}
     m.assert_called_once_with(
-        "t-route01", done=True, file_path=None, done_date=None,
+        task_id="t-route01", done=True, file_path=None, done_date=None,
     )

@@ -136,7 +136,7 @@ def email_create_tasks(
 
     Returns ``{"thread_id": str, "created": [...], "failed": [...]}``.
     """
-    from work_buddy.obsidian.tasks.mutations import create_task
+    from work_buddy.threads.models import Task
 
     thread = _get_thread_or_raise(thread_id)
     emails = _emails_from_thread(thread)
@@ -162,7 +162,7 @@ def email_create_tasks(
         summary = "\n".join(summary_parts) if summary_parts else None
 
         try:
-            result = create_task(
+            result = Task.create(
                 task_text=text,
                 urgency=urgency,
                 project=project,
@@ -212,7 +212,7 @@ def email_create_umbrella_task(
     description lists every email's subject + sender + date so the
     user has the full bundle of context on one task.
     """
-    from work_buddy.obsidian.tasks.mutations import create_task
+    from work_buddy.threads.models import Task
 
     thread = _get_thread_or_raise(thread_id)
     emails = _emails_from_thread(thread)
@@ -234,7 +234,7 @@ def email_create_umbrella_task(
     summary = "Emails in this cluster:\n\n" + "\n".join(bullet_lines)
 
     try:
-        result = create_task(
+        result = Task.create(
             task_text=text[:120],
             urgency=urgency,
             project=project,

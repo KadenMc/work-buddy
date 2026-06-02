@@ -27,7 +27,7 @@ def test_create_delegates_to_create_task():
     assert result is sentinel
     # First seven params forwarded explicitly; the GTD/risk tail rides **kwargs.
     m.assert_called_once_with(
-        "do the thing",
+        task_text="do the thing",
         urgency="high",
         project="work-buddy",
         due_date=None,
@@ -45,7 +45,7 @@ def test_toggle_delegates_to_toggle_task():
         result = task_adapter.toggle("t-abc123", done=True)
     assert result is sentinel
     m.assert_called_once_with(
-        "t-abc123", done=True, file_path=None, done_date=None,
+        task_id="t-abc123", done=True, file_path=None, done_date=None,
     )
 
 
@@ -75,7 +75,9 @@ def test_set_description_delegates():
     with patch.object(mutations, "update_task_description", return_value=sentinel) as m:
         result = task_adapter.set_description("t-abc123", "new text")
     assert result is sentinel
-    m.assert_called_once_with("t-abc123", "new text", file_path=None)
+    m.assert_called_once_with(
+        task_id="t-abc123", new_description="new text", file_path=None,
+    )
 
 
 def test_set_tags_delegates():
@@ -83,7 +85,7 @@ def test_set_tags_delegates():
     with patch.object(mutations, "set_task_tags_on_line", return_value=sentinel) as m:
         result = task_adapter.set_tags("t-abc123", ["admin/uhn"])
     assert result is sentinel
-    m.assert_called_once_with("t-abc123", ["admin/uhn"])
+    m.assert_called_once_with(task_id="t-abc123", namespace_tags=["admin/uhn"])
 
 
 def test_delete_delegates():
@@ -91,7 +93,7 @@ def test_delete_delegates():
     with patch.object(mutations, "delete_task", return_value=sentinel) as m:
         result = task_adapter.delete("t-abc123")
     assert result is sentinel
-    m.assert_called_once_with("t-abc123")
+    m.assert_called_once_with(task_id="t-abc123")
 
 
 def test_assign_delegates():
@@ -99,4 +101,4 @@ def test_assign_delegates():
     with patch.object(mutations, "assign_task", return_value=sentinel) as m:
         result = task_adapter.assign("t-abc123")
     assert result is sentinel
-    m.assert_called_once_with("t-abc123")
+    m.assert_called_once_with(task_id="t-abc123")

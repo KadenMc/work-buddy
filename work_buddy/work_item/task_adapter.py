@@ -50,7 +50,7 @@ def create(
     from work_buddy.obsidian.tasks import mutations
 
     return mutations.create_task(
-        task_text,
+        task_text=task_text,
         urgency=urgency,
         project=project,
         due_date=due_date,
@@ -72,7 +72,7 @@ def toggle(
     from work_buddy.obsidian.tasks import mutations
 
     return mutations.toggle_task(
-        task_id, done=done, file_path=file_path, done_date=done_date,
+        task_id=task_id, done=done, file_path=file_path, done_date=done_date,
     )
 
 
@@ -124,7 +124,7 @@ def set_description(
     from work_buddy.obsidian.tasks import mutations
 
     return mutations.update_task_description(
-        task_id, new_description, file_path=file_path,
+        task_id=task_id, new_description=new_description, file_path=file_path,
     )
 
 
@@ -136,7 +136,9 @@ def set_tags(task_id: str, namespace_tags: list[str]) -> dict[str, Any]:
     """
     from work_buddy.obsidian.tasks import mutations
 
-    return mutations.set_task_tags_on_line(task_id, namespace_tags)
+    return mutations.set_task_tags_on_line(
+        task_id=task_id, namespace_tags=namespace_tags,
+    )
 
 
 def delete(task_id: str) -> dict[str, Any]:
@@ -146,7 +148,7 @@ def delete(task_id: str) -> dict[str, Any]:
     """
     from work_buddy.obsidian.tasks import mutations
 
-    return mutations.delete_task(task_id)
+    return mutations.delete_task(task_id=task_id)
 
 
 def assign(task_id: str) -> dict[str, Any]:
@@ -156,4 +158,4 @@ def assign(task_id: str) -> dict[str, Any]:
     """
     from work_buddy.obsidian.tasks import mutations
 
-    return mutations.assign_task(task_id)
+    return mutations.assign_task(task_id=task_id)
