@@ -413,6 +413,137 @@ class Task(WorkItem):
 
         return _task_store.get(self.thread_id)
 
+    # ------------------------------------------------------------------
+    # Write surface — a Task is mutated *as a WorkItem*, through the
+    # task write port (``work_item.task_adapter``). The port delegates to
+    # the live mutation layer, which owns the atomic dual-surface write,
+    # plugin-marker preservation, consent, bridge-retry, and event
+    # emission — so these methods add no behaviour of their own. The
+    # adapter is imported inside each method to keep ``threads.models``
+    # decoupled from it at import time (and cycle-free).
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def load(cls, task_id: str) -> Optional["Task"]:
+        """Build a Task facade from a ``task_id`` by reading the live store.
+
+        Returns ``None`` if the task is absent or soft-deleted. Reuses
+        :meth:`from_store_row`; lazily imports the store (same decoupling as
+        :meth:`live_row`).
+        """
+        from work_buddy.obsidian.tasks import store as _task_store
+
+        row = _task_store.get(task_id)
+        return cls.from_store_row(row) if row is not None else None
+
+    @classmethod
+    def create(
+        cls,
+        task_text: str,
+        *,
+        urgency: str = "medium",
+        project: Optional[str] = None,
+        due_date: Optional[str] = None,
+        contract: Optional[str] = None,
+        summary: Optional[str] = None,
+        tags: Optional[list[str]] = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """Create a new task through the WorkItem write port.
+
+        A classmethod — there is no Task yet (no ``thread_id`` to act on); the
+        id is minted inside the mutation layer's idempotency cache, so this
+        never generates its own. Returns the raw ``create_task`` result dict
+        (the minted ``task_id`` + verification state callers consume), NOT a
+        Task; a caller wanting the object does ``Task.load(result["task_id"])``.
+        The GTD/risk keyword tail is forwarded via ``**kwargs``.
+        """
+        from work_buddy.work_item import task_adapter
+
+        return task_adapter.create(
+            task_text,
+            urgency=urgency,
+            project=project,
+            due_date=due_date,
+            contract=contract,
+            summary=summary,
+            tags=tags,
+            **kwargs,
+        )
+
+    def toggle(
+        self,
+        done: Optional[bool] = None,
+        *,
+        file_path: Optional[str] = None,
+        done_date: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Toggle this task's completion through the WorkItem write port."""
+        from work_buddy.work_item import task_adapter
+
+        return task_adapter.toggle(
+            self.thread_id, done=done, file_path=file_path, done_date=done_date,
+        )
+
+    def update(
+        self,
+        *,
+        state: Optional[str] = None,
+        urgency: Optional[str] = None,
+        complexity: Optional[str] = None,
+        contract: Optional[str] = None,
+        snooze_until: Optional[str] = None,
+        due_date: Optional[str] = None,
+        reason: Optional[str] = None,
+        file_path: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Update this task's metadata through the WorkItem write port.
+
+        Cannot set ``state='done'`` — the mutation layer rejects it; use
+        :meth:`toggle` for completion.
+        """
+        from work_buddy.work_item import task_adapter
+
+        return task_adapter.update(
+            self.thread_id,
+            state=state,
+            urgency=urgency,
+            complexity=complexity,
+            contract=contract,
+            snooze_until=snooze_until,
+            due_date=due_date,
+            reason=reason,
+            file_path=file_path,
+        )
+
+    def set_description(
+        self, text: str, *, file_path: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Rewrite this task's description text through the WorkItem write port."""
+        from work_buddy.work_item import task_adapter
+
+        return task_adapter.set_description(
+            self.thread_id, text, file_path=file_path,
+        )
+
+    def set_tags(self, namespace_tags: list[str]) -> dict[str, Any]:
+        """Replace this task's user-modifiable tags through the WorkItem write port."""
+        from work_buddy.work_item import task_adapter
+
+        return task_adapter.set_tags(self.thread_id, namespace_tags)
+
+    def delete(self) -> dict[str, Any]:
+        """Delete this task (line, note, store record) through the WorkItem write port."""
+        from work_buddy.work_item import task_adapter
+
+        return task_adapter.delete(self.thread_id)
+
+    def assign(self) -> dict[str, Any]:
+        """Claim this task for the current agent session through the WorkItem write port."""
+        from work_buddy.work_item import task_adapter
+
+        return task_adapter.assign(self.thread_id)
+
 
 # ---------------------------------------------------------------------------
 # ResolutionRequest (DESIGN.md §7.3, §15.1)
