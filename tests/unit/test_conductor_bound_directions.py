@@ -151,6 +151,34 @@ def test_delivery_failure_degrades_to_warning(monkeypatch, caplog):
         get_registry().pop(name, None)
 
 
+class _StubDag:
+    """Minimal stand-in for a WorkflowDAG: ``_get_wf_def`` only reads ``.name``
+    (``"<workflow_name>:<run_id>"``)."""
+
+    def __init__(self, name: str):
+        self.name = name
+
+
+def test_real_update_journal_resolves_its_bound_directions():
+    """Integration proof against the REAL registry + store: the actual
+    ``update-journal`` workflow (whose ``synthesize``/``write`` reasoning steps
+    are bare) resolves and renders its real bound directions unit. This is the
+    nested-invocation gap the change exists for — exercised end-to-end through
+    the registry binding and the tier() renderer, without running the
+    workflow's collectors or restarting the MCP server."""
+    from work_buddy.mcp_server import conductor
+
+    rendered, src = conductor._resolve_bound_directions(
+        _StubDag("update-journal:wf_test")
+    )
+    assert src == "journal/update-directions"
+    assert rendered is not None
+    # Sentinels from journal/update-directions — the Log-entry format rules the
+    # agent would otherwise reach blind on the nested (morning-routine) path.
+    assert "#projects/" in rendered
+    assert "wb/journal/log" in rendered
+
+
 def test_inline_instruction_is_not_overridden(monkeypatch):
     """A reasoning step that already carries an inline instruction must be
     served verbatim — delivery only fills genuinely-empty instructions."""
