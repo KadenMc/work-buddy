@@ -183,7 +183,7 @@ def _emit(view: dict, *, as_json: bool, exit_code: int) -> int:
 
 def _run_query(check, exit_map, terminal_states, args) -> int:
     """Shared logic for status (one-shot) and wait (blocking)."""
-    as_json = args.json
+    as_json = getattr(args, "json", False)
     is_wait = args.mode == "wait"
 
     if not is_wait:
@@ -247,13 +247,20 @@ def _add_wait_flags(p: argparse.ArgumentParser) -> None:
 
 
 def _build_parser() -> argparse.ArgumentParser:
+    # --json on a shared parent (default SUPPRESS so an unset level never
+    # overwrites a set one) added to BOTH the top parser and every leaf
+    # subparser, so `--json` is accepted before OR after the subcommand —
+    # a trailing flag is the natural shell order and must work.
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument(
+        "--json", action="store_true", default=argparse.SUPPRESS,
+        help="emit the full status dict as JSON on stdout",
+    )
+
     parser = argparse.ArgumentParser(
         prog="statusctl",
         description="Read-only consent/operation status for shell pollers.",
-    )
-    parser.add_argument(
-        "--json", action="store_true",
-        help="emit the full status dict as JSON on stdout",
+        parents=[common],
     )
     domains = parser.add_subparsers(dest="domain", required=True)
 
@@ -264,13 +271,15 @@ def _build_parser() -> argparse.ArgumentParser:
         d = domains.add_parser(domain, help=f"{domain} status queries")
         verbs = d.add_subparsers(dest="mode", required=True)
 
-        s = verbs.add_parser("status", help="print current state and exit")
+        s = verbs.add_parser("status", parents=[common],
+                             help="print current state and exit")
         s.add_argument("id", help=ident_help)
         if domain == "consent":
             s.add_argument("--session", default=None,
                            help="agent session id (default: $WORK_BUDDY_SESSION_ID)")
 
-        w = verbs.add_parser("wait", help="block until resolved or timeout")
+        w = verbs.add_parser("wait", parents=[common],
+                             help="block until resolved or timeout")
         w.add_argument("id", help=ident_help)
         if domain == "consent":
             w.add_argument("--session", default=None,

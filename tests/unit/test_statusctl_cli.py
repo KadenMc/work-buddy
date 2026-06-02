@@ -80,6 +80,28 @@ def test_oneshot_json_includes_exit_code(fake_consent, capsys):
     assert data["exit_code"] == 0
 
 
+@pytest.mark.parametrize("argv", [
+    ["--json", "consent", "status", "req_1"],          # before subcommand
+    ["consent", "status", "req_1", "--json"],          # trailing (the natural shell order)
+    ["consent", "req_1", "--json"],                     # shorthand + trailing
+])
+def test_json_flag_accepted_in_any_position(fake_consent, capsys, argv):
+    # Regression: --json after the subcommand was rejected by argparse
+    # because it was only on the top-level parser. It must work in either
+    # position — a trailing flag is how a Monitor loop / shell user writes it.
+    fake_consent["view"]["state"] = "granted"
+    assert cli.main(argv) == cli.EXIT_OK
+    assert json.loads(capsys.readouterr().out)["state"] == "granted"
+
+
+def test_wait_json_trailing_with_other_flags(fake_consent, capsys):
+    fake_consent["view"]["state"] = "granted"
+    fake_consent["view"]["terminal"] = True
+    rc = cli.main(["consent", "wait", "req_1", "--timeout", "0", "--json"])
+    assert rc == cli.EXIT_OK
+    assert json.loads(capsys.readouterr().out)["state"] == "granted"
+
+
 # --- wait: exit-code vocabulary ---------------------------------------------
 
 @pytest.mark.parametrize("state,code", [
