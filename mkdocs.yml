@@ -77,6 +77,7 @@ nav:
   - Components & health checks layer: handbook/architecture_health_components.md
   - Fixers layer: handbook/architecture_health_fixers.md
   - Requirements layer: handbook/architecture_health_requirements.md
+  - Hot-Path Discipline: handbook/architecture_hot-path-discipline.md
   - Inference: handbook/architecture_inference.md
   - Local Inference Broker: handbook/architecture_inference_broker.md
   - Knowledge System: handbook/architecture_knowledge-system.md
@@ -118,9 +119,13 @@ nav:
 - Calendar:
   - Calendar subsystem (provider-neutral): handbook/calendar.md
   - Calendar Coverage: handbook/calendar_calendar_coverage.md
+  - Calendar Create Event: handbook/calendar_calendar_create_event.md
+  - Calendar Delete Event: handbook/calendar_calendar_delete_event.md
   - Calendar Get Event: handbook/calendar_calendar_get_event.md
   - Calendar Health: handbook/calendar_calendar_health.md
   - Calendar List Events: handbook/calendar_calendar_list_events.md
+  - Calendar Update Event: handbook/calendar_calendar_update_event.md
+  - Google Calendar native (OAuth) setup: handbook/calendar_google-native-setup.md
 - Clarify:
   - Text-segmenter SubCall: handbook/clarify_text-segmenter.md
 - Context:
@@ -364,6 +369,7 @@ nav:
   - Agent Sessions: handbook/operations_agent-sessions.md
   - MCP Gateway: handbook/operations_mcp-gateway.md
   - Retry: handbook/operations_retry.md
+  - Status CLI (shell-pollable consent/operation status): handbook/operations_status-cli.md
 - Projects:
   - Projects: handbook/projects.md
   - Deleting a Project: handbook/projects_project-delete-directions.md
@@ -462,6 +468,7 @@ nav:
   - Task Create: handbook/tasks_task_create.md
   - Task Delete: handbook/tasks_task_delete.md
   - Task Namespace Suggest: handbook/tasks_task_namespace_suggest.md
+  - Task Note Readers: handbook/tasks_task_note_readers.md
   - Task Provenance: handbook/tasks_task_provenance.md
   - Task Read: handbook/tasks_task_read.md
   - Task Review Inbox: handbook/tasks_task_review_inbox.md
