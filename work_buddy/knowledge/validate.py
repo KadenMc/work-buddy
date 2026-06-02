@@ -440,6 +440,16 @@ def _check_directions_workflow_resolution(store: dict[str, PromptUnit]) -> list[
 _WB_RUN_RE = re.compile(r"""wb_run\(\s*["']([A-Za-z0-9_\-]+)["']""")
 """Match a ``wb_run("<name>")`` / ``wb_run('<name>')`` call in prose."""
 
+_WB_RUN_PARAMS_RE = re.compile(
+    r"""wb_run\(\s*["']([A-Za-z0-9_\-]+)["']\s*,\s*(\{[^{}]*\})"""
+)
+"""Match ``wb_run("<name>", {<params>})`` — captures name + a single-level
+(non-nested) params literal. Best-effort: multi-line or nested-brace params
+are not parsed; the contract check that uses this degrades to a no-op for them."""
+
+_PARAM_KEY_RE = re.compile(r"""["'](\w+)["']\s*:""")
+"""Extract top-level keys from a ``{...}`` params literal."""
+
 
 def _check_workflow_delegation_resolution(store: dict[str, PromptUnit]) -> list[dict[str, str]]:
     """Check 14: nested workflow→workflow delegations are sound.
@@ -460,12 +470,20 @@ def _check_workflow_delegation_resolution(store: dict[str, PromptUnit]) -> list[
     - **Blind delegation** — the target is a real workflow whose reasoning
       steps are bare *and* it has no bound directions unit. A nested caller
       reaches those steps with no instructions and nothing to deliver. Error.
+    - **Param-contract mismatch** — the delegation passes a param the target
+      workflow does not declare in its ``params_schema`` (or the target
+      declares no schema at all). The call is rejected at the start-gate
+      (`_validate_workflow_params`) before any step runs — "declares no
+      params_schema" / "Unknown param(s)". Error. (This is the bug class where
+      a caller and callee silently disagree on the interface.)
 
     A delegation into a workflow whose bare reasoning steps *are* covered by a
     bound directions unit is intentional and silent — runtime delivery handles
     it. Snake_case unknown names are assumed to be capabilities (possibly
     op-registered without a store declaration) and are left to
-    ``capability_op_resolution``; they are not flagged here.
+    ``capability_op_resolution``; they are not flagged here. Param-contract
+    parsing is best-effort (single-level, non-nested ``{...}`` literals in
+    prose); multi-line or nested params are skipped rather than mis-flagged.
     """
     workflow_slugs: dict[str, str] = {}      # slug -> store path
     capability_names: set[str] = set()
@@ -505,9 +523,15 @@ def _check_workflow_delegation_resolution(store: dict[str, PromptUnit]) -> list[
         full = unit.content.get("full", "") if isinstance(unit.content, dict) else ""
         if isinstance(full, str):
             texts.append(full)
+        # Params passed at each delegation site: workflow name -> set of keys.
+        passed_params: dict[str, set[str]] = {}
         for t in texts:
             for m in _WB_RUN_RE.finditer(t):
                 referenced.add(m.group(1))
+            for m in _WB_RUN_PARAMS_RE.finditer(t):
+                passed_params.setdefault(m.group(1), set()).update(
+                    _PARAM_KEY_RE.findall(m.group(2))
+                )
 
         for name in sorted(referenced):
             if name == unit.workflow_name:
@@ -531,6 +555,26 @@ def _check_workflow_delegation_resolution(store: dict[str, PromptUnit]) -> list[
                         ),
                     })
                 # bare + bound → covered by runtime delivery → intentional, silent
+
+                # Param contract: every key the delegation passes must be
+                # declared in the target's params_schema. A target with no
+                # schema rejects ANY params at runtime; an undeclared key is an
+                # "Unknown param(s)" rejection. Either way the call errors at
+                # the start-gate before a single step runs.
+                declared = set((getattr(target, "params_schema", None) or {}).keys())
+                undeclared = sorted(passed_params.get(name, set()) - declared)
+                if undeclared:
+                    errors.append({
+                        "check": "workflow_delegation_resolution",
+                        "path": path,
+                        "message": (
+                            f"delegates to workflow {name!r} passing param(s) "
+                            f"{undeclared} it does not declare in params_schema — "
+                            "the call is rejected at the param gate before any "
+                            "step runs. Declare the param(s) on the target "
+                            "(and wire them via input_map) or drop them."
+                        ),
+                    })
             elif "-" in name:
                 errors.append({
                     "check": "workflow_delegation_resolution",

@@ -4,6 +4,11 @@ kind: workflow
 description: Append activity-detected Log entries to an Obsidian journal file.
 workflow_name: update-journal
 execution: main
+params_schema:
+  target:
+    type: str
+    description: Which day's journal to update — "today", "yesterday", or "YYYY-MM-DD". Omit to auto-detect (today, or ask near midnight).
+    required: false
 steps:
 - id: read-journal
   name: Read today's journal and determine activity window
@@ -12,6 +17,8 @@ steps:
   auto_run:
     callable: work_buddy.journal.read_journal_state
     kwargs: {}
+    input_map:
+      target: __params__.target
     timeout: 30
   invokes: []
 - id: collect

@@ -124,10 +124,13 @@ Caller passes them through any of the standard surfaces (`wb_run(name, params)`,
 
 Validated params reach steps via two paths:
 
-- **`auto_run` steps via `input_map`** — use the synthetic source key `__params__` (whole dict) or `__params__.foo` / `__params__.a.b` (dotted-key walk) to wire a param into a kwarg. Missing dotted keys fail the same way an unresolved step source does. Example:
+- **`auto_run` steps via `input_map`** — use the synthetic source key `__params__` (whole dict) or `__params__.foo` / `__params__.a.b` (dotted-key walk) to wire a param into a kwarg. There are two ways to handle optional params, and the schema's `required` flag is authoritative for both:
+  - **Dotted, schema-optional** — `input_map: {target: __params__.target}` where `target` is declared `required: false`. If the caller omits it, the resolver **skips the kwarg** so the callable's own default applies (it does NOT error). A missing key that is *required*, *not declared*, or *nested* (`a.b`) still fails like an unresolved step source. This lets a step wire one named param directly while still working when the caller omits it.
+  - **Whole-dict** — `input_map: {params: __params__}` passes the entire (possibly empty) dict; the callable destructures and defaults internally. Use when a step consumes several params.
   ```json
   "input_map": {"project_id": "__params__.project_id"}
   ```
+  (Resolution lives in `_resolve_input_map` / `_execute_auto_run` in `conductor.py`; the `workflow_delegation_resolution` validator check flags a nested `wb_run("W", {...})` delegation that passes a key `W` doesn't declare — a caller/callee contract mismatch — before it can fail at runtime.)
 - **Reasoning steps via the first-step response** — the response includes an `initial_params` field alongside `workflow_context`, so the agent reading the first instruction can inspect what was passed in. There is no `{{params.foo}}` template substitution into instruction text — agents read params from the response payload.
 
 Workflows are authored / edited through the `docs_edit` workflow — you edit the unit's `.md` directly (frontmatter `steps` and `params_schema`, plus the `## <step-id>` body sections), and the commit step validates the step DAG (cycles, dangling deps) and reconciles the store + index.
@@ -157,7 +160,7 @@ A reasoning step is therefore well-formed when it is either (a) covered by such 
 Three `docs_validate` checks back this contract:
 - `workflow_step_consistency` warns on a bare reasoning step **only** when no directions unit binds the workflow (a bound workflow's empty reasoning steps are intentional — their content is delivered at runtime).
 - `directions_workflow_resolution` errors when a directions unit's `workflow:` does not resolve to a real `kind: workflow` unit. A dangling binding both defeats the suppression above and leaves the conductor with nothing to deliver, so the link must always point somewhere real (full path, e.g. `tasks/task-me`, not the bare slug).
-- `workflow_delegation_resolution` checks nested `wb_run("<workflow>")` delegations between workflows: it errors on a delegation to a non-existent workflow, and flags a delegation into a workflow whose reasoning steps are bare *and* unbound (runtime delivery cannot rescue what has no bound directions).
+- `workflow_delegation_resolution` checks nested `wb_run("<workflow>")` delegations between workflows: it errors on a delegation to a non-existent workflow, on a delegation into a workflow whose reasoning steps are bare *and* unbound (runtime delivery cannot rescue what has no bound directions), and on a delegation that passes a param the target workflow does not declare in its `params_schema` (a caller/callee contract mismatch that would be rejected at the param gate).
 
 ## Step result visibility
 

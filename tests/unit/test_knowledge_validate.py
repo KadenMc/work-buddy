@@ -416,6 +416,55 @@ class TestWorkflowDelegationResolutionCheck:
         assert len(errs) == 1
         assert "y" in errs[0]["message"]
 
+    # --- param-contract checks (caller passes keys the callee must declare) ---
+
+    def test_delegation_passing_undeclared_param_errors_update_journal_case(self):
+        # The exact shape of the real bug: a caller passes {"target": ...} to a
+        # workflow that declares no such param → rejected at the param gate.
+        caller = _wf_with_prose(
+            "morning",
+            'step 6: `mcp__work-buddy__wb_run("upd", {"target": "yesterday"})`',
+        )
+        target = WorkflowUnit(
+            path="upd", name="upd", description="d", workflow_name="upd",
+            steps=[{"id": "a", "step_type": "code", "depends_on": []}],
+        )  # no params_schema → rejects any params
+        errs = _check_workflow_delegation_resolution({"morning": caller, "upd": target})
+        assert len(errs) == 1
+        assert errs[0]["check"] == "workflow_delegation_resolution"
+        assert "target" in errs[0]["message"]
+        assert errs[0].get("severity", "error") != "warning"
+
+    def test_delegation_with_declared_optional_param_is_clean(self):
+        # After the fix: target declares `target` (optional) → no flag. This is
+        # the post-fix update-journal state.
+        caller = _wf_with_prose("morning", 'wb_run("upd", {"target": "yesterday"})')
+        target = WorkflowUnit(
+            path="upd", name="upd", description="d", workflow_name="upd",
+            steps=[{"id": "a", "step_type": "code", "depends_on": []}],
+            params_schema={"target": {"type": "str", "required": False}},
+        )
+        assert _check_workflow_delegation_resolution({"morning": caller, "upd": target}) == []
+
+    def test_bare_delegation_has_no_param_contract_error(self):
+        caller = _wf_with_prose("morning", 'wb_run("upd")')
+        target = WorkflowUnit(
+            path="upd", name="upd", description="d", workflow_name="upd",
+            steps=[{"id": "a", "step_type": "code", "depends_on": []}],
+        )
+        assert _check_workflow_delegation_resolution({"morning": caller, "upd": target}) == []
+
+    def test_undeclared_key_when_target_has_schema_errors(self):
+        caller = _wf_with_prose("morning", 'wb_run("upd", {"bogus": 1})')
+        target = WorkflowUnit(
+            path="upd", name="upd", description="d", workflow_name="upd",
+            steps=[{"id": "a", "step_type": "code", "depends_on": []}],
+            params_schema={"target": {"type": "str", "required": False}},
+        )
+        errs = _check_workflow_delegation_resolution({"morning": caller, "upd": target})
+        assert len(errs) == 1
+        assert "bogus" in errs[0]["message"]
+
 
 class TestWorkflowBodyHeadingIssues:
     """The raw-file heading helper the commit step uses — catches a ``##``
