@@ -353,6 +353,14 @@ def _check_workflow_step_consistency(store: dict[str, PromptUnit]) -> list[dict[
       reasoning step is the real defect this check exists to surface: either
       the instruction was never written, or the step is miscategorized and
       should be a ``code`` step. (See ``architecture/workflows`` for the rule.)
+
+    The suppression is safe because the binding is a runtime delivery contract,
+    not merely documentation: the conductor delivers the bound directions unit's
+    rendered content to an instruction-less reasoning step on every entry path
+    (slash command, nested ``wb_run`` delegation, headless), so a bound bare
+    step is never reached blind. ``directions_workflow_resolution`` guards that
+    the binding resolves to a real workflow — a dangling binding would both
+    silence this warning and leave the conductor nothing to deliver.
     """
     documented_workflows = {
         u.workflow
@@ -429,6 +437,158 @@ def _check_directions_workflow_resolution(store: dict[str, PromptUnit]) -> list[
     return errors
 
 
+_WB_RUN_RE = re.compile(r"""wb_run\(\s*["']([A-Za-z0-9_\-]+)["']""")
+"""Match a ``wb_run("<name>")`` / ``wb_run('<name>')`` call in prose."""
+
+_WB_RUN_PARAMS_RE = re.compile(
+    r"""wb_run\(\s*["']([A-Za-z0-9_\-]+)["']\s*,\s*(\{[^{}]*\})"""
+)
+"""Match ``wb_run("<name>", {<params>})`` — captures name + a single-level
+(non-nested) params literal. Best-effort: multi-line or nested-brace params
+are not parsed; the contract check that uses this degrades to a no-op for them."""
+
+_PARAM_KEY_RE = re.compile(r"""["'](\w+)["']\s*:""")
+"""Extract top-level keys from a ``{...}`` params literal."""
+
+
+def _check_workflow_delegation_resolution(store: dict[str, PromptUnit]) -> list[dict[str, str]]:
+    """Check 14: nested workflow→workflow delegations are sound.
+
+    A workflow step may delegate to another workflow with a bare
+    ``wb_run("<slug>")`` (in its ``invokes`` list or its step prose) and
+    advance it to completion. That nested entry path skips the target's slash
+    command, so it never loads the target's bound directions unit. The
+    conductor closes this by *delivering* the bound directions to the target's
+    instruction-less reasoning steps (see ``architecture/workflows``) — but
+    that rescue only works when the target actually *has* a bound directions
+    unit. This check surfaces, at author time, the two cases delivery cannot
+    save:
+
+    - **Dangling delegation** — the referenced name is workflow-shaped (kebab,
+      contains ``-``) but resolves to no registered workflow and no declared
+      capability. ``wb_run`` would return "Unknown workflow" at runtime. Error.
+    - **Blind delegation** — the target is a real workflow whose reasoning
+      steps are bare *and* it has no bound directions unit. A nested caller
+      reaches those steps with no instructions and nothing to deliver. Error.
+    - **Param-contract mismatch** — the delegation passes a param the target
+      workflow does not declare in its ``params_schema`` (or the target
+      declares no schema at all). The call is rejected at the start-gate
+      (`_validate_workflow_params`) before any step runs — "declares no
+      params_schema" / "Unknown param(s)". Error. (This is the bug class where
+      a caller and callee silently disagree on the interface.)
+
+    A delegation into a workflow whose bare reasoning steps *are* covered by a
+    bound directions unit is intentional and silent — runtime delivery handles
+    it. Snake_case unknown names are assumed to be capabilities (possibly
+    op-registered without a store declaration) and are left to
+    ``capability_op_resolution``; they are not flagged here. Param-contract
+    parsing is best-effort (single-level, non-nested ``{...}`` literals in
+    prose); multi-line or nested params are skipped rather than mis-flagged.
+    """
+    workflow_slugs: dict[str, str] = {}      # slug -> store path
+    capability_names: set[str] = set()
+    for p, u in store.items():
+        if isinstance(u, WorkflowUnit) and u.workflow_name:
+            workflow_slugs[u.workflow_name] = p
+        elif isinstance(u, CapabilityUnit) and getattr(u, "capability_name", ""):
+            capability_names.add(u.capability_name)
+    bound_workflows = {
+        u.workflow
+        for u in store.values()
+        if isinstance(u, DirectionsUnit) and u.workflow
+    }
+
+    def _bare_reasoning_ids(wf: WorkflowUnit) -> list[str]:
+        instr = wf.step_instructions or {}
+        return [
+            s["id"] for s in (wf.steps or [])
+            if isinstance(s, dict) and s.get("step_type") == "reasoning"
+            and s.get("id") and s["id"] not in instr
+        ]
+
+    errors: list[dict[str, str]] = []
+    for path, unit in sorted(store.items()):
+        if not isinstance(unit, WorkflowUnit):
+            continue
+
+        # Collect referenced names from the structured `invokes` lists and the
+        # `wb_run("...")` calls in step prose + workflow-level content.
+        referenced: set[str] = set()
+        for s in unit.steps or []:
+            if isinstance(s, dict):
+                for inv in s.get("invokes") or []:
+                    if isinstance(inv, str):
+                        referenced.add(inv)
+        texts = [v for v in (unit.step_instructions or {}).values() if isinstance(v, str)]
+        full = unit.content.get("full", "") if isinstance(unit.content, dict) else ""
+        if isinstance(full, str):
+            texts.append(full)
+        # Params passed at each delegation site: workflow name -> set of keys.
+        passed_params: dict[str, set[str]] = {}
+        for t in texts:
+            for m in _WB_RUN_RE.finditer(t):
+                referenced.add(m.group(1))
+            for m in _WB_RUN_PARAMS_RE.finditer(t):
+                passed_params.setdefault(m.group(1), set()).update(
+                    _PARAM_KEY_RE.findall(m.group(2))
+                )
+
+        for name in sorted(referenced):
+            if name == unit.workflow_name:
+                continue                       # self-reference ("Start via …")
+            if name in capability_names:
+                continue                       # a capability call, not a delegation
+            if name in workflow_slugs:
+                target = store[workflow_slugs[name]]
+                bare = _bare_reasoning_ids(target)  # type: ignore[arg-type]
+                if bare and workflow_slugs[name] not in bound_workflows:
+                    errors.append({
+                        "check": "workflow_delegation_resolution",
+                        "path": path,
+                        "message": (
+                            f"delegates to workflow {name!r} whose reasoning "
+                            f"steps {bare} are bare and have no bound directions "
+                            "unit — a nested invocation reaches them with no "
+                            "instructions and nothing for the conductor to "
+                            "deliver. Bind a directions unit or write the step "
+                            "bodies."
+                        ),
+                    })
+                # bare + bound → covered by runtime delivery → intentional, silent
+
+                # Param contract: every key the delegation passes must be
+                # declared in the target's params_schema. A target with no
+                # schema rejects ANY params at runtime; an undeclared key is an
+                # "Unknown param(s)" rejection. Either way the call errors at
+                # the start-gate before a single step runs.
+                declared = set((getattr(target, "params_schema", None) or {}).keys())
+                undeclared = sorted(passed_params.get(name, set()) - declared)
+                if undeclared:
+                    errors.append({
+                        "check": "workflow_delegation_resolution",
+                        "path": path,
+                        "message": (
+                            f"delegates to workflow {name!r} passing param(s) "
+                            f"{undeclared} it does not declare in params_schema — "
+                            "the call is rejected at the param gate before any "
+                            "step runs. Declare the param(s) on the target "
+                            "(and wire them via input_map) or drop them."
+                        ),
+                    })
+            elif "-" in name:
+                errors.append({
+                    "check": "workflow_delegation_resolution",
+                    "path": path,
+                    "message": (
+                        f"delegates via wb_run({name!r}) which resolves to no "
+                        "registered workflow and no declared capability — "
+                        "dangling delegation (would return 'Unknown workflow')"
+                    ),
+                })
+            # snake_case unknown → assume a capability; left to capability_op_resolution
+    return errors
+
+
 # ---------------------------------------------------------------------------
 # Main validation runner
 # ---------------------------------------------------------------------------
@@ -447,6 +607,7 @@ _CHECKS = [
     ("workflow_step_dag", _check_workflow_step_dag),
     ("workflow_step_consistency", _check_workflow_step_consistency),
     ("directions_workflow_resolution", _check_directions_workflow_resolution),
+    ("workflow_delegation_resolution", _check_workflow_delegation_resolution),
 ]
 
 
@@ -535,7 +696,8 @@ def docs_validate(
                  kind_specific_fields, placeholder_duplicate,
                  parent_child_symmetry, capability_op_resolution,
                  workflow_step_dag, workflow_step_consistency,
-                 directions_workflow_resolution
+                 directions_workflow_resolution,
+                 workflow_delegation_resolution
     """
     check_list = [c.strip() for c in checks.split(",") if c.strip()] if checks else None
     return validate_store(checks=check_list)

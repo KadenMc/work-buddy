@@ -23,6 +23,7 @@ dev_notes: |-
 
   - Validation: `_validate_workflow_params(entry, params)` near the top of `work_buddy/mcp_server/conductor.py`. Returns `(ok, error_message)`. Strict policy enforced here — don't loosen without updating `features/user-jobs` and the `architecture/workflows` content above.
   - Source resolution: `_resolve_params_source(source, initial_params)` walks the dotted path. Returns `(found, value)`. Treats `__params__` alone as "whole dict."
+  - input_map resolution: `_resolve_input_map(input_map, step_results, initial_params, optional_params)` — pure helper called by `_execute_auto_run`; returns `(kwargs, error)`. Honors schema optionality: an absent top-level `__params__.<key>` whose `<key>` is in `optional_params` is SKIPPED so the callable's own default applies; a *required* / *unknown* / *nested* (`a.b`) miss still errors (fail-loud). `optional_params` is the workflow's `required: false` key set, derived in `_build_response` from `WorkflowDefinition.params_schema`. Unit-tested in `tests/unit/test_conductor_input_map.py`.
   - DAG storage: `start_workflow` sets `dag.initial_params = dict(params or {})` after validation. The attribute is dynamic on the DAG instance (not in `__init__`) — read everywhere via `getattr(dag, 'initial_params', None)` to stay safe against pre-feature DAG instances.
   - Persistence: `WorkflowDAG._save` / `WorkflowDAG.load` (in `workflow.py`) round-trip `initial_params` via `getattr(self, 'initial_params', None)` and `raw.get('initial_params')`. Save files written before this feature simply restore as `None`; everything downstream tolerates that.
 
@@ -124,10 +125,13 @@ Caller passes them through any of the standard surfaces (`wb_run(name, params)`,
 
 Validated params reach steps via two paths:
 
-- **`auto_run` steps via `input_map`** — use the synthetic source key `__params__` (whole dict) or `__params__.foo` / `__params__.a.b` (dotted-key walk) to wire a param into a kwarg. Missing dotted keys fail the same way an unresolved step source does. Example:
+- **`auto_run` steps via `input_map`** — use the synthetic source key `__params__` (whole dict) or `__params__.foo` / `__params__.a.b` (dotted-key walk) to wire a param into a kwarg. There are two ways to handle optional params, and the schema's `required` flag is authoritative for both:
+  - **Dotted, schema-optional** — `input_map: {target: __params__.target}` where `target` is declared `required: false`. If the caller omits it, the resolver **skips the kwarg** so the callable's own default applies (it does NOT error). A missing key that is *required*, *not declared*, or *nested* (`a.b`) still fails like an unresolved step source. This lets a step wire one named param directly while still working when the caller omits it.
+  - **Whole-dict** — `input_map: {params: __params__}` passes the entire (possibly empty) dict; the callable destructures and defaults internally. Use when a step consumes several params.
   ```json
   "input_map": {"project_id": "__params__.project_id"}
   ```
+  (Resolution lives in `_resolve_input_map` / `_execute_auto_run` in `conductor.py`; the `workflow_delegation_resolution` validator check flags a nested `wb_run("W", {...})` delegation that passes a key `W` doesn't declare — a caller/callee contract mismatch — before it can fail at runtime.)
 - **Reasoning steps via the first-step response** — the response includes an `initial_params` field alongside `workflow_context`, so the agent reading the first instruction can inspect what was passed in. There is no `{{params.foo}}` template substitution into instruction text — agents read params from the response payload.
 
 Workflows are authored / edited through the `docs_edit` workflow — you edit the unit's `.md` directly (frontmatter `steps` and `params_schema`, plus the `## <step-id>` body sections), and the commit step validates the step DAG (cycles, dangling deps) and reconciles the store + index.
@@ -148,13 +152,16 @@ All slash commands (.claude/commands/wb-*.md) are thin launchers that load behav
 
 ## Reasoning-step instructions and directions binding
 
-A `reasoning` step's behavioral prose normally lives in the **bound directions unit** — the `kind: directions` unit whose `workflow:` frontmatter field targets this workflow — not in the step body. This keeps a single source: the directions unit (loaded by the slash command) is what the agent reads at runtime, so duplicating that prose into `## <step-id>` body sections only invites drift.
+A `reasoning` step's behavioral prose normally lives in the **bound directions unit** — the `kind: directions` unit whose `workflow:` frontmatter field targets this workflow — not in the step body. This keeps a single source, so duplicating that prose into `## <step-id>` body sections only invites drift.
 
 A reasoning step is therefore well-formed when it is either (a) covered by such a bound directions unit, or (b) carries its own `## <step-id>` instruction in the workflow body. There is no legitimate *bare* reasoning step: if it has neither, it is either undocumented (write the `## <step-id>` prose) or miscategorized (the work is deterministic → make it a `code`/`auto_run` step).
 
-Two `docs_validate` checks enforce this:
-- `workflow_step_consistency` warns on a bare reasoning step **only** when no directions unit binds the workflow (a bound workflow's empty reasoning steps are intentional).
-- `directions_workflow_resolution` errors when a directions unit's `workflow:` does not resolve to a real `kind: workflow` unit — a dangling binding would silently defeat the suppression above, so the link must always point somewhere real (full path, e.g. `tasks/task-me`, not the bare slug).
+**The binding is a runtime delivery contract, not just a doc link.** When the conductor serves an instruction-less reasoning step, it resolves the workflow's bound directions unit and delivers that unit's rendered full content as the step's instruction — the same content (and renderer) `agent_docs` produces at `depth="full"`. So form (a) holds on *every* entry path: the slash command, a nested `wb_run("<workflow>")` delegation from inside another workflow, and headless/sidecar runs all reach the bare step with the directions in hand — not only the slash-command path. The binding is precomputed once at registry-build time (`WorkflowDefinition.bound_directions_path`), and the served step carries a `directions_source` pointer naming the delivered unit. Delivery degrades safely: if the unit cannot be rendered, the step falls back to the empty-instruction warning. (Mechanism: `_resolve_bound_directions` in `conductor.py`, `_index_directions_by_workflow` in `registry.py`.)
+
+Three `docs_validate` checks back this contract:
+- `workflow_step_consistency` warns on a bare reasoning step **only** when no directions unit binds the workflow (a bound workflow's empty reasoning steps are intentional — their content is delivered at runtime).
+- `directions_workflow_resolution` errors when a directions unit's `workflow:` does not resolve to a real `kind: workflow` unit. A dangling binding both defeats the suppression above and leaves the conductor with nothing to deliver, so the link must always point somewhere real (full path, e.g. `tasks/task-me`, not the bare slug).
+- `workflow_delegation_resolution` checks nested `wb_run("<workflow>")` delegations between workflows: it errors on a delegation to a non-existent workflow, on a delegation into a workflow whose reasoning steps are bare *and* unbound (runtime delivery cannot rescue what has no bound directions), and on a delegation that passes a param the target workflow does not declare in its `params_schema` (a caller/callee contract mismatch that would be rejected at the param gate).
 
 ## Step result visibility
 

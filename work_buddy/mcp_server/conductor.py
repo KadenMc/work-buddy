@@ -1104,6 +1104,14 @@ def _build_response(
     """
     auto_ran: list[dict[str, Any]] = []  # track what was auto-executed
     wf_def = _get_wf_def(dag)  # for visibility lookups
+    # Top-level params this workflow declares optional (required is falsy).
+    # An auto_run step whose input_map wires such a param via __params__.<key>
+    # may legitimately find it absent; the resolver skips the kwarg so the
+    # callable's own default applies, instead of failing the step.
+    optional_params = {
+        k for k, spec in (getattr(wf_def, "params_schema", None) or {}).items()
+        if not (isinstance(spec, dict) and spec.get("required"))
+    }
 
     while True:
         available = dag.next_available()
@@ -1233,6 +1241,7 @@ def _build_response(
             dag.get_all_results(),
             agent_session_id=getattr(dag, "agent_session_id", None),
             initial_params=getattr(dag, "initial_params", None),
+            optional_params=optional_params,
         )
 
         # Re-mint workflow run grant if we suspended it
@@ -1305,13 +1314,35 @@ def _build_response(
     instruction = meta.get("instruction", "")
     step_type = meta.get("step_type", "unknown")
 
+    # A reasoning step may legitimately carry no inline instruction: by the
+    # house convention its behavioral prose lives in the workflow's bound
+    # directions unit (the kind:directions unit whose `workflow:` targets this
+    # workflow). The slash command loads that unit on the front-door path —
+    # but a nested or headless invocation never does, leaving the agent blind
+    # at the bare step. Deliver the bound directions content here so the
+    # convention holds on every entry path. Only when there is genuinely no
+    # bound directions to deliver is an empty reasoning instruction the real
+    # defect the validator's workflow_step_consistency check flags.
+    directions_source: str | None = None
     if not instruction and step_type == "reasoning":
-        logger.warning(
-            "Reasoning step '%s' has empty instruction — the agent will "
-            "receive no procedure. Check that the workflow body has a "
-            "matching section (### Task: `%s` or ### N. %s).",
-            task_id, task_id, next_task["name"],
-        )
+        delivered, src = _resolve_bound_directions(dag)
+        if delivered:
+            instruction = (
+                f"The behavioral procedure for this step lives in its bound "
+                f"directions unit `{src}`, delivered below so it is available "
+                f"regardless of how this workflow was entered (slash command "
+                f"or nested invocation). If you already loaded it this session, "
+                f"this re-anchors it at the point of use:\n\n---\n\n{delivered}"
+            )
+            directions_source = src
+        else:
+            logger.warning(
+                "Reasoning step '%s' has empty instruction and no bound "
+                "directions unit — the agent will receive no procedure. Either "
+                "write the workflow body section (### Task: `%s` / ### N. %s) "
+                "or bind a kind:directions unit (workflow: <this workflow path>).",
+                task_id, task_id, next_task["name"],
+            )
 
     current_step: dict[str, Any] = {
         "id": task_id,
@@ -1320,6 +1351,9 @@ def _build_response(
         "step_type": step_type,
         "execution": next_task.get("execution", "main"),
     }
+
+    if directions_source:
+        current_step["directions_source"] = directions_source
 
     if next_task.get("workflow_file"):
         current_step["workflow_file"] = next_task["workflow_file"]
@@ -1385,6 +1419,56 @@ def _build_response(
     return response
 
 
+def _resolve_input_map(
+    input_map: dict[str, str],
+    step_results: dict[str, Any],
+    initial_params: dict[str, Any] | None,
+    optional_params: set[str] | None = None,
+) -> tuple[dict[str, Any], str | None]:
+    """Resolve an auto_run step's ``input_map`` into kwargs.
+
+    Returns ``(kwargs_updates, error)`` — ``error`` is None on success.
+
+    Sources beginning with ``__params__`` resolve from the workflow's
+    caller-provided initial params (``__params__`` → whole dict;
+    ``__params__.foo`` → ``initial_params["foo"]``; ``__params__.a.b`` →
+    nested). Every other source names a prior step whose result is wired in.
+
+    Optionality: when a **top-level** ``__params__.<key>`` source is absent but
+    ``<key>`` is declared ``required: false`` in the workflow's params_schema
+    (passed as ``optional_params``), the kwarg is **skipped** so the callable's
+    own default applies — the schema's ``required: false`` is authoritative
+    here, matching the start-gate (`_validate_workflow_params`). A missing
+    source that is not a declared-optional top-level param — a typo, a nested
+    (`a.b`) miss, or a required key — still errors (fail-loud preserved).
+    """
+    optional_params = optional_params or set()
+    kwargs: dict[str, Any] = {}
+    for kwarg_name, source in input_map.items():
+        if isinstance(source, str) and source.startswith("__params__"):
+            found, value = _resolve_params_source(source, initial_params)
+            if found:
+                kwargs[kwarg_name] = value
+                continue
+            parts = source.split(".")
+            if len(parts) == 2 and parts[1] in optional_params:
+                # Declared-optional param the caller omitted → let the
+                # callable's default apply; do not wire the kwarg.
+                continue
+            return {}, (
+                f"input_map references {source!r} for kwarg {kwarg_name!r}, "
+                "but the workflow's initial_params has no such key"
+            )
+        if source in step_results:
+            kwargs[kwarg_name] = step_results[source]
+        else:
+            return {}, (
+                f"input_map references step {source!r} for kwarg "
+                f"{kwarg_name!r}, but that step has no result yet"
+            )
+    return kwargs, None
+
+
 def _execute_auto_run(
     step_id: str,
     spec: dict[str, Any],
@@ -1392,6 +1476,7 @@ def _execute_auto_run(
     *,
     agent_session_id: str | None = None,
     initial_params: dict[str, Any] | None = None,
+    optional_params: set[str] | None = None,
 ) -> dict[str, Any]:
     """Execute an auto_run callable in an isolated subprocess.
 
@@ -1442,36 +1527,18 @@ def _execute_auto_run(
     # --- Strip None values from kwargs (YAML `null` → Python None) ---
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
 
-    # --- Resolve input_map: wire prior step results into kwargs ---
-    # Sources beginning with ``__params__`` resolve from the workflow's
-    # caller-provided initial params instead of step_results. Supports
-    # dotted-key walks: ``__params__`` → whole dict; ``__params__.foo``
-    # → initial_params["foo"]; ``__params__.a.b`` → nested.
-    input_map = spec.get("input_map") or {}
-    for kwarg_name, source_step_id in input_map.items():
-        if isinstance(source_step_id, str) and source_step_id.startswith("__params__"):
-            found, value = _resolve_params_source(source_step_id, initial_params)
-            if not found:
-                return {
-                    "success": False,
-                    "error": (
-                        f"input_map references {source_step_id!r} for kwarg "
-                        f"{kwarg_name!r}, but the workflow's initial_params has no "
-                        "such key"
-                    ),
-                }
-            kwargs[kwarg_name] = value
-            continue
-        if source_step_id in step_results:
-            kwargs[kwarg_name] = step_results[source_step_id]
-        else:
-            return {
-                "success": False,
-                "error": (
-                    f"input_map references step {source_step_id!r} for kwarg "
-                    f"{kwarg_name!r}, but that step has no result yet"
-                ),
-            }
+    # --- Resolve input_map: wire prior step results / caller params into kwargs ---
+    # Delegated to the pure _resolve_input_map helper (unit-tested in isolation),
+    # which also applies the declared-optional skip for absent __params__.<key>.
+    resolved, im_error = _resolve_input_map(
+        spec.get("input_map") or {},
+        step_results,
+        initial_params,
+        optional_params,
+    )
+    if im_error:
+        return {"success": False, "error": im_error}
+    kwargs.update(resolved)
 
     # --- Build subprocess payload ---
     # Prefer the workflow-pinned agent session so consent checks hit the
@@ -1824,6 +1891,45 @@ def _get_wf_def(dag: WorkflowDAG) -> WorkflowDefinition | None:
     wf_name = dag.name.split(":")[0] if ":" in dag.name else dag.name
     entry = get_entry(wf_name)
     return entry if isinstance(entry, WorkflowDefinition) else None
+
+
+def _resolve_bound_directions(dag: WorkflowDAG) -> tuple[str | None, str | None]:
+    """Render the workflow's bound directions unit for delivery to a bare step.
+
+    Returns ``(rendered_full_content, source_path)`` when the running
+    workflow has a bound directions unit (``WorkflowDefinition.bound_directions_path``,
+    precomputed at registry-build time), or ``(None, None)`` when there is no
+    binding or it cannot be rendered.
+
+    The content is rendered exactly as ``agent_docs`` delivers it at
+    ``depth="full"`` — via the unit's public ``tier()`` renderer with
+    ``recursive_mode="default"`` — so conductor delivery is byte-for-byte what
+    the slash command would have loaded. ``load_store()`` is memoized, so this
+    is cheap; it runs only for instruction-less reasoning steps.
+
+    Never raises: any failure degrades to ``(None, None)``, which routes the
+    caller back to the empty-instruction warning (status quo before delivery).
+    """
+    wf_def = _get_wf_def(dag)
+    path = getattr(wf_def, "bound_directions_path", None) if wf_def else None
+    if not path:
+        return None, None
+    try:
+        from work_buddy.knowledge.store import load_store
+
+        store = load_store()
+        unit = store.get(path)
+        if unit is None:
+            return None, None
+        rendered = unit.tier(
+            depth="full", store=store, recursive_mode="default",
+        ).get("content")
+        return (rendered, path) if rendered else (None, None)
+    except Exception as exc:  # pragma: no cover — defensive; never break a step
+        logger.warning(
+            "bound-directions delivery failed for %r: %s", path, exc,
+        )
+        return None, None
 
 
 def _relevant_step_results(

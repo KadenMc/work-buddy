@@ -146,13 +146,38 @@ def test_resolve_captures_invoked_capability_names(workflow, registry):
         )
 
 
-def test_resolve_skips_missing_capability_gracefully(registry):
-    """detect-blindspots is referenced in prose but not registered — resolver tolerates it."""
-    from work_buddy.control.capability_resolver import resolve_dependencies
+def test_resolve_skips_missing_capability_gracefully():
+    """A step that invokes an unregistered capability must not crash the
+    resolver — it silently skips the missing hop.
 
-    # If blindspot-scan ever added an invokes=['detect-blindspots'] and that
-    # capability didn't exist, the resolver should silently skip it.
-    deps = resolve_dependencies("morning-routine", registry=registry)
-    # Just confirm the call succeeded — no crash, no TypeError.
+    Uses a self-contained synthetic registry rather than relying on a
+    dangling reference in a real workflow's prose, so the property stays
+    covered regardless of how the shipped workflows evolve.
+    """
+    from work_buddy.control.capability_resolver import resolve_dependencies
+    from work_buddy.mcp_server.registry import WorkflowDefinition, WorkflowStep
+
+    synthetic = {
+        "wf-ghost": WorkflowDefinition(
+            name="wf-ghost",
+            description="invokes a capability that isn't registered",
+            workflow_file="test:in-memory",
+            execution="main",
+            steps=[
+                WorkflowStep(
+                    id="s1",
+                    name="step invoking a ghost",
+                    step_type="reasoning",
+                    depends_on=[],
+                    instruction="",
+                    invokes=["ghost_capability_that_does_not_exist"],
+                ),
+            ],
+        ),
+    }
+
+    deps = resolve_dependencies("wf-ghost", registry=synthetic)
+    # No crash, no TypeError; the three standard sets are present.
     assert isinstance(deps, dict)
     assert "components" in deps
+    assert "capabilities" in deps

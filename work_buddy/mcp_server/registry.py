@@ -233,6 +233,14 @@ class WorkflowDefinition:
     # hand-author; see `_compute_workflow_requires()`.
     requires: list[str] = field(default_factory=list)
 
+    # Computed at registry-build time: the store path of the kind:directions
+    # unit whose `workflow:` field targets this workflow (its bound directions
+    # unit), or None if unbound. The conductor delivers this unit's rendered
+    # content to the workflow's instruction-less reasoning steps so the
+    # directions reach the agent on every entry path — not only the slash
+    # command. Do not hand-author; see `_index_directions_by_workflow()`.
+    bound_directions_path: str | None = None
+
     # Optional schema for caller-provided initial params, mirrors
     # ``Capability.parameters``: ``{name: {type, description, required}}``.
     # Workflows that declare no schema reject any non-empty params at
@@ -1219,6 +1227,33 @@ def _compute_workflow_requires(
         entry.requires = sorted(seen)
 
 
+def _index_directions_by_workflow(store: dict[str, Any]) -> dict[str, str]:
+    """Map a workflow's store path -> the path of its bound directions unit.
+
+    A ``kind: directions`` unit binds to a workflow via its ``workflow:``
+    frontmatter field, which holds the workflow's **store path** (e.g.
+    ``daily-journal/update-journal``), not its slug. This reverse index lets
+    the registry stamp each ``WorkflowDefinition`` with its bound directions
+    path at build time, so the conductor can deliver that unit's content to
+    the workflow's instruction-less reasoning steps without a store scan.
+
+    Mirrors the ``documented_workflows`` set built in
+    ``work_buddy.knowledge.validate._check_workflow_step_consistency``. The
+    mapping is 1:1 in practice (a directions unit owns one workflow); on the
+    pathological case of two directions units naming the same workflow, the
+    last one wins — harmless, since the conductor only needs *some* bound
+    directions content and the ``directions_workflow_resolution`` validator
+    check guards the bindings themselves.
+    """
+    from work_buddy.knowledge.model import DirectionsUnit
+
+    idx: dict[str, str] = {}
+    for path, u in store.items():
+        if isinstance(u, DirectionsUnit) and u.workflow:
+            idx[u.workflow] = path
+    return idx
+
+
 def _discover_workflows_from_store() -> list[WorkflowDefinition]:
     """Load workflow definitions from the knowledge store.
 
@@ -1231,6 +1266,7 @@ def _discover_workflows_from_store() -> list[WorkflowDefinition]:
     from work_buddy.knowledge.model import WorkflowUnit
 
     store = load_store()
+    directions_by_workflow = _index_directions_by_workflow(store)
     workflows: list[WorkflowDefinition] = []
 
     for _path, unit in store.items():
@@ -1298,6 +1334,7 @@ def _discover_workflows_from_store() -> list[WorkflowDefinition]:
             context=context,
             slash_command=unit.command,
             params_schema=unit.params_schema or {},
+            bound_directions_path=directions_by_workflow.get(_path),
         ))
 
     return workflows

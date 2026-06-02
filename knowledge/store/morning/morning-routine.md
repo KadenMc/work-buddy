@@ -292,7 +292,7 @@ Return a brief summary: either "None detected" or a list of pattern names with o
 
 #### Full mode
 
-Delegate to the `detect-blindspots` workflow: `mcp__work-buddy__wb_run("detect-blindspots")`. Return the full result.
+Run the complete blindspot scan rather than the HIGH-severity light pass: load `metacognition/blindspot-directions` (`mcp__work-buddy__wb_run("agent_docs", {"path": "metacognition/blindspot-directions", "depth": "full"})`) and follow it end-to-end — all severities, cascade checking, the intervention ladder. Return the full pattern report.
 
 **Result:** Pattern summary string or full blindspot report.
 
