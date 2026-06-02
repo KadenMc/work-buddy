@@ -16,6 +16,7 @@ from work_buddy.knowledge.validate import (
     _check_capability_op_resolution,
     _check_directions_workflow_resolution,
     _check_placeholder_duplicates,
+    _check_workflow_delegation_resolution,
     _check_workflow_step_consistency,
     _check_workflow_step_dag,
     validate_store,
@@ -323,6 +324,97 @@ class TestDirectionsWorkflowResolutionCheck:
     def test_directions_without_workflow_field_is_ignored(self):
         directions = DirectionsUnit(path="d", name="D", description="d")
         assert _check_directions_workflow_resolution({"d": directions}) == []
+
+
+def _wf_with_prose(path: str, full: str, *, steps: list[dict] | None = None) -> WorkflowUnit:
+    return WorkflowUnit(
+        path=path, name=path, description="d", workflow_name=path.replace("/", "-"),
+        steps=steps or [{"id": "a", "step_type": "code", "depends_on": []}],
+        content={"full": full},
+    )
+
+
+def _bare_reasoning_wf(path: str) -> WorkflowUnit:
+    """A workflow with a bare (instruction-less) reasoning step."""
+    return _wf(path, [{"id": "think", "step_type": "reasoning", "depends_on": []}])
+
+
+class TestWorkflowDelegationResolutionCheck:
+    """``workflow_delegation_resolution`` — nested wb_run delegations between
+    workflows must resolve, and must not land on bare+unbound reasoning steps
+    that runtime directions-delivery cannot rescue."""
+
+    def test_dangling_hyphenated_delegation_is_error(self):
+        # A kebab-shaped name that is neither a workflow nor a capability.
+        caller = _wf_with_prose(
+            "x", 'do `mcp__work-buddy__wb_run("ghost-workflow")` then advance',
+        )
+        errs = _check_workflow_delegation_resolution({"x": caller})
+        assert len(errs) == 1
+        assert errs[0]["check"] == "workflow_delegation_resolution"
+        assert errs[0]["path"] == "x"
+        assert "ghost-workflow" in errs[0]["message"]
+        assert errs[0].get("severity", "error") != "warning"
+
+    def test_blind_delegation_into_bare_unbound_workflow_is_error(self):
+        caller = _wf_with_prose("x", 'wb_run("y")')
+        target = _bare_reasoning_wf("y")  # bare reasoning, no directions bind it
+        errs = _check_workflow_delegation_resolution({"x": caller, "y": target})
+        assert len(errs) == 1
+        assert "y" in errs[0]["message"]
+        assert "think" in errs[0]["message"]      # names the bare step
+        assert errs[0].get("severity", "error") != "warning"
+
+    def test_covered_delegation_is_silent(self):
+        # target is bare BUT has a bound directions unit -> runtime delivery
+        # covers it -> intentional, no finding.
+        caller = _wf_with_prose("x", 'wb_run("y")')
+        target = _bare_reasoning_wf("y")
+        directions = DirectionsUnit(
+            path="y-dir", name="D", description="d", workflow="y",
+        )
+        store = {"x": caller, "y": target, "y-dir": directions}
+        assert _check_workflow_delegation_resolution(store) == []
+
+    def test_delegation_into_self_documented_workflow_is_silent(self):
+        # target's reasoning step has an inline instruction -> not bare -> fine.
+        caller = _wf_with_prose("x", 'wb_run("y")')
+        target = _wf(
+            "y", [{"id": "think", "step_type": "reasoning", "depends_on": []}],
+            {"think": "do the thing"},
+        )
+        assert _check_workflow_delegation_resolution({"x": caller, "y": target}) == []
+
+    def test_capability_call_is_not_a_delegation(self):
+        cap = CapabilityUnit(
+            path="c", name="C", description="d", capability_name="task_briefing",
+        )
+        caller = _wf_with_prose("x", 'wb_run("task_briefing")')
+        assert _check_workflow_delegation_resolution({"x": caller, "c": cap}) == []
+
+    def test_snake_case_unknown_is_not_flagged(self):
+        # Assumed to be an op-registered capability without a store declaration;
+        # left to capability_op_resolution, not flagged here.
+        caller = _wf_with_prose("x", 'wb_run("some_unknown_cap")')
+        assert _check_workflow_delegation_resolution({"x": caller}) == []
+
+    def test_self_reference_is_ignored(self):
+        # A workflow's own "Start via wb_run('self')" line must not flag itself.
+        caller = _wf_with_prose("x", 'Start via wb_run("x").')
+        assert _check_workflow_delegation_resolution({"x": caller}) == []
+
+    def test_invokes_surface_is_scanned(self):
+        # Delegation declared structurally via a step's `invokes` list, no prose.
+        caller = _wf(
+            "x",
+            [{"id": "a", "step_type": "reasoning", "depends_on": [],
+              "invokes": ["y"]}],
+            {"a": "go"},
+        )
+        target = _bare_reasoning_wf("y")
+        errs = _check_workflow_delegation_resolution({"x": caller, "y": target})
+        assert len(errs) == 1
+        assert "y" in errs[0]["message"]
 
 
 class TestWorkflowBodyHeadingIssues:

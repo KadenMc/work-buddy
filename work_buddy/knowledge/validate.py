@@ -437,6 +437,114 @@ def _check_directions_workflow_resolution(store: dict[str, PromptUnit]) -> list[
     return errors
 
 
+_WB_RUN_RE = re.compile(r"""wb_run\(\s*["']([A-Za-z0-9_\-]+)["']""")
+"""Match a ``wb_run("<name>")`` / ``wb_run('<name>')`` call in prose."""
+
+
+def _check_workflow_delegation_resolution(store: dict[str, PromptUnit]) -> list[dict[str, str]]:
+    """Check 14: nested workflow→workflow delegations are sound.
+
+    A workflow step may delegate to another workflow with a bare
+    ``wb_run("<slug>")`` (in its ``invokes`` list or its step prose) and
+    advance it to completion. That nested entry path skips the target's slash
+    command, so it never loads the target's bound directions unit. The
+    conductor closes this by *delivering* the bound directions to the target's
+    instruction-less reasoning steps (see ``architecture/workflows``) — but
+    that rescue only works when the target actually *has* a bound directions
+    unit. This check surfaces, at author time, the two cases delivery cannot
+    save:
+
+    - **Dangling delegation** — the referenced name is workflow-shaped (kebab,
+      contains ``-``) but resolves to no registered workflow and no declared
+      capability. ``wb_run`` would return "Unknown workflow" at runtime. Error.
+    - **Blind delegation** — the target is a real workflow whose reasoning
+      steps are bare *and* it has no bound directions unit. A nested caller
+      reaches those steps with no instructions and nothing to deliver. Error.
+
+    A delegation into a workflow whose bare reasoning steps *are* covered by a
+    bound directions unit is intentional and silent — runtime delivery handles
+    it. Snake_case unknown names are assumed to be capabilities (possibly
+    op-registered without a store declaration) and are left to
+    ``capability_op_resolution``; they are not flagged here.
+    """
+    workflow_slugs: dict[str, str] = {}      # slug -> store path
+    capability_names: set[str] = set()
+    for p, u in store.items():
+        if isinstance(u, WorkflowUnit) and u.workflow_name:
+            workflow_slugs[u.workflow_name] = p
+        elif isinstance(u, CapabilityUnit) and getattr(u, "capability_name", ""):
+            capability_names.add(u.capability_name)
+    bound_workflows = {
+        u.workflow
+        for u in store.values()
+        if isinstance(u, DirectionsUnit) and u.workflow
+    }
+
+    def _bare_reasoning_ids(wf: WorkflowUnit) -> list[str]:
+        instr = wf.step_instructions or {}
+        return [
+            s["id"] for s in (wf.steps or [])
+            if isinstance(s, dict) and s.get("step_type") == "reasoning"
+            and s.get("id") and s["id"] not in instr
+        ]
+
+    errors: list[dict[str, str]] = []
+    for path, unit in sorted(store.items()):
+        if not isinstance(unit, WorkflowUnit):
+            continue
+
+        # Collect referenced names from the structured `invokes` lists and the
+        # `wb_run("...")` calls in step prose + workflow-level content.
+        referenced: set[str] = set()
+        for s in unit.steps or []:
+            if isinstance(s, dict):
+                for inv in s.get("invokes") or []:
+                    if isinstance(inv, str):
+                        referenced.add(inv)
+        texts = [v for v in (unit.step_instructions or {}).values() if isinstance(v, str)]
+        full = unit.content.get("full", "") if isinstance(unit.content, dict) else ""
+        if isinstance(full, str):
+            texts.append(full)
+        for t in texts:
+            for m in _WB_RUN_RE.finditer(t):
+                referenced.add(m.group(1))
+
+        for name in sorted(referenced):
+            if name == unit.workflow_name:
+                continue                       # self-reference ("Start via …")
+            if name in capability_names:
+                continue                       # a capability call, not a delegation
+            if name in workflow_slugs:
+                target = store[workflow_slugs[name]]
+                bare = _bare_reasoning_ids(target)  # type: ignore[arg-type]
+                if bare and workflow_slugs[name] not in bound_workflows:
+                    errors.append({
+                        "check": "workflow_delegation_resolution",
+                        "path": path,
+                        "message": (
+                            f"delegates to workflow {name!r} whose reasoning "
+                            f"steps {bare} are bare and have no bound directions "
+                            "unit — a nested invocation reaches them with no "
+                            "instructions and nothing for the conductor to "
+                            "deliver. Bind a directions unit or write the step "
+                            "bodies."
+                        ),
+                    })
+                # bare + bound → covered by runtime delivery → intentional, silent
+            elif "-" in name:
+                errors.append({
+                    "check": "workflow_delegation_resolution",
+                    "path": path,
+                    "message": (
+                        f"delegates via wb_run({name!r}) which resolves to no "
+                        "registered workflow and no declared capability — "
+                        "dangling delegation (would return 'Unknown workflow')"
+                    ),
+                })
+            # snake_case unknown → assume a capability; left to capability_op_resolution
+    return errors
+
+
 # ---------------------------------------------------------------------------
 # Main validation runner
 # ---------------------------------------------------------------------------
@@ -455,6 +563,7 @@ _CHECKS = [
     ("workflow_step_dag", _check_workflow_step_dag),
     ("workflow_step_consistency", _check_workflow_step_consistency),
     ("directions_workflow_resolution", _check_directions_workflow_resolution),
+    ("workflow_delegation_resolution", _check_workflow_delegation_resolution),
 ]
 
 
@@ -543,7 +652,8 @@ def docs_validate(
                  kind_specific_fields, placeholder_duplicate,
                  parent_child_symmetry, capability_op_resolution,
                  workflow_step_dag, workflow_step_consistency,
-                 directions_workflow_resolution
+                 directions_workflow_resolution,
+                 workflow_delegation_resolution
     """
     check_list = [c.strip() for c in checks.split(",") if c.strip()] if checks else None
     return validate_store(checks=check_list)
