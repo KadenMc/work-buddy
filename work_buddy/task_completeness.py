@@ -146,13 +146,16 @@ def gather_completeness_evidence(task_id: str) -> dict[str, Any]:
     # a task with readers-but-no-commits no longer falls into the
     # no-structural-link early return — its readers get full evidence.
     try:
-        from work_buddy.obsidian.tasks import store as _store
+        from work_buddy.threads.models import Task
         from work_buddy.obsidian.tasks.provenance import (
             sessions_who_read_task,
         )
         # note_uuid from the authoritative store row (read_task's payload
         # exposes note_path, not a bare uuid); matches build_task_provenance.
-        _row = _store.get(task_id, include_deleted=True) or {}
+        # Read through the WorkItem family — Task.load carries the row, so
+        # .row is the same dict; include_deleted to match a tombstoned task.
+        _t = Task.load(task_id, include_deleted=True)
+        _row = _t.row if _t is not None else {}
         note_uuid = _row.get("note_uuid")
         for r in sessions_who_read_task(
             task_id, note_uuid=note_uuid, include_saw_id=False

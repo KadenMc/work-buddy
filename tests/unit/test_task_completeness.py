@@ -72,7 +72,10 @@ def _patched(payload, *, prov=None, commits=None, writes=None, summary=None,
         **_rv(prov, prov_exc)))
     stack.enter_context(patch(
         "work_buddy.obsidian.tasks.store.get",
-        return_value={"note_uuid": note_uuid}))
+        # A real store row carries its PK; the gatherer now reads via
+        # Task.load, which builds from the row through from_store_row (needs
+        # task_id). Mirror a realistic row shape.
+        return_value={"task_id": "t-stub01", "note_uuid": note_uuid}))
     stack.enter_context(patch(
         "work_buddy.obsidian.tasks.provenance.sessions_who_read_task",
         **_rv(note_readers or [], readers_exc)))

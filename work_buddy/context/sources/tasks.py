@@ -156,7 +156,7 @@ def _collect_tasks(
     :func:`build_triage_context` produced so callers retrofit cleanly.
     """
     try:
-        from work_buddy.obsidian.tasks import store as task_store
+        from work_buddy.threads.models import Task
         from work_buddy.clarify.task_match import _read_task_texts
     except Exception as exc:
         logger.debug("tasks source: deps unavailable (%s)", exc)
@@ -171,7 +171,7 @@ def _collect_tasks(
     rows: list[dict[str, Any]] = []
     for state in states:
         try:
-            query_rows = list(task_store.query(state=state))
+            query_rows = [t.row for t in Task.query(state=state)]
         except Exception as exc:
             logger.debug("tasks source: query(state=%r) failed: %s", state, exc)
             continue
@@ -259,8 +259,11 @@ def _read_task_note(task_id: str) -> str | None:
     content.
     """
     try:
-        from work_buddy.obsidian.tasks import store as task_store
-        task = task_store.get(task_id)
+        # Read through the WorkItem family: Task.load carries the row, so
+        # .row is the same dict store.get would return (single query).
+        from work_buddy.threads.models import Task
+        _t = Task.load(task_id)
+        task = _t.row if _t is not None else None
     except Exception:
         task = None
     if not task:

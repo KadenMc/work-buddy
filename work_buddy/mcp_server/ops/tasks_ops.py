@@ -27,10 +27,13 @@ def session_tasks_get(session_id: str) -> dict[str, Any]:
     oldest-first.
     """
     from work_buddy.obsidian.tasks import store
+    from work_buddy.threads.models import Task
 
     out: list[dict[str, Any]] = []
     for row in store.get_tasks_for_session(session_id):
-        rec = store.get(row["task_id"])
+        # Enrich through the WorkItem family; Task.load carries its row.
+        _t = Task.load(row["task_id"])
+        rec = _t.row if _t is not None else None
         out.append({
             "task_id": row["task_id"],
             "assigned_at": row.get("assigned_at"),
@@ -54,6 +57,8 @@ def _register() -> None:
     )
     from work_buddy.obsidian.tasks.sync import task_sync
     from work_buddy.projects.markdown_db import reconcile_projects
+    from work_buddy.threads.models import Task
+    from work_buddy.work_item import task_adapter
 
     register_op("op.wb.task_read", mutations.read_task)
     register_op("op.wb.task_provenance", provenance.build_task_provenance)
@@ -63,13 +68,21 @@ def _register() -> None:
     register_op("op.wb.task_stale_check", manager.stale_check)
     register_op("op.wb.task_search", manager.task_search)
     register_op("op.wb.weekly_review_data", manager.weekly_review_data)
-    register_op("op.wb.task_create", mutations.create_task)
-    register_op("op.wb.task_set_tags", mutations.set_task_tags_on_line)
-    register_op("op.wb.task_assign", mutations.assign_task)
-    register_op("op.wb.task_toggle", mutations.toggle_task)
-    register_op("op.wb.task_delete", mutations.delete_task)
-    register_op("op.wb.task_change_state", mutations.update_task)
-    register_op("op.wb.task_update_description", mutations.update_task_description)
+    # Mutator ops route through the WorkItem write port (``work_item.task_adapter``
+    # — the surface ``Task`` instance methods also delegate to) so no task
+    # mutation bypasses the WorkItem family. The port is a pure pass-through to
+    # the mutation layer, which keeps owning the atomic dual-surface write,
+    # plugin-marker preservation, consent, bridge-retry, and event emission — so
+    # dispatch is unchanged in behaviour. ``task_create`` routes through the
+    # ``Task.create`` classmethod (it mints a new id); the verb ops take a task_id.
+    register_op("op.wb.task_create", Task.create)
+    register_op("op.wb.task_set_tags", task_adapter.set_tags)
+    register_op("op.wb.task_assign", task_adapter.assign)
+    register_op("op.wb.task_toggle", task_adapter.toggle)
+    register_op("op.wb.task_delete", task_adapter.delete)
+    register_op("op.wb.task_change_state", task_adapter.update)
+    register_op("op.wb.task_update_description", task_adapter.set_description)
+    # Reads, the bulk archive sweep, and aggregates stay on the mutation layer.
     register_op("op.wb.task_archive", mutations.archive_completed)
     register_op("op.wb.task_namespace_suggest", task_namespace_suggest)
     register_op("op.wb.namespace_lookup", namespace_lookup)

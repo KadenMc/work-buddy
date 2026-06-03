@@ -3,6 +3,16 @@ name: Threads — universal-entity primitive
 kind: system
 description: The Thread is the FSM-resolution subtype of the WorkItem base. Replaces the older split between PoolEntry (now folded into states) and ActionItem (now folded into sub-Threads). Task is a sibling subtype on the shared WorkItem base — Task(WorkItem), NOT a Thread subclass.
 summary: 'v5 collapses v4''s overlapping entities into one primitive: Thread. A Thread has FSM state, an event log, an autonomy policy, optional parent_id (for sub-threads), optional subtype (''task'' for the master-list contract). Stage 1: types frozen, schemas migrated, scaffolding in place. Stage 2 wires the engine. Stage 3 migrates v4 data. Stage 4 redesigns surfaces.'
+dev_notes: |
+  Task's read snapshot (``Task._row``) is a read CACHE, never a source of truth —
+  the markdown master list (then the store) stays authoritative. Mutation methods
+  invalidate the snapshot (``_row = None``) and delegate FIELD-TARGETED writes
+  through ``work_item/task_adapter.py`` -> ``mutations.py`` (never a whole-object
+  save), preserving the markdown-wins / dual-surface reconcile invariant.
+  ``Task.load`` / ``from_store_row`` carry the row (one query); ``live_row()`` and
+  ``refresh()`` are the explicit always-fresh re-reads. The ``work_item_events``
+  audit log requires the ``db/work_item_events`` path resource registered in
+  ``paths.RESOURCES`` — ``emit()`` is best-effort and silently no-ops if missing.
 tags:
 - threads
 - fsm
@@ -21,8 +31,14 @@ and **`Task`** are its two *sibling* subtypes (neither subclasses the other):
   inference, autonomy). Everything below about "the Thread" describes *this* subtype.
 - **`Task(WorkItem)`** — the master-list-contract subtype. **No FSM.** Persists in
   the ``obsidian/tasks`` ``task_metadata`` store + the markdown master list, **not**
-  the ``threads`` table. It is a real type (a facade reading the live task store),
-  **not** the old ``NotImplementedError`` stub and **not** a Thread subclass.
+  the ``threads`` table. It is **the live path** the task system runs through:
+  mutations (create / toggle / update / delete) route through ``Task`` via the
+  work-item write port (``work_buddy/work_item/task_adapter.py``, delegating to
+  ``obsidian/tasks/mutations.py``); per-task reads go through ``Task.load(id)`` — a
+  **content-carrying** Task whose ``.row`` + field accessors (``state``, ``urgency``,
+  ``description``, ``deadline_date``, ``completed_at``, ``note_uuid``, …) read a
+  loaded snapshot — and collection reads through ``Task.query(...) -> list[Task]``.
+  **Not** the old ``NotImplementedError`` stub and **not** a Thread subclass.
 
 Rationale + plan live in the workflow-induction design dossier (the roadmap's
 locked-inversion decision, plus the implementation + cutover design). The sections
@@ -35,6 +51,7 @@ FSM-resolution subtype of WorkItem."
 - ``work_buddy/threads/workitem.py`` — the thin **WorkItem** base (id, lineage, attached context, risk profile, lifecycle timestamps; **NO FSM**) that both subtypes share.
 - ``work_buddy/threads/models.py`` — Thread(WorkItem), Task(WorkItem), ContextItem, AutonomyPolicy, ResolutionRequest, Proposal.
 - ``work_buddy/threads/work_item_events.py`` — the WorkItem base provenance log (durable audit of lifecycle events across subtypes).
+- ``work_buddy/work_item/task_adapter.py`` — the Task write port (one-way Task → ``obsidian/tasks/mutations.py``).
 - ``work_buddy/threads/events.py`` — ThreadEvent, ALL_KINDS catalog, OptimisticLockConflict.
 - ``work_buddy/threads/fsm.py`` — TRANSITION_TABLE (DESIGN.md §7.6), lookup helpers, state-entry side-effect catalog.
 - ``work_buddy/threads/store.py`` — SQLite schema for ``threads`` + ``thread_events``; minimum CRUD; optimistic-lock event submission.

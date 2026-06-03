@@ -7,6 +7,7 @@ primitives that translate user decisions into vault mutations.
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -40,15 +41,61 @@ def grant_routing_consents() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_create_task_appends_line_to_master_list(vault: Path) -> None:
+def test_create_task_delegates_to_the_mutation_layer(vault: Path) -> None:
+    """A journal-routed task goes through the WorkItem write path (Task.create
+    → the task mutation layer), tagged agent-inferred. The mutation layer owns
+    the real markdown + store write (covered by its own tests); here we assert
+    the delegation + the preserved return shape, without a real write."""
     from work_buddy.journal_backlog.route import create_task
+    from work_buddy.obsidian.tasks import mutations
 
-    result = create_task(
-        task_text="Review tax return", vault_root=vault, urgency="high",
-    )
+    sentinel = {
+        "success": True,
+        "task_line": "- [ ] #todo Review tax return 🆔 t-x",
+        "task_id": "t-x",
+        "file": "tasks/master-task-list.md",
+        "verified": {},
+    }
+    with patch.object(mutations, "create_task", return_value=sentinel) as m:
+        result = create_task(
+            task_text="Review tax return", vault_root=vault, urgency="high",
+        )
     assert result["success"] is True
-    contents = (vault / "tasks" / "master-task-list.md").read_text(encoding="utf-8")
-    assert "Review tax return" in contents
+    assert result["task_id"] == "t-x"
+    assert result["task_line"] == sentinel["task_line"]
+    kwargs = m.call_args.kwargs
+    assert kwargs["task_text"] == "Review tax return"
+    assert kwargs["urgency"] == "high"
+    # The journal path marks its tasks agent-inferred — the old direct-write
+    # path left creation_provenance at the store default.
+    assert kwargs["creation_provenance"] == "agent_inferred_from_journal"
+
+
+def test_create_task_emits_a_work_item_event(tmp_path: Path, monkeypatch) -> None:
+    """The reroute closes the audit gap the old direct-write path left open: a
+    journal-routed task now produces a ``task.created`` WorkItem event. Runs the
+    real mutation layer with the bridge faked and the store isolated, so the
+    event fires without touching the real vault or store."""
+    from work_buddy.journal_backlog.route import _create_task_impl
+    from work_buddy.obsidian.tasks import mutations, store as task_store
+    from work_buddy.threads import work_item_events
+
+    monkeypatch.setattr(task_store, "_db_path", lambda: tmp_path / "tasks.sqlite")
+    with patch("work_buddy.consent._cache") as cache, \
+            patch.object(mutations, "bridge") as bridge:
+        cache.is_granted.return_value = True
+        cache.get_mode.return_value = "always"
+        # A readable (empty) master list so create_task proceeds; the bridge
+        # write is a no-op (no real vault touched). The store is the isolated
+        # tmp DB monkeypatched above.
+        bridge.read_file.return_value = "# Master Task List\n\n"
+        bridge.write_file.return_value = True
+        result = _create_task_impl(
+            task_text="Pay quarterly taxes", vault_root=tmp_path, urgency="medium",
+        )
+    assert result["success"] is True
+    kinds = [e["kind"] for e in work_item_events.list_events(result["task_id"])]
+    assert "task.created" in kinds
 
 
 # ---------------------------------------------------------------------------
@@ -121,6 +168,7 @@ def test_append_to_note_appends_to_existing_note(vault: Path) -> None:
 
 def test_execute_routing_plan_mixed_actions(vault: Path) -> None:
     from work_buddy.journal_backlog.route import execute_routing_plan
+    from work_buddy.obsidian.tasks import mutations
 
     plan = [
         {
@@ -130,7 +178,12 @@ def test_execute_routing_plan_mixed_actions(vault: Path) -> None:
         {"id": "t_1", "action": "delete", "reason": "noise"},
         {"id": "t_2", "action": "skip"},
     ]
-    result = execute_routing_plan(plan, vault_root=vault)
+    with patch.object(
+        mutations, "create_task",
+        return_value={"success": True, "task_line": "x", "task_id": "t-x",
+                      "file": "tasks/master-task-list.md"},
+    ):
+        result = execute_routing_plan(plan, vault_root=vault)
     assert result["success"] is True
     summary = result["summary"]
     assert summary["routed"] == 1

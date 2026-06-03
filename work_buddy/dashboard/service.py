@@ -1749,7 +1749,7 @@ def _build_engage_view_payload(*, current_contexts: list[str] | None = None) -> 
     No mutations; safe to call on every render.  ``current_contexts``
     is forwarded to :func:`user_satisfies_against` per-task.
     """
-    from work_buddy.obsidian.tasks import store as tasks_store
+    from work_buddy.threads.models import Task
     from work_buddy.automation.risk import resolve_operating_tier
     from work_buddy.automation.contexts import (
         parse_context_list,
@@ -1760,7 +1760,7 @@ def _build_engage_view_payload(*, current_contexts: list[str] | None = None) -> 
     from work_buddy.clarify.resolution import PIPELINE_BLOCKER_PRESENTATION
 
     cfg = load_config()
-    rows = tasks_store.query(include_archived=False)
+    rows = [t.row for t in Task.query(include_archived=False)]
     items: list[dict] = []
 
     for row in rows:

@@ -371,15 +371,26 @@ class Task(WorkItem):
     # live task store's id shape so a Task wraps its existing row 1:1.
     thread_id: str = field(default_factory=_new_task_id)
 
+    # Read cache of the ``task_metadata`` row this Task was loaded from. A
+    # *cache*, never a source of truth: the store (markdown above it) stays
+    # authoritative; mutations write field-targeted deltas through the port,
+    # never this snapshot. ``None`` ⇒ not loaded from the store yet (a freshly
+    # constructed Task) — reads then lazily fill it via a live read. Set by
+    # ``from_store_row`` / ``refresh``; invalidated (set ``None``) after a
+    # mutation. Excluded from init / equality / repr / serialization.
+    _row: Optional[dict[str, Any]] = field(
+        default=None, init=False, compare=False, repr=False,
+    )
+
     @classmethod
     def from_store_row(cls, row: dict[str, Any]) -> "Task":
-        """Build a Task facade from a live ``task_metadata`` row dict (the
-        shape returned by ``obsidian.tasks.store.get`` / ``.query``).
+        """Build a Task from a live ``task_metadata`` row dict (the shape
+        returned by ``obsidian.tasks.store.get`` / ``.query``).
 
-        Maps the store's columns onto the WorkItem universal slots. Task
-        content with no WorkItem slot (state, urgency, contract, the
-        plugin-owned markers, …) stays in the store and is read live via
-        :meth:`live_row` — the facade does not duplicate it.
+        Maps the store's columns onto the WorkItem universal slots and
+        caches the full row on the instance (see :attr:`row`) so reads of
+        task content come from the snapshot, not a second query. The cache
+        is a read convenience, never a source of truth.
         """
 
         def _load_json(value: Any, default: Any) -> Any:
@@ -392,7 +403,7 @@ class Task(WorkItem):
             except (TypeError, ValueError):
                 return default
 
-        return cls(
+        task = cls(
             thread_id=row["task_id"],
             parent_id=row.get("parent_id"),
             risk_profile=_load_json(row.get("risk_profile_json"), {}),
@@ -400,18 +411,296 @@ class Task(WorkItem):
             updated_at=row.get("updated_at") or _now_iso(),
             archived_at=row.get("archived_at"),
         )
+        # Carry the content this Task was built from so a subsequent read of
+        # task content costs no second query. A read cache, not authority.
+        task._row = dict(row)
+        return task
 
     def live_row(self) -> Optional[dict[str, Any]]:
-        """Read this Task's authoritative row from the live task store.
+        """Always-fresh read of this Task's row from the live store.
 
-        The markdown-backed store is the source of truth for task content
-        + state; the facade never caches it. Lazily imports the task store
-        so ``threads.models`` stays decoupled from ``obsidian.tasks`` at
-        import time. Returns ``None`` if the task is absent / deleted.
+        Bypasses the :attr:`_row` snapshot and does NOT update it — use this
+        (or :meth:`refresh`) when you need current truth rather than the
+        point-in-time snapshot that :attr:`row` and the field accessors
+        serve. The markdown-backed store is the source of truth for task
+        content + state. Lazily imports the store so ``threads.models`` stays
+        decoupled from ``obsidian.tasks`` at import time. ``None`` if the
+        task is absent / soft-deleted.
         """
         from work_buddy.obsidian.tasks import store as _task_store
 
         return _task_store.get(self.thread_id)
+
+    def refresh(self) -> "Task":
+        """Re-read the authoritative row into the snapshot; return ``self``.
+
+        Updates :attr:`_row` from the live store — use after an out-of-band
+        change, or when a long-held Task needs current truth. Sets the
+        snapshot to ``None`` if the task is now absent / soft-deleted.
+        """
+        self._row = self.live_row()
+        return self
+
+    def _ensure_row(self) -> Optional[dict[str, Any]]:
+        """Return the cached row, lazily filling it from the store once.
+
+        A Task built via :meth:`from_store_row` / :meth:`load` already holds
+        the snapshot; a freshly-constructed one fills it on first read.
+        """
+        if self._row is None:
+            self._row = self.live_row()
+        return self._row
+
+    @property
+    def row(self) -> Optional[dict[str, Any]]:
+        """This task's content as a dict — the cached snapshot, lazily read.
+
+        Returns a **copy**, so a caller mutating it cannot corrupt the
+        snapshot (parity with ``store.get``'s fresh-dict semantics). A
+        drop-in for a direct ``store.get(task_id)``. ``None`` if absent.
+        """
+        r = self._ensure_row()
+        return dict(r) if r is not None else None
+
+    # Field accessors over the snapshot (lazily filled) — store-only task
+    # content with no WorkItem universal slot. A fresh-truth read is
+    # ``refresh()`` / ``live_row()``.
+    @property
+    def state(self) -> Optional[str]:
+        r = self._ensure_row()
+        return r.get("state") if r else None
+
+    @property
+    def urgency(self) -> Optional[str]:
+        r = self._ensure_row()
+        return r.get("urgency") if r else None
+
+    @property
+    def description(self) -> Optional[str]:
+        r = self._ensure_row()
+        return r.get("description") if r else None
+
+    @property
+    def deadline_date(self) -> Optional[str]:
+        r = self._ensure_row()
+        return r.get("deadline_date") if r else None
+
+    @property
+    def has_deadline(self) -> Optional[bool]:
+        r = self._ensure_row()
+        return bool(r.get("has_deadline")) if r else None
+
+    @property
+    def completed_at(self) -> Optional[str]:
+        r = self._ensure_row()
+        return r.get("completed_at") if r else None
+
+    @property
+    def note_uuid(self) -> Optional[str]:
+        r = self._ensure_row()
+        return r.get("note_uuid") if r else None
+
+    @property
+    def contract(self) -> Optional[str]:
+        r = self._ensure_row()
+        return r.get("contract") if r else None
+
+    @property
+    def complexity(self) -> Optional[str]:
+        r = self._ensure_row()
+        return r.get("complexity") if r else None
+
+    @property
+    def snooze_until(self) -> Optional[str]:
+        r = self._ensure_row()
+        return r.get("snooze_until") if r else None
+
+    @property
+    def deleted_at(self) -> Optional[str]:
+        r = self._ensure_row()
+        return r.get("deleted_at") if r else None
+
+    # ------------------------------------------------------------------
+    # Write surface — a Task is mutated *as a WorkItem*, through the
+    # task write port (``work_item.task_adapter``). The port delegates to
+    # the live mutation layer, which owns the atomic dual-surface write,
+    # plugin-marker preservation, consent, bridge-retry, and event
+    # emission — so these methods add no behaviour of their own. The
+    # adapter is imported inside each method to keep ``threads.models``
+    # decoupled from it at import time (and cycle-free).
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def load(
+        cls, task_id: str, *, include_deleted: bool = False,
+    ) -> Optional["Task"]:
+        """Build a Task from a ``task_id`` by reading the live store once.
+
+        The returned Task **carries its content** (see :attr:`row`), so a
+        following ``.row`` / accessor read costs no extra query. Returns
+        ``None`` if the task is absent (or soft-deleted, unless
+        ``include_deleted``). Lazily imports the store (same decoupling as
+        :meth:`live_row`).
+        """
+        from work_buddy.obsidian.tasks import store as _task_store
+
+        row = _task_store.get(task_id, include_deleted=include_deleted)
+        return cls.from_store_row(row) if row is not None else None
+
+    @classmethod
+    def query(
+        cls,
+        *,
+        state: Optional[str] = None,
+        urgency: Optional[str] = None,
+        contract: Optional[str] = None,
+        include_archived: bool = False,
+        include_deleted: bool = False,
+    ) -> list["Task"]:
+        """Load tasks matching the filters as content-carrying Tasks.
+
+        The collection analogue of :meth:`load`: wraps ``store.query`` and
+        builds one Task per row, each already carrying its content (see
+        :attr:`row`) — so iterating ``.row`` / accessors over the result
+        adds no further queries.
+        """
+        from work_buddy.obsidian.tasks import store as _task_store
+
+        # Forward only the filters that narrow the query — store.query
+        # already defaults the rest — so the underlying call stays minimal
+        # and shaped like a direct store.query(state=...) call.
+        kwargs: dict[str, Any] = {}
+        if state is not None:
+            kwargs["state"] = state
+        if urgency is not None:
+            kwargs["urgency"] = urgency
+        if contract is not None:
+            kwargs["contract"] = contract
+        if include_archived:
+            kwargs["include_archived"] = True
+        if include_deleted:
+            kwargs["include_deleted"] = True
+        return [cls.from_store_row(r) for r in _task_store.query(**kwargs)]
+
+    @classmethod
+    def create(
+        cls,
+        task_text: str,
+        *,
+        urgency: str = "medium",
+        project: Optional[str] = None,
+        due_date: Optional[str] = None,
+        contract: Optional[str] = None,
+        summary: Optional[str] = None,
+        tags: Optional[list[str]] = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """Create a new task through the WorkItem write port.
+
+        A classmethod — there is no Task yet (no ``thread_id`` to act on); the
+        id is minted inside the mutation layer's idempotency cache, so this
+        never generates its own. Returns the raw ``create_task`` result dict
+        (the minted ``task_id`` + verification state callers consume), NOT a
+        Task; a caller wanting the object does ``Task.load(result["task_id"])``.
+        The GTD/risk keyword tail is forwarded via ``**kwargs``.
+        """
+        from work_buddy.work_item import task_adapter
+
+        return task_adapter.create(
+            task_text,
+            urgency=urgency,
+            project=project,
+            due_date=due_date,
+            contract=contract,
+            summary=summary,
+            tags=tags,
+            **kwargs,
+        )
+
+    def toggle(
+        self,
+        done: Optional[bool] = None,
+        *,
+        file_path: Optional[str] = None,
+        done_date: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Toggle this task's completion through the WorkItem write port."""
+        from work_buddy.work_item import task_adapter
+
+        result = task_adapter.toggle(
+            self.thread_id, done=done, file_path=file_path, done_date=done_date,
+        )
+        self._row = None  # invalidate snapshot; next read re-fetches
+        return result
+
+    def update(
+        self,
+        *,
+        state: Optional[str] = None,
+        urgency: Optional[str] = None,
+        complexity: Optional[str] = None,
+        contract: Optional[str] = None,
+        snooze_until: Optional[str] = None,
+        due_date: Optional[str] = None,
+        reason: Optional[str] = None,
+        file_path: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Update this task's metadata through the WorkItem write port.
+
+        Cannot set ``state='done'`` — the mutation layer rejects it; use
+        :meth:`toggle` for completion.
+        """
+        from work_buddy.work_item import task_adapter
+
+        result = task_adapter.update(
+            self.thread_id,
+            state=state,
+            urgency=urgency,
+            complexity=complexity,
+            contract=contract,
+            snooze_until=snooze_until,
+            due_date=due_date,
+            reason=reason,
+            file_path=file_path,
+        )
+        self._row = None  # invalidate snapshot; next read re-fetches
+        return result
+
+    def set_description(
+        self, text: str, *, file_path: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Rewrite this task's description text through the WorkItem write port."""
+        from work_buddy.work_item import task_adapter
+
+        result = task_adapter.set_description(
+            self.thread_id, text, file_path=file_path,
+        )
+        self._row = None  # invalidate snapshot; next read re-fetches
+        return result
+
+    def set_tags(self, namespace_tags: list[str]) -> dict[str, Any]:
+        """Replace this task's user-modifiable tags through the WorkItem write port."""
+        from work_buddy.work_item import task_adapter
+
+        result = task_adapter.set_tags(self.thread_id, namespace_tags)
+        self._row = None  # invalidate snapshot; next read re-fetches
+        return result
+
+    def delete(self) -> dict[str, Any]:
+        """Delete this task (line, note, store record) through the WorkItem write port."""
+        from work_buddy.work_item import task_adapter
+
+        result = task_adapter.delete(self.thread_id)
+        self._row = None  # task is gone; invalidate snapshot
+        return result
+
+    def assign(self) -> dict[str, Any]:
+        """Claim this task for the current agent session through the WorkItem write port."""
+        from work_buddy.work_item import task_adapter
+
+        result = task_adapter.assign(self.thread_id)
+        self._row = None  # invalidate snapshot; next read re-fetches
+        return result
 
 
 # ---------------------------------------------------------------------------

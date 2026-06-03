@@ -97,7 +97,14 @@ def test_pipeline_route_then_rewrite_round_trip(tmp_path: Path) -> None:
         {"id": "t_1", "action": "delete", "reason": "noise"},
         {"id": "t_2", "action": "skip"},
     ]
-    routing_result = execute_routing_plan(plan, vault_root=tmp_path)
+    from unittest.mock import patch
+    from work_buddy.obsidian.tasks import mutations
+    with patch.object(
+        mutations, "create_task",
+        return_value={"success": True, "task_line": "x", "task_id": "t-x",
+                      "file": "tasks/master-task-list.md"},
+    ):
+        routing_result = execute_routing_plan(plan, vault_root=tmp_path)
     assert routing_result["success"] is True
     assert routing_result["summary"]["routed"] == 1
     assert routing_result["summary"]["deleted"] == 1

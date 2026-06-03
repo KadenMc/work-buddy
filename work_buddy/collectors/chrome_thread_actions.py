@@ -79,7 +79,7 @@ def chrome_route_to_tasks(
 
     Returns ``{"created": [...], "failed": [{...}], "thread_id": str}``.
     """
-    from work_buddy.obsidian.tasks.mutations import create_task
+    from work_buddy.threads.models import Task
 
     thread = _get_thread_or_raise(thread_id)
     tabs = _tabs_from_thread(thread)
@@ -97,7 +97,7 @@ def chrome_route_to_tasks(
         text = (tab["title"] or tab["url"] or tab["id"])[:120]
         summary = f"From Chrome tab: {tab['url']}" if tab["url"] else None
         try:
-            result = create_task(
+            result = Task.create(
                 task_text=text,
                 urgency=urgency,
                 project=project,
@@ -147,7 +147,7 @@ def chrome_route_to_umbrella_task(
     description lists every tab's title + URL so the user can pick
     up the context later.
     """
-    from work_buddy.obsidian.tasks.mutations import create_task
+    from work_buddy.threads.models import Task
 
     thread = _get_thread_or_raise(thread_id)
     tabs = _tabs_from_thread(thread)
@@ -178,7 +178,7 @@ def chrome_route_to_umbrella_task(
     summary = "Chrome tabs in this group:\n\n" + "\n".join(bullet_lines)
 
     try:
-        result = create_task(
+        result = Task.create(
             task_text=text[:120],
             urgency=urgency,
             project=project,
