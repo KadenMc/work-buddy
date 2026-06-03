@@ -172,3 +172,89 @@ def test_assign_delegates():
         result = task.assign()
     assert result is sentinel
     m.assert_called_once_with("t-asg00001")
+
+
+# ----------------------------------------------------------------------
+# Content-carrying read surface — a Task loaded from the store carries its
+# row as a read cache (snapshot), so reads come from it rather than a second
+# query. The cache is never authoritative: the store stays the source of
+# truth, and mutations invalidate the snapshot rather than writing it back.
+# ----------------------------------------------------------------------
+
+
+def test_load_carries_content_one_query(isolated_store):
+    """``load`` reads once; subsequent content reads hit the snapshot, not
+    the store."""
+    task_store.create("t-carry001", state="focused", urgency="high")
+    with patch.object(task_store, "get", wraps=task_store.get) as spy:
+        task = Task.load("t-carry001")
+        # All three reads come from the carried snapshot.
+        assert task.state == "focused"
+        assert task.urgency == "high"
+        assert task.row["state"] == "focused"
+    assert spy.call_count == 1  # the single load read — no per-attribute query
+
+
+def test_row_returns_a_copy(isolated_store):
+    """``.row`` hands back a copy, so a caller mutating it cannot corrupt the
+    snapshot (parity with ``store.get``)."""
+    task_store.create("t-copy0001", state="inbox")
+    task = Task.load("t-copy0001")
+    snap = task.row
+    snap["state"] = "MUTATED"
+    assert task.row["state"] == "inbox"
+    assert task.state == "inbox"
+
+
+def test_accessors_none_for_absent_task(isolated_store):
+    task = Task(thread_id="t-absent00")
+    assert task.row is None
+    assert task.state is None
+    assert task.deleted_at is None
+
+
+def test_accessor_lazy_fetches_for_constructed_task(isolated_store):
+    """A Task built by id (not via ``load``) fills its snapshot on first read."""
+    task_store.create("t-lazy0001", state="snoozed")
+    task = Task(thread_id="t-lazy0001")
+    assert task._row is None
+    assert task.state == "snoozed"   # lazy fill
+    assert task._row is not None     # now cached
+
+
+def test_refresh_picks_up_external_change(isolated_store):
+    """The snapshot is point-in-time; ``refresh`` re-reads current truth."""
+    task_store.create("t-refr0001", state="inbox", urgency="low")
+    task = Task.load("t-refr0001")
+    assert task.urgency == "low"
+    task_store.update("t-refr0001", urgency="high", reason="external edit")
+    assert task.urgency == "low"     # stale snapshot, by design
+    assert task.refresh() is task
+    assert task.urgency == "high"    # re-read
+
+
+def test_load_excludes_soft_deleted_by_default(isolated_store):
+    task_store.create("t-delc0001", state="inbox")
+    task_store.delete("t-delc0001")  # soft-delete
+    assert Task.load("t-delc0001") is None
+    revived = Task.load("t-delc0001", include_deleted=True)
+    assert revived is not None
+    assert revived.deleted_at is not None
+
+
+def test_mutation_invalidates_snapshot(isolated_store):
+    """A mutation invalidates the snapshot so the next read reflects the
+    write — without the mutator ever writing the held snapshot back."""
+    task_store.create("t-inval001", state="inbox", urgency="low")
+    task = Task.load("t-inval001")
+    assert task.urgency == "low"  # cached
+
+    def fake_update(task_id, **kwargs):
+        # Stand in for the real port→mutations write of a single field.
+        task_store.update(task_id, urgency="high", reason="sim")
+        return {"success": True}
+
+    with patch.object(task_adapter, "update", side_effect=fake_update):
+        task.update(urgency="high", reason="bump")
+
+    assert task.urgency == "high"  # snapshot was invalidated → re-fetched
