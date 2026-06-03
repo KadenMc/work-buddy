@@ -344,3 +344,28 @@ class TestModeGating:
         entries = {"gated": _gated_entry("dev")}
         out = filter_results_by_modes([{"name": "gated"}], {"dev"}, lambda n: entries.get(n))
         assert [r["name"] for r in out] == ["gated"]
+
+
+# ---------------------------------------------------------------------------
+# Workflow-side available_when resolution (log-and-ungate, no issues channel)
+# ---------------------------------------------------------------------------
+
+class TestWorkflowGateResolution:
+    def test_valid_gate_resolves(self):
+        from work_buddy.mcp_server.registry import _resolve_mode_gate
+        from work_buddy.control.gates import Component
+        assert _resolve_mode_gate("dev", "store:x") == Component("dev")
+
+    def test_none_and_empty_return_none(self):
+        from work_buddy.mcp_server.registry import _resolve_mode_gate
+        assert _resolve_mode_gate(None, "store:x") is None
+        assert _resolve_mode_gate("", "store:x") is None
+
+    def test_unknown_mode_ungates(self):
+        # Workflows log + leave ungated (vs capabilities, which omit + issue).
+        from work_buddy.mcp_server.registry import _resolve_mode_gate
+        assert _resolve_mode_gate("totally_unknown_mode", "store:x") is None
+
+    def test_bad_dsl_ungates(self):
+        from work_buddy.mcp_server.registry import _resolve_mode_gate
+        assert _resolve_mode_gate("a & & b", "store:x") is None
