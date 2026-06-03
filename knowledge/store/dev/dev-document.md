@@ -160,7 +160,7 @@ Reasoning step. You're looking at the `scan` output and producing a list of conc
 Every proposal must consciously route content between **two** body fields:
 
 - **`content_full`** — read by every agent (operational + dev) on `agent_docs(depth="full")`. Surfaces, semantic contracts, user-visible behavior.
-- **`dev_notes`** — surfaced only when dev mode is on (`dev_mode_toggle`, auto-enabled by `/wb-dev`). Implementation patterns, snapshot/cache invariants, refactor footguns, decision rationale.
+- **`dev_notes`** — surfaced only when dev mode is on (`mode_toggle`, auto-enabled by `/wb-dev`). Implementation patterns, snapshot/cache invariants, refactor footguns, decision rationale.
 
 The default failure mode is dumping everything into `content_full`. **Resist it.** Operational agents reading this unit shouldn't have their context window filled with implementation detail they cannot act on. The decision test: "if an operational agent was calling this subsystem from a capability, would they want this in their context window?" Yes → `content_full`. No, only useful while editing the code → `dev_notes`.
 
