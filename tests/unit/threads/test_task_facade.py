@@ -258,3 +258,30 @@ def test_mutation_invalidates_snapshot(isolated_store):
         task.update(urgency="high", reason="bump")
 
     assert task.urgency == "high"  # snapshot was invalidated → re-fetched
+
+
+# ----------------------------------------------------------------------
+# Task.query — the collection analogue of load: content-carrying Tasks
+# straight from store.query, so iterating them adds no further reads.
+# ----------------------------------------------------------------------
+
+
+def test_query_returns_content_carrying_tasks(isolated_store):
+    task_store.create("t-q0000001", state="inbox", urgency="high")
+    task_store.create("t-q0000002", state="mit", urgency="low")
+    tasks = Task.query()
+    assert len(tasks) == 2
+    assert all(isinstance(t, Task) for t in tasks)
+    # Each Task carries its row from the query result — reads need no get.
+    with patch.object(task_store, "get", wraps=task_store.get) as spy:
+        rows = [t.row for t in tasks]
+        _ = [t.state for t in tasks]
+    assert spy.call_count == 0
+    assert {r["task_id"] for r in rows} == {"t-q0000001", "t-q0000002"}
+
+
+def test_query_filters_by_state(isolated_store):
+    task_store.create("t-qf000001", state="inbox")
+    task_store.create("t-qf000002", state="done")
+    done = Task.query(state="done")
+    assert [t.thread_id for t in done] == ["t-qf000002"]

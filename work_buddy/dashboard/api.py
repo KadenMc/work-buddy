@@ -540,13 +540,13 @@ def get_tasks_summary() -> dict[str, Any]:
     surface legacy lines that were never written into the store.
     """
     from datetime import datetime, timedelta, timezone
-    from work_buddy.obsidian.tasks import store as tasks_store
+    from work_buddy.threads.models import Task
 
     tasks: list[dict[str, Any]] = []
 
     # ── Tracked tasks: canonical from SQLite ────────────────────────
     try:
-        store_rows = tasks_store.query(include_archived=True)
+        store_rows = [t.row for t in Task.query(include_archived=True)]
     except Exception as exc:
         logger.warning("Failed to read task_metadata: %s", exc)
         return {"tasks": [], "counts": {}, "error": str(exc)}

@@ -86,11 +86,11 @@ def _load_active_tasks(states: list[str]) -> list[dict[str, Any]]:
     Reads metadata from SQLite store, then reads task text from the
     master task list file.
     """
-    from work_buddy.obsidian.tasks import store
+    from work_buddy.threads.models import Task
 
     all_tasks: list[dict[str, Any]] = []
     for state in states:
-        rows = store.query(state=state)
+        rows = [t.row for t in Task.query(state=state)]
         all_tasks.extend(rows)
 
     if not all_tasks:

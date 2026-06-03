@@ -501,11 +501,12 @@ def _load_task_info() -> dict[str, dict[str, Any]]:
     try:
         from work_buddy.obsidian.tasks import store as task_store
         from work_buddy.clarify.task_match import _read_task_texts
+        from work_buddy.threads.models import Task
 
         task_texts = _read_task_texts()
         result: dict[str, dict[str, Any]] = {}
 
-        for task in task_store.query(include_archived=False):
+        for task in (t.row for t in Task.query(include_archived=False)):
             tid = task["task_id"]
             history = task_store.get_history(tid)
             result[tid] = {
@@ -520,7 +521,7 @@ def _load_task_info() -> dict[str, dict[str, Any]]:
             }
 
         # Also check recently completed tasks (last 7 days)
-        for task in task_store.query(state="done"):
+        for task in (t.row for t in Task.query(state="done")):
             tid = task["task_id"]
             if tid not in result:
                 result[tid] = {

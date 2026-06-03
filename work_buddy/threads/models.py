@@ -548,6 +548,41 @@ class Task(WorkItem):
         return cls.from_store_row(row) if row is not None else None
 
     @classmethod
+    def query(
+        cls,
+        *,
+        state: Optional[str] = None,
+        urgency: Optional[str] = None,
+        contract: Optional[str] = None,
+        include_archived: bool = False,
+        include_deleted: bool = False,
+    ) -> list["Task"]:
+        """Load tasks matching the filters as content-carrying Tasks.
+
+        The collection analogue of :meth:`load`: wraps ``store.query`` and
+        builds one Task per row, each already carrying its content (see
+        :attr:`row`) — so iterating ``.row`` / accessors over the result
+        adds no further queries.
+        """
+        from work_buddy.obsidian.tasks import store as _task_store
+
+        # Forward only the filters that narrow the query — store.query
+        # already defaults the rest — so the underlying call stays minimal
+        # and shaped like a direct store.query(state=...) call.
+        kwargs: dict[str, Any] = {}
+        if state is not None:
+            kwargs["state"] = state
+        if urgency is not None:
+            kwargs["urgency"] = urgency
+        if contract is not None:
+            kwargs["contract"] = contract
+        if include_archived:
+            kwargs["include_archived"] = True
+        if include_deleted:
+            kwargs["include_deleted"] = True
+        return [cls.from_store_row(r) for r in _task_store.query(**kwargs)]
+
+    @classmethod
     def create(
         cls,
         task_text: str,
