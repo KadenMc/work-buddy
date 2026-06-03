@@ -104,6 +104,44 @@ class TestUnitSerialization:
         )
         assert unit._kind_fields()["available_when"] == "knowledge"
 
+    # Regression: available_when must survive the real store load path
+    # (frontmatter dict -> unit_from_dict), not just direct construction.
+    def test_capability_available_when_survives_deserialization(self):
+        from work_buddy.knowledge.model import CapabilityUnit, unit_from_dict
+        unit = CapabilityUnit(
+            path="modes/x", name="X", description="d",
+            capability_name="x", category="c", op="op.wb.x",
+            schema_version="wb-capability/v1", available_when="dev & knowledge",
+        )
+        restored = unit_from_dict("modes/x", unit.to_dict())
+        assert restored.available_when == "dev & knowledge"
+
+    def test_workflow_available_when_survives_deserialization(self):
+        from work_buddy.knowledge.model import WorkflowUnit, unit_from_dict
+        unit = WorkflowUnit(
+            path="modes/w", name="W", description="d",
+            workflow_name="w", steps=[{"id": "s"}], available_when="knowledge",
+        )
+        restored = unit_from_dict("modes/w", unit.to_dict())
+        assert restored.available_when == "knowledge"
+
+    def test_capability_frontmatter_dict_reads_available_when(self):
+        from work_buddy.knowledge.model import unit_from_dict
+        data = {
+            "kind": "capability", "name": "X", "capability_name": "x",
+            "category": "c", "op": "op.wb.x",
+            "schema_version": "wb-capability/v1", "available_when": "dev",
+        }
+        assert unit_from_dict("context/x", data).available_when == "dev"
+
+    def test_ungated_frontmatter_deserializes_to_none(self):
+        from work_buddy.knowledge.model import unit_from_dict
+        data = {
+            "kind": "capability", "name": "X", "capability_name": "x",
+            "category": "c", "op": "op.wb.x", "schema_version": "wb-capability/v1",
+        }
+        assert unit_from_dict("context/x", data).available_when is None
+
 
 # ---------------------------------------------------------------------------
 # available_when resolution in the capability loader

@@ -939,6 +939,7 @@ def unit_from_dict(path: str, data: dict[str, Any]) -> KnowledgeUnit:
         base_kwargs["intrinsic_amplifiers"] = data.get("intrinsic_amplifiers", {})
         base_kwargs["op"] = data.get("op", "")
         base_kwargs["schema_version"] = data.get("schema_version", "")
+        base_kwargs["available_when"] = data.get("available_when")
     elif cls is WorkflowUnit:
         base_kwargs["workflow_name"] = data.get("workflow_name", "")
         base_kwargs["execution"] = data.get("execution", "main")
@@ -948,6 +949,7 @@ def unit_from_dict(path: str, data: dict[str, Any]) -> KnowledgeUnit:
         base_kwargs["command"] = data.get("command")
         base_kwargs["params_schema"] = data.get("params_schema", {})
         base_kwargs["schema_version"] = data.get("schema_version", "")
+        base_kwargs["available_when"] = data.get("available_when")
     elif cls is VaultUnit:
         base_kwargs["category"] = data.get("category", "")
         base_kwargs["severity"] = data.get("severity", "")
