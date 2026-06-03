@@ -23,6 +23,17 @@ def fresh_events_db(tmp_path: Path, monkeypatch):
     return db
 
 
+def test_db_path_resource_is_registered():
+    """Regression guard: ``db/work_item_events`` must be a registered path
+    resource. If it is not, ``_db_path()`` raises ``KeyError`` and the
+    best-effort ``emit()`` / ``list_events()`` silently no-op at runtime —
+    the entire audit log goes dead while the other tests (which monkeypatch
+    ``_db_path``) stay green. So this one deliberately exercises the REAL
+    ``_db_path`` via ``paths.resolve``, with no monkeypatch."""
+    p = wie._db_path()
+    assert p.name == "work_item_events.db"
+
+
 def test_emit_and_list_round_trip(fresh_events_db):
     rid = wie.emit(
         "t-abc12345", "task.state_changed",
