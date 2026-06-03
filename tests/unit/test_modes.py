@@ -181,10 +181,11 @@ def _cap_store(available_when):
 class TestAvailableWhenResolution:
     def test_gated_capability_resolves_gate(self):
         from work_buddy.knowledge.capability_loader import load_declared_capabilities
-        from work_buddy.control.gates import Component
         caps, issues = load_declared_capabilities(_cap_store("dev"))
         cap = next(c for c in caps if c.name == "test_cap_modes")
-        assert cap.available_when == Component("dev")
+        # The validated raw DSL string is stored (not a parsed AST) so the gate
+        # survives an mcp_registry_reload without class-identity skew.
+        assert cap.available_when == "dev"
         assert not any(i["path"] == "test/test_cap_modes" for i in issues)
 
     def test_ungated_capability_has_none(self):
@@ -326,15 +327,17 @@ class TestModeToggle:
 # ---------------------------------------------------------------------------
 
 def _gated_entry(available_when):
-    """Minimal stand-in for a registry entry carrying a resolved gate."""
-    from work_buddy.control.gates import parse_gate
+    """Minimal stand-in for a registry entry carrying a gate.
 
+    Mirrors a real entry: ``available_when`` is the raw DSL string (or None),
+    parsed at evaluation time — never a stored Gate AST.
+    """
     class _Entry:
         pass
 
     e = _Entry()
     e.name = "x"
-    e.available_when = parse_gate(available_when) if available_when else None
+    e.available_when = available_when
     return e
 
 
@@ -383,6 +386,16 @@ class TestModeGating:
         out = filter_results_by_modes([{"name": "gated"}], {"dev"}, lambda n: entries.get(n))
         assert [r["name"] for r in out] == ["gated"]
 
+    def test_gate_stored_as_string_is_parsed_at_eval(self):
+        # Reload-safety contract: entries hold the raw DSL string, not a Gate
+        # AST, so evaluation re-parses with the current gates module — immune to
+        # the class-identity skew an mcp_registry_reload would otherwise cause.
+        from work_buddy.mcp_server.registry import mode_gate_denial
+        e = _gated_entry("dev")
+        assert isinstance(e.available_when, str)
+        assert mode_gate_denial(e, set())["denied_by"] == "mode_gate"
+        assert mode_gate_denial(e, {"dev"}) is None
+
 
 # ---------------------------------------------------------------------------
 # Workflow-side available_when resolution (log-and-ungate, no issues channel)
@@ -391,8 +404,8 @@ class TestModeGating:
 class TestWorkflowGateResolution:
     def test_valid_gate_resolves(self):
         from work_buddy.mcp_server.registry import _resolve_mode_gate
-        from work_buddy.control.gates import Component
-        assert _resolve_mode_gate("dev", "store:x") == Component("dev")
+        # Returns the validated raw string (stored on the entry), not an AST.
+        assert _resolve_mode_gate("dev", "store:x") == "dev"
 
     def test_none_and_empty_return_none(self):
         from work_buddy.mcp_server.registry import _resolve_mode_gate

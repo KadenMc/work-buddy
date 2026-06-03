@@ -155,8 +155,8 @@ def load_declared_capabilities(
             from work_buddy.control import gates
             from work_buddy.modes.registry import get_known_mode_ids
             try:
-                available_when = gates.parse_gate(unit.available_when)
-                gates.validate(available_when, get_known_mode_ids())
+                gates.validate(gates.parse_gate(unit.available_when), get_known_mode_ids())
+                available_when = unit.available_when  # store the validated DSL string
             except ValueError as exc:
                 issues.append(_issue(
                     path, f"invalid available_when {unit.available_when!r}: {exc}"
