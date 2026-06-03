@@ -43,6 +43,68 @@ def _isolate_work_item_events(tmp_path, monkeypatch):
     )
 
 
+@pytest.fixture(autouse=True)
+def _isolate_task_store_and_vault(tmp_path, monkeypatch, request):
+    """Isolate the task metadata store and neutralize the Obsidian bridge.
+
+    Two real resources the per-test sandbox would otherwise leak into:
+
+    * **Task metadata store.** ``work_buddy.obsidian.tasks.store._db_path``
+      resolves (via ``paths.resolve("db/tasks")``) to the real
+      ``.data/db/task_metadata.db``. Any unmocked ``store.create`` /
+      ``mutations.create_task`` would write a real row. Redirected to a
+      per-test temp SQLite file.
+
+    * **Obsidian vault.** ``mutations.create_task`` writes the master task
+      list through the Obsidian *bridge* — an HTTP PUT to a *running*
+      Obsidian, which commits to the real ``tasks/master-task-list.md``.
+      The bridge bypasses ``vault_root`` entirely, so redirecting that
+      config value would not help. All bridge network I/O funnels through
+      ``bridge.urlopen``; replacing it with a connection-refusing stub
+      makes every bridge call behave as "Obsidian unreachable", so a
+      stray ``create_task`` reads ``None`` and bails via ``bridge_failure``
+      *before* it can write to the vault or the store — regardless of
+      whether Obsidian is actually running on the dev box.
+
+    Mirrors ``_isolate_work_item_events``. Best-effort imports so a module
+    move never breaks collection. The patch only swaps the attribute at
+    setup (it never calls ``urlopen`` itself), so tests that re-patch
+    ``bridge.urlopen`` / ``bridge._request_with_status`` in their own body
+    cleanly override it — e.g. ``test_bridge_typed_exceptions`` and
+    ``test_editor_conflict``.
+
+    Opt out per-test with ``@pytest.mark.real_task_store`` (drive the real
+    DB path) or ``@pytest.mark.real_obsidian_bridge`` (drive the real
+    bridge transport against the test's own mock/server). The two markers
+    are independent.
+    """
+    if request.node.get_closest_marker("real_task_store") is None:
+        try:
+            import work_buddy.obsidian.tasks.store as task_store
+        except Exception:  # pragma: no cover - defensive
+            pass
+        else:
+            monkeypatch.setattr(
+                task_store, "_db_path", lambda: tmp_path / "task_metadata.db",
+            )
+
+    if request.node.get_closest_marker("real_obsidian_bridge") is None:
+        try:
+            import work_buddy.obsidian.bridge as bridge
+        except Exception:  # pragma: no cover - defensive
+            pass
+        else:
+            def _refuse_bridge_connection(*_args, **_kwargs):
+                raise ConnectionRefusedError(
+                    "Obsidian bridge disabled in tests "
+                    "(_isolate_task_store_and_vault in tests/conftest.py). "
+                    "Mock the bridge, or mark @pytest.mark.real_obsidian_bridge "
+                    "to opt out."
+                )
+
+            monkeypatch.setattr(bridge, "urlopen", _refuse_bridge_connection)
+
+
 @pytest.fixture
 def tmp_agents_dir(tmp_path, monkeypatch):
     """Redirect agent_session to write into a temp directory.

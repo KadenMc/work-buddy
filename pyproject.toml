@@ -83,5 +83,7 @@ markers = [
     "unit: Pure logic tests — no filesystem, no network",
     "component: Tests with temp dirs, temp DBs, or service boundaries",
     "integration: CLI smoke tests and HTTP endpoint tests",
+    "real_task_store: opt out of the autouse task-store temp-DB isolation (see _isolate_task_store_and_vault)",
+    "real_obsidian_bridge: opt out of the autouse Obsidian-bridge neutralization (see _isolate_task_store_and_vault)",
 ]
 addopts = "-q --tb=short"
