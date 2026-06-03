@@ -259,8 +259,11 @@ def _read_task_note(task_id: str) -> str | None:
     content.
     """
     try:
-        from work_buddy.obsidian.tasks import store as task_store
-        task = task_store.get(task_id)
+        # Read through the WorkItem family: Task.load carries the row, so
+        # .row is the same dict store.get would return (single query).
+        from work_buddy.threads.models import Task
+        _t = Task.load(task_id)
+        task = _t.row if _t is not None else None
     except Exception:
         task = None
     if not task:

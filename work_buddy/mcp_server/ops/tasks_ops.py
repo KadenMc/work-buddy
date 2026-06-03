@@ -27,10 +27,13 @@ def session_tasks_get(session_id: str) -> dict[str, Any]:
     oldest-first.
     """
     from work_buddy.obsidian.tasks import store
+    from work_buddy.threads.models import Task
 
     out: list[dict[str, Any]] = []
     for row in store.get_tasks_for_session(session_id):
-        rec = store.get(row["task_id"])
+        # Enrich through the WorkItem family; Task.load carries its row.
+        _t = Task.load(row["task_id"])
+        rec = _t.row if _t is not None else None
         out.append({
             "task_id": row["task_id"],
             "assigned_at": row.get("assigned_at"),
