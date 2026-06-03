@@ -1442,19 +1442,26 @@ def register_tools(mcp: FastMCP) -> None:
                 return _prepare({"error": f"Unknown capability: {capability!r}. Use wb_search to find available capabilities."})
 
         # Mode gate: reject when the capability/workflow declares an
-        # ``available_when`` the session's active modes don't satisfy.
-        # Distinct from the session ACL (which runs earlier, so an ACL
-        # denial still wins); a mode denial is recoverable agent-side by
-        # toggling the required mode on.
-        from work_buddy.agent_session import get_active_modes
-        _denial = registry.mode_gate_denial(entry, get_active_modes(_agent_sid))
-        if _denial is not None:
-            _denial["error"] = (
-                f"Capability {capability!r} requires mode(s) "
-                f"{_denial['required_modes']} that are not active. "
-                f"Enable with mode_toggle."
-            )
-            return _prepare(_denial)
+        # ``available_when`` the session's active modes don't satisfy. The
+        # session's modes are resolved only when a gate is actually present
+        # (the common, ungated case stays a no-op), and a manifest/session
+        # read error fails open. Distinct from the session ACL (which runs
+        # earlier, so an ACL denial still wins); a mode denial is recoverable
+        # agent-side by toggling the required mode on.
+        if getattr(entry, "available_when", None) is not None:
+            try:
+                from work_buddy.agent_session import get_active_modes
+                _active_modes = get_active_modes(_agent_sid)
+            except Exception:
+                _active_modes = set()
+            _denial = registry.mode_gate_denial(entry, _active_modes)
+            if _denial is not None:
+                _denial["error"] = (
+                    f"Capability {capability!r} requires mode(s) "
+                    f"{_denial['required_modes']} that are not active. "
+                    f"Enable with mode_toggle."
+                )
+                return _prepare(_denial)
 
         # Determine operation type and retry policy
         if isinstance(entry, registry.WorkflowDefinition):
