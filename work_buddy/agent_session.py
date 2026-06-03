@@ -146,13 +146,14 @@ def get_session_dir(session_id: str | None = None) -> Path:
     return session_dir
 
 
-def update_manifest(**updates: Any) -> dict[str, Any]:
-    """Update the current session's manifest with additional fields.
+def update_manifest(session_id: str | None = None, **updates: Any) -> dict[str, Any]:
+    """Update a session's manifest with additional fields.
 
-    Reads the existing manifest, merges updates, and writes back.
-    Returns the updated manifest dict.
+    Reads the existing manifest, merges ``updates``, writes back, and returns
+    the merged dict. ``session_id`` selects the target session (defaults to
+    this process's own env-derived session).
     """
-    session_dir = get_session_dir()
+    session_dir = get_session_dir(session_id)
     manifest_path = session_dir / "manifest.json"
     manifest: dict[str, Any] = {}
     if manifest_path.exists():
@@ -162,22 +163,28 @@ def update_manifest(**updates: Any) -> dict[str, Any]:
     return manifest
 
 
-def get_dev_mode() -> bool:
-    """Check if the current session is in dev mode."""
-    session_dir = get_session_dir()
+def get_active_modes(session_id: str | None = None) -> set[str]:
+    """Return the set of active mode ids for a session.
+
+    Reads the ``active_modes`` list from the session manifest (defaulting to
+    this process's own session). Returns an empty set when the manifest is
+    missing, unreadable, or declares no modes. Modes gate capability and
+    workflow availability — see ``work_buddy/modes/`` and ``available_when``.
+    """
+    session_dir = get_session_dir(session_id)
     manifest_path = session_dir / "manifest.json"
     if not manifest_path.exists():
-        return False
+        return set()
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        return bool(manifest.get("dev_mode", False))
     except (json.JSONDecodeError, OSError):
-        return False
+        return set()
+    return {str(m) for m in (manifest.get("active_modes") or [])}
 
 
-def set_dev_mode(enabled: bool) -> None:
-    """Set the dev mode flag on the current session's manifest."""
-    update_manifest(dev_mode=enabled)
+def set_active_modes(modes: set[str], session_id: str | None = None) -> None:
+    """Persist the active mode ids for a session (stored as a sorted list)."""
+    update_manifest(active_modes=sorted(modes), session_id=session_id)
 
 
 def get_session_consent_db_path(session_dir: Path | None = None) -> Path:

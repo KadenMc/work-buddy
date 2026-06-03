@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import TYPE_CHECKING, Any, Callable, Mapping
 
 from work_buddy.frontmatter import parse_frontmatter
 
@@ -27,6 +27,9 @@ from work_buddy.frontmatter import parse_frontmatter
 # pure-data module with no other work_buddy deps, so this import is
 # cycle-safe).
 from work_buddy.threads.enums import InvocationContext
+
+if TYPE_CHECKING:
+    from work_buddy.control.gates import Gate
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +96,12 @@ class Capability:
     # ``capability_loader.load_declared_capabilities`` — the standard path. None
     # for a Capability constructed directly (e.g. in tests).
     op_id: str | None = None
+
+    # Optional mode-availability gate, resolved from the declaration's
+    # ``available_when`` string by the capability loader. When set, ``wb_search``
+    # hides and ``wb_run`` rejects this capability unless the gate is satisfied
+    # by the session's active modes. None = always available (ungated).
+    available_when: "Gate | None" = None
 
     # ---------------- Action Catalog fields (defaults are the legacy non-action shape) ----
 
@@ -249,6 +258,12 @@ class WorkflowDefinition:
     # to reasoning steps via ``initial_params`` in the first-step
     # response payload.
     params_schema: dict[str, dict[str, Any]] = field(default_factory=dict)
+
+    # Optional mode-availability gate, resolved from the ``WorkflowUnit``'s
+    # ``available_when`` string. When set, ``wb_search`` hides and ``wb_run``
+    # rejects this workflow unless the gate is satisfied by the session's
+    # active modes. None = always available (ungated).
+    available_when: "Gate | None" = None
 
     # ---------------- Action Catalog fields (defaults are the legacy non-action shape) ----
     # Workflows can also be Action Catalog
@@ -468,6 +483,52 @@ def _format_probe_age() -> str:
         return f"{int(elapsed / 3600)}h ago"
     except Exception:
         return "(probe age unknown)"
+
+
+def mode_gate_denial(entry: Any, active_modes: set[str]) -> dict[str, Any] | None:
+    """Return a mode-gate denial when ``entry``'s gate is unmet, else ``None``.
+
+    When ``entry.available_when`` is set and not satisfied by ``active_modes``,
+    returns a dict carrying ``denied_by="mode_gate"`` plus ``required_modes``
+    and the current ``active_modes``. Returns ``None`` when the entry passes —
+    including when it declares no gate. A mode denial is distinct from a
+    session-ACL denial and is recoverable agent-side by toggling a mode on.
+    """
+    gate = getattr(entry, "available_when", None)
+    if gate is None:
+        return None
+    from work_buddy.control import gates
+
+    if gates.evaluate(gate, active_modes):
+        return None
+    required = sorted(gates.referenced_components(gate))
+    return {
+        "denied_by": "mode_gate",
+        "required_modes": required,
+        "active_modes": sorted(active_modes),
+    }
+
+
+def filter_results_by_modes(
+    results: list[dict[str, Any]],
+    active_modes: set[str],
+    lookup: Callable[[str | None], Any],
+) -> list[dict[str, Any]]:
+    """Drop search-result dicts whose named entry has an unmet mode gate.
+
+    ``lookup`` maps a result's ``name`` to its registry entry (or ``None``).
+    Results whose entry is ungated, unknown, or unnamed pass through.
+    """
+    from work_buddy.control import gates
+
+    out: list[dict[str, Any]] = []
+    for r in results:
+        name = r.get("name") if isinstance(r, dict) else None
+        entry = lookup(name) if name else None
+        gate = getattr(entry, "available_when", None) if entry is not None else None
+        if gate is None or gates.evaluate(gate, active_modes):
+            out.append(r)
+    return out
 
 
 def search_registry(
@@ -1254,6 +1315,29 @@ def _index_directions_by_workflow(store: dict[str, Any]) -> dict[str, str]:
     return idx
 
 
+def _resolve_mode_gate(raw: str | None, source: str) -> "Gate | None":
+    """Resolve an ``available_when`` gate-DSL string to a ``Gate`` AST.
+
+    Returns ``None`` when unset. On a malformed expression or a reference to an
+    unknown mode id, logs a warning and returns ``None`` — a surface with a
+    broken gate stays visible rather than silently hidden forever. (The
+    capability loader handles its own resolution so it can surface the failure
+    as a hard, count-checked issue instead.)
+    """
+    if not raw:
+        return None
+    from work_buddy.control import gates
+    from work_buddy.modes.registry import get_known_mode_ids
+
+    try:
+        gate = gates.parse_gate(raw)
+        gates.validate(gate, get_known_mode_ids())
+        return gate
+    except ValueError as exc:
+        logger.warning("ignoring invalid available_when %r on %s: %s", raw, source, exc)
+        return None
+
+
 def _discover_workflows_from_store() -> list[WorkflowDefinition]:
     """Load workflow definitions from the knowledge store.
 
@@ -1335,17 +1419,8 @@ def _discover_workflows_from_store() -> list[WorkflowDefinition]:
             slash_command=unit.command,
             params_schema=unit.params_schema or {},
             bound_directions_path=directions_by_workflow.get(_path),
+            available_when=_resolve_mode_gate(unit.available_when, f"store:{_path}"),
         ))
 
     return workflows
-
-
-def _dev_mode_toggle(enabled: bool | None = None) -> dict[str, Any]:
-    """Toggle dev mode for the current session."""
-    from work_buddy.agent_session import get_dev_mode, set_dev_mode
-
-    previous = get_dev_mode()
-    new_value = (not previous) if enabled is None else bool(enabled)
-    set_dev_mode(new_value)
-    return {"dev_mode": new_value, "previous": previous}
 

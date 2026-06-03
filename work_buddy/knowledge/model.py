@@ -725,6 +725,11 @@ class CapabilityUnit(PromptUnit):
     # the version of the declaration format itself (e.g. "wb-capability/v1").
     op: str = ""
     schema_version: str = ""
+    # Optional mode-availability gate — a gate-DSL string over mode ids
+    # (e.g. "knowledge" or "dev & knowledge"). When set, ``wb_search`` hides
+    # and ``wb_run`` rejects this capability unless the gate is satisfied by
+    # the session's active modes. None = always available (ungated).
+    available_when: str | None = None
 
     def _kind_fields(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -756,6 +761,8 @@ class CapabilityUnit(PromptUnit):
             d["op"] = self.op
         if self.schema_version:
             d["schema_version"] = self.schema_version
+        if self.available_when:
+            d["available_when"] = self.available_when
         return d
 
     _kind_dict = _kind_fields
@@ -781,6 +788,10 @@ class WorkflowUnit(PromptUnit):
     # Workflows that omit this field reject any non-empty params at start.
     params_schema: dict[str, dict[str, Any]] = field(default_factory=dict)
     schema_version: str = ""           # declaration format version, e.g. "wb-workflow/v1"
+    # Optional mode-availability gate (gate-DSL string over mode ids). When
+    # set, ``wb_search`` hides and ``wb_run`` rejects this workflow unless the
+    # gate is satisfied by the session's active modes. None = always available.
+    available_when: str | None = None
 
     def _kind_fields(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -799,6 +810,8 @@ class WorkflowUnit(PromptUnit):
             d["params_schema"] = self.params_schema
         if self.schema_version:
             d["schema_version"] = self.schema_version
+        if self.available_when:
+            d["available_when"] = self.available_when
         return d
 
     _kind_dict = _kind_fields
