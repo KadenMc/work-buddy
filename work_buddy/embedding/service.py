@@ -812,6 +812,27 @@ def main():
     # Build model registry from config (cheap — just metadata)
     _init_registry(cfg)
 
+    # Recover the IR vector store before serving: quarantine any crash-corrupted
+    # .npz and clear orphaned write temps, so the first read after boot is clean
+    # instead of raising on a 0-byte file and taking a search source dark.
+    # Non-fatal — a sweep failure must not stop the service from coming up.
+    try:
+        from work_buddy.ir.store import recover_vector_store
+
+        summary = recover_vector_store(cfg)
+        if summary.get("quarantined") or summary.get("temps_removed"):
+            print(
+                "IR vector store recovery: "
+                f"quarantined={len(summary['quarantined'])} "
+                f"temps_removed={len(summary['temps_removed'])}",
+                file=sys.stderr,
+            )
+    except Exception as exc:
+        print(
+            f"IR vector store recovery raised (non-fatal): {exc}",
+            file=sys.stderr,
+        )
+
     # Surface LM Studio configuration drift at startup (loud but
     # non-fatal). Keeps the user informed when they've opted into
     # offloading but LM Studio isn't actually up, without blocking

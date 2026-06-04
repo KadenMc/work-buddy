@@ -16,6 +16,8 @@ from __future__ import annotations
 import platform
 from dataclasses import dataclass, field
 
+from work_buddy.utils.service_hints import sidecar_restart_command
+
 # Detect once at import time — used to select platform-specific fix hints.
 _IS_WINDOWS = platform.system() == "Windows"
 _IS_MAC = platform.system() == "Darwin"
@@ -366,9 +368,7 @@ _register(ComponentDef(
 
 _SIDECAR_LOG_HINT = (
     "Check sidecar logs: <data_root>/logs/sidecar.log\n"
-    "Restart sidecar: "
-    + ("Start-ScheduledTask 'WB-Sidecar'" if _IS_WINDOWS
-       else "python -m work_buddy.sidecar &")
+    "Restart sidecar: " + sidecar_restart_command()
 )
 
 _register(ComponentDef(

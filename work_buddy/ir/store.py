@@ -10,16 +10,33 @@ Vector storage uses a companion .npz file alongside the DB for efficiency
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import time
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from work_buddy.ir.sources.base import Document, Source
 from work_buddy.logging_config import get_logger
+from work_buddy.utils.npz_io import (
+    TEMP_GLOB,
+    TEMP_SUFFIX,
+    atomic_save_npz,
+    pid_from_temp_name,
+    safe_load_npz,
+)
+from work_buddy.utils.process import is_process_alive
 
 logger = get_logger(__name__)
+
+# A temp left by a writer whose PID is dead is an orphan; one whose PID is still
+# alive is a live write in progress and must be spared. PID reuse can make a
+# dead writer's PID resolve to an unrelated live process, so the recovery sweep
+# also deletes a temp older than this regardless of liveness — a real in-flight
+# build refreshes its temp on every checkpoint, well inside this window.
+ORPHAN_TEMP_MAX_AGE_S = 3600
 
 
 _SCHEMA = """\
@@ -347,8 +364,11 @@ def save_vectors(
     import numpy as np
 
     path = _npz_path(cfg, source=source, projection=projection)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(
+    # Atomic temp + fsync + os.replace: a process killed mid-write can no longer
+    # truncate the canonical file into a 0-byte/corrupt search outage. The
+    # checkpoint loop in ir/dense.py calls this ~20x per large build, so every
+    # write — not just the final one — must be atomic.
+    atomic_save_npz(
         path,
         vectors=vectors.astype(np.float16),
         doc_ids=np.array(doc_ids, dtype=object),
@@ -363,16 +383,126 @@ def load_vectors(
     source: str | None = None,
     projection: str | None = None,
 ) -> tuple["np.ndarray", list[str]] | None:
-    """Load vectors from companion .npz file. Returns None if not found."""
+    """Load vectors from companion .npz file.
+
+    Returns ``None`` if the file is missing, empty, or corrupt. Callers degrade
+    to BM25-only and the next build regenerates (the vectors are a regenerable
+    cache), so a crash-truncated file self-heals instead of 500-ing. This read
+    is pure — it never mutates the filesystem; the startup recovery sweep
+    (:func:`recover_vector_store`) is what quarantines a corrupt file.
+    """
     import numpy as np
 
     path = _npz_path(cfg, source=source, projection=projection)
-    if not path.exists():
+    data = safe_load_npz(path)
+    if data is None:
         return None
-    data = np.load(path, allow_pickle=True)
     vectors = data["vectors"].astype(np.float32)  # Upcast for computation
     doc_ids = data["doc_ids"].tolist()
     return vectors, doc_ids
+
+
+def recover_vector_store(cfg: dict | None = None) -> dict[str, Any]:
+    """Quarantine corrupt vector files and remove orphaned temps.
+
+    Run once at embedding-service startup, before any read. The vector ``.npz``
+    files are a regenerable cache, so this favours self-heal over preservation:
+
+    - **Corrupt canonical** (0-byte, or an unreadable zip central directory):
+      renamed to ``<name>.corrupt`` — one forensic copy, overwriting any prior.
+      ``load_vectors`` already returns ``None`` for it, and the next build
+      cold-rebuilds; quarantining just keeps the first post-boot read clean and
+      preserves the bad file for diagnosis.
+    - **Orphaned temp** (a ``*.tmp.npz`` whose writer PID is dead, or which is
+      stale beyond :data:`ORPHAN_TEMP_MAX_AGE_S`): deleted. A temp whose PID is
+      still alive and recent is a live write in progress and is left untouched —
+      temps are never glob-deleted unconditionally.
+
+    Safe against a concurrent build: the build runs in-process inside the
+    embedding service and this sweep runs before the service serves, so there is
+    no in-process writer to race. A separate-process CLI build is guarded by the
+    PID-liveness + mtime checks.
+
+    Returns a summary of what it touched.
+    """
+    if cfg is None:
+        from work_buddy.config import load_config
+        cfg = load_config()
+
+    ir_dir = _db_path(cfg).parent
+    quarantined: list[str] = []
+    temps_removed: list[str] = []
+    temps_kept: list[str] = []
+
+    if not ir_dir.exists():
+        return {
+            "quarantined": quarantined,
+            "temps_removed": temps_removed,
+            "temps_kept": temps_kept,
+        }
+
+    # Canonical vector files: work_buddy_ir.<source>[.<projection>].npz. Exclude
+    # temps (which also end in .npz, via the .tmp.npz suffix); .corrupt files
+    # don't end in .npz so they're already excluded.
+    for path in sorted(ir_dir.glob("work_buddy_ir.*.npz")):
+        if path.name.endswith(TEMP_SUFFIX):
+            continue
+        corrupt = False
+        try:
+            if path.stat().st_size == 0:
+                corrupt = True
+            else:
+                # Validate the central directory without loading arrays.
+                with zipfile.ZipFile(path) as zf:
+                    zf.namelist()
+        except (zipfile.BadZipFile, OSError) as exc:
+            corrupt = True
+            logger.warning("Vector file %s failed validation: %s", path, exc)
+        if corrupt:
+            quarantine = path.with_name(path.name + ".corrupt")
+            try:
+                path.replace(quarantine)  # atomic; overwrites any prior .corrupt
+                quarantined.append(str(path))
+                logger.warning(
+                    "Quarantined corrupt vector file %s -> %s", path, quarantine
+                )
+            except OSError as exc:
+                logger.error("Could not quarantine %s: %s", path, exc)
+
+    # Orphaned temp files left by a dead (or hung / PID-reused) writer.
+    now = time.time()
+    for tmp in sorted(ir_dir.glob(TEMP_GLOB)):
+        pid = pid_from_temp_name(tmp.name)
+        try:
+            age = now - tmp.stat().st_mtime
+        except OSError:
+            age = float("inf")
+        recent = age < ORPHAN_TEMP_MAX_AGE_S
+        # Keep only a fresh temp whose writer is verifiably alive. An
+        # unparseable PID can't be liveness-checked, so fall back to mtime alone.
+        keep = recent and (pid is None or is_process_alive(pid))
+        if keep:
+            temps_kept.append(str(tmp))
+            continue
+        try:
+            tmp.unlink()
+            temps_removed.append(str(tmp))
+            logger.info(
+                "Removed orphaned temp %s (pid=%s, age=%.0fs)", tmp, pid, age
+            )
+        except OSError as exc:
+            logger.warning("Could not remove temp %s: %s", tmp, exc)
+
+    if quarantined or temps_removed:
+        logger.info(
+            "Vector store recovery: quarantined=%d temps_removed=%d temps_kept=%d",
+            len(quarantined), len(temps_removed), len(temps_kept),
+        )
+    return {
+        "quarantined": quarantined,
+        "temps_removed": temps_removed,
+        "temps_kept": temps_kept,
+    }
 
 
 # ---------------------------------------------------------------------------

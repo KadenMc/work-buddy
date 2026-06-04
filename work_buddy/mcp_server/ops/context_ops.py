@@ -169,12 +169,28 @@ def _register() -> None:
         """Build or check the IR index via the embedding service."""
         import json
 
+        from work_buddy.utils.service_hints import sidecar_restart_command
+
         result = _ir_index_client(
             action, source=source, days=days, force=force,
         )
         if result is None:
+            # Genuine connection failure. The embedding service is supervised by
+            # the sidecar (not an independent scheduled task), so point there.
             return json.dumps({
-                "error": "Embedding service unavailable. Start it with: Start-ScheduledTask -TaskName 'WB-Embedding'"
+                "error": (
+                    "Embedding service unreachable. It's supervised by the "
+                    f"sidecar — restart with: {sidecar_restart_command()}. "
+                    "Or run /wb-setup-help to diagnose."
+                )
+            })
+        if "error" in result:
+            # Service was reachable but /ir/index failed — surface the real
+            # error (e.g. a corrupt vector file) instead of masking it.
+            status = result.get("status")
+            detail = f" (HTTP {status})" if status else ""
+            return json.dumps({
+                "error": f"/ir/index failed{detail}: {result['error']}"
             })
         return json.dumps(result, indent=2)
 
