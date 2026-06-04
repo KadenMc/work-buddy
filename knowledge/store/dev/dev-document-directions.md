@@ -91,7 +91,7 @@ A `system` unit can be a subsystem of another `system`. The `parents` field is a
 Knowledge units have **two** body fields surfaced to different audiences. Picking the right one is not a stylistic call — it controls who sees what, and getting it wrong silently misleads agents in production.
 
 - **`content_full`** — the canonical body. Read by **every** agent (operational + dev) on `agent_docs(depth="full")`. This is the contract.
-- **`dev_notes`** — surfaced **only** when dev mode is on (set via `dev_mode_toggle`, auto-enabled by `/wb-dev`). This is the workshop.
+- **`dev_notes`** — surfaced **only** when dev mode is on (set via `mode_toggle`, auto-enabled by `/wb-dev`). This is the workshop.
 
 The split is the structural mechanism for the operational/developmental separation. Get it wrong and either operational agents miss the contract, or their context window fills with implementation noise they cannot act on.
 

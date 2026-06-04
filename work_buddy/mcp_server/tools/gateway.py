@@ -1205,6 +1205,20 @@ def register_tools(mcp: FastMCP) -> None:
             registry.search_registry, query, category, filter_n,
         )
 
+        session_id = _resolve_session(ctx)
+
+        # Mode gating: hide any capability/workflow whose ``available_when``
+        # gate is not satisfied by this session's active modes. Runs before
+        # the ACL filter — the visible set is the intersection either way —
+        # and fails open, since search is a discovery aid, not a boundary.
+        try:
+            from work_buddy.agent_session import get_active_modes
+            results = registry.filter_results_by_modes(
+                results, get_active_modes(session_id), registry.get_entry,
+            )
+        except Exception:
+            pass  # never let mode-gating break discovery
+
         # If this session has a capability ACL (set by ``llm_with_tools``
         # before a local-model tool call), filter results. The helper
         # returns a bare list when no filtering occurred, or a dict
@@ -1214,7 +1228,6 @@ def register_tools(mcp: FastMCP) -> None:
         # for the full semantics (including the fail-closed bookend
         # when the session can't be resolved but an ACL is active).
         from work_buddy.mcp_server.session_acl import filter_search_results
-        session_id = _resolve_session(ctx)
         filtered = filter_search_results(results, session_id)
         result_count = (
             len(filtered) if isinstance(filtered, list)
@@ -1428,6 +1441,28 @@ def register_tools(mcp: FastMCP) -> None:
             else:
                 return _prepare({"error": f"Unknown capability: {capability!r}. Use wb_search to find available capabilities."})
 
+        # Mode gate: reject when the capability/workflow declares an
+        # ``available_when`` the session's active modes don't satisfy. The
+        # session's modes are resolved only when a gate is actually present
+        # (the common, ungated case stays a no-op), and a manifest/session
+        # read error fails open. Distinct from the session ACL (which runs
+        # earlier, so an ACL denial still wins); a mode denial is recoverable
+        # agent-side by toggling the required mode on.
+        if getattr(entry, "available_when", None) is not None:
+            try:
+                from work_buddy.agent_session import get_active_modes
+                _active_modes = get_active_modes(_agent_sid)
+            except Exception:
+                _active_modes = set()
+            _denial = registry.mode_gate_denial(entry, _active_modes)
+            if _denial is not None:
+                _denial["error"] = (
+                    f"Capability {capability!r} requires mode(s) "
+                    f"{_denial['required_modes']} that are not active. "
+                    f"Enable with mode_toggle."
+                )
+                return _prepare(_denial)
+
         # Determine operation type and retry policy
         if isinstance(entry, registry.WorkflowDefinition):
             op_type = "workflow"
@@ -1550,19 +1585,19 @@ def register_tools(mcp: FastMCP) -> None:
         # agent's view.
         if capability in (
             "session_activity", "session_summary", "session_wb_activity",
-            "artifact_save", "consent_list",
+            "artifact_save", "consent_list", "mode_toggle",
         ) and _agent_sid:
             parsed_params.setdefault("agent_session_id", _agent_sid)
 
-        # Auto-inject dev=True for knowledge capabilities when session
-        # dev mode is active (set via dev_mode_toggle).
+        # Auto-inject dev=True for knowledge capabilities when the agent's
+        # session has dev mode active (toggled via mode_toggle).
         _KNOWLEDGE_CAPS = {
             "agent_docs", "knowledge", "knowledge_personal",
         }
         if capability in _KNOWLEDGE_CAPS and "dev" not in parsed_params:
             try:
-                from work_buddy.agent_session import get_dev_mode
-                if get_dev_mode():
+                from work_buddy.agent_session import get_active_modes
+                if "dev" in get_active_modes(_agent_sid):
                     parsed_params["dev"] = True
             except Exception:
                 pass  # Don't break queries if manifest read fails

@@ -24,7 +24,7 @@ steps:
       files_read: 1
       wrappers_found: 1
   invokes:
-  - dev_mode_toggle
+  - mode_toggle
   - agent_docs
 tags:
 - dev
@@ -46,7 +46,7 @@ Before touching code, orient on the subsystem you are about to modify. The defau
 1. **Activate dev mode** so `dev_notes` surface in subsequent knowledge queries:
 
    ```
-   mcp__work-buddy__wb_run("dev_mode_toggle", {"enabled": true})
+   mcp__work-buddy__wb_run("mode_toggle", {"mode_id": "dev", "active": true})
    ```
 
 2. **Identify the subsystem** you are about to modify in one short phrase (for your own framing; not submitted as output).

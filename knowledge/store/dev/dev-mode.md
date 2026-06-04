@@ -8,7 +8,7 @@ command: wb-dev
 workflow: dev/dev-orient
 capabilities:
 - mcp_registry_reload
-- dev_mode_toggle
+- mode_toggle
 tags:
 - dev
 - developmental

@@ -103,7 +103,7 @@ A `context_before` / `context_after` mechanism on each unit (auto-prepend / -app
 
 ## Dev notes
 
-Units can carry a `dev_notes` string — development-facing guidance that only surfaces when the agent is in dev mode (set via `dev_mode_toggle`) or when the caller passes `dev=True`. Use for architectural constraints, non-obvious dependencies, and hard-won lessons that future agents could easily clobber. All subsequent knowledge queries in the session auto-include `dev_notes` once dev mode is active.
+Units can carry a `dev_notes` string — development-facing guidance that only surfaces when the agent is in dev mode (enabled via `mode_toggle`) or when the caller passes `dev=True`. Use for architectural constraints, non-obvious dependencies, and hard-won lessons that future agents could easily clobber. All subsequent knowledge queries in the session auto-include `dev_notes` once dev mode is active.
 
 ## Search index
 
@@ -115,7 +115,7 @@ A persistent BM25 + dense vector index over full unit content is warmed eagerly 
 - `knowledge_personal` — personal vault knowledge only (supports `category` and `severity` filters)
 - `knowledge_mint` — create or update a personal knowledge unit in the vault
 - `agent_docs_rebuild` — reload both stores from disk after edits
-- `dev_mode_toggle` — toggle dev mode for the session
+- `mode_toggle` — toggle a session mode (e.g. dev) on or off
 - `knowledge_index_rebuild` — force rebuild knowledge search index with full embeddings
 - `knowledge_index_status` — check index health
 - `docs_edit` — the workflow for editing or creating **any** unit kind: it returns the unit's `.md` path, the agent edits it natively, and the commit step validates (kind-aware) and reconciles the store cache + index.

@@ -94,6 +94,15 @@ class Capability:
     # for a Capability constructed directly (e.g. in tests).
     op_id: str | None = None
 
+    # Optional mode-availability gate — the raw gate-DSL string from the
+    # declaration's ``available_when`` (validated at load). When set,
+    # ``wb_search`` hides and ``wb_run`` rejects this capability unless the gate
+    # is satisfied by the session's active modes. The raw string (not a parsed
+    # AST) is stored so the gate is re-parsed against the current ``gates``
+    # module at evaluation time — immune to the class-identity skew an
+    # ``mcp_registry_reload`` introduces in long-lived entries. None = ungated.
+    available_when: str | None = None
+
     # ---------------- Action Catalog fields (defaults are the legacy non-action shape) ----
 
     # Whether this capability appears in the Action Catalog (i.e.
@@ -249,6 +258,13 @@ class WorkflowDefinition:
     # to reasoning steps via ``initial_params`` in the first-step
     # response payload.
     params_schema: dict[str, dict[str, Any]] = field(default_factory=dict)
+
+    # Optional mode-availability gate — the raw gate-DSL string from the
+    # ``WorkflowUnit``'s ``available_when`` (validated at load; re-parsed at
+    # evaluation time, so it is reload-safe). When set, ``wb_search`` hides and
+    # ``wb_run`` rejects this workflow unless the gate is satisfied by the
+    # session's active modes. None = always available (ungated).
+    available_when: str | None = None
 
     # ---------------- Action Catalog fields (defaults are the legacy non-action shape) ----
     # Workflows can also be Action Catalog
@@ -468,6 +484,71 @@ def _format_probe_age() -> str:
         return f"{int(elapsed / 3600)}h ago"
     except Exception:
         return "(probe age unknown)"
+
+
+def mode_gate_denial(entry: Any, active_modes: set[str]) -> dict[str, Any] | None:
+    """Return a mode-gate denial when ``entry``'s gate is unmet, else ``None``.
+
+    ``entry.available_when`` is the raw gate-DSL string (validated at load).
+    It is parsed here, at evaluation time, rather than stored as a ``Gate`` AST
+    — a re-parse always uses the current ``gates`` module, so the gate is
+    immune to the class-identity skew an ``mcp_registry_reload`` introduces in
+    long-lived registry entries (the same hazard ``_entry_to_dict`` documents).
+
+    When the gate is set and not satisfied by ``active_modes``, returns a dict
+    carrying ``denied_by="mode_gate"`` plus ``required_modes`` and the current
+    ``active_modes``. Returns ``None`` when the entry passes (including when it
+    declares no gate, or its gate is unparseable — fail open).
+    """
+    raw = getattr(entry, "available_when", None)
+    if not raw:
+        return None
+    from work_buddy.control import gates
+
+    try:
+        gate = gates.parse_gate(raw)
+    except ValueError:
+        return None  # malformed (should fail at load); fail open
+    if gates.evaluate(gate, active_modes):
+        return None
+    required = sorted(gates.referenced_components(gate))
+    return {
+        "denied_by": "mode_gate",
+        "required_modes": required,
+        "active_modes": sorted(active_modes),
+    }
+
+
+def filter_results_by_modes(
+    results: list[dict[str, Any]],
+    active_modes: set[str],
+    lookup: Callable[[str | None], Any],
+) -> list[dict[str, Any]]:
+    """Drop search-result dicts whose named entry has an unmet mode gate.
+
+    ``lookup`` maps a result's ``name`` to its registry entry (or ``None``).
+    Results whose entry is ungated, unknown, unnamed, or carries an unparseable
+    gate pass through. The gate string is parsed here (not stored as an AST) so
+    it is immune to ``mcp_registry_reload`` class-identity skew.
+    """
+    from work_buddy.control import gates
+
+    out: list[dict[str, Any]] = []
+    for r in results:
+        name = r.get("name") if isinstance(r, dict) else None
+        entry = lookup(name) if name else None
+        raw = getattr(entry, "available_when", None) if entry is not None else None
+        if not raw:
+            out.append(r)
+            continue
+        try:
+            gate = gates.parse_gate(raw)
+        except ValueError:
+            out.append(r)  # malformed; fail open (stay visible)
+            continue
+        if gates.evaluate(gate, active_modes):
+            out.append(r)
+    return out
 
 
 def search_registry(
@@ -1254,6 +1335,30 @@ def _index_directions_by_workflow(store: dict[str, Any]) -> dict[str, str]:
     return idx
 
 
+def _resolve_mode_gate(raw: str | None, source: str) -> str | None:
+    """Validate an ``available_when`` gate-DSL string; return it (or ``None``).
+
+    Returns ``None`` when unset. On a malformed expression or a reference to an
+    unknown mode id, logs a warning and returns ``None`` — a surface with a
+    broken gate stays visible rather than silently hidden forever. (The
+    capability loader handles its own resolution so it can surface the failure
+    as a hard, count-checked issue instead.) The validated string is stored,
+    not a parsed AST: the gate is re-parsed at evaluation time so it never
+    carries a stale class identity across an ``mcp_registry_reload``.
+    """
+    if not raw:
+        return None
+    from work_buddy.control import gates
+    from work_buddy.modes.registry import get_known_mode_ids
+
+    try:
+        gates.validate(gates.parse_gate(raw), get_known_mode_ids())
+        return raw
+    except ValueError as exc:
+        logger.warning("ignoring invalid available_when %r on %s: %s", raw, source, exc)
+        return None
+
+
 def _discover_workflows_from_store() -> list[WorkflowDefinition]:
     """Load workflow definitions from the knowledge store.
 
@@ -1335,17 +1440,8 @@ def _discover_workflows_from_store() -> list[WorkflowDefinition]:
             slash_command=unit.command,
             params_schema=unit.params_schema or {},
             bound_directions_path=directions_by_workflow.get(_path),
+            available_when=_resolve_mode_gate(unit.available_when, f"store:{_path}"),
         ))
 
     return workflows
-
-
-def _dev_mode_toggle(enabled: bool | None = None) -> dict[str, Any]:
-    """Toggle dev mode for the current session."""
-    from work_buddy.agent_session import get_dev_mode, set_dev_mode
-
-    previous = get_dev_mode()
-    new_value = (not previous) if enabled is None else bool(enabled)
-    set_dev_mode(new_value)
-    return {"dev_mode": new_value, "previous": previous}
 

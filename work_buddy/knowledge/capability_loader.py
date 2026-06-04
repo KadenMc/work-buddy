@@ -150,6 +150,19 @@ def load_declared_capabilities(
                 issues.append(_issue(path, f"signature mismatch: {si}"))
             continue  # never dispatch a capability whose schema disagrees with its op
 
+        available_when = None
+        if unit.available_when:
+            from work_buddy.control import gates
+            from work_buddy.modes.registry import get_known_mode_ids
+            try:
+                gates.validate(gates.parse_gate(unit.available_when), get_known_mode_ids())
+                available_when = unit.available_when  # store the validated DSL string
+            except ValueError as exc:
+                issues.append(_issue(
+                    path, f"invalid available_when {unit.available_when!r}: {exc}"
+                ))
+                continue  # never dispatch a capability whose mode gate is malformed
+
         capabilities.append(Capability(
             name=unit.capability_name,
             description=unit.description,
@@ -169,6 +182,7 @@ def load_declared_capabilities(
             op_id=unit.op,
             is_action=unit.is_action,
             intrinsic_amplifiers=dict(unit.intrinsic_amplifiers),
+            available_when=available_when,
         ))
 
     return capabilities, issues

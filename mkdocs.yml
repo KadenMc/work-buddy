@@ -166,7 +166,6 @@ nav:
   - Datacore Schema: handbook/context_datacore_schema.md
   - Datacore Status: handbook/context_datacore_status.md
   - Datacore Validate: handbook/context_datacore_validate.md
-  - Dev Mode Toggle: handbook/context_dev_mode_toggle.md
   - Docs Edit: handbook/context_docs-edit.md
   - Docs Delete: handbook/context_docs_delete.md
   - Docs Get: handbook/context_docs_get.md
@@ -333,6 +332,9 @@ nav:
 - Metacognition:
   - Metacognition: handbook/metacognition.md
   - Blindspot Detection Directions: handbook/metacognition_blindspot-directions.md
+- Modes:
+  - Modes: handbook/modes.md
+  - Mode Toggle: handbook/modes_mode_toggle.md
 - Morning:
   - Morning Routine: handbook/morning.md
   - Morning Routine Directions: handbook/morning_directions.md

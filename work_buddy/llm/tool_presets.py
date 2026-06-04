@@ -191,8 +191,8 @@ _MUTATING_CAPABILITIES: frozenset[str] = frozenset({
     "conversation_ask", "conversation_close",
     # Chrome mutations
     "chrome_tab_close", "chrome_tab_group", "chrome_tab_move",
-    # Workflow control
-    "dev_mode_toggle",
+    # Modes
+    "mode_toggle",
     # Admin
     "service_restart", "mcp_registry_reload", "obsidian_retry",
     # Docs edits (content authoring/creation is the docs_edit workflow, not a
