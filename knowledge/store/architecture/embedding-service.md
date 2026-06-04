@@ -87,6 +87,20 @@ dev_notes: |-
 
   This is the structural twin of the knowledge-system three-signal design above. Future migration of `work_buddy/knowledge/index.py` onto this engine is the natural next step (gated on the brittleness harness to avoid wb_search regression); doing so would collapse the two parallel implementations.
 
+  ## Vector store durability: atomic writes + recovery sweep
+
+  The per-source/per-projection ``.npz`` vector files are a regenerable cache (the source docs live in ``work_buddy_ir.db`` plus the JSONL sessions), so the contract is resilience and self-heal, not durability:
+
+  - **Atomic writes.** ``work_buddy/ir/store.py::save_vectors`` writes through ``work_buddy/utils/npz_io.py::atomic_save_npz``: a sibling temp (``<name>.<pid>.tmp.npz``) written via an *open file object* (so numpy neither re-opens nor appends ``.npz``, and the fd can be ``fsync``'d), then ``os.replace``'d onto the canonical path with a short Windows-``PermissionError`` retry. A process killed mid-write can no longer truncate the canonical file into a 0-byte search outage. This matters on every write, not just the last one: the ``CHECKPOINT_ROWS`` loop in ``ir/dense.py`` calls ``save_vectors`` many times per large build.
+  - **Corrupt-tolerant reads.** ``load_vectors`` goes through ``safe_load_npz``, which returns ``None`` (never raises) for a missing, zero-byte, or truncated file — catching ``EOFError`` / ``zipfile.BadZipFile`` / ``ValueError`` / ``OSError`` (``BadZipFile`` is listed explicitly; it does not subclass the others). A corrupt file therefore degrades to BM25-only and the next build regenerates, instead of raising and taking the source dark behind an ``/ir/index`` 500. The read is pure — it never mutates the filesystem.
+  - **Startup recovery sweep.** ``recover_vector_store(cfg)`` runs in ``embedding/service.py::main()`` before serving. It quarantines a corrupt canonical file to ``<name>.corrupt`` (one forensic copy) and deletes orphaned ``*.tmp.npz`` temps whose writer PID is dead (``work_buddy/utils/process.py::is_process_alive``) or which are stale beyond ``ORPHAN_TEMP_MAX_AGE_S`` — while sparing a live writer's temp. The build runs in-process and the sweep runs before ``app.run``, so there is no in-process writer to race.
+
+  ``work_buddy/knowledge/persistence.py`` shares the same ``atomic_save_npz`` primitive (passing a fixed temp name, since its cache dir is not swept). The ``.npz`` durability primitives live in ``utils/npz_io.py`` so both vector caches use one implementation; its header-gated loaders stay local because they bail on a model/version mismatch before materializing arrays.
+
+  ## ``/ir/index`` error surfacing
+
+  A reachable embedding service that fails an ``/ir/index`` request surfaces the **real** error, not a generic "service unavailable". ``client._request`` catches ``HTTPError`` (a subclass of ``URLError``, so it must be caught first) separately from connection failures, logs the status + body, and — with ``return_http_error=True`` (passed only by ``ir_index``) — returns ``{"error", "status"}`` rather than collapsing a 500 to ``None``. The ``ir_index`` dispatch then distinguishes: ``None`` → service unreachable (remediation points at the sidecar via ``utils/service_hints.py::sidecar_restart_command``, since the embedding service is a sidecar-supervised child, not a standalone scheduled task); an error envelope → surface the real ``/ir/index`` error; otherwise the status/build result. Every *other* client caller still gets ``None`` on any failure — the flag defaults off, so their graceful-degradation contract is unchanged.
+
   ## Adding a new model
 
   Add an entry to `config.yaml` under `embedding.models` (or `_DEFAULT_MODELS` in `service.py` for the fallback). Required fields: HF name, dims, `eager` (bool). Eager-load only models on the critical path for interactive work; lazy-load large models (e.g. the 526 MB `leaf-ir` passage encoder) that are used only during indexing.
@@ -106,13 +120,14 @@ dev_notes: |-
   ## Key dev files
 
   - `work_buddy/embedding/service.py` — Flask service, `_DEFAULT_MODELS`, `ModelEntry`, lazy loader, `/embed` and `/similarity` handlers; `/ir/index` now also triggers a best-effort `dense.build_vectors` so hybrid search has vectors to score against.
-  - `work_buddy/embedding/client.py` — `embed`, `embed_for_ir`, `similarity_search`, `hybrid_search`, `ir_search`, `ir_index`. ``embed()`` and ``embed_for_ir()`` accept ``timeout_s`` for indexing callers that need to absorb a lazy-model cold load — see 'Lazy models' section above.
+  - `work_buddy/embedding/client.py` — `embed`, `embed_for_ir`, `similarity_search`, `hybrid_search`, `ir_search`, `ir_index`. ``embed()`` and ``embed_for_ir()`` accept ``timeout_s`` for indexing callers that need to absorb a lazy-model cold load — see 'Lazy models' section above. ``_request`` splits ``HTTPError`` from connection failures and takes ``return_http_error`` so ``ir_index`` can surface a real ``/ir/index`` error — see '``/ir/index`` error surfacing' above.
   - `work_buddy/knowledge/index.py` — knowledge search index; three-signal RRF fusion (custom path).
-  - `work_buddy/knowledge/persistence.py` — disk cache for content + alias vectors (hash-keyed, atomic writes, model+version headers).
+  - `work_buddy/knowledge/persistence.py` — disk cache for content + alias vectors (hash-keyed, model+version headers); atomic writes via ``utils/npz_io.atomic_save_npz``.
+  - `work_buddy/utils/npz_io.py` — shared atomic ``.npz`` write (``atomic_save_npz``), corrupt-tolerant load (``safe_load_npz``), and the temp-naming convention the recovery sweep parses. Used by both ``ir/store.py`` and ``knowledge/persistence.py``.
   - `work_buddy/ir/sources/base.py` — `Document`, `Projection`, `ProjectionSpec`, `Source` protocol, `get_projection_schema` helper.
   - `work_buddy/ir/dense.py` — kind-aware `encode_query` / `encode_documents`; pool-aware `score_dense`; projection-aware `build_vectors` with shared `_build_vectors_for_projection` inner loop.
   - `work_buddy/ir/engine.py` — `search` runs BM25 plus one ranking per declared projection (or one legacy ranking) and RRF-fuses; per-result `projection_scores` diagnostic.
-  - `work_buddy/ir/store.py` — `documents.projections` JSON column + in-place schema migration; `_npz_path` / `save_vectors` / `load_vectors` accept a `projection` arg.
+  - `work_buddy/ir/store.py` — `documents.projections` JSON column + in-place schema migration; `_npz_path` / `save_vectors` / `load_vectors` accept a `projection` arg. ``save_vectors`` is atomic and ``load_vectors`` is corrupt-tolerant (both via ``utils/npz_io``); ``recover_vector_store`` is the startup quarantine/orphan-temp sweep — see 'Vector store durability' above.
 ---
 
 ## Overview

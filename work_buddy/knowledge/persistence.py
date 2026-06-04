@@ -33,21 +33,22 @@ corrupt an existing cache. Reads are idempotent.
 
 Reads use ``with np.load(...) as data:`` so the underlying ZipFile handle
 is closed before the function returns. On Windows, leaking that handle
-makes the next ``tmp.replace(path)`` fail with ``[WinError 5] Access
-denied`` because the destination still has a live read handle. The
-``_atomic_replace`` helper additionally retries the rename a few times
-with brief backoff to absorb transient locks held by AV / file indexers.
+makes the next ``os.replace`` fail with ``[WinError 5] Access denied``
+because the destination still has a live read handle. The shared
+``atomic_save_npz`` helper (``work_buddy.utils.npz_io``) additionally retries
+the rename a few times with brief backoff to absorb transient locks held by
+AV / file indexers.
 """
 
 from __future__ import annotations
 
 import hashlib
-import time
 from pathlib import Path
 from typing import Any
 
 from work_buddy.logging_config import get_logger
 from work_buddy.paths import resolve
+from work_buddy.utils.npz_io import atomic_save_npz
 
 logger = get_logger(__name__)
 
@@ -59,26 +60,6 @@ CACHE_VERSION = 1
 # 16 hex chars = 8 bytes of SHA-256 prefix. Plenty of collision margin for a
 # corpus of a few hundred units.
 _HASH_LEN = 16
-
-# Brief retry schedule for tmp.replace(path). Windows occasionally refuses
-# the rename when AV / Defender / a file indexer momentarily holds the
-# destination open; backing off a few hundred ms is enough.
-_REPLACE_RETRY_DELAYS_S = (0.05, 0.1, 0.2)
-
-
-def _atomic_replace(tmp: Path, path: Path) -> None:
-    """Rename ``tmp`` over ``path``, retrying briefly on transient locks."""
-    last_err: Exception | None = None
-    for delay in (0.0, *_REPLACE_RETRY_DELAYS_S):
-        if delay:
-            time.sleep(delay)
-        try:
-            tmp.replace(path)
-            return
-        except PermissionError as e:  # WinError 5 surfaces as PermissionError
-            last_err = e
-    assert last_err is not None
-    raise last_err
 
 
 def _content_cache_path() -> Path:
@@ -169,20 +150,18 @@ def save_content_cache(
         # Empty 0-row array, but shape out the dim so load doesn't barf
         vectors_arr = np.zeros((0, 1), dtype=np.float16)
 
-    # savez_compressed auto-appends '.npz' when the path doesn't already
-    # end with it. Giving it a tmp name that ends in '.npz' (e.g.
-    # 'content.tmp.npz') keeps the on-disk name predictable so the rename
-    # targets the right file.
-    tmp = path.with_suffix(".tmp.npz")
-    np.savez_compressed(
-        tmp,
+    # Fixed temp name (single-process cache builder; this cache dir isn't swept,
+    # so no PID-namespacing is needed). atomic_save_npz writes via an open file
+    # object, so the '.tmp.npz' name is kept verbatim with no '.npz' re-append.
+    atomic_save_npz(
+        path,
+        tmp_path=path.with_suffix(".tmp.npz"),
         paths=paths_arr,
         hashes=hashes_arr,
         vectors=vectors_arr,
         model_key=np.array(model_key),
         version=np.array(CACHE_VERSION),
     )
-    _atomic_replace(tmp, path)
     logger.debug(
         "Saved knowledge content cache: %d units, %.2f MB",
         len(cache), path.stat().st_size / 1024 / 1024,
@@ -257,20 +236,18 @@ def save_alias_cache(
     else:
         vectors_arr = np.zeros((0, 1), dtype=np.float16)
 
-    # savez_compressed auto-appends '.npz' when the path doesn't already
-    # end with it. Giving it a tmp name that ends in '.npz' (e.g.
-    # 'content.tmp.npz') keeps the on-disk name predictable so the rename
-    # targets the right file.
-    tmp = path.with_suffix(".tmp.npz")
-    np.savez_compressed(
-        tmp,
+    # Fixed temp name (single-process cache builder; this cache dir isn't swept,
+    # so no PID-namespacing is needed). atomic_save_npz writes via an open file
+    # object, so the '.tmp.npz' name is kept verbatim with no '.npz' re-append.
+    atomic_save_npz(
+        path,
+        tmp_path=path.with_suffix(".tmp.npz"),
         paths=paths_arr,
         alias_texts=texts_arr,
         vectors=vectors_arr,
         model_key=np.array(model_key),
         version=np.array(CACHE_VERSION),
     )
-    _atomic_replace(tmp, path)
     logger.debug(
         "Saved knowledge alias cache: %d aliases, %.2f MB",
         len(cache), path.stat().st_size / 1024 / 1024,

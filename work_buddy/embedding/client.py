@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import time
 from typing import Any
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from pathlib import Path
@@ -39,8 +39,28 @@ def _base_url() -> str:
     return f"http://127.0.0.1:{port}"
 
 
-def _request(method: str, path: str, data: dict | None = None, timeout: int = 30) -> dict | None:
-    """Make a request to the embedding service."""
+def _request(
+    method: str,
+    path: str,
+    data: dict | None = None,
+    timeout: int = 30,
+    *,
+    return_http_error: bool = False,
+) -> dict | None:
+    """Make a request to the embedding service.
+
+    Returns the parsed JSON response on success. On failure:
+
+    - A genuine connection failure (service down / refused / timeout) returns
+      ``None`` — the universal "service unavailable" signal every caller already
+      degrades on.
+    - An HTTP error status (the service was reached but the endpoint failed,
+      e.g. ``/ir/index`` 500) is always logged with its body. By default it also
+      returns ``None`` (preserving the historical contract for all callers);
+      when ``return_http_error=True`` it instead returns
+      ``{"error": <message>, "status": <code>}`` so the caller can surface the
+      real error instead of masking it as "service unavailable".
+    """
     url = f"{_base_url()}{path}"
     body = json.dumps(data).encode("utf-8") if data else None
     req = Request(url, data=body, method=method)
@@ -49,6 +69,28 @@ def _request(method: str, path: str, data: dict | None = None, timeout: int = 30
     try:
         with urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode("utf-8"))
+    except HTTPError as exc:
+        # HTTPError subclasses URLError, so it MUST be caught first — otherwise a
+        # 500's body (carrying the real error) is swallowed as a generic
+        # connection failure.
+        try:
+            raw = exc.read().decode("utf-8", errors="replace")
+        except Exception:
+            raw = ""
+        logger.warning(
+            "Embedding %s %s -> HTTP %s: %s", method, path, exc.code, raw[:500]
+        )
+        if not return_http_error:
+            return None
+        message = raw or f"HTTP {exc.code}"
+        if raw:
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, dict) and parsed.get("error"):
+                    message = parsed["error"]
+            except ValueError:
+                pass
+        return {"error": message, "status": exc.code}
     except (URLError, TimeoutError) as exc:
         logger.debug("Embedding service request failed: %s", exc)
         return None
@@ -205,7 +247,12 @@ def ir_index(
 ) -> dict | None:
     """Build or check the IR index via the embedding service.
 
-    Returns stats/status dict, or None if service unavailable.
+    Returns:
+        - the stats/status dict on success;
+        - ``{"error": <message>, "status": <code>}`` if the service was reachable
+          but the request failed (e.g. ``/ir/index`` returned 500 because a
+          vector file was corrupt) — so the caller surfaces the real error;
+        - ``None`` if the service is unreachable (connection refused / timeout).
     """
     payload: dict[str, Any] = {
         "action": action,
@@ -215,10 +262,14 @@ def ir_index(
     }
     # Index building can be slow (bulk encoding)
     timeout = 30 if action == "status" else 300
-    result = _request("POST", "/ir/index", payload, timeout=timeout)
+    result = _request(
+        "POST", "/ir/index", payload, timeout=timeout, return_http_error=True
+    )
     if result is None:
         return None
-    return result.get("result")
+    if "result" in result:
+        return result["result"]
+    return result  # HTTP-error envelope: {"error": ..., "status": ...}
 
 
 def similarity_search(
