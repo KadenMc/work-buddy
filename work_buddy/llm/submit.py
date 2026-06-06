@@ -41,6 +41,7 @@ def llm_submit(
     max_tokens: int = 1024,
     temperature: float = 0.0,
     cache_ttl_minutes: int | None = None,
+    priority: str | None = None,
 ) -> dict[str, Any]:
     """Queue an ``llm_call`` for async background execution.
 
@@ -54,6 +55,12 @@ def llm_submit(
         max_tokens: Max response tokens.
         temperature: Sampling temperature.
         cache_ttl_minutes: Cache TTL override.
+        priority: Local-inference admission priority for the broker —
+            ``"interactive"``, ``"workflow"`` (default), or
+            ``"background"``. Background submits should pass
+            ``"background"`` so they yield to interactive work on the
+            same LM Studio profile. Validated here so a bad value fails
+            fast at submit time rather than silently at replay time.
 
     Returns:
         ``{operation_id, status: "queued", profile, queue_reason,
@@ -70,6 +77,15 @@ def llm_submit(
                 "Cloud tier calls are already fast — use llm_call instead."
             ),
         }
+
+    # Validate the priority now so a typo fails fast at submit time
+    # rather than silently at replay time inside the sidecar.
+    from work_buddy.inference import parse_priority
+
+    try:
+        parsed_priority = parse_priority(priority)
+    except ValueError as exc:
+        return {"error": str(exc)}
 
     now = datetime.now(timezone.utc)
     op_id = f"op_{uuid.uuid4().hex[:8]}"
@@ -98,6 +114,10 @@ def llm_submit(
         replay_params["output_schema"] = output_schema
     if cache_ttl_minutes is not None:
         replay_params["cache_ttl_minutes"] = cache_ttl_minutes
+    # Carry the canonical name string across the JSON queue boundary;
+    # the replayed llm_call maps it back onto the broker enum.
+    if parsed_priority is not None:
+        replay_params["priority"] = parsed_priority.name.lower()
 
     record: dict[str, Any] = {
         "operation_id": op_id,
@@ -136,6 +156,7 @@ def llm_submit(
         "operation_id": op_id,
         "status": "queued",
         "profile": profile,
+        "priority": parsed_priority.name.lower() if parsed_priority else None,
         "queue_reason": "deferred_submit",
         "queued_at": now.isoformat(),
         "estimated_start_within_seconds": 10,

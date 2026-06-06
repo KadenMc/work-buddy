@@ -85,6 +85,7 @@ def llm_call(
     max_tokens: int = 1024,
     temperature: float = 0.0,
     cache_ttl_minutes: int | None = None,
+    priority: str | None = None,
 ) -> dict[str, Any]:
     """Make a single LLM API call with optional structured output.
 
@@ -107,11 +108,16 @@ def llm_call(
         max_tokens: Max response tokens.
         temperature: Sampling temperature.
         cache_ttl_minutes: Cache TTL. ``None`` = config default, ``0`` = skip.
+        priority: Local-inference admission priority for the broker —
+            ``"interactive"``, ``"workflow"`` (default), or
+            ``"background"``. Only meaningful on the local ``profile``
+            path; ignored for cloud ``tier`` (Anthropic isn't brokered).
 
     Returns:
         Dict with ``content`` (raw text), ``parsed`` (dict if schema used),
         ``model``, ``input_tokens``, ``output_tokens``, ``cached``, ``error``.
     """
+    from work_buddy.inference import parse_priority
     from work_buddy.llm.runner import ModelTier, run_task
 
     if tier is not None and profile is not None:
@@ -123,6 +129,20 @@ def llm_call(
             "output_tokens": 0,
             "cached": False,
             "error": "'tier' and 'profile' are mutually exclusive",
+        }
+
+    # Map the JSON-boundary priority string onto the broker enum.
+    try:
+        broker_priority = parse_priority(priority)
+    except ValueError as exc:
+        return {
+            "content": "",
+            "parsed": None,
+            "model": "",
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cached": False,
+            "error": str(exc),
         }
 
     # Resolve schema
@@ -158,6 +178,7 @@ def llm_call(
             max_tokens=max_tokens,
             temperature=temperature,
             cache_ttl_minutes=cache_ttl_minutes,
+            priority=broker_priority,
         )
     else:
         result = run_task(
@@ -169,6 +190,7 @@ def llm_call(
             max_tokens=max_tokens,
             temperature=temperature,
             cache_ttl_minutes=cache_ttl_minutes,
+            priority=broker_priority,
         )
 
     return {

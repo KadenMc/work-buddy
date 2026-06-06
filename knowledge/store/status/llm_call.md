@@ -39,6 +39,10 @@ parameters:
     type: int
     description: Cache TTL in minutes. None=config default, 0=no cache.
     required: false
+  priority:
+    type: str
+    description: "Local-inference admission priority for the broker: 'interactive', 'workflow' (default), or 'background'. Only applies to the local 'profile' path; ignored for cloud 'tier' (Anthropic isn't brokered). Lets background work yield to interactive work on the same LM Studio profile."
+    required: false
 tags:
 - llm
 - call

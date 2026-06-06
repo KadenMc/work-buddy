@@ -53,6 +53,8 @@ with broker.slot(
 
 On ``__exit__``, the ticket releases the slot and the call's metrics land in the ring buffer. Metrics are readable via ``broker.snapshot_metrics()``; current per-profile occupancy via ``broker.profile_status()``.
 
+``work_buddy.inference.parse_priority(value)`` maps a case-insensitive name string (``"interactive"`` / ``"workflow"`` / ``"background"``) — or a ``Priority`` / ``None`` passthrough — onto the enum. It exists for the MCP boundary, where capability params (``llm_call`` / ``llm_submit``) arrive as JSON strings and must map onto the enum before reaching the broker.
+
 ## Priority classes
 
 Three classes, fixed-priority admission across + FIFO within:
