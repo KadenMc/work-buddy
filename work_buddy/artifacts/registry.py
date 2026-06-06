@@ -44,6 +44,7 @@ _CONSUMER_MODULES: tuple[str, ...] = (
     "work_buddy.llm.queue",
     "work_buddy.conversation_observability",
     "work_buddy.summarization",
+    "work_buddy.inference.metrics_store",
 )
 
 _consumers_loaded = False

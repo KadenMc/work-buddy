@@ -143,6 +143,7 @@ The dashboard updates in real time from server-pushed events delivered over Serv
 | ``llm.call_logged`` | ``{model, task_id, input_tokens, output_tokens, estimated_cost_usd, execution_mode, cached}`` | ``llm.cost.log_call`` |
 | ``cron.hot_reload`` | ``{old_count, new_count}`` | ``Scheduler._hot_reload`` (when fingerprints change) |
 | ``user_job.created`` | ``{name, file_path}`` | ``api_user_job_create`` (after successful write) |
+| ``broker.state`` | ``{available, in_flight_total, n_recent}`` (thin ping) | dashboard ``start_broker_state_poller`` (subscriber-gated, ~2 s) — Settings › Inference refetches the cached ``/api/broker`` |
 
 ## Replay semantics
 

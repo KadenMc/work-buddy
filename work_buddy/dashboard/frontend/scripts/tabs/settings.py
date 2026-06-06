@@ -39,7 +39,7 @@ let WB_MATCHED_SET = null;
 let WB_SETTINGS_SUBTAB = 'status';
 
 function switchSettingsSubtab(st) {
-    if (st !== 'status' && st !== 'activity' && st !== 'embeddings') st = 'status';
+    if (st !== 'status' && st !== 'activity' && st !== 'embeddings' && st !== 'inference') st = 'status';
     WB_SETTINGS_SUBTAB = st;
     document.querySelectorAll('.settings-subtab-btn').forEach(b =>
         b.classList.toggle('active', b.dataset.st === st));
@@ -54,6 +54,9 @@ function switchSettingsSubtab(st) {
     }
     if (st === 'embeddings' && typeof loadEmbeddings === 'function') {
         loadEmbeddings();  // cheap (cached, pre-warmed) — refresh on each open
+    }
+    if (st === 'inference' && typeof loadInference === 'function') {
+        loadInference();  // cheap (cached) — refresh on open; broker.state SSE keeps it live
     }
 }
 
