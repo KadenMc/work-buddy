@@ -110,7 +110,7 @@ The lifecycle is itself composed of three orthogonal pieces — separating them 
 
 `SessionTagged` extracts the creating session id from a record. Accepts either a single field name (filesystem `session_id`, agent-sessions) or an ordered list of candidate columns (messaging `sender_session` / `recipient_session`, first non-null wins). Justifies the `list_by_session(sid)` operation on the Artifact composer.
 
-## Fifteen registered artifacts
+## Sixteen registered artifacts
 
 Each consumer registers one `Artifact` from its own module at import time (or in `work_buddy.artifacts.default_registrations` for the four backends without a natural consumer module: filesystem, logs-global, service-logs, agents-logs). `sweep_all` and `artifact_registry_dump` lazily import all consumer modules so the registry is fully populated by the first cleanup tick.
 
@@ -127,6 +127,7 @@ Each consumer registers one `Artifact` from its own module at import time (or in
 | `logs-global` | DirectoryTreeStorage(LOG_FILES) | MtimeWindow(_mtime, 7d) + Delete | — | Default registration. `.data/logs/`. |
 | `notifications` | DirectoryTreeStorage(JSON_FILES) | PerRecordTtl(expires_at) + Delete + retention(keep PENDING/DELIVERED) | — | NEW: previously had no scheduled pruner; ~370 expired records were piling up. |
 | `llm-queue` | SqliteRowsStorage | PerRecordTtl(completed_at, 30d) + Delete + retention(keep pending/in_flight) | — | NEW: previously had no DELETE path at all; rows accumulated indefinitely. |
+| `broker-metrics` | SqliteRowsStorage | PerRecordTtl(completed_at, 7d) + Delete | — | Persisted ``LocalInferenceBroker`` call metrics; flushed out-of-band by an embedding-service daemon so the dashboard Inference panel keeps history across restarts. |
 | `conversation-observability` | SqliteRowsStorage | NeverExpires + Delete | — | Durable session-derived activity (commits / writes / summaries); retained indefinitely, manual delete only. |
 | `summarization` | SqliteRowsStorage | NeverExpires + Delete | — | Content-summary store; retained indefinitely, manual delete only. |
 | `service-logs` | DirectoryTreeStorage(LOG_FILES) | MtimeWindow(_mtime, 7d) + Delete + retention(pin live `<name>.log`) | — | Default registration. `.data/runtime/service_logs/` (sidecar child stdout/stderr). The daemon rolls an oversized *live* log aside at startup (`_roll_oversize_log`, dateext naming); this artifact reaps the rolled backups by age while pinning the live log. |
@@ -138,7 +139,7 @@ Each consumer registers one `Artifact` from its own module at import time (or in
 
 One tick now does everything in a single uniform pass:
 * per-type TTL on filesystem blobs (via the registered `filesystem` Artifact)
-* per-record TTL on SQLite tables (messaging, llm-queue) and JSON caches
+* per-record TTL on SQLite tables (messaging, llm-queue, broker-metrics) and JSON caches
 * time-window cutoffs on the chrome ledger and escalations log
 * mtime+activity checks on session dirs and global logs; mtime reaping of rolled service-log and agents-log backups (live logs pinned)
 * rollup-then-delete on the claude-code-usage DB
@@ -160,7 +161,7 @@ Metadata captures: creating session id, tags, description, expiry, original arti
 * `artifact_list(type?, since?, tags?, session?, include_expired?, limit?)` — filesystem-typed list with filters.
 * `artifact_get(id)` — filesystem-typed read; metadata + inline content for files <50 KB.
 * `artifact_delete(id)` — filesystem-typed delete.
-* `artifact_cleanup(dry_run?, name?)` — sweep registered artifacts. With no `name`, sweeps all 15. With `name="llm-cache"` etc., scopes to a single artifact. Note: `name` is deliberately distinct from `artifact_save`'s `type` field (which means filesystem subtype).
+* `artifact_cleanup(dry_run?, name?)` — sweep registered artifacts. With no `name`, sweeps all 16. With `name="llm-cache"` etc., scopes to a single artifact. Note: `name` is deliberately distinct from `artifact_save`'s `type` field (which means filesystem subtype).
 * `artifact_registry()` — returns the cross-backend introspection map: every artifact's name, storage_kind, lifecycle_kind, provenance_kind, capabilities (i.e. its declared `StorageTrait` set), exposed_operations. Replaces grep'ing paths.py for resource definitions.
 * `commit_record(...)` — record commit metadata as a filesystem artifact (specialised convenience).
 
@@ -212,6 +213,7 @@ Consumer modules where Artifacts are registered at import time:
 * `work_buddy/messaging/models.py` (messages)
 * `work_buddy/notifications/store.py` (notifications)
 * `work_buddy/llm/queue.py` (llm-queue)
+* `work_buddy/inference/metrics_store.py` (broker-metrics)
 
 Other entry points:
 * `work_buddy/paths.py` — `RESOURCES` (path registry) + `PRUNERS` (now empty, deprecated)

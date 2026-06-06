@@ -49,6 +49,7 @@ from .tabs import (
     conversations,
     costs,
     embeddings,
+    inference,
     jobs,
     memory,
     projects,
@@ -124,12 +125,14 @@ SCRIPTS = [
     palette.script,
     costs.script,
     embeddings.script,
+    inference.script,
     # page LAST — see ordering note above.
     page.script,
 ]
 
 STYLES = [
     embeddings.styles,
+    inference.styles,
     resolution.styles,
     threads.styles,
     threads_card.styles,

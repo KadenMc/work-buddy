@@ -255,6 +255,11 @@ def script() -> str:
 
     window.eventBus.on('llm.call_logged', () => _refreshSoon('costsSurface'));
 
+    // Inference sub-view: the broker-state poller pings this on a cadence; the
+    // surface refetches the cached /api/broker and morphs in the change. The
+    // ping is thin — the snapshot rides the HTTP read, not the SSE frame.
+    window.eventBus.on('broker.state', () => _refreshSoon('inferenceSurface'));
+
     // Jobs tab: refresh on dashboard-side create (immediate, repaints the
     // pending banner) and on sidecar hot-reload (jobs appear in /api/state
     // for the first time, banner auto-clears).
@@ -285,6 +290,7 @@ def script() -> str:
         'component.health_changed':        'settingsSurface.refresh (morphdom)',
         'component.preference_changed':    'settingsSurface.refresh (morphdom)',
         'llm.call_logged':                 'costsSurface.refresh (morphdom)',
+        'broker.state':                    'inferenceSurface.refresh (morphdom)',
         'user_job.created':                'jobsSurface.refresh (morphdom)',
         'user_job.deleted':                'jobsSurface.refresh (morphdom)',
         'cron.hot_reload':                  'jobsSurface.refresh (morphdom)',

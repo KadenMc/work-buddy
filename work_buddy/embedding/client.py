@@ -105,6 +105,17 @@ def is_available() -> bool:
     return available
 
 
+def broker_state() -> dict | None:
+    """Fetch the embedding service's ``LocalInferenceBroker`` snapshot.
+
+    Returns the ``/broker/state`` payload (``profiles`` / ``recent`` /
+    ``latency`` / ``now_monotonic``), or ``None`` when the service is
+    unreachable — the universal "service unavailable" signal callers already
+    degrade on. Used by the dashboard's Inference panel (read-only).
+    """
+    return _request("GET", "/broker/state", timeout=5)
+
+
 def wait_until_available(
     timeout_s: float = 30.0,
     interval_s: float = 0.5,

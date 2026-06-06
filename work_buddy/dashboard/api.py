@@ -1421,6 +1421,94 @@ def get_embeddings_summary() -> dict[str, Any]:
         return _embeddings_cache
 
 
+# Broker (Inference sub-view) snapshot cache. Unlike the embeddings snapshot
+# (local store reads), building this does a cross-process HTTP call to the
+# embedding service's ``/broker/state`` — so a slow/down service must NOT block
+# the request. Broker state is live, so the TTL is short; the dashboard poller
+# refreshes it on a cadence and a panel open serves whatever is cached.
+_BROKER_CACHE_TTL = 2.5
+_broker_cache: dict[str, Any] | None = None
+_broker_cache_ts: float = 0.0
+_broker_cache_lock = threading.Lock()
+_broker_refreshing = False
+
+
+def _build_broker_summary() -> dict[str, Any]:
+    """Compose the Inference sub-view snapshot from the embedding-service broker.
+
+    Wraps the cross-process read in an availability envelope: the service being
+    unreachable is the normal "no data yet" state, not an error. The panel
+    renders a graceful empty state on ``available: False``.
+    """
+    from work_buddy.embedding.client import broker_state
+
+    state = broker_state()
+    if state is None:
+        return {"available": False}
+    return {"available": True, **state}
+
+
+def _kick_broker_refresh() -> None:
+    """Rebuild the broker snapshot on a background thread (single-flight).
+
+    Also the page-load pre-warm + poller hook.
+    """
+    global _broker_refreshing
+    with _broker_cache_lock:
+        if _broker_refreshing:
+            return
+        _broker_refreshing = True
+
+    def _refresh() -> None:
+        global _broker_cache, _broker_cache_ts, _broker_refreshing
+        try:
+            fresh = _build_broker_summary()
+            _broker_cache = fresh
+            _broker_cache_ts = time.time()
+        except Exception as exc:
+            logger.warning("Background broker refresh failed: %s", exc)
+        finally:
+            _broker_refreshing = False
+
+    threading.Thread(
+        target=_refresh, name="broker-refresh", daemon=True,
+    ).start()
+
+
+def get_broker_summary() -> dict[str, Any]:
+    """Inference sub-view snapshot, served from a short-TTL background-refreshed cache.
+
+    Cold start does NOT build synchronously: the build does a cross-process HTTP
+    call, and a slow/down embedding service would otherwise block the first
+    ``/api/broker`` request for the full client timeout. Instead it kicks a
+    background refresh and returns an immediate ``{available: False}``; the next
+    read (or the poller's refresh) serves real data.
+    """
+    cache = _broker_cache
+    if cache is not None:
+        if time.time() - _broker_cache_ts >= _BROKER_CACHE_TTL:
+            _kick_broker_refresh()  # stale — refresh for next read
+        return cache
+    # Cold start: kick a background build, return a fast "no data yet" envelope
+    # rather than blocking on the network round-trip.
+    _kick_broker_refresh()
+    return {"available": False}
+
+
+def refresh_broker_cache() -> dict[str, Any]:
+    """Synchronously rebuild the broker snapshot and update the cache; return it.
+
+    Called by the dashboard's broker-state poller, which is already a background
+    daemon, so a blocking cross-process read here is fine — and it keeps the
+    cache that ``/api/broker`` serves current with what the poller just pushed.
+    """
+    global _broker_cache, _broker_cache_ts
+    fresh = _build_broker_summary()
+    _broker_cache = fresh
+    _broker_cache_ts = time.time()
+    return fresh
+
+
 # ---------------------------------------------------------------------------
 # Command palette
 # ---------------------------------------------------------------------------

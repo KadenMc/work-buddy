@@ -24,6 +24,7 @@ from flask import Flask, Response, jsonify, request, send_file
 
 from work_buddy.config import load_config
 from work_buddy.dashboard.api import (
+    get_broker_summary,
     get_chats_summary,
     get_contracts_summary,
     get_embeddings_summary,
@@ -1463,6 +1464,12 @@ def api_contracts():
 def api_embeddings():
     """System (IR/knowledge) + User (vaults) status for Settings › Embeddings."""
     return jsonify(get_embeddings_summary())
+
+
+@app.get("/api/broker")
+def api_broker():
+    """LocalInferenceBroker snapshot for Settings › Inference (read-only, cached)."""
+    return jsonify(get_broker_summary())
 
 
 @app.post("/api/embeddings/vault")
@@ -4661,6 +4668,50 @@ def _prewarm_costs() -> None:
     get_claude_code_usage_summary()
 
 
+def start_broker_state_poller(interval: float = 2.0) -> threading.Event:
+    """Poll the embedding-service broker and push a thin ``broker.state`` ping.
+
+    The broker's per-call metrics live in the embedding-service process; the SSE
+    event bus lives here in the dashboard process. This daemon (mirroring
+    ``events.start_heartbeat``) refreshes the dashboard's broker cache and
+    publishes a lightweight ``broker.state`` event so the Settings › Inference
+    sub-view refetches the (cached) ``/api/broker`` and morphs the change in —
+    the actual snapshot rides the cached HTTP read, not the SSE frame.
+
+    Gated on having at least one SSE subscriber, so an idle or closed dashboard
+    does zero cross-process work. Returns a ``threading.Event``; ``set()`` stops
+    the loop within ``interval`` seconds.
+    """
+    from work_buddy.dashboard.api import refresh_broker_cache
+    from work_buddy.dashboard.events import get_bus, publish
+
+    stop = threading.Event()
+
+    def _loop() -> None:
+        while not stop.is_set():
+            try:
+                if get_bus().subscriber_count() > 0:
+                    summary = refresh_broker_cache()
+                    profiles = summary.get("profiles") or {}
+                    in_flight = sum(
+                        p.get("in_flight", 0) for p in profiles.values()
+                    )
+                    publish("broker.state", {
+                        "available": bool(summary.get("available")),
+                        "in_flight_total": in_flight,
+                        "n_recent": len(summary.get("recent") or []),
+                    })
+            except Exception as exc:  # pragma: no cover - best-effort daemon
+                logger.debug("broker-state poller tick failed: %s", exc)
+            stop.wait(interval)
+
+    threading.Thread(
+        target=_loop, name="broker-state-poller", daemon=True,
+    ).start()
+    logger.info("Broker-state poller started (interval=%.1fs)", interval)
+    return stop
+
+
 def main():
     import sys
 
@@ -4704,6 +4755,10 @@ def main():
     # service-health monitor) reach the dashboard via this bridge.
     from work_buddy.dashboard.messaging_bridge import start_messaging_bridge
     start_messaging_bridge()
+
+    # Push live broker (LocalInferenceBroker) state to the Settings › Inference
+    # sub-view. Subscriber-gated, so it idles when no dashboard is connected.
+    start_broker_state_poller(interval=2.0)
 
     from work_buddy.web.access_log_filter import install_probe_log_filter
     install_probe_log_filter(["/health"])
