@@ -35,6 +35,10 @@ parameters:
     type: int
     description: Cache TTL in minutes. None=config default, 0=no cache.
     required: false
+  priority:
+    type: str
+    description: "Local-inference admission priority for the broker: 'interactive', 'workflow' (default), or 'background'. Background submits should pass 'background' so they yield to interactive work on the same LM Studio profile."
+    required: false
 auto_retry: false
 tags:
 - llm

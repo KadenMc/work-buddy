@@ -28,7 +28,7 @@ Scope / limitations for phase 1:
 from __future__ import annotations
 
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from work_buddy.llm.response import (
     ErrorKind,
@@ -38,6 +38,9 @@ from work_buddy.llm.response import (
 )
 from work_buddy.llm.tiers import ModelTier, TierBinding, resolve_tier, legacy_tier_for
 from work_buddy.logging_config import get_logger
+
+if TYPE_CHECKING:
+    from work_buddy.inference import Priority
 
 logger = get_logger(__name__)
 
@@ -198,6 +201,7 @@ class LLMRunner:
         escalate_to: list[ModelTier] | None = None,
         max_tokens: int | None = None,
         temperature: float | None = None,
+        priority: Priority | None = None,
         cache_ttl_minutes: int | None = None,
         trace_id: str | None = None,
     ) -> LLMResponse:
@@ -215,6 +219,12 @@ class LLMRunner:
             escalate_to: Ordered list of fallback tiers, tried in order
                 when escalation fires. Empty/None = no escalation.
             max_tokens, temperature: Override the tier defaults.
+            priority: Local-inference admission priority
+                (:class:`work_buddy.inference.Priority`). Threaded down to
+                the local backend's ``broker.slot(...)`` so background work
+                yields to interactive work on the same LM Studio profile.
+                ``None`` lets the backend apply its default (``WORKFLOW``).
+                Ignored for the Anthropic backend, which is not brokered.
             cache_ttl_minutes: Passed through to :func:`run_task`.
             trace_id: Passed through for debug correlation.
 
@@ -243,6 +253,7 @@ class LLMRunner:
                 output_schema=output_schema,
                 max_tokens=max_tokens if max_tokens is not None else binding.max_tokens,
                 temperature=temperature if temperature is not None else binding.temperature,
+                priority=priority,
                 cache_ttl_minutes=cache_ttl_minutes,
                 trace_id=trace_id,
             )
@@ -368,6 +379,7 @@ class LLMRunner:
         temperature: float,
         cache_ttl_minutes: int | None,
         trace_id: str | None,
+        priority: Priority | None = None,
     ) -> LLMResponse:
         """Dispatch one attempt to the right backend adapter.
 
@@ -375,6 +387,10 @@ class LLMRunner:
         :func:`run_task`. Local tiers use the profile path; frontier
         tiers translate through :func:`legacy_tier_for` to the legacy
         :class:`work_buddy.llm.runner.ModelTier`.
+
+        ``priority`` threads to the local backend's broker slot; it is
+        only meaningful on the local profile path (the Anthropic backend
+        is not brokered), so it is attached to the profile kwargs only.
         """
         from work_buddy.llm.runner import ModelTier as LegacyTier
         from work_buddy.llm.runner import run_task
@@ -432,6 +448,7 @@ class LLMRunner:
                 )
             kwargs["profile"] = binding.profile
             kwargs["backend_kind"] = binding.backend
+            kwargs["priority"] = priority
 
         try:
             result = run_task(**kwargs)

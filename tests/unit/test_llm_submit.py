@@ -133,6 +133,55 @@ def test_llm_submit_preserves_output_schema(tmp_ops_dir):
     assert record["params"]["output_schema"] == schema
 
 
+def test_llm_submit_carries_priority_in_replay_params(tmp_ops_dir):
+    """A background submit stores the canonical priority string in the
+    replay params, so the sidecar-replayed llm_call admits at BACKGROUND."""
+    from work_buddy.llm.submit import llm_submit
+
+    response = llm_submit(
+        system="s", user="u", profile="local_general",
+        priority="BACKGROUND",  # case-insensitive
+    )
+    assert response["priority"] == "background"
+
+    record = json.loads(
+        (tmp_ops_dir / f"{response['operation_id']}.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert record["params"]["priority"] == "background"
+
+
+def test_llm_submit_omits_priority_when_absent(tmp_ops_dir):
+    """No priority → none in the response and the replay params don't
+    carry the key (the backend applies its WORKFLOW default)."""
+    from work_buddy.llm.submit import llm_submit
+
+    response = llm_submit(system="s", user="u", profile="local_general")
+    assert response["priority"] is None
+
+    record = json.loads(
+        (tmp_ops_dir / f"{response['operation_id']}.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert "priority" not in record["params"]
+
+
+def test_llm_submit_rejects_invalid_priority(tmp_ops_dir):
+    """An unknown priority fails fast at submit time — no op record is
+    written for the sidecar to replay."""
+    from work_buddy.llm.submit import llm_submit
+
+    response = llm_submit(
+        system="s", user="u", profile="local_general", priority="urgent",
+    )
+    assert "error" in response
+    assert "priority" in response["error"].lower()
+    # Nothing should have been queued.
+    assert not list(tmp_ops_dir.glob("op_*.json"))
+
+
 # ---------------------------------------------------------------------------
 # Gateway _is_queued helper
 # ---------------------------------------------------------------------------

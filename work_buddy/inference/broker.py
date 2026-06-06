@@ -31,12 +31,23 @@ for local inference:
 
 Scope
 -----
-Wired only into ``work_buddy.embedding.providers.lmstudio`` for now —
-that's the call site that caused the recent dashboard-search outages
-(bulk encode holding the embedding service's thread + Python locks
-while an interactive search tried to run). Wiring into
-``work_buddy.llm.backends.{lmstudio_native,openai_compat}`` is a
-follow-on.
+Wired into every local-inference call site:
+
+* ``work_buddy.embedding.providers.lmstudio`` — bulk document encode
+  (profile prefix ``lmstudio:``). This is the call site that originally
+  motivated the broker: a bulk encode holding the embedding service's
+  thread + Python locks while an interactive search tried to run.
+* ``work_buddy.llm.backends.openai_compat`` (profile prefix
+  ``openai_compat:``) and ``work_buddy.llm.backends.lmstudio_native``
+  (profile prefix ``lmstudio_native:``) — every local LLM completion.
+
+The per-call-site profile prefix keeps slot limits independent even
+when all three point at the same LM Studio instance. Each caller
+declares a :class:`Priority` per call: the LLM path threads it from
+``LLMRunner.call(priority=...)`` down through ``run_task`` to the
+backend slot; the embedding path from ``encode(priority=...)``.
+Frontier/Anthropic calls are NOT brokered — Anthropic is a cloud
+service with its own rate limiting.
 
 The broker does NOT enforce ``inference_s`` directly — it passes
 the value along so the caller's ``httpx.Client(timeout=...)`` does
@@ -95,6 +106,30 @@ class Priority(enum.IntEnum):
 
     BACKGROUND = 2
     """Cron jobs, bulk index rebuilds. Yields to everything else."""
+
+
+def parse_priority(value: str | Priority | None) -> Priority | None:
+    """Coerce a string / enum / ``None`` into a :class:`Priority`.
+
+    Accepts a :class:`Priority` (returned as-is), ``None`` (returned as
+    ``None`` so the caller falls through to its own default), or a
+    case-insensitive name string (``"interactive"`` / ``"workflow"`` /
+    ``"background"``). Exists for the MCP boundary, where capability
+    params arrive as JSON strings and must map onto the enum before
+    reaching the broker.
+
+    Raises:
+        ValueError: the string does not name a known priority.
+    """
+    if value is None or isinstance(value, Priority):
+        return value
+    try:
+        return Priority[str(value).strip().upper()]
+    except KeyError:
+        valid = ", ".join(p.name.lower() for p in Priority)
+        raise ValueError(
+            f"Unknown priority {value!r}; expected one of: {valid}."
+        )
 
 
 class BrokerError(Exception):

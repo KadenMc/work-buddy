@@ -20,6 +20,7 @@ from work_buddy.inference.broker import (
     QueueWaitTimeout,
     SlotMetrics,
     get_broker,
+    parse_priority,
 )
 
 __all__ = [
@@ -31,4 +32,5 @@ __all__ = [
     "QueueWaitTimeout",
     "SlotMetrics",
     "get_broker",
+    "parse_priority",
 ]

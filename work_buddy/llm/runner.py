@@ -18,10 +18,13 @@ import os
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from work_buddy.config import load_config
 from work_buddy.logging_config import get_logger
+
+if TYPE_CHECKING:
+    from work_buddy.inference import Priority
 
 
 class ModelTier(str, Enum):
@@ -141,6 +144,7 @@ def run_task(
     allowed_tiers: list[ModelTier] | None = None,
     profile: str | None = None,
     backend_kind: str | None = None,
+    priority: Priority | None = None,
 ) -> TaskResult:
     """Run a single LLM task with optional caching.
 
@@ -173,6 +177,13 @@ def run_task(
             whose server-side JIT auto-load lets a cold request succeed
             without a prior model-load step. Only override when calling
             a profile intended for MCP tool use.
+        priority: Local-inference admission priority
+            (:class:`work_buddy.inference.Priority`), forwarded to the
+            local backend's ``broker.slot(...)`` so a background request
+            yields to interactive work on the same LM Studio profile.
+            Meaningful only on the local-profile path; the Anthropic path
+            is not brokered and ignores it. ``None`` lets the backend
+            apply its default (``WORKFLOW``).
 
     Returns:
         TaskResult with response content, token counts, and cache status.
@@ -296,6 +307,7 @@ def run_task(
             system_preview=system_preview,
             trace_id=trace_id,
             backend_kind=backend_kind,
+            priority=priority,
         )
 
     # Call Anthropic API — check dedicated subagent key first, then general key
@@ -508,6 +520,7 @@ def _run_profile(
     system_preview: str,
     trace_id: str | None,
     backend_kind: str | None = None,
+    priority: Priority | None = None,
 ) -> TaskResult:
     """Dispatch a profile-based request to the requested endpoint kind.
 
@@ -531,6 +544,10 @@ def _run_profile(
     warning when it disagrees with ``backend_kind``; the config value
     is not used for dispatch. Tier binding → dispatch kind is the one
     source of truth, authored at :mod:`work_buddy.llm.tiers`.
+
+    ``priority`` is forwarded to the chosen local backend's
+    ``broker.slot(...)`` admission call. Both local backends accept it
+    and default to ``WORKFLOW`` when it is ``None``.
     """
     provider = backend_kind or "openai_compat"
     config_provider = profile_info.get("provider")
@@ -567,6 +584,7 @@ def _run_profile(
                 max_tokens=max_tokens,
                 temperature=temperature,
                 api_key_env=profile_info["api_key_env"],
+                priority=priority,
             )
             # Normalize to the {content, input_tokens, output_tokens,
             # model} shape the rest of this function expects. The
@@ -593,6 +611,7 @@ def _run_profile(
                 temperature=temperature,
                 output_schema=output_schema,
                 api_key_env=profile_info["api_key_env"],
+                priority=priority,
             )
         else:
             return TaskResult(
