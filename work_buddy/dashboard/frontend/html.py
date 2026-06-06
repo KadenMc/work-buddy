@@ -530,6 +530,8 @@ def _html() -> str:
                 onclick="switchSettingsSubtab('status')">Status</button>
         <button class="settings-subtab-btn" data-st="activity"
                 onclick="switchSettingsSubtab('activity')">Activity</button>
+        <button class="settings-subtab-btn" data-st="embeddings"
+                onclick="switchSettingsSubtab('embeddings')">Embeddings</button>
     </div>
     <!-- Status sub-view: the control graph (component state, preferences,
          requirements). Default sub-tab. The toolbar lives inside this
@@ -552,6 +554,12 @@ def _html() -> str:
          Lazy-loaded on first switch (see switchSettingsSubtab). -->
     <div class="settings-subtab-panel" id="ssp-activity">
         <div id="activity-cards"><div class="loading">Loading activity...</div></div>
+    </div>
+    <!-- Embeddings sub-view: System (IR + knowledge, read-only) + Your vaults
+         (editable roots). Lazy-loaded on first switch (see switchSettingsSubtab).
+         Replaces the former top-level Indexes tab. -->
+    <div class="settings-subtab-panel" id="ssp-embeddings">
+        <div id="embeddings-content"><div class="loading">Loading embeddings...</div></div>
     </div>
 </div>
 

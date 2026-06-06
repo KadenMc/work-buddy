@@ -272,6 +272,64 @@ def ir_index(
     return result  # HTTP-error envelope: {"error": ..., "status": ...}
 
 
+def vault_search(
+    query: str,
+    *,
+    top_k: int = 10,
+    method: str = "hybrid",
+    vault_id: str | None = None,
+    recency: bool = False,
+) -> list[dict] | None:
+    """Hybrid vault search via the embedding service (warm resident matrix).
+
+    Running search in the service process keeps the ~hundreds-of-MB vector matrix
+    resident across queries (``vault_index.dense_cache``) instead of reloading it
+    per calling process. Returns the result-dict list, or ``None`` if the service
+    is unreachable — the caller then degrades to an in-process lexical-only search.
+    """
+    payload: dict[str, Any] = {
+        "query": query,
+        "top_k": top_k,
+        "method": method,
+        "recency": recency,
+    }
+    if vault_id:
+        payload["vault_id"] = vault_id
+    result = _request("POST", "/vault/search", payload, timeout=60)
+    if result is None:
+        return None
+    return result.get("results")
+
+
+def vault_index(
+    action: str = "build",
+    *,
+    force: bool = False,
+) -> dict | None:
+    """Build or check the vault semantic index via the embedding service.
+
+    The build runs in-service (``_IN_SERVICE``) so its encode shares the one
+    ``LocalInferenceBroker`` with interactive searches and truly yields at
+    BACKGROUND priority. Same envelope contract as :func:`ir_index`: the stats/
+    status dict on success, an ``{"error", "status"}`` envelope when the service
+    was reached but the request failed, or ``None`` when it is unreachable.
+
+    The ``build`` timeout covers an *incremental* run (the cron's normal case); a
+    forced full rebuild encodes tens of thousands of chunks and should be driven by
+    the ``python -m work_buddy.vault_index`` CLI instead.
+    """
+    payload: dict[str, Any] = {"action": action, "force": force}
+    timeout = 30 if action == "status" else 600
+    result = _request(
+        "POST", "/vault/index", payload, timeout=timeout, return_http_error=True
+    )
+    if result is None:
+        return None
+    if "result" in result:
+        return result["result"]
+    return result  # HTTP-error envelope: {"error": ..., "status": ...}
+
+
 def similarity_search(
     query: str,
     candidates: list[dict[str, Any]],

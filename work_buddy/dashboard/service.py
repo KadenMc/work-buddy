@@ -26,6 +26,7 @@ from work_buddy.config import load_config
 from work_buddy.dashboard.api import (
     get_chats_summary,
     get_contracts_summary,
+    get_embeddings_summary,
     get_palette_commands,
     get_sessions_summary,
     get_system_state,
@@ -197,6 +198,13 @@ def api_events():
 
 @app.get("/")
 def index():
+    # Pre-warm the embeddings snapshot on a background thread so the first
+    # Settings › Embeddings open serves instantly instead of paying the cold aggregate.
+    try:
+        from work_buddy.dashboard.api import _kick_embeddings_refresh
+        _kick_embeddings_refresh()
+    except Exception:
+        pass
     resp = Response(render_page(), content_type="text/html; charset=utf-8")
     resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     resp.headers["Pragma"] = "no-cache"
@@ -1449,6 +1457,46 @@ def api_chats_commits_prepare():
 def api_contracts():
     """Active contract summaries."""
     return jsonify(get_contracts_summary())
+
+
+@app.get("/api/embeddings")
+def api_embeddings():
+    """System (IR/knowledge) + User (vaults) status for Settings › Embeddings."""
+    return jsonify(get_embeddings_summary())
+
+
+@app.post("/api/embeddings/vault")
+def api_embeddings_vault():
+    """Add/update or remove a vault config (Settings › Embeddings editor).
+
+    Thin wrapper around the ``vault_config`` capability (mirrors ``/api/user_jobs``).
+    The user clicking Save IS the consent; read-only mode blocks the write. On
+    success the embeddings snapshot is busted so the new row shows immediately
+    (counts won't change until the next build).
+    """
+    blocked = _reject_read_only()
+    if blocked is not None:
+        return blocked
+
+    payload = request.get_json(silent=True) or {}
+    from work_buddy.mcp_server.registry import get_registry
+
+    cap = get_registry().get("vault_config")
+    if cap is None:
+        return jsonify({"success": False, "error": "vault_config capability not registered "
+                        "(reload MCP / rebuild the knowledge store)."}), 500
+    try:
+        result = cap.callable(**payload)
+    except TypeError as exc:
+        return jsonify({"success": False, "error": f"Invalid arguments: {exc}"}), 400
+
+    if result.get("success"):
+        from work_buddy.dashboard.api import bust_embeddings_cache
+        bust_embeddings_cache()
+        from work_buddy.dashboard.events import publish_auto
+        publish_auto("embeddings.vault_changed",
+                     {"id": result.get("id"), "action": result.get("action")})
+    return jsonify(result), (200 if result.get("success") else 400)
 
 
 # ---------------------------------------------------------------------------

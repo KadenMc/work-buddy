@@ -48,6 +48,7 @@ from .tabs import (
     contracts,
     conversations,
     costs,
+    embeddings,
     jobs,
     memory,
     projects,
@@ -122,11 +123,13 @@ SCRIPTS = [
     threads_group.script,
     palette.script,
     costs.script,
+    embeddings.script,
     # page LAST — see ordering note above.
     page.script,
 ]
 
 STYLES = [
+    embeddings.styles,
     resolution.styles,
     threads.styles,
     threads_card.styles,

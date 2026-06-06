@@ -793,6 +793,79 @@ def ir_index_endpoint():
         return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500
 
 
+@app.route("/vault/search", methods=["POST"])
+def vault_search_endpoint():
+    """Hybrid search over the vault semantic index, in-process.
+
+    Running here (not in the caller's process) keeps the dense vector matrix
+    resident across queries via ``vault_index.dense_cache`` — the query encoder is
+    ``_IN_SERVICE``-aware, so no HTTP self-call.
+
+    Request body: {"query", "top_k"?, "method"?, "vault_id"?, "recency"?}
+    Response: {"results": [...]}
+    """
+    data = request.get_json(silent=True) or {}
+    try:
+        from work_buddy.vault_index.search import search as vault_search
+
+        results = vault_search(
+            data.get("query", ""),
+            top_k=data.get("top_k", 10),
+            method=data.get("method", "hybrid"),
+            vault_id=data.get("vault_id"),
+            recency=data.get("recency", False),
+        )
+        return jsonify({"results": results})
+    except Exception as exc:
+        return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500
+
+
+@app.route("/vault/index", methods=["POST"])
+def vault_index_endpoint():
+    """Build or check the vault semantic index.
+
+    ``build`` runs ``build_all`` in-process with ``_IN_SERVICE=True``, so the encode
+    uses the in-service model and the **one** ``LocalInferenceBroker`` — yielding to
+    interactive searches at BACKGROUND priority (a standalone CLI build has its own
+    broker, so cross-process priority would only be LM Studio's FIFO).
+
+    Request body: {"action": "build"|"status", "force"?}
+    Response: {"result": {...}}
+    """
+    data = request.get_json(silent=True) or {}
+    action = data.get("action", "build")
+    try:
+        if action == "status":
+            from work_buddy.vault_index.status import index_status
+
+            result = index_status()
+        else:
+            from work_buddy.vault_index.indexer import build_all
+
+            result = build_all(force=data.get("force", False), encode=True)
+        return jsonify({"result": result})
+    except Exception as exc:
+        return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500
+
+
+def _vault_matrix_evictor_loop() -> None:
+    """Background thread: release the resident vault search matrix after an idle TTL.
+
+    The matrix (~hundreds of MB at vault scale) is lazy-loaded on the first search
+    and would otherwise stay pinned in this long-lived process. Mirrors
+    ``_idle_evictor_loop`` (which evicts idle models).
+    """
+    from work_buddy.vault_index import dense_cache
+
+    while True:
+        try:
+            time.sleep(60)
+            if dense_cache.release_if_idle(ttl_s=600):
+                print("Released idle vault search matrix", file=sys.stderr)
+        except Exception as exc:
+            print(f"vault matrix evictor error (non-fatal): {exc}", file=sys.stderr)
+
+
 def main():
     """Entry point — init registry, start serving, load models in background.
 
@@ -869,6 +942,13 @@ def main():
     threading.Thread(
         target=_idle_evictor_loop,
         name="embedding-idle-evictor",
+        daemon=True,
+    ).start()
+    # Release the resident vault search matrix when search goes idle, so an
+    # occasional vault query doesn't pin hundreds of MB in this long-lived process.
+    threading.Thread(
+        target=_vault_matrix_evictor_loop,
+        name="vault-matrix-evictor",
         daemon=True,
     ).start()
 

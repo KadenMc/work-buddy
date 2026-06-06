@@ -45,6 +45,7 @@ python-telegram-bot = {version = "^22.7", optional = true}
 httpx = "^0.28.1"
 watchdog = "^6.0.0"
 google-auth-oauthlib = "^1.4.0"
+pathspec = "^1.1.1"
 [tool.poetry.extras]
 memory = ["hindsight-api-slim", "hindsight-client"]
 telegram = ["python-telegram-bot"]

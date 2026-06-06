@@ -140,6 +140,9 @@ A long-running sidecar service providing dense vector embeddings for work-buddy'
 - `POST /similarity` — cosine similarity between a query and candidate texts
 - `POST /search` — BM25 + embedding hybrid search over candidates
 - `POST /ir/search`, `POST /ir/index` — indexed IR search over registered sources
+- `POST /vault/search`, `POST /vault/index` — vault semantic index search / build, run
+  in-process so the resident vector matrix stays warm and the bulk encode shares the broker
+  (see `architecture/vault-index`)
 - `GET /health` — liveness probe
 
 ## Client
@@ -152,6 +155,8 @@ A long-running sidecar service providing dense vector embeddings for work-buddy'
 - `hybrid_search(query, candidates)` — BM25 + dense blend
 - `ir_search(query)` — search a pre-built IR index
 - `ir_index(action, source, ...)` — build or check an IR index
+- `vault_search(query, ...)`, `vault_index(action, ...)` — vault semantic index search / build
+  (see `architecture/vault-index`)
 
 ## Graceful degradation
 

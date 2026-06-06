@@ -1300,6 +1300,127 @@ def get_contracts_summary() -> dict[str, Any]:
     return {"contracts": contracts}
 
 
+# Embeddings sub-view snapshot cache. Aggregating status reads several stores (IR
+# .npz counts, the knowledge store, the vault DB), so — like the system-state
+# snapshot above — serve a cached copy and refresh on a background thread. Counts
+# change slowly (the rebuild cron is every 5 min), so a 30s TTL is invisible.
+_EMBEDDINGS_CACHE_TTL = 30.0
+_embeddings_cache: dict[str, Any] | None = None
+_embeddings_cache_ts: float = 0.0
+_embeddings_cache_lock = threading.Lock()
+_embeddings_refreshing = False
+
+
+def _build_embeddings_summary() -> dict[str, Any]:
+    """Compose the Embeddings sub-view: System (IR+knowledge) + User (vaults). Slow path.
+
+    Each section degrades independently — a failure in one never blanks the whole
+    panel. The vault index is the only one holding a real advisory lock today, so
+    ``building`` is surfaced on the vault rows.
+    """
+    result: dict[str, Any] = {"system": [], "vaults": [], "db_size_mb": None}
+
+    # --- System: IR + knowledge partitions, flattened to rows (read-only) ---
+    try:
+        from work_buddy.indexing.status import aggregate_status
+        for ix in aggregate_status():
+            if ix.name not in ("ir", "knowledge"):
+                continue  # vault_index lives in the User table
+            for p in ix.partitions:
+                result["system"].append({
+                    "index": ix.name,
+                    "source": p.key,
+                    "items": p.total_items,
+                    "vectors": p.vector_count,
+                    "pending": p.pending,
+                    # The partition's own vector-file size (IR: per-source .npz).
+                    # No fallback to the index total — that would make every
+                    # size-less row (e.g. unvectorized chrome) show the whole index.
+                    "size_mb": p.size_on_disk_mb,
+                    "health": p.health,
+                    "last_build": p.last_build,
+                    "detail": p.detail,
+                })
+    except Exception as exc:
+        result["system_error"] = str(exc)
+        logger.warning("embeddings: system status failed: %s", exc)
+
+    # --- User: vault rows (effective config + counts) + total DB size ---
+    building_vault = False
+    try:
+        from work_buddy.utils.index_lock import is_locked
+        from work_buddy.vault_index import store
+        building_vault = is_locked(store._db_path())
+    except Exception:
+        pass
+    try:
+        from work_buddy.vault_index.status import effective_vault_configs, index_status
+        vaults = effective_vault_configs()
+        for v in vaults:
+            v["building"] = building_vault
+        result["vaults"] = vaults
+        st = index_status()
+        result["db_size_mb"] = st.get("size_on_disk_mb") if st.get("status") == "ok" else None
+    except Exception as exc:
+        result["vaults_error"] = str(exc)
+        logger.warning("embeddings: vault status failed: %s", exc)
+
+    return result
+
+
+def _kick_embeddings_refresh() -> None:
+    """Rebuild the embeddings snapshot on a background thread (single-flight).
+
+    Also the page-load pre-warm hook: the ``/`` route calls this so the first
+    Settings › Embeddings open serves a ready snapshot instead of the cold build.
+    """
+    global _embeddings_refreshing
+    with _embeddings_cache_lock:
+        if _embeddings_refreshing:
+            return
+        _embeddings_refreshing = True
+
+    def _refresh() -> None:
+        global _embeddings_cache, _embeddings_cache_ts, _embeddings_refreshing
+        try:
+            fresh = _build_embeddings_summary()
+            _embeddings_cache = fresh
+            _embeddings_cache_ts = time.time()
+        except Exception as exc:
+            logger.warning("Background embeddings refresh failed: %s", exc)
+        finally:
+            _embeddings_refreshing = False
+
+    threading.Thread(
+        target=_refresh, name="embeddings-refresh", daemon=True,
+    ).start()
+
+
+def bust_embeddings_cache() -> None:
+    """Drop the snapshot so the next read rebuilds (call after a vault-config write)."""
+    global _embeddings_cache
+    with _embeddings_cache_lock:
+        _embeddings_cache = None
+
+
+def get_embeddings_summary() -> dict[str, Any]:
+    """Embeddings sub-view snapshot, served from a background-refreshed cache."""
+    global _embeddings_cache, _embeddings_cache_ts
+    cache = _embeddings_cache
+    if cache is not None:
+        if time.time() - _embeddings_cache_ts >= _EMBEDDINGS_CACHE_TTL:
+            _kick_embeddings_refresh()  # stale — refresh for next open
+        return cache
+    # Cold start: build once synchronously (the lock makes concurrent first
+    # callers wait for the single build rather than each starting their own).
+    with _embeddings_cache_lock:
+        if _embeddings_cache is not None:
+            return _embeddings_cache
+        _embeddings_cache = _build_embeddings_summary()
+        _embeddings_cache_ts = time.time()
+        return _embeddings_cache
+
+
 # ---------------------------------------------------------------------------
 # Command palette
 # ---------------------------------------------------------------------------

@@ -70,6 +70,7 @@ RESOURCES: dict[str, str] = {
     "db/threads":                "db/threads.db",  # Thread + thread_events
     "db/llm_queue":              "db/llm_call_queue.db",  # LLM-call priority queue
     "db/work_item_events":       "db/work_item_events.db",  # WorkItem audit/provenance log
+    "db/vault-index":            "db/vault-index.db",  # Vault semantic-index chunk store
 
     # Logs
     "logs/gateway-debug":        "logs/gateway_debug.log",
