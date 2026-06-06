@@ -693,31 +693,50 @@ def index_status(source: str | None = None) -> dict[str, Any]:
         "sources": sources_info,
     }
 
-    # Check for per-source vector files
+    # Check for per-source vector files. Multi-projection sources (e.g. task_note
+    # → one .npz per declared projection: line + body) would otherwise read only
+    # the legacy single ``<source>.npz`` and report 0 vectors / all-pending despite
+    # being fully vectorized. Count the DISTINCT docs vectored across a source's
+    # projection files, and sum their sizes.
+    from work_buddy.ir.sources.base import get_projection_schema
+
     vectors_info = {}
     for src in sources_info:
-        npz = _npz_path(cfg, source=src)
-        if npz.exists():
-            vdata = load_vectors(cfg, source=src)
-            if vdata:
-                vectors, doc_ids = vdata
-                eligible = sources_info.get(src, {}).get(
-                    "dense_eligible_docs", 0
-                )
-                # pending = docs that *should* have vectors but don't
-                # yet. This is the number to watch for "is the index
-                # catching up?" — vector_count vs doc_count is
-                # misleading because many docs are intentionally
-                # ineligible (empty dense_text).
-                vector_count = len(doc_ids)
-                pending = max(0, eligible - vector_count)
-                vectors_info[src] = {
-                    "vector_file": str(npz),
-                    "vector_file_mb": round(npz.stat().st_size / 1024 / 1024, 1),
-                    "vector_count": vector_count,
-                    "vector_dims": vectors.shape[1],
-                    "pending_eligible": pending,
-                }
+        eligible = sources_info.get(src, {}).get("dense_eligible_docs", 0)
+        try:
+            schema = get_projection_schema(_get_source(src))
+        except Exception:
+            schema = {}
+        projections = list(schema) or [None]  # None → legacy single-projection file
+
+        vectored_docs: set[str] = set()
+        size_mb = 0.0
+        dims = 0
+        files: list[str] = []
+        for proj in projections:
+            npz = _npz_path(cfg, source=src, projection=proj)
+            if not npz.exists():
+                continue
+            vdata = load_vectors(cfg, source=src, projection=proj)
+            if not vdata:
+                continue
+            vectors, doc_ids = vdata
+            vectored_docs.update(doc_ids)
+            size_mb += npz.stat().st_size / 1024 / 1024
+            dims = vectors.shape[1]
+            files.append(str(npz))
+        if vectored_docs:
+            # pending = eligible docs without a vector — the "is the index
+            # catching up?" number. Per-DOC (distinct across projections), so a
+            # multi-projection source reads as items==vectors when complete.
+            vector_count = len(vectored_docs)
+            vectors_info[src] = {
+                "vector_files": files,
+                "vector_file_mb": round(size_mb, 1),
+                "vector_count": vector_count,
+                "vector_dims": dims,
+                "pending_eligible": max(0, eligible - vector_count),
+            }
     if vectors_info:
         result["vectors"] = vectors_info
 

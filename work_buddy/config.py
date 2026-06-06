@@ -68,6 +68,11 @@ DEFAULTS = {
         ],
         "bridge_port": 27125,
     },
+    "vault_index": {
+        "embedding_model": "leaf-ir",
+        "max_chars": 1200,
+        "vaults": {},   # empty → zero-config default synthesized from vault_root
+    },
     "chats": {
         "specstory_days": 7,
         "claude_history_days": 7,

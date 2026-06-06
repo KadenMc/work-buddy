@@ -39,6 +39,35 @@ obsidian:
   #                             non-default config-folder name, e.g.
   #                             ".obsidian-work"). Default is ".obsidian".
 
+# Native chunk-level semantic index over your Markdown (runs in work-buddy's own
+# process, not Obsidian's heap). "Vault" here = any indexed root, Obsidian or not.
+vault_index:
+  embedding_model: "leaf-ir"     # key under embedding.models; sets the vector space
+  max_chars: 1200                # chunk-size ceiling (chars); ~300 tokens
+
+  # Fast directory-name prune for the walk (dot-dirs like .obsidian/.git are ALWAYS
+  # skipped). If omitted, falls back to obsidian.exclude_folders. Set it explicitly
+  # to control scope — e.g. OMIT "repos" to INCLUDE your code-repo markdown in the
+  # semantic index (broader, like Smart Connections), or INCLUDE "repos" to keep the
+  # index to your notes only.
+  # exclude_dirs: ["node_modules", "public"]
+
+  # Roots to index. Omit `vaults` entirely for the zero-config default: a single
+  # vault id "vault" rooted at `vault_root`, excluding `obsidian.exclude_folders`.
+  # Each entry KEY is the stable vault_id (it appears in every chunk id as
+  # "{vault_id}/{relative_path}"). include/exclude are gitignore-style globs;
+  # include OVERRIDES exclude (a later "!negation" wins).
+  vaults: {}
+  # vaults:
+  #   vault:
+  #     path: "/path/to/your/obsidian/vault"
+  #     include: ["**/*.md"]
+  #     exclude: [".obsidian/**", ".trash/**", "node_modules/**", "repos/**"]
+  #   docs:
+  #     path: "/path/to/a/docs-repo"
+  #     include: ["**/*.md"]
+  #     exclude: ["archive/**"]
+
 tasks:
   db_path: "tasks/task_metadata.db"
   event_lookback_hours: 48
@@ -246,7 +275,7 @@ sidecar:
   # scheduled task whose ``conda activate`` silently no-op'd, leaving
   # the daemon and every child on the base env). Setting this pins the
   # env regardless of how the daemon booted. Recommended on Windows.
-  # python_executable: "C:/Users/Owner/miniforge3/envs/work-buddy/python.exe"
+  # python_executable: "C:/Users/you/miniforge3/envs/work-buddy/python.exe"
   # A service must miss this many consecutive probes before the daemon
   # restarts it. Guards against cascading false-positive restarts when
   # a single probe is late (e.g. a service is briefly busy).

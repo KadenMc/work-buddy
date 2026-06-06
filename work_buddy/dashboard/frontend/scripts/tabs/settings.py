@@ -39,18 +39,21 @@ let WB_MATCHED_SET = null;
 let WB_SETTINGS_SUBTAB = 'status';
 
 function switchSettingsSubtab(st) {
-    if (st !== 'status' && st !== 'activity') st = 'status';
+    if (st !== 'status' && st !== 'activity' && st !== 'embeddings') st = 'status';
     WB_SETTINGS_SUBTAB = st;
     document.querySelectorAll('.settings-subtab-btn').forEach(b =>
         b.classList.toggle('active', b.dataset.st === st));
     document.querySelectorAll('.settings-subtab-panel').forEach(p =>
         p.classList.toggle('active', p.id === 'ssp-' + st));
     if (typeof _persistHash === 'function') _persistHash();
-    // Lazy-load Activity content on first switch — the panel ships with
-    // placeholder loading divs until loadActivity() populates it.
+    // Lazy-load sub-views on first switch — panels ship with placeholder
+    // loading divs until their loader populates them.
     if (st === 'activity' && !window._activityLoaded
         && typeof loadActivity === 'function') {
         loadActivity();
+    }
+    if (st === 'embeddings' && typeof loadEmbeddings === 'function') {
+        loadEmbeddings();  // cheap (cached, pre-warmed) — refresh on each open
     }
 }
 

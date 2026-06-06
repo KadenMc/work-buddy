@@ -44,6 +44,7 @@ locks.
 from __future__ import annotations
 
 import os
+import pickle
 import time
 import zipfile
 from pathlib import Path
@@ -183,8 +184,10 @@ def safe_load_npz(path: Path) -> dict[str, "np.ndarray"] | None:
             # Materialize every array while the handle is open. np.load is lazy,
             # so corruption can surface here on access rather than on np.load().
             return {key: data[key] for key in data.files}
-    except (EOFError, zipfile.BadZipFile, ValueError, OSError) as exc:
-        # BadZipFile subclasses Exception (not OSError/ValueError), so it must
-        # be caught explicitly — a 0-byte or truncated archive surfaces as one.
+    except (EOFError, zipfile.BadZipFile, ValueError, OSError, pickle.UnpicklingError) as exc:
+        # BadZipFile and UnpicklingError subclass Exception (not OSError/ValueError),
+        # so they must be caught explicitly. A 0-byte or truncated archive surfaces
+        # as BadZipFile/EOFError; a bit-rotted non-zip file (numpy falls back to
+        # pickle and chokes) surfaces as UnpicklingError. All mean "corrupt → absent".
         logger.warning("Vector file %s is unreadable (%s); treating as absent.", path, exc)
         return None
