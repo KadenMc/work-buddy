@@ -218,11 +218,11 @@ SUBSYSTEMS: list[_DomainDef] = [
         "id": "subsystem:obsidian-knowledge",
         "label": "Obsidian Knowledge Plugins",
         "description": (
-            "Smart Connections and Datacore plugins, which expose the "
-            "Obsidian vault as a queryable knowledge surface."
+            "Datacore plugin, which exposes the "
+            "Obsidian vault as a queryable structured surface."
         ),
         "grouping_parents": ["domain:knowledge"],
-        "component_deps": ["smart_connections", "datacore"],
+        "component_deps": ["datacore"],
     },
     # ------------------------------------------------------------------
     # Repository Setup — work-buddy's own config files and paths.

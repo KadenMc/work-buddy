@@ -409,8 +409,8 @@ def obsidian_backed_tools() -> set[str]:
     """Tool ids that ARE the Obsidian bridge or transitively depend on it.
 
     Computed from the probe ``depends_on`` graph: ``obsidian`` plus every tool
-    whose dependency chain reaches it (e.g. ``datacore``, ``smart_connections``,
-    ``google_calendar`` — the in-Obsidian plugins). These share one failure
+    whose dependency chain reaches it (e.g. ``datacore`` and ``google_calendar``
+    — the in-Obsidian plugins). These share one failure
     domain — when the bridge is down they all go unavailable together via the
     probe short-circuit — so the gateway governs them with a single circuit
     breaker rather than the build-time disable, and only when the bridge itself
@@ -527,7 +527,7 @@ def _probe_obsidian_plugins() -> dict[str, bool]:
     from work_buddy.config import load_config
     cfg = load_config()
     port = cfg.get("obsidian", {}).get("bridge_port", 27125)
-    plugin_ids = ["smart-connections", "datacore", "google-calendar"]
+    plugin_ids = ["datacore", "google-calendar"]
     # Single eval call that returns an object mapping plugin_id → boolean
     checks = ", ".join(f"'{pid}': !!app.plugins.plugins['{pid}']" for pid in plugin_ids)
     code = f"return {{{checks}}}"
@@ -560,7 +560,7 @@ def _probe_obsidian() -> tuple[bool, str]:
     Uses http.client (not urllib) to avoid issues with urllib inside
     asyncio.to_thread + winloop on Windows. Also batch-checks all
     integrated Obsidian plugins in a single eval call, caching results
-    for dependent probes (smart_connections, datacore, google_calendar).
+    for dependent probes (datacore, google_calendar).
 
     Note: The bridge has documented latency spikes up to ~4s. We use a
     generous timeout to avoid false negatives.
@@ -737,11 +737,6 @@ def _probe_telegram() -> bool:
         return False
 
 
-def _probe_smart_connections() -> bool:
-    """Check if Smart Connections plugin is available (from batch probe)."""
-    return _bridge_plugin_available("smart-connections")
-
-
 def _probe_embedding() -> bool:
     """Check if the embedding service is reachable."""
     import urllib.request
@@ -912,14 +907,6 @@ def _register_default_probes() -> None:
             probe_fn=_probe_telegram,
             config_key="tools.telegram.enabled",
             reason_when_missing="Telegram bot token not set or service not enabled",
-        ),
-        ToolProbe(
-            id="smart_connections",
-            display_name="Smart Connections",
-            probe_fn=_probe_smart_connections,
-            config_key="tools.smart_connections.enabled",
-            depends_on=["obsidian"],
-            reason_when_missing="Smart Connections plugin not available in Obsidian",
         ),
         ToolProbe(
             id="embedding",

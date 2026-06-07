@@ -30,9 +30,9 @@ Build a new Obsidian plugin integration for work-buddy.
 
 ## Essential reading (in this order)
 
-1. `work_buddy/obsidian/smart/README.md` — read the **Reverse-Engineering Methodology** section. It explains how to probe bundled Obsidian plugins at runtime via eval_js (object graph walking, prototype method discovery, function source extraction, capability probing). Use these exact techniques.
+1. **Reverse-engineering a bundled plugin** — probe it at runtime via `bridge.eval_js`: object-graph walking, prototype method discovery, function-source extraction, capability probing. `work_buddy/calendar/` and `work_buddy/obsidian/tasks/` are live examples of the resulting wrappers.
 
-2. `work_buddy/obsidian/smart/env.py` — the **template pattern**: JS snippets in `_js/` directory, `_run_js()` helper, Python wrapper functions with docstrings. Follow this pattern exactly.
+2. `work_buddy/calendar/env.py` — the **template pattern**: JS snippets in a `_js/` directory, a `_run_js()`-style helper, Python wrapper functions with docstrings. Follow this pattern.
 
 3. `work_buddy/obsidian/bridge.py` — the eval_js transport layer. `bridge.eval_js(code, timeout)` executes JS inside Obsidian with access to the `app` object. **`bridge.eval_js` is gated by `@requires_consent('obsidian.eval_js', risk='high')`** — direct calls trigger a consent prompt. Read-only wrappers that execute fixed JS snippets must declare themselves safe invokers via `@reduces_risk_for('obsidian.eval_js', 'low')` so the inner gate auto-passes. Mutations that already establish their own outer `@requires_consent` gate (e.g. `calendar.create_event`) need no `@reduces_risk_for` — the outer consent context subsumes the inner check. See `notifications/consent` for the full mechanism and `work_buddy/calendar/env.py` for a reference implementation.
 
@@ -104,7 +104,7 @@ Create:
 ```
 work_buddy/<location>/
 ├── __init__.py          # Public API re-exports
-├── env.py               # Python wrappers (_run_js pattern from smart/env.py)
+├── env.py               # Python wrappers (_run_js pattern from calendar/env.py)
 ├── README.md            # Integration docs + runtime surface + stale warnings
 └── _js/                 # JavaScript snippets
     ├── check_ready.js   # Always include a readiness check

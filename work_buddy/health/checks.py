@@ -185,10 +185,6 @@ def _check_obsidian_plugin(plugin_id: str) -> dict[str, Any]:
     return {"ok": False, "detail": f"Plugin '{plugin_id}' is not loaded in Obsidian"}
 
 
-def check_obsidian_plugin_smart() -> dict[str, Any]:
-    return _check_obsidian_plugin("smart-connections")
-
-
 def check_obsidian_plugin_datacore() -> dict[str, Any]:
     return _check_obsidian_plugin("datacore")
 

@@ -43,7 +43,7 @@ DEFAULT_DISPATCH_TIMEOUT_S: float = 30.0
 _OBSIDIAN_TOOL_ID = "obsidian"
 
 # Cache of the bridge-backed tool family (obsidian + its in-Obsidian plugin
-# tools: datacore, smart_connections, ...). Static from the probe graph for the
+# tools: datacore, ...). Static from the probe graph for the
 # process lifetime; recomputed on the first call after a module reload.
 _BRIDGE_TOOLS: set[str] | None = None
 

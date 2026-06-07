@@ -9,7 +9,7 @@ schema_version: wb-capability/v1
 parameters:
   component:
     type: str
-    description: 'Component ID to diagnose, or ''all'' for overview. Available: chrome_extension, dashboard, datacore, embedding, github_backups, google_calendar, hindsight, lmstudio, messaging, obsidian, postgresql, sidecar, smart_connections, tailscale, telegram, thunderbird'
+    description: 'Component ID to diagnose, or ''all'' for overview. Available: chrome_extension, dashboard, datacore, embedding, github_backups, google_calendar, hindsight, lmstudio, messaging, obsidian, postgresql, sidecar, tailscale, telegram, thunderbird'
     required: false
 tags:
 - status

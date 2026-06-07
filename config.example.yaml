@@ -389,8 +389,6 @@ tools:
     enabled: true
   telegram:
     enabled: true
-  smart_connections:
-    enabled: true
   embedding:
     enabled: true
   messaging:

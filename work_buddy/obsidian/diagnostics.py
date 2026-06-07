@@ -1,7 +1,6 @@
 """Obsidian-level diagnostics: bridge health, plugins, log parsing, crash detection.
 
-This module does NOT import from work_buddy.obsidian.smart — it only knows
-about the bridge, plugins, and Obsidian itself.
+This module knows only about the bridge, plugins, and Obsidian itself.
 """
 
 import os

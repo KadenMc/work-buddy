@@ -986,7 +986,7 @@ def _build_registry() -> dict[str, Capability | WorkflowDefinition]:
             # breaker on the gateway dispatch, not by this build-time flip. A
             # transient bridge probe failure must not disable every bridge-
             # dependent capability (the bridge itself AND its in-Obsidian
-            # plugins: datacore, smart_connections, ...) for the whole session;
+            # plugins: datacore, ...) for the whole session;
             # an admitted capability whose bridge is down fails fast per call
             # and recovers the instant the bridge returns (no registry reload).
             # Transitive-only: we only skip the hard-disable when the bridge

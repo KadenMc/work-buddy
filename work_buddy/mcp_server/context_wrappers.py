@@ -723,12 +723,12 @@ def get_messages_context() -> str:
     return message_collector.collect(cfg)
 
 
-def get_smart_context() -> str:
-    """Smart Connections context: semantically related notes to active contracts."""
-    from work_buddy.collectors import smart_collector
+def get_vault_context() -> str:
+    """Vault context: contract-relevant notes via the native vault index."""
+    from work_buddy.collectors import vault_collector
 
     cfg = _cfg_with_overrides()
-    return smart_collector.collect(cfg)
+    return vault_collector.collect(cfg)
 
 
 def get_calendar_context(*, date: str | None = None, check_ready: bool = False) -> str:
@@ -1342,7 +1342,7 @@ def collect_bundle(
         days: Override all time windows to N days.
         hours: Override all time windows to N hours (takes precedence over days).
         only: Comma-separated collector names to run (e.g. "git,chats").
-            Valid names: git, obsidian, chats, chrome, messages, smart, calendar.
+            Valid names: git, obsidian, chats, chrome, messages, vault, calendar.
             Default: run all.
     """
     from work_buddy.collect import run_collection

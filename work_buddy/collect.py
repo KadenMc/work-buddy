@@ -19,7 +19,7 @@ File-name mapping from source → bundle file:
     chrome source              → chrome_summary.md (rendered markdown)
     chat                       → chat_summary.md
     message                    → messages_summary.md
-    smart                      → smart_summary.md
+    vault                      → vault_summary.md
     calendar                   → calendar_summary.md
     day_planner                → day_planner_summary.md
     session_activity           → session_activity_summary.md
@@ -66,7 +66,7 @@ _BUNDLE_MAP: dict[str, str] = {
     "chat":              "chat_summary.md",
     "chrome":            "chrome_summary.md",
     "message":           "messages_summary.md",
-    "smart":             "smart_summary.md",
+    "vault":             "vault_summary.md",
     "calendar":          "calendar_summary.md",
     "day_planner":       "day_planner_summary.md",
     "session_activity":  "session_activity_summary.md",
@@ -90,7 +90,7 @@ _LEGACY_ONLY_ALIAS: dict[str, list[str]] = {
 # so it costs nothing until queries are populated.
 COLLECTORS = {
     "git", "obsidian", "chat", "chrome", "message",
-    "smart", "calendar", "day_planner", "projects",
+    "vault", "calendar", "day_planner", "projects",
     "session_activity", "claude_session_summary",
     "obsidian_tasks", "obsidian_wellness", "datacore",
 }
