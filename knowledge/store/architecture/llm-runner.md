@@ -32,6 +32,8 @@ aliases:
 parents:
 - architecture
 - architecture
+dev_notes: |-
+  **Inference provenance.** ``run_task`` is wrapped by ``_with_call_id``, which binds an ambient ``call_id`` (+ start time) for the call and emits an ``error`` provenance row on failure. Successful / cached completions emit their provenance row from ``cost.log_call`` instead. The bound ``call_id`` is also reused by ``broker.slot`` as its ``SlotMetrics.id``, so a local call's scheduler-latency row joins its provenance row. See ``architecture/inference/provenance``.
 ---
 
 # LLM Runner

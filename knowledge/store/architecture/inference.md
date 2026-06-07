@@ -28,6 +28,7 @@ Local-inference subsystems — everything that decides **when**, **where**, and 
 ## What lives here
 
 - **[Broker](architecture_inference_broker.md)** — ``work_buddy.inference.broker.LocalInferenceBroker``. Per-profile slot limits, priority classes (INTERACTIVE / WORKFLOW / BACKGROUND), split queue-wait vs inference timeouts, and per-call metrics. Every outbound local-inference call (embedding or LLM) routes through it so work-buddy — not LM Studio — is the scheduler of record.
+- **[Provenance](architecture_inference_provenance.md)** — ``work_buddy.llm.provenance.record_inference_call``. A stable ``call_id`` + plain-text description for every model call — local **and** cloud, completions **and** embeddings — written beside the cost ledger and surfaced as the Settings › Inference activity feed. Where the broker decides *when/where* a local call runs, provenance records *what* called a model and *why* across both providers; the two join by ``call_id`` so local rows carry their scheduler latency.
 
 ## What WILL live here (pending restructure)
 

@@ -102,13 +102,13 @@ Unregistered profiles auto-register on first use with conservative defaults (max
 
 ``SlotMetrics`` rows in a 1000-entry ring buffer, one per slot admission. Fields: ``id, profile, priority, queued_at, admitted_at, started_http_at, first_token_at, finished_at, status, error_kind, error_detail``, plus computed splits ``queue_wait_ms, service_time_ms, total_latency_ms``. ``status`` is one of ``queued / running / ok / queue_full / queue_wait_timeout / inference_timeout / error``. Read via ``broker.snapshot_metrics(limit=...)``.
 
-Completed calls are also persisted out-of-band to a SQLite store (``work_buddy/inference/metrics_store.py``, registered as the ``broker-metrics`` artifact with a 7-day per-record TTL) by a flusher daemon in the embedding service, so dashboard history survives a process restart that wipes the in-memory ring. The Settings › Inference dashboard panel visualizes per-profile occupancy, a recent-calls feed, and a latency summary — merging the live ring with the persisted store. See ``services/dashboard`` for the panel and ``architecture/event-bus`` for the ``broker.state`` push that keeps it live.
+Completed calls are also persisted out-of-band to a SQLite store (``work_buddy/inference/metrics_store.py``, the ``broker-metrics`` artifact, 7-day per-record TTL) by a flusher daemon in the embedding service, so per-call latency survives a process restart that wipes the in-memory ring. The dashboard reads that store to join scheduler latency (queue-wait / service) onto local rows of the cross-provider Inference-activity feed by ``call_id`` — see ``architecture/inference/provenance``.
 
 ## Important limitation: process-global singleton
 
 The broker is one instance **per Python process**. The MCP gateway, the embedding service, and the dashboard each have their own broker — they do NOT share state. Reading ``get_broker().snapshot_metrics()`` from process A returns only calls originating in A.
 
-Practical consequence: the dashboard panel reads broker state through an HTTP endpoint on the embedding service (``GET /broker/state``), which serves that process's broker — the high-traffic local-inference path. Cross-process aggregation (merging the MCP-gateway broker's view) is not supported; both the panel and the persisted metrics store scope to the embedding-service broker.
+Practical consequence: the broker exposes no HTTP state endpoint; per-call metrics reach the dashboard only via the persisted ``metrics_store`` (the embedding-service flusher), scoped to the embedding-service broker — the high-traffic local-inference path. Cross-process aggregation (merging the MCP-gateway broker's view) is not supported.
 
 ## Key files
 

@@ -462,8 +462,12 @@ class LocalInferenceBroker:
             else state.cfg.default_inference_s
         )
 
+        # Reuse the ambient inference call_id (bound by run_task / the embedding
+        # capture) as this slot's metrics id, so a local call's scheduler-latency
+        # row joins its provenance row. Falls back to a fresh id when unbound.
+        from work_buddy.inference.call_context import current_call_id
         metrics = SlotMetrics(
-            id=uuid.uuid4().hex[:12],
+            id=current_call_id() or uuid.uuid4().hex[:12],
             profile=profile,
             priority=priority,
             queued_at=time.monotonic(),

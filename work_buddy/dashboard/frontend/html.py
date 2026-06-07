@@ -563,9 +563,10 @@ def _html() -> str:
     <div class="settings-subtab-panel" id="ssp-embeddings">
         <div id="embeddings-content"><div class="loading">Loading embeddings...</div></div>
     </div>
-    <!-- Inference sub-view: LocalInferenceBroker occupancy cards + recent-calls
-         feed + latency summary. Read-only; live-updated via the broker.state
-         SSE event. Lazy-loaded on first switch (see switchSettingsSubtab). -->
+    <!-- Inference sub-view: cross-provider inference-activity feed (every model
+         call across work-buddy, local + cloud). Read-only; live-updated via the
+         inference.call_logged SSE event. Lazy-loaded on first switch (see
+         switchSettingsSubtab). -->
     <div class="settings-subtab-panel" id="ssp-inference">
         <div id="inference-content"><div class="loading">Loading inference...</div></div>
     </div>

@@ -258,6 +258,66 @@ def _encode_bulk_direct(
     batch_size: int = 32,
     kind: str = "passage",
 ) -> np.ndarray:
+    """Encode a batch + record one inference-provenance row (kind=embedding).
+
+    Thin wrapper over :func:`_encode_bulk_direct_impl`: binds a ``call_id`` so
+    the LM Studio offload path's ``broker.slot`` row joins this provenance row,
+    and writes one record per batch (best-effort). The description detail comes
+    from the ambient ``inference_detail`` set by the caller (the IR source),
+    falling back to a count when none is set. ``provider`` is the *configured*
+    embedding provider (lmstudio vs sentence_transformer).
+    """
+    import time as _time
+    import uuid as _uuid
+
+    from work_buddy.inference.call_context import bind_call_id, current_detail
+
+    model_key = "leaf-mt" if kind == "label" else "leaf-ir"
+    try:
+        from work_buddy.config import load_config
+        _mcfg = (
+            load_config().get("embedding", {}).get("models", {}).get(model_key, {})
+            or {}
+        )
+        provider = (_mcfg.get("provider") or "sentence_transformer").lower()
+    except Exception:
+        provider = "sentence_transformer"
+
+    cid = _uuid.uuid4().hex[:12]
+    status = "ok"
+    t0 = _time.monotonic()
+    try:
+        with bind_call_id(cid):
+            return _encode_bulk_direct_impl(texts, batch_size=batch_size, kind=kind)
+    except Exception:
+        status = "error"
+        raise
+    finally:
+        try:
+            from work_buddy.llm.provenance import record_inference_call
+            n = len(texts)
+            detail = current_detail() or f"{n} document{'s' if n != 1 else ''}"
+            record_inference_call(
+                kind="embedding",
+                model=model_key,
+                provider=provider,
+                execution_mode="local",
+                status=status,
+                item_count=n,
+                call_id=cid,
+                call_site="Embed",
+                detail=detail,
+                latency_ms=(_time.monotonic() - t0) * 1000.0,
+            )
+        except Exception:
+            pass
+
+
+def _encode_bulk_direct_impl(
+    texts: list[str],
+    batch_size: int = 32,
+    kind: str = "passage",
+) -> np.ndarray:
     """Encode documents in-process (no HTTP to our own embedding service).
 
     Dispatches on the model's configured provider:
@@ -601,7 +661,10 @@ def _build_vectors_for_projection(
     for chunk_start in range(0, len(new_texts), CHECKPOINT_ROWS):
         chunk_texts = new_texts[chunk_start : chunk_start + CHECKPOINT_ROWS]
         chunk_ids = new_doc_ids[chunk_start : chunk_start + CHECKPOINT_ROWS]
-        chunk_vectors = _encode_bulk_direct(chunk_texts, kind=kind)
+        from work_buddy.inference.call_context import inference_detail
+        _embed_detail = f"IR source '{source or '?'}'" + (f" / {projection}" if projection else "")
+        with inference_detail(_embed_detail):
+            chunk_vectors = _encode_bulk_direct(chunk_texts, kind=kind)
 
         if running_vectors is not None and len(running_ids) > 0:
             running_vectors = np.vstack([running_vectors, chunk_vectors])

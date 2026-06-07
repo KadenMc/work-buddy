@@ -56,7 +56,7 @@ function switchSettingsSubtab(st) {
         loadEmbeddings();  // cheap (cached, pre-warmed) — refresh on each open
     }
     if (st === 'inference' && typeof loadInference === 'function') {
-        loadInference();  // cheap (cached) — refresh on open; broker.state SSE keeps it live
+        loadInference();  // cheap (cached) — refresh on open; inference.call_logged SSE keeps it live
     }
 }
 

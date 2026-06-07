@@ -2,8 +2,8 @@
 
 The JS is a Python string assembled into the single-page app. We verify the
 sub-view renders, the sub-tab guard accepts ``'inference'`` (a silent
-rewrite-to-status would otherwise hide the panel), and the broker.state SSE
-handler routes through the surface mutator without a wholesale-loader call.
+rewrite-to-status would otherwise hide the panel), and the inference.call_logged
+SSE handler routes through the surface mutator without a wholesale-loader call.
 """
 from __future__ import annotations
 
@@ -33,34 +33,50 @@ def test_inference_surface_contract():
     assert "window.inferenceSurface" in src
     assert "function loadInference" in src
     assert "isMounted" in src
-    # Newest-first ordering of the oldest-first ring snapshot.
-    assert ".slice().reverse()" in src
 
 
-def test_inference_legibility_affordances():
-    """The UX addendum: verdict, humanized labels, teaching help, units."""
+def test_inference_panel_affordances():
+    """Trimmed panel: provenance feed + teaching help; broker-scheduler heritage removed."""
     src = _inference_script()
-    # Health verdict (the "see it, don't guess" signal).
-    assert "_infHealth" in src
-    assert "Contended" in src and "Healthy" in src
-    # Humanized profile labels (raw key → role).
-    assert "_infRole" in src
-    assert "Embedding offload" in src
-    # Inline teaching help.
+    # Teaching help (kept, retrimmed).
     assert "_infToggleHelp" in src
-    assert "Priority" in src and "Latency splits" in src
-    # Units + window explanation.
-    assert "Queue wait (ms)" in src
-    assert "the table below lists recent calls" in src
-    # Recent calls scroll viewport (Event Log pattern) so many rows fit.
+    assert "What this is" in src and "Escalation" in src
+    # Provenance feed columns / cells.
+    assert "Purpose" in src
+    assert "Latency (ms)" in src
+    assert "_infUsage" in src
     assert "inf-table-scroll" in src
+    # Trimmed panel: no occupancy cards (those belong to the fleet view), no latency percentiles.
+    assert "_infHealth" not in src
+    assert "_infRenderCards" not in src
+    assert "Occupancy" not in src
+    assert "p95" not in src
 
 
-def test_broker_state_handler_clean():
+def test_inference_activity_feed_renders():
+    src = _inference_script()
+    assert "_infRenderActivity" in src
+    assert "Inference activity" in src      # panel/feed title
+    assert "/api/inference-activity" in src
+    assert "inf-mode-local" in src          # local/cloud badge
+
+
+def test_recent_calls_table_is_merged():
+    """The broker recent-calls table is folded into the unified activity table."""
+    src = _inference_script()
+    # Old broker table + its dropped columns are gone.
+    assert "_infRenderRecent" not in src
+    assert "Total (ms)" not in src
+    assert "Tokens / items" not in src
+    # Multi-select filters (Kind is a filter, not a column) using the shared
+    # chip style; redesigned usage cell; escalation chains marked.
+    assert "_infToggleKind" in src and "_infToggleWhere" in src
+    assert "costs-filter-pill" in src
+    assert "_infUsage" in src
+    assert "inf-chain" in src
+
+
+def test_activity_sse_handler_registered():
     src = _event_bus_script()
-    assert "eventBus.on('broker.state'" in src
+    assert "eventBus.on('inference.call_logged'" in src
     assert "_refreshSoon('inferenceSurface')" in src
-    # The dispatcher must not introduce any wholesale-loader call (mirrors the
-    # invariant in test_dashboard_event_bus_frontend.py).
-    for forbidden in ("loadSettings(", "loadInference(", "staticLoaders[", "_smartRefresh"):
-        assert forbidden not in src

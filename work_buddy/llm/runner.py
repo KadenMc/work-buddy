@@ -13,8 +13,10 @@ the MCP gateway, matching the anthropic SDK's safety profile.
 
 from __future__ import annotations
 
+import functools
 import json
 import os
+import uuid
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -128,6 +130,47 @@ def _normalize_structured_output_schema(schema: Any) -> Any:
     return schema
 
 
+def _with_call_id(fn):
+    """Bind a fresh inference ``call_id`` for the duration of a run_task call.
+
+    Read downstream (same thread) by the broker — which uses it as its
+    ``SlotMetrics.id`` so a local call's scheduler-latency row and its
+    provenance row share one id — and by the provenance writer in
+    ``cost.log_call``. One id per attempt (escalation re-runs get fresh ids).
+    """
+    @functools.wraps(fn)
+    def _wrapper(*args, **kwargs):
+        from work_buddy.inference.call_context import bind_call_id
+        with bind_call_id(uuid.uuid4().hex[:12]):
+            result = fn(*args, **kwargs)
+            # Failed / timed-out attempts (including each rung of an escalation
+            # chain) never reach cost.log_call, so emit their provenance here —
+            # within the bound call_id + ambient detail. Successful and cached
+            # calls are recorded via log_call and carry no error, so there is no
+            # double-write. The shared trace_id lets the feed group an
+            # escalation's attempts.
+            err = getattr(result, "error", None)
+            if err:
+                try:
+                    from work_buddy.llm.provenance import record_inference_call
+                    profile = kwargs.get("profile")
+                    record_inference_call(
+                        kind="completion",
+                        model=getattr(result, "model", "") or "?",
+                        provider=profile or "cloud",
+                        execution_mode="local" if profile else "cloud",
+                        status="error",
+                        task_id=kwargs.get("task_id"),
+                        trace_id=kwargs.get("trace_id"),
+                        error=str(err)[:200],
+                    )
+                except Exception:
+                    pass
+            return result
+    return _wrapper
+
+
+@_with_call_id
 def run_task(
     *,
     task_id: str,

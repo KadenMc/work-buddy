@@ -70,7 +70,9 @@ def build_vectors(
             batch = pending[start:start + CHECKPOINT_ROWS]
             doc_ids = [doc_id for doc_id, _ in batch]
             texts = [text for _, text in batch]
-            vecs = _encode_bulk_direct(texts, kind="passage")
+            from work_buddy.inference.call_context import inference_detail
+            with inference_detail("vault index"):
+                vecs = _encode_bulk_direct(texts, kind="passage")
             store.upsert_vectors(conn, doc_ids, vecs)   # per-batch commit (resumable)
             new += len(doc_ids)
             dims = int(vecs.shape[1])

@@ -204,6 +204,7 @@ class LLMRunner:
         priority: Priority | None = None,
         cache_ttl_minutes: int | None = None,
         trace_id: str | None = None,
+        detail: str | None = None,
     ) -> LLMResponse:
         """Execute one LLM call, escalating through fallback tiers on matching failures.
 
@@ -227,6 +228,9 @@ class LLMRunner:
                 Ignored for the Anthropic backend, which is not brokered.
             cache_ttl_minutes: Passed through to :func:`run_task`.
             trace_id: Passed through for debug correlation.
+            detail: Optional readily-available one-liner appended to the
+                inference-provenance description as ``<call site>: <detail>``
+                (e.g. a tab title). Cheap; pass only where it's already on hand.
 
         Returns:
             :class:`LLMResponse`. Check ``resp.is_error()`` before
@@ -246,17 +250,19 @@ class LLMRunner:
         for attempt_tier in tier_chain:
             binding = resolve_tier(attempt_tier)
             t0 = time.time()
-            resp = self._call_one(
-                binding=binding,
-                system=system,
-                user=user,
-                output_schema=output_schema,
-                max_tokens=max_tokens if max_tokens is not None else binding.max_tokens,
-                temperature=temperature if temperature is not None else binding.temperature,
-                priority=priority,
-                cache_ttl_minutes=cache_ttl_minutes,
-                trace_id=trace_id,
-            )
+            from work_buddy.inference.call_context import inference_detail
+            with inference_detail(detail):
+                resp = self._call_one(
+                    binding=binding,
+                    system=system,
+                    user=user,
+                    output_schema=output_schema,
+                    max_tokens=max_tokens if max_tokens is not None else binding.max_tokens,
+                    temperature=temperature if temperature is not None else binding.temperature,
+                    priority=priority,
+                    cache_ttl_minutes=cache_ttl_minutes,
+                    trace_id=trace_id,
+                )
             elapsed_ms = int((time.time() - t0) * 1000)
 
             # Classify the outcome of this attempt for the structured log.
