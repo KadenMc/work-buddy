@@ -29,7 +29,7 @@ dev_notes: |-
 
   **No more auto-tick.** The 30s ``setInterval`` that previously re-ran ``refreshCostsData`` is gone. The Costs tab now refreshes from the event bus: ``llm.call_logged`` events route through the smart-refresh policy (see ``architecture/event-bus``) and call ``loadCosts()`` when the panel is active and no input is focused.
 
-  Chip handlers (``costsModelToggle``, ``costsModelSolo``, ``costsModelFamilyToggle``, ``costsModelFamilySolo``, ``costsModelsReset``) all flow through ``_costsAfterModelChipChange``: (a) re-render chips locally for immediate visual feedback, then (b) call ``refreshCostsData`` for backend re-aggregation.
+  The model rail is the shared ``wbRenderFilters`` widget (``core/filters.py``) in grouped mode; its dispatchers compute the next selection and hand it to the caller-owned ``_costsOnModelChange``, which sets ``costsState.selectedModels`` and flows through ``_costsAfterModelChipChange``: (a) re-render the rail via ``costsRenderModelsFilter`` for immediate visual feedback, then (b) call ``refreshCostsData`` for backend re-aggregation. The activity row is the same widget in single-select segmented mode (``_costsOnActivityChange`` → ``costsActivityChanged``). The ``knownModels`` snapshot rule below still governs which model list the rail renders from.
 
   ## Toolbar Refresh button + empty-state CTA share ``costsRefresh``
 
@@ -115,9 +115,9 @@ The internal source records cost only for cloud calls; local-LLM calls log ``est
 Toolbar widgets, in order:
 
 * **Project select** — populated from ``/api/costs/projects``. Reuses the chats-tab canonical project resolver so worktrees collapse to their parent.
-* **Activity pills** — only visible when ``project=work-buddy``. Switches between ``all / claude_code / programmatic / api / local``; ``api`` and ``local`` thread an ``execution_mode`` filter to the backend.
+* **Activity pills** — only visible when ``project=work-buddy``. Switches between ``all / claude_code / programmatic / api / local``; ``api`` and ``local`` thread an ``execution_mode`` filter to the backend. Rendered by the shared ``wbRenderFilters`` widget (single-select segmented).
 * **Date range pill** — translates to ``start_date``.
-* **Model filter chips** — grouped by family (currently a single ``Claude`` family). Click toggles a chip; alt/shift-click solos to that one. Family pill toggles the whole group. ``Reset`` link appears when narrowed. De-selecting every chip narrows to zero rows (matches the trichotomy above).
+* **Model filter chips** — the shared ``wbRenderFilters`` widget (grouped tristate multi-select), grouped by family (currently a single ``Claude`` family). Click toggles a chip; alt/shift-click solos to that one. Family pill toggles the whole group. ``Reset`` link appears when narrowed. De-selecting every chip narrows to zero rows (matches the trichotomy above).
 * **Rate-limit chip** — shows the most-restrictive headroom across recently-observed Anthropic models; click to expand a per-model popover. Backed by ``/api/costs/rate-limits``. The headers describe **burn rate** (token-bucket replenishment), not session-total quota — they show how close you are to being throttled right now, not how much you've spent overall.
 
 The sessions table shows an **active dot** next to sessions whose last activity is within ``ACTIVE_WINDOW_MINUTES``. The ``.wb-active-dot`` CSS class is reusable — the Chats tab uses the same one.

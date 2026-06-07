@@ -68,10 +68,11 @@ def test_recent_calls_table_is_merged():
     assert "_infRenderRecent" not in src
     assert "Total (ms)" not in src
     assert "Tokens / items" not in src
-    # Multi-select filters (Kind is a filter, not a column) using the shared
-    # chip style; redesigned usage cell; escalation chains marked.
-    assert "_infToggleKind" in src and "_infToggleWhere" in src
-    assert "costs-filter-pill" in src
+    # Multi-select filters (Kind is a filter, not a column) via the shared
+    # wbRenderFilters widget; redesigned usage cell; escalation chains marked.
+    assert "wbRenderFilters('inf-filters'" in src
+    assert "key: 'where'" in src and "key: 'kind'" in src and "key: 'status'" in src
+    assert "_infGetSelected" in src and "_infOnChange" in src
     assert "_infUsage" in src
     assert "inf-chain" in src
 

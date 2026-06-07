@@ -427,30 +427,6 @@ body {
     align-items: center;
     gap: 12px;
 }
-.task-state-chips {
-    display: flex;
-    gap: 4px;
-    flex-wrap: wrap;
-}
-.task-state-chip {
-    padding: 3px 10px;
-    border-radius: 10px;
-    border: 1px solid var(--border);
-    background: transparent;
-    color: var(--text-muted);
-    font-size: 11px;
-    font-family: inherit;
-    text-transform: lowercase;
-    cursor: pointer;
-    user-select: none;
-}
-.task-state-chip:hover { border-color: var(--accent); color: var(--text-primary); }
-.task-state-chip.selected {
-    background: var(--accent-alpha, rgba(60,120,200,0.18));
-    color: var(--text-primary);
-    border-color: var(--accent);
-    font-weight: 600;
-}
 .task-search-input {
     padding: 5px 10px;
     border-radius: 6px;
@@ -2043,49 +2019,6 @@ body {
     border: 1px solid var(--border);
     border-radius: 6px;
 }
-.chats-filter-row {
-    display: flex;
-    gap: 8px;
-    align-items: center;
-    flex-wrap: wrap;
-}
-.chats-filter-label {
-    font-size: 11px;
-    color: var(--text-muted);
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-}
-.chats-filter-divider {
-    width: 1px;
-    height: 20px;
-    background: var(--border);
-    margin: 0 4px;
-}
-.chats-filter-spacer { flex: 1; }
-.chats-filter-pill {
-    padding: 4px 12px;
-    background: var(--bg-tertiary);
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    color: var(--text-secondary);
-    font-size: 12px;
-    cursor: pointer;
-    transition: background 0.15s, border-color 0.15s, color 0.15s;
-}
-.chats-filter-pill:hover {
-    color: var(--text-primary);
-    border-color: var(--accent);
-}
-.chats-filter-pill.active {
-    background: var(--accent-subtle);
-    border-color: var(--accent);
-    color: var(--accent);
-}
-.chats-filter-reset {
-    margin-left: auto;
-    color: var(--text-muted);
-    font-style: italic;
-}
 .chats-content {
     position: relative;
     min-height: 600px;
@@ -2489,21 +2422,25 @@ a.chat-card-badge.prs:hover { text-decoration: underline; }
     font-size: 10px;
     float: right;
 }
-/* Activity-rail selector (Topics | Git | Tasks) + switchable panels.
-   Neutral pills (reuse .costs-pill); per-stream colors live in the panel
-   CONTENT — commits green (.chat-commit-marker base), PRs purple
-   (.pr-marker), tasks orange (.task-marker). */
-.chats-rail-selector {
+/* Activity-rail selector (Topics | Git | Tasks) + switchable panels. The
+   selector is the shared wb-filter rail; the scoped overrides below keep its
+   full-width-tabs layout (equal-width, borderless, with a bottom divider)
+   inside the narrow rail rather than the default content-width capsule.
+   Per-stream colors live in the panel CONTENT — commits green
+   (.chat-commit-marker base), PRs purple (.pr-marker), tasks orange
+   (.task-marker). */
+#chats-rail-selector.wb-filters {
     display: flex;
-    gap: 4px;
     margin-bottom: 8px;
     padding-bottom: 8px;
     border-bottom: 1px solid var(--border);
 }
-.chats-rail-pill {
-    flex: 1;
-    padding: 4px 6px;
-    text-align: center;
+#chats-rail-selector .wb-filter-capsule {
+    display: flex; width: 100%; gap: 4px;
+    background: transparent; border: none; border-radius: 0; padding: 0;
+}
+#chats-rail-selector .wb-filter-chip {
+    flex: 1; text-align: center; justify-content: center; padding: 4px 6px;
 }
 .chats-rail-panel { display: none; }
 .chats-rail-panel.active { display: block; }
@@ -2536,14 +2473,9 @@ a.chat-card-badge.prs:hover { text-decoration: underline; }
     flex-wrap: wrap;
     font-size: 10px;
 }
-/* Disabled (empty) selector tab — grayed, non-interactive. The rail is
-   permanent; a panel with no content just disables its tab. */
-.chats-rail-pill.disabled,
-.chats-rail-pill:disabled {
-    opacity: 0.38;
-    cursor: default;
-    color: var(--text-muted);
-}
+/* Disabled (empty) selector tab — the rail is permanent; a panel with no
+   content just disables its tab. The grayed state is the shared widget's
+   .wb-filter-chip:disabled rule (no rail-specific override needed). */
 /* Tasks panel — structured rows (id + state header, role pills, wrapped
    text) so it reads with the same weight as the commit/PR markers rather
    than as flat text. Stays in the orange/task family per the palette lock. */
@@ -3665,21 +3597,6 @@ a.chat-card-badge.prs:hover { text-decoration: underline; }
     display: flex; align-items: center; gap: 10px;
     padding: 8px 0 12px 0;
 }
-.costs-activity-pills {
-    display: inline-flex; gap: 4px;
-    background: var(--bg-secondary); border: 1px solid var(--border);
-    border-radius: 16px; padding: 3px;
-}
-.costs-pill {
-    background: transparent; border: none; color: var(--text-secondary);
-    padding: 4px 14px; font-size: 12px; cursor: pointer; border-radius: 12px;
-    font-family: inherit; transition: background 0.12s, color 0.12s;
-}
-.costs-pill:hover { color: var(--text-primary); }
-.costs-pill.active {
-    background: var(--accent-subtle); color: var(--accent);
-    font-weight: 500;
-}
 
 .card.card-accent {
     border-left: 2px solid var(--accent);
@@ -3751,77 +3668,14 @@ a.chat-card-badge.prs:hover { text-decoration: underline; }
 .costs-meta {
     font-size: 12px; color: var(--text-muted);
 }
+/* Model-family rail container chrome. The chips themselves are the shared
+   wb-filter-* widget (mounted with class wb-filters is-grouped); this rule
+   only provides the row's padding + bottom divider separating it from the
+   cards below. */
 .costs-models-filter {
     display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
     padding: 8px 0 12px 0; border-bottom: 1px solid var(--border);
     margin-bottom: 16px;
-}
-.costs-filter-label {
-    font-size: 12px; color: var(--text-muted); margin-right: 6px;
-}
-.costs-filter-pill {
-    background: var(--bg-tertiary); border: 1px solid var(--border);
-    color: var(--text-secondary); padding: 3px 10px; border-radius: 12px;
-    font-size: 11px; cursor: pointer; transition: all 0.12s;
-    font-family: inherit;
-}
-.costs-filter-pill:hover {
-    background: var(--bg-secondary); color: var(--text-primary);
-    border-color: var(--accent);
-}
-.costs-filter-pill.active {
-    background: var(--accent-subtle); border-color: var(--accent);
-    color: var(--accent);
-}
-.costs-filter-pill.costs-filter-action {
-    color: var(--text-muted); background: transparent; border-style: dashed;
-}
-
-/* Model-family grouping
-   Each family gets a subtle bordered container holding [family pill] +
-   [member chips]. The family pill is visually heavier so it reads as a
-   header, and a third "indeterminate" state covers the partial-on case. */
-.costs-family-group {
-    display: inline-flex; align-items: center; gap: 4px;
-    padding: 3px 6px; margin-right: 4px;
-    background: rgba(255,255,255,0.015);
-    border: 1px solid var(--border);
-    border-radius: 14px;
-}
-.costs-family-pill {
-    background: var(--bg-tertiary); border: 1px solid var(--border);
-    color: var(--text-primary); padding: 3px 10px; border-radius: 12px;
-    font-size: 11px; font-weight: 600; cursor: pointer;
-    transition: all 0.12s; font-family: inherit;
-}
-.costs-family-pill:hover {
-    background: var(--accent-subtle); color: var(--accent);
-    border-color: var(--accent);
-}
-.costs-family-pill.active {
-    background: var(--accent); color: #fff; border-color: var(--accent);
-}
-/* Indeterminate = some members on, some off. Striped fill makes it
-   read as "in between" without a competing color. */
-.costs-family-pill.indeterminate {
-    background: var(--accent-subtle);
-    color: var(--accent); border-color: var(--accent);
-    background-image: repeating-linear-gradient(
-        45deg,
-        transparent 0,
-        transparent 3px,
-        rgba(216, 120, 87, 0.15) 3px,
-        rgba(216, 120, 87, 0.15) 6px
-    );
-}
-.costs-models-reset {
-    background: transparent; border: 1px dashed var(--border);
-    color: var(--text-muted); padding: 3px 10px; border-radius: 12px;
-    font-size: 11px; cursor: pointer; font-family: inherit;
-    margin-left: 8px;
-}
-.costs-models-reset:hover {
-    color: var(--accent); border-color: var(--accent);
 }
 
 /* Rate-limit chip + popover ---------------------------------------- */

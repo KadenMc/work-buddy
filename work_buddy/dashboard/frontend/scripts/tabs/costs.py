@@ -199,7 +199,7 @@ function costsRangeChanged(v) {
 function costsActivityChanged(v) {
     const prev = costsState.activity;
     costsState.activity = v;
-    _costsSyncActivityPills();
+    _costsRenderActivityFilter();
     if (typeof _persistHash === 'function') _persistHash();
     // api / local require a backend refetch (execution_mode filter
     // applies at row level — by_model / sessions need to be re-aggregated).
@@ -211,20 +211,36 @@ function costsActivityChanged(v) {
     else costsRenderAll();
 }
 
-function _costsSyncActivityPills() {
-    document.querySelectorAll('#costs-activity-pills .costs-pill').forEach(b => {
-        b.classList.toggle('active', b.dataset.activity === costsState.activity);
+// Activity selector via the shared wbRenderFilters widget (single-select
+// segmented). costsState.activity is the source of truth.
+function _costsRenderActivityFilter() {
+    wbRenderFilters('costs-activity-filter', {
+        id: 'costs-activity-filter',
+        mode: 'single',
+        variant: 'segmented',
+        groups: [{ key: 'activity', label: 'Activity', options: [
+            { value: 'all', label: 'All' },
+            { value: 'claude_code', label: 'Claude Code' },
+            { value: 'programmatic', label: 'Programmatic',
+              title: "work-buddy's runner activity — API + Local combined" },
+            { value: 'api', label: 'API' },
+            { value: 'local', label: 'Local' },
+        ] }],
+        getSelected: '_costsGetActivity',
+        onChange: '_costsOnActivityChange',
     });
 }
+function _costsGetActivity(key) { return costsState.activity; }
+function _costsOnActivityChange(key, value) { costsActivityChanged(value); }
 
 function _costsSyncActivityVisibility() {
     const row = document.getElementById('costs-activity-row');
     if (!row) return;
     const isWB = (costsState.project || '').toLowerCase() === 'work-buddy';
     row.style.display = isWB ? '' : 'none';
-    // Keep pill `.active` class in sync — needed when state was set
+    // Repaint the rail — keeps the active pill in sync when state was set
     // programmatically (e.g. URL hash restore) without a pill click.
-    _costsSyncActivityPills();
+    _costsRenderActivityFilter();
 }
 
 // Manual refresh: kick the Claude Code transcript scanner first, then
@@ -774,117 +790,49 @@ function _costsGroupModelsByFamily(models) {
     return ordered.concat(rest);
 }
 
-function _costsFamilyState(familyModels) {
-    if (!costsState.selectedModels) return 'all';
-    let on = 0;
-    for (const m of familyModels) if (costsState.selectedModels.has(m)) on++;
-    if (on === 0) return 'none';
-    if (on === familyModels.length) return 'all';
-    return 'partial';
-}
-
+// Model-family rail via the shared wbRenderFilters widget (grouped tristate
+// multi-select + solo + appears-when-narrowed reset). costsState.selectedModels
+// (a Set; null = all selected) is the source of truth. The widget derives each
+// family's all/none/indeterminate state from the leaf set and centralizes the
+// modifier-solo dispatch, so the bespoke costsModel* handlers are gone.
 function costsRenderModelsFilter() {
     const all = _costsCurrentModels();
     const el = document.getElementById('costs-models-filter');
     if (!el) return;
-    if (all.length === 0) {
-        el.innerHTML = '';
-        return;
-    }
+    if (all.length === 0) { el.innerHTML = ''; return; }
     const groups = _costsGroupModelsByFamily(all);
-    const isNarrowed = !!costsState.selectedModels
-        && costsState.selectedModels.size !== all.length;
-
-    let html = '<span class="costs-filter-label">Models:</span>';
-    for (const grp of groups) {
-        const state = _costsFamilyState(grp.models);
-        const stateClass = state === 'all' ? ' active'
-                         : state === 'partial' ? ' indeterminate' : '';
-        html += '<span class="costs-family-group">';
-        html += `<button class="costs-family-pill${stateClass}"
-                    title="Click to toggle family · Alt-click to solo"
-                    onclick="costsModelFamilyClick(event, '${costsEsc(grp.family)}')">${costsEsc(grp.family)}</button>`;
-        for (const m of grp.models) {
-            const on = costsState.selectedModels && costsState.selectedModels.has(m);
-            const label = _costsModelShortLabel(m, grp.family);
-            html += `<button class="costs-filter-pill${on ? ' active' : ''}"
-                        title="Click to toggle · Alt-click to solo"
-                        onclick="costsModelClick(event, '${costsEsc(m)}')">${costsEsc(label)}</button>`;
-        }
-        html += '</span>';
-    }
-    if (isNarrowed) {
-        html += '<button class="costs-models-reset"'
-              + ' title="Re-select every model"'
-              + ' onclick="costsModelsReset()">Reset</button>';
-    }
-    el.innerHTML = html;
+    wbRenderFilters('costs-models-filter', {
+        id: 'costs-models-filter',
+        mode: 'grouped',
+        variant: 'grouped',
+        label: 'Models',
+        families: groups.map(g => ({
+            family: g.family,
+            members: g.models.map(m => ({ value: m, label: _costsModelShortLabel(m, g.family) })),
+        })),
+        getSelected: '_costsGetSelectedModels',
+        onChange: '_costsOnModelChange',
+        solo: true,
+        reset: true,
+    });
 }
 
-// ---- Click dispatchers (modifier-key aware) ----
-
-function costsModelClick(ev, model) {
-    if (ev && (ev.altKey || ev.shiftKey)) costsModelSolo(model);
-    else costsModelToggle(model);
+// null selectedModels means "all" — materialize it so the widget's tristate
+// derivation and narrowed-reset check see a concrete full set.
+function _costsGetSelectedModels() {
+    return costsState.selectedModels || new Set(_costsCurrentModels());
+}
+function _costsOnModelChange(nextSet) {
+    costsState.selectedModels = nextSet;
+    _costsAfterModelChipChange();
 }
 
-// After mutating costsState.selectedModels, re-render the chip rail
-// (so the ``active`` class flips and the Reset link appears) and
-// refetch /api/costs so cards / charts / top-callers / sessions all
-// re-aggregate against the narrowed model set.
+// After mutating costsState.selectedModels, re-render the chip rail (so the
+// active classes flip and the Reset appears) and refetch /api/costs so cards /
+// charts / top-callers / sessions all re-aggregate against the narrowed set.
 function _costsAfterModelChipChange() {
     costsRenderModelsFilter();
     refreshCostsData();
-}
-
-function costsModelToggle(m) {
-    if (!costsState.selectedModels) {
-        costsState.selectedModels = new Set(_costsCurrentModels());
-    }
-    if (costsState.selectedModels.has(m)) costsState.selectedModels.delete(m);
-    else costsState.selectedModels.add(m);
-    _costsAfterModelChipChange();
-}
-
-function costsModelSolo(m) {
-    costsState.selectedModels = new Set([m]);
-    _costsAfterModelChipChange();
-}
-
-function costsModelFamilyClick(ev, family) {
-    if (ev && (ev.altKey || ev.shiftKey)) costsModelFamilySolo(family);
-    else costsModelFamilyToggle(family);
-}
-
-function costsModelFamilyToggle(family) {
-    const groups = _costsGroupModelsByFamily(_costsCurrentModels());
-    const grp = groups.find(g => g.family === family);
-    if (!grp) return;
-    if (!costsState.selectedModels) {
-        costsState.selectedModels = new Set(_costsCurrentModels());
-    }
-    const state = _costsFamilyState(grp.models);
-    if (state === 'all') {
-        // All currently on → toggle off.
-        for (const m of grp.models) costsState.selectedModels.delete(m);
-    } else {
-        // Partial or none → toggle all on.
-        for (const m of grp.models) costsState.selectedModels.add(m);
-    }
-    _costsAfterModelChipChange();
-}
-
-function costsModelFamilySolo(family) {
-    const groups = _costsGroupModelsByFamily(_costsCurrentModels());
-    const grp = groups.find(g => g.family === family);
-    if (!grp) return;
-    costsState.selectedModels = new Set(grp.models);
-    _costsAfterModelChipChange();
-}
-
-function costsModelsReset() {
-    costsState.selectedModels = new Set(_costsCurrentModels());
-    _costsAfterModelChipChange();
 }
 
 // ---- Aggregation helpers (range-filtered) ----

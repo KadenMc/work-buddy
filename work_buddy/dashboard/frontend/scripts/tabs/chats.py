@@ -71,6 +71,7 @@ async function loadChats() {
     chatsState.chats = data.chats || [];
     chatsResetPage();
     chatsPopulateProjectFilter();
+    _chatsRenderAdvFilters();
 
     // Honor `?q=...` one-shot. Triggers a search after data lands so
     // the search corpus is the freshly-loaded chats. Cleared from
@@ -577,7 +578,7 @@ function chatsResetPage() { chatsState.page = 1; }
 function chatsResetFiltersAll() {
     chatsState.filters.has_commits = false;
     chatsState.filters.has_unfinished = false;
-    chatsUpdatePillVisuals();
+    _chatsRenderAdvFilters();
     var projSel = document.getElementById('chats-project-filter');
     if (projSel) { projSel.value = ''; projSel.classList.remove('active'); }
     chatsClearSearch();  // also resets page + re-renders
@@ -906,18 +907,39 @@ function _loadRailTasks() {
     });
 }
 
+// Rail selector via the shared wbRenderFilters widget (single-select
+// segmented). chatsState.railPanel is the source of truth; the widget skips
+// disabled (empty) panels, so this only fires for selectable ones.
+function _chatsRenderRailSelector(enabled) {
+    wbRenderFilters('chats-rail-selector', {
+        id: 'chats-rail-selector',
+        mode: 'single',
+        variant: 'segmented',
+        groups: [{ key: 'panel', options: [
+            { value: 'topics', label: 'Topics', disabled: !enabled.topics },
+            { value: 'git',    label: 'Git',    disabled: !enabled.git },
+            { value: 'tasks',  label: 'Tasks',  disabled: !enabled.tasks },
+        ] }],
+        getSelected: '_chatsGetRailPanel',
+        onChange: '_chatsOnRailChange',
+    });
+}
+function _chatsGetRailPanel(key) { return chatsState.railPanel; }
+function _chatsOnRailChange(key, value) { chatsRailSwitch(value); }
+
 function chatsRailSwitch(panelId) {
-    var rail = document.getElementById('chats-topic-rail');
-    if (!rail) return;
-    var btn = rail.querySelector('.chats-rail-pill[data-panel="' + panelId + '"]');
-    if (btn && btn.classList.contains('disabled')) return;  // grayed/empty tab
     chatsState.railPanel = panelId;
-    rail.querySelectorAll('.chats-rail-pill').forEach(function(b) {
-        b.classList.toggle('active', b.dataset.panel === panelId);
-    });
-    rail.querySelectorAll('.chats-rail-panel').forEach(function(p) {
-        p.classList.toggle('active', p.id === 'chats-rail-' + panelId);
-    });
+    // Repaint the selector (flips the active pill) from the registered config,
+    // which carries the current per-panel disabled flags, then activate the
+    // matching panel.
+    var cfg = window._wbFilterConfigs && window._wbFilterConfigs['chats-rail-selector'];
+    if (cfg) wbRenderFilters('chats-rail-selector', cfg);
+    var rail = document.getElementById('chats-topic-rail');
+    if (rail) {
+        rail.querySelectorAll('.chats-rail-panel').forEach(function(p) {
+            p.classList.toggle('active', p.id === 'chats-rail-' + panelId);
+        });
+    }
     if (panelId === 'tasks' && chatsState.tasksData == null) _loadRailTasks();
 }
 
@@ -961,14 +983,6 @@ function renderActivityRail() {
     }
     chatsState.railPanel = active;
 
-    function pill(id, label) {
-        var off = !enabled[id];
-        return '<button class="costs-pill chats-rail-pill'
-            + (active === id ? ' active' : '') + (off ? ' disabled' : '') + '"'
-            + ' data-panel="' + id + '"'
-            + (off ? ' disabled title="Nothing to show"' : ' onclick="chatsRailSwitch(\'' + id + '\')"')
-            + '>' + label + '</button>';
-    }
     function panel(id, html) {
         return '<div class="chats-rail-panel' + (active === id ? ' active' : '') + '" id="chats-rail-' + id + '">'
             + html + '</div>';
@@ -978,9 +992,7 @@ function renderActivityRail() {
     rail.id = 'chats-topic-rail';
     rail.className = 'chats-topic-rail';
     rail.innerHTML =
-        '<div class="chats-rail-selector">'
-        + pill('topics', 'Topics') + pill('git', 'Git') + pill('tasks', 'Tasks')
-        + '</div>'
+        '<div class="wb-filters" id="chats-rail-selector"></div>'
         + panel('topics', _railTopicsHtml(topicData))
         + panel('git', _railGitHtml(commits))
         + panel('tasks', _railTasksHtml(chatsState.tasksData));
@@ -998,6 +1010,10 @@ function renderActivityRail() {
     }
     if (messagesEl.parentNode !== wrapper) wrapper.appendChild(messagesEl);
     wrapper.insertBefore(rail, messagesEl);
+
+    // Fill the selector now that #chats-rail-selector is in the DOM. The
+    // disabled flags reflect the just-computed per-panel enabled map.
+    _chatsRenderRailSelector(enabled);
 
     // If we opened straight onto Tasks, kick off its lazy fetch.
     if (active === 'tasks' && chatsState.tasksData == null) _loadRailTasks();
@@ -2003,42 +2019,53 @@ function chatsToggleAdvanced() {
     btn.textContent = (isHidden ? 'Advanced ▴' : 'Advanced ▾');
 }
 
-function chatsToggleFilter(key) {
-    if (!(key in chatsState.filters)) return;
-    chatsState.filters[key] = !chatsState.filters[key];
-    chatsUpdatePillVisuals();
+// Advanced filter rail via the shared wbRenderFilters widget (multi-select
+// boolean predicates, AND-composed). chatsState.filters stays the source of
+// truth; the widget reads/writes it through the string-named accessors.
+function _chatsRenderAdvFilters() {
+    wbRenderFilters('chats-advanced-filters', {
+        id: 'chats-advanced-filters',
+        mode: 'multi',
+        variant: 'chips',
+        groups: [{ key: 'advanced', label: 'Filter', options: [
+            { value: 'has_commits',    label: 'Has commits' },
+            { value: 'has_unfinished', label: 'Has unfinished work' },
+        ] }],
+        getSelected: '_chatsGetAdvFilter',
+        onChange: '_chatsOnAdvChange',
+        reset: true,
+        isNarrowed: '_chatsAdvNarrowed',
+        onReset: 'chatsResetFilters',
+    });
+}
+function _chatsGetAdvFilter(key) {
+    var s = new Set();
+    Object.keys(chatsState.filters).forEach(function(k) { if (chatsState.filters[k]) s.add(k); });
+    return s;
+}
+function _chatsOnAdvChange(key, nextSet) {
+    Object.keys(chatsState.filters).forEach(function(k) { chatsState.filters[k] = nextSet.has(k); });
+    _chatsRenderAdvFilters();
     chatsResetPage();
-    // If a global-search query is active, re-run it so the
-    // eligible_sids set updates in lockstep. Otherwise just re-render
-    // the listing-mode view.
-    if (chatsState.searchActive) {
-        chatsGlobalSearch();
-    } else {
-        renderChatList();
-    }
+    // If a global-search query is active, re-run it so the eligible_sids set
+    // updates in lockstep. Otherwise just re-render the listing-mode view.
+    if (chatsState.searchActive) chatsGlobalSearch();
+    else renderChatList();
+}
+function _chatsAdvNarrowed() {
+    return Object.keys(chatsState.filters).some(function(k) { return chatsState.filters[k]; });
 }
 
 function chatsResetFilters() {
     chatsState.filters.has_commits = false;
     chatsState.filters.has_unfinished = false;
-    chatsUpdatePillVisuals();
+    _chatsRenderAdvFilters();
     chatsResetPage();
     if (chatsState.searchActive) {
         chatsGlobalSearch();
     } else {
         renderChatList();
     }
-}
-
-function chatsUpdatePillVisuals() {
-    var any = false;
-    Object.keys(chatsState.filters).forEach(function(k) {
-        var pill = document.getElementById('chats-pill-' + k.replace(/_/g, '-'));
-        if (pill) pill.classList.toggle('active', !!chatsState.filters[k]);
-        if (chatsState.filters[k]) any = true;
-    });
-    var reset = document.getElementById('chats-pill-reset');
-    if (reset) reset.style.display = any ? '' : 'none';
 }
 
 /**

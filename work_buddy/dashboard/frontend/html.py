@@ -119,7 +119,7 @@ def _html() -> str:
     <div class="task-toolbar">
         <div class="section-title"><a id="master-task-link" href="#" style="color: var(--accent); text-decoration: none;" title="Open in Obsidian">Master Task List</a> <span id="task-namespace-breadcrumb" class="task-namespace-breadcrumb"></span></div>
         <div class="task-toolbar-controls">
-            <div id="task-state-chips" class="task-state-chips" title="Toggle which task states to show"></div>
+            <div id="task-state-chips" class="wb-filters" title="Toggle which task states to show"></div>
             <span id="task-filter-status" class="task-filter-status" title="Filtered task count and last sync time"></span>
             <button id="task-sync-btn" class="task-sync-btn" title="Run task_sync now (refreshes the view when done)">↻ Sync</button>
             <input type="text" id="task-search" class="task-search-input" placeholder="Filter tasks..." />
@@ -349,16 +349,7 @@ def _html() -> str:
          the rarely-used pure-predicate pills. Project + sort + window
          are common enough to stay in the main toolbar. -->
     <div id="chats-advanced" class="chats-advanced-panel" style="display:none;">
-        <div class="chats-filter-row">
-            <span class="chats-filter-label">Filter:</span>
-            <button class="chats-filter-pill" id="chats-pill-has-commits"
-                    onclick="chatsToggleFilter('has_commits')">Has commits</button>
-            <button class="chats-filter-pill" id="chats-pill-has-unfinished"
-                    onclick="chatsToggleFilter('has_unfinished')">Has unfinished work</button>
-            <span class="chats-filter-spacer"></span>
-            <button class="chats-filter-pill chats-filter-reset" id="chats-pill-reset"
-                    onclick="chatsResetFilters()" style="display:none;">Reset</button>
-        </div>
+        <div class="wb-filters" id="chats-advanced-filters"></div>
     </div>
 
     <!-- Single-pane content area. Exactly one of #chats-list or
@@ -460,20 +451,7 @@ def _html() -> str:
          is the umbrella for everything work-buddy's runner started (cloud + local).
          API and Local drill into the cloud / local backends individually. -->
     <div id="costs-activity-row" class="costs-activity-row" style="display:none;">
-        <span class="costs-filter-label">Activity:</span>
-        <div class="costs-activity-pills" id="costs-activity-pills">
-            <button class="costs-pill active" data-activity="all"
-                    onclick="costsActivityChanged('all')">All</button>
-            <button class="costs-pill" data-activity="claude_code"
-                    onclick="costsActivityChanged('claude_code')">Claude Code</button>
-            <button class="costs-pill" data-activity="programmatic"
-                    onclick="costsActivityChanged('programmatic')"
-                    title="work-buddy's runner activity \u2014 API + Local combined">Programmatic</button>
-            <button class="costs-pill" data-activity="api"
-                    onclick="costsActivityChanged('api')">API</button>
-            <button class="costs-pill" data-activity="local"
-                    onclick="costsActivityChanged('local')">Local</button>
-        </div>
+        <div class="wb-filters" id="costs-activity-filter"></div>
     </div>
 
     <div id="costs-models-filter" class="costs-models-filter"></div>
