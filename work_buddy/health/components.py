@@ -500,21 +500,6 @@ _register(ComponentDef(
 # --- Obsidian plugins (depend on obsidian) ---
 
 _register(ComponentDef(
-    id="smart_connections",
-    display_name="Smart Connections",
-    category="plugin",
-    depends_on=["obsidian"],
-    health_source="tool_probe",
-    check_sequence=[
-        CheckStep(
-            description="Smart Connections plugin loaded in Obsidian",
-            check_fn="work_buddy.health.checks.check_obsidian_plugin_smart",
-            on_fail="Smart Connections plugin is not active in Obsidian.",
-        ),
-    ],
-))
-
-_register(ComponentDef(
     id="datacore",
     display_name="Datacore Plugin",
     category="plugin",

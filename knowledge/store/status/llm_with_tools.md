@@ -65,8 +65,8 @@ invokes:
 - context_obsidian
 - context_projects
 - context_search
-- context_smart
 - context_tasks
+- context_vault
 - context_wellness
 - contract_constraints
 - contract_health

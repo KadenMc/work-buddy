@@ -128,7 +128,7 @@ class TestBreakerTripAndShed:
 
 class TestBridgeFamily:
     """The bridge failure domain is the Obsidian bridge AND its in-Obsidian
-    plugins (datacore, smart_connections, google_calendar) — they go down
+    plugins (datacore, google_calendar) — they go down
     together when the bridge is down. All are breaker-governed, and carved out
     of the build-time disable only when the bridge ITSELF is the cause."""
 
@@ -136,7 +136,7 @@ class TestBridgeFamily:
         from work_buddy.tools import obsidian_backed_tools
 
         backed = obsidian_backed_tools()
-        assert {"obsidian", "datacore", "smart_connections"} <= backed
+        assert {"obsidian", "datacore", "google_calendar"} <= backed
 
     def test_plugin_cap_is_breaker_governed_and_unbounded(self):
         # A datacore-requiring cap (NOT directly requiring obsidian) still gets
@@ -172,7 +172,7 @@ class TestBridgeFamily:
         try:
             # Bridge down → obsidian + all its plugins unavailable transitively.
             bridge_down = build(
-                {"obsidian", "datacore", "smart_connections", "google_calendar"}
+                {"obsidian", "datacore", "google_calendar"}
             )
             assert "datacore_query" not in bridge_down, (
                 "datacore_query should stay admitted when the bridge is down"

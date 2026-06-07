@@ -35,11 +35,11 @@ def test_disabled_reason_surfaces_missing_deps():
 def test_disabled_reason_handles_multiple_deps():
     with patch(
         "work_buddy.tools.DISABLED_CAPABILITIES",
-        {"context_smart": ["obsidian", "smart_connections"]},
+        {"datacore_query": ["obsidian", "datacore"]},
     ):
-        reason = _disabled_reason("context_smart")
+        reason = _disabled_reason("datacore_query")
     assert "obsidian" in reason
-    assert "smart_connections" in reason
+    assert "datacore" in reason
 
 
 # ---------------------------------------------------------------------------
@@ -122,7 +122,7 @@ class TestDisabledReasonEnriched:
         stale. Each reported with its own state."""
         with patch(
             "work_buddy.tools.DISABLED_CAPABILITIES",
-            {"context_smart": ["obsidian", "smart_connections"]},
+            {"datacore_query": ["obsidian", "datacore"]},
         ), patch(
             "work_buddy.tools.get_tool_status",
             return_value={
@@ -133,7 +133,7 @@ class TestDisabledReasonEnriched:
                         "reason": "Bridge unreachable",
                         "config_enabled": True,
                     },
-                    "smart_connections": {
+                    "datacore": {
                         "available": True,
                         "probe_ms": 100.0,
                         "reason": "",
@@ -142,11 +142,11 @@ class TestDisabledReasonEnriched:
                 },
             },
         ):
-            reason = _disabled_reason("context_smart")
+            reason = _disabled_reason("datacore_query")
 
         assert "obsidian" in reason
         assert "Bridge unreachable" in reason
-        assert "smart_connections" in reason
+        assert "datacore" in reason
         assert "available" in reason.lower()
         assert "mcp_registry_reload" in reason
 

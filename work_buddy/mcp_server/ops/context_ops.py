@@ -28,7 +28,7 @@ def _register() -> None:
         get_chat_context,
         get_chrome_context,
         get_messages_context,
-        get_smart_context,
+        get_vault_context,
         get_calendar_context,
         get_projects_context,
         collect_bundle,
@@ -152,7 +152,7 @@ def _register() -> None:
     register_op("op.wb.chrome_route_to_umbrella_task", lambda **kw: __import__('work_buddy.collectors.chrome_thread_actions', fromlist=['chrome_route_to_umbrella_task']).chrome_route_to_umbrella_task(**kw))
     register_op("op.wb.llm_costs", llm_costs)
     register_op("op.wb.context_messages", get_messages_context)
-    register_op("op.wb.context_smart", get_smart_context)
+    register_op("op.wb.context_vault", get_vault_context)
     register_op("op.wb.context_calendar", get_calendar_context)
     register_op("op.wb.datacore_status", datacore_status)
     register_op("op.wb.datacore_query", datacore_query)

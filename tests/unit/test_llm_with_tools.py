@@ -505,7 +505,7 @@ def test_llm_with_tools_readonly_context_exposes_broader_menu(
     # The actual capability whitelist is returned in the result and
     # reflects the broader readonly_context preset.
     assert "context_git" in result["allowed_tools"]
-    assert "context_smart" in result["allowed_tools"]
+    assert "context_vault" in result["allowed_tools"]
     assert "datacore_run_plan" in result["allowed_tools"]
 
 

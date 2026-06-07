@@ -112,7 +112,6 @@ DEFAULTS = {
         "chrome_extension": {"enabled": True},
         "hindsight": {"enabled": True},
         "telegram": {"enabled": True},
-        "smart_connections": {"enabled": True},
         "embedding": {"enabled": True},
         "messaging": {"enabled": True},
         "datacore": {"enabled": True},

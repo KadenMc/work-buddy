@@ -27,7 +27,6 @@ INTEGRATED_PLUGINS = {
     "google-calendar": "work_buddy.calendar",
     "obsidian-tasks-plugin": "work_buddy.obsidian.tasks",
     "tag-wrangler": "work_buddy.obsidian.tags",
-    "smart-connections": "work_buddy.obsidian.smart",
     "obsidian-local-rest-api": "work_buddy.obsidian.bridge",
     "obsidian-day-planner": "work_buddy.obsidian.day_planner",
     "datacore": "work_buddy.obsidian.datacore",

@@ -136,9 +136,9 @@ Every scope below is browsable with `mcp__work-buddy__wb_run("agent_docs", {"sco
 | `projects/` | Registry, observations, memory bank |
 | `entities/` | Entity registry — authored names, hierarchical tags, aliases, federated `entity_resolve`, append-only reference index |
 | `journal/` | Daily note, sign-in, running notes, day planner |
-| `context/` | Collectors (git, chrome, calendar, obsidian, smart, datacore…), bundles, conversation search, session inspection, knowledge-store editing |
+| `context/` | Collectors (git, chrome, calendar, obsidian, vault, datacore…), bundles, conversation search, session inspection, knowledge-store editing |
 | `conversation_observability/` | Durable session-attributed commits / writes / PR activity / uncommitted-work / topic summaries derived from Claude Code JSONL sessions |
-| `obsidian/` | Bridge, vault writer, tasks plugin, datacore, smart ecosystem |
+| `obsidian/` | Bridge, vault writer, tasks plugin, datacore |
 | `vault/` | Vault-recon collector, investigation-agent directions, accept-loop |
 | `email/` | Thunderbird bridge, provider abstraction, email triage adapter |
 | `calendar/` | Calendar reads via provider seam (canonical models, protocol + factory, Obsidian-bridge adapter), coverage |

@@ -106,7 +106,7 @@ _READONLY_SAFE = frozenset({
 # ---------------------------------------------------------------------------
 # Adds the context collectors that fetch richer but more expensive
 # context (git diffs, Obsidian summaries, chat history, Chrome tabs,
-# calendar, smart/semantic search). All reads — no mutations.
+# calendar, vault/semantic search). All reads — no mutations.
 _READONLY_CONTEXT = _READONLY_SAFE | frozenset({
     # Context collectors
     "context_bundle",
@@ -118,7 +118,7 @@ _READONLY_CONTEXT = _READONLY_SAFE | frozenset({
     "context_messages",
     "context_chrome",
     "context_calendar",
-    "context_smart",
+    "context_vault",
     "context_wellness",
     "context_search",
     "ir_index",

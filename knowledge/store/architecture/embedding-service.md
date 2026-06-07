@@ -164,7 +164,7 @@ Every client function returns `None` (or an empty list) when the service is unav
 
 ## Consumers
 
-Knowledge search, IR conversation search, Smart Connections ranking, task-triage similarity, and other semantic-scoring sites throughout the codebase all route through this service. Model loading happens once here; all callers share the loaded weights.
+Knowledge search, IR conversation search, native vault search, task-triage similarity, and other semantic-scoring sites throughout the codebase all route through this service. Model loading happens once here; all callers share the loaded weights.
 
 ## Optional: LM Studio offload for bulk document encoding
 

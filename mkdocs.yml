@@ -80,6 +80,7 @@ nav:
   - Hot-Path Discipline: handbook/architecture_hot-path-discipline.md
   - Inference: handbook/architecture_inference.md
   - Local Inference Broker: handbook/architecture_inference_broker.md
+  - Inference Provenance: handbook/architecture_inference_provenance.md
   - Knowledge System: handbook/architecture_knowledge-system.md
   - LLM Runner: handbook/architecture_llm-runner.md
   - Local LLM With Tools: handbook/architecture_llm-with-tools.md
@@ -90,6 +91,7 @@ nav:
   - Resilience Framework: handbook/architecture_resilience.md
   - Async Execution Queue: handbook/architecture_retry-queue.md
   - Summarization Framework: handbook/architecture_summarization-framework.md
+  - Vault Semantic Index: handbook/architecture_vault-index.md
   - Workflow Cancel Directions: handbook/architecture_wb-workflow-cancel-directions.md
   - Workflow Run Lifecycle: handbook/architecture_workflow-run-lifecycle.md
   - Workflow System: handbook/architecture_workflows.md
@@ -154,8 +156,8 @@ nav:
   - Context Obsidian: handbook/context_context_obsidian.md
   - Context Projects: handbook/context_context_projects.md
   - Context Search: handbook/context_context_search.md
-  - Context Smart: handbook/context_context_smart.md
   - Context Tasks: handbook/context_context_tasks.md
+  - Context Vault: handbook/context_context_vault.md
   - Context Wellness: handbook/context_context_wellness.md
   - Datacore Compile Plan: handbook/context_datacore_compile_plan.md
   - Datacore Evaluate: handbook/context_datacore_evaluate.md
@@ -190,8 +192,11 @@ nav:
   - Session Uncommitted: handbook/context_session_uncommitted.md
   - Session Wb Activity: handbook/context_session_wb_activity.md
   - Session Inspection: handbook/context_sessions.md
+  - Vault Config: handbook/context_vault_config.md
+  - Vault Index: handbook/context_vault_index.md
   - Vault Recon: handbook/context_vault_recon.md
   - Vault Recon Collect: handbook/context_vault_recon_collect.md
+  - Vault Search: handbook/context_vault_search.md
   - Workflow Cancel: handbook/context_workflow_cancel.md
   - Workflow Sweep Idle: handbook/context_workflow_sweep_idle.md
 - Contracts:
@@ -359,7 +364,6 @@ nav:
   - Day Planner Plugin Integration: handbook/obsidian_day-planner.md
   - Keep the Rhythm Integration: handbook/obsidian_ktr.md
   - Obsidian Retry: handbook/obsidian_obsidian_retry.md
-  - Smart Connections Ecosystem: handbook/obsidian_smart-ecosystem.md
   - Tag Wrangler Integration: handbook/obsidian_tags.md
   - Obsidian Tasks Plugin Integration: handbook/obsidian_tasks-plugin.md
   - Typed Obsidian Exception Hierarchy: handbook/obsidian_typed-exceptions.md

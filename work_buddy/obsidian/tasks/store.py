@@ -215,7 +215,7 @@ VALID_CREATION_EFFORTS = {"sparse", "medium", "developed"}
 VALID_USER_INVOLVEMENTS = {"low", "medium", "high"}
 
 # creation_provenance is intentionally OPEN (no validator) — new sources
-# (telegram, calendar, smart-source, …) get to register their own
+# (telegram, calendar, …) get to register their own
 # provenance string without a code change. Convention: 'manual' or
 # 'agent_inferred_from_*'.
 

@@ -35,7 +35,7 @@ def test_wave_2_3_sources_are_registered():
         "obsidian", "obsidian_tasks", "obsidian_wellness",
         "calendar", "day_planner", "session_activity",
         # wave 3
-        "chat", "message", "smart", "datacore",
+        "chat", "message", "vault", "datacore",
     }
     assert expected_names <= set(registry.names())
 
