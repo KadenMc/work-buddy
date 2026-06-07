@@ -12,8 +12,8 @@ with a chain icon and share a trace id.
 
 Per-machine occupancy / loaded-model state ("what's running on which box") is out
 of scope for this provenance feed; it belongs to the separate **Local model
-fleet** view (LM Studio / LM Link integration). Filter chips use the shared
-``.costs-filter-pill`` chip style.
+fleet** view (LM Studio / LM Link integration). The where/kind/status filter rail
+is the shared ``wbRenderFilters`` widget (``core/filters.py``) in multi-select mode.
 """
 
 from __future__ import annotations
@@ -104,6 +104,38 @@ function _infRender() {
     const container = document.getElementById('inference-content');
     if (!container) return;
     window._wbMorphReplace(container, _infRenderHeader() + _infRenderActivity(window._infActivity));
+    // The filter rail lives in a wb-filters container inside the morphed blob;
+    // refill it after the diff (selection is re-derived from the _inf* Sets, so
+    // it survives the refresh). No-op when the feed is empty (no container).
+    wbRenderFilters('inf-filters', _infFilterConfig());
+}
+
+// Caller-owned selection: each group maps to one of the multi-select Sets.
+function _infFilterConfig() {
+    return {
+        id: 'inf-filters',
+        mode: 'multi',
+        variant: 'chips',
+        groups: [
+            { key: 'where',  label: 'where',  options: [{ value: 'local' }, { value: 'cloud' }] },
+            { key: 'kind',   label: 'kind',   options: [{ value: 'completion' }, { value: 'embedding' }] },
+            { key: 'status', label: 'status', options: [{ value: 'ok' }, { value: 'errored' }, { value: 'queued' }] },
+        ],
+        getSelected: '_infGetSelected',
+        onChange: '_infOnChange',
+    };
+}
+function _infGetSelected(key) {
+    if (key === 'where')  return _infWhere;
+    if (key === 'kind')   return _infKind;
+    if (key === 'status') return _infStatusSet;
+    return new Set();
+}
+function _infOnChange(key, nextSet) {
+    if (key === 'where')       _infWhere = nextSet;
+    else if (key === 'kind')   _infKind = nextSet;
+    else if (key === 'status') _infStatusSet = nextSet;
+    _infRender();
 }
 
 function _infRenderHeader() {
@@ -117,10 +149,6 @@ function _infRenderHeader() {
                 completions and embeddings — newest first.</div>
             ${_infHelpOpen ? _INF_HELP_HTML : ''}
         </div>`;
-}
-
-function _infFilterChip(setter, value, label, active) {
-    return `<button class="costs-filter-pill${active ? ' active' : ''}" onclick="${setter}('${value}')">${escapeHtml(label)}</button>`;
 }
 
 function _infRenderActivity(act) {
@@ -138,13 +166,9 @@ function _infRenderActivity(act) {
         && (_infKind.size === 0 || _infKind.has(c.kind))
         && (_infStatusSet.size === 0 || _infStatusSet.has(_infStatusGroup(c.status))));
 
-    const chip = (setter, set, value) => _infFilterChip(setter, value, value, set.has(value));
-    const filterBar = `
-        <div class="inf-filters">
-            <span class="inf-filter-label">where</span>${chip('_infToggleWhere', _infWhere, 'local')}${chip('_infToggleWhere', _infWhere, 'cloud')}
-            <span class="inf-filter-label">kind</span>${chip('_infToggleKind', _infKind, 'completion')}${chip('_infToggleKind', _infKind, 'embedding')}
-            <span class="inf-filter-label">status</span>${chip('_infToggleStatus', _infStatusSet, 'ok')}${chip('_infToggleStatus', _infStatusSet, 'errored')}${chip('_infToggleStatus', _infStatusSet, 'queued')}
-        </div>`;
+    // Shared filter rail (window.wbRenderFilters); filled by _infRender after
+    // the morphdom diff. Empty container here keeps the markup serializable.
+    const filterBar = `<div class="wb-filters" id="inf-filters"></div>`;
 
     const body = rows.length ? rows.map(c => {
         const chain = (c.trace_id && traceCounts[c.trace_id] > 1)
@@ -185,11 +209,6 @@ function _infRenderActivity(act) {
         </div>`;
 }
 
-function _infToggleSet(set, v) { if (set.has(v)) set.delete(v); else set.add(v); _infRender(); }
-function _infToggleWhere(v) { _infToggleSet(_infWhere, v); }
-function _infToggleKind(v) { _infToggleSet(_infKind, v); }
-function _infToggleStatus(v) { _infToggleSet(_infStatusSet, v); }
-
 // Surface handle for the event-bus dispatcher (inference.call_logged → _refreshSoon).
 window.inferenceSurface = {
     refresh: function() { return loadInference(); },
@@ -225,10 +244,8 @@ def styles() -> str:
 .inf-mode-local { background: color-mix(in srgb, var(--green) 16%, transparent); color: var(--green); }
 .inf-mode-cloud { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
 
-/* Filter chips — reuse the shared .costs-filter-pill style */
-.inf-filters { display:flex; align-items:center; gap:6px; margin-bottom:8px; flex-wrap:wrap; }
-.inf-filter-label { font-size:0.75em; color: var(--text-muted); margin-left:8px; }
-.inf-filter-label:first-child { margin-left:0; }
+/* Filter rail spacing — the chips themselves are the shared wb-filter-* widget. */
+.inf-section .wb-filters { margin-bottom: 8px; }
 
 /* Recent-calls scroll viewport (mirrors the Activity Event Log's .log-container) */
 .inf-table-scroll { max-height: 420px; overflow-y: auto; border:1px solid var(--border, var(--bg-tertiary)); border-radius:8px; }

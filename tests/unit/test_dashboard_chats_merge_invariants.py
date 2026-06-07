@@ -153,9 +153,10 @@ def test_filter_changes_reset_pagination(chats_js: str) -> None:
     reset chatsState.page to the first page. Otherwise users on page 5
     would see a confusing partial slice after re-filtering.
     """
-    # Direct calls to chatsResetPage in the relevant handlers.
+    # Direct calls to chatsResetPage in the relevant handlers. The advanced
+    # filter toggle flows through the shared widget's onChange adapter.
     for handler in (
-        "chatsToggleFilter",
+        "_chatsOnAdvChange",
         "chatsResetFilters",
         "chatsProjectFilterChanged",
         "applyChatsFiltersAndSort",

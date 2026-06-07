@@ -112,26 +112,24 @@ function _applyTaskStateFilter(tasks, activeStates) {
     return tasks.filter(t => activeStates.has(t.state || (t.done ? "done" : "inbox")));
 }
 
+// State-chip filter via the shared wbRenderFilters widget (multi-select).
+// Selection stays in window._taskStateFilter (caller-owned), so it survives
+// the morphdom table refresh.
 function _renderTaskStateChips() {
-    const host = document.getElementById('task-state-chips');
-    if (!host) return;
-    host.innerHTML = '';
-    const active = window._taskStateFilter;
-    for (const state of TASK_STATES_ORDER) {
-        const chip = document.createElement('button');
-        chip.type = 'button';
-        chip.className = 'task-state-chip' + (active.has(state) ? ' selected' : '');
-        chip.dataset.state = state;
-        chip.textContent = state;
-        chip.title = active.has(state) ? 'Hide ' + state : 'Show ' + state;
-        chip.addEventListener('click', () => {
-            if (active.has(state)) active.delete(state);
-            else active.add(state);
-            _renderTaskStateChips();
-            _refreshTaskView();
-        });
-        host.appendChild(chip);
-    }
+    wbRenderFilters('task-state-chips', {
+        id: 'task-state-chips',
+        mode: 'multi',
+        variant: 'chips',
+        groups: [{ key: 'state', options: TASK_STATES_ORDER.map(s => ({ value: s })) }],
+        getSelected: '_taskGetStateFilter',
+        onChange: '_taskOnStateChange',
+    });
+}
+function _taskGetStateFilter(key) { return window._taskStateFilter; }
+function _taskOnStateChange(key, nextSet) {
+    window._taskStateFilter = nextSet;
+    _renderTaskStateChips();
+    _refreshTaskView();
 }
 
 async function loadTasks() {

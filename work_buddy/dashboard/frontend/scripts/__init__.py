@@ -33,6 +33,7 @@ from .core import (
     card_registry,
     chat_sidebar,
     event_bus,
+    filters,
     form_bridge,
     helpers,
     notifications,
@@ -101,6 +102,10 @@ SCRIPTS = [
     card_event_log.script,
     card_notification_log.script,
     pager.script,
+    # filters: core/ chip-filter widget (window.wbRenderFilters). Uses
+    # escapeHtml (helpers, above) and declares only window.* assignments +
+    # hoisted function declarations, so it is safe ahead of page.script.
+    filters.script,
     workflows.script,
     notifications.script,
     chat_sidebar.script,
@@ -131,6 +136,7 @@ SCRIPTS = [
 ]
 
 STYLES = [
+    filters.styles,
     embeddings.styles,
     inference.styles,
     resolution.styles,
