@@ -188,6 +188,28 @@ def log_call(
     except Exception:
         pass  # never let event publish hurt the call-logging path
 
+    # First-class inference provenance — a SEPARATE record beside this cost
+    # ledger entry (cost stays authoritative for $; provenance answers "what
+    # for"). Every completion path funnels through log_call, so emitting here
+    # gives universal coverage without threading through each backend. The
+    # call_id + detail are read from the ambient call context (bound by
+    # run_task / with_tools); call_site is derived from the caller chain.
+    try:
+        from work_buddy.llm.provenance import record_inference_call
+        record_inference_call(
+            kind="completion",
+            model=model,
+            provider=backend or ("cloud" if execution_mode == "cloud" else "local"),
+            execution_mode=execution_mode,
+            status="cached" if cached else "ok",
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            task_id=task_id,
+            trace_id=trace_id,
+        )
+    except Exception:
+        pass  # provenance is best-effort; never affects the cost path
+
 
 def session_total() -> dict:
     """Summarize costs for the current session."""

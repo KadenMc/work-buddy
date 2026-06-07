@@ -104,6 +104,7 @@ def summarize(
         max_tokens=512,
         cache_ttl_minutes=cache_ttl_minutes,
         trace_id=task_id,
+        detail=label or None,  # readily-available one-liner → "Summarize: <label>"
     )
 
     if resp.is_error():

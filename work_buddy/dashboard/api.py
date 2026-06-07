@@ -1421,92 +1421,109 @@ def get_embeddings_summary() -> dict[str, Any]:
         return _embeddings_cache
 
 
-# Broker (Inference sub-view) snapshot cache. Unlike the embeddings snapshot
-# (local store reads), building this does a cross-process HTTP call to the
-# embedding service's ``/broker/state`` — so a slow/down service must NOT block
-# the request. Broker state is live, so the TTL is short; the dashboard poller
-# refreshes it on a cadence and a panel open serves whatever is cached.
-_BROKER_CACHE_TTL = 2.5
-_broker_cache: dict[str, Any] | None = None
-_broker_cache_ts: float = 0.0
-_broker_cache_lock = threading.Lock()
-_broker_refreshing = False
+# ---------------------------------------------------------------------------
+# Inference activity (Settings › Inference — cross-provider provenance feed)
+# ---------------------------------------------------------------------------
+# Reads the per-session ``inference_calls.jsonl`` provenance logs (same
+# cross-session pattern as the Costs tab), newest-first, and joins local rows to
+# broker scheduler latency by ``call_id``. Background-cached: the scan touches
+# many small files, so we don't repeat it on every SSE tick.
+_INFERENCE_CACHE_TTL = 3.0
+_INFERENCE_RECENT_LIMIT = 200
+_inference_cache: dict[str, Any] | None = None
+_inference_cache_ts: float = 0.0
+_inference_cache_lock = threading.Lock()
+_inference_refreshing = False
 
 
-def _build_broker_summary() -> dict[str, Any]:
-    """Compose the Inference sub-view snapshot from the embedding-service broker.
+def _iter_inference_calls(session_dir: Path) -> Any:
+    """Yield parseable rows from one session's inference_calls.jsonl (tolerant)."""
+    path = session_dir / "inference_calls.jsonl"
+    if not path.exists():
+        return
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                yield json.loads(line)
+            except json.JSONDecodeError:
+                continue
+    except OSError:
+        return
 
-    Wraps the cross-process read in an availability envelope: the service being
-    unreachable is the normal "no data yet" state, not an error. The panel
-    renders a graceful empty state on ``available: False``.
-    """
-    from work_buddy.embedding.client import broker_state
 
-    state = broker_state()
-    if state is None:
-        return {"available": False}
-    return {"available": True, **state}
+def _build_inference_activity() -> dict[str, Any]:
+    """Compose the Inference-activity feed: newest-first calls + broker join."""
+    rows: list[dict[str, Any]] = []
+    agents_root = _AGENTS_DIR
+    if agents_root.exists():
+        for session_dir in agents_root.iterdir():
+            if not session_dir.is_dir():
+                continue
+            short = session_dir.name[:8]
+            for rec in _iter_inference_calls(session_dir):
+                rec.setdefault("session", short)
+                rows.append(rec)
+    rows.sort(key=lambda r: r.get("finished_at") or "", reverse=True)
+    rows = rows[:_INFERENCE_RECENT_LIMIT]
+    # Join: enrich rows with broker scheduler latency by call_id (local calls
+    # that went through the broker share their id with their broker-metrics row).
+    try:
+        from work_buddy.inference import metrics_store
+        by_id = {m["id"]: m for m in metrics_store.read_recent(limit=1000)}
+        for r in rows:
+            m = by_id.get(r.get("call_id"))
+            if m:
+                r["queue_wait_ms"] = m.get("queue_wait_ms")
+                r["service_time_ms"] = m.get("service_time_ms")
+                if r.get("latency_ms") is None:
+                    r["latency_ms"] = m.get("total_latency_ms")
+    except Exception as exc:
+        logger.debug("inference-activity broker join skipped: %s", exc)
+    return {"calls": rows, "count": len(rows)}
 
 
-def _kick_broker_refresh() -> None:
-    """Rebuild the broker snapshot on a background thread (single-flight).
-
-    Also the page-load pre-warm + poller hook.
-    """
-    global _broker_refreshing
-    with _broker_cache_lock:
-        if _broker_refreshing:
+def _kick_inference_refresh() -> None:
+    """Rebuild the inference-activity snapshot on a background thread (single-flight)."""
+    global _inference_refreshing
+    with _inference_cache_lock:
+        if _inference_refreshing:
             return
-        _broker_refreshing = True
+        _inference_refreshing = True
 
     def _refresh() -> None:
-        global _broker_cache, _broker_cache_ts, _broker_refreshing
+        global _inference_cache, _inference_cache_ts, _inference_refreshing
         try:
-            fresh = _build_broker_summary()
-            _broker_cache = fresh
-            _broker_cache_ts = time.time()
+            fresh = _build_inference_activity()
+            _inference_cache = fresh
+            _inference_cache_ts = time.time()
         except Exception as exc:
-            logger.warning("Background broker refresh failed: %s", exc)
+            logger.warning("Background inference-activity refresh failed: %s", exc)
         finally:
-            _broker_refreshing = False
+            _inference_refreshing = False
 
     threading.Thread(
-        target=_refresh, name="broker-refresh", daemon=True,
+        target=_refresh, name="inference-activity-refresh", daemon=True,
     ).start()
 
 
-def get_broker_summary() -> dict[str, Any]:
-    """Inference sub-view snapshot, served from a short-TTL background-refreshed cache.
-
-    Cold start does NOT build synchronously: the build does a cross-process HTTP
-    call, and a slow/down embedding service would otherwise block the first
-    ``/api/broker`` request for the full client timeout. Instead it kicks a
-    background refresh and returns an immediate ``{available: False}``; the next
-    read (or the poller's refresh) serves real data.
-    """
-    cache = _broker_cache
+def get_inference_activity() -> dict[str, Any]:
+    """Inference-activity feed, served from a short-TTL background-refreshed cache."""
+    cache = _inference_cache
     if cache is not None:
-        if time.time() - _broker_cache_ts >= _BROKER_CACHE_TTL:
-            _kick_broker_refresh()  # stale — refresh for next read
+        if time.time() - _inference_cache_ts >= _INFERENCE_CACHE_TTL:
+            _kick_inference_refresh()
         return cache
-    # Cold start: kick a background build, return a fast "no data yet" envelope
-    # rather than blocking on the network round-trip.
-    _kick_broker_refresh()
-    return {"available": False}
-
-
-def refresh_broker_cache() -> dict[str, Any]:
-    """Synchronously rebuild the broker snapshot and update the cache; return it.
-
-    Called by the dashboard's broker-state poller, which is already a background
-    daemon, so a blocking cross-process read here is fine — and it keeps the
-    cache that ``/api/broker`` serves current with what the poller just pushed.
-    """
-    global _broker_cache, _broker_cache_ts
-    fresh = _build_broker_summary()
-    _broker_cache = fresh
-    _broker_cache_ts = time.time()
-    return fresh
+    # Cold start: build once synchronously (local file scan; fast enough).
+    with _inference_cache_lock:
+        if _inference_cache is not None:
+            return _inference_cache
+        built = _build_inference_activity()
+        globals()["_inference_cache"] = built
+        globals()["_inference_cache_ts"] = time.time()
+        return built
 
 
 # ---------------------------------------------------------------------------
