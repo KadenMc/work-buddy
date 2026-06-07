@@ -144,6 +144,7 @@ The dashboard updates in real time from server-pushed events delivered over Serv
 | ``cron.hot_reload`` | ``{old_count, new_count}`` | ``Scheduler._hot_reload`` (when fingerprints change) |
 | ``user_job.created`` | ``{name, file_path}`` | ``api_user_job_create`` (after successful write) |
 | ``inference.call_logged`` | ``{call_id, description, kind, model, execution_mode, status}`` (thin ping) | ``llm.provenance.record_inference_call`` — Settings › Inference refetches the cached ``/api/inference-activity`` |
+| ``fleet.changed`` | ``{reason}`` | ``dashboard.api.start_fleet_poller`` (25 s) — the Settings › Inference **fleet** section refetches the cached ``/api/fleet`` and morphs the cards. Published only when a machine's reachability or loaded-model set changes (external LM Studio loads/unloads have no other internal event). |
 
 ## Replay semantics
 

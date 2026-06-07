@@ -546,6 +546,7 @@ def _html() -> str:
          inference.call_logged SSE event. Lazy-loaded on first switch (see
          switchSettingsSubtab). -->
     <div class="settings-subtab-panel" id="ssp-inference">
+        <div id="fleet-content"><div class="loading">Loading fleet...</div></div>
         <div id="inference-content"><div class="loading">Loading inference...</div></div>
     </div>
 </div>

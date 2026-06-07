@@ -210,6 +210,21 @@ llm:
   #     context_length: 8192
   #     execution_mode: local
 
+inference:
+  # Static roster for the Settings > Inference "Local model fleet" section.
+  # The machine list is discovered live from the configured local-inference
+  # provider (e.g. LM Studio + LM Link); this roster only ENRICHES discovered
+  # machines, joined by device_id, with hardware specs the provider can't read
+  # remotely (peer GPU/VRAM/RAM). Leave empty to rely on discovery alone —
+  # discovered machines still render, with hardware shown as "unknown".
+  # fleet:
+  #   - device_id: "0123456789abcdef0123456789abcdef"   # provider's device identifier
+  #     role: "Remote compute node"
+  #     ram_gb: 64
+  #     gpus:                                            # a machine can have several
+  #       - name: "NVIDIA RTX 2080 Super Max-Q"
+  #         vram_gb: 8
+
 chats:
   specstory_days: 7
   claude_history_days: 7

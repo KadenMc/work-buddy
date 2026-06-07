@@ -1527,6 +1527,127 @@ def get_inference_activity() -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Local model fleet (Settings › Inference — per-machine loaded models / hardware)
+# ---------------------------------------------------------------------------
+# Reads the local-inference fleet (machines, reachability, loaded models,
+# hardware) via the provider-neutral fleet reader, which shells out to the
+# provider CLI. The reads hit remote peers and can be slow, so — like the
+# embeddings/inference snapshots above — serve a cached copy and refresh on a
+# background thread; the subprocess work never runs on a request thread.
+_FLEET_CACHE_TTL = 20.0
+_fleet_cache: dict[str, Any] | None = None
+_fleet_cache_ts: float = 0.0
+_fleet_cache_lock = threading.Lock()
+_fleet_refreshing = False
+
+
+def _build_fleet_summary() -> dict[str, Any]:
+    """Compose the fleet snapshot (slow path — provider CLI subprocesses)."""
+    from work_buddy.inference.fleet import read_fleet
+    return read_fleet(load_config())
+
+
+def _kick_fleet_refresh() -> None:
+    """Rebuild the fleet snapshot on a background thread (single-flight).
+
+    Also the page-load pre-warm hook: the ``/`` route calls this so the first
+    Settings › Inference open serves a ready snapshot instead of the cold read.
+    """
+    global _fleet_refreshing
+    with _fleet_cache_lock:
+        if _fleet_refreshing:
+            return
+        _fleet_refreshing = True
+
+    def _refresh() -> None:
+        global _fleet_cache, _fleet_cache_ts, _fleet_refreshing
+        try:
+            fresh = _build_fleet_summary()
+            _fleet_cache = fresh
+            _fleet_cache_ts = time.time()
+        except Exception as exc:
+            logger.warning("Background fleet refresh failed: %s", exc)
+        finally:
+            _fleet_refreshing = False
+
+    threading.Thread(target=_refresh, name="fleet-refresh", daemon=True).start()
+
+
+def get_fleet_summary() -> dict[str, Any]:
+    """Fleet snapshot, served from a short-TTL background-refreshed cache."""
+    global _fleet_cache, _fleet_cache_ts
+    cache = _fleet_cache
+    if cache is not None:
+        if time.time() - _fleet_cache_ts >= _FLEET_CACHE_TTL:
+            _kick_fleet_refresh()  # stale — refresh for next open
+        return cache
+    # Cold start: build once synchronously (the lock makes concurrent first
+    # callers wait for the single build rather than each starting their own).
+    with _fleet_cache_lock:
+        if _fleet_cache is not None:
+            return _fleet_cache
+        _fleet_cache = _build_fleet_summary()
+        _fleet_cache_ts = time.time()
+        return _fleet_cache
+
+
+def bust_fleet_cache() -> None:
+    """Drop the snapshot so the next read rebuilds (call after a roster write)."""
+    global _fleet_cache
+    with _fleet_cache_lock:
+        _fleet_cache = None
+
+
+def _fleet_fingerprint(snapshot: dict[str, Any]) -> str:
+    """Material state of the fleet — reachability + loaded-model set per machine.
+
+    Deliberately excludes volatile fields (last-used time, queue depth, context)
+    so the poller only publishes ``fleet.changed`` on changes a user would care
+    about: a machine coming/going, or a model being loaded/unloaded.
+    """
+    parts = []
+    for m in snapshot.get("machines", []):
+        models = ",".join(sorted(
+            lm.get("model", "") for lm in m.get("loaded_models", [])
+        ))
+        parts.append(f"{m.get('device_id')}:{int(bool(m.get('reachable')))}:{models}")
+    return "|".join(parts) + f"|lms={snapshot.get('lms_available')}"
+
+
+def start_fleet_poller(interval: float = 25.0) -> "threading.Event":
+    """Daemon thread that refreshes the fleet snapshot and publishes ``fleet.changed``.
+
+    External model loads/unloads on peers produce no internal event, so the only
+    way to live-update the fleet section is to poll. This loop owns the cache
+    refresh (warming it for request-path reads) and publishes ``fleet.changed``
+    only when the *material* fingerprint changes — the dashboard section then
+    morphs in the fresh snapshot. Returns a ``threading.Event``; ``set()`` stops it.
+    """
+    stop = threading.Event()
+
+    def _loop() -> None:
+        global _fleet_cache, _fleet_cache_ts
+        last_fp: str | None = None
+        while not stop.is_set():
+            try:
+                snap = _build_fleet_summary()
+                _fleet_cache = snap
+                _fleet_cache_ts = time.time()
+                fp = _fleet_fingerprint(snap)
+                if last_fp is not None and fp != last_fp:
+                    from work_buddy.dashboard.events import publish_auto
+                    publish_auto("fleet.changed", {"reason": "state_changed"})
+                last_fp = fp
+            except Exception as exc:
+                logger.debug("fleet poller iteration failed: %s", exc)
+            stop.wait(interval)
+
+    threading.Thread(target=_loop, name="fleet-poller", daemon=True).start()
+    logger.info("Fleet poller started (interval=%.1fs)", interval)
+    return stop
+
+
+# ---------------------------------------------------------------------------
 # Command palette
 # ---------------------------------------------------------------------------
 

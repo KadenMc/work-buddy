@@ -259,6 +259,10 @@ def script() -> str:
     // the surface refetches the cross-provider activity feed and morphs it in.
     window.eventBus.on('inference.call_logged', () => _refreshSoon('inferenceSurface'));
 
+    // Fleet section (Settings › Inference): a machine's reachability or loaded-model
+    // set changed (published by the server-side fleet poller) — morph the cards in.
+    window.eventBus.on('fleet.changed', () => _refreshSoon('fleetSurface'));
+
     // Jobs tab: refresh on dashboard-side create (immediate, repaints the
     // pending banner) and on sidecar hot-reload (jobs appear in /api/state
     // for the first time, banner auto-clears).
