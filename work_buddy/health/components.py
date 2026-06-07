@@ -364,6 +364,33 @@ _register(ComponentDef(
     ],
 ))
 
+_register(ComponentDef(
+    id="websearch",
+    display_name="Web Search",
+    category="integration",
+    # Non-core: a legitimate setup may not want outbound web search at all.
+    # Opting out (features.websearch.wanted: false) skips the probe + the Jina
+    # key requirement. ddgs needs no key, so the feature works out of the box
+    # when wanted.
+    is_core=False,
+    # custom: resolve on Diagnose only — don't continuously hammer ddgs/Jina.
+    health_source="custom",
+    requirements=["integrations/websearch/jina-api-key"],
+    check_sequence=[
+        CheckStep(
+            description="Active web-search backend responds (ddgs keyless; Jina when keyed)",
+            check_fn="work_buddy.websearch.health.check_websearch",
+            on_fail=(
+                "No web-search backend is usable. ddgs needs no key and should "
+                "work whenever the machine has network access — if this fails, "
+                "check connectivity and that websearch.enabled isn't false in "
+                "config. Optionally add a free Jina API key (Settings > Web "
+                "Search > Configure) to use the higher-quality default backend."
+            ),
+        ),
+    ],
+))
+
 # --- Sidecar-managed services ---
 
 _SIDECAR_LOG_HINT = (

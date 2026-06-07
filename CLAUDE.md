@@ -143,6 +143,7 @@ Every scope below is browsable with `mcp__work-buddy__wb_run("agent_docs", {"sco
 | `email/` | Thunderbird bridge, provider abstraction, email triage adapter |
 | `calendar/` | Calendar reads via provider seam (canonical models, protocol + factory, Obsidian-bridge adapter), coverage |
 | `browser/` | Chrome tab triage |
+| `websearch/` | General web search via provider seam (Jina default + keyless ddgs fallback), trafilatura/Jina-reader extraction, evidence-cards, broker-admitted LOCAL_FAST classify |
 | `threads/` | Multi-turn agent-user threads |
 | `notifications/` | Notify, request, consent, surfaces |
 | `services/` | Messaging, memory (Hindsight), dashboard, sidecar |
