@@ -77,6 +77,16 @@ DEFAULTS = {
         "specstory_days": 7,
         "claude_history_days": 7,
     },
+    "inference": {
+        # Static roster for the Local model fleet view. Discovery is live
+        # (the configured provider enumerates reachable machines); this
+        # roster only ENRICHES discovered machines — keyed by device_id —
+        # with hardware specs the provider can't read remotely. Each entry:
+        #   {device_id, role, ram_gb, gpus: [{name, vram_gb}, ...]}
+        # (a machine can have several GPUs). Empty is fine: discovered
+        # machines still render, with hardware shown as "unknown".
+        "fleet": [],
+    },
     "dashboard": {
         "read_only": False,  # disable mutating actions (investigate, palette execute, etc.)
         "external_url": "",  # Tailscale HTTPS URL (e.g. "https://machine.tailnet.ts.net")

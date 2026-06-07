@@ -27,6 +27,7 @@ from work_buddy.dashboard.api import (
     get_chats_summary,
     get_contracts_summary,
     get_embeddings_summary,
+    get_fleet_summary,
     get_inference_activity,
     get_palette_commands,
     get_sessions_summary,
@@ -202,8 +203,12 @@ def index():
     # Pre-warm the embeddings snapshot on a background thread so the first
     # Settings › Embeddings open serves instantly instead of paying the cold aggregate.
     try:
-        from work_buddy.dashboard.api import _kick_embeddings_refresh
+        from work_buddy.dashboard.api import (
+            _kick_embeddings_refresh,
+            _kick_fleet_refresh,
+        )
         _kick_embeddings_refresh()
+        _kick_fleet_refresh()
     except Exception:
         pass
     resp = Response(render_page(), content_type="text/html; charset=utf-8")
@@ -1470,6 +1475,46 @@ def api_embeddings():
 def api_inference_activity():
     """Cross-provider inference-call provenance feed for Settings › Inference (cached)."""
     return jsonify(get_inference_activity())
+
+
+@app.get("/api/fleet")
+def api_fleet():
+    """Local model fleet snapshot for Settings › Inference (per-machine, cached)."""
+    return jsonify(get_fleet_summary())
+
+
+@app.post("/api/fleet/roster")
+def api_fleet_roster():
+    """Add/update or clear a machine's inference.fleet roster entry (Settings › Inference).
+
+    Thin wrapper around the ``fleet_roster`` capability (mirrors ``/api/embeddings/vault``).
+    The user clicking Save IS the consent; read-only mode blocks the write. On success
+    the fleet snapshot is busted and ``fleet.changed`` is published so the cards update
+    immediately.
+    """
+    blocked = _reject_read_only()
+    if blocked is not None:
+        return blocked
+
+    payload = request.get_json(silent=True) or {}
+    from work_buddy.mcp_server.registry import get_registry
+
+    cap = get_registry().get("fleet_roster")
+    if cap is None:
+        return jsonify({"success": False, "error": "fleet_roster capability not registered "
+                        "(reload MCP / rebuild the knowledge store)."}), 500
+    try:
+        result = cap.callable(**payload)
+    except TypeError as exc:
+        return jsonify({"success": False, "error": f"Invalid arguments: {exc}"}), 400
+
+    if result.get("success"):
+        from work_buddy.dashboard.api import bust_fleet_cache
+        bust_fleet_cache()
+        from work_buddy.dashboard.events import publish_auto
+        publish_auto("fleet.changed",
+                     {"reason": "roster_changed", "device_id": result.get("device_id")})
+    return jsonify(result), (200 if result.get("success") else 400)
 
 
 @app.post("/api/embeddings/vault")
@@ -4704,6 +4749,16 @@ def main():
     # liveness signal). The SSE endpoint also emits its own keepalive
     # comments; both are complementary.
     start_heartbeat(interval=10.0)
+
+    # Start the fleet poller: refreshes the local model fleet snapshot and
+    # publishes ``fleet.changed`` when a machine's reachability or loaded-model
+    # set changes (external LM Studio loads/unloads have no internal event, so
+    # the fleet section can only live-update via polling).
+    try:
+        from work_buddy.dashboard.api import start_fleet_poller
+        start_fleet_poller(interval=25.0)
+    except Exception as exc:
+        logger.warning("Fleet poller failed to start: %s", exc)
 
     # Start the cross-process bridge: pulls ``bus.event`` messages
     # from the messaging service (port 5123) and republishes them on

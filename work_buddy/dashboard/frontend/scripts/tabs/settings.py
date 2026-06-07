@@ -58,6 +58,9 @@ function switchSettingsSubtab(st) {
     if (st === 'inference' && typeof loadInference === 'function') {
         loadInference();  // cheap (cached) — refresh on open; inference.call_logged SSE keeps it live
     }
+    if (st === 'inference' && typeof loadFleet === 'function') {
+        loadFleet();  // fleet section shares the Inference sub-view; load-on-open (no SSE)
+    }
 }
 
 // At-a-glance system cards (uptime / services healthy / jobs / last

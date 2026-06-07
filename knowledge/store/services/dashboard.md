@@ -50,6 +50,8 @@ Web dashboard for system observability + control. Served as a sidecar-managed Fl
 
 Primary consumer of the **control graph** (see ``architecture/control-graph`` for the aggregator; ``architecture/health`` for the four-layer mental model the graph fuses). The Settings panel has two sub-tabs: **Status** — the control-graph tree (domain → subsystem → component hierarchy with ``effective_state`` badges, preference toggles (Want / No thanks / Undecided, hidden for ``is_core`` components), Configure / Walk me through action buttons for fixable requirements, universal ``?`` help buttons that spawn interactive Claude Code sessions with structured briefs, a per-component ↻ reprobe button, and clickable bulk-state chips that jump to the first problem node of that state) — and **Activity**, a registry-driven set of cards (Obsidian bridge sparkline, sidecar event log, recent-notifications log). See the Card registry section below.
 
+The Settings panel also has **Embeddings** and **Inference** sub-views. Settings › Inference hosts the per-call provenance activity feed and, above it, a **Local model fleet** section — one card per machine (reachability, loaded models, multi-GPU hardware), load-on-open + manual refresh, live-updated via the ``fleet.changed`` SSE event. Reads serve from ``GET /api/fleet`` (cached per-machine snapshot); the inline roster editor writes via ``POST /api/fleet/roster`` (add/update or clear a machine's ``inference.fleet`` entry; ``_reject_read_only``-gated, mirrors ``/api/embeddings/vault``). See ``architecture/inference/fleet``.
+
 ## Modes and endpoints
 
 * **Dev mode:** ``python -m work_buddy.dashboard --dev`` (auto-reloads on file changes). **Not enabled in sidecar config** — use manually for local development only.

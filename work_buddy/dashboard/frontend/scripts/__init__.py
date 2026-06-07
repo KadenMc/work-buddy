@@ -50,6 +50,7 @@ from .tabs import (
     conversations,
     costs,
     embeddings,
+    fleet,
     inference,
     jobs,
     memory,
@@ -131,6 +132,7 @@ SCRIPTS = [
     costs.script,
     embeddings.script,
     inference.script,
+    fleet.script,
     # page LAST — see ordering note above.
     page.script,
 ]
@@ -139,6 +141,7 @@ STYLES = [
     filters.styles,
     embeddings.styles,
     inference.styles,
+    fleet.styles,
     resolution.styles,
     threads.styles,
     threads_card.styles,
