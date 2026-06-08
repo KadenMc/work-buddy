@@ -742,6 +742,35 @@ _register(RequirementDef(
 ))
 
 _register(RequirementDef(
+    id="integrations/websearch/jina-api-key",
+    component="websearch",
+    description="Jina API key is configured (optional — the keyless ddgs fallback works without it)",
+    check_fn="work_buddy.health.requirement_checks.check_jina_api_key",
+    # Recommended, not required: ddgs serves web search with no key, so a missing
+    # Jina key degrades quality but never blocks the feature.
+    severity="recommended",
+    fix_hint=(
+        "Add a free Jina API key to enable the higher-quality Jina backend.\n"
+        "Get one at https://jina.ai/ and paste it into Settings > Web Search >\n"
+        "Configure (or set JINA_API_KEY in your .env). Web search works on the\n"
+        "ddgs fallback without it."
+    ),
+    setup_group="websearch",
+    fix_kind="input_required",
+    fix_fn="work_buddy.health.fixers.fix_jina_api_key",
+    fix_params={
+        "api_key": {
+            "type": "secret",
+            "label": "Jina API key",
+            "hint": "Free key from https://jina.ai/ — enables the Jina backend; ddgs is used otherwise.",
+            "required": True,
+            "secret": True,
+        },
+    },
+    fix_preview="Writes JINA_API_KEY=<your-key> to the repo .env file.",
+))
+
+_register(RequirementDef(
     id="integrations/thunderbird/bridge",
     component="thunderbird",
     description=(

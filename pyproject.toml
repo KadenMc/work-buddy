@@ -46,6 +46,8 @@ httpx = "^0.28.1"
 watchdog = "^6.0.0"
 google-auth-oauthlib = "^1.4.0"
 pathspec = "^1.1.1"
+ddgs = "^9.14.4"
+trafilatura = "^1.8"
 [tool.poetry.extras]
 memory = ["hindsight-api-slim", "hindsight-client"]
 telegram = ["python-telegram-bot"]

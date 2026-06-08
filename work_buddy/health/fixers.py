@@ -541,6 +541,21 @@ def fix_telegram_bot_token(*, bot_token: str) -> dict[str, Any]:
     return {"ok": ok, "detail": detail, "side_effects": side}
 
 
+def fix_jina_api_key(*, api_key: str) -> dict[str, Any]:
+    """Write JINA_API_KEY to .env (enables the Jina websearch backend).
+
+    Jina is optional — the keyless ddgs fallback works without it — so this is a
+    'recommended' fixer. Mirrors the Telegram/Anthropic key fixers: ``_set_env_var``
+    writes the repo .env AND updates the live ``os.environ`` so the post-fix
+    recheck passes immediately.
+    """
+    api_key = (api_key or "").strip()
+    if not api_key:
+        return {"ok": False, "detail": "API key cannot be empty.", "side_effects": []}
+    ok, detail, side = _set_env_var("JINA_API_KEY", api_key)
+    return {"ok": ok, "detail": detail, "side_effects": side}
+
+
 # ---------------------------------------------------------------------------
 # Remote access — Tailscale Serve
 # ---------------------------------------------------------------------------

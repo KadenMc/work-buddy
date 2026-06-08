@@ -391,6 +391,26 @@ calendar:
       - "https://www.googleapis.com/auth/calendar.events"
       - "https://www.googleapis.com/auth/calendar.calendarlist.readonly"
 
+# General web search subsystem (provider-neutral). Jina is the reliable default
+# (full-text Markdown; needs a free JINA_API_KEY) with a keyless ddgs fallback,
+# so search works out of the box and upgrades automatically once a Jina key is
+# set via Settings > Web Search > Configure. `api_key_env` names the env var
+# holding the key, not the key itself. The relevance-classify step's admission /
+# timeout is governed by the broker profile (inference.profiles.<key>), NOT here.
+# See the `websearch` knowledge unit.
+websearch:
+  enabled: true
+  routing: [jina, ddgs]            # try Jina first (if keyed) → fall back to ddgs
+  jina:
+    api_key_env: JINA_API_KEY
+  ddgs:
+    backend: auto
+    timeout_s: 10
+    min_interval_s: 2
+    max_retries: 3
+  cache:
+    ttl_hours: 12                  # only used by opt-in router.search(cache=True); web_search itself is ephemeral
+
 # Tool-availability probes used to gate capability dispatch. Set the
 # matching `enabled` flag to false to skip a probe entirely (the
 # capabilities that depend on it move into DISABLED_CAPABILITIES with

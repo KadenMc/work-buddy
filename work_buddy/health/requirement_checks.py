@@ -686,6 +686,24 @@ def check_telegram_bot_token() -> dict[str, Any]:
     return {"ok": False, "detail": f"${token_env} not found in environment or .env file"}
 
 
+def check_jina_api_key() -> dict[str, Any]:
+    """Check whether a Jina API key is configured for the websearch subsystem.
+
+    Severity is 'recommended', not 'required' — the keyless ddgs fallback works
+    without it, so a missing key never blocks web search. Uses the shared
+    env-or-``.env`` resolver so a key written by the Settings fixer (dashboard
+    process) is visible here too.
+    """
+    from work_buddy.secret_env import read_secret_env
+    cfg = _cfg()
+    env_name = ((cfg.get("websearch", {}) or {}).get("jina", {}) or {}).get(
+        "api_key_env", "JINA_API_KEY"
+    )
+    if read_secret_env(env_name):
+        return {"ok": True, "detail": f"${env_name} is set"}
+    return {"ok": False, "detail": f"${env_name} not set — the keyless ddgs fallback is used instead"}
+
+
 def check_thunderbird_bridge() -> dict[str, Any]:
     """Check the thunderbird-work-buddy companion bridge is reachable.
 
