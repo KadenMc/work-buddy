@@ -794,7 +794,7 @@ _register(RequirementDef(
         "   nothing.)\n"
         "3. In config.local.yaml, set tools.thunderbird.enabled: true.\n"
         "4. Reload the work-buddy registry:\n"
-        "     wb_run('mcp_registry_reload')"
+        "     wb_run('reload_capability_data')"
     ),
     setup_group="thunderbird",
     fix_kind="agent_handoff",
@@ -831,7 +831,7 @@ _register(RequirementDef(
         "     tools:\n"
         "       thunderbird:\n"
         "         enabled: true\n"
-        "6. Reload the registry: wb_run('mcp_registry_reload'). Then "
+        "6. Reload the registry: wb_run('reload_capability_data'). Then "
         "wb_run('email_health') — expect ok: true and a non-zero "
         "accessible_accounts count.\n"
         "7. If ok: false, the 'reason' field tells you which step missed:\n"

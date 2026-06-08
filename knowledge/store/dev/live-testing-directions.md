@@ -28,9 +28,9 @@ Live testing exists because some changes only manifest correctly in a running mu
 work-buddy spans two long-running processes that load Python code at different times:
 
 - **Sidecar** — restarts when the user does a sidecar-only reset. Re-reads code at startup. Hosts cron jobs, the retry queue, the dashboard, the messaging service, the sidecar MCP gateway.
-- **Claude Code Desktop's MCP server** — restarts only on **Ctrl+R** in the Desktop app. This is the process that handles `wb_run` calls from the agent. Its `wb_run` and `wb_search` tool functions are frozen function references held by FastMCP at startup; module-level reloads via `mcp_registry_reload` do NOT replace them.
+- **Claude Code Desktop's MCP server** — restarts only on **Ctrl+R** in the Desktop app. This is the process that handles `wb_run` calls from the agent. Its `wb_run` and `wb_search` tool functions are frozen function references held by FastMCP at startup. `reload_capability_data` refreshes the registry those functions *read* — so declaration / workflow / param-schema changes go live without a restart — but it cannot replace the frozen function objects themselves, so changing their code needs a Ctrl+R.
 
-If you change code inside `wb_run` / `wb_search` directly (e.g. the gateway's workflow pre-flight branch), only a Ctrl+R picks it up. If you change code that's *lazy-imported* by those functions (e.g. the conductor, the consent layer, capability callables), `mcp_registry_reload` plus a sidecar reset is usually enough — but Ctrl+R is the safe move that always works.
+If you change code inside `wb_run` / `wb_search` directly (e.g. the gateway's workflow pre-flight branch), only a Ctrl+R picks it up. If you change code that's *lazy-imported* by those functions (e.g. the conductor, the consent layer, capability callables), that's still code — a Ctrl+R (or a sidecar reset for sidecar-hosted code) is the reliable way to load it. `reload_capability_data` only refreshes *data* (declarations, workflows, param schemas), not Python.
 
 Before driving any live test: confirm with the user that they have restarted whichever process owns the changed code. The user prompt 'I reset the sidecar/MCP!' typically means a sidecar reset; ask whether they also did Ctrl+R if the change touches gateway entry-point functions.
 

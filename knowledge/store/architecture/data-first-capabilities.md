@@ -30,7 +30,7 @@ dev_notes: |-
 
   `validate_signature` introspects with `follow_wrapped=True`; a callable that accepts `**kwargs` is treated as accepting any declared parameter name, and a callable whose signature cannot be introspected is treated as matching.
 
-  A new op or a new declaration needs a full registry rebuild to go live. `mcp_registry_reload` rebuilds the registry, but a running gateway can still hold a stale capability *schema* for editor capabilities (e.g. `docs_delete`) until a server restart.
+  A new **declaration** (including a changed `parameters` schema) or a new **workflow** goes live via `reload_capability_data`, which rebuilds the registry from fresh store data WITHOUT a `sys.modules` purge — no restart, and no stale-schema problem. (That stale-schema bug belonged to the retired `mcp_registry_reload`: its purge spawned a second class generation that the long-lived FastMCP gateway never actually read, so a running gateway kept a stale editor-capability schema, e.g. `docs_delete`, until a restart.) A new **Op** — new Python code or a brand-new module — still needs a process restart (Ctrl+R) to be importable.
 ---
 
 ## What
@@ -55,7 +55,7 @@ Every capability is a declaration. The capability loader (`work_buddy/knowledge/
 - `load_builtin_ops()` — imports the `work_buddy/mcp_server/ops/` package, whose modules register their ops as an import side effect.
 - `register_op_effects(op_id, effects)` / `get_op_effects(op_id)` — for capabilities with multi-effect manifests. An `EffectSpec` holds a `resolver` callable, so it cannot ride in a data declaration; the ops module registers the manifest and the loader threads it onto the resolved `Capability`.
 
-The registry keeps no state across a reload: `mcp_registry_reload` purges `work_buddy.*` from `sys.modules`, so the table rebuilds fresh on the next registry build.
+The Op table (`_OPS`) survives a data-only `reload_capability_data` (no purge — declarations just re-resolve against the same callables). The dormant `invalidate_registry` purges `work_buddy.*` from `sys.modules`, which rebuilds `_OPS` fresh on the next registry build.
 
 ## Load-time validation
 

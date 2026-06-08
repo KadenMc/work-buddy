@@ -100,13 +100,13 @@ If you want to read arguments and route, that's fine inline. If you want to *do 
 
 To verify a new handler doesn't block the event loop:
 
-1. Invalidate the registry on a running gateway: `mcp__work-buddy__wb_run("mcp_registry_reload")`
+1. Rebuild the registry on a running gateway: `mcp__work-buddy__wb_run("reload_capability_data")`
 2. In another terminal, hammer `/health` at ~20 Hz: `while true; do curl -sm1 -o/dev/null -w "%{time_total}\n" http://localhost:5126/health; done`
 3. Call your new tool once.
 4. `/health` latency must stay under ~100ms throughout. A spike into seconds means you're blocking the event loop.
 
 ### Defenses already in place
 
-- **Background warm-start**: `main_http()` in `mcp_server/server.py` fires a daemon thread that calls `get_registry()` immediately after bind. By the time the first real request lands, the registry is already built. This hides latency — but it does *not* excuse skipping `asyncio.to_thread` on new handlers, because `mcp_registry_reload` can invalidate at any time.
+- **Background warm-start**: `main_http()` in `mcp_server/server.py` fires a daemon thread that calls `get_registry()` immediately after bind. By the time the first real request lands, the registry is already built. This hides latency — but it does *not* excuse skipping `asyncio.to_thread` on new handlers, because `reload_capability_data` can rebuild at any time.
 - **Slow-rebuild warning**: `_build_registry()` emits a `WARNING` to the main log when total rebuild exceeds 5s, with a per-section breakdown (`tool_probes`, `cap:*`, `knowledge_index`). Check the sidecar log if `/health` flakes — a noisy section there usually points at the culprit (often the Obsidian probe's 10s HTTP timeout when Obsidian is closed).
 - **Fast-path socket check**: `compat._find_pids_on_port` shortcuts to a socket probe before shelling out to PowerShell (`Get-NetTCPConnection`). Pinned by a regression test in `tests/unit/test_compat_port_cleanup.py` — sidecar restart is ~15s on Windows, not 25–30s.

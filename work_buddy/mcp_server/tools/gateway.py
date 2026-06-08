@@ -1401,7 +1401,7 @@ def register_tools(mcp: FastMCP) -> None:
                 # to the live registry transparently. This closes the
                 # bootstrap-race papercut (capabilities marked disabled
                 # at sidecar startup stay disabled even after the probe
-                # recovers, until somebody runs mcp_registry_reload).
+                # recovers, until somebody runs reload_capability_data).
                 # Cool-down inside recheck_disabled_capability prevents
                 # tight-loop hammering on a genuinely-down tool.
                 from work_buddy.recovery import recheck_disabled_capability
