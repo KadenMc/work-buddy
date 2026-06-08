@@ -1140,7 +1140,7 @@ def _build_response(
             # workflows: at sidecar startup the obsidian probe may
             # briefly fail and stale-disable every workflow step that
             # needs it; without recheck, those steps fail forever
-            # until a manual mcp_registry_reload.
+            # until a manual reload_capability_data.
             #
             # Conditional: only recheck tools currently reporting
             # unavailable. Healthy paths pay no latency cost.

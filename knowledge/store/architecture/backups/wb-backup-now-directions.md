@@ -35,7 +35,7 @@ The response shows the snapshot ID, tarball path, size, and whether the remote p
 
 ## When to use
 
-- About to run a `mcp_registry_reload` after editing a sensitive capability.
+- About to run a `reload_capability_data` (or restart) after editing a sensitive capability.
 - About to run `task_archive` or another high-fan-out task-mutating operation.
 - About to swap branches, run a long-running script that writes to the store, or restore an older state.
 - Just want a fresh off-machine copy because it has been a while.

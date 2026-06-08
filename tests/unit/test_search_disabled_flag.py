@@ -77,7 +77,7 @@ class TestDisabledReasonEnriched:
         assert "Bridge unreachable" in reason
         assert "ago" in reason  # probe age formatting
 
-    def test_probe_now_passing_recommends_mcp_registry_reload(self):
+    def test_probe_now_passing_recommends_reload_capability_data(self):
         """The rare race where the probe is reporting available but the
         capability is still in DISABLED_CAPABILITIES — should suggest
         the manual remediation."""
@@ -100,7 +100,7 @@ class TestDisabledReasonEnriched:
             reason = _disabled_reason("journal_write")
 
         assert "available" in reason.lower()
-        assert "mcp_registry_reload" in reason
+        assert "reload_capability_data" in reason
 
     def test_no_probe_data_yet_distinct_message(self):
         """Cold-start race: tool isn't in get_tool_status's tools dict
@@ -148,7 +148,7 @@ class TestDisabledReasonEnriched:
         assert "Bridge unreachable" in reason
         assert "datacore" in reason
         assert "available" in reason.lower()
-        assert "mcp_registry_reload" in reason
+        assert "reload_capability_data" in reason
 
     def test_falls_back_when_get_tool_status_raises(self):
         """If the enriched-message machinery throws, we still return the

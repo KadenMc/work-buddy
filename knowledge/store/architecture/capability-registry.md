@@ -2,7 +2,7 @@
 name: Capability Registry
 kind: concept
 description: How capabilities are registered, probed for tool availability, disabled when a probe fails, and recovered cheaply via per-capability re-probe (CP-A3) instead of a full registry rebuild. Authoritative reference for the heavy-vs-light recovery decision.
-summary: 'The registry has two maps: _REGISTRY (active) and _DISABLED_REGISTRY (probe failed at build time). Two recovery paths: (1) heavy mcp_registry_reload (~6-8s, full rebuild, sys.modules purge); (2) light recheck_disabled_capability(name) (per-tool, 30s cool-down, in-place restore). Use (2) for transient probe failures; (1) only when code changed.'
+summary: 'The registry has two maps: _REGISTRY (active) and _DISABLED_REGISTRY (probe failed at build time). Refresh paths: reload_capability_data (data-only rebuild, no sys.modules purge, so declarations/workflows/param schemas go live without a restart); a Ctrl+R restart for Op code or new modules; and recheck_disabled_capability(name) (per-tool, 30s cool-down, in-place restore) for transient probe failures. The heavy mcp_registry_reload was retired — its purge silently did nothing in the long-lived FastMCP gateway.'
 tags:
 - capability
 - registry
@@ -29,7 +29,7 @@ parents:
 dev_notes: |-
   ## Stale class identity after sys.modules purge
 
-  `mcp_registry_reload` purges `work_buddy.*` from `sys.modules` and rebuilds the registry.  Any code that captured a class reference — most commonly an exception class used in an `except` clause, or a dataclass used for `isinstance` discrimination — holds onto the *pre-reload* class object.  The freshly-imported class is a different object even when its name, base classes, and shape are identical, so `isinstance(post_reload_instance, captured_pre_reload_class)` returns False.
+  The dormant `invalidate_registry` purges `work_buddy.*` from `sys.modules` and rebuilds the registry.  Any code that captured a class reference — most commonly an exception class used in an `except` clause, or a dataclass used for `isinstance` discrimination — holds onto the *pre-reload* class object.  The freshly-imported class is a different object even when its name, base classes, and shape are identical, so `isinstance(post_reload_instance, captured_pre_reload_class)` returns False.
 
   Symptoms observed in the activity ledger and reproduced in unit tests:
 
@@ -86,21 +86,24 @@ Used by:
 - The gateway's wb_run dispatch path (`work_buddy/mcp_server/tools/gateway.py`). On hitting a disabled capability, the gateway calls `recheck_disabled_capability` before returning the disabled-error.
 - The sidecar's retry sweep `_replay` (`work_buddy/sidecar/retry_sweep.py`). On hitting a disabled capability during a queued retry, the sweep calls `recheck_disabled_capability` rather than reporting "not found in registry". Falls back to invoking the disabled entry's callable when recheck still says no, since the bridge call inside raises a typed transient exception and the operation re-queues correctly.
 
-### Full registry rebuild (only when code changed)
+### Data-only registry reload (declaration / workflow / param-schema changed)
 
-**`mcp_registry_reload`** capability (calls `invalidate_registry()` in `registry.py`) clears `_REGISTRY` AND purges all `work_buddy.*` from `sys.modules` so the next `get_registry()` rebuilds from current source. Costs ~6–8 seconds (tool_probes ~5s + capability registration ~2s) on a typical machine and re-probes every tool.
+**`reload_capability_data`** capability (calls `reload_capability_data()` in `registry.py`) resets the knowledge-store cache and clears `_REGISTRY`, then rebuilds in place via `get_registry()` — WITHOUT purging `sys.modules`. Because no module is re-imported, `Capability` / `WorkflowDefinition` class identity stays stable and the long-lived FastMCP gateway reads the rebuilt registry directly. Costs ~6–8s (it re-probes every tool via `_build_registry`).
 
-Use only when:
-- You changed capability code mid-session and want the running gateway to pick up the change without a sidecar restart
-- You suspect the entire registry is stale (e.g. a workflow / knowledge unit was added)
+Use when you edited or added a capability **declaration** (including its `parameters` schema) or a **workflow** unit and want it live without a restart. It also re-enables a capability whose tool just came back (the rebuild re-probes and re-runs the requirements filter).
 
-**Do NOT use `mcp_registry_reload` for transient probe failures.** It's a sledgehammer where a per-capability re-probe is the right tool. The 8-second rebuild blocks `/health` and slows down the gateway for the duration.
+It does NOT pick up edited Op **code** or a brand-new Op **module** — re-importing Python is what a process restart (Ctrl+R) does safely.
+
+> **Retired:** `mcp_registry_reload` (the function `invalidate_registry()` lives on, dormant) purged `work_buddy.*` from `sys.modules` to pick up code. In the long-lived FastMCP gateway that silently did nothing — `wb_run` / `wb_search` are frozen against the boot module generation, so the rebuilt registry never reached dispatch, while the purge corrupted `Capability` class identity. It was removed from the agent surface; use `reload_capability_data` for data and a `Ctrl+R` restart for code. See `dev/mcp-reload` and `.data/designs/mcp-registry-reload`.
+
+**Do NOT use `reload_capability_data` for transient probe failures.** The dispatch path already auto-recovers a disabled capability via `recheck_disabled_capability` (a per-capability re-probe); the full rebuild is heavier than needed for that.
 
 ## Decision tree
 
 ```
 Capability is disabled / not found in active registry
-  - Code changed -> mcp_registry_reload
+  - Declaration / workflow / param-schema changed -> reload_capability_data
+  - Op code or new Op module changed -> restart the gateway (Ctrl+R)
   - Probe transient-failed -> recheck_disabled_capability(name)
       - Returns True -> capability is back in _REGISTRY, proceed
       - Returns False -> tools still down
@@ -128,4 +131,4 @@ Not every capability is a `Capability(...)` instance in `registry.py`. A capabil
 
 ## When in doubt
 
-Per-capability is almost always right at runtime. Full reload is for code changes, full inventory rebuilds, or panic-mode diagnosis. The 30s cool-down on per-capability is your friend — it stops aggressive callers from hammering a genuinely-down tool.
+Per-capability re-probe is almost always right at runtime. `reload_capability_data` is for data changes (declarations, workflows, param schemas) and full inventory rebuilds; an Op **code** change or a new Op module needs a gateway restart (Ctrl+R). The 30s cool-down on per-capability is your friend — it stops aggressive callers from hammering a genuinely-down tool.

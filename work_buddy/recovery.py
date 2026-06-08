@@ -3,8 +3,9 @@
 When the sidecar starts and a tool's first probe fails (or hasn't run
 yet), capabilities depending on that tool get filtered into
 ``DISABLED_CAPABILITIES`` by the registry filter pass. If the probe
-later recovers, those capabilities stay disabled until somebody runs
-``mcp_registry_reload`` (a ~6s heavy operation that purges
+later recovers, those capabilities stay disabled until the registry is
+rebuilt — by ``reload_capability_data`` (data-only, no purge) or the
+dormant ``invalidate_registry`` (a ~6s heavy operation that purges
 ``sys.modules`` and re-imports everything).
 
 This module closes that papercut. The dispatch path (gateway + conductor)
@@ -34,7 +35,7 @@ Concurrency policy
 The single ``_RECOVERY_LOCK`` (RLock) serializes:
 
 - every entry into :func:`recheck_disabled_capability` and :func:`recheck_tool`;
-- the mutation phase of ``mcp_registry_reload`` (acquired inside
+- the mutation phase of ``invalidate_registry`` (acquired inside
   :func:`reload_registry_under_lock`, the lock-aware wrapper for
   ``invalidate_registry``).
 
@@ -104,7 +105,7 @@ def recheck_tool(tool_id: str, *, force: bool = False) -> bool:
 
     Args:
         tool_id: The probe ID (e.g. ``"obsidian"``, ``"chrome_extension"``).
-        force: Bypass the cool-down. Used by ``mcp_registry_reload`` and
+        force: Bypass the cool-down. Used by ``invalidate_registry`` and
             similar deliberate refreshes.
 
     Returns:
@@ -280,7 +281,7 @@ def recheck_disabled_capability(name: str, *, force: bool = False) -> bool:
 def reload_registry_under_lock() -> None:
     """Lock-aware wrapper for ``invalidate_registry``.
 
-    The full-registry-reload path (``mcp_registry_reload``) needs to
+    The full-registry-reload path (``invalidate_registry``) needs to
     serialize against in-flight rechecks: a recheck holds the lock and
     might be mid-mutation when reload comes through. This wrapper
     acquires ``_RECOVERY_LOCK`` around the reload call so the two

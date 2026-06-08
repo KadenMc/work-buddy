@@ -4,8 +4,8 @@ Each op here is referenced by a ``kind: capability`` declaration unit under
 ``knowledge/store/websearch/`` carrying a matching ``op`` field. Mirrors
 ``email_ops.py``: a module-level ``_register()`` binds the thin capability
 callables to ``op.wb.*`` ids. A newly added op requires a full MCP server
-restart to enter the tool dispatcher (``mcp_registry_reload`` only hot-patches
-code inside existing callables).
+restart to enter the tool dispatcher; ``reload_capability_data`` refreshes
+declaration / workflow *data*, not new Op code.
 """
 
 from __future__ import annotations

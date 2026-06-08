@@ -12,7 +12,7 @@ from work_buddy.mcp_server.op_registry import register_op
 
 
 def _register() -> None:
-    from work_buddy.mcp_server.registry import invalidate_registry
+    from work_buddy.mcp_server.registry import reload_capability_data
 
     from work_buddy.messaging import client
     from work_buddy import agent_session
@@ -150,7 +150,7 @@ def _register() -> None:
     register_op("op.wb.setup_wizard", _setup_wizard)
     register_op("op.wb.service_health", client.is_service_running)
     register_op("op.wb.list_sessions", agent_session.list_sessions)
-    register_op("op.wb.mcp_registry_reload", invalidate_registry)
+    register_op("op.wb.reload_capability_data", reload_capability_data)
     register_op("op.wb.retry", _retry_operation)
     register_op("op.wb.tailscale_status", _tailscale_status)
 

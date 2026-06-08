@@ -383,6 +383,39 @@ def invalidate_registry() -> None:
         )
 
 
+def reload_capability_data() -> dict[str, Any]:
+    """Data-only registry refresh — reload declarations + workflows from disk
+    and rebuild the registry WITHOUT purging ``sys.modules``.
+
+    Contrast with ``invalidate_registry``, which purges ``work_buddy.*`` from
+    ``sys.modules`` and re-imports it. That purge re-creates the ``Capability`` /
+    ``WorkflowDefinition`` classes, so a long-lived FastMCP gateway — whose
+    ``wb_run`` / ``wb_search`` are frozen against the boot module generation —
+    ends up reading a stale/mixed generation and the rebuild never reaches the
+    agent-facing dispatch path. (See ``.data/designs/mcp-registry-reload`` and
+    ``dev/mcp-reload`` for the full mechanism.)
+
+    This variant keeps a single module generation: it resets only the knowledge
+    store cache and the registry cache, then rebuilds in place via
+    ``_build_registry()``. Because no module is re-imported, class identity is
+    stable and the frozen gateway reads the rebuilt ``_REGISTRY`` directly.
+
+    Picks up WITHOUT a restart: edited/added capability declarations (including
+    parameter-schema changes) and new workflow units whose referenced Ops are
+    already registered. Does NOT pick up edited Op *code* or brand-new Op modules
+    — those require re-importing Python, which only a process restart does safely.
+
+    Returns a small status dict: ``{"status": "ok", "entries": <count>}``.
+    """
+    global _REGISTRY  # noqa: PLW0603
+    from work_buddy.knowledge.store import invalidate_store
+
+    invalidate_store()    # reset store cache + search index → next load reads disk
+    _REGISTRY = None      # drop the registry cache WITHOUT a sys.modules purge
+    reg = get_registry()  # rebuild in place from the freshly-loaded store
+    return {"status": "ok", "entries": len(reg)}
+
+
 def _disabled_reason(capability_name: str) -> str:
     """Human-readable reason a capability is disabled in the live registry.
 
@@ -401,10 +434,10 @@ def _disabled_reason(capability_name: str) -> str:
        the cool-down hasn't expired; tool is genuinely down. Format:
        "<tool> probe failed Ns ago: '<reason>'".
     2. **Probe now passing but cap still in DISABLED_CAPABILITIES** —
-       rare race; suggest mcp_registry_reload. Format: "<tool> probe
+       rare race; suggest reload_capability_data. Format: "<tool> probe
        reports available but capability not yet in registry".
     3. **No probe data yet** — cold-start race; agent should retry or
-       run mcp_registry_reload. Format: "<tool> probe hasn't completed
+       run reload_capability_data. Format: "<tool> probe hasn't completed
        yet".
     """
     try:
@@ -430,7 +463,7 @@ def _disabled_reason(capability_name: str) -> str:
                 # State 3: no probe data yet. Cold start.
                 per_tool.append(
                     f"{dep} (no probe data yet — wait {probe_age_str} or "
-                    f"run mcp_registry_reload)"
+                    f"run reload_capability_data)"
                 )
                 continue
             if entry.get("available"):
@@ -440,7 +473,7 @@ def _disabled_reason(capability_name: str) -> str:
                 # recover via CP-A3) — e.g. wb_search hits.
                 per_tool.append(
                     f"{dep} (probe reports available — run "
-                    f"mcp_registry_reload to re-enable this capability)"
+                    f"reload_capability_data to re-enable this capability)"
                 )
                 continue
             # State 1: probe still failing.

@@ -7,7 +7,7 @@ trigger: When the user invokes /wb-dev, asks to build something in work-buddy, o
 command: wb-dev
 workflow: dev/dev-orient
 capabilities:
-- mcp_registry_reload
+- reload_capability_data
 - mode_toggle
 tags:
 - dev
@@ -75,7 +75,7 @@ A capability is an **Op** (a Python callable) plus a **declaration unit** (a `ki
 **To add a capability:**
 1. Write the callable and register it in the relevant `work_buddy/mcp_server/ops/<domain>_ops.py` with `register_op("op.wb.<name>", fn)`.
 2. Author a declaration unit at `knowledge/store/<domain>/<name>.md` (`kind: capability`, with `capability_name`, `op`, `category`, and a `parameters` schema) — via the `docs_edit` workflow.
-3. **Restart the MCP server** to register the new entry in the tool dispatcher. `mcp_registry_reload` picks up code changes inside *existing* callables but does NOT register a newly added capability.
+3. **Restart the MCP server (Ctrl+R)** so the new Op's code is imported and the capability enters the dispatcher. A new Op is new Python — `reload_capability_data` only refreshes *data* (declarations, workflows, and param schemas whose Op already exists), so it cannot pick up a brand-new Op.
 4. Verify: `mcp__work-buddy__wb_search("your_capability")`.
 
 ### Workflows
@@ -86,7 +86,7 @@ A workflow is a `kind: workflow` unit — one Markdown file per workflow under `
 2. Create a matching slash command in `.claude/commands/wb-<name>.md` (thin launcher) if it's user-facing.
 3. Create a behavioral directions unit (`kind: directions`) via `docs_edit`, loaded by the slash command.
 4. Update CLAUDE.md if the workflow belongs in a user-facing table.
-5. **Restart the MCP server** — new workflow names require a full restart to be callable via `wb_run`; `mcp_registry_reload` does not suffice.
+5. **Reload with `reload_capability_data`** — a new workflow is data, so the data-only reload makes it callable via `wb_run` with no restart (a restart also works but isn't needed).
 
 **To edit an existing workflow:** use `docs_edit` and edit the unit's `.md` directly — frontmatter `steps` (the DAG) and the `## <step-id>` body sections. The commit step re-validates the DAG.
 
@@ -106,7 +106,7 @@ Quick map:
 - **Fixer** — `work_buddy/health/fixers.py`. Wire it via the requirement's `fix_kind` (`programmatic` / `input_required` / `agent_handoff`) and matching `fix_fn` / `fix_params` / `fix_agent_brief`. See [architecture/health/fixers](architecture/health/fixers).
 - **Preferences** — `work_buddy/health/preferences.py` plus `config.local.yaml` `features.<id>.{wanted, reason}`. Mostly automatic when a component is non-core. Behavioral guidance for agents: [features/preferences](features/preferences).
 
-The Settings tab UI picks up new components automatically via the control graph; you don't need to touch the dashboard frontend. After registering: `mcp_registry_reload` is sufficient (no new `Capability` is added). For the unified view-model + cascade rules + endpoint surface, see [architecture/control-graph](architecture/control-graph).
+The Settings tab UI picks up new components automatically via the control graph; you don't need to touch the dashboard frontend. A component registration is Python (in `components.py`), so **restart the MCP server (Ctrl+R)** to import it — `reload_capability_data` only refreshes data, not code. For the unified view-model + cascade rules + endpoint surface, see [architecture/control-graph](architecture/control-graph).
 
 ### Doc hygiene after changes
 `/wb-dev-pr` runs `/wb-dev-document` as a **mandatory chained step** (doc-update sits between the test and PII-scan steps in the `dev-pr` workflow). So committing through `/wb-dev-pr` already keeps the knowledge store in sync — do NOT run `/wb-dev-document` as a separate step first. Run `/wb-dev-document` standalone only when you want to *preview* the proposed doc edits outside the commit flow. It scans current changes against the knowledge store, proposes edits for stale units (and creates new ones where needed), and applies them via the sanctioned capabilities. Doc drift is a recurring failure mode; chaining it into `/wb-dev-pr` makes the check a DAG step that cannot be silently skipped.
@@ -136,12 +136,12 @@ powershell.exe -Command "cd <vault-root>\repos\work-buddy; conda activate work-b
 
 ### Testing capabilities
 ```
-mcp__work-buddy__wb_run("mcp_registry_reload")        # pick up code changes inside existing callables
+mcp__work-buddy__wb_run("reload_capability_data")     # pick up declaration / workflow / param-schema edits (data only)
 mcp__work-buddy__wb_search("your_query")              # verify discovery
 mcp__work-buddy__wb_run("capability_name", {...})     # test execution
 ```
 
-**Caveat:** `mcp_registry_reload` does NOT register newly added `Capability` entries or newly added workflow names. For either, restart the MCP server. The reload is a hot-patch for code-inside-existing-callables only.
+**Caveat — data vs code:** `reload_capability_data` makes *data* changes live with no restart: new/edited **declarations** (including param schemas) and new **workflows** whose Op already exists. It does NOT pick up edited Op **code** or a brand-new Op **module** — those are Python and need a `Ctrl+R` restart. (The retired `mcp_registry_reload` claimed to hot-patch code but silently did nothing in the long-lived FastMCP gateway — see `dev/mcp-reload`.)
 
 ### Restarting services
 ```
