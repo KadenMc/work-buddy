@@ -1,0 +1,5 @@
+# Shell scripts are executed by bash — the messaging hook (check_messages.sh) and
+# the generated helper scripts under work_buddy/messaging/bin/. A CRLF line ending
+# breaks the `#!/bin/bash` shebang ("bad interpreter: /bin/bash^M"), so pin LF
+# regardless of a contributor's core.autocrlf setting or platform.
+*.sh text eol=lf

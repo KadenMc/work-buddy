@@ -729,6 +729,43 @@ def _make_queued_op(
     return record, path
 
 
+class TestRetrySweepNotifications:
+    """Retry-queue notifications: success FYIs are born ``resolved`` (so they don't
+    block the recipient's Stop hook or accumulate); exhaustion notices stay
+    ``pending`` so they surface once."""
+
+    def test_on_success_emits_resolved_status(self, sweep_ops_dir):
+        from work_buddy.sidecar.retry_sweep import RetrySweep
+        sweep = RetrySweep()
+        record, _ = _make_queued_op(sweep_ops_dir, name="summary_search")
+        with patch("work_buddy.messaging.client.is_service_running", return_value=True), \
+             patch("work_buddy.messaging.client.send_message") as mock_send:
+            sweep._on_success(record, {"result": "ok"})
+        assert mock_send.call_count == 1
+        kwargs = mock_send.call_args.kwargs
+        assert kwargs["type"] == "retry_success"
+        assert kwargs["status"] == "resolved"
+        assert kwargs["priority"] == "normal"
+        assert kwargs["recipient_session"] == "test-session-123"
+
+    def test_on_exhausted_stays_pending(self, sweep_ops_dir):
+        from work_buddy.sidecar.retry_sweep import RetrySweep
+        sweep = RetrySweep()
+        # queue_reason != "retry" keeps the user-notification surface path quiet,
+        # so the test isolates the messaging emission.
+        record, _ = _make_queued_op(sweep_ops_dir, name="summary_search")
+        record["queue_reason"] = "deferred_submit"
+        with patch("work_buddy.messaging.client.is_service_running", return_value=True), \
+             patch("work_buddy.messaging.client.send_message") as mock_send:
+            sweep._on_exhausted(record, {"error": "TimeoutError"})
+        assert mock_send.call_count == 1
+        kwargs = mock_send.call_args.kwargs
+        assert kwargs["type"] == "retry_exhausted"
+        assert kwargs["priority"] == "high"
+        # No terminal status override → born pending so the Stop hook surfaces it once.
+        assert kwargs.get("status", "pending") == "pending"
+
+
 class TestRetrySweepIsReady:
     """Test RetrySweep._is_ready() filtering logic."""
 

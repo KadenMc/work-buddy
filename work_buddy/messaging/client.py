@@ -110,9 +110,15 @@ def send_message(
     recipient_session: str | None = None,
     thread_id: str | None = None,
     priority: str = "normal",
+    status: str = "pending",
     tags: list[str] | None = None,
 ) -> dict | None:
-    """Send a message via the HTTP service."""
+    """Send a message via the HTTP service.
+
+    ``status`` defaults to ``'pending'``; pass a terminal status (e.g.
+    ``'resolved'``) for fire-and-forget notifications that should not block a
+    recipient's Stop hook.
+    """
     payload: dict[str, Any] = {
         "sender": sender,
         "recipient": recipient,
@@ -129,6 +135,8 @@ def send_message(
         payload["thread_id"] = thread_id
     if priority != "normal":
         payload["priority"] = priority
+    if status != "pending":
+        payload["status"] = status
     if tags:
         payload["tags"] = tags
 
