@@ -71,9 +71,16 @@ def list_messages():
         hook_event = request.args.get("hook_event", "SessionStart")
         ttl_days = request.args.get("ttl_days", None, type=int)
         include_instructions = (hook_event == "SessionStart")
+        # Only the Stop hook turns a non-empty summary into a decision:block. Pass
+        # unread_only so a message the recipient has already seen cannot keep the
+        # turn blocked — it surfaces once, is auto-marked read, then releases.
+        # PostToolUse is deliberately excluded: it is not block-capable, and its
+        # own auto-mark-read would otherwise race the unread flag the Stop relies on.
+        unread_only = (hook_event == "Stop")
         summary = summarize_pending(
             _get_conn(), recipient or "", session,
             ttl_days=ttl_days, include_instructions=include_instructions,
+            unread_only=unread_only,
         )
         if not summary:
             # No messages — return empty so hook is a no-op
@@ -146,6 +153,7 @@ def send_message():
         recipient_session=data.get("recipient_session"),
         thread_id=data.get("thread_id"),
         priority=data.get("priority", "normal"),
+        status=data.get("status", "pending"),
         in_reply_to=data.get("in_reply_to"),
         tags=tags,
     )

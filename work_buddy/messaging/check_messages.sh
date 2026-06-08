@@ -52,7 +52,7 @@ fi
 # ---------------------------------------------------------------------------
 if [ "$MODE" = "instructions" ]; then
     mkdir -p /tmp/wb
-    for script in send.sh reply.sh read.sh; do
+    for script in send.sh reply.sh read.sh resolve.sh; do
         if [ -f "$BIN_SRC/$script" ]; then
             sed \
                 -e "s|%%SERVICE_URL%%|$SERVICE_URL|g" \
@@ -126,13 +126,21 @@ if [ "$HTTP_CODE" = "200" ]; then
     if [ "$MODE" = "stop" ]; then
         CONTEXT=$(python -c "import sys,json; d=json.load(sys.stdin); print(d['hookSpecificOutput']['additionalContext'])" < /tmp/wb_msg_response.json 2>/dev/null)
         rm -f /tmp/wb_msg_response.json 2>/dev/null
+        # The Stop summary lists items that still need attention: unread messages,
+        # plus high-priority ones that remain unresolved. Surface how to clear one
+        # so a message you have already handled can never keep blocking the turn.
+        CONTEXT="${CONTEXT}
+
+These messages need attention before this turn can end — each is either unread or a still-open high-priority item. Read each, then act on it; or, if you have already handled it, clear it so it stops blocking your turn:
+  bash /tmp/wb/read --id <message-id>      # see the full message
+  bash /tmp/wb/resolve --id <message-id>   # mark it resolved (stops re-blocking)"
         cat <<STOP_JSON
 {
   "decision": "block",
-  "reason": "Pending agent-ingest events require review before stopping",
+  "reason": "Messages need review before stopping. Read each, then act on it or resolve it (bash /tmp/wb/resolve --id <id>).",
   "hookSpecificOutput": {
     "hookEventName": "Stop",
-    "additionalContext": $(python -c "import json,sys; print(json.dumps(sys.argv[1]))" "$CONTEXT" 2>/dev/null || echo "\"Pending ingest events found\"")
+    "additionalContext": $(python -c "import json,sys; print(json.dumps(sys.argv[1]))" "$CONTEXT" 2>/dev/null || echo "\"Unread messages pending\"")
   }
 }
 STOP_JSON

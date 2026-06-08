@@ -165,3 +165,109 @@ class TestSummarizePending:
         with freeze_time("2026-04-12T12:00:00+00:00"):
             result = summarize_pending(conn, "b", session="sess-2", ttl_days=1, include_instructions=False)
             assert result == ""
+
+    @freeze_time("2026-04-12T12:00:00+00:00")
+    def test_unread_only_false_keeps_read_within_ttl(self, tmp_messaging_db):
+        """Non-blocking summaries still show a read-but-recent message (context)."""
+        conn, _ = tmp_messaging_db
+        msg = create_message(conn, sender="a", recipient="b", type="task", subject="Recent")
+        record_read(conn, msg["id"], "sess-1", reader_project="b")
+        result = summarize_pending(
+            conn, "b", session="sess-2", ttl_days=7,
+            include_instructions=False, unread_only=False,
+        )
+        assert "Recent" in result
+        assert "(read by" in result  # rendered as already-seen, not *NEW*
+
+    @freeze_time("2026-04-12T12:00:00+00:00")
+    def test_unread_only_true_excludes_read_within_ttl(self, tmp_messaging_db):
+        """Stop-hook summary drops a read message so it cannot keep blocking."""
+        conn, _ = tmp_messaging_db
+        msg = create_message(conn, sender="a", recipient="b", type="task", subject="Recent")
+        record_read(conn, msg["id"], "sess-1", reader_project="b")
+        result = summarize_pending(
+            conn, "b", session="sess-2", ttl_days=7,
+            include_instructions=False, unread_only=True,
+        )
+        assert result == ""
+
+    @freeze_time("2026-04-12T12:00:00+00:00")
+    def test_unread_only_true_surfaces_unread(self, tmp_messaging_db):
+        """An unread message still surfaces under unread_only (the one-shot block)."""
+        conn, _ = tmp_messaging_db
+        create_message(conn, sender="a", recipient="b", type="event", subject="Fresh")
+        result = summarize_pending(
+            conn, "b", session="sess-1",
+            include_instructions=False, unread_only=True,
+        )
+        assert "Fresh" in result
+
+    @freeze_time("2026-04-12T12:00:00+00:00")
+    def test_surface_once_then_release(self, tmp_messaging_db):
+        """First Stop render surfaces + auto-marks-read; the next render releases."""
+        conn, _ = tmp_messaging_db
+        msg = create_message(conn, sender="a", recipient="b", type="event", subject="OneShot")
+        first = summarize_pending(
+            conn, "b", session="sess-1",
+            include_instructions=False, unread_only=True,
+        )
+        assert "OneShot" in first
+        assert has_been_read_by(conn, msg["id"], "sess-1")
+        second = summarize_pending(
+            conn, "b", session="sess-1",
+            include_instructions=False, unread_only=True,
+        )
+        assert second == ""
+
+    @freeze_time("2026-04-12T12:00:00+00:00")
+    def test_born_resolved_absent_from_pending(self, tmp_messaging_db):
+        """A message created with a terminal status never enters the pending path."""
+        conn, _ = tmp_messaging_db
+        create_message(
+            conn, sender="sidecar:retry_queue", recipient="b",
+            type="retry_success", subject="Retry succeeded", status="resolved",
+        )
+        assert query_messages(conn, recipient="b", status="pending") == []
+        result = summarize_pending(conn, "b", session="sess-1", include_instructions=False)
+        assert result == ""
+
+    @freeze_time("2026-04-12T12:00:00+00:00")
+    def test_high_priority_blocks_until_resolved(self, tmp_messaging_db):
+        """High-priority read+pending keeps blocking until resolved; resolving releases."""
+        conn, _ = tmp_messaging_db
+        msg = create_message(
+            conn, sender="sidecar:retry_queue", recipient="b",
+            type="retry_exhausted", subject="Boom", priority="high",
+        )
+        first = summarize_pending(conn, "b", session="s1", include_instructions=False, unread_only=True)
+        assert "Boom" in first  # surfaces, auto-marks read
+        assert has_been_read_by(conn, msg["id"], "s1")
+        # Still blocks even though read, because it is high priority.
+        second = summarize_pending(conn, "b", session="s1", include_instructions=False, unread_only=True)
+        assert "Boom" in second
+        # Resolving it (the discoverable /tmp/wb/resolve exit) releases the block.
+        update_status(conn, msg["id"], "resolved")
+        third = summarize_pending(conn, "b", session="s1", include_instructions=False, unread_only=True)
+        assert third == ""
+
+    @freeze_time("2026-04-12T12:00:00+00:00")
+    def test_normal_priority_releases_but_high_does_not(self, tmp_messaging_db):
+        """Same read state: a normal message releases, a high one keeps blocking."""
+        conn, _ = tmp_messaging_db
+        create_message(conn, sender="a", recipient="b", type="task", subject="LowPri", priority="normal")
+        create_message(conn, sender="a", recipient="b", type="event", subject="HighPri", priority="high")
+        # First render surfaces both and marks them read.
+        first = summarize_pending(conn, "b", session="s1", include_instructions=False, unread_only=True)
+        assert "LowPri" in first and "HighPri" in first
+        # Second render: normal released, high still blocking.
+        second = summarize_pending(conn, "b", session="s1", include_instructions=False, unread_only=True)
+        assert "LowPri" not in second
+        assert "HighPri" in second
+
+    @freeze_time("2026-04-12T12:00:00+00:00")
+    def test_instructions_include_resolve_verb(self, tmp_messaging_db):
+        """The resolve helper must be discoverable in the messaging instructions."""
+        conn, _ = tmp_messaging_db
+        create_message(conn, sender="a", recipient="b", type="task", subject="Hi")
+        result = summarize_pending(conn, "b", session="s1", include_instructions=True)
+        assert "/tmp/wb/resolve" in result

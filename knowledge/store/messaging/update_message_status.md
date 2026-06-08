@@ -27,6 +27,8 @@ aliases:
 - update message state
 - close out a message
 - message status change
+- clear a blocking message
+- stop a message blocking my turn
 parents:
 - messaging
 ---

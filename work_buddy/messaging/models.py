@@ -107,10 +107,17 @@ def create_message(
     recipient_session: str | None = None,
     thread_id: str | None = None,
     priority: str = "normal",
+    status: str = "pending",
     in_reply_to: str | None = None,
     tags: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Insert a new message and return it as a dict."""
+    """Insert a new message and return it as a dict.
+
+    ``status`` defaults to ``'pending'``. Callers that emit fire-and-forget
+    notifications (e.g. the retry sweep's success FYIs) pass a terminal status
+    such as ``'resolved'`` so the message never enters the pending/block path and
+    is pruned on the normal TTL.
+    """
     msg_id = _generate_id(sender)
     now = _now_iso()
 
@@ -123,11 +130,11 @@ def create_message(
             (id, thread_id, sender, sender_session, recipient,
              recipient_session, type, priority, status, subject,
              body, in_reply_to, created_at, updated_at, tags)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             msg_id, thread_id, sender, sender_session, recipient,
-            recipient_session, type, priority, subject,
+            recipient_session, type, priority, status, subject,
             body, in_reply_to, now, now,
             json.dumps(tags) if tags else None,
         ),
@@ -300,6 +307,13 @@ def create_reply(
 # Summary for hook context injection
 # ---------------------------------------------------------------------------
 
+# Priorities whose pending messages keep blocking the Stop hook even after the
+# recipient has read them — until they are explicitly resolved (e.g. via the
+# /tmp/wb/resolve helper). Lower-priority messages surface once (while unread)
+# then release. Set to an empty set to collapse to "surface once" for every
+# priority (pure block-on-unread semantics).
+BLOCK_UNTIL_RESOLVED_PRIORITIES = {"high", "urgent"}
+
 def summarize_pending(
     conn: sqlite3.Connection,
     recipient: str,
@@ -307,6 +321,7 @@ def summarize_pending(
     max_chars: int = 9500,
     ttl_days: int | None = None,
     include_instructions: bool = True,
+    unread_only: bool = False,
 ) -> str:
     """Build a human-readable summary of pending messages for context injection.
 
@@ -315,6 +330,14 @@ def summarize_pending(
 
     When include_instructions is False (e.g. UserPromptSubmit), only the
     message list is returned — the curl instructions are omitted to save context.
+
+    When ``unread_only`` is True, messages the recipient has already read are
+    excluded regardless of the TTL window. The Stop hook uses this so that a
+    message which has been surfaced once (and auto-marked read by a prior render)
+    does not keep the agent's turn blocked — it surfaces exactly once, then the
+    next render returns empty and the block releases. The non-blocking summaries
+    (SessionStart / UserPromptSubmit) leave it False and still show read-but-recent
+    messages as context.
     """
     if ttl_days is None:
         from work_buddy.config import load_config
@@ -338,10 +361,18 @@ def summarize_pending(
         m["_read"] = is_read
         m["_readers"] = recipient_readers
 
-        # Include if: unread by recipient OR within TTL window
+        # Unread messages always surface. For the non-blocking summaries
+        # (unread_only=False) also keep read messages within the TTL window so
+        # SessionStart/UserPromptSubmit retain recent context. The Stop hook
+        # passes unread_only=True: a read message is dropped (it surfaced once,
+        # now releases) UNLESS it is high/urgent priority, which keeps blocking
+        # until resolved — /tmp/wb/resolve is the discoverable exit.
         if not is_read:
             new_count += 1
             filtered.append(m)
+        elif unread_only:
+            if m["priority"] in BLOCK_UNTIL_RESOLVED_PRIORITIES:
+                filtered.append(m)
         else:
             try:
                 created = datetime.fromisoformat(m["created_at"])
@@ -388,6 +419,7 @@ def summarize_pending(
         lines.append("  bash /tmp/wb/read --id <message-id>")
         lines.append("  bash /tmp/wb/reply --id <message-id> --body \"...\"")
         lines.append("  bash /tmp/wb/send --to <recipient> --subject \"...\" --body \"...\"")
+        lines.append("  bash /tmp/wb/resolve --id <message-id>   # clear a seen notification")
 
     # Auto-mark new messages as read by this session since they appeared in the summary
     if session:

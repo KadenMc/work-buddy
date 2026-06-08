@@ -610,6 +610,12 @@ class RetrySweep:
                             "result_preview": result_preview,
                         }),
                         priority="normal",
+                        # Born resolved: a succeeded retry is a fire-and-forget FYI.
+                        # Leaving it 'pending' would block the recipient's Stop hook
+                        # (until read) and accumulate un-pruned rows. Failures
+                        # (_on_exhausted, priority=high) stay 'pending' so they
+                        # surface once.
+                        status="resolved",
                         tags=["retry", "success"],
                     )
             except Exception as exc:
