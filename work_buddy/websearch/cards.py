@@ -1,7 +1,7 @@
 """Shape ``SearchHit``s into ``EvidenceCard``s — the compact, cited, LLM-facing
 projection the classifier reasons over.
 
-The load-bearing trick (DESIGN §3.2): the model judges *retrieved evidence*,
+The load-bearing trick: the model judges *retrieved evidence*,
 not the open web. So a card carries a short snippet (or a bounded slice of
 extracted text), the source domain, the URL, and provenance (``matched_terms`` /
 ``why_retrieved``) — never a raw search dump. Snippets are truncated so the

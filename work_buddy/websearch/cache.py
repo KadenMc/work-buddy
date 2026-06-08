@@ -116,7 +116,7 @@ def put(
 
 
 # ---------------------------------------------------------------------------
-# Lifecycle registration — websearch-cache artifact (spec step 12)
+# Lifecycle registration — websearch-cache artifact
 # ---------------------------------------------------------------------------
 
 

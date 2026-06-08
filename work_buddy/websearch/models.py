@@ -9,7 +9,7 @@ judges *retrieved evidence*, not the open web). ``FetchResult`` is one extracted
 page. ``ClassifyResult`` is the structured verdict from the LOCAL_FAST classify.
 
 These four shapes are the frozen public contract the future Events
-``Processor``/``Condition`` adapters call (spec §7) — keep them stable.
+``Processor``/``Condition`` adapters call — keep them stable.
 """
 
 from __future__ import annotations

@@ -5,19 +5,15 @@ Given a question and a set of :class:`EvidenceCard`s, return a structured
 (cheap local structured output) and at ``Priority.BACKGROUND`` so a poll-watcher
 classify yields to interactive inference on the same LM Studio profile.
 
-**Admission note (deviates from the spec's §6.5 self-wrap — deliberately):**
-the spec wrapped this call in its own ``get_broker().slot(...)`` because, when it
-was written, the broker was not on the LLM call path. That gap was closed by
-task t-aa9b4181: the local backends already acquire a ``broker.slot`` and
-``LLMRunner.call(priority=...)`` threads the priority down to it
-(``runner_v2 → run_task → call_openai_compat → broker.slot``, pinned by
-``tests/unit/test_llm_backends_broker_wiring.py``). A self-wrap here would hold a
-*second* slot on an invented profile while the real inference takes a slot on
-``openai_compat:<model>`` — redundant and, for the stated "yield to interactive"
-goal, ineffective. So we pass ``priority=Priority.BACKGROUND`` and let the
-backend's own slot do the admission. The classify config block (``queue_wait_s``
-/ ``inference_s``) is correspondingly governed by the broker profile under
-``inference.profiles.<key>`` — single source of truth.
+**Admission:** the local backend acquires the broker slot itself —
+``LLMRunner.call(priority=...)`` threads the priority down through ``run_task``
+to ``call_openai_compat``'s ``broker.slot(profile="openai_compat:<model>")``
+(pinned by ``tests/unit/test_llm_backends_broker_wiring.py``). So this classify
+passes ``priority=Priority.BACKGROUND`` and must NOT wrap its own
+``get_broker().slot(...)``: a second slot on a separate profile would be
+redundant and would not actually yield to interactive work on the contended
+profile. Admission/timeout is governed by the broker profile under
+``inference.profiles.<key>``, not a websearch-local config block.
 
 The caller does any cheap prefilter (content-hash / threshold / CEL) *before*
 this — the classify is the expensive tier. On any error the verdict defaults to

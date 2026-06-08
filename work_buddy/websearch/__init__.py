@@ -1,7 +1,7 @@
 """work-buddy WebSearch subsystem — a standalone, events-agnostic, provider-
 neutral web-search + retrieval library.
 
-Public surface (the frozen contract the future Events adapters call, spec §7):
+Public surface (the frozen contract the future Events adapters call):
 
 - ``search`` / ``search_hits`` — routed multi-backend search (router layer)
 - ``to_evidence_cards`` — shape hits into compact, cited LLM-facing cards

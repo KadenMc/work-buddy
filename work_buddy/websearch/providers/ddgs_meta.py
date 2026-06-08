@@ -2,7 +2,7 @@
 
 ddgs (the maintained successor to duckduckgo_search) fans a query across ~10
 engines with no API key. It is fragile and has a documented sync-hang failure
-mode, so this adapter hardens it three ways (spec §6.2):
+mode, so this adapter hardens it three ways:
 
 1. **Wall-clock timeout** — every call runs in a one-shot ``ThreadPoolExecutor``
    and is awaited with ``future.result(timeout=…)``. On timeout we raise
