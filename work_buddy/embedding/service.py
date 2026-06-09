@@ -415,6 +415,46 @@ def health():
 # (dashboard/api.py::_build_inference_activity).
 
 
+def _embed_priority(data: dict[str, Any], prompt_name: str | None) -> Any:
+    """Pick a broker priority for an encode request.
+
+    Explicit ``priority`` in the request body wins; otherwise derive from the
+    asymmetric prompt role — a ``"query"`` encode serves a live search
+    (INTERACTIVE), a ``"document"`` encode is part of a bulk index build
+    (BACKGROUND). Symmetric encodes (no ``prompt_name``, e.g. leaf-mt aliases)
+    default to WORKFLOW: they preempt background rebuilds but yield to explicit
+    interactive queries.
+    """
+    from work_buddy.inference import Priority, parse_priority
+
+    try:
+        explicit = parse_priority(data.get("priority"))
+    except ValueError:
+        explicit = None
+    if explicit is not None:
+        return explicit
+    if prompt_name == "query":
+        return Priority.INTERACTIVE
+    if prompt_name == "document":
+        return Priority.BACKGROUND
+    return Priority.WORKFLOW
+
+
+def _brokered_encode(model: Any, texts: list[str], *, priority: Any, **encode_kwargs: Any):
+    """Run ``model.encode`` under the shared local-device broker slot, so an
+    INTERACTIVE query preempts a BACKGROUND rebuild on the one GPU. Degrades to
+    a direct encode when the broker is unavailable (see ``local_embed_slot``).
+
+    ``priority`` may be a ``Priority`` or a name string ("interactive" / …).
+    """
+    from work_buddy.inference import parse_priority
+    from work_buddy.inference.local_slot import local_embed_slot
+
+    prio = parse_priority(priority) if isinstance(priority, str) else priority
+    with local_embed_slot(prio):
+        return model.encode(texts, **encode_kwargs)
+
+
 @app.route("/embed", methods=["POST"])
 def embed():
     """Embed one or more texts.
@@ -445,7 +485,9 @@ def embed():
     if prompt_name:
         encode_kwargs["prompt_name"] = prompt_name
 
-    vectors = model.encode(texts, **encode_kwargs)
+    vectors = _brokered_encode(
+        model, texts, priority=_embed_priority(data, prompt_name), **encode_kwargs,
+    )
 
     return Response(
         json.dumps({
@@ -498,7 +540,10 @@ def similarity():
             text_to_candidate.append((name, len(all_texts)))
             all_texts.append(phrase)
 
-    vectors = model.encode(all_texts, batch_size=32, show_progress_bar=False)
+    # Serving a live similarity query → INTERACTIVE (preempts background rebuilds).
+    vectors = _brokered_encode(
+        model, all_texts, priority="interactive", batch_size=32, show_progress_bar=False,
+    )
     query_vec = vectors[0]
     query_norm = np.linalg.norm(query_vec)
 
@@ -662,7 +707,9 @@ def search():
             # Cache hit — only encode the query
             cand_vectors = cached[1]
             text_to_name = cached[2]
-            query_vec = model.encode([query], batch_size=1, show_progress_bar=False)[0]
+            query_vec = _brokered_encode(
+                model, [query], priority="interactive", batch_size=1, show_progress_bar=False,
+            )[0]
         else:
             # Cache miss — encode all candidates, cache them, then encode query
             cand_texts = []
@@ -673,9 +720,13 @@ def search():
                     text_to_name.append((name, len(cand_texts)))
                     cand_texts.append(phrase)
 
-            cand_vectors = model.encode(cand_texts, batch_size=32, show_progress_bar=False)
+            cand_vectors = _brokered_encode(
+                model, cand_texts, priority="interactive", batch_size=32, show_progress_bar=False,
+            )
             _candidate_cache[model_key] = (fp, cand_vectors, text_to_name)
-            query_vec = model.encode([query], batch_size=1, show_progress_bar=False)[0]
+            query_vec = _brokered_encode(
+                model, [query], priority="interactive", batch_size=1, show_progress_bar=False,
+            )[0]
 
         query_norm = np.linalg.norm(query_vec)
         if query_norm > 0:

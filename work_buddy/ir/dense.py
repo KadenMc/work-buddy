@@ -51,15 +51,23 @@ def encode_query(query: str, kind: str = "passage") -> np.ndarray | None:
 
 
 def _encode_query_direct(query: str, kind: str = "passage") -> np.ndarray | None:
-    """Encode query in-process using the service's loaded model."""
+    """Encode query in-process using the service's loaded model.
+
+    Admitted at INTERACTIVE priority on the shared local-device broker profile so
+    a live search preempts a BACKGROUND index rebuild on the same GPU.
+    """
     try:
         from work_buddy.embedding.service import _get_model
+        from work_buddy.inference import Priority
+        from work_buddy.inference.local_slot import local_embed_slot
         if kind == "label":
             model = _get_model("leaf-mt")
-            vec = model.encode([query], show_progress_bar=False)
+            with local_embed_slot(Priority.INTERACTIVE):
+                vec = model.encode([query], show_progress_bar=False)
         else:
             model = _get_model("leaf-ir-query")
-            vec = model.encode([query], prompt_name="query", show_progress_bar=False)
+            with local_embed_slot(Priority.INTERACTIVE):
+                vec = model.encode([query], prompt_name="query", show_progress_bar=False)
         return np.array(vec, dtype=np.float32)
     except Exception as exc:
         logger.warning("In-service query encoding failed (kind=%s): %s", kind, exc)
@@ -422,6 +430,9 @@ def _encode_bulk_direct_impl(
         logger.info("Loading %s for bulk encoding (kind=%s)...", model_name, kind)
         model = SentenceTransformer(model_name)
 
+    from work_buddy.inference import Priority
+    from work_buddy.inference.local_slot import local_embed_slot
+
     all_vecs = []
     total = len(texts)
     for i in range(0, total, batch_size):
@@ -429,7 +440,11 @@ def _encode_bulk_direct_impl(
         encode_kwargs = {"batch_size": batch_size, "show_progress_bar": False}
         if prompt is not None:
             encode_kwargs["prompt_name"] = prompt
-        vecs = model.encode(batch, **encode_kwargs)
+        # Per-batch BACKGROUND admission: the build holds the shared GPU slot only
+        # for one batch, so an INTERACTIVE query is admitted *between* batches
+        # rather than waiting out the whole rebuild.
+        with local_embed_slot(Priority.BACKGROUND):
+            vecs = model.encode(batch, **encode_kwargs)
         all_vecs.append(vecs)
         done = min(i + batch_size, total)
         print(f"\r  Encoded {done}/{total} documents...", end="", file=sys.stderr)

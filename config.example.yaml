@@ -224,6 +224,19 @@ inference:
   #     gpus:                                            # a machine can have several
   #       - name: "NVIDIA RTX 2080 Super Max-Q"
   #         vram_gb: 8
+  #
+  # Broker profiles — priority-aware admission for local inference so background
+  # index rebuilds yield to interactive searches on the shared GPU. A profile is
+  # a logical endpoint+model queue. All in-process ("local") embedding encode
+  # shares one `local:embedding` profile (the host GPU is one device); remote LM
+  # Studio peers get per-model `lmstudio:<model_id>` profiles. Profiles not
+  # listed auto-register with these defaults — listed here to make them tunable.
+  profiles:
+    "local:embedding":
+      max_concurrent: 1      # one encode at a time on the single GPU
+      max_queued: 64
+      default_queue_wait_s: 30
+      default_inference_s: 120
 
 chats:
   specstory_days: 7
