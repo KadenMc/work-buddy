@@ -84,6 +84,98 @@ def search(
     )
 
 
+def search_many(
+    queries: list[str],
+    *,
+    scope: str | None = None,
+    kind: str | None = None,
+    depth: str = "index",
+    top_n: int = 8,
+    knowledge_scope: str = "system",
+    category: str | None = None,
+    severity: str | None = None,
+    dev: bool = False,
+    query_embed_timeout_s: int | None = None,
+) -> list[dict[str, Any]]:
+    """Batched multi-query search — one result dict per query, in order.
+
+    Functionally equivalent to ``[search(q, ...) for q in queries]`` for the
+    search (query) mode, but the query-side dense embeddings for every query
+    are batched into a single round-trip per model (see
+    ``KnowledgeIndex.search_many``). Use this instead of a loop over
+    ``search()`` whenever you issue several queries against the same store in
+    one pass — the per-round-trip embedding overhead, not the in-process
+    BM25/fusion, is what dominates on weak or contended hardware.
+
+    Each returned dict has the same shape as ``search()``'s search-mode
+    response: ``{"mode": "search", "query", "count", "results"}`` where each
+    result carries ``path``, ``score``, and the unit's ``depth``-tiered fields.
+
+    Graceful degradation matches ``search()``: if the embedding service is
+    unavailable (or a batched embed exceeds ``query_embed_timeout_s``), the
+    dense signals drop and results fall back to BM25. ``query_embed_timeout_s``
+    bounds each batch so a contended service degrades fast rather than
+    stalling the whole call.
+    """
+    if depth not in ("index", "summary", "full"):
+        return [
+            {"error": f"Invalid depth: {depth!r}. Must be 'index', 'summary', or 'full'."}
+            for _ in queries
+        ]
+    if not queries:
+        return []
+
+    store = load_store(scope=knowledge_scope)
+
+    # Filter candidates once — shared across all queries.
+    candidates_units: dict[str, KnowledgeUnit] = {}
+    for p, u in store.items():
+        if scope and not p.startswith(scope.rstrip("/") + "/") and p != scope.rstrip("/"):
+            continue
+        if kind and u.kind != kind:
+            continue
+        candidates_units[p] = u
+    candidates_units = _apply_vault_filters(candidates_units, category, severity)
+
+    if not candidates_units:
+        return [
+            {"mode": "search", "query": q, "count": 0, "results": []}
+            for q in queries
+        ]
+
+    full_store = load_store(scope="all") if depth == "full" else None
+
+    from work_buddy.knowledge.index import ensure_index
+
+    idx = ensure_index(knowledge_scope=knowledge_scope)
+    scored_lists = idx.search_many(
+        queries=queries,
+        candidates=candidates_units,
+        top_n=top_n,
+        query_embed_timeout_s=query_embed_timeout_s,
+    )
+
+    out: list[dict[str, Any]] = []
+    for query, scored in zip(queries, scored_lists):
+        results = []
+        for item in scored:
+            unit = candidates_units.get(item["path"])
+            if unit is None:
+                continue
+            results.append({
+                "path": unit.path,
+                "score": item["score"],
+                **unit.tier(depth, store=full_store, dev=dev),
+            })
+        out.append({
+            "mode": "search",
+            "query": query,
+            "count": len(results),
+            "results": results,
+        })
+    return out
+
+
 def _lookup(
     path: str,
     depth: str,

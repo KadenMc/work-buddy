@@ -298,6 +298,107 @@ class TestKnowledgeIndexSearch:
                 assert results[i]["score"] >= results[i + 1]["score"]
 
 
+class TestKnowledgeIndexSearchMany:
+    """The batched multi-query path: same results as a search() loop, but the
+    query-side embeddings are computed in one round-trip per model."""
+
+    @pytest.fixture
+    def idx(self):
+        store = _make_store()
+        idx = KnowledgeIndex()
+        idx.build(store, skip_dense=True)
+        return idx
+
+    def test_matches_search_loop_bm25_only(self, idx):
+        """With no dense signal, search_many == [search(q) for q in queries]."""
+        queries = [
+            "requires_consent decorator",
+            "telegram mobile notifications",
+            "xyzzyplugh",  # no match
+        ]
+        batched = idx.search_many(queries)
+        individual = [idx.search(q) for q in queries]
+        assert batched == individual
+
+    def test_empty_queries_returns_empty_list(self, idx):
+        assert idx.search_many([]) == []
+
+    def test_not_built_returns_empty_slot_per_query(self):
+        idx = KnowledgeIndex()
+        assert idx.search_many(["a", "b"]) == [[], []]
+
+    def test_untokenizable_query_gets_empty_slot(self, idx):
+        results = idx.search_many(["consent", "  "])
+        assert len(results) == 2
+        assert results[0]  # "consent" matches
+        assert results[1] == []  # whitespace tokenizes to nothing
+
+    def _give_content_vectors(self, idx, seed=0):
+        """Attach a synthetic normalized content matrix so the dense query
+        path is exercised without a real index build."""
+        import numpy as np
+        n = idx.size
+        mat = np.random.default_rng(seed).normal(size=(n, 768)).astype(np.float32)
+        idx._content_vectors = KnowledgeIndex._l2_normalize(mat)
+        idx._has_content = True
+        idx._alias_flat = None  # isolate the content signal
+
+    def test_query_embeddings_are_batched_into_one_call(self, idx, monkeypatch):
+        """The whole point: N queries → exactly ONE embed round-trip."""
+        import numpy as np
+        from work_buddy.embedding import client as embed_client
+
+        self._give_content_vectors(idx)
+
+        calls: list[list[str]] = []
+
+        def fake_embed_for_ir(texts, role="query", **kwargs):
+            calls.append(list(texts))
+            rng = np.random.default_rng(abs(hash(tuple(texts))) & 0xFFFF)
+            return [rng.normal(size=768).tolist() for _ in texts]
+
+        monkeypatch.setattr(embed_client, "embed_for_ir", fake_embed_for_ir)
+
+        queries = ["alpha query", "beta query", "gamma query"]
+        results = idx.search_many(queries)
+
+        assert len(calls) == 1, f"expected 1 batched embed call, got {len(calls)}"
+        assert calls[0] == queries, "the single call must carry every query"
+        assert len(results) == len(queries)
+
+    def test_degrades_to_bm25_when_embed_unavailable(self, idx, monkeypatch):
+        """Content vectors exist, but the service is down (embed → None):
+        results fall back to BM25 instead of failing."""
+        from work_buddy.embedding import client as embed_client
+
+        self._give_content_vectors(idx)
+        monkeypatch.setattr(
+            embed_client, "embed_for_ir",
+            lambda texts, role="query", **kw: None,
+        )
+
+        results = idx.search_many(["requires_consent decorator", "xyzzyplugh"])
+        # BM25 still resolves the first query; the nonsense query matches nothing.
+        assert results[0] and results[0][0]["path"] == "consent/system"
+        assert results[1] == []
+
+    def test_passes_embed_timeout_through(self, idx, monkeypatch):
+        """query_embed_timeout_s is forwarded to the embed client so a
+        contended service can be bounded."""
+        from work_buddy.embedding import client as embed_client
+
+        self._give_content_vectors(idx)
+        seen_timeout: list = []
+
+        def fake_embed_for_ir(texts, role="query", timeout_s=None, **kwargs):
+            seen_timeout.append(timeout_s)
+            return [[0.0] * 768 for _ in texts]
+
+        monkeypatch.setattr(embed_client, "embed_for_ir", fake_embed_for_ir)
+        idx.search_many(["q1", "q2"], query_embed_timeout_s=25)
+        assert seen_timeout == [25]
+
+
 class TestPlaceholderIndexSearch:
     """Searching for content from a referenced unit should surface the referrer."""
 

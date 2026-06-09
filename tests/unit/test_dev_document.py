@@ -129,11 +129,11 @@ def test_scan_candidates_shape_is_slimmed(fake_git):
 # RAG vs grep dispatch
 # ---------------------------------------------------------------------------
 
-def _fake_search_success(*args: Any, **kwargs: Any) -> dict[str, Any]:
-    """search() stub that returns a deterministic small result set."""
+def _one_result(query: str) -> dict[str, Any]:
+    """A deterministic search-mode result dict (the shape search_many emits)."""
     return {
         "mode": "search",
-        "query": kwargs.get("query", ""),
+        "query": query,
         "count": 2,
         "results": [
             {
@@ -154,23 +154,28 @@ def _fake_search_success(*args: Any, **kwargs: Any) -> dict[str, Any]:
     }
 
 
+def _fake_search_many_success(queries, *args: Any, **kwargs: Any) -> list[dict[str, Any]]:
+    """search_many() stub: one deterministic result dict per query, in order."""
+    return [_one_result(q) for q in queries]
+
+
 def _fake_search_raises(*args: Any, **kwargs: Any) -> dict[str, Any]:
-    """search() stub that simulates an embedding-service failure."""
+    """search_many() stub that simulates a hard search failure."""
     raise RuntimeError("embedding service unhealthy")
 
 
 def test_scan_uses_rag_when_available(fake_git):
-    """When search() returns scored hits, the candidates carry _source: rag.
+    """When search_many returns scored hits, the candidates carry _source: rag.
 
-    The scan now makes 1 + N search() calls (one structural query, plus one
-    per Python file with a docstring). The mock's ``side_effect`` returns
-    the same response for every call.
+    The scan now makes a SINGLE batched search_many call carrying one
+    structural query plus one query per Python file with a docstring. The
+    stub returns one result dict per query.
     """
     fake_git["tracked"] = ["work_buddy/dashboard/forms.py"]
     fake_git["untracked"] = []
     # Stub _read_module_docstring to be deterministic — return empty so this
     # test exercises the structural-query-only path.
-    with patch("work_buddy.knowledge.search.search", side_effect=_fake_search_success), \
+    with patch("work_buddy.knowledge.search.search_many", side_effect=_fake_search_many_success), \
          patch("work_buddy.dev.document._read_module_docstring", return_value=""):
         result = dev_document.scan_changes()
     assert result["_source"] == "rag"
@@ -185,10 +190,10 @@ def test_scan_uses_rag_when_available(fake_git):
 
 
 def test_scan_falls_back_on_search_failure(fake_git):
-    """When search() raises on the structural query, scan falls back to grep."""
+    """When search_many raises outright, scan falls back to grep."""
     fake_git["tracked"] = ["work_buddy/obsidian/tasks/namespace_suggest.py"]
     fake_git["untracked"] = []
-    with patch("work_buddy.knowledge.search.search", side_effect=_fake_search_raises):
+    with patch("work_buddy.knowledge.search.search_many", side_effect=_fake_search_raises):
         result = dev_document.scan_changes()
     assert result["_source"] == "grep_fallback"
     # The fallback should still surface SOME candidates against the real
@@ -212,8 +217,10 @@ def test_scan_caps_at_20_candidates(fake_git):
     fake = {"mode": "search", "query": "x", "count": 50, "results": many}
     fake_git["tracked"] = ["work_buddy/dev/document.py"]
     fake_git["untracked"] = []
-    with patch("work_buddy.knowledge.search.search", return_value=fake), \
-         patch("work_buddy.dev.document._read_module_docstring", return_value=""):
+    with patch(
+        "work_buddy.knowledge.search.search_many",
+        side_effect=lambda queries, *a, **k: [fake for _ in queries],
+    ), patch("work_buddy.dev.document._read_module_docstring", return_value=""):
         result = dev_document.scan_changes()
     assert result["_source"] == "rag"
     assert len(result["candidate_units"]) <= 20
@@ -249,9 +256,11 @@ def test_scan_fuses_path_and_docstring_signals(fake_git):
     }
     fake_git["tracked"] = ["work_buddy/dev/document.py"]
     fake_git["untracked"] = []
+    # One batched call returns both rankings, in query order:
+    # [structural, docstring].
     with patch(
-        "work_buddy.knowledge.search.search",
-        side_effect=[structural, docstring],
+        "work_buddy.knowledge.search.search_many",
+        return_value=[structural, docstring],
     ), patch(
         "work_buddy.dev.document._read_module_docstring",
         return_value="some docstring text",
@@ -265,7 +274,7 @@ def test_scan_fuses_path_and_docstring_signals(fake_git):
 
 
 def test_scan_skips_files_without_docstrings(fake_git):
-    """Files with no docstring contribute no extra search call."""
+    """Files with no docstring contribute no extra query to the batch."""
     structural = {
         "mode": "search", "count": 1,
         "results": [{"path": "fake/A", "name": "A", "description": "a", "score": 0.9}],
@@ -273,17 +282,23 @@ def test_scan_skips_files_without_docstrings(fake_git):
     fake_git["tracked"] = ["work_buddy/dev/document.py"]
     fake_git["untracked"] = []
     mock_search = patch(
-        "work_buddy.knowledge.search.search",
-        return_value=structural,
+        "work_buddy.knowledge.search.search_many",
+        return_value=[structural],
     )
     with mock_search as m, patch(
         "work_buddy.dev.document._read_module_docstring",
         return_value="",
     ):
         dev_document.scan_changes()
-    # Only the structural query should have run.
+    # One batched call, carrying only the structural query (no docstrings).
     assert m.call_count == 1, (
-        f"Expected 1 search call (structural only); got {m.call_count}"
+        f"Expected 1 batched search_many call; got {m.call_count}"
+    )
+    called_queries = (
+        m.call_args.args[0] if m.call_args.args else m.call_args.kwargs["queries"]
+    )
+    assert len(called_queries) == 1, (
+        f"Expected only the structural query; got {len(called_queries)}"
     )
 
 
