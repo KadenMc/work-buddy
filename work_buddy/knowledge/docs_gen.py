@@ -316,7 +316,11 @@ def _write_nav_to_mkdocs(nav: list[dict[str, Any]]) -> None:
 
     Replaces everything between ``# AUTOGEN_NAV_START`` and
     ``# AUTOGEN_NAV_END`` with the generated nav structure, flattening
-    handbook sections into the top-level navigation.
+    handbook sections into the top-level navigation. The committed block is
+    intentionally left minimal (a lone ``Home`` entry) so the generated nav is
+    never a drift-prone tracked artifact; this fill runs at build time. Content
+    outside the markers — hand-written config above, anything below — is
+    preserved verbatim, so the marker block need not sit at end of file.
     """
     import yaml
 
@@ -340,7 +344,7 @@ def _write_nav_to_mkdocs(nav: list[dict[str, Any]]) -> None:
         text[:start_idx]
         + start_marker + "\n"
         + nav_yaml
-        + end_marker
+        + text[end_idx:]  # keep the end marker and everything after it
     )
 
     mkdocs_path.write_text(new_text, encoding="utf-8")

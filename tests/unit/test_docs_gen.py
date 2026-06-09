@@ -218,3 +218,79 @@ class TestLiveStoreSmoke:
         assert isinstance(result, dict)
         assert result["pages"] > 0
         assert result["units"] > 0
+
+
+class TestNavInjection:
+    """``_write_nav_to_mkdocs`` splices the generated nav between the marker
+    comments. The committed block is intentionally minimal (drift-proofing): the
+    full nav is rebuilt at build time, never tracked in git. So the splice must
+    fill a marker-only block, preserve everything outside the markers (config
+    above, anything below), and be idempotent.
+    """
+
+    # A marker block that is NOT at end of file — there is trailing config the
+    # splice must not eat. The latent bug this guards against dropped it.
+    _MKDOCS = (
+        "site_name: Test\n"
+        "theme:\n"
+        "  name: material\n"
+        "\n"
+        "# AUTOGEN_NAV_START\n"
+        "nav:\n"
+        "- Home: index.md\n"
+        "# AUTOGEN_NAV_END\n"
+        "\n"
+        "# trailing config the splice must not eat\n"
+        "extra:\n"
+        "  sentinel: keep-me\n"
+    )
+
+    def _prepare(self, tmp_path, monkeypatch, text=None):
+        (tmp_path / "mkdocs.yml").write_text(text or self._MKDOCS, encoding="utf-8")
+        monkeypatch.setattr(docs_gen, "_REPO_ROOT", tmp_path)
+
+    def test_fills_block_and_preserves_surroundings(self, tmp_path, monkeypatch):
+        import yaml
+
+        self._prepare(tmp_path, monkeypatch)
+        docs_gen._write_nav_to_mkdocs([{"Tasks": [{"Triage": "handbook/tasks_triage.md"}]}])
+        out = (tmp_path / "mkdocs.yml").read_text(encoding="utf-8")
+
+        # Hand-written config above AND below the marker block survives.
+        assert "site_name: Test" in out
+        assert "# trailing config the splice must not eat" in out
+        assert "sentinel: keep-me" in out
+        # Both markers survive.
+        assert "# AUTOGEN_NAV_START" in out
+        assert "# AUTOGEN_NAV_END" in out
+
+        # The generated nav landed and parses as valid YAML.
+        loaded = yaml.safe_load(out)
+        # _write_nav_to_mkdocs always prepends Home + Handbook to the sections.
+        assert loaded["nav"][0] == {"Home": "index.md"}
+        assert loaded["nav"][1] == {"Handbook": "handbook/index.md"}
+        assert {"Tasks": [{"Triage": "handbook/tasks_triage.md"}]} in loaded["nav"]
+        # Trailing config is still structurally present, not just textually.
+        assert loaded["extra"]["sentinel"] == "keep-me"
+
+    def test_marker_only_block_is_tolerated(self, tmp_path, monkeypatch):
+        # Even with nothing between the markers, the fill must succeed.
+        bare = "site_name: Test\n# AUTOGEN_NAV_START\n# AUTOGEN_NAV_END\n"
+        self._prepare(tmp_path, monkeypatch, text=bare)
+        docs_gen._write_nav_to_mkdocs([{"Tasks": [{"Triage": "handbook/tasks_triage.md"}]}])
+        out = (tmp_path / "mkdocs.yml").read_text(encoding="utf-8")
+
+        import yaml
+
+        loaded = yaml.safe_load(out)
+        assert loaded["nav"][0] == {"Home": "index.md"}
+        assert loaded["site_name"] == "Test"
+
+    def test_idempotent(self, tmp_path, monkeypatch):
+        self._prepare(tmp_path, monkeypatch)
+        nav = [{"Tasks": [{"Triage": "handbook/tasks_triage.md"}]}]
+        docs_gen._write_nav_to_mkdocs(nav)
+        once = (tmp_path / "mkdocs.yml").read_text(encoding="utf-8")
+        docs_gen._write_nav_to_mkdocs(nav)
+        twice = (tmp_path / "mkdocs.yml").read_text(encoding="utf-8")
+        assert once == twice
