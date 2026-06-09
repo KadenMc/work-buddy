@@ -2,7 +2,7 @@
 name: Local Inference Broker
 kind: reference
 description: Admission-control + priority scheduling + per-call metrics for every local-inference call. Work-buddy is the scheduler of record for LM Studio / LM Link traffic, not LM Studio itself.
-summary: 'Process-global broker (``work_buddy.inference.get_broker()``) wraps every outbound local-inference call. Per-profile max_concurrent + max_queued. Three priority classes (INTERACTIVE, WORKFLOW, BACKGROUND) with priority-aware admission. Distinct error kinds: QueueFull, QueueWaitTimeout, InferenceTimeout. Metrics ring buffer (queued_at, admitted_at, started_http_at, first_token_at, finished_at + latency splits) for the dashboard.'
+summary: 'Process-global broker (``work_buddy.inference.get_broker()``) wraps every local-inference call — remote HTTP (LM Studio / OpenAI-compat) and in-process host-GPU embedding encode. Per-profile max_concurrent + max_queued. Three priority classes (INTERACTIVE, WORKFLOW, BACKGROUND) with priority-aware admission. Distinct error kinds: QueueFull, QueueWaitTimeout, InferenceTimeout. Metrics ring buffer (queued_at, admitted_at, started_http_at, first_token_at, finished_at + latency splits) for the dashboard.'
 entry_points:
 - work_buddy.inference.broker
 - work_buddy.inference
@@ -32,7 +32,7 @@ parents:
 
 LM Studio has an internal queue and concurrency slots (``Max Concurrent Predictions``, default 4), but its public API does NOT expose current slot occupancy. A naive caller hitting ``/v1/chat/completions`` or ``/v1/embeddings`` can sit inside LM Studio's hidden queue until the caller's timeout fires — and work-buddy would see "LM Studio is slow" with no way to tell whether the slow bit was queue-wait or actual inference. Worse: a background bulk encode can starve an interactive dashboard search because both hit the same server and the server has no notion of *our* priorities.
 
-The broker fixes that by making **work-buddy** the scheduler of record for local inference. Every outbound call (embedding provider, both LLM backends) routes through ``broker.slot(...)`` before the HTTP call is made.
+The broker fixes that by making **work-buddy** the scheduler of record for local inference. Every local-inference call routes through ``broker.slot(...)``: the LM Studio embedding provider and both LLM backends (outbound HTTP to a peer), **and** the in-process embedding encode on the host GPU — query and bulk-document — via ``work_buddy.inference.local_slot.local_embed_slot``. That last one is what lets a background index rebuild yield the local GPU to an interactive search; without it the default (no-offload) setup had no admission control between a rebuild and a live query.
 
 ## Public API
 
@@ -59,9 +59,9 @@ On ``__exit__``, the ticket releases the slot and the call's metrics land in the
 
 Three classes, fixed-priority admission across + FIFO within:
 
-- ``INTERACTIVE`` (0) — user-facing / UI-driven requests (dashboard search, agent response). Must not sit behind background work.
-- ``WORKFLOW`` (1) — agent-initiated work tied to a user task but not UI-facing. Default for LLM backend calls.
-- ``BACKGROUND`` (2) — cron jobs, bulk index rebuilds. Default for embedding provider calls. Yields to everything else.
+- ``INTERACTIVE`` (0) — user-facing / UI-driven requests (dashboard search, agent response, **query-side embedding encode**). Must not sit behind background work.
+- ``WORKFLOW`` (1) — agent-initiated work tied to a user task but not UI-facing. Default for LLM backend calls; also where a symmetric (no prompt-role) local embedding encode lands.
+- ``BACKGROUND`` (2) — cron jobs, bulk index rebuilds (LM Studio offload **and** in-process document encode). Yields to everything else.
 
 Lower numeric = higher priority. A queued INTERACTIVE ticket admits ahead of a queued BACKGROUND ticket on the same profile when a slot frees up.
 
@@ -74,13 +74,14 @@ Lower numeric = higher priority. A queued INTERACTIVE ticket admits ahead of a q
 
 ## Profile naming convention
 
-Each call site uses a prefix so slot limits stay independent:
+Each call site uses a prefix so slot limits stay independent. A profile is one logical queue on one device:
 
-- ``lmstudio:<model_id>`` — embedding provider (``work_buddy.embedding.providers.lmstudio.encode``).
+- ``lmstudio:<model_id>`` — embedding provider, per remote LM Studio peer/model (``work_buddy.embedding.providers.lmstudio.encode``).
 - ``lmstudio_native:<model>`` — LM Studio native-chat tool-call loop (``work_buddy.llm.backends.lmstudio_native.call_lmstudio_native``).
 - ``openai_compat:<model>`` — OpenAI-compatible chat-completions (``work_buddy.llm.backends.openai_compat.call_openai_compat``).
+- ``local:embedding`` — **all** in-process sentence-transformer embedding encode on the host GPU, regardless of model (``work_buddy.inference.local_slot.local_embed_slot``; used by the embedding service's ``/embed`` · ``/search`` · ``/similarity`` and ``work_buddy.ir.dense``). Deliberately a **single shared** profile: the local GPU is one device, so query (INTERACTIVE) and bulk-document (BACKGROUND) encode share one queue and the broker can let a search preempt a rebuild between batches.
 
-Same model id on the same physical LM Studio instance gets up to three independent logical profiles — so an active embedding bulk-encode can't starve a chat call (and vice versa), even though they talk to the same server.
+The ``lmstudio*`` / ``openai_compat`` prefixes give the same model id on the same physical LM Studio instance up to three independent logical profiles — so an active embedding bulk-encode can't starve a chat call (and vice versa), even though they talk to the same server. The ``local:embedding`` profile takes the opposite stance on purpose: one device → one queue, shared across models, so cross-priority preemption works.
 
 ## Per-profile config
 
@@ -115,7 +116,8 @@ Practical consequence: the broker exposes no HTTP state endpoint; per-call metri
 - ``work_buddy/inference/broker.py`` — the broker itself, ``SlotMetrics``, ``ProfileConfig``, error classes.
 - ``work_buddy/inference/__init__.py`` — public API re-exports (``get_broker``, ``Priority``, etc.).
 - ``work_buddy/inference/metrics_store.py`` — SQLite persistence for completed calls (the ``broker-metrics`` entry-TTL artifact); an embedding-service flusher daemon drains the ring into it so dashboard history survives restarts.
-- ``work_buddy/embedding/providers/lmstudio.py`` — first consumer; wraps bulk encode in ``broker.slot``.
+- ``work_buddy/embedding/providers/lmstudio.py`` — remote-offload consumer; wraps bulk encode in ``broker.slot``.
+- ``work_buddy/inference/local_slot.py`` — ``local_embed_slot`` helper + the ``local:embedding`` profile; admits in-process host-GPU encode (consumed by ``work_buddy/embedding/service.py`` encode endpoints and ``work_buddy/ir/dense.py``). Best-effort — degrades to a direct encode when the broker is unavailable.
 - ``work_buddy/llm/backends/lmstudio_native.py`` — LLM native-chat consumer.
 - ``work_buddy/llm/backends/openai_compat.py`` — OpenAI-compat consumer.
 - ``tests/unit/test_local_inference_broker.py`` — 12 tests covering admission, priority, queue capacity, timeouts, metrics, reconfigure.

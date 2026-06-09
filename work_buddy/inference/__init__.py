@@ -22,9 +22,11 @@ from work_buddy.inference.broker import (
     get_broker,
     parse_priority,
 )
+from work_buddy.inference.local_slot import LOCAL_EMBED_PROFILE, local_embed_slot
 
 __all__ = [
     "InferenceTimeout",
+    "LOCAL_EMBED_PROFILE",
     "LocalInferenceBroker",
     "Priority",
     "ProfileConfig",
@@ -32,5 +34,6 @@ __all__ = [
     "QueueWaitTimeout",
     "SlotMetrics",
     "get_broker",
+    "local_embed_slot",
     "parse_priority",
 ]

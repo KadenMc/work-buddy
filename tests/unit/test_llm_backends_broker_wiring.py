@@ -243,8 +243,13 @@ def test_lmstudio_native_and_openai_compat_profiles_are_distinct(
     profiles = set(get_broker().profile_status().keys())
     assert "openai_compat:shared-model" in profiles
     assert "lmstudio_native:shared-model" in profiles
-    # Emphatic: they are NOT the same entry.
-    assert len(profiles) == 2
+    # Emphatic: they are NOT the same entry. (Other profiles may also be
+    # registered — e.g. the config-declared `local:embedding` admission profile
+    # — so assert the two backend profiles are present + distinct rather than
+    # pinning the total count.)
+    assert len(
+        {"openai_compat:shared-model", "lmstudio_native:shared-model"} & profiles
+    ) == 2
 
 
 # ---------------------------------------------------------------------------
