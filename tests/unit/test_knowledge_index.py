@@ -629,6 +629,57 @@ class TestCacheIntegration:
         )
         assert "EDITED summary text" in embedded_texts[0]
 
+    def test_content_save_uses_per_pid_temp_not_a_fixed_name(self, monkeypatch):
+        """Regression: the content-cache save must NOT pin a single fixed temp name.
+
+        The gateway (warmup / agent_docs_rebuild) AND the dev-document scan
+        subprocess each rebuild the index in a fresh process and save here, so a
+        shared ``content.tmp.npz`` races — one process's temp->canonical rename
+        finds the temp already gone (WinError 2), the save fails, and the cache is
+        left cold. Passing no ``tmp_path`` lets ``atomic_save_npz`` default to a
+        per-PID temp that can't collide.
+        """
+        import numpy as np
+        from work_buddy.knowledge import persistence as persist
+
+        seen = {}
+        real = persist.atomic_save_npz
+
+        def spy(path, *, tmp_path=None, **arrays):
+            seen["tmp_path"] = tmp_path
+            return real(path, tmp_path=tmp_path, **arrays)
+
+        monkeypatch.setattr(persist, "atomic_save_npz", spy)
+        persist.save_content_cache(
+            {"u": (persist.content_hash("x"), np.zeros((1, 768), dtype=np.float32))},
+            "leaf-ir",
+        )
+        assert seen.get("tmp_path") is None, (
+            "save_content_cache must not pass a fixed tmp_path (would race across "
+            f"concurrent builders); got {seen.get('tmp_path')!r}"
+        )
+
+    def test_alias_save_uses_per_pid_temp_not_a_fixed_name(self, monkeypatch):
+        """Same per-PID-temp contract for the alias cache."""
+        import numpy as np
+        from work_buddy.knowledge import persistence as persist
+
+        seen = {}
+        real = persist.atomic_save_npz
+
+        def spy(path, *, tmp_path=None, **arrays):
+            seen["tmp_path"] = tmp_path
+            return real(path, tmp_path=tmp_path, **arrays)
+
+        monkeypatch.setattr(persist, "atomic_save_npz", spy)
+        persist.save_alias_cache(
+            {("u", "alias phrase"): np.zeros((1024,), dtype=np.float32)},
+            "leaf-mt",
+        )
+        assert seen.get("tmp_path") is None, (
+            f"save_alias_cache must not pass a fixed tmp_path; got {seen.get('tmp_path')!r}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Module-level helpers
