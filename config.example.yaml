@@ -238,6 +238,22 @@ inference:
       default_queue_wait_s: 30
       default_inference_s: 120
 
+# Consolidated index (work_buddy/index/) — one SQLite+FTS5+vector store across all
+# partitions (knowledge, vault chunks, conversation, projects, chrome, summary,
+# task_note). INERT until `enabled: true` (default OFF): the live knowledge/vault/IR
+# indexes stay the hot path; this builds into a SEPARATE db (db/index-consolidated),
+# served warm in-service and broker-scheduled. Per-partition `rrf_k` is the single
+# source for the RRF constant (was hardcoded ×7). Enabling + re-pointing callers is a
+# deliberate, reviewed step — see .data/designs/index-consolidation/.
+index:
+  enabled: false
+  db_path: null            # null → paths.resolve("db/index-consolidated")
+  partitions:
+    knowledge:
+      rrf_k: 20            # smaller per-partition default (A/B: k=60≈k=15 at top-k)
+    # conversation: { rrf_k: 60, recency: true }
+    # vault:        { rrf_k: 60 }
+
 chats:
   specstory_days: 7
   claude_history_days: 7

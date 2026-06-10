@@ -905,6 +905,68 @@ def vault_index_endpoint():
         return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500
 
 
+@app.route("/index/search", methods=["POST"])
+def index_search_endpoint():
+    """Hybrid search over the consolidated index, in-process (resident matrices).
+
+    Flag-gated infrastructure: inert unless something queries it; the live
+    knowledge/vault/IR paths are unaffected. Runs here so the query encoder is
+    ``_IN_SERVICE``-aware and the per-(partition,projection) resident matrices stay warm.
+
+    Request body: {"query", "top_k"?, "method"?, "partitions"?, "filters"?, "scope"?, "recency"?, "rrf_k"?}
+    Response: {"results": [{"doc_id","score","signals","display_text","metadata"}, ...]}
+    """
+    data = request.get_json(silent=True) or {}
+    try:
+        from work_buddy.index.model import Query
+        from work_buddy.index.partitioned import UnifiedIndex
+
+        q = Query(
+            text=data.get("query", ""),
+            top_k=data.get("top_k", 10),
+            method=data.get("method", "hybrid"),
+            filters=data.get("filters") or {},
+            scope=data.get("scope"),
+            recency=data.get("recency", False),
+            rrf_k=data.get("rrf_k"),
+        )
+        hits = UnifiedIndex().search(q, partitions=data.get("partitions"))
+        results = [
+            {"doc_id": h.doc_id, "score": h.score, "signals": h.signals,
+             "display_text": h.display_text, "metadata": h.metadata}
+            for h in hits
+        ]
+        return jsonify({"results": results})
+    except Exception as exc:
+        return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500
+
+
+@app.route("/index/build", methods=["POST"])
+def index_build_endpoint():
+    """Build the consolidated index (a partition, or all) into its SEPARATE DB.
+
+    Explicit build endpoint — builds into ``db/index-consolidated`` regardless of the
+    ``index.enabled`` flag (a separate DB; building it does not change live behavior —
+    only flipping the flag + re-pointing callers would). The cron-driven seam adapter,
+    by contrast, respects the flag.
+
+    Request body: {"partition"?: str, "force"?: bool}  (omit partition → build_all)
+    Response: {"result": {...}}
+    """
+    data = request.get_json(silent=True) or {}
+    try:
+        from work_buddy.index.config import load_index_config
+        from work_buddy.index.partitioned import UnifiedIndex
+
+        ui = UnifiedIndex(config=load_index_config())
+        name = data.get("partition")
+        force = bool(data.get("force", False))
+        result = ui.build(name, force=force) if name else ui.build_all(force=force)
+        return jsonify({"result": result})
+    except Exception as exc:
+        return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500
+
+
 def _vault_matrix_evictor_loop() -> None:
     """Background thread: release the resident vault search matrix after an idle TTL.
 
@@ -1034,6 +1096,13 @@ def main():
         name="vault-matrix-evictor",
         daemon=True,
     ).start()
+    # Release idle resident matrices of the consolidated index (flag-gated; additive —
+    # does NOT replace the model/vault evictors above). One sweep for all its partitions.
+    try:
+        from work_buddy.index.resident import start_idle_evictor as _start_index_evictor
+        _start_index_evictor()
+    except Exception as exc:  # never block service startup
+        print(f"consolidated-index evictor start failed (non-fatal): {exc}", file=sys.stderr)
     # Persist completed broker calls so the dashboard Inference panel keeps
     # history across restarts (the broker's metrics ring is in-memory only).
     threading.Thread(
