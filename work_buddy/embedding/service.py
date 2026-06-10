@@ -941,6 +941,42 @@ def index_search_endpoint():
         return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500
 
 
+@app.route("/index/search_many", methods=["POST"])
+def index_search_many_endpoint():
+    """Batched hybrid search over the consolidated index (resident matrices).
+
+    Mirrors ``/index/search`` but takes a LIST of queries and runs ONE query-encode
+    round-trip per projection for all of them — the budget-preserving path the
+    dev-document scan uses (collapses N round-trips to 1, per the #178 rationale).
+
+    Request body: {"queries":[...], "top_k"?, "method"?, "partitions"?, "filters"?, "scope"?, "recency"?, "rrf_k"?}
+    Response: {"results": [[{doc_id,score,signals,display_text,metadata}, ...], ...]}  (one list per query, order preserved)
+    """
+    data = request.get_json(silent=True) or {}
+    try:
+        from work_buddy.index.partitioned import UnifiedIndex
+
+        per_query = UnifiedIndex().search_many(
+            data.get("queries") or [],
+            partitions=data.get("partitions"),
+            top_k=data.get("top_k", 10),
+            method=data.get("method", "hybrid"),
+            filters=data.get("filters") or {},
+            scope=data.get("scope"),
+            recency=data.get("recency", False),
+            rrf_k=data.get("rrf_k"),
+        )
+        results = [
+            [{"doc_id": h.doc_id, "score": h.score, "signals": h.signals,
+              "display_text": h.display_text, "metadata": h.metadata}
+             for h in hits]
+            for hits in per_query
+        ]
+        return jsonify({"results": results})
+    except Exception as exc:
+        return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500
+
+
 @app.route("/index/build", methods=["POST"])
 def index_build_endpoint():
     """Build the consolidated index (a partition, or all) into its SEPARATE DB.

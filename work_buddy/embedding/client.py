@@ -301,6 +301,48 @@ def vault_search(
     return result.get("results")
 
 
+def index_search_many(
+    queries: list[str],
+    *,
+    top_k: int = 10,
+    method: str = "hybrid",
+    partitions: list[str] | None = None,
+    filters: dict | None = None,
+    scope: str | None = None,
+    recency: bool = False,
+    rrf_k: int | None = None,
+    timeout_s: int | None = None,
+) -> list[list[dict]] | None:
+    """Batched hybrid search over the consolidated index via the embedding service.
+
+    ONE round-trip for all ``queries`` — the service batch-encodes them and scores
+    against the warm resident matrices. Returns one result-dict list per query (order
+    preserved), or ``None`` when the service is unreachable — the caller then degrades
+    to the in-process knowledge path.
+    """
+    payload: dict[str, Any] = {
+        "queries": list(queries),
+        "top_k": top_k,
+        "method": method,
+        "recency": recency,
+    }
+    if partitions is not None:
+        payload["partitions"] = partitions
+    if filters:
+        payload["filters"] = filters
+    if scope:
+        payload["scope"] = scope
+    if rrf_k is not None:
+        payload["rrf_k"] = rrf_k
+    result = _request(
+        "POST", "/index/search_many", payload,
+        timeout=timeout_s if timeout_s is not None else 60,
+    )
+    if result is None:
+        return None
+    return result.get("results")
+
+
 def vault_index(
     action: str = "build",
     *,

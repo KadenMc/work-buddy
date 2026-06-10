@@ -61,6 +61,16 @@ class IndexPartition:
     def search(self, q: Query) -> list[Hit]:
         return self._searcher.search(q)
 
+    def search_many(
+        self, queries: list[str], *, top_k: int = 10, method: str = "hybrid",
+        filters: dict | None = None, scope: str | None = None,
+        recency: bool = False, rrf_k: int | None = None,
+    ) -> list[list[Hit]]:
+        return self._searcher.search_many(
+            queries, top_k=top_k, method=method, filters=filters,
+            scope=scope, recency=recency, rrf_k=rrf_k,
+        )
+
     def hydrate(self, hits: list[Hit], **opts) -> list[Any]:
         return hydrate(self._partition, hits, **opts)
 
@@ -151,6 +161,40 @@ class UnifiedIndex:
             return results[0][: q.top_k]
         # Cross-partition federation via RRF (fork F-CROSS).
         return MultiQueryFuser.fuse(results, k=(q.rrf_k or 60), top_k=q.top_k)
+
+    def search_many(
+        self, queries: list[str], partitions: list[str] | None = None, *,
+        top_k: int = 10, method: str = "hybrid", filters: dict | None = None,
+        scope: str | None = None, recency: bool = False, rrf_k: int | None = None,
+    ) -> list[list[Hit]]:
+        """Batched federated search — one ``list[Hit]`` per query, in order. Each
+        partition is searched once (batched); per query, results federate across
+        partitions via RRF, exactly like :meth:`search` does for a single query."""
+        names = partitions if partitions is not None else (
+            self._store.partitions() or self.available()
+        )
+        per_partition: list[list[list[Hit]]] = []
+        for name in names:
+            try:
+                res = self.partition(name).search_many(
+                    queries, top_k=top_k, method=method, filters=filters,
+                    scope=scope, recency=recency, rrf_k=rrf_k,
+                )
+            except Exception as exc:  # one partition failing must not kill the batch
+                logger.warning("partition %r search_many failed: %s", name, exc)
+                continue
+            per_partition.append(res)
+        out: list[list[Hit]] = []
+        fk = rrf_k or 60
+        for i in range(len(queries)):
+            per_q = [pp[i] for pp in per_partition if i < len(pp) and pp[i]]
+            if not per_q:
+                out.append([])
+            elif len(per_q) == 1:
+                out.append(per_q[0][:top_k])
+            else:
+                out.append(MultiQueryFuser.fuse(per_q, k=fk, top_k=top_k))
+        return out
 
     def hydrate(self, partition: str, hits: list[Hit], **opts) -> list[Any]:
         return self.partition(partition).hydrate(hits, **opts)

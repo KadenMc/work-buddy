@@ -25,7 +25,9 @@ class FakeEncoder:
     def encode_query(self, texts, kind, model_key=None):
         if self.down:
             return None
-        return np.array([self.qvec], dtype=np.float32)
+        # One row per query (so batched search_many gets an (N, D) matrix); for a
+        # single query this is (1, D) — unchanged for the single-query tests.
+        return np.array([self.qvec] * len(texts), dtype=np.float32)
 
     def encode_documents(self, texts, kind, model_key=None):
         return np.zeros((len(texts), len(self.qvec)), dtype=np.float32)
@@ -132,6 +134,55 @@ class TestHybridSearch:
         ids = [h.doc_id for h in hits]
         # fresh 'c' should outrank ancient 'a' after recency decay
         assert ids.index("knowledge:c") < ids.index("knowledge:a")
+
+
+class _BadCountEncoder:
+    """Returns the WRONG row count for a batch (always 1 row) → batch degrade guard."""
+
+    def encode_query(self, texts, kind, model_key=None):
+        return np.array([[1.0, 0.0]], dtype=np.float32)  # 1 row regardless of len(texts)
+
+    def encode_documents(self, texts, kind, model_key=None):
+        return np.zeros((len(texts), 2), dtype=np.float32)
+
+
+class TestSearchMany:
+    def test_parity_with_single_search(self, store):
+        """search_many([q1,q2]) must equal [search(q1), search(q2)] element-for-element."""
+        _seed(store)
+        s = _searcher(store, FakeEncoder(qvec=(1.0, 0.0)))
+        qs = ["alpha", "gamma"]
+        batch = s.search_many(qs, top_k=10)
+        singles = [s.search(Query(text=q, top_k=10)) for q in qs]
+        assert len(batch) == 2
+        for b, single in zip(batch, singles):
+            assert [h.doc_id for h in b] == [h.doc_id for h in single]
+            assert [h.score for h in b] == [h.score for h in single]
+            assert [h.signals for h in b] == [h.signals for h in single]
+
+    def test_order_and_empty_query_preserved(self, store):
+        _seed(store)
+        batch = _searcher(store, FakeEncoder(qvec=(1.0, 0.0))).search_many(
+            ["alpha", "", "gamma"], top_k=10,
+        )
+        assert len(batch) == 3
+        assert batch[1] == []  # empty query → empty list, position preserved
+        assert any(h.doc_id == "knowledge:a" for h in batch[0])
+
+    def test_degrade_to_lexical_when_encoder_down(self, store):
+        _seed(store)
+        batch = _searcher(store, FakeEncoder(down=True)).search_many(["alpha"], top_k=10)
+        assert batch and batch[0]
+        assert all("content" not in h.signals for h in batch[0])  # lexical only
+
+    def test_wrong_row_count_degrades_to_lexical(self, store):
+        _seed(store)
+        # Encoder returns 1 row for a 2-query batch → projection degrades (no dense),
+        # but lexical still produces results and nothing raises.
+        batch = _searcher(store, _BadCountEncoder()).search_many(["alpha", "gamma"], top_k=10)
+        assert len(batch) == 2
+        for hits in batch:
+            assert all("content" not in h.signals for h in hits)
 
 
 class TestMultiQueryFuser:
