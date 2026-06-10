@@ -72,6 +72,7 @@ RESOURCES: dict[str, str] = {
     "db/llm_queue":              "db/llm_call_queue.db",  # LLM-call priority queue
     "db/work_item_events":       "db/work_item_events.db",  # WorkItem audit/provenance log
     "db/vault-index":            "db/vault-index.db",  # Vault semantic-index chunk store
+    "db/index-consolidated":     "db/index-consolidated.db",  # Consolidated index (flag-gated; index.enabled)
     "db/broker-metrics":         "db/broker_metrics.db",  # Persisted LocalInferenceBroker call metrics
 
     # Logs
