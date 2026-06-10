@@ -1,0 +1,518 @@
+"""IndexStore — the consolidated index's shared SQLite substrate.
+
+One DB (``index.db_path``, default ``db/index-consolidated``) holding ALL partitions
+(fork F-STORE: one shared DB, ``partition`` column). Generalizes
+``vault_index/store.py`` to whole ``Document``s with named ``fields`` (BM25) +
+``projections`` (dense), and lifts the IR engine's JSON ``metadata`` filtering.
+
+Tables:
+- ``documents`` — one row per doc (fields/projections/metadata as JSON; ``content_hash``
+  for change detection; ``timestamp`` for recency).
+- ``doc_fts`` — a STANDALONE FTS5 index over canonical ``(title, body, tags)`` text
+  (not external-content: avoids rowid/trigger coupling and lets us delete by ``doc_id``).
+  Per-field importance is preserved via FTS5's native ``bm25(doc_fts, wt, wb, wg)``
+  column weights. Partition/metadata scoping is a JOIN to ``documents``.
+- ``doc_vectors`` — one float16 blob per ``(doc_id, projection)``, FK-cascaded to
+  ``documents`` (incremental O(1) writes; vectors auto-deleted with their doc).
+- ``indexed_items`` — the change-detection ledger (mtime + content_hash per item).
+- ``index_meta`` — KV (per-partition ``build_version`` etc.).
+
+Thread-safety: a fresh connection per public method (sqlite3 connections aren't
+shareable across threads; the embedding service is multi-threaded). ``CREATE … IF NOT
+EXISTS`` runs each open — cheap and idempotent, matching ``vault_index/store.py``.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import sqlite3
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from work_buddy.index.model import Document, Projection
+from work_buddy.logging_config import get_logger
+
+logger = get_logger(__name__)
+
+_SCHEMA = """\
+CREATE TABLE IF NOT EXISTS documents (
+    doc_id        TEXT PRIMARY KEY,
+    partition     TEXT NOT NULL,
+    item_id       TEXT NOT NULL DEFAULT '',
+    fields        TEXT NOT NULL DEFAULT '{}',   -- JSON {name: text}
+    projections   TEXT NOT NULL DEFAULT '{}',   -- JSON {key: {"text": str | list[str]}}
+    display_text  TEXT NOT NULL DEFAULT '',
+    metadata      TEXT NOT NULL DEFAULT '{}',   -- JSON, json_extract-filterable
+    content_hash  TEXT NOT NULL DEFAULT '',
+    timestamp     REAL,                          -- epoch seconds, nullable (recency)
+    indexed_at    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_documents_partition ON documents(partition);
+CREATE INDEX IF NOT EXISTS idx_documents_item ON documents(item_id);
+
+CREATE TABLE IF NOT EXISTS doc_vectors (
+    doc_id      TEXT NOT NULL REFERENCES documents(doc_id) ON DELETE CASCADE,
+    projection  TEXT NOT NULL,
+    dim         INTEGER NOT NULL,
+    vector      BLOB NOT NULL,
+    PRIMARY KEY (doc_id, projection)
+);
+CREATE INDEX IF NOT EXISTS idx_doc_vectors_proj ON doc_vectors(projection);
+
+CREATE TABLE IF NOT EXISTS indexed_items (
+    item_id       TEXT NOT NULL,
+    partition     TEXT NOT NULL DEFAULT '',
+    mtime         REAL NOT NULL DEFAULT 0,
+    content_hash  TEXT NOT NULL DEFAULT '',
+    doc_count     INTEGER NOT NULL DEFAULT 0,
+    indexed_at    TEXT NOT NULL,
+    PRIMARY KEY (item_id, partition)
+);
+
+CREATE TABLE IF NOT EXISTS index_meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+-- Standalone FTS5 (NOT external-content): canonical title/body/tags columns +
+-- an UNINDEXED doc_id so we can delete by id and JOIN back to documents.
+CREATE VIRTUAL TABLE IF NOT EXISTS doc_fts USING fts5(
+    doc_id UNINDEXED, title, body, tags
+);
+"""
+
+# Default FTS5 bm25() column weights (title > tags > body), overridable per partition.
+_DEFAULT_FTS_WEIGHTS = (3.0, 1.0, 2.0)  # (title, body, tags)
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _fts_columns(fields: dict[str, str]) -> tuple[str, str, str]:
+    """Map a Document's generic ``fields`` into canonical (title, body, tags) text.
+
+    Convention: ``title``/``name`` → title; ``tags`` → tags; every other field value
+    → body. Partition-agnostic — partitions just use conventional field keys.
+    """
+    title = (fields.get("title") or fields.get("name") or "").strip()
+    tags = (fields.get("tags") or "").strip()
+    body = " ".join(
+        str(v) for k, v in fields.items()
+        if k not in ("title", "name", "tags") and v
+    ).strip()
+    return title, body, tags
+
+
+def _fts_match_expr(query: str) -> str | None:
+    """Reduce arbitrary user text to a safe FTS5 MATCH expr (OR of quoted tokens)."""
+    terms = [t for t in re.split(r"\W+", (query or "").lower()) if len(t) > 1]
+    if not terms:
+        return None
+    return " OR ".join(f'"{t}"' for t in terms)
+
+
+def _metadata_where(filters: dict[str, Any] | None) -> tuple[str, list[Any]]:
+    """Build a SQL fragment + params for json_extract metadata filtering.
+
+    Scalar value → equality; list value → set-membership (IN). Keys are the
+    metadata dict keys. Returns ``("", [])`` for no filters.
+    """
+    if not filters:
+        return "", []
+    clauses: list[str] = []
+    params: list[Any] = []
+    for key, val in filters.items():
+        path = f"$.{key}"
+        if isinstance(val, (list, tuple, set)):
+            vals = list(val)
+            if not vals:
+                clauses.append("0")  # empty set matches nothing
+                continue
+            placeholders = ",".join("?" * len(vals))
+            clauses.append(f"json_extract(d.metadata, ?) IN ({placeholders})")
+            params.append(path)
+            params.extend(str(v) for v in vals)
+        else:
+            clauses.append("json_extract(d.metadata, ?) = ?")
+            params.append(path)
+            params.append(str(val))
+    return (" AND " + " AND ".join(clauses)) if clauses else "", params
+
+
+class IndexStore:
+    """Connection-per-operation SQLite store for the consolidated index."""
+
+    def __init__(self, db_path: str | Path) -> None:
+        self._db_path = Path(db_path)
+        self._db_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # -- connection -------------------------------------------------------
+    def _connect(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(str(self._db_path), timeout=10)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.executescript(_SCHEMA)
+        return conn
+
+    # -- writes -----------------------------------------------------------
+    def upsert_documents(self, docs: list[Document], item_id: str = "") -> int:
+        """Insert/replace documents (tagged with ``item_id``) and refresh FTS rows.
+
+        ``item_id`` is the source item the docs came from (``parse(item_id)``), used
+        for per-item deletes. Returns the number of docs written.
+        """
+        if not docs:
+            return 0
+        conn = self._connect()
+        try:
+            now = _now_iso()
+            for d in docs:
+                d.ensure_hash()
+                conn.execute(
+                    "INSERT OR REPLACE INTO documents "
+                    "(doc_id, partition, item_id, fields, projections, display_text, "
+                    " metadata, content_hash, timestamp, indexed_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        d.doc_id, d.partition, item_id,
+                        json.dumps(d.fields),
+                        json.dumps({k: {"text": p.text} for k, p in d.projections.items()}),
+                        d.display_text, json.dumps(d.metadata), d.content_hash,
+                        d.timestamp, now,
+                    ),
+                )
+                # refresh FTS (standalone → manage explicitly)
+                conn.execute("DELETE FROM doc_fts WHERE doc_id = ?", (d.doc_id,))
+                title, body, tags = _fts_columns(d.fields)
+                conn.execute(
+                    "INSERT INTO doc_fts (doc_id, title, body, tags) VALUES (?,?,?,?)",
+                    (d.doc_id, title, body, tags),
+                )
+            conn.commit()
+            return len(docs)
+        finally:
+            conn.close()
+
+    def upsert_vectors(
+        self, projection: str, rows: list[tuple[str, "Any"]]
+    ) -> int:
+        """Insert/replace one float16 blob per (doc_id, projection). Returns count."""
+        if not rows:
+            return 0
+        import numpy as np
+        conn = self._connect()
+        try:
+            payload = [
+                (
+                    doc_id, projection, int(len(vec)),
+                    np.asarray(vec, dtype=np.float16).tobytes(),
+                )
+                for doc_id, vec in rows
+            ]
+            conn.executemany(
+                "INSERT OR REPLACE INTO doc_vectors (doc_id, projection, dim, vector) "
+                "VALUES (?,?,?,?)",
+                payload,
+            )
+            conn.commit()
+            return len(payload)
+        finally:
+            conn.close()
+
+    def delete_item_docs(self, item_id: str, partition: str | None = None) -> int:
+        """Delete all docs for an item (FTS rows + cascaded vectors). Returns rows."""
+        conn = self._connect()
+        try:
+            sql = "SELECT doc_id FROM documents WHERE item_id = ?"
+            args: list[Any] = [item_id]
+            if partition is not None:
+                sql += " AND partition = ?"
+                args.append(partition)
+            doc_ids = [r["doc_id"] for r in conn.execute(sql, args).fetchall()]
+            for did in doc_ids:
+                conn.execute("DELETE FROM doc_fts WHERE doc_id = ?", (did,))
+            cur = conn.execute(
+                "DELETE FROM documents WHERE item_id = ?"
+                + (" AND partition = ?" if partition is not None else ""),
+                args,
+            )
+            if partition is not None:
+                conn.execute(
+                    "DELETE FROM indexed_items WHERE item_id = ? AND partition = ?",
+                    (item_id, partition),
+                )
+            else:
+                conn.execute("DELETE FROM indexed_items WHERE item_id = ?", (item_id,))
+            conn.commit()
+            return cur.rowcount
+        finally:
+            conn.close()
+
+    def delete_partition(self, partition: str) -> int:
+        """Drop an entire partition (FTS + docs + cascaded vectors + ledger)."""
+        conn = self._connect()
+        try:
+            doc_ids = [
+                r["doc_id"] for r in conn.execute(
+                    "SELECT doc_id FROM documents WHERE partition = ?", (partition,)
+                ).fetchall()
+            ]
+            for did in doc_ids:
+                conn.execute("DELETE FROM doc_fts WHERE doc_id = ?", (did,))
+            cur = conn.execute("DELETE FROM documents WHERE partition = ?", (partition,))
+            conn.execute("DELETE FROM indexed_items WHERE partition = ?", (partition,))
+            conn.commit()
+            return cur.rowcount
+        finally:
+            conn.close()
+
+    # -- change-detection ledger -----------------------------------------
+    def get_indexed_items(self, partition: str) -> dict[str, tuple[float, str]]:
+        """``{item_id: (mtime, content_hash)}`` for a partition."""
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT item_id, mtime, content_hash FROM indexed_items WHERE partition = ?",
+                (partition,),
+            ).fetchall()
+            return {r["item_id"]: (r["mtime"], r["content_hash"]) for r in rows}
+        finally:
+            conn.close()
+
+    def mark_item_indexed(
+        self, item_id: str, partition: str, *, mtime: float = 0.0,
+        content_hash: str = "", doc_count: int = 0,
+    ) -> None:
+        conn = self._connect()
+        try:
+            conn.execute(
+                "INSERT OR REPLACE INTO indexed_items "
+                "(item_id, partition, mtime, content_hash, doc_count, indexed_at) "
+                "VALUES (?,?,?,?,?,?)",
+                (item_id, partition, mtime, content_hash, doc_count, _now_iso()),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    # -- meta + versioning ------------------------------------------------
+    def get_meta(self, key: str) -> str | None:
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT value FROM index_meta WHERE key = ?", (key,)
+            ).fetchone()
+            return row["value"] if row else None
+        finally:
+            conn.close()
+
+    def set_meta(self, key: str, value: str) -> None:
+        conn = self._connect()
+        try:
+            conn.execute(
+                "INSERT OR REPLACE INTO index_meta (key, value) VALUES (?, ?)",
+                (key, value),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def build_version(self, partition: str) -> int:
+        v = self.get_meta(f"build_version:{partition}")
+        try:
+            return int(v) if v is not None else 0
+        except (TypeError, ValueError):
+            return 0
+
+    def bump_version(self, partition: str) -> int:
+        nxt = self.build_version(partition) + 1
+        self.set_meta(f"build_version:{partition}", str(nxt))
+        return nxt
+
+    # -- reads ------------------------------------------------------------
+    def search_lexical(
+        self, query: str, *, partition: str | None = None,
+        filters: dict[str, Any] | None = None, scope: str | None = None,
+        weights: tuple[float, float, float] = _DEFAULT_FTS_WEIGHTS, top_k: int = 50,
+    ) -> dict[str, float]:
+        """FTS5 bm25 lexical search → ``{doc_id: score}`` max-normalized to [0,1].
+
+        Higher score = better (same shape as the IR engine's BM25 → ready for RRF).
+        ``weights`` are the (title, body, tags) bm25 column weights.
+        """
+        match = _fts_match_expr(query)
+        if match is None:
+            return {}
+        wt, wb, wg = weights
+        meta_sql, meta_params = _metadata_where(filters)
+        conn = self._connect()
+        try:
+            # bm25() takes one weight per FTS column IN ORDER, including the leading
+            # UNINDEXED doc_id (col 0) — so a 0.0 placeholder precedes title/body/tags.
+            sql = (
+                f"SELECT f.doc_id AS doc_id, bm25(doc_fts, 0.0, {wt}, {wb}, {wg}) AS rank "
+                "FROM doc_fts f JOIN documents d ON d.doc_id = f.doc_id "
+                "WHERE doc_fts MATCH ?"
+            )
+            params: list[Any] = [match]
+            if partition is not None:
+                sql += " AND d.partition = ?"
+                params.append(partition)
+            if scope:
+                sql += " AND d.doc_id LIKE ?"
+                params.append(scope + "%")
+            sql += meta_sql
+            params.extend(meta_params)
+            sql += " ORDER BY rank LIMIT ?"  # bm25 ascending: more-negative = better
+            params.append(top_k)
+            rows = conn.execute(sql, params).fetchall()
+        finally:
+            conn.close()
+        if not rows:
+            return {}
+        raw = {r["doc_id"]: -float(r["rank"]) for r in rows}  # negate → higher=better
+        hi = max(raw.values())
+        if hi <= 0:
+            return {d: 0.0 for d in raw}
+        return {d: v / hi for d, v in raw.items()}
+
+    def load_documents(
+        self, *, partition: str | None = None, doc_ids: list[str] | None = None,
+        filters: dict[str, Any] | None = None, scope: str | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        """Load documents (parsed JSON) keyed by doc_id, with optional filters."""
+        meta_sql, meta_params = _metadata_where(filters)
+        conn = self._connect()
+        try:
+            sql = (
+                "SELECT d.doc_id, d.partition, d.item_id, d.fields, d.projections, "
+                "d.display_text, d.metadata, d.content_hash, d.timestamp "
+                "FROM documents d WHERE 1=1"
+            )
+            params: list[Any] = []
+            if partition is not None:
+                sql += " AND d.partition = ?"
+                params.append(partition)
+            if doc_ids is not None:
+                if not doc_ids:
+                    return {}
+                sql += f" AND d.doc_id IN ({','.join('?' * len(doc_ids))})"
+                params.extend(doc_ids)
+            if scope:
+                sql += " AND d.doc_id LIKE ?"
+                params.append(scope + "%")
+            sql += meta_sql
+            params.extend(meta_params)
+            rows = conn.execute(sql, params).fetchall()
+        finally:
+            conn.close()
+        out: dict[str, dict[str, Any]] = {}
+        for r in rows:
+            out[r["doc_id"]] = {
+                "doc_id": r["doc_id"],
+                "partition": r["partition"],
+                "item_id": r["item_id"],
+                "fields": json.loads(r["fields"] or "{}"),
+                "projections": json.loads(r["projections"] or "{}"),
+                "display_text": r["display_text"] or "",
+                "metadata": json.loads(r["metadata"] or "{}"),
+                "content_hash": r["content_hash"] or "",
+                "timestamp": r["timestamp"],
+            }
+        return out
+
+    def load_all_vectors(
+        self, partition: str, projection: str
+    ) -> "tuple[Any, list[str]] | None":
+        """Load every vector for (partition, projection) → (matrix, doc_ids) | None."""
+        import numpy as np
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT v.doc_id AS doc_id, v.vector AS vector "
+                "FROM doc_vectors v JOIN documents d ON d.doc_id = v.doc_id "
+                "WHERE v.projection = ? AND d.partition = ? ORDER BY v.doc_id",
+                (projection, partition),
+            ).fetchall()
+        finally:
+            conn.close()
+        if not rows:
+            return None
+        doc_ids = [r["doc_id"] for r in rows]
+        flat = np.frombuffer(b"".join(r["vector"] for r in rows), dtype=np.float16)
+        matrix = flat.reshape(len(doc_ids), -1).astype(np.float32)
+        return matrix, doc_ids
+
+    def docs_missing_vectors(
+        self, partition: str, projection: str
+    ) -> list[tuple[str, Any]]:
+        """``(doc_id, projection_text)`` for docs in the partition lacking a vector.
+
+        The incremental/resumable encode work-list. ``projection_text`` is read from
+        the document's stored ``projections`` JSON (scalar or list).
+        """
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT d.doc_id AS doc_id, d.projections AS projections "
+                "FROM documents d "
+                "LEFT JOIN doc_vectors v ON v.doc_id = d.doc_id AND v.projection = ? "
+                "WHERE d.partition = ? AND v.doc_id IS NULL ORDER BY d.doc_id",
+                (projection, partition),
+            ).fetchall()
+        finally:
+            conn.close()
+        out: list[tuple[str, Any]] = []
+        for r in rows:
+            projs = json.loads(r["projections"] or "{}")
+            entry = projs.get(projection)
+            if entry is None:
+                continue
+            text = entry.get("text") if isinstance(entry, dict) else entry
+            if text:
+                out.append((r["doc_id"], text))
+        return out
+
+    # -- counts -----------------------------------------------------------
+    def doc_count(self, partition: str | None = None) -> int:
+        conn = self._connect()
+        try:
+            if partition is None:
+                return conn.execute("SELECT COUNT(*) AS n FROM documents").fetchone()["n"]
+            return conn.execute(
+                "SELECT COUNT(*) AS n FROM documents WHERE partition = ?", (partition,)
+            ).fetchone()["n"]
+        finally:
+            conn.close()
+
+    def vector_count(self, partition: str, projection: str | None = None) -> int:
+        conn = self._connect()
+        try:
+            if projection is None:
+                return conn.execute(
+                    "SELECT COUNT(*) AS n FROM doc_vectors v "
+                    "JOIN documents d ON d.doc_id = v.doc_id WHERE d.partition = ?",
+                    (partition,),
+                ).fetchone()["n"]
+            return conn.execute(
+                "SELECT COUNT(*) AS n FROM doc_vectors v "
+                "JOIN documents d ON d.doc_id = v.doc_id "
+                "WHERE d.partition = ? AND v.projection = ?",
+                (partition, projection),
+            ).fetchone()["n"]
+        finally:
+            conn.close()
+
+    def partitions(self) -> list[str]:
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT DISTINCT partition FROM documents ORDER BY partition"
+            ).fetchall()
+            return [r["partition"] for r in rows]
+        finally:
+            conn.close()
