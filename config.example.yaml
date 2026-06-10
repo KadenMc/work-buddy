@@ -251,8 +251,14 @@ index:
   partitions:
     knowledge:
       rrf_k: 20            # smaller per-partition default (A/B: k=60≈k=15 at top-k)
-    # conversation: { rrf_k: 60, recency: true }
-    # vault:        { rrf_k: 60 }
+    # `coverage: all` admits a history source's archived/closed/superseded items into
+    # the corpus so retrospective queries can find them; whether they're SHOWN is a
+    # query-time filter on `lifecycle_state`, not a build-time exclusion. Default is
+    # "active" (the source's working set). History partitions want "all":
+    task_note:
+      coverage: all
+    # conversation: { rrf_k: 60, recency: true, coverage: all }
+    # vault:        { rrf_k: 60, coverage: all }
 
 chats:
   specstory_days: 7

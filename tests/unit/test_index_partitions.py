@@ -193,6 +193,173 @@ class TestVaultChunkPartition:
         assert part.parse("nope") == []
 
 
+class _FakeLifecycleSource:
+    """A history-style IR source: discover() takes coverage, exposes lifecycle()."""
+
+    name = "task_note"
+
+    def __init__(self, states):
+        # states: {item_id: state}; archived items only appear under coverage="all"
+        self._states = dict(states)
+        self.last_coverage = None
+
+    def default_field_weights(self):
+        return {"line": 2.0, "body": 1.0}
+
+    def discover(self, days: int = 30, *, coverage: str = "active"):
+        self.last_coverage = coverage
+        items = []
+        for iid, state in self._states.items():
+            if coverage != "all" and state == "archived":
+                continue
+            items.append((iid, 100.0))
+        return items
+
+    def lifecycle(self, item_ids):
+        return {iid: self._states.get(iid, "unknown") for iid in item_ids}
+
+    def parse(self, item_id):
+        return [_FakeIRDoc(
+            doc_id=f"{item_id}", fields={"line": item_id},
+            dense_text=f"note body for {item_id}", display_text=item_id,
+            metadata={"note_uuid": item_id},
+        )]
+
+
+class TestIRSourcePartitionCoverage:
+    """The generic coverage + lifecycle seam (extensible to any history source)."""
+
+    def _states(self):
+        return {"open1": "open", "done1": "done", "arch1": "archived"}
+
+    def test_no_lifecycle_source_unchanged(self):
+        # A plain source (no lifecycle, no coverage kwarg) behaves exactly as before.
+        p = IRSourcePartition(_FakeIRSource())
+        assert p.change_key == "mtime"
+        refs = list(p.discover())
+        assert all(r.content_hash is None for r in refs)  # mtime-only, no token
+        d = p.parse("sess1")[0]
+        assert "lifecycle_state" not in d.metadata
+
+    def test_lifecycle_source_uses_hash_change_key(self):
+        p = IRSourcePartition(_FakeLifecycleSource(self._states()))
+        assert p.change_key == "hash"  # state can change without an mtime change
+
+    def test_active_coverage_excludes_archived(self):
+        src = _FakeLifecycleSource(self._states())
+        p = IRSourcePartition(src, coverage="active")
+        ids = {r.item_id for r in p.discover()}
+        assert ids == {"open1", "done1"}  # archived withheld
+        assert src.last_coverage == "active"
+
+    def test_all_coverage_includes_archived(self):
+        src = _FakeLifecycleSource(self._states())
+        p = IRSourcePartition(src, coverage="all")
+        ids = {r.item_id for r in p.discover()}
+        assert ids == {"open1", "done1", "arch1"}  # archived now in the corpus
+        assert src.last_coverage == "all"
+
+    def test_change_token_folds_state_and_mtime(self):
+        # A state transition (mtime unchanged) must change the item's change token.
+        s = self._states()
+        p_open = IRSourcePartition(_FakeLifecycleSource(s), coverage="all")
+        tok_open = {r.item_id: r.content_hash for r in p_open.discover()}["open1"]
+
+        s2 = dict(s, open1="done")  # same item, same mtime, new state
+        p_done = IRSourcePartition(_FakeLifecycleSource(s2), coverage="all")
+        tok_done = {r.item_id: r.content_hash for r in p_done.discover()}["open1"]
+
+        assert tok_open and tok_done and tok_open != tok_done
+
+    def test_parse_stamps_uniform_lifecycle_state(self):
+        src = _FakeLifecycleSource(self._states())
+        p = IRSourcePartition(src, coverage="all")
+        p.discover()  # populates per-item states
+        d = p.parse("arch1")[0]
+        assert d.metadata["lifecycle_state"] == "archived"  # filterable by any query
+
+    def test_configure_applies_coverage_from_config(self):
+        from work_buddy.index.config import PartitionConfig
+        src = _FakeLifecycleSource(self._states())
+        p = IRSourcePartition(src)               # constructed with default "active"
+        p.configure(PartitionConfig(name="task_note", coverage="all"))
+        ids = {r.item_id for r in p.discover()}
+        assert "arch1" in ids                    # config drove coverage → archived included
+
+
+class TestPartitionConfigCoverage:
+    def test_default_coverage_is_active(self):
+        from work_buddy.index.config import PartitionConfig
+        assert PartitionConfig(name="x").coverage == "active"
+
+    def test_from_dict_reads_coverage(self):
+        from work_buddy.index.config import PartitionConfig
+        pc = PartitionConfig.from_dict("task_note", {"coverage": "all", "rrf_k": 30})
+        assert pc.coverage == "all" and pc.rrf_k == 30
+
+    def test_load_config_threads_coverage(self):
+        from work_buddy.index.config import load_index_config
+        cfg = load_index_config({"index": {"enabled": True, "partitions": {
+            "task_note": {"coverage": "all"}}}})
+        assert cfg.partition("task_note").coverage == "all"
+        assert cfg.partition("unlisted").coverage == "active"  # safe default
+
+
+class TestTaskNoteSourceCoverage:
+    """Real-SQLite test of the task_note SOURCE change (the recall fix at the source)."""
+
+    def _setup(self, tmp_path, monkeypatch):
+        import sqlite3
+        from work_buddy.obsidian.tasks.mutations import TASK_NOTES_DIR
+
+        vault = tmp_path / "vault"
+        notes_dir = vault / TASK_NOTES_DIR
+        notes_dir.mkdir(parents=True)
+        rows = [
+            ("t-open", "uuid-open", "open", None),
+            ("t-done", "uuid-done", "done", None),
+            ("t-arch", "uuid-arch", "open", "2026-01-01T00:00:00+00:00"),  # archived
+        ]
+        for _, uuid, _, _ in rows:
+            (notes_dir / f"{uuid}.md").write_text(f"# {uuid}\n\nbody\n", encoding="utf-8")
+
+        db = tmp_path / "tasks.db"
+        c = sqlite3.connect(db)
+        c.execute("CREATE TABLE task_metadata "
+                  "(task_id TEXT, note_uuid TEXT, state TEXT, archived_at TEXT)")
+        c.executemany("INSERT INTO task_metadata VALUES (?,?,?,?)", rows)
+        c.commit(); c.close()
+
+        def _conn():
+            cc = sqlite3.connect(db); cc.row_factory = sqlite3.Row; return cc
+
+        monkeypatch.setattr("work_buddy.config.load_config",
+                            lambda *a, **k: {"vault_root": str(vault), "ir": {}})
+        monkeypatch.setattr("work_buddy.obsidian.tasks.store.get_connection", _conn)
+        from work_buddy.ir.sources.task_notes import TaskNoteSource
+        return TaskNoteSource()
+
+    def test_default_coverage_excludes_archived(self, tmp_path, monkeypatch):
+        src = self._setup(tmp_path, monkeypatch)
+        stems = {p.split("\\")[-1].split("/")[-1] for p, _ in src.discover()}
+        assert "uuid-open.md" in stems and "uuid-done.md" in stems
+        assert "uuid-arch.md" not in stems  # live-IR behavior preserved
+
+    def test_all_coverage_includes_archived(self, tmp_path, monkeypatch):
+        src = self._setup(tmp_path, monkeypatch)
+        stems = {p.split("\\")[-1].split("/")[-1] for p, _ in src.discover(coverage="all")}
+        assert "uuid-arch.md" in stems  # archived note now discoverable
+
+    def test_lifecycle_maps_state_with_archived_priority(self, tmp_path, monkeypatch):
+        src = self._setup(tmp_path, monkeypatch)
+        paths = [p for p, _ in src.discover(coverage="all")]
+        life = src.lifecycle(paths)
+        by_uuid = {p.replace("\\", "/").split("/")[-1]: s for p, s in life.items()}
+        assert by_uuid["uuid-open.md"] == "open"
+        assert by_uuid["uuid-done.md"] == "done"
+        assert by_uuid["uuid-arch.md"] == "archived"  # archived_at wins over state
+
+
 class TestBootstrap:
     def test_ensure_registers_core_partitions(self):
         from work_buddy.index.partition import get_partition_registry

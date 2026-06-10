@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, Callable
 from work_buddy.index.config import IndexConfig, load_index_config
 from work_buddy.index.model import Hit, Query
 from work_buddy.index.partition import (
+    configure_partition,
     get_partition_registry,
     get_projection_schema,
     hydrate,
@@ -43,6 +44,7 @@ class IndexPartition:
         from work_buddy.index.build import IndexBuilder
 
         self._partition = partition
+        configure_partition(partition, cfg)  # apply coverage etc. before build/search
         self._store = store
         self._cfg = cfg
         self._searcher = HybridSearcher(
