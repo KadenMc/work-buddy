@@ -150,12 +150,16 @@ def save_content_cache(
         # Empty 0-row array, but shape out the dim so load doesn't barf
         vectors_arr = np.zeros((0, 1), dtype=np.float16)
 
-    # Fixed temp name (single-process cache builder; this cache dir isn't swept,
-    # so no PID-namespacing is needed). atomic_save_npz writes via an open file
-    # object, so the '.tmp.npz' name is kept verbatim with no '.npz' re-append.
+    # PID-namespaced temp (the atomic_save_npz default — pass no tmp_path). This
+    # content cache is rebuilt + saved by MULTIPLE processes — the gateway warmup /
+    # agent_docs_rebuild AND the dev-document scan subprocess each build the index
+    # in a fresh process and save here — so a single fixed temp name races: one
+    # process's temp->canonical rename finds the temp already renamed/cleaned by
+    # the other (WinError 2), the save fails, and the cache is left cold (forcing
+    # the next cold process to re-embed the whole store). Per-PID temps don't
+    # collide; os.replace keeps the final write atomic whichever builder lands last.
     atomic_save_npz(
         path,
-        tmp_path=path.with_suffix(".tmp.npz"),
         paths=paths_arr,
         hashes=hashes_arr,
         vectors=vectors_arr,
@@ -236,12 +240,11 @@ def save_alias_cache(
     else:
         vectors_arr = np.zeros((0, 1), dtype=np.float16)
 
-    # Fixed temp name (single-process cache builder; this cache dir isn't swept,
-    # so no PID-namespacing is needed). atomic_save_npz writes via an open file
-    # object, so the '.tmp.npz' name is kept verbatim with no '.npz' re-append.
+    # PID-namespaced temp (the atomic_save_npz default — pass no tmp_path); see
+    # save_content_cache for why a single fixed temp name races across the gateway
+    # and the dev-document scan subprocess that both rebuild + save this cache.
     atomic_save_npz(
         path,
-        tmp_path=path.with_suffix(".tmp.npz"),
         paths=paths_arr,
         alias_texts=texts_arr,
         vectors=vectors_arr,

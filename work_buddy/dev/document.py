@@ -53,6 +53,15 @@ _EXT_BUCKETS: dict[str, str] = {
 # depth.
 _TOP_N = 20
 
+# Per-batch timeout for the query-side dense embeddings. The semantic pass
+# embeds every query (structural + per-file docstrings) in one batched call
+# per model; bounding each batch keeps the scan degrading to lexical-only
+# fast when the embedding service is contended, instead of consuming the
+# whole auto_run budget. Two batched calls (content + alias) fit comfortably
+# under the step's 90s budget even at this ceiling, with margin for the
+# ~5-6s fixed subprocess + index-build overhead.
+_QUERY_EMBED_TIMEOUT_S = 25
+
 
 def _run_git(*args: str) -> list[str]:
     """Run a git command in the repo root; return stdout lines (no blanks)."""
@@ -241,100 +250,96 @@ def _search_units_via_rag(
       query. Surfaces units that describe the *behavior* in domain language
       (e.g. ``architecture/workflows`` for changes to ``conductor.py``).
 
-    Each query produces its own ranked list; ``rrf_combine`` fuses them
-    rank-by-rank with equal voice. Concatenating the queries into one
-    string would dilute short structural signals under longer prosier
-    docstring text — running them separately and fusing keeps each
-    signal's discriminative power.
+    All queries are issued in ONE batched call (``search_many``) so their
+    query-side dense embeddings share a single round-trip per model rather
+    than one per query — the difference between fitting the scan's auto_run
+    budget and blowing it on a large changeset. Each query still produces
+    its own ranked list; ``rrf_combine`` fuses them rank-by-rank with equal
+    voice (concatenating queries into one string would dilute short
+    structural signals under longer prosier docstring text).
 
     Returns:
         A list of ``{path, name, description, score, why}`` dicts on
-        success, or ``None`` if the structural query failed (embedding
-        service unavailable, exception). ``None`` is the signal for
-        ``scan_changes`` to fall back to the scored grep path. Per-file
-        docstring queries that fail are logged and skipped — partial
-        rankings are better than no rankings.
+        success, or ``None`` if the batched search could not run at all
+        (exception) or the structural query errored. ``None`` is the signal
+        for ``scan_changes`` to fall back to the scored grep path. A
+        contended embedding service does NOT trigger ``None`` — ``search_many``
+        degrades to BM25 (lexical) and still returns ranked candidates;
+        per-docstring errors are logged and skipped.
     """
     if not (changed_files or slugs):
         return []
 
-    from work_buddy.knowledge.search import rrf_combine, search
+    from work_buddy.knowledge.search import rrf_combine, search_many
 
-    rankings: list[list[dict[str, Any]]] = []
-    sources_per_path: dict[str, list[str]] = {}  # for "why" labels
+    # Build the query set: one structural query + one per .py docstring.
+    # ``labels`` runs parallel to ``queries`` and feeds the "why" annotation.
+    queries: list[str] = []
+    labels: list[str] = []
 
-    # --- Source 1: structural query (paths + slugs). ---
     structural_query = _build_rag_query(changed_files, slugs)
     if structural_query.strip():
-        try:
-            result = search(
-                query=structural_query,
-                knowledge_scope="system",
-                top_n=_TOP_N,
-                depth="index",
-            )
-        except Exception as exc:  # noqa: BLE001 — fallback path is the recovery
-            logger.warning(
-                "RAG structural search failed (%s); falling back to grep.",
-                exc,
-            )
-            return None
-        if "error" in result:
-            logger.warning(
-                "RAG structural search returned error (%s); falling back to grep.",
-                result["error"],
-            )
-            return None
-        ranking = result.get("results") or []
-        if ranking:
-            rankings.append(ranking)
-            for hit in ranking:
-                sources_per_path.setdefault(hit["path"], []).append("paths")
+        queries.append(structural_query)
+        labels.append("paths")
 
-    # --- Source 2..N: per-file docstring queries. ---
     for f in changed_files:
         docstring = _read_module_docstring(f)
         if not docstring:
             continue
-        try:
-            result = search(
-                query=docstring,
-                knowledge_scope="system",
-                top_n=_TOP_N,
-                depth="index",
-            )
-        except Exception as exc:  # noqa: BLE001 — non-fatal: drop this signal
-            logger.warning(
-                "RAG docstring search for %s failed (%s); continuing without it.",
-                f, exc,
-            )
-            continue
+        queries.append(docstring)
+        labels.append(f"docstring({PurePosixPath(f.replace(chr(92), '/')).stem})")
+
+    if not queries:
+        return []
+
+    try:
+        results = search_many(
+            queries,
+            knowledge_scope="system",
+            top_n=_TOP_N,
+            depth="index",
+            query_embed_timeout_s=_QUERY_EMBED_TIMEOUT_S,
+        )
+    except Exception as exc:  # noqa: BLE001 — grep fallback is the recovery
+        logger.warning(
+            "RAG batched search failed (%s); falling back to grep.", exc,
+        )
+        return None
+
+    rankings: list[list[dict[str, Any]]] = []
+    sources_per_path: dict[str, list[str]] = {}  # for "why" labels
+
+    for label, result in zip(labels, results):
         if "error" in result:
+            # The structural query is load-bearing; if it errored, signal a
+            # grep fallback. A per-docstring error is non-fatal — skip it.
+            if label == "paths":
+                logger.warning(
+                    "RAG structural search returned error (%s); falling back to grep.",
+                    result["error"],
+                )
+                return None
             logger.warning(
-                "RAG docstring search for %s returned error (%s); skipping.",
-                f, result["error"],
+                "RAG docstring search (%s) returned error (%s); skipping.",
+                label, result["error"],
             )
             continue
         ranking = result.get("results") or []
         if ranking:
             rankings.append(ranking)
-            label = f"docstring({PurePosixPath(f.replace(chr(92), '/')).stem})"
             for hit in ranking:
                 sources_per_path.setdefault(hit["path"], []).append(label)
 
-    # If every source returned empty, surface that to the caller as an empty
-    # list (genuine "nothing matches"), not as a failure.  ``None`` is reserved
-    # for "the structural query couldn't even run" — that's where the grep
-    # fallback adds value.
+    # Every source empty → genuine "nothing matches", not a failure. ``None``
+    # is reserved for "the search couldn't run" — that's where grep adds value.
     if not rankings:
         return []
 
     fused = rrf_combine(rankings)
 
     # Slim each candidate and synthesize the "why" from which sources
-    # contributed.  This is materially more useful than the old single-source
-    # "matched: <slugs>" label — a reader can tell at a glance whether a
-    # candidate landed via path-mention or domain-language match.
+    # contributed — a reader can tell at a glance whether a candidate landed
+    # via path-mention or domain-language (docstring) match.
     out: list[dict[str, Any]] = []
     for hit in fused[:_TOP_N]:
         sources = sources_per_path.get(hit["path"], [])

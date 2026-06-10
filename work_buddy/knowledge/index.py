@@ -682,19 +682,162 @@ class KnowledgeIndex:
         if not q_tokens:
             return []
 
+        mask = self._candidate_mask(candidates)
+
+        # Dense signals — either may be None if a signal is unavailable
+        # (service down, model missing, no aliases). The query is embedded
+        # here (one round-trip per model); for multi-query callers that want
+        # to amortize that round-trip, see ``search_many``.
+        content_scores, alias_scores = self._score_dense(query, mask)
+
+        return self._combine_and_rank(
+            q_tokens, content_scores, alias_scores, mask,
+            top_n, meta_weight, content_weight,
+        )
+
+    def search_many(
+        self,
+        queries: list[str],
+        candidates: dict[str, KnowledgeUnit] | None = None,
+        top_n: int = 8,
+        meta_weight: float = 0.3,
+        content_weight: float = 0.7,
+        query_embed_timeout_s: int | None = None,
+    ) -> list[list[dict[str, Any]]]:
+        """Score multiple queries against the index, batching the embeddings.
+
+        Functionally equivalent to ``[self.search(q, ...) for q in queries]``,
+        but the query-side dense embeddings for ALL queries are computed in a
+        single round-trip per model (one ``embed_for_ir`` call for the content
+        signal, one ``embed`` call for the alias signal) instead of one round-
+        trip per query. On weak/contended hardware the per-round-trip overhead
+        dominates, so collapsing N round-trips to 1 is the difference between
+        fitting an auto_run budget and blowing it. BM25 and the score fusion
+        stay per-query and in-process (cheap).
+
+        Graceful degradation: if a batched embed call returns ``None`` (service
+        unavailable, or it exceeded ``query_embed_timeout_s``), that dense
+        signal is dropped for every query and results fall back to the
+        remaining signals (BM25 always available once built). A query with no
+        tokens yields an empty result list in its slot.
+
+        Args:
+            queries: Query strings. Result order matches input order.
+            candidates: If provided, restrict to these paths (shared mask).
+            top_n: Max results per query.
+            meta_weight / content_weight: BM25 signal weights.
+            query_embed_timeout_s: Per-batch embed timeout. Bound this below
+                the caller's overall budget so a contended service degrades to
+                lexical-only fast rather than stalling the whole call.
+
+        Returns:
+            One ``[{"path", "score"}, ...]`` list per input query, in order.
+        """
+        if not self.is_built:
+            return [[] for _ in queries]
+        if not queries:
+            return []
+
+        mask = self._candidate_mask(candidates)
+
+        # --- Batch the query-side embeddings: one round-trip per model. ---
+        content_qvecs: "list | None" = None
+        alias_qvecs: "list | None" = None
+
+        if self._content_vectors is not None:
+            try:
+                from work_buddy.embedding.client import embed_for_ir
+                content_qvecs = embed_for_ir(
+                    queries, role="query", timeout_s=query_embed_timeout_s,
+                )
+            except Exception as e:  # noqa: BLE001 — degrade to other signals
+                logger.debug("Batched content query embedding failed: %s", e)
+            if content_qvecs is not None and len(content_qvecs) != len(queries):
+                logger.warning(
+                    "Batched content embed returned %d vectors for %d queries; "
+                    "dropping content signal.", len(content_qvecs), len(queries),
+                )
+                content_qvecs = None
+
+        if self._alias_flat is not None and self._alias_flat.shape[0] > 0:
+            try:
+                from work_buddy.embedding.client import embed
+                alias_qvecs = embed(queries, timeout_s=query_embed_timeout_s)
+            except Exception as e:  # noqa: BLE001 — degrade to other signals
+                logger.debug("Batched alias query embedding failed: %s", e)
+            if alias_qvecs is not None and len(alias_qvecs) != len(queries):
+                logger.warning(
+                    "Batched alias embed returned %d vectors for %d queries; "
+                    "dropping alias signal.", len(alias_qvecs), len(queries),
+                )
+                alias_qvecs = None
+
+        # Surface graceful degradation: dense was expected (vectors exist) but
+        # the query-side embedding could not be obtained — results fall back to
+        # BM25 (lexical) for every query in this batch.
+        if self._content_vectors is not None and content_qvecs is None:
+            logger.info(
+                "search_many: content dense signal unavailable for %d queries; "
+                "degrading to lexical (BM25).", len(queries),
+            )
+
+        out: list[list[dict[str, Any]]] = []
+        for i, query in enumerate(queries):
+            q_tokens = _tokenize(query)
+            if not q_tokens:
+                out.append([])
+                continue
+            cqv = content_qvecs[i] if content_qvecs is not None else None
+            aqv = alias_qvecs[i] if alias_qvecs is not None else None
+            content_scores, alias_scores = self._score_dense_from_vecs(
+                cqv, aqv, mask,
+            )
+            out.append(self._combine_and_rank(
+                q_tokens, content_scores, alias_scores, mask,
+                top_n, meta_weight, content_weight,
+            ))
+        return out
+
+    def _candidate_mask(
+        self,
+        candidates: dict[str, KnowledgeUnit] | None,
+    ) -> "np.ndarray":
+        """Boolean mask over docs: True where searchable.
+
+        ``candidates is None`` means "search the whole index". Otherwise only
+        the given paths (that exist in the index) are searchable.
+        """
         import numpy as np
 
         n_docs = len(self._docs)
+        if candidates is None:
+            return np.ones(n_docs, dtype=bool)
+        mask = np.zeros(n_docs, dtype=bool)
+        for path in candidates:
+            idx = self._path_to_idx.get(path)
+            if idx is not None:
+                mask[idx] = True
+        return mask
 
-        # Candidate mask (restrict to subset if provided)
-        if candidates is not None:
-            mask = np.zeros(n_docs, dtype=bool)
-            for path in candidates:
-                idx = self._path_to_idx.get(path)
-                if idx is not None:
-                    mask[idx] = True
-        else:
-            mask = np.ones(n_docs, dtype=bool)
+    def _combine_and_rank(
+        self,
+        q_tokens: list[str],
+        content_scores: "np.ndarray | None",
+        alias_scores: "np.ndarray | None",
+        mask: "np.ndarray",
+        top_n: int,
+        meta_weight: float,
+        content_weight: float,
+    ) -> list[dict[str, Any]]:
+        """Fuse BM25 + (optional) dense signals and return the top_n ranking.
+
+        BM25 is computed here (in-process, cheap) from ``q_tokens``; the dense
+        signals are passed in pre-scored so this helper is shared by both the
+        single-query (``search``) and batched (``search_many``) paths.
+        """
+        import numpy as np
+
+        n_docs = len(self._docs)
 
         # --- BM25 scoring (weighted: content + metadata) ---
         bm25_scores = np.zeros(n_docs)
@@ -715,12 +858,7 @@ class KnowledgeIndex:
 
         bm25_scores[~mask] = 0.0
 
-        # --- Dense scoring: two independent signals, fused by rank ---
-        # Either may be None if the respective signal is unavailable (service
-        # down, model missing, no aliases in store). _rrf_fuse skips None/zero
-        # arrays, so fusion degrades gracefully.
-        content_scores, alias_scores = self._score_dense(query, mask)
-
+        # --- Fuse: BM25 + whichever dense signals are present ---
         signals: list = [bm25_scores]
         if content_scores is not None:
             signals.append(content_scores)
@@ -755,72 +893,108 @@ class KnowledgeIndex:
         query: str,
         mask: "np.ndarray",
     ) -> "tuple[np.ndarray | None, np.ndarray | None]":
-        """Score query against both dense indices.
+        """Embed a single query and score it against both dense indices.
 
-        Returns ``(content_scores, alias_scores)`` — either may be ``None``
-        if the respective signal is unavailable (service down, model missing,
-        no aliases in store). Callers should drop ``None`` arrays from fusion.
+        Convenience wrapper over ``_score_dense_from_vecs`` for single-query
+        callers: it performs the per-model query embedding (one round-trip
+        each) and then defers all the numpy to the shared scorer. Batched
+        callers embed once for many queries and call ``_score_dense_from_vecs``
+        directly — see ``search_many``.
 
-        Both arrays are normalized to [0, 1] per-query so that within-array
-        ranking is preserved; actual score magnitudes don't matter after RRF
-        since fusion is rank-based.
+        Returns ``(content_scores, alias_scores)`` — either may be ``None`` if
+        the respective signal is unavailable (service down, model missing, no
+        aliases in store). Callers should drop ``None`` arrays from fusion.
         """
         if self._content_vectors is None and self._alias_flat is None:
             return None, None
 
+        content_qvec = None
+        alias_qvec = None
+
+        if self._content_vectors is not None:
+            try:
+                from work_buddy.embedding.client import embed_for_ir
+                q_vecs = embed_for_ir([query], role="query")
+                if q_vecs and q_vecs[0]:
+                    content_qvec = q_vecs[0]
+            except Exception as e:
+                logger.debug("Content dense query embedding failed: %s", e)
+
+        if self._alias_flat is not None and self._alias_flat.shape[0] > 0:
+            try:
+                from work_buddy.embedding.client import embed
+                q_vecs = embed([query])
+                if q_vecs and q_vecs[0]:
+                    alias_qvec = q_vecs[0]
+            except Exception as e:
+                logger.debug("Alias dense query embedding failed: %s", e)
+
+        return self._score_dense_from_vecs(content_qvec, alias_qvec, mask)
+
+    def _score_dense_from_vecs(
+        self,
+        content_qvec: "list[float] | np.ndarray | None",
+        alias_qvec: "list[float] | np.ndarray | None",
+        mask: "np.ndarray",
+    ) -> "tuple[np.ndarray | None, np.ndarray | None]":
+        """Score pre-embedded query vectors against both dense indices.
+
+        Pure numpy — no embedding-service calls — so it works identically for
+        single-query and batched callers. ``content_qvec`` / ``alias_qvec``
+        may each be ``None`` (signal unavailable for this query), in which case
+        the corresponding score array is ``None``.
+
+        Both arrays are normalized to [0, 1] per-query so within-array ranking
+        is preserved; absolute magnitudes don't matter after rank fusion.
+        """
         import numpy as np
 
         content_scores: "np.ndarray | None" = None
         alias_scores: "np.ndarray | None" = None
 
-        # --- Content path: asymmetric query encoder (leaf-ir-query, 768-d) ---
-        if self._content_vectors is not None:
+        # --- Content path: 768-d asymmetric query vector vs content matrix ---
+        if self._content_vectors is not None and content_qvec is not None:
             try:
-                from work_buddy.embedding.client import embed_for_ir
-
-                q_vecs = embed_for_ir([query], role="query")
-                if q_vecs and q_vecs[0]:
-                    q_vec = np.array(q_vecs[0], dtype=np.float32)
-                    q_norm = np.linalg.norm(q_vec)
-                    if q_norm > 0:
-                        q_vec = q_vec / q_norm
-                        sims = self._content_vectors @ q_vec
-                        sims[~mask] = 0.0
-                        max_sim = sims.max()
-                        if max_sim > 0:
-                            sims = sims / max_sim
-                        content_scores = sims
+                q_vec = np.array(content_qvec, dtype=np.float32)
+                q_norm = np.linalg.norm(q_vec)
+                if q_norm > 0:
+                    q_vec = q_vec / q_norm
+                    sims = self._content_vectors @ q_vec
+                    sims[~mask] = 0.0
+                    max_sim = sims.max()
+                    if max_sim > 0:
+                        sims = sims / max_sim
+                    content_scores = sims
             except Exception as e:
-                logger.debug("Content dense query scoring failed: %s", e)
+                logger.debug("Content dense scoring failed: %s", e)
 
-        # --- Alias path: symmetric leaf-mt (1024-d), max-pool per doc ---
-        if self._alias_flat is not None and self._alias_flat.shape[0] > 0:
+        # --- Alias path: 1024-d symmetric query vector, max-pool per doc ---
+        if (
+            self._alias_flat is not None
+            and self._alias_flat.shape[0] > 0
+            and alias_qvec is not None
+        ):
             try:
-                from work_buddy.embedding.client import embed
-
-                q_vecs = embed([query])
-                if q_vecs and q_vecs[0]:
-                    q_vec = np.array(q_vecs[0], dtype=np.float32)
-                    q_norm = np.linalg.norm(q_vec)
-                    if q_norm > 0:
-                        q_vec = q_vec / q_norm
-                        # One dot product against ALL alias vectors.
-                        flat_sims = self._alias_flat @ q_vec
-                        # Max-pool per doc via slices.
-                        n_docs = len(self._docs)
-                        sims = np.zeros(n_docs, dtype=np.float32)
-                        for i, (start, end) in enumerate(self._alias_slices):
-                            if end > start and mask[i]:
-                                sims[i] = flat_sims[start:end].max()
-                        max_sim = sims.max()
-                        if max_sim > 0:
-                            sims = sims / max_sim
-                            alias_scores = sims
-                        # If no positive alias matches at all, leave as None —
-                        # adding an all-zero signal to fusion is a no-op but
-                        # explicit None is cleaner.
+                q_vec = np.array(alias_qvec, dtype=np.float32)
+                q_norm = np.linalg.norm(q_vec)
+                if q_norm > 0:
+                    q_vec = q_vec / q_norm
+                    # One dot product against ALL alias vectors.
+                    flat_sims = self._alias_flat @ q_vec
+                    # Max-pool per doc via slices.
+                    n_docs = len(self._docs)
+                    sims = np.zeros(n_docs, dtype=np.float32)
+                    for i, (start, end) in enumerate(self._alias_slices):
+                        if end > start and mask[i]:
+                            sims[i] = flat_sims[start:end].max()
+                    max_sim = sims.max()
+                    if max_sim > 0:
+                        sims = sims / max_sim
+                        alias_scores = sims
+                    # No positive alias match → leave as None (all-zero signal
+                    # would be a fusion no-op, but explicit None is cleaner).
             except Exception as e:
-                logger.debug("Alias dense query scoring failed: %s", e)
+                logger.debug("Alias dense scoring failed: %s", e)
 
         return content_scores, alias_scores
 

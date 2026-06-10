@@ -14,7 +14,7 @@ steps:
     callable: work_buddy.dev.document.scan_changes
     kwargs:
       base_ref: HEAD
-    timeout: 30
+    timeout: 90
   invokes: []
 - id: propose
   name: Propose knowledge-store edits (updates + new units)
@@ -104,7 +104,9 @@ parents:
 - dev
 - dev
 dev_notes: |-
-  The `scan` step uses grep-level matching intentionally — semantic search is the agent's job in `propose`. Don't 'improve' scan with embeddings; the split in responsibility keeps scan fast, deterministic, and cache-friendly, and forces the agent to actually load units instead of trusting a ranked list.
+  The `scan` step runs a hybrid matcher: BM25 + dense (embedding) retrieval over the knowledge store fused with Reciprocal Rank Fusion, with the scored substring-grep matcher (`_match_units_via_grep`) as a graceful lexical fallback. The semantic pass embeds every query — one structural query over changed paths/slugs, plus one per changed `.py` file's docstring — in a SINGLE batched call per model via `work_buddy.knowledge.search.search_many`, never one round-trip per query. This is the load-bearing design choice: on weak/contended GPUs the per-round-trip embedding overhead (not the in-process BM25/fusion) is the cost that scales with changeset size, so batching collapses ~2N round-trips to 2. If the embedding service is contended past `_QUERY_EMBED_TIMEOUT_S` (in `work_buddy/dev/document.py`), the dense signal drops and results fall back to BM25 (lexical) without failing the step; only a hard search failure falls all the way back to grep. **Footgun**: when changing the query fan-out, keep it batched — reintroducing a per-file `search()` loop brings back the O(changed_files) round-trip blowup that times the step out on large changesets.
+
+  The `auto_run` timeout is 90s, not the workflow default. The scan subprocess pays ~5-6s fixed startup + knowledge-index build before the first query runs; 90s is deliberate headroom for a step whose failure aborts the whole doc-sync flow (it is also chained inside `/wb-dev-pr`).
 
   The `apply` step is a code step with an `invokes` list, not an auto_run — this is the task-new pattern, applied here so the agent mediates each doc mutation (consent flows, error recovery, per-edit rationale all stay in agent hands).
 ---
@@ -138,8 +140,9 @@ Auto-run. The conductor calls `work_buddy.dev.document.scan_changes(base_ref="HE
 - `changed_files`: repo-relative paths of uncommitted + untracked files
 - `classified`: files grouped by bucket (module / knowledge / slash / tests / config / other)
 - `subsystem_slugs`: module keys derived from the changed paths (e.g. `obsidian/tasks`, `namespace_suggest`)
-- `candidate_units`: knowledge units whose text references a changed file or subsystem, ranked by match strength. **First-pass net only** — you must still do your own semantic searches in the next step.
+- `candidate_units`: knowledge units whose text references a changed file or subsystem, ranked by match strength (hybrid BM25 + semantic). **First-pass net only** — you must still do your own semantic searches in the next step.
 - `warnings`: non-fatal issues (empty diff, direct JSON edits).
+- `_source`: which matcher produced the candidates — `"rag"` (hybrid; degrades to lexical BM25 if the embedding service is busy) or `"grep_fallback"` (substring matcher, used only if the search could not run at all).
 
 ## propose
 
