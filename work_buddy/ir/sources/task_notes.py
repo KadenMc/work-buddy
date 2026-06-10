@@ -60,12 +60,21 @@ class TaskNoteSource:
 
     # ------------------------------------------------------------------ discover
 
-    def discover(self, days: int = 30) -> list[tuple[str, float]]:
+    def discover(self, days: int = 30, *, coverage: str = "active") -> list[tuple[str, float]]:
         """Return `(path, mtime)` for every task-linked note that exists on disk.
 
         `days` is accepted for protocol compatibility but ignored — task
         notes are long-lived and cheap to check (mtime lookup). The engine's
         `indexed_items` mtime skip handles "unchanged" efficiently.
+
+        `coverage` controls which notes enter the corpus (keyword-only so the
+        live IR's `discover(days=...)` is unaffected):
+        - ``"active"`` (default): non-archived tasks only — the live IR's
+          historical behavior, unchanged.
+        - ``"all"``: include archived tasks' notes too, so retrospective
+          search can find them. Whether archived notes are *shown* is then a
+          query-time filter on the ``lifecycle_state`` metadata, not a
+          build-time exclusion. See HISTORY-PARTITION-COVERAGE.md.
         """
         from work_buddy.config import load_config
         from work_buddy.obsidian.tasks import store as task_store
@@ -79,13 +88,16 @@ class TaskNoteSource:
 
         notes_dir = Path(vault_root) / TASK_NOTES_DIR
 
-        # Pull all non-archived tasks with a note_uuid from the store.
-        # Archived tasks' notes are intentionally excluded from the index.
+        # Pull tasks with a note_uuid from the store. Default coverage excludes
+        # archived (the working set); coverage="all" includes them for full
+        # historical recall.
+        where = "WHERE note_uuid IS NOT NULL"
+        if coverage != "all":
+            where += " AND archived_at IS NULL"
         conn = task_store.get_connection()
         try:
             rows = conn.execute(
-                """SELECT task_id, note_uuid FROM task_metadata
-                   WHERE note_uuid IS NOT NULL AND archived_at IS NULL"""
+                f"SELECT task_id, note_uuid FROM task_metadata {where}"
             ).fetchall()
         finally:
             conn.close()
@@ -108,6 +120,35 @@ class TaskNoteSource:
                 missing,
             )
         return results
+
+    # ------------------------------------------------------------------ lifecycle
+
+    def lifecycle(self, item_ids: list[str]) -> dict[str, str]:
+        """Map note path → current lifecycle state (open/done/archived/…).
+
+        Optional, generic hook (no IR-engine dependency on it): a consolidated-
+        index partition adapter calls this to (a) fold state into change
+        detection so an archive/complete transition re-indexes the note even
+        though its file mtime is unchanged, and (b) stamp a uniform
+        ``lifecycle_state`` metadata key for query-time filtering. ``archived_at``
+        being set wins over the raw ``state``. Items with no task row map to
+        ``"unknown"``.
+        """
+        from work_buddy.obsidian.tasks import store as task_store
+
+        conn = task_store.get_connection()
+        try:
+            rows = conn.execute(
+                """SELECT note_uuid, state, archived_at FROM task_metadata
+                   WHERE note_uuid IS NOT NULL"""
+            ).fetchall()
+        finally:
+            conn.close()
+        by_uuid = {
+            r["note_uuid"]: ("archived" if r["archived_at"] else (r["state"] or "open"))
+            for r in rows
+        }
+        return {iid: by_uuid.get(Path(iid).stem, "unknown") for iid in item_ids}
 
     # ------------------------------------------------------------------ parse
 

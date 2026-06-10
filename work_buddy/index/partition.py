@@ -68,6 +68,21 @@ def hydrate(partition: Any, hits: "list[Hit]", **opts: Any) -> list[Any]:
     return fn(hits, **opts)
 
 
+def configure_partition(partition: Any, cfg: Any) -> None:
+    """Hand a partition its ``PartitionConfig`` if it opts into one (optional hook).
+
+    Lets a partition pick up config-driven behavior (e.g. ``coverage``) from the
+    facade's *injected* config rather than reaching for global config. A partition
+    that declares no ``configure`` is unaffected. Never raises."""
+    fn = getattr(partition, "configure", None)
+    if fn is None:
+        return
+    try:
+        fn(cfg)
+    except Exception:  # pragma: no cover — config application is best-effort
+        pass
+
+
 class PartitionRegistry:
     """Lazy factory registry. Domains register a ``() -> Partition`` factory; the
     instance is built (and cached) on first ``get``."""

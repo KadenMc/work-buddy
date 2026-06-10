@@ -46,6 +46,13 @@ class PartitionConfig:
     recency: bool = False
     recency_half_life_days: float = 14.0
     recency_floor: float = 0.15
+    # Corpus COVERAGE this partition indexes (generic, source-interpreted). "active" =
+    # the source's working set (the safe default — preserves each source's own default,
+    # e.g. task_note excludes archived). "all" = full history incl. archived/closed/
+    # superseded items, so retrospective queries can find them; selection is then a
+    # query-time concern (Query.filters), not a build-time policy. A source that doesn't
+    # understand `coverage` simply ignores it. See HISTORY-PARTITION-COVERAGE.md.
+    coverage: str = "active"
 
     @classmethod
     def from_dict(cls, name: str, raw: dict[str, Any] | None) -> "PartitionConfig":
@@ -64,6 +71,7 @@ class PartitionConfig:
                 raw.get("recency_half_life_days", defaults.recency_half_life_days)
             ),
             recency_floor=float(raw.get("recency_floor", defaults.recency_floor)),
+            coverage=str(raw.get("coverage", defaults.coverage)),
         )
 
 
