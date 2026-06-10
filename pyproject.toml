@@ -29,6 +29,9 @@ rank-bm25 = "^0.2.2"
 # Embedding & search (core — powers wb_search, IR, chrome clustering)
 torch = "^2.11.0"
 sentence-transformers = "^5.3.0"
+# Pure-Python, zero-dep: required by trust_remote_code embedding models (nomic etc.)
+# loaded via the consolidated index's `st` provider; absent it those models can't load.
+einops = "^0.8.2"
 
 # Platform-specific PTY libraries (auto-selected by OS)
 pywinpty = {version = "^3.0.3", markers = "sys_platform == 'win32'"}

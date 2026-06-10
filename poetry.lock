@@ -1607,6 +1607,18 @@ files = [
 ]
 
 [[package]]
+name = "einops"
+version = "0.8.2"
+description = "A new flavour of deep learning operations"
+optional = false
+python-versions = ">=3.9"
+groups = ["main"]
+files = [
+    {file = "einops-0.8.2-py3-none-any.whl", hash = "sha256:54058201ac7087911181bfec4af6091bb59380360f069276601256a76af08193"},
+    {file = "einops-0.8.2.tar.gz", hash = "sha256:609da665570e5e265e27283aab09e7f279ade90c4f01bcfca111f3d3e13f2827"},
+]
+
+[[package]]
 name = "email-validator"
 version = "2.3.0"
 description = "A robust email address syntax and deliverability validation library."
@@ -9208,4 +9220,4 @@ telegram = ["python-telegram-bot"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11,<3.12"
-content-hash = "40074692fd5cd1cde931ff174db28555813fe6838f8581840c771c553740d8be"
+content-hash = "30f98b01ecd0362466e7be77e4e27be5789397136b247822fb6dd561ace68b6f"

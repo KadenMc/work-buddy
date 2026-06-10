@@ -123,6 +123,27 @@ embedding:
       #                      # is ~0.0002 cosine, so "fallback" is
       #                      # safe for retrieval quality.
 
+    # ---- Pluggable embedding models for the consolidated index (work_buddy/index/) ----
+    # Point a projection at a model via ProjectionSpec.model_key. The OPTIONAL `encoding`
+    # block tells the index how that model encodes each side (query vs document); with no
+    # `encoding` block the model is treated as symmetric (same model, no prompt). `provider:
+    # st` loads the model DIRECTLY via sentence-transformers in the calling process (e.g. an
+    # offline A/B) — no service restart, live service untouched. Example candidate for the
+    # embedding A/B (Apache-2.0, 768d, asymmetric prefixes):
+    # nomic:
+    #   name: "nomic-ai/nomic-embed-text-v1.5"
+    #   dims: 768
+    #   provider: st               # direct in-process load (eval); omit for service-loaded
+    #   trust_remote_code: true    # nomic requires it; its custom modeling code needs
+    #                              # einops, which ships as a core dep (works out of the
+    #                              # box). The st provider degrades gracefully if a model's
+    #                              # deps are ever missing — it won't crash the build.
+    #   encoding:
+    #     query_model: nomic
+    #     document_model: nomic    # == query_model ⇒ symmetric model, asymmetric PROMPTS
+    #     query_prompt: "search_query"      # registered prompt_name OR literal prefix
+    #     document_prompt: "search_document"
+
 # Optional: LM Studio as an offload target (embeddings and/or LLM).
 # Base URL is the BARE server root — no /v1 suffix. The health check
 # and embedding provider both append their own paths (/v1/models,

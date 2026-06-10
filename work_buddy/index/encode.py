@@ -18,6 +18,7 @@ live search on the shared GPU.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
 from work_buddy.index.model import PoolStrategy, ProjectionKind
@@ -87,19 +88,84 @@ def score_dense(
 
 
 # ---------------------------------------------------------------------------
+# Model registry (config-driven model resolution — "test more embeddings")
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class ModelSpec:
+    """How a registered ``model_key`` encodes each side of a comparison.
+
+    ``query_model``/``document_model`` are encoder ids (equal ⇒ symmetric). The prompts
+    are passed to the provider, which treats a value as a registered prompt_name if the
+    model declares it, else as a literal prefix to prepend (covers nomic ``search_query:``,
+    e5 ``query:``, leaf prompt_names, …).
+    """
+
+    query_model: str
+    document_model: str
+    query_prompt: str | None = None
+    document_prompt: str | None = None
+
+
+_REGISTRY_CACHE: "dict[str, ModelSpec] | None" = None
+
+
+def _build_registry(cfg: dict[str, Any] | None = None) -> "dict[str, ModelSpec]":
+    """Build the model registry from ``embedding.models.<key>.encoding`` blocks. Defensive:
+    any malformed entry is skipped, and a model with no ``encoding`` block is simply not
+    registered (so it falls through to the legacy defaults — behavior unchanged)."""
+    try:
+        if cfg is None:
+            from work_buddy.config import load_config
+            cfg = load_config()
+        models = (cfg or {}).get("embedding", {}).get("models", {}) or {}
+    except Exception:
+        return {}
+    reg: dict[str, ModelSpec] = {}
+    for key, entry in models.items():
+        if not isinstance(entry, dict):
+            continue
+        enc = entry.get("encoding")
+        if not isinstance(enc, dict):
+            continue
+        reg[key] = ModelSpec(
+            query_model=str(enc.get("query_model", key)),
+            document_model=str(enc.get("document_model", key)),
+            query_prompt=enc.get("query_prompt"),
+            document_prompt=enc.get("document_prompt"),
+        )
+    return reg
+
+
+def get_model_registry(*, reload: bool = False) -> "dict[str, ModelSpec]":
+    """Process-cached model registry. ``reload=True`` rebuilds (e.g. tests / config change)."""
+    global _REGISTRY_CACHE
+    if _REGISTRY_CACHE is None or reload:
+        _REGISTRY_CACHE = _build_registry()
+    return _REGISTRY_CACHE
+
+
+# ---------------------------------------------------------------------------
 # Model resolution (kind + role → model id + prompt)
 # ---------------------------------------------------------------------------
 
 def resolve_model(
     kind: str, role: str, model_key: str | None = None
 ) -> tuple[str, str | None]:
-    """Map (projection kind, role) → (model_id, prompt_name).
+    """Map (projection kind, role) → (model_id, prompt_name). role ∈ {"query","document"}.
 
-    role ∈ {"query", "document"}. LABEL → symmetric ``leaf-mt`` (no prompt). PASSAGE →
-    asymmetric ``leaf-ir-query`` (query) / ``leaf-ir`` (document). ``model_key`` overrides
-    (fork F-RECENCY/MODEL — per-partition model choice).
+    Precedence: (1) a config-registered ``model_key`` → its per-role (model, prompt); (2) the
+    legacy ``leaf-ir`` family special-case; (3) any other ``model_key`` → that model, no prompt
+    (symmetric); (4) no ``model_key`` → LABEL → ``leaf-mt``, PASSAGE → asymmetric ``leaf-ir``
+    pair. With no ``encoding`` config the registry is empty and (4)/(2) preserve today's behavior.
     """
     if model_key:
+        spec = get_model_registry().get(model_key)
+        if spec is not None:
+            return (
+                (spec.query_model, spec.query_prompt) if role == "query"
+                else (spec.document_model, spec.document_prompt)
+            )
         if model_key in ("leaf-ir", "leaf-ir-query"):
             return ("leaf-ir-query", "query") if role == "query" else ("leaf-ir", "document")
         return (model_key, None)
@@ -197,6 +263,73 @@ class LmStudioProvider:
             return None
 
 
+class SentenceTransformerProvider:
+    """Loads a sentence-transformers model DIRECTLY in the current process.
+
+    Decoupled from the embedding service: lets an offline A/B or CI compare embedding
+    models with no running/restarted service. Routed only when a model declares
+    ``provider: st``; production paths (local/lmstudio) are untouched. The HF repo is
+    ``embedding.models.<id>.name`` (defaulting to the id itself), ``trust_remote_code``
+    is read from the same block. Broker-admitted; returns ``None`` on any failure (OOM,
+    missing model) so the router/build degrades gracefully.
+    """
+
+    name = "st"
+
+    def __init__(self) -> None:
+        self._cache: dict[str, Any] = {}
+
+    def _spec(self, model_id: str) -> tuple[str, bool]:
+        try:
+            from work_buddy.config import load_config
+            entry = (
+                (load_config().get("embedding", {}).get("models", {}) or {}).get(model_id, {})
+                or {}
+            )
+            return str(entry.get("name", model_id)), bool(entry.get("trust_remote_code", False))
+        except Exception:
+            return model_id, False
+
+    def _model(self, model_id: str) -> Any:
+        if model_id not in self._cache:
+            from sentence_transformers import SentenceTransformer
+            hf_name, trust = self._spec(model_id)
+            # device=None → sentence-transformers auto-selects CUDA if present, else CPU.
+            self._cache[model_id] = SentenceTransformer(
+                hf_name, device=None, trust_remote_code=trust,
+            )
+        return self._cache[model_id]
+
+    def encode(
+        self, texts: list[str], *, model_id: str, prompt_name: str | None = None,
+        priority: Priority = Priority.BACKGROUND,
+    ) -> "Any | None":
+        import numpy as np
+        if not texts:
+            return np.zeros((0, 0), dtype=np.float32)
+        try:
+            from work_buddy.inference.local_slot import local_embed_slot
+            model = self._model(model_id)
+            registered = set(getattr(model, "prompts", {}) or {})
+            with local_embed_slot(priority):
+                if prompt_name and prompt_name in registered:
+                    vecs = model.encode(
+                        list(texts), prompt_name=prompt_name, show_progress_bar=False,
+                    )
+                elif prompt_name:
+                    # literal prefix (e.g. "search_query:" / "query:"); add a space if bare.
+                    pre = prompt_name if prompt_name.endswith((" ", ":")) else f"{prompt_name}: "
+                    vecs = model.encode(
+                        [f"{pre}{t}" for t in texts], show_progress_bar=False,
+                    )
+                else:
+                    vecs = model.encode(list(texts), show_progress_bar=False)
+            return np.asarray(vecs, dtype=np.float32)
+        except Exception as exc:
+            logger.warning("SentenceTransformerProvider encode failed for %s: %s", model_id, exc)
+            return None
+
+
 class ProviderRouter:
     """(model_id) → provider, with on-error fallback to local."""
 
@@ -208,6 +341,7 @@ class ProviderRouter:
         self._providers: dict[str, EmbeddingProvider] = providers or {
             "local": LocalProvider(),
             "lmstudio": LmStudioProvider(),
+            "st": SentenceTransformerProvider(),
         }
         if "local" not in self._providers:
             self._providers["local"] = LocalProvider()
