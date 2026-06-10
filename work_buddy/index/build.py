@@ -116,6 +116,8 @@ class IndexBuilder:
             changed_any = bool(changed or deleted)
             if changed_any:
                 self._store.bump_version(pname)
+                from datetime import datetime, timezone
+                self._store.set_meta(f"last_build:{pname}", datetime.now(timezone.utc).isoformat())
                 for proj_name in schema:
                     self._residents.invalidate(f"{pname}:{proj_name}")
 
