@@ -23,10 +23,16 @@ def _knowledge() -> Index:
     return KnowledgeIndexAdapter()
 
 
+def _consolidated() -> Index:
+    from work_buddy.indexing.adapters.index_consolidated import ConsolidatedIndexAdapter
+    return ConsolidatedIndexAdapter()
+
+
 _FACTORIES = {
     "ir": _ir,
     "vault_index": _vault,
     "knowledge": _knowledge,
+    "consolidated": _consolidated,  # flag-gated; status safe, build no-op unless index.enabled
 }
 
 
