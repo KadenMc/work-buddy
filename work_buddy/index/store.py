@@ -153,6 +153,10 @@ class IndexStore:
         self._db_path = Path(db_path)
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
 
+    @property
+    def db_path(self) -> Path:
+        return self._db_path
+
     # -- connection -------------------------------------------------------
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(str(self._db_path), timeout=10)
