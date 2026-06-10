@@ -52,12 +52,16 @@ CREATE TABLE IF NOT EXISTS documents (
 CREATE INDEX IF NOT EXISTS idx_documents_partition ON documents(partition);
 CREATE INDEX IF NOT EXISTS idx_documents_item ON documents(item_id);
 
+-- One row per (doc_id, projection, sub). ``sub`` lets a single projection carry
+-- MULTIPLE vectors per doc (e.g. one per alias) which are pooled (max/mean) at query
+-- time — preserving the knowledge alias signal. Scalar projections use sub=0 only.
 CREATE TABLE IF NOT EXISTS doc_vectors (
     doc_id      TEXT NOT NULL REFERENCES documents(doc_id) ON DELETE CASCADE,
     projection  TEXT NOT NULL,
+    sub         INTEGER NOT NULL DEFAULT 0,
     dim         INTEGER NOT NULL,
     vector      BLOB NOT NULL,
-    PRIMARY KEY (doc_id, projection)
+    PRIMARY KEY (doc_id, projection, sub)
 );
 CREATE INDEX IF NOT EXISTS idx_doc_vectors_proj ON doc_vectors(projection);
 
@@ -200,26 +204,38 @@ class IndexStore:
     def upsert_vectors(
         self, projection: str, rows: list[tuple[str, "Any"]]
     ) -> int:
-        """Insert/replace one float16 blob per (doc_id, projection). Returns count."""
+        """Insert/replace vectors for a projection. Returns rows written.
+
+        Each item is ``(doc_id, vecs)`` where ``vecs`` is a 1-D vector (scalar
+        projection → one sub) or a 2-D array / list-of-vectors (pooled projection →
+        one sub per row). Existing rows for each ``(doc_id, projection)`` are replaced.
+        """
         if not rows:
             return 0
         import numpy as np
         conn = self._connect()
         try:
-            payload = [
-                (
-                    doc_id, projection, int(len(vec)),
-                    np.asarray(vec, dtype=np.float16).tobytes(),
+            written = 0
+            for doc_id, vecs in rows:
+                arr = np.asarray(vecs, dtype=np.float16)
+                if arr.ndim == 1:
+                    arr = arr.reshape(1, -1)
+                conn.execute(
+                    "DELETE FROM doc_vectors WHERE doc_id = ? AND projection = ?",
+                    (doc_id, projection),
                 )
-                for doc_id, vec in rows
-            ]
-            conn.executemany(
-                "INSERT OR REPLACE INTO doc_vectors (doc_id, projection, dim, vector) "
-                "VALUES (?,?,?,?)",
-                payload,
-            )
+                payload = [
+                    (doc_id, projection, i, int(arr.shape[1]), arr[i].tobytes())
+                    for i in range(arr.shape[0])
+                ]
+                conn.executemany(
+                    "INSERT INTO doc_vectors (doc_id, projection, sub, dim, vector) "
+                    "VALUES (?,?,?,?,?)",
+                    payload,
+                )
+                written += len(payload)
             conn.commit()
-            return len(payload)
+            return written
         finally:
             conn.close()
 
@@ -428,14 +444,18 @@ class IndexStore:
     def load_all_vectors(
         self, partition: str, projection: str
     ) -> "tuple[Any, list[str]] | None":
-        """Load every vector for (partition, projection) → (matrix, doc_ids) | None."""
+        """Load every vector for (partition, projection) → (matrix, doc_ids) | None.
+
+        For pooled projections ``doc_ids`` repeats (one entry per sub-vector, parallel
+        to the matrix rows); the caller max/mean-pools per doc_id at query time.
+        """
         import numpy as np
         conn = self._connect()
         try:
             rows = conn.execute(
                 "SELECT v.doc_id AS doc_id, v.vector AS vector "
                 "FROM doc_vectors v JOIN documents d ON d.doc_id = v.doc_id "
-                "WHERE v.projection = ? AND d.partition = ? ORDER BY v.doc_id",
+                "WHERE v.projection = ? AND d.partition = ? ORDER BY v.doc_id, v.sub",
                 (projection, partition),
             ).fetchall()
         finally:
@@ -490,16 +510,17 @@ class IndexStore:
             conn.close()
 
     def vector_count(self, partition: str, projection: str | None = None) -> int:
+        """Count DISTINCT docs with ≥1 vector (pooled projections have many rows/doc)."""
         conn = self._connect()
         try:
             if projection is None:
                 return conn.execute(
-                    "SELECT COUNT(*) AS n FROM doc_vectors v "
+                    "SELECT COUNT(DISTINCT v.doc_id) AS n FROM doc_vectors v "
                     "JOIN documents d ON d.doc_id = v.doc_id WHERE d.partition = ?",
                     (partition,),
                 ).fetchone()["n"]
             return conn.execute(
-                "SELECT COUNT(*) AS n FROM doc_vectors v "
+                "SELECT COUNT(DISTINCT v.doc_id) AS n FROM doc_vectors v "
                 "JOIN documents d ON d.doc_id = v.doc_id "
                 "WHERE d.partition = ? AND v.projection = ?",
                 (partition, projection),

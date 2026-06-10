@@ -136,6 +136,24 @@ class TestVectors:
         # FTS row gone too
         assert store.search_lexical("a", partition="knowledge") == {}
 
+    def test_pooled_projection_multiple_subvectors(self, store):
+        # A label projection (e.g. aliases) stores MANY vectors per doc.
+        store.upsert_documents([_doc("knowledge:a", name="a")], item_id="i")
+        rng = np.random.default_rng(1)
+        vecs = rng.normal(size=(3, 6)).astype(np.float32)  # 3 aliases
+        store.upsert_vectors("aliases", [("knowledge:a", vecs)])
+        loaded = store.load_all_vectors("knowledge", "aliases")
+        assert loaded is not None
+        mat, doc_ids = loaded
+        assert mat.shape == (3, 6)
+        assert doc_ids == ["knowledge:a", "knowledge:a", "knowledge:a"]
+        # distinct-doc count is 1, not 3
+        assert store.vector_count("knowledge", "aliases") == 1
+        # re-upsert replaces (2 aliases now)
+        store.upsert_vectors("aliases", [("knowledge:a", rng.normal(size=(2, 6)).astype(np.float32))])
+        mat2, ids2 = store.load_all_vectors("knowledge", "aliases")
+        assert mat2.shape == (2, 6)
+
     def test_docs_missing_vectors_worklist(self, store):
         store.upsert_documents([
             Document(doc_id="knowledge:a", partition="knowledge", fields={"name": "a"},
