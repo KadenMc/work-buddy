@@ -70,43 +70,112 @@ class HybridSearcher:
     def search(self, q: Query) -> list[Hit]:
         if not (q.text or "").strip():
             return []
+        allowed = self._allowed_ids(q.filters, q.scope)
+        mats = self._encode_projections([q.text], q.method)
+        qvec_by_proj = {
+            p: (m[0] if m is not None and len(m) else None) for p, m in mats.items()
+        }
+        return self._score_one(
+            q.text, qvec_by_proj, allowed=allowed, filters=q.filters, scope=q.scope,
+            method=q.method, recency=q.recency, rrf_k=q.rrf_k, top_k=q.top_k,
+        )
 
-        pool = max(q.top_k * self._cfg.pool_multiplier, self._cfg.pool_floor)
-        rrf_k = q.rrf_k if q.rrf_k is not None else self._cfg.rrf_k
+    def search_many(
+        self,
+        queries: list[str],
+        *,
+        top_k: int = 10,
+        method: str = "hybrid",
+        filters: dict | None = None,
+        scope: str | None = None,
+        recency: bool = False,
+        rrf_k: int | None = None,
+    ) -> list[list[Hit]]:
+        """Batched search: ONE query-encode round-trip per projection for ALL queries,
+        then per-query lexical + score + fuse against the (shared, resident) matrices.
 
-        # Allowed-id set for filter-then-rank on the dense side (lexical filters in SQL).
-        allowed: set[str] | None = None
-        if q.filters or q.scope:
-            allowed = set(self._store.load_documents(
-                partition=self._partition, filters=q.filters, scope=q.scope,
+        Equivalent to ``[search(Query(text=q, ...)) for q in queries]`` but collapses N
+        embedding round-trips to 1/projection (the budget-preserving property the
+        dev-document scan relies on). Returns one ``list[Hit]`` per input query, in order.
+        """
+        texts = [str(t or "") for t in queries]
+        allowed = self._allowed_ids(filters, scope)
+        mats = self._encode_projections(texts, method)  # batch-encode once per projection
+        out: list[list[Hit]] = []
+        for i, text in enumerate(texts):
+            if not text.strip():
+                out.append([])
+                continue
+            qvec_by_proj = {
+                p: (m[i] if m is not None and i < len(m) else None)
+                for p, m in mats.items()
+            }
+            out.append(self._score_one(
+                text, qvec_by_proj, allowed=allowed, filters=filters, scope=scope,
+                method=method, recency=recency, rrf_k=rrf_k, top_k=top_k,
+            ))
+        return out
+
+    # -- internals shared by search + search_many ------------------------------
+
+    def _allowed_ids(self, filters, scope) -> "set[str] | None":
+        """Allowed-id set for filter-then-rank on the dense side (lexical filters in SQL).
+        Independent of query text, so it's computed once per (filters, scope)."""
+        if filters or scope:
+            return set(self._store.load_documents(
+                partition=self._partition, filters=filters, scope=scope,
             ).keys())
+        return None
+
+    def _encode_projections(self, texts: list[str], method: str) -> "dict[str, object | None]":
+        """Batch query-encode all ``texts`` per projection → ``{proj: (N,D) | None}``.
+        A projection degrades to ``None`` (skipped for every query) when the encoder is
+        unavailable OR returns the wrong row count (mirrors the knowledge batch guard)."""
+        mats: dict[str, object | None] = {}
+        if method not in ("hybrid", "dense"):
+            return mats
+        n = len(texts)
+        for proj_name, spec in self._schema.items():
+            qvecs = self._encoder.encode_query(texts, spec.kind, model_key=spec.model_key)
+            mats[proj_name] = qvecs if (qvecs is not None and len(qvecs) == n) else None
+        return mats
+
+    def _score_one(
+        self, text: str, qvec_by_proj: "dict[str, object | None]", *,
+        allowed: "set[str] | None", filters, scope, method: str, recency: bool,
+        rrf_k: int | None, top_k: int,
+    ) -> list[Hit]:
+        """Score ONE query given its pre-encoded per-projection vectors. The retrieval
+        body shared by ``search`` (1 query) and ``search_many`` (N) — lexical + dense
+        fuse + hydrate + recency, identical to the original single-query path."""
+        if not (text or "").strip():
+            return []
+        pool = max(top_k * self._cfg.pool_multiplier, self._cfg.pool_floor)
+        rrf_k_val = rrf_k if rrf_k is not None else self._cfg.rrf_k
 
         rankings: list[dict[str, float]] = []
         signal_scores: dict[str, dict[str, float]] = {}
 
         # --- Lexical (FTS5 bm25) ---
-        if q.method in ("hybrid", "lexical"):
+        if method in ("hybrid", "lexical"):
             lex = self._store.search_lexical(
-                q.text, partition=self._partition, filters=q.filters,
-                scope=q.scope, top_k=pool,
+                text, partition=self._partition, filters=filters, scope=scope, top_k=pool,
             )
             if lex:
                 rankings.append(lex)
                 signal_scores["lexical"] = lex
 
-        # --- Dense (per projection) ---
-        if q.method in ("hybrid", "dense"):
+        # --- Dense (per projection; pre-encoded vectors) ---
+        if method in ("hybrid", "dense"):
             for proj_name, spec in self._schema.items():
-                qvecs = self._encoder.encode_query(
-                    [q.text], spec.kind, model_key=spec.model_key,
-                )
-                if qvecs is None or len(qvecs) == 0:
-                    continue  # service down for this signal → degrade
+                qvec = qvec_by_proj.get(proj_name)
+                if qvec is None:
+                    continue  # service down for this signal, or no encode → degrade
                 loaded = self._resident(proj_name).get()
                 if loaded is None:
                     continue  # no vectors for this projection yet
                 matrix, doc_ids = loaded
-                scores = score_dense(qvecs[0], matrix, doc_ids, pool=spec.pool)
+                scores = score_dense(qvec, matrix, doc_ids, pool=spec.pool)
                 if allowed is not None:
                     scores = {d: s for d, s in scores.items() if d in allowed}
                 if scores:
@@ -120,9 +189,9 @@ class HybridSearcher:
         if len(rankings) == 1:
             fused = rankings[0]
         else:
-            fused = rrf_fuse(rankings, k=rrf_k)
+            fused = rrf_fuse(rankings, k=rrf_k_val)
 
-        top_ids = sorted(fused, key=fused.get, reverse=True)[: max(q.top_k, 1)]
+        top_ids = sorted(fused, key=fused.get, reverse=True)[: max(top_k, 1)]
         if not top_ids:
             return []
 
@@ -146,7 +215,7 @@ class HybridSearcher:
             timestamps[did] = d.get("timestamp")
 
         # --- Recency (optional) ---
-        if q.recency and self._cfg.recency:
+        if recency and self._cfg.recency:
             apply_recency_bias(
                 hits, timestamps,
                 half_life_days=self._cfg.recency_half_life_days,

@@ -235,6 +235,55 @@ def _slim_search_hit(hit: dict[str, Any], why: str) -> dict[str, Any]:
     }
 
 
+def _search_units_via_consolidated(queries: list[str]) -> list[dict[str, Any]] | None:
+    """Route the scan's batched knowledge search to the resident consolidated index.
+
+    Returns per-query results in the SAME shape as ``knowledge.search.search_many``
+    (so the downstream RRF + slim path is byte-unchanged), or ``None`` to signal
+    "use the live in-process index" — when the service is unreachable, the response
+    shape is unexpected, or the consolidated ``knowledge`` partition is empty/stale
+    (zero hits across all queries). System-scope only, matching the live path's
+    ``knowledge_scope="system"``.
+    """
+    from work_buddy.embedding.client import index_search_many
+
+    raw = index_search_many(
+        queries,
+        top_k=_TOP_N,
+        partitions=["knowledge"],
+        # Metadata json_extract filter — knowledge doc_ids are ``knowledge:<path>``,
+        # so the store's doc_id-prefix ``scope=`` knob does NOT apply here. The
+        # partition indexes system+personal, so this filter is load-bearing.
+        filters={"scope": "system"},
+        timeout_s=_QUERY_EMBED_TIMEOUT_S,
+    )
+    if raw is None or len(raw) != len(queries):
+        return None  # service down or shape mismatch → fall back to the live index
+
+    store = load_store(scope="system")  # system-only hydration: a 2nd guard vs leak
+    results: list[dict[str, Any]] = []
+    total = 0
+    for query, hits in zip(queries, raw):
+        ranked: list[dict[str, Any]] = []
+        for hit in hits or []:
+            meta = hit.get("metadata") or {}
+            path = meta.get("path") or str(hit.get("doc_id", "")).split(":", 1)[-1]
+            unit = store.get(path)
+            if unit is None:
+                continue  # not a system unit (or unknown path) → skip
+            ranked.append(
+                {"path": path, "score": hit.get("score", 0.0), **unit.tier("index")}
+            )
+        total += len(ranked)
+        results.append(
+            {"mode": "search", "query": query, "count": len(ranked), "results": ranked}
+        )
+
+    if total == 0:
+        return None  # empty/stale consolidated partition → fall back to the live index
+    return results
+
+
 def _search_units_via_rag(
     changed_files: list[str],
     slugs: list[str],
@@ -292,19 +341,35 @@ def _search_units_via_rag(
     if not queries:
         return []
 
+    # Route to the resident consolidated index when activated (``index.enabled``);
+    # on ANY failure/empty, fall through to the live in-process knowledge index. The
+    # live path's contract is preserved exactly (``None`` → grep fallback below).
+    results: list[dict[str, Any]] | None = None
     try:
-        results = search_many(
-            queries,
-            knowledge_scope="system",
-            top_n=_TOP_N,
-            depth="index",
-            query_embed_timeout_s=_QUERY_EMBED_TIMEOUT_S,
-        )
-    except Exception as exc:  # noqa: BLE001 — grep fallback is the recovery
+        from work_buddy.index.config import load_index_config
+
+        if load_index_config().enabled:
+            results = _search_units_via_consolidated(queries)
+    except Exception as exc:  # noqa: BLE001 — consolidated is best-effort
         logger.warning(
-            "RAG batched search failed (%s); falling back to grep.", exc,
+            "consolidated scan search failed (%s); using the live index.", exc,
         )
-        return None
+        results = None
+
+    if results is None:
+        try:
+            results = search_many(
+                queries,
+                knowledge_scope="system",
+                top_n=_TOP_N,
+                depth="index",
+                query_embed_timeout_s=_QUERY_EMBED_TIMEOUT_S,
+            )
+        except Exception as exc:  # noqa: BLE001 — grep fallback is the recovery
+            logger.warning(
+                "RAG batched search failed (%s); falling back to grep.", exc,
+            )
+            return None
 
     rankings: list[list[dict[str, Any]]] = []
     sources_per_path: dict[str, list[str]] = {}  # for "why" labels

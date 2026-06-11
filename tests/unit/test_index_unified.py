@@ -94,6 +94,20 @@ class TestUnifiedIndex:
     def test_search_empty_when_nothing_built(self, unified):
         assert unified.search(Query(text="alpha")) == []
 
+    def test_search_many_federated_and_ordered(self, unified):
+        unified.build("p1")
+        unified.build("p2")
+        out = unified.search_many(["alpha", "zzznomatch"], top_k=5)
+        assert len(out) == 2  # one list per query, in order
+        assert {h.doc_id for h in out[0]} == {"p1:a", "p2:b"}  # "alpha" federates both
+        assert out[1] == []  # no lexical match → empty, position preserved
+
+    def test_search_many_partition_filter(self, unified):
+        unified.build("p1")
+        unified.build("p2")
+        out = unified.search_many(["alpha"], partitions=["p1"], top_k=5)
+        assert [h.doc_id for h in out[0]] == ["p1:a"]  # p2 excluded
+
 
 class TestConsolidatedAdapter:
     def test_registered_in_seam(self):

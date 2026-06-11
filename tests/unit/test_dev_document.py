@@ -303,6 +303,136 @@ def test_scan_skips_files_without_docstrings(fake_git):
 
 
 # ---------------------------------------------------------------------------
+# Consolidated-index routing (flag-gated; live/grep fallback is load-bearing)
+# ---------------------------------------------------------------------------
+
+class _FakeUnit:
+    def __init__(self, name, desc):
+        self._n, self._d = name, desc
+
+    def tier(self, depth, **kw):
+        return {"name": self._n, "description": self._d}
+
+
+def _cfg(enabled):
+    from work_buddy.index.config import IndexConfig
+    return IndexConfig(enabled=enabled)
+
+
+def test_consolidated_helper_converts_to_search_many_shape(monkeypatch):
+    """The helper returns the exact shape search_many emits, hydrated by path."""
+    raw = [[
+        {"doc_id": "knowledge:services/dashboard", "score": 0.42,
+         "metadata": {"path": "services/dashboard", "scope": "system"}},
+        {"doc_id": "knowledge:architecture/event-bus", "score": 0.31,
+         "metadata": {"path": "architecture/event-bus", "scope": "system"}},
+    ]]
+    monkeypatch.setattr(
+        "work_buddy.embedding.client.index_search_many", lambda *a, **k: raw
+    )
+    store = {
+        "services/dashboard": _FakeUnit("Dashboard", "Dashboard service."),
+        "architecture/event-bus": _FakeUnit("Event Bus", "SSE pub-sub."),
+    }
+    monkeypatch.setattr(dev_document, "load_store", lambda **k: store)
+    out = dev_document._search_units_via_consolidated(["q1"])
+    assert len(out) == 1 and out[0]["mode"] == "search" and out[0]["count"] == 2
+    r0 = out[0]["results"][0]
+    assert r0["path"] == "services/dashboard"
+    assert r0["name"] == "Dashboard" and r0["score"] == 0.42
+
+
+def test_consolidated_helper_passes_system_filter(monkeypatch):
+    seen = {}
+
+    def _fake(queries, **k):
+        seen.update(k)
+        return [[{"doc_id": "knowledge:x", "score": 1.0, "metadata": {"path": "x"}}]]
+
+    monkeypatch.setattr("work_buddy.embedding.client.index_search_many", _fake)
+    monkeypatch.setattr(dev_document, "load_store", lambda **k: {"x": _FakeUnit("X", "x")})
+    dev_document._search_units_via_consolidated(["q1"])
+    assert seen.get("filters") == {"scope": "system"}  # system-only (no personal leak)
+    assert seen.get("partitions") == ["knowledge"]
+
+
+def test_consolidated_helper_none_when_service_down(monkeypatch):
+    monkeypatch.setattr("work_buddy.embedding.client.index_search_many", lambda *a, **k: None)
+    assert dev_document._search_units_via_consolidated(["q1"]) is None
+
+
+def test_consolidated_helper_none_when_empty(monkeypatch):
+    """Empty/stale consolidated partition → None → caller falls back to live."""
+    monkeypatch.setattr("work_buddy.embedding.client.index_search_many", lambda *a, **k: [[]])
+    monkeypatch.setattr(dev_document, "load_store", lambda **k: {})
+    assert dev_document._search_units_via_consolidated(["q1"]) is None
+
+
+def test_scan_flag_off_skips_consolidated(fake_git, monkeypatch):
+    """index.enabled false → the consolidated helper is never invoked; live path runs."""
+    fake_git["tracked"] = ["work_buddy/dashboard/forms.py"]
+    fake_git["untracked"] = []
+    monkeypatch.setattr("work_buddy.index.config.load_index_config", lambda *a, **k: _cfg(False))
+    calls = {"n": 0}
+
+    def _spy(queries):
+        calls["n"] += 1
+        return None
+
+    monkeypatch.setattr(dev_document, "_search_units_via_consolidated", _spy)
+    with patch("work_buddy.knowledge.search.search_many", side_effect=_fake_search_many_success), \
+         patch("work_buddy.dev.document._read_module_docstring", return_value=""):
+        result = dev_document.scan_changes()
+    assert calls["n"] == 0  # flag off → helper not called
+    assert result["_source"] == "rag"
+    assert "services/dashboard" in {c["path"] for c in result["candidate_units"]}
+
+
+def test_scan_flag_on_uses_consolidated(fake_git, monkeypatch):
+    fake_git["tracked"] = ["work_buddy/dashboard/forms.py"]
+    fake_git["untracked"] = []
+    monkeypatch.setattr("work_buddy.index.config.load_index_config", lambda *a, **k: _cfg(True))
+    monkeypatch.setattr(
+        dev_document, "_search_units_via_consolidated",
+        lambda queries: [_one_result(q) for q in queries],
+    )
+    with patch("work_buddy.dev.document._read_module_docstring", return_value=""):
+        result = dev_document.scan_changes()
+    assert result["_source"] == "rag"
+    assert "services/dashboard" in {c["path"] for c in result["candidate_units"]}
+
+
+def test_scan_flag_on_falls_back_when_helper_returns_none(fake_git, monkeypatch):
+    """Service down / empty consolidated (None) → fall through to the live index."""
+    fake_git["tracked"] = ["work_buddy/dashboard/forms.py"]
+    fake_git["untracked"] = []
+    monkeypatch.setattr("work_buddy.index.config.load_index_config", lambda *a, **k: _cfg(True))
+    monkeypatch.setattr(dev_document, "_search_units_via_consolidated", lambda queries: None)
+    with patch("work_buddy.knowledge.search.search_many", side_effect=_fake_search_many_success), \
+         patch("work_buddy.dev.document._read_module_docstring", return_value=""):
+        result = dev_document.scan_changes()
+    assert result["_source"] == "rag"  # live fallback still RAG (not grep)
+    assert "services/dashboard" in {c["path"] for c in result["candidate_units"]}
+
+
+def test_scan_flag_on_falls_back_when_helper_raises(fake_git, monkeypatch):
+    """Any exception in the consolidated path must not break the scan → live fallback."""
+    fake_git["tracked"] = ["work_buddy/dashboard/forms.py"]
+    fake_git["untracked"] = []
+    monkeypatch.setattr("work_buddy.index.config.load_index_config", lambda *a, **k: _cfg(True))
+
+    def _boom(queries):
+        raise RuntimeError("consolidated exploded")
+
+    monkeypatch.setattr(dev_document, "_search_units_via_consolidated", _boom)
+    with patch("work_buddy.knowledge.search.search_many", side_effect=_fake_search_many_success), \
+         patch("work_buddy.dev.document._read_module_docstring", return_value=""):
+        result = dev_document.scan_changes()
+    assert result["_source"] == "rag"
+    assert "services/dashboard" in {c["path"] for c in result["candidate_units"]}
+
+
+# ---------------------------------------------------------------------------
 # _read_module_docstring
 # ---------------------------------------------------------------------------
 
