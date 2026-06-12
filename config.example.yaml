@@ -280,6 +280,13 @@ index:
       coverage: all
     # conversation: { rrf_k: 60, recency: true, coverage: all }
     # vault:        { rrf_k: 60, coverage: all }
+  # Per-CONSUMER routing gates: a consumer routes to the consolidated index only when
+  # `enabled` AND its gate are both true. Lets each consumer be staged live independently
+  # even while `enabled` is already on for another (the dev-document scan reads `enabled`
+  # directly; broader-traffic consumers get their own gate so they don't flip live on
+  # reload). Default off (ships inert). Flip in config.local.yaml after a live A/B.
+  consumers:
+    agent_docs: false        # the knowledge SEARCH path (agent_docs/knowledge/knowledge_personal)
 
 chats:
   specstory_days: 7

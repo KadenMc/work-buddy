@@ -82,10 +82,20 @@ class IndexConfig:
     enabled: bool = False
     db_path: Path | None = None
     partitions: dict[str, PartitionConfig] = field(default_factory=dict)
+    # Per-CONSUMER routing gates (``index.consumers.<name>``). A consumer (e.g. the
+    # agent_docs knowledge search) routes to the consolidated index only when BOTH
+    # ``enabled`` AND its gate are true — so each consumer can be staged live
+    # independently even while ``enabled`` is already on for another. Default off.
+    consumers: dict[str, bool] = field(default_factory=dict)
 
     def partition(self, name: str) -> PartitionConfig:
         """Config for ``name`` — falls back to defaults for an unlisted partition."""
         return self.partitions.get(name) or PartitionConfig(name=name)
+
+    def consumer_enabled(self, name: str) -> bool:
+        """True iff the consolidated index is enabled AND consumer ``name``'s gate is on.
+        Unlisted consumer → False (ships inert)."""
+        return self.enabled and bool(self.consumers.get(name, False))
 
     def resolved_db_path(self) -> Path:
         if self.db_path is not None:
@@ -120,8 +130,15 @@ def load_index_config(cfg: dict[str, Any] | None = None) -> IndexConfig:
         if isinstance(pc, dict) or pc is None
     }
 
+    consumers_raw = raw.get("consumers", {}) or {}
+    consumers = (
+        {str(k): bool(v) for k, v in consumers_raw.items()}
+        if isinstance(consumers_raw, dict) else {}
+    )
+
     return IndexConfig(
         enabled=bool(raw.get("enabled", False)),
         db_path=db_path,
         partitions=partitions,
+        consumers=consumers,
     )

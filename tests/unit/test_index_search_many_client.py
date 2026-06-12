@@ -42,3 +42,29 @@ def test_omits_optional_keys_when_unset(monkeypatch):
     p = captured["payload"]
     assert "partitions" not in p and "filters" not in p and "scope" not in p
     assert p["queries"] == ["q"]
+
+
+# --- index_search (single-query sibling) ---
+
+def test_index_search_returns_single_list(monkeypatch):
+    captured = {}
+
+    def _req(method, path, payload, timeout=None):
+        captured.update(method=method, path=path, payload=payload, timeout=timeout)
+        return {"results": [{"doc_id": "knowledge:x", "score": 1.0}]}
+
+    monkeypatch.setattr(client, "_request", _req)
+    out = client.index_search(
+        "q", top_k=8, partitions=["knowledge"], filters={"scope": "system"}, timeout_s=15,
+    )
+    assert out == [{"doc_id": "knowledge:x", "score": 1.0}]  # one flat list, not list-of-lists
+    assert captured["method"] == "POST" and captured["path"] == "/index/search"
+    assert captured["timeout"] == 15
+    assert captured["payload"]["query"] == "q"
+    assert captured["payload"]["partitions"] == ["knowledge"]
+    assert captured["payload"]["filters"] == {"scope": "system"}
+
+
+def test_index_search_none_when_unreachable(monkeypatch):
+    monkeypatch.setattr(client, "_request", lambda *a, **k: None)
+    assert client.index_search("q") is None
