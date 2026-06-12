@@ -305,6 +305,29 @@ class TestPartitionConfigCoverage:
         assert cfg.partition("unlisted").coverage == "active"  # safe default
 
 
+class TestConsumerGate:
+    def test_consumer_enabled_requires_master_and_gate(self):
+        from work_buddy.index.config import IndexConfig
+        assert IndexConfig(enabled=True, consumers={"agent_docs": True}).consumer_enabled("agent_docs")
+        # master off → gate irrelevant
+        assert not IndexConfig(enabled=False, consumers={"agent_docs": True}).consumer_enabled("agent_docs")
+        # gate off → off
+        assert not IndexConfig(enabled=True, consumers={"agent_docs": False}).consumer_enabled("agent_docs")
+        # unlisted consumer → off (ships inert)
+        assert not IndexConfig(enabled=True, consumers={}).consumer_enabled("agent_docs")
+
+    def test_load_config_parses_consumers(self):
+        from work_buddy.index.config import load_index_config
+        cfg = load_index_config({"index": {"enabled": True, "consumers": {"agent_docs": True}}})
+        assert cfg.consumer_enabled("agent_docs") is True
+        assert cfg.consumer_enabled("unlisted") is False
+
+    def test_malformed_consumers_degrades_safely(self):
+        from work_buddy.index.config import load_index_config
+        cfg = load_index_config({"index": {"enabled": True, "consumers": "not-a-dict"}})
+        assert cfg.consumers == {} and cfg.consumer_enabled("agent_docs") is False
+
+
 class TestTaskNoteSourceCoverage:
     """Real-SQLite test of the task_note SOURCE change (the recall fix at the source)."""
 

@@ -25,6 +25,80 @@ from work_buddy.logging_config import get_logger
 
 logger = get_logger(__name__)
 
+# Interactive agent_docs query → fall back to the live index fast if the consolidated
+# service is cold/contended past this budget.
+_CONSOLIDATED_TIMEOUT_S = 15
+
+# knowledge_scope → consolidated metadata filter. The consolidated knowledge partition
+# indexes BOTH scopes (metadata["scope"]); "all" omits the filter (both).
+_CONSOLIDATED_SCOPE_FILTERS: dict[str, dict[str, str]] = {
+    "system": {"scope": "system"},
+    "personal": {"scope": "personal"},
+    "all": {},
+}
+
+
+def _search_via_consolidated(
+    query: str,
+    knowledge_scope: str,
+    top_n: int,
+    *,
+    scope: str | None = None,
+    kind: str | None = None,
+    category: str | None = None,
+    severity: str | None = None,
+) -> list[dict[str, Any]] | None:
+    """Route the knowledge search to the resident consolidated index when activated.
+
+    All filters are PUSHED DOWN so the index filter-then-ranks and returns a full ``top_n``
+    drawn from within the qualifying set (no over-fetch, no post-filter recall loss — a tight
+    filter whose members rank low globally still yields ``top_n`` when ``top_n`` match).
+
+    Returns ``[{path, score}]`` — the SAME shape ``KnowledgeIndex.search`` returns, so the
+    caller's tier hydration is unchanged — or ``None`` to signal "use the live in-process
+    index": gate off, service unreachable, or empty.
+    """
+    from work_buddy.index.config import load_index_config
+
+    if not load_index_config().consumer_enabled("agent_docs"):
+        return None
+
+    # Push every filter down (pre-filter == filter-then-rank, which the index already does
+    # when handed the predicates). knowledge_scope + kind/category/severity → metadata
+    # equality; agent_docs subtree-scope → doc_id prefix (store does ``doc_id LIKE scope%``).
+    filters: dict[str, Any] = dict(_CONSOLIDATED_SCOPE_FILTERS.get(knowledge_scope, {}))
+    if kind:
+        filters["kind"] = kind
+    if category:
+        filters["category"] = category
+    if severity:
+        filters["severity"] = severity
+    doc_id_prefix = f"knowledge:{scope.rstrip('/')}/" if scope else None
+
+    try:
+        from work_buddy.embedding.client import index_search
+
+        hits = index_search(
+            query,
+            top_k=top_n,
+            partitions=["knowledge"],
+            filters=filters or None,
+            scope=doc_id_prefix,
+            timeout_s=_CONSOLIDATED_TIMEOUT_S,
+        )
+    except Exception as exc:  # noqa: BLE001 — live fallback is the recovery
+        logger.debug("consolidated knowledge search failed (%s); using live index.", exc)
+        return None
+    if not hits:
+        return None
+    scored: list[dict[str, Any]] = []
+    for h in hits:
+        meta = h.get("metadata") or {}
+        path = meta.get("path") or str(h.get("doc_id", "")).split(":", 1)[-1]
+        if path:
+            scored.append({"path": path, "score": h.get("score", 0.0)})
+    return scored or None
+
 
 def search(
     query: str = "",
@@ -320,15 +394,23 @@ def _search(
     # Pass full store for chain resolution
     full_store = load_store(scope="all") if depth == "full" else None
 
-    # Use the persistent knowledge index for hybrid BM25 + dense search
-    from work_buddy.knowledge.index import ensure_index
-
-    idx = ensure_index(knowledge_scope=knowledge_scope)
-    scored = idx.search(
-        query=query,
-        candidates=candidates_units,
-        top_n=top_n,
+    # Route to the resident consolidated index when the agent_docs consumer is activated;
+    # on any failure/empty, fall through to the live in-process knowledge index. All filters
+    # are pushed down so the consolidated path filter-then-ranks (full top_n within filter);
+    # it returns the same [{path, score}] shape, so the hydration below is unchanged.
+    scored = _search_via_consolidated(
+        query, knowledge_scope, top_n,
+        scope=scope, kind=kind, category=category, severity=severity,
     )
+    if scored is None:
+        from work_buddy.knowledge.index import ensure_index
+
+        idx = ensure_index(knowledge_scope=knowledge_scope)
+        scored = idx.search(
+            query=query,
+            candidates=candidates_units,
+            top_n=top_n,
+        )
 
     if scored:
         results = []
@@ -344,6 +426,8 @@ def _search(
                     recursive_mode=recursive, max_depth=max_depth,
                 ),
             })
+            if len(results) >= top_n:
+                break  # defense-in-depth cap (both backends already return ≤ top_n)
 
         return {
             "mode": "search",

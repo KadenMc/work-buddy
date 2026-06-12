@@ -343,6 +343,47 @@ def index_search_many(
     return result.get("results")
 
 
+def index_search(
+    query: str,
+    *,
+    top_k: int = 10,
+    method: str = "hybrid",
+    partitions: list[str] | None = None,
+    filters: dict | None = None,
+    scope: str | None = None,
+    recency: bool = False,
+    rrf_k: int | None = None,
+    timeout_s: int | None = None,
+) -> list[dict] | None:
+    """Single-query hybrid search over the consolidated index via the embedding service.
+
+    The single-query sibling of :func:`index_search_many`. Returns the result-dict list
+    (one per hit) scored against the warm resident matrices, or ``None`` when the service
+    is unreachable — the caller then degrades to the in-process knowledge path.
+    """
+    payload: dict[str, Any] = {
+        "query": query,
+        "top_k": top_k,
+        "method": method,
+        "recency": recency,
+    }
+    if partitions is not None:
+        payload["partitions"] = partitions
+    if filters:
+        payload["filters"] = filters
+    if scope:
+        payload["scope"] = scope
+    if rrf_k is not None:
+        payload["rrf_k"] = rrf_k
+    result = _request(
+        "POST", "/index/search", payload,
+        timeout=timeout_s if timeout_s is not None else 60,
+    )
+    if result is None:
+        return None
+    return result.get("results")
+
+
 def vault_index(
     action: str = "build",
     *,

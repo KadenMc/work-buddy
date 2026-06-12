@@ -119,6 +119,11 @@ class KnowledgePartition:
         kind = getattr(unit, "kind", "") or ""
         scope = "personal" if isinstance(unit, VaultUnit) else "system"
         description = getattr(unit, "description", "") or ""
+        # VaultUnit-only filter fields ("" for system units) — indexed so agent_docs
+        # category/severity filters can be PUSHED DOWN (filter-then-rank) instead of
+        # post-filtered from a bounded pool.
+        category = getattr(unit, "category", "") or ""
+        severity = getattr(unit, "severity", "") or ""
 
         # Body for lexical recall = full content text + aliases (title=name weighted higher).
         body = ct + (("\n" + " ".join(aliases)) if aliases else "")
@@ -136,7 +141,10 @@ class KnowledgePartition:
             partition=_PARTITION,
             fields=fields,
             display_text=f"[{kind}] {path}: {description}",
-            metadata={"kind": kind, "path": path, "scope": scope, "tags": tags},
+            metadata={
+                "kind": kind, "path": path, "scope": scope, "tags": tags,
+                "category": category, "severity": severity,
+            },
             projections=projections,
         )
 
