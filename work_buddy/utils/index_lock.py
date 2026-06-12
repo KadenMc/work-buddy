@@ -9,8 +9,9 @@ at the same instant.
 A holder writes ``{pid, started_at, heartbeat}`` to ``<target>.lock``. The lock is
 HONORED while the holder PID is alive AND the file is fresh (mtime within
 ``stale_after_s``); otherwise it is reclaimed. The two gates together survive a
-crashed holder (dead PID), a PID-reused holder (stale age), and a slow build (the
-holder :func:`refresh`es its heartbeat each checkpoint so it never looks stale).
+crashed holder (dead PID), a PID-reused holder (stale age), and a slow build (a
+daemon heartbeat thread, started on acquire, :func:`refresh`es the lock while held,
+so even a multi-hour build never looks stale).
 
 An *unparseable* lock (the sub-millisecond window between the ``O_EXCL`` create and
 the first holder write, or a hand-corrupted file) is honored while fresh and only
@@ -28,6 +29,7 @@ import contextlib
 import json
 import os
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Iterator
@@ -164,6 +166,12 @@ def index_lock(
     concurrent reclaimers cannot both acquire.
 
     Raises ``TimeoutError`` if a live, fresh holder keeps the lock past ``timeout``.
+
+    While held, a daemon thread re-stamps the heartbeat every ``stale_after_s / 3``,
+    so a long hold (the vault encode is multi-hour) never ages out and looks
+    abandoned to ``is_locked`` or a would-be reclaimer. The thread self-stops the
+    instant the lock is no longer ours, and ``_release`` joins it before unlinking —
+    it can neither clobber a successor's lock nor re-create the one it just removed.
     """
     lock = _lock_path(target)
     lock.parent.mkdir(parents=True, exist_ok=True)
@@ -201,7 +209,29 @@ def index_lock(
             _unlink_quiet(lock)
             continue
 
+    # Keep our lock fresh for the whole hold: a daemon thread re-stamps the heartbeat
+    # periodically so a long build never ages past ``stale_after_s`` and looks
+    # abandoned to ``is_locked`` or a concurrent reclaimer. It self-stops the moment
+    # the lock is no longer ours — a build paused past the stale window can be
+    # reclaimed, and we must never clobber the successor's lock.
+    stop = threading.Event()
+
+    def _heartbeat() -> None:
+        interval = max(1.0, stale_after_s / 3)
+        while not stop.wait(interval):
+            holder = _read_holder(lock)
+            if holder is None or holder.get("pid") != os.getpid():
+                return  # reclaimed out from under us → stop, don't clobber the successor
+            refresh(target)
+
+    beat = threading.Thread(target=_heartbeat, name=f"index-lock-hb:{lock.name}", daemon=True)
+    beat.start()
+
     def _release() -> None:
+        # Stop heartbeating and let any in-flight refresh finish BEFORE unlinking, so
+        # the thread can't re-create the lockfile we just removed.
+        stop.set()
+        beat.join(timeout=5.0)
         # Unlink only if WE still hold it — a build that got stale-reclaimed must
         # not delete its successor's lock.
         holder = _read_holder(lock)
