@@ -311,6 +311,7 @@ def index_search_many(
     scope: str | None = None,
     recency: bool = False,
     rrf_k: int | None = None,
+    include_orphaned: bool = True,
     timeout_s: int | None = None,
 ) -> list[list[dict]] | None:
     """Batched hybrid search over the consolidated index via the embedding service.
@@ -318,7 +319,8 @@ def index_search_many(
     ONE round-trip for all ``queries`` — the service batch-encodes them and scores
     against the warm resident matrices. Returns one result-dict list per query (order
     preserved), or ``None`` when the service is unreachable — the caller then degrades
-    to the in-process knowledge path.
+    to the in-process knowledge path. ``include_orphaned=False`` excludes
+    retained-but-source-gone docs (a live-only view).
     """
     payload: dict[str, Any] = {
         "queries": list(queries),
@@ -334,6 +336,8 @@ def index_search_many(
         payload["scope"] = scope
     if rrf_k is not None:
         payload["rrf_k"] = rrf_k
+    if not include_orphaned:
+        payload["include_orphaned"] = False
     result = _request(
         "POST", "/index/search_many", payload,
         timeout=timeout_s if timeout_s is not None else 60,
@@ -353,6 +357,7 @@ def index_search(
     scope: str | None = None,
     recency: bool = False,
     rrf_k: int | None = None,
+    include_orphaned: bool = True,
     timeout_s: int | None = None,
 ) -> list[dict] | None:
     """Single-query hybrid search over the consolidated index via the embedding service.
@@ -360,6 +365,7 @@ def index_search(
     The single-query sibling of :func:`index_search_many`. Returns the result-dict list
     (one per hit) scored against the warm resident matrices, or ``None`` when the service
     is unreachable — the caller then degrades to the in-process knowledge path.
+    ``include_orphaned=False`` excludes retained-but-source-gone docs (a live-only view).
     """
     payload: dict[str, Any] = {
         "query": query,
@@ -375,6 +381,8 @@ def index_search(
         payload["scope"] = scope
     if rrf_k is not None:
         payload["rrf_k"] = rrf_k
+    if not include_orphaned:
+        payload["include_orphaned"] = False
     result = _request(
         "POST", "/index/search", payload,
         timeout=timeout_s if timeout_s is not None else 60,
