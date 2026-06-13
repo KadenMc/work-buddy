@@ -117,6 +117,14 @@ dev_notes: |-
 
   'Default model for all' is a tempting shortcut. Every new semantic-scoring site should ask: am I comparing query-shaped things to query-shaped things (use `leaf-mt`), or query-shaped to passage-shaped (use `embed_for_ir` with the correct role)? The wrong answer produces subtle quality loss, not visible errors.
 
+  ## Consolidated index: resident-matrix prewarm at startup
+
+  The consolidated index (``work_buddy/index/``) serves search from per-(partition, projection) dense matrices held resident in this process (``index/resident.py`` — the generic ResidentCache the vault matrix and model registry reuse). They are lazy-loaded on a partition's first search, so a large partition (vault is ~88k×768) pays a tens-of-seconds load on that first query — long enough to exceed the request timeout, returning ``None`` and silently missing the consolidated index until something queries it again.
+
+  ``main()`` prewarms them: when ``index.enabled``, a background daemon (``index/partitioned.py::start_prewarm`` -> ``prewarm_resident_matrices``) loads every BUILT partition's matrices up front, **largest partition first** (so the slowest-to-load, highest-cold-cost partitions are protected soonest). It goes through the same ``HybridSearcher._resident`` caches the serving path reads (no key drift), does NO model encode (pure SQLite read + numpy reshape, so it doesn't contend for the inference broker / GPU), and is idempotent with the consolidated-index idle evictor (``resident.start_idle_evictor``: warm -> serve -> release after the idle TTL -> re-warm on next query). It is gated — a disabled or unbuilt index warms nothing, and the daemon never blocks ``/health`` or query serving.
+
+  Caveat: prewarm shrinks but does not eliminate the first-query cold window. Matrix loading is GIL-heavy (a ``b"".join`` over a partition's vector blobs), so on a contended boot — eager model load plus concurrent query-encodes competing for one GIL — warming all partitions can take minutes, and a query that races ahead of its partition's warm-up still triggers the cold load (and may time out to ``None``). Consumers already degrade gracefully on ``None``; a one-shot retry-after-cold in the consumers (``knowledge/search.py``, ``mcp_server/ops/context_consolidated.py``) is the clean way to fully close the residual window if it ever matters.
+
   ## Key dev files
 
   - `work_buddy/embedding/service.py` — Flask service, `_DEFAULT_MODELS`, `ModelEntry`, lazy loader, `/embed` and `/similarity` handlers; `/ir/index` now also triggers a best-effort `dense.build_vectors` so hybrid search has vectors to score against.
