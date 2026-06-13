@@ -53,11 +53,28 @@ class PartitionConfig:
     # query-time concern (Query.filters), not a build-time policy. A source that doesn't
     # understand `coverage` simply ignores it. See HISTORY-PARTITION-COVERAGE.md.
     coverage: str = "active"
+    # RETENTION — what STAYS after the source DROPS an item (orthogonal to `coverage`,
+    # which controls what ENTERS). The build's prune step honors this:
+    #   "track_source" (default) — delete the doc when its source item disappears (today's
+    #       behavior; the index mirrors the live source).
+    #   "retain" — keep it, stamped ``lifecycle_state="orphaned"`` (and forget the change
+    #       ledger entry), so search RECALL survives source deletion. A frozen snapshot —
+    #       it can't refresh (source gone); if the source later restores the item it
+    #       re-indexes fresh (ledger forgot it). Use when a hit's value is in-hit content,
+    #       not a drill-through pointer (e.g. conversation spans after Claude Code prunes
+    #       the JSONL).
+    #   "ttl" — like "retain", but a per-build sweep prunes orphans whose newest doc
+    #       timestamp is older than ``retention_ttl_days``, to bound storage growth.
+    # Config accepts ``retention: track_source|retain`` or ``retention: {ttl_days: N}``.
+    # See RETENTION-POLICY-DESIGN. Defaults preserve current behavior on every partition.
+    retention: str = "track_source"
+    retention_ttl_days: float | None = None
 
     @classmethod
     def from_dict(cls, name: str, raw: dict[str, Any] | None) -> "PartitionConfig":
         raw = raw or {}
         defaults = cls(name=name)
+        retention, retention_ttl_days = cls._parse_retention(raw, defaults)
         return cls(
             name=name,
             enabled=bool(raw.get("enabled", defaults.enabled)),
@@ -72,7 +89,36 @@ class PartitionConfig:
             ),
             recency_floor=float(raw.get("recency_floor", defaults.recency_floor)),
             coverage=str(raw.get("coverage", defaults.coverage)),
+            retention=retention,
+            retention_ttl_days=retention_ttl_days,
         )
+
+    @staticmethod
+    def _parse_retention(
+        raw: dict[str, Any], defaults: "PartitionConfig"
+    ) -> tuple[str, float | None]:
+        """Normalize ``retention`` (a mode string, or ``{ttl_days: N}``) → (mode, ttl).
+
+        An unknown mode or a ttl without a positive ``ttl_days`` degrades to a SAFE
+        default — track_source if nothing was set, else retain (keep, never prune-all).
+        """
+        ret = raw.get("retention", defaults.retention)
+        ttl: float | None = None
+        if isinstance(ret, dict):
+            ttl_raw = ret.get("ttl_days")
+            ttl = float(ttl_raw) if ttl_raw is not None else None
+            mode = "ttl"
+        else:
+            mode = str(ret)
+            ttl_raw = raw.get("retention_ttl_days")
+            ttl = float(ttl_raw) if ttl_raw is not None else None
+        if mode == "ttl" and not (ttl and ttl > 0):
+            mode = "retain"  # ttl with no positive window → keep (don't prune everything)
+            ttl = None
+        if mode not in ("track_source", "retain", "ttl"):
+            mode = "track_source"  # unknown → today's behavior, never a surprise prune
+            ttl = None
+        return mode, ttl
 
 
 @dataclass(frozen=True)
