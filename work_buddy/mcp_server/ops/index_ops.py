@@ -2,11 +2,12 @@
 
 Referenced by the ``index_rebuild`` capability declaration. The sidecar's per-partition
 ``index-<partition>-refresh`` jobs call this on a schedule; it no-ops while ``index.enabled``
-is false and runs an incremental build of the named partition when enabled. When a
-``partition`` is given it also self-skips (read-only advisory-lock
-probe) if a build for that partition is already running, so a recurring refresh never
-re-enters an in-flight build. The sidecar runs in its own process and may import heavy libs,
-so the build runs in-process here (sharing the broker).
+is false and runs an incremental build of the named partition when enabled. It also
+self-skips (read-only advisory-lock probe) while ANY index build is running — the
+partitions share one single-writer SQLite DB, so builds serialize on a DB-wide writer
+gate and a recurring refresh never piles onto an in-flight build of any partition.
+The sidecar runs in its own process and may import heavy libs, so the build runs
+in-process here (sharing the broker).
 """
 
 from __future__ import annotations
@@ -20,8 +21,9 @@ def _index_rebuild_dispatch(partition: str | None = None, force: bool = False) -
     """Incrementally (re)build the consolidated index — flag-gated.
 
     Returns ``{"skipped": ...}`` while ``index.enabled`` is false, or
-    ``{"skipped": "build_in_progress"}`` when a build for ``partition`` already holds the
-    advisory lock. When enabled + free, builds ``partition`` (e.g. ``"knowledge"``) into the
+    ``{"skipped": "build_in_progress"}`` while any index build holds the DB-wide writer
+    gate (or this partition's own lock). When enabled + free, builds ``partition``
+    (e.g. ``"knowledge"``) into the
     separate ``db/index-consolidated``, or all partitions when omitted. ``force=True`` rebuilds
     from scratch; the default is incremental (content-hash diff — cheap when nothing changed).
     """
@@ -33,16 +35,21 @@ def _index_rebuild_dispatch(partition: str | None = None, force: bool = False) -
             {"skipped": "index.enabled is false (flag-gated; off by default)"}
         )
 
-    # Self-skip a partition whose build is already running. The builder takes a BLOCKING
-    # advisory lock (``index/build.py``) that raises after ~30s if a live holder owns it, so a
-    # recurring refresh re-firing mid-build would stall-then-error every tick (a multi-hour
-    # vault build would error on every fire). Probe the SAME per-partition lock target
-    # read-only and bail cheaply — mirrors ``vault_ops``'s ``is_locked`` pre-check.
-    if partition:
-        from work_buddy.utils import index_lock
+    # Self-skip while ANY index build is running. All partitions share one SQLite DB
+    # (single writer), so builds serialize on the DB-wide ``.build`` writer gate
+    # (``index/build.py``) — and a refresh firing into a held gate would block ~30s on
+    # the advisory acquire then error, every tick, for as long as the build runs (a
+    # first vault/conversation build is multi-hour). Probe the gate (and, for the
+    # message's sake, this partition's own lock) read-only and bail cheaply — mirrors
+    # ``vault_ops``'s ``is_locked`` pre-check.
+    from work_buddy.utils import index_lock
 
-        db = cfg.resolved_db_path()
-        if index_lock.is_locked(db.parent / f"{db.name}.{partition}"):
+    db = cfg.resolved_db_path()
+    targets = [db.parent / f"{db.name}.build"]
+    if partition:
+        targets.append(db.parent / f"{db.name}.{partition}")
+    for target in targets:
+        if index_lock.is_locked(target):
             return json.dumps({"skipped": "build_in_progress", "partition": partition})
 
     from work_buddy.index.partitioned import UnifiedIndex

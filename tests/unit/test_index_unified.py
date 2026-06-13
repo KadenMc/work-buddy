@@ -116,9 +116,16 @@ class TestConsolidatedAdapter:
         adapter = get_index("consolidated")
         assert adapter.name == "consolidated"
 
-    def test_bulk_build_skips_when_disabled(self):
+    def test_bulk_build_skips_when_disabled(self, monkeypatch):
+        from work_buddy.index.config import IndexConfig
         from work_buddy.indexing.adapters.index_consolidated import ConsolidatedIndexAdapter
-        # default config has index.enabled=false → build is a no-op
+        # Pin the flag OFF. bulk_build reads the MACHINE config — unpinned, a machine
+        # with index.enabled=true would really build every partition of the real DB
+        # from inside this unit test (multi-hour at vault scale).
+        monkeypatch.setattr(
+            "work_buddy.index.config.load_index_config",
+            lambda *a, **k: IndexConfig(enabled=False),
+        )
         res = ConsolidatedIndexAdapter().bulk_build()
         assert res.ok is True
         assert "skipped" in res.stats
