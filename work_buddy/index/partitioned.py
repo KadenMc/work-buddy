@@ -52,7 +52,9 @@ class IndexPartition:
             projection_schema=get_projection_schema(partition), cfg=cfg,
             residents=residents,
         )
-        self._builder = IndexBuilder(store, encoder, partition, residents=residents)
+        self._builder = IndexBuilder(
+            store, encoder, partition, cfg=cfg, residents=residents
+        )
 
     @property
     def name(self) -> str:

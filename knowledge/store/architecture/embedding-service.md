@@ -143,6 +143,11 @@ A long-running sidecar service providing dense vector embeddings for work-buddy'
 - `POST /vault/search`, `POST /vault/index` — vault semantic index search / build, run
   in-process so the resident vector matrix stays warm and the bulk encode shares the broker
   (see `architecture/vault-index`)
+- `POST /index/search`, `POST /index/search_many` — consolidated-index hybrid search over one
+  or more partitions (`/index/search_many` shares ONE query-encode across a batch of queries);
+  `POST /index/build` — incremental build of a partition (or all) into the separate
+  `db/index-consolidated` DB. Run in-process so the resident matrices stay warm and the bulk
+  encode shares the broker (see `architecture/consolidated-index`)
 - `GET /health` — liveness probe
 
 ## Client
@@ -157,6 +162,8 @@ A long-running sidecar service providing dense vector embeddings for work-buddy'
 - `ir_index(action, source, ...)` — build or check an IR index
 - `vault_search(query, ...)`, `vault_index(action, ...)` — vault semantic index search / build
   (see `architecture/vault-index`)
+- `index_search(query, ...)`, `index_search_many(queries, ...)` — consolidated-index hybrid
+  search over its partitions (see `architecture/consolidated-index`)
 
 ## Graceful degradation
 
