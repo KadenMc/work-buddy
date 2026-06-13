@@ -141,6 +141,10 @@ class Query:
     scope: str | None = None
     recency: bool = False
     rrf_k: int | None = None  # per-call override; else the partition's configured rrf_k
+    # Whether retained-but-source-gone docs (``lifecycle_state="orphaned"``, from the
+    # "retain"/"ttl" retention modes) are eligible. Default True = include them (recall is
+    # the point of retain). False → a "live-only" view that excludes frozen snapshots.
+    include_orphaned: bool = True
 
 
 @dataclass
