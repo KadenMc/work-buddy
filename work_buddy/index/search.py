@@ -67,6 +67,31 @@ class HybridSearcher:
             version_fn=lambda: str(self._store.build_version(self._partition)),
         )
 
+    def prewarm(self) -> int:
+        """Eagerly load this partition's resident dense matrices into RAM.
+
+        Goes through the SAME ``_resident`` caches the search path reads, so the
+        matrix warmed here is exactly the one the next query serves from — no key
+        drift. Removes the first-query cold-load penalty (a large partition's matrix
+        can take tens of seconds to build from the float16 blobs, long enough for the
+        first post-restart search to exceed its request timeout and degrade to a
+        lexical-only / empty result). Idempotent with the idle evictor: a released
+        matrix is simply re-loaded on the next call.
+
+        Returns the number of projections whose matrix loaded (a projection with no
+        vectors yet, or one that fails to load, contributes 0).
+        """
+        warmed = 0
+        for projection in self._schema:
+            try:
+                if self._resident(projection).get() is not None:
+                    warmed += 1
+            except Exception as exc:  # one projection failing must not abort the rest
+                logger.warning(
+                    "prewarm: %s:%s failed to load: %s", self._partition, projection, exc,
+                )
+        return warmed
+
     def search(self, q: Query) -> list[Hit]:
         if not (q.text or "").strip():
             return []
