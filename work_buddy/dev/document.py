@@ -256,6 +256,9 @@ def _search_units_via_consolidated(queries: list[str]) -> list[dict[str, Any]] |
         # partition indexes system+personal, so this filter is load-bearing.
         filters={"scope": "system"},
         timeout_s=_QUERY_EMBED_TIMEOUT_S,
+        # Cold knowledge matrix → wait once for the background warm and retry, rather
+        # than degrading to the live index on the first (lexical-only) pass.
+        warm_retry=True,
     )
     if raw is None or len(raw) != len(queries):
         return None  # service down or shape mismatch → fall back to the live index

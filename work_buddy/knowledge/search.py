@@ -85,6 +85,9 @@ def _search_via_consolidated(
             filters=filters or None,
             scope=doc_id_prefix,
             timeout_s=_CONSOLIDATED_TIMEOUT_S,
+            # Cold knowledge matrix → wait once for the background warm and retry, rather
+            # than degrading to the live index on the first (lexical-only) pass.
+            warm_retry=True,
         )
     except Exception as exc:  # noqa: BLE001 — live fallback is the recovery
         logger.debug("consolidated knowledge search failed (%s); using live index.", exc)

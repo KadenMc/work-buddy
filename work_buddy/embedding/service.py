@@ -919,7 +919,7 @@ def index_search_endpoint():
     data = request.get_json(silent=True) or {}
     try:
         from work_buddy.index.model import Query
-        from work_buddy.index.partitioned import UnifiedIndex
+        from work_buddy.index.partitioned import UnifiedIndex, warm_partitions_async
 
         q = Query(
             text=data.get("query", ""),
@@ -930,13 +930,27 @@ def index_search_endpoint():
             recency=data.get("recency", False),
             rrf_k=data.get("rrf_k"),
         )
-        hits = UnifiedIndex().search(q, partitions=data.get("partitions"))
+        ui = UnifiedIndex()
+        partitions = data.get("partitions")
+        # Non-blocking serving by default: a partition whose dense matrix isn't resident
+        # degrades to lexical-only, warms in the background, and is reported in ``warming``
+        # so the caller can wait once and retry against the now-warm matrix. The retry
+        # (block_until_warm=true) loads inline; the whole signal is kill-switchable.
+        block = bool(data.get("block_until_warm", False)) or not ui.config.warming_signal
+        warming = [] if block else ui.cold_partitions(partitions)
+        if warming:
+            warm_partitions_async(warming)
+        hits = ui.search(q, partitions=partitions, block_until_warm=block)
         results = [
             {"doc_id": h.doc_id, "score": h.score, "signals": h.signals,
              "display_text": h.display_text, "metadata": h.metadata}
             for h in hits
         ]
-        return jsonify({"results": results})
+        resp: dict[str, Any] = {"results": results}
+        if warming:
+            resp["warming"] = warming
+            resp["retry_after_s"] = round(ui.warm_eta_s(warming), 1)
+        return jsonify(resp)
     except Exception as exc:
         return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500
 
@@ -954,17 +968,24 @@ def index_search_many_endpoint():
     """
     data = request.get_json(silent=True) or {}
     try:
-        from work_buddy.index.partitioned import UnifiedIndex
+        from work_buddy.index.partitioned import UnifiedIndex, warm_partitions_async
 
-        per_query = UnifiedIndex().search_many(
+        ui = UnifiedIndex()
+        partitions = data.get("partitions")
+        block = bool(data.get("block_until_warm", False)) or not ui.config.warming_signal
+        warming = [] if block else ui.cold_partitions(partitions)
+        if warming:
+            warm_partitions_async(warming)
+        per_query = ui.search_many(
             data.get("queries") or [],
-            partitions=data.get("partitions"),
+            partitions=partitions,
             top_k=data.get("top_k", 10),
             method=data.get("method", "hybrid"),
             filters=data.get("filters") or {},
             scope=data.get("scope"),
             recency=data.get("recency", False),
             rrf_k=data.get("rrf_k"),
+            block_until_warm=block,
         )
         results = [
             [{"doc_id": h.doc_id, "score": h.score, "signals": h.signals,
@@ -972,7 +993,11 @@ def index_search_many_endpoint():
              for h in hits]
             for hits in per_query
         ]
-        return jsonify({"results": results})
+        resp: dict[str, Any] = {"results": results}
+        if warming:
+            resp["warming"] = warming
+            resp["retry_after_s"] = round(ui.warm_eta_s(warming), 1)
+        return jsonify(resp)
     except Exception as exc:
         return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500
 

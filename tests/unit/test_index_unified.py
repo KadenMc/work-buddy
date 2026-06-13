@@ -19,6 +19,7 @@ from work_buddy.index.partitioned import (
     UnifiedIndex,
     prewarm_resident_matrices,
     start_prewarm,
+    warm_partitions_async,
 )
 from work_buddy.index.resident import ResidentCacheRegistry
 from work_buddy.index.store import IndexStore
@@ -183,11 +184,18 @@ class CountingStore(IndexStore):
         super().__init__(*a, **kw)
         self.load_calls = 0
         self.load_order: list[str] = []
+        self.vector_count_calls = 0
 
     def load_all_vectors(self, partition, projection):
         self.load_calls += 1
         self.load_order.append(partition)
         return super().load_all_vectors(partition, projection)
+
+    def vector_count(self, partition, projection=None):
+        # ``vector_count`` is a COUNT(DISTINCT) JOIN over the whole doc_vectors table —
+        # far too heavy for the per-query readiness path. The readiness check must avoid it.
+        self.vector_count_calls += 1
+        return super().vector_count(partition, projection)
 
 
 class TestPrewarm:
@@ -297,3 +305,98 @@ class TestPrewarm:
         t.join(timeout=5)
         assert not t.is_alive()
         assert t.daemon
+
+    def test_prewarm_only_warms_named_subset(self, tmp_path):
+        ui = self._unified(tmp_path)
+        ui.build("p1")
+        ui.build("p2")
+        warmed = prewarm_resident_matrices(
+            IndexConfig(enabled=True), only=["p1"], index_factory=lambda cfg: ui
+        )
+        assert set(warmed) == {"p1"}
+        assert ui._residents.get("p1:default").is_cached()
+        assert ui._residents.get("p2:default") is None  # never touched
+
+
+class TestWarmingSignal:
+    def _unified(self, tmp_path, store=None):
+        reg = PartitionRegistry()
+        reg.register("proj", lambda: ProjectedPartition("proj", {"i": [("a", "alpha one")]}))
+        reg.register("lex", lambda: FakePartition("lex", {"j": [("b", "alpha two")]}))
+        return UnifiedIndex(
+            store=store or CountingStore(tmp_path / "uni.db"),
+            encoder=FakeEncoder(),
+            config=IndexConfig(enabled=True),
+            residents=ResidentCacheRegistry(),
+            registry=reg,
+        )
+
+    def test_cold_partitions_reports_only_unwarmed_dense(self, tmp_path):
+        ui = self._unified(tmp_path)
+        ui.build("proj")
+        ui.build("lex")
+        # 'proj' has a dense matrix not yet resident → cold; 'lex' is lexical-only → warm.
+        assert ui.cold_partitions(["proj", "lex"]) == ["proj"]
+        ui.partition("proj").prewarm()
+        assert ui.cold_partitions(["proj", "lex"]) == []  # warmed → no longer cold
+
+    def test_warm_eta_scales_with_vector_count(self, tmp_path):
+        ui = self._unified(tmp_path)
+        ui.build("proj")
+        eta = ui.warm_eta_s(["proj"])
+        assert eta >= 2.0  # floored; a tiny partition still reports the floor
+
+    def test_readiness_check_avoids_heavy_vector_count(self, tmp_path):
+        # cold_partitions runs on the serving hot path; it must NOT issue the heavy
+        # COUNT(DISTINCT) JOIN that vector_count is — only in-RAM is_cached() checks.
+        store = CountingStore(tmp_path / "uni.db")
+        ui = self._unified(tmp_path, store=store)
+        ui.build("proj")
+        ui.build("lex")
+        store.vector_count_calls = 0
+        assert ui.cold_partitions(["proj", "lex"]) == ["proj"]
+        assert store.vector_count_calls == 0  # readiness stayed off the heavy query
+
+    def test_non_blocking_search_serves_lexical_for_cold(self, tmp_path):
+        store = CountingStore(tmp_path / "uni.db")
+        ui = self._unified(tmp_path, store=store)
+        ui.build("proj")
+        store.load_calls = 0
+
+        # Cold + non-blocking → lexical hit, and the matrix is NOT loaded (peek only).
+        hits = ui.search(Query(text="alpha", top_k=5), partitions=["proj"],
+                         block_until_warm=False)
+        assert [h.doc_id for h in hits] == ["proj:a"]
+        assert store.load_calls == 0
+
+        # Blocking → the matrix loads inline (the retry path).
+        hits2 = ui.search(Query(text="alpha", top_k=5), partitions=["proj"],
+                          block_until_warm=True)
+        assert [h.doc_id for h in hits2] == ["proj:a"]
+        assert store.load_calls == 1
+
+    def test_warm_partitions_async_singleflights(self, tmp_path):
+        from work_buddy.index import partitioned as P
+        ui = self._unified(tmp_path)
+        ui.build("proj")
+
+        # A warm already in flight for 'proj' → a second request is a no-op.
+        with P._warming_lock:
+            P._warming_in_flight.add("proj")
+        try:
+            assert P.warm_partitions_async(
+                ["proj"], config=IndexConfig(enabled=True), index_factory=lambda cfg: ui
+            ) is None
+        finally:
+            with P._warming_lock:
+                P._warming_in_flight.discard("proj")
+
+        # Nothing in flight → it actually warms (and clears the guard afterwards).
+        t = P.warm_partitions_async(
+            ["proj"], config=IndexConfig(enabled=True), index_factory=lambda cfg: ui
+        )
+        assert t is not None
+        t.join(timeout=5)
+        assert ui.cold_partitions(["proj"]) == []
+        with P._warming_lock:
+            assert "proj" not in P._warming_in_flight

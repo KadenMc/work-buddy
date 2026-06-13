@@ -35,6 +35,24 @@ def fake_git():
         yield state
 
 
+@pytest.fixture(autouse=True)
+def _default_consolidated_off(monkeypatch):
+    """Default every scan test to the LIVE knowledge path.
+
+    The consolidated-index route requires a running embedding service AND
+    ``index.enabled`` — a dependency a unit test must not have. On a dev machine where
+    the index is live it would otherwise intercept the mocked ``search_many`` (and, with
+    the cold-start warm-retry, block on real sleeps), so tests that pin the live/grep
+    behaviour would flake. Tests that exercise the consolidated path re-enable it
+    explicitly; their own ``load_index_config`` patch overrides this one."""
+    from work_buddy.index.config import IndexConfig
+
+    monkeypatch.setattr(
+        "work_buddy.index.config.load_index_config",
+        lambda *a, **k: IndexConfig(enabled=False),
+    )
+
+
 def test_classify_covers_all_buckets():
     assert dev_document._classify("work_buddy/mcp_server/x.py") == "module"
     assert dev_document._classify("knowledge/store/dev.json") == "knowledge"
