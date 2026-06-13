@@ -75,15 +75,25 @@ def _register() -> None:
     ) -> str:
         """Search indexed content using configurable method(s).
 
-        Thin wrapper: delegates to ir.search.search() for structured results,
-        then formats to markdown via _format_results().
+        Routes to the consolidated index when its consumer flag is on and the request is
+        in the supported subset (single named source, no scope, hybrid-mappable method);
+        otherwise — and on any consolidated miss — delegates to ir.search.search(). Either
+        way the structured results render through _format_results().
         """
         from work_buddy.ir.search import search as _ir_search
+        from work_buddy.mcp_server.ops.context_consolidated import (
+            search_context_via_consolidated,
+        )
 
-        results = _ir_search(
+        results = search_context_via_consolidated(
             query, top_k=top_k, source=source, scope=scope,
             method=method, recency=recency,
         )
+        if results is None:
+            results = _ir_search(
+                query, top_k=top_k, source=source, scope=scope,
+                method=method, recency=recency,
+            )
         if isinstance(results, str):
             return results  # error message
 
