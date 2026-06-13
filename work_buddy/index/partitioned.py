@@ -8,6 +8,7 @@ federates cross-partition search via RRF (fork F-CROSS), and reports status thro
 
 from __future__ import annotations
 
+import threading
 from typing import TYPE_CHECKING, Any, Callable
 
 from work_buddy.index.config import IndexConfig, load_index_config
@@ -75,6 +76,11 @@ class IndexPartition:
 
     def hydrate(self, hits: list[Hit], **opts) -> list[Any]:
         return hydrate(self._partition, hits, **opts)
+
+    def prewarm(self) -> int:
+        """Eagerly load this partition's resident dense matrices (see
+        :meth:`HybridSearcher.prewarm`). Returns the number of projections warmed."""
+        return self._searcher.prewarm()
 
     def build(self, *, force: bool = False, on_progress=None) -> dict[str, Any]:
         return self._builder.build(force=force, on_progress=on_progress)
@@ -232,3 +238,86 @@ class UnifiedIndex:
         except OSError:
             pass
         return IndexStatus(name=self.NAME, partitions=parts, size_on_disk_mb=size_mb)
+
+
+def prewarm_resident_matrices(
+    config: IndexConfig | None = None,
+    *,
+    index_factory: Callable[[IndexConfig], UnifiedIndex] | None = None,
+) -> dict[str, int]:
+    """Load every BUILT partition's resident dense matrices into RAM up front.
+
+    The cold-start fix. Dense matrices are lazy-loaded on a partition's first search,
+    so after the embedding service restarts the first search of a large partition pays
+    the full load (e.g. vault, ~88k×768 vectors) — long enough to exceed the request
+    timeout, at which point the client sees ``None`` and the first post-restart search
+    silently misses the consolidated index. Warming the matrices up front (the service
+    calls this in a background thread at startup) removes that first-query penalty.
+
+    Gated: returns ``{}`` immediately when ``index.enabled`` is false or no partition is
+    built — never builds or loads a disabled/empty index. Loading is a SQLite read plus
+    numpy reshape (no model encode), so it does not contend for the inference broker /
+    GPU. Idempotent with the idle evictor. Never raises — a failing partition is logged
+    and skipped.
+
+    ``index_factory`` is an injection seam for tests; production passes the resolved
+    config and lets it construct a :class:`UnifiedIndex` bound to the process-global
+    resident registry (the one the serving path reads).
+
+    Returns ``{partition: n_projections_warmed}``.
+    """
+    cfg = config or load_index_config()
+    if not cfg.enabled:
+        logger.debug("index prewarm: index.enabled is false; skipping")
+        return {}
+    ui = index_factory(cfg) if index_factory is not None else UnifiedIndex(config=cfg)
+    built = ui.store.partitions()
+    if not built:
+        logger.debug("index prewarm: no built partitions; skipping")
+        return {}
+    # Warm the largest partitions first. Their matrices take longest to load (vault is
+    # ~88k×768) and are exactly the ones whose cold-load penalty motivates prewarm, so a
+    # query that races the warm-up is least likely to find a slow partition still cold;
+    # the small partitions (~1-2s each) trail harmlessly. Ordering is best-effort — a
+    # count failure falls back to the store's order rather than aborting the warm-up.
+    try:
+        built = sorted(built, key=lambda n: ui.store.doc_count(n), reverse=True)
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.debug("index prewarm: size ordering failed (%s); using store order", exc)
+    logger.info(
+        "index prewarm: warming resident matrices for %d built partition(s): %s",
+        len(built), built,
+    )
+    warmed: dict[str, int] = {}
+    for name in built:
+        try:
+            n = ui.partition(name).prewarm()
+        except Exception as exc:  # one partition failing must not abort the rest
+            logger.warning("index prewarm: partition %r failed: %s", name, exc)
+            continue
+        warmed[name] = n
+        logger.info("index prewarm: %s warmed (%d projection matrix/matrices)", name, n)
+    return warmed
+
+
+def start_prewarm(
+    config: IndexConfig | None = None,
+    *,
+    index_factory: Callable[[IndexConfig], UnifiedIndex] | None = None,
+    name: str = "index-prewarm",
+) -> threading.Thread:
+    """Spawn a daemon thread that runs :func:`prewarm_resident_matrices`.
+
+    Non-blocking: the service must keep serving ``/health`` and queries while the
+    matrices warm. Started by the embedding-service ``main()`` (additive — pairs with
+    the idle evictor, which releases what this warms after an idle TTL).
+    """
+    def _run() -> None:
+        try:
+            prewarm_resident_matrices(config, index_factory=index_factory)
+        except Exception as exc:  # pragma: no cover — prewarm already guards per-partition
+            logger.warning("index prewarm thread failed: %s", exc)
+
+    t = threading.Thread(target=_run, name=name, daemon=True)
+    t.start()
+    return t

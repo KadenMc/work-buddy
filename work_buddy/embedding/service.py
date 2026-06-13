@@ -1141,6 +1141,16 @@ def main():
         _start_index_evictor()
     except Exception as exc:  # never block service startup
         print(f"consolidated-index evictor start failed (non-fatal): {exc}", file=sys.stderr)
+    # Prewarm the consolidated index's resident matrices at startup (flag-gated; runs in
+    # a background daemon so it never blocks /health or query serving). Without it the
+    # FIRST post-restart search of a large partition pays the full cold matrix-load and
+    # can time out to None; warming up front removes that first-query penalty. Pairs with
+    # the idle evictor above (warm → serve → release when idle → re-warm on next query).
+    try:
+        from work_buddy.index.partitioned import start_prewarm as _start_index_prewarm
+        _start_index_prewarm()
+    except Exception as exc:  # never block service startup
+        print(f"consolidated-index prewarm start failed (non-fatal): {exc}", file=sys.stderr)
     # Persist completed broker calls so the dashboard Inference panel keeps
     # history across restarts (the broker's metrics ring is in-memory only).
     threading.Thread(
