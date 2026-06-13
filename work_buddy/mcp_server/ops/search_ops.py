@@ -76,6 +76,20 @@ def find_op(
     from work_buddy.ir.search import search as ir_search
 
     if not drill:
+        # Route the plain (non-drill) path to the consolidated index when the `find`
+        # consumer flag is on and the request is in the supported subset (single source,
+        # no scope, hybrid-mappable method); fall back to the IR engine on any miss. The
+        # helper returns the same list[dict] shape ir.search.search does. (drill=True keeps
+        # using the IR engine + its source-specific drill handlers.)
+        from work_buddy.mcp_server.ops.context_consolidated import (
+            search_context_via_consolidated,
+        )
+        routed = search_context_via_consolidated(
+            query, top_k=top_k, source=source, scope=scope,
+            method=method, recency=recency, consumer="find",
+        )
+        if routed is not None:
+            return routed
         return ir_search(
             query,
             top_k=top_k,

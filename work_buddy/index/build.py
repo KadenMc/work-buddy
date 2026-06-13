@@ -46,12 +46,14 @@ class IndexBuilder:
         encoder: "Encoder",
         partition: "Partition",
         *,
+        cfg: Any = None,
         residents: "ResidentCacheRegistry | None" = None,
         use_lock: bool = True,
     ) -> None:
         self._store = store
         self._encoder = encoder
         self._partition = partition
+        self._cfg = cfg  # PartitionConfig; None → retention defaults to track_source
         self._use_lock = use_lock
         if residents is None:
             from work_buddy.index.resident import get_registry
@@ -108,8 +110,7 @@ class IndexBuilder:
                         changed.append(ref)
 
             deleted = [iid for iid in indexed if iid not in disc_ids]
-            for iid in deleted:
-                self._store.delete_item_docs(iid, partition=pname)
+            self._prune(pname, deleted)
 
             # --- parse + upsert + encode changed items ---
             n_docs = 0
@@ -152,6 +153,38 @@ class IndexBuilder:
             }
             logger.info("index build [%s]: %s", pname, stats)
             return stats
+
+    # -- retention --------------------------------------------------------
+    def _prune(self, pname: str, deleted: list[str]) -> None:
+        """Apply the partition's RETENTION policy to items the source has dropped.
+
+        - ``track_source`` (default): delete them — the index mirrors the live source.
+        - ``retain``: keep them as orphans (``mark_items_orphaned`` stamps + forgets the
+          ledger), so search recall survives source deletion.
+        - ``ttl``: keep newly-gone items as orphans too, then sweep orphans older than
+          ``retention_ttl_days`` to bound growth.
+        """
+        if not deleted:
+            # Still run the TTL sweep so orphans age out even on a no-new-deletions tick.
+            if getattr(self._cfg, "retention", "track_source") == "ttl":
+                self._sweep_orphans(pname)
+            return
+        retention = getattr(self._cfg, "retention", "track_source") if self._cfg else "track_source"
+        if retention == "track_source":
+            for iid in deleted:
+                self._store.delete_item_docs(iid, partition=pname)
+            return
+        # retain / ttl: newly-gone items become orphans (kept, ledger forgotten).
+        self._store.mark_items_orphaned(deleted, pname)
+        if retention == "ttl":
+            self._sweep_orphans(pname)
+
+    def _sweep_orphans(self, pname: str) -> None:
+        """TTL mode: delete orphans whose newest doc timestamp is older than the window."""
+        ttl_days = getattr(self._cfg, "retention_ttl_days", None) or 0
+        if ttl_days and ttl_days > 0:
+            import time
+            self._store.prune_orphans_older_than(pname, time.time() - ttl_days * 86400.0)
 
     # -- encoding helpers -------------------------------------------------
     def _encode_docs(self, docs: list, schema: dict) -> None:
