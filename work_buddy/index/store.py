@@ -99,6 +99,14 @@ CREATE VIRTUAL TABLE IF NOT EXISTS doc_fts USING fts5(
 # Default FTS5 bm25() column weights (title > tags > body), overridable per partition.
 _DEFAULT_FTS_WEIGHTS = (3.0, 1.0, 2.0)  # (title, body, tags)
 
+# Excludes retained-but-source-gone docs (retention "retain"/"ttl"). A NULL or non-
+# "orphaned" lifecycle_state is a live doc. Appended to a query whose alias for the
+# documents table is ``d``.
+_ORPHAN_EXCLUSION_SQL = (
+    " AND (json_extract(d.metadata, '$.lifecycle_state') IS NULL "
+    "OR json_extract(d.metadata, '$.lifecycle_state') != 'orphaned')"
+)
+
 # How long one connection waits on a held write lock before sqlite raises
 # ``database is locked`` (a large item — e.g. a many-thousand-span conversation
 # session — can legitimately hold the writer for seconds).
@@ -419,11 +427,13 @@ class IndexStore:
         self, query: str, *, partition: str | None = None,
         filters: dict[str, Any] | None = None, scope: str | None = None,
         weights: tuple[float, float, float] = _DEFAULT_FTS_WEIGHTS, top_k: int = 50,
+        exclude_orphaned: bool = False,
     ) -> dict[str, float]:
         """FTS5 bm25 lexical search → ``{doc_id: score}`` max-normalized to [0,1].
 
         Higher score = better (same shape as the IR engine's BM25 → ready for RRF).
-        ``weights`` are the (title, body, tags) bm25 column weights.
+        ``weights`` are the (title, body, tags) bm25 column weights. ``exclude_orphaned``
+        drops retained-but-source-gone docs (a live-only view).
         """
         match = _fts_match_expr(query)
         if match is None:
@@ -448,6 +458,8 @@ class IndexStore:
                 params.append(scope + "%")
             sql += meta_sql
             params.extend(meta_params)
+            if exclude_orphaned:
+                sql += _ORPHAN_EXCLUSION_SQL
             sql += " ORDER BY rank LIMIT ?"  # bm25 ascending: more-negative = better
             params.append(top_k)
             rows = conn.execute(sql, params).fetchall()
@@ -464,8 +476,12 @@ class IndexStore:
     def load_documents(
         self, *, partition: str | None = None, doc_ids: list[str] | None = None,
         filters: dict[str, Any] | None = None, scope: str | None = None,
+        exclude_orphaned: bool = False,
     ) -> dict[str, dict[str, Any]]:
-        """Load documents (parsed JSON) keyed by doc_id, with optional filters."""
+        """Load documents (parsed JSON) keyed by doc_id, with optional filters.
+
+        ``exclude_orphaned`` drops retained-but-source-gone docs (a live-only view) — used
+        to build the dense allow-set for a live-only search."""
         meta_sql, meta_params = _metadata_where(filters)
         conn = self._connect()
         try:
@@ -488,6 +504,8 @@ class IndexStore:
                 params.append(scope + "%")
             sql += meta_sql
             params.extend(meta_params)
+            if exclude_orphaned:
+                sql += _ORPHAN_EXCLUSION_SQL
             rows = conn.execute(sql, params).fetchall()
         finally:
             conn.close()
