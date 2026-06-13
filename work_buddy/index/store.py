@@ -349,6 +349,63 @@ class IndexStore:
         finally:
             conn.close()
 
+    # -- retention -------------------------------------------------------
+    @_write_retry
+    def mark_items_orphaned(self, item_ids: list[str], partition: str) -> int:
+        """Retain items whose source dropped them: stamp ``lifecycle_state="orphaned"`` on
+        their docs and FORGET the change-ledger entry. Docs (FTS + vectors) stay searchable;
+        forgetting the ledger means the next build won't re-detect them as "deleted" (no
+        re-stamp churn), and if the source later restores an item it re-indexes fresh.
+        Returns the number of items affected."""
+        if not item_ids:
+            return 0
+        conn = self._connect()
+        try:
+            n = 0
+            for iid in item_ids:
+                conn.execute(
+                    "UPDATE documents SET metadata = "
+                    "json_set(metadata, '$.lifecycle_state', 'orphaned') "
+                    "WHERE item_id = ? AND partition = ?",
+                    (iid, partition),
+                )
+                conn.execute(
+                    "DELETE FROM indexed_items WHERE item_id = ? AND partition = ?",
+                    (iid, partition),
+                )
+                n += 1
+            conn.commit()
+            return n
+        finally:
+            conn.close()
+
+    @_write_retry
+    def prune_orphans_older_than(self, partition: str, cutoff_ts: float) -> int:
+        """TTL sweep: delete orphaned docs whose ``timestamp`` is older than ``cutoff_ts``
+        (FTS rows cleared explicitly; vectors FK-cascade). Bounds orphan growth under the
+        ``ttl`` retention mode. Returns docs deleted."""
+        conn = self._connect()
+        try:
+            where = (
+                "partition = ? "
+                "AND json_extract(metadata, '$.lifecycle_state') = 'orphaned' "
+                "AND COALESCE(timestamp, 0) < ?"
+            )
+            doc_ids = [
+                r["doc_id"] for r in conn.execute(
+                    f"SELECT doc_id FROM documents WHERE {where}", (partition, cutoff_ts)
+                ).fetchall()
+            ]
+            for did in doc_ids:
+                conn.execute("DELETE FROM doc_fts WHERE doc_id = ?", (did,))
+            cur = conn.execute(
+                f"DELETE FROM documents WHERE {where}", (partition, cutoff_ts)
+            )
+            conn.commit()
+            return cur.rowcount
+        finally:
+            conn.close()
+
     # -- change-detection ledger -----------------------------------------
     def get_indexed_items(self, partition: str) -> dict[str, tuple[float, str]]:
         """``{item_id: (mtime, content_hash)}`` for a partition."""
