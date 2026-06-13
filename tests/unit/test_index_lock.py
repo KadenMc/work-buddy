@@ -113,6 +113,18 @@ def test_refresh_keeps_alive_past_short_stale(tmp_path, monkeypatch):
     assert index_lock.is_locked(target, stale_after_s=2) is True   # heartbeat re-armed it
 
 
+def test_held_lock_auto_heartbeats_past_stale(tmp_path):
+    # A long hold keeps its OWN lock fresh. With a 3s stale window the auto-heartbeat
+    # thread (interval = stale_after_s/3, floored at 1s) re-stamps the lock, so it still
+    # reads locked well past 3s of holding — and is gone (thread stopped, no re-create)
+    # once released.
+    target = tmp_path / "x.db"
+    with index_lock.index_lock(target, stale_after_s=3.0):
+        time.sleep(3.5)  # past the stale window; heartbeat has fired ~3×
+        assert index_lock.is_locked(target, stale_after_s=3.0) is True
+    assert index_lock.is_locked(target, stale_after_s=3.0) is False
+
+
 def test_fresh_empty_lock_is_honored(tmp_path):
     # The sub-ms create→write window: an empty/unparseable but FRESH lock must be
     # honored (someone mid-acquire), not stolen.

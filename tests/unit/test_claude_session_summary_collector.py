@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from freezegun import freeze_time
 
 from tests.unit.conversation_observability_fixtures import (
     assistant_text,
@@ -14,6 +15,20 @@ from tests.unit.conversation_observability_fixtures import (
     write_scenario,
     write_session,
 )
+
+
+# ---------------------------------------------------------------------------
+# Frozen clock — the fixtures below carry fixed timestamps (2026-05-13 .. 2026-05-27)
+# and the collector windows them against "now" (days=7/30). Pin "now" just past the
+# latest fixture so every window is deterministic and no test can expire as the real
+# clock advances. New dated fixtures must sit at or before this anchor.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _frozen_now():
+    with freeze_time("2026-05-28T12:00:00Z"):
+        yield
 
 
 # ---------------------------------------------------------------------------
