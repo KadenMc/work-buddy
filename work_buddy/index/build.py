@@ -1,13 +1,22 @@
 """IndexBuilder — incremental, resumable, locked build of one partition.
 
-Flow (under a per-partition advisory lock):
+Flow (under the DB-wide writer gate + the per-partition advisory lock):
   discover → diff by ``change_key`` (content-hash default, or mtime) → for each
   changed item: delete its old docs, parse, upsert, encode projections (BACKGROUND,
   batched across docs) → prune deleted items → if anything changed, bump the partition
   ``build_version`` and invalidate its resident matrices.
 
+Two advisory locks, both heartbeated for the whole hold:
+- ``<db>.build`` — the DB-wide WRITER GATE. SQLite allows one writer per DB and all
+  partitions share one DB, so builds serialize across partitions AND processes
+  (sidecar refresh jobs, the embedding service's build endpoint, the CLI). The
+  refresh jobs probe this gate read-only and self-skip while any build runs.
+- ``<db>.<partition>`` — the per-partition identity lock (status probes, and the
+  same-partition self-skip message).
+
 Generalizes ``vault_index/indexer.py`` + ``ir/store.build_index`` and adds the advisory
-lock the IR build lacked. Resumable: re-encodes any docs still missing vectors.
+lock the IR build lacked. Resumable: re-encodes any docs still missing vectors, in
+bounded batches so each pass commits durable progress.
 """
 
 from __future__ import annotations
@@ -54,11 +63,23 @@ class IndexBuilder:
             return contextlib.nullcontext()
         try:
             from work_buddy.utils.index_lock import index_lock
-            target = self._store.db_path.parent / f"{self._store.db_path.name}.{self._partition.name}"
-            return index_lock(target)
         except Exception as exc:  # lock infra unavailable → proceed without (best-effort)
             logger.debug("index_lock unavailable (%s); building without a lock", exc)
             return contextlib.nullcontext()
+
+        db = self._store.db_path
+        gate = db.parent / f"{db.name}.build"          # DB-wide writer gate
+        mine = db.parent / f"{db.name}.{self._partition.name}"  # partition identity
+
+        @contextlib.contextmanager
+        def _locks():
+            # Gate first, partition second — a single fixed order, so two builders
+            # can never deadlock holding one each.
+            with index_lock(gate):
+                with index_lock(mine):
+                    yield
+
+        return _locks()
 
     def build(
         self, *, force: bool = False,
@@ -167,26 +188,32 @@ class IndexBuilder:
             rows = [(doc_id, vecs[start:start + count]) for doc_id, start, count in layout]
             self._store.upsert_vectors(proj_name, rows)
 
+    # Docs per encode→write cycle in the vector backfill. Bounds both the write
+    # transaction (a short writer hold, not one giant multi-thousand-row commit)
+    # and the unit of loss: each batch is durable the moment it lands, so an
+    # interrupted backfill resumes from the last batch, not from zero.
+    _ENCODE_MISSING_BATCH = 256
+
     def _encode_missing(self, pname: str, projection: str, spec) -> None:
         work = self._store.docs_missing_vectors(pname, projection)
-        if not work:
-            return
-        flat_texts: list[str] = []
-        layout: list[tuple[str, int, int]] = []
-        for doc_id, text in work:
-            if isinstance(text, list):
-                texts = [t for t in text if t]
-                if not texts:
-                    continue
-                layout.append((doc_id, len(flat_texts), len(texts)))
-                flat_texts.extend(texts)
-            elif text:
-                layout.append((doc_id, len(flat_texts), 1))
-                flat_texts.append(text)
-        if not flat_texts:
-            return
-        vecs = self._encoder.encode_documents(flat_texts, spec.kind, model_key=spec.model_key)
-        if vecs is None:
-            return
-        rows = [(doc_id, vecs[start:start + count]) for doc_id, start, count in layout]
-        self._store.upsert_vectors(projection, rows)
+        for batch_start in range(0, len(work), self._ENCODE_MISSING_BATCH):
+            batch = work[batch_start:batch_start + self._ENCODE_MISSING_BATCH]
+            flat_texts: list[str] = []
+            layout: list[tuple[str, int, int]] = []
+            for doc_id, text in batch:
+                if isinstance(text, list):
+                    texts = [t for t in text if t]
+                    if not texts:
+                        continue
+                    layout.append((doc_id, len(flat_texts), len(texts)))
+                    flat_texts.extend(texts)
+                elif text:
+                    layout.append((doc_id, len(flat_texts), 1))
+                    flat_texts.append(text)
+            if not flat_texts:
+                continue
+            vecs = self._encoder.encode_documents(flat_texts, spec.kind, model_key=spec.model_key)
+            if vecs is None:
+                return  # encoder unavailable — leave the remainder for the next resume
+            rows = [(doc_id, vecs[start:start + count]) for doc_id, start, count in layout]
+            self._store.upsert_vectors(projection, rows)

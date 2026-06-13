@@ -160,6 +160,53 @@ class TestBuild:
         assert b.build()["doc_count"] == 1
 
 
+class TestConcurrencySafety:
+    def test_build_holds_db_gate_and_partition_lock(self, store):
+        # The builder must hold BOTH the DB-wide writer gate and its partition lock
+        # while building (SQLite = one writer per DB; partitions share the DB), and
+        # release both afterwards. Observe mid-build via the partition's discover().
+        db = store.db_path
+        gate = db.parent / f"{db.name}.build.lock"
+        mine = db.parent / f"{db.name}.fake.lock"
+        seen = {}
+
+        class Spy(FakePartition):
+            def discover(self):
+                seen["gate"] = gate.exists()
+                seen["mine"] = mine.exists()
+                return super().discover()
+
+        part = Spy({"i1": {"hash": "h1", "docs": [("a", "alpha", "p")]}})
+        IndexBuilder(
+            store, FakeEncoder(), part,
+            residents=ResidentCacheRegistry(), use_lock=True,
+        ).build()
+        assert seen == {"gate": True, "mine": True}
+        assert not gate.exists() and not mine.exists()  # both released
+
+    def test_encode_missing_writes_in_batches(self, store, monkeypatch):
+        # Backfill must be analyze-a-little-write-a-little: vectors land in bounded
+        # batches (durable progress + short writer holds), never one giant commit.
+        items = {
+            f"i{n}": {"hash": f"h{n}", "docs": [(f"d{n}", f"name{n}", f"text {n}")]}
+            for n in range(5)
+        }
+        part = FakePartition(items)
+        _builder(store, part, encoder=FakeEncoder(down=True)).build()  # docs, no vectors
+        assert store.vector_count("fake", "content") == 0
+
+        monkeypatch.setattr(IndexBuilder, "_ENCODE_MISSING_BATCH", 2)
+        calls: list[int] = []
+        orig = store.upsert_vectors
+        monkeypatch.setattr(
+            store, "upsert_vectors",
+            lambda projection, rows: (calls.append(len(rows)), orig(projection, rows))[1],
+        )
+        _builder(store, part).build()  # unchanged items → pure backfill resume
+        assert store.vector_count("fake", "content") == 5
+        assert calls == [2, 2, 1]  # batched, not one giant write
+
+
 class TestPartitionRegistry:
     def test_lazy_register_and_get(self):
         reg = PartitionRegistry()

@@ -192,3 +192,59 @@ class TestLedgerAndVersion:
         store.upsert_documents([_doc("knowledge:a", name="a")], item_id="i")
         store.upsert_documents([_doc("vault:a", partition="vault", name="a")], item_id="j")
         assert store.partitions() == ["knowledge", "vault"]
+
+
+class TestWriteContention:
+    def test_write_rides_through_transient_lock(self, tmp_path, monkeypatch):
+        # Another connection holds the write lock briefly; the store write must retry
+        # through it and land — not die on the first ``database is locked``.
+        # (sqlite3 connections are thread-bound, so the blocker lives entirely in
+        # its own thread: connect → BEGIN IMMEDIATE → hold → commit.)
+        import sqlite3
+        import threading
+        import time
+
+        from work_buddy.index import store as store_mod
+
+        st = IndexStore(tmp_path / "contend.db", busy_timeout_s=0.1)
+        st.set_meta("warm", "1")  # create the schema before contending
+        monkeypatch.setattr(store_mod, "_WRITE_RETRY_DELAYS_S", (0.1, 0.2, 0.4, 0.8))
+
+        acquired = threading.Event()
+
+        def _hold_write_lock_briefly():
+            conn = sqlite3.connect(str(st.db_path), timeout=5)
+            try:
+                conn.execute("PRAGMA journal_mode=WAL")
+                conn.execute("BEGIN IMMEDIATE")  # take the DB write lock
+                acquired.set()
+                time.sleep(0.4)
+                conn.commit()
+            finally:
+                conn.close()
+
+        blocker = threading.Thread(target=_hold_write_lock_briefly)
+        blocker.start()
+        try:
+            assert acquired.wait(5)
+            st.set_meta("k", "v")  # would raise instantly without the retry
+        finally:
+            blocker.join()
+        assert st.get_meta("k") == "v"
+
+    def test_non_lock_errors_not_retried(self, tmp_path, monkeypatch):
+        # Only contention retries; a real OperationalError surfaces immediately.
+        import sqlite3
+        from work_buddy.index import store as store_mod
+
+        st = IndexStore(tmp_path / "fail.db")
+        slept: list[float] = []
+        monkeypatch.setattr(store_mod.time, "sleep", slept.append)
+
+        def boom(self):
+            raise sqlite3.OperationalError("no such table: nope")
+
+        monkeypatch.setattr(IndexStore, "_connect", boom)
+        with pytest.raises(sqlite3.OperationalError, match="no such table"):
+            st.set_meta("k", "v")
+        assert slept == []  # zero backoff sleeps → no retry happened

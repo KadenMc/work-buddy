@@ -85,3 +85,30 @@ def test_op_self_skips_against_a_real_held_lock(tmp_path, monkeypatch):
         dt = time.time() - t0
     assert out == {"skipped": "build_in_progress", "partition": "summary"}
     assert dt < 5.0  # instant skip, not the 30s blocking acquire
+
+
+def test_op_self_skips_when_any_build_holds_the_db_gate(tmp_path, monkeypatch):
+    """Cross-partition: ANY running build holds the DB-wide writer gate (all partitions
+    share one single-writer SQLite DB), so a refresh of a DIFFERENT partition must skip
+    too — not run into the shared DB and collide."""
+    import time
+    from work_buddy.mcp_server.ops import index_ops
+    from work_buddy.index.config import IndexConfig
+    from work_buddy.utils import index_lock
+
+    cfg = IndexConfig(enabled=True, db_path=tmp_path / "idx.db")
+    monkeypatch.setattr("work_buddy.index.config.load_index_config", lambda *a, **k: cfg)
+
+    def _boom(*a, **k):
+        raise AssertionError("gate failed to skip — op fell through to a real build")
+
+    monkeypatch.setattr("work_buddy.index.partitioned.UnifiedIndex.build", _boom)
+
+    db = cfg.resolved_db_path()
+    gate = db.parent / f"{db.name}.build"  # the DB-wide writer gate (e.g. a vault build)
+    with index_lock.index_lock(gate):
+        t0 = time.time()
+        out = json.loads(index_ops._index_rebuild_dispatch(partition="chrome"))
+        dt = time.time() - t0
+    assert out == {"skipped": "build_in_progress", "partition": "chrome"}
+    assert dt < 5.0

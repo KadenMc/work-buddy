@@ -20,13 +20,22 @@ Tables:
 Thread-safety: a fresh connection per public method (sqlite3 connections aren't
 shareable across threads; the embedding service is multi-threaded). ``CREATE … IF NOT
 EXISTS`` runs each open — cheap and idempotent, matching ``vault_index/store.py``.
+
+Write contention: SQLite allows ONE writer per DB. Builds serialize on a DB-wide
+advisory gate (``build.py``), but writers can still live in different processes
+(sidecar jobs, the embedding service, the CLI), so every write method additionally
+rides through transient ``database is locked`` with a bounded backoff-retry. Each
+write is a small self-contained connect→commit→close transaction, which is what
+makes the retry safe (idempotent INSERT OR REPLACE / DELETE).
 """
 
 from __future__ import annotations
 
+import functools
 import json
 import re
 import sqlite3
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -90,6 +99,49 @@ CREATE VIRTUAL TABLE IF NOT EXISTS doc_fts USING fts5(
 # Default FTS5 bm25() column weights (title > tags > body), overridable per partition.
 _DEFAULT_FTS_WEIGHTS = (3.0, 1.0, 2.0)  # (title, body, tags)
 
+# How long one connection waits on a held write lock before sqlite raises
+# ``database is locked`` (a large item — e.g. a many-thousand-span conversation
+# session — can legitimately hold the writer for seconds).
+_BUSY_TIMEOUT_S = 30.0
+
+# Backoff between write attempts after a locked error. Combined with the busy
+# timeout this rides out a concurrent writer's longest single transaction
+# instead of killing a multi-hour build over one collision.
+_WRITE_RETRY_DELAYS_S = (0.5, 1.0, 2.0, 4.0, 8.0)
+
+
+def _is_locked_error(exc: sqlite3.OperationalError) -> bool:
+    msg = str(exc).lower()
+    return "locked" in msg or "busy" in msg
+
+
+def _write_retry(fn):
+    """Retry a write method through transient lock contention.
+
+    Safe because every write method is one self-contained connect→commit→close
+    transaction of idempotent statements — a failed attempt leaves nothing behind
+    and a repeat converges to the same rows.
+    """
+    @functools.wraps(fn)
+    def wrapper(self, *args, **kwargs):
+        last: sqlite3.OperationalError | None = None
+        for attempt, delay in enumerate((0.0, *_WRITE_RETRY_DELAYS_S)):
+            if delay:
+                time.sleep(delay)
+            try:
+                return fn(self, *args, **kwargs)
+            except sqlite3.OperationalError as exc:
+                if not _is_locked_error(exc):
+                    raise
+                last = exc
+                logger.warning(
+                    "index store: %s contended (%s); attempt %d/%d",
+                    fn.__name__, exc, attempt + 1, 1 + len(_WRITE_RETRY_DELAYS_S),
+                )
+        assert last is not None
+        raise last
+    return wrapper
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -149,9 +201,12 @@ def _metadata_where(filters: dict[str, Any] | None) -> tuple[str, list[Any]]:
 class IndexStore:
     """Connection-per-operation SQLite store for the consolidated index."""
 
-    def __init__(self, db_path: str | Path) -> None:
+    def __init__(
+        self, db_path: str | Path, *, busy_timeout_s: float = _BUSY_TIMEOUT_S
+    ) -> None:
         self._db_path = Path(db_path)
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._busy_timeout_s = busy_timeout_s
 
     @property
     def db_path(self) -> Path:
@@ -159,7 +214,7 @@ class IndexStore:
 
     # -- connection -------------------------------------------------------
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self._db_path), timeout=10)
+        conn = sqlite3.connect(str(self._db_path), timeout=self._busy_timeout_s)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
@@ -167,6 +222,7 @@ class IndexStore:
         return conn
 
     # -- writes -----------------------------------------------------------
+    @_write_retry
     def upsert_documents(self, docs: list[Document], item_id: str = "") -> int:
         """Insert/replace documents (tagged with ``item_id``) and refresh FTS rows.
 
@@ -205,6 +261,7 @@ class IndexStore:
         finally:
             conn.close()
 
+    @_write_retry
     def upsert_vectors(
         self, projection: str, rows: list[tuple[str, "Any"]]
     ) -> int:
@@ -243,6 +300,7 @@ class IndexStore:
         finally:
             conn.close()
 
+    @_write_retry
     def delete_item_docs(self, item_id: str, partition: str | None = None) -> int:
         """Delete all docs for an item (FTS rows + cascaded vectors). Returns rows."""
         conn = self._connect()
@@ -272,6 +330,7 @@ class IndexStore:
         finally:
             conn.close()
 
+    @_write_retry
     def delete_partition(self, partition: str) -> int:
         """Drop an entire partition (FTS + docs + cascaded vectors + ledger)."""
         conn = self._connect()
@@ -303,6 +362,7 @@ class IndexStore:
         finally:
             conn.close()
 
+    @_write_retry
     def mark_item_indexed(
         self, item_id: str, partition: str, *, mtime: float = 0.0,
         content_hash: str = "", doc_count: int = 0,
@@ -330,6 +390,7 @@ class IndexStore:
         finally:
             conn.close()
 
+    @_write_retry
     def set_meta(self, key: str, value: str) -> None:
         conn = self._connect()
         try:
