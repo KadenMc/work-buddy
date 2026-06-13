@@ -1,11 +1,12 @@
-"""Route `context_search` to the consolidated index when its consumer flag is on.
+"""Route an IR-search consumer to the consolidated index when its consumer flag is on.
 
-The consumer-layer bridge from the IR-engine `context_search` op (`context_ops.py`) to
-the consolidated index. Mirrors the knowledge re-point (`knowledge/search.py::
-_search_via_consolidated`): gate on `index.consumers.context_search`, push the request
-down to the matching partition, adapt hits back into the IR result-dict shape so
-`result_format.format_results` renders identically — and on ANY miss return ``None`` so
-the caller falls back to the live IR engine.
+The consumer-layer bridge from the IR-engine search ops (`context_search` in
+`context_ops.py`, and `find`'s drill=False path in `search_ops.py`) to the consolidated
+index. Mirrors the knowledge re-point (`knowledge/search.py::_search_via_consolidated`):
+gate on `index.consumers.<consumer>` (each op passes its own consumer name, so they stage
+independently), push the request down to the matching partition, adapt hits back into the
+IR result-dict shape so the callers render/return them identically — and on ANY miss
+return ``None`` so the caller falls back to the live IR engine.
 
 Deliberately scoped to the unambiguous subset: a SINGLE, named ``source`` (so the
 partition — hence the result's ``source`` tag and its preserved metadata — is known) with
@@ -23,11 +24,11 @@ from work_buddy.logging_config import get_logger
 
 logger = get_logger(__name__)
 
-# index.consumers.<name> gate for this consumer.
+# Default index.consumers.<name> gate (context_search); `find` passes consumer="find".
 CONSUMER = "context_search"
 
-# context_search method tokens → the consolidated index's Query.method. ``substring`` is an
-# exact, no-embedding mode the consolidated index has no equivalent for → it stays on IR.
+# IR method tokens → the consolidated index's Query.method. ``substring`` is an exact,
+# no-embedding mode the consolidated index has no equivalent for → it stays on IR.
 _METHOD_MAP = {"keyword": "lexical", "semantic": "dense"}
 
 _TIMEOUT_S = 30
@@ -69,17 +70,19 @@ def search_context_via_consolidated(
     scope: str | None = None,
     method: str = "keyword,semantic",
     recency: bool | None = None,
+    consumer: str = CONSUMER,
 ) -> list[dict[str, Any]] | None:
     """Try the consolidated index; return IR-shaped results, or ``None`` to use live IR.
 
-    ``None`` (→ caller falls back to the IR engine) on any of: gate off; no ``source`` or
-    a ``scope`` (out of the supported subset); ``substring``/unknown method; the embedding
-    service failing; or zero hits.
+    ``consumer`` selects the ``index.consumers.<consumer>`` gate (e.g. "context_search" or
+    "find"). ``None`` (→ caller falls back to the IR engine) on any of: gate off; no
+    ``source`` or a ``scope`` (out of the supported subset); ``substring``/unknown method;
+    the embedding service failing; or zero hits.
     """
     try:
         from work_buddy.index.config import load_index_config
 
-        if not load_index_config().consumer_enabled(CONSUMER):
+        if not load_index_config().consumer_enabled(consumer):
             return None
     except Exception:  # noqa: BLE001 — never let config errors break search
         return None
@@ -105,7 +108,7 @@ def search_context_via_consolidated(
             timeout_s=_TIMEOUT_S,
         )
     except Exception as exc:  # noqa: BLE001 — IR fallback is the recovery
-        logger.debug("consolidated context_search failed (%s); using IR engine.", exc)
+        logger.debug("consolidated search [%s] failed (%s); using IR engine.", consumer, exc)
         return None
 
     if not hits:
