@@ -106,6 +106,9 @@ def search_context_via_consolidated(
             partitions=[source],
             recency=bool(recency),
             timeout_s=_TIMEOUT_S,
+            # Cold partition → wait once for the background warm and retry, rather than
+            # degrading to the IR engine on the first (lexical-only) pass.
+            warm_retry=True,
         )
     except Exception as exc:  # noqa: BLE001 — IR fallback is the recovery
         logger.debug("consolidated search [%s] failed (%s); using IR engine.", consumer, exc)
