@@ -95,6 +95,15 @@ class TestRouting:
         assert cap["method"] == expected
         assert cap["partitions"] == ["conversation"]
 
+    def test_opts_into_warm_retry(self, monkeypatch):
+        # Cold-start: this consumer must ride out the warming window (wait+retry once)
+        # rather than degrading to the IR engine on the first cold pass.
+        _enable(monkeypatch)
+        cap: dict = {}
+        _fake_index_search(monkeypatch, [_HIT], capture=cap)
+        cc.search_context_via_consolidated("q", source="conversation", method="keyword")
+        assert cap["warm_retry"] is True
+
     def test_service_failure_returns_none(self, monkeypatch):
         _enable(monkeypatch)
 
