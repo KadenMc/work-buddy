@@ -301,6 +301,42 @@ def vault_search(
     return result.get("results")
 
 
+# Cold-load tolerance for the consolidated index, mirroring
+# ``knowledge/index.py::_CONTENT_COLD_LOAD_TIMEOUT_S``. When the service reports a
+# partition ``warming`` (its dense matrix is loading in the background), an opted-in
+# caller waits up to ``_WARM_RETRY_MAX_WAIT_S`` (or the server's ``retry_after_s``),
+# then retries ONCE with ``block_until_warm`` and an extended budget so the retry rides
+# out any remaining load instead of giving up.
+_COLD_LOAD_TIMEOUT_S = 90
+_WARM_RETRY_MAX_WAIT_S = 30.0
+_WARM_RETRY_DEFAULT_WAIT_S = 5.0
+
+
+def _index_request(
+    path: str, payload: dict, *, timeout: int, warm_retry: bool
+) -> dict | None:
+    """POST a consolidated-index query, applying the one-shot warm-retry when opted in.
+
+    Returns the full response dict (``{"results", "warming"?, "retry_after_s"?}``), or
+    ``None`` when the service is unreachable. The three states are kept DISTINCT — this is
+    the whole point of the warming signal: ``None`` means *down* (caller falls back, no
+    retry); a ``warming`` field means *cold* (transient — wait once and retry against the
+    now-warming matrix); neither means the results are final."""
+    result = _request("POST", path, payload, timeout=timeout)
+    if result is None:
+        return None  # service down — NOT a warming condition; do not retry
+    if warm_retry and result.get("warming"):
+        wait_s = result.get("retry_after_s") or _WARM_RETRY_DEFAULT_WAIT_S
+        time.sleep(min(float(wait_s), _WARM_RETRY_MAX_WAIT_S))
+        retry = _request(
+            "POST", path, {**payload, "block_until_warm": True},
+            timeout=max(timeout, _COLD_LOAD_TIMEOUT_S),
+        )
+        if retry is not None:
+            return retry  # the warm (blocking) result supersedes the cold one
+    return result
+
+
 def index_search_many(
     queries: list[str],
     *,
@@ -313,6 +349,7 @@ def index_search_many(
     rrf_k: int | None = None,
     include_orphaned: bool = True,
     timeout_s: int | None = None,
+    warm_retry: bool = False,
 ) -> list[list[dict]] | None:
     """Batched hybrid search over the consolidated index via the embedding service.
 
@@ -338,9 +375,10 @@ def index_search_many(
         payload["rrf_k"] = rrf_k
     if not include_orphaned:
         payload["include_orphaned"] = False
-    result = _request(
-        "POST", "/index/search_many", payload,
+    result = _index_request(
+        "/index/search_many", payload,
         timeout=timeout_s if timeout_s is not None else 60,
+        warm_retry=warm_retry,
     )
     if result is None:
         return None
@@ -359,12 +397,17 @@ def index_search(
     rrf_k: int | None = None,
     include_orphaned: bool = True,
     timeout_s: int | None = None,
+    warm_retry: bool = False,
 ) -> list[dict] | None:
     """Single-query hybrid search over the consolidated index via the embedding service.
 
     The single-query sibling of :func:`index_search_many`. Returns the result-dict list
     (one per hit) scored against the warm resident matrices, or ``None`` when the service
     is unreachable — the caller then degrades to the in-process knowledge path.
+
+    ``warm_retry`` opts into the one-shot cold-start retry: if the service reports the
+    queried partition still ``warming``, wait once and retry against the now-warm matrix
+    (see :func:`_index_request`) rather than degrading on the first, lexical-only pass.
     ``include_orphaned=False`` excludes retained-but-source-gone docs (a live-only view).
     """
     payload: dict[str, Any] = {
@@ -383,9 +426,10 @@ def index_search(
         payload["rrf_k"] = rrf_k
     if not include_orphaned:
         payload["include_orphaned"] = False
-    result = _request(
-        "POST", "/index/search", payload,
+    result = _index_request(
+        "/index/search", payload,
         timeout=timeout_s if timeout_s is not None else 60,
+        warm_retry=warm_retry,
     )
     if result is None:
         return None

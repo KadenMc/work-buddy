@@ -89,6 +89,23 @@ class ResidentCache(Generic[T]):
             logger.info("%s: loaded resident value (version=%s)", self._name, version)
             return self._cached.value
 
+    def get_if_cached(self) -> T | None:
+        """Return the resident value ONLY if already loaded for the current version.
+
+        Never triggers a load — the non-blocking peek the serving path uses to decide
+        "dense now (warm) vs lexical-only + warm-in-background (cold)" without paying the
+        cold-load latency inline. A cached value whose version is stale counts as absent
+        (same correctness rule as :meth:`get`: a stale matrix must never be served)."""
+        try:
+            version = self._version_fn()
+        except Exception:
+            return None
+        with self._lock:
+            if self._cached is not None and self._cached.version == version:
+                self._cached.loaded_at = self._clock()
+                return self._cached.value
+        return None
+
     def invalidate(self) -> None:
         """Drop the cached value (call after a rebuild bumps the version)."""
         with self._lock:

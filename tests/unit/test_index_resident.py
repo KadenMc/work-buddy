@@ -82,6 +82,33 @@ class TestResidentCache:
         cache = ResidentCache(lambda: [1], version_fn=boom)
         assert cache.get() is None
 
+    def test_get_if_cached_never_loads(self):
+        calls = {"n": 0}
+
+        def loader():
+            calls["n"] += 1
+            return [calls["n"]]
+
+        cache = ResidentCache(loader, version_fn=lambda: "v1")
+        assert cache.get_if_cached() is None   # cold → peek does NOT load
+        assert calls["n"] == 0
+        assert cache.get() == [1]              # now load
+        assert cache.get_if_cached() == [1]    # warm → peek serves from RAM
+        assert calls["n"] == 1                 # still only the one load
+
+    def test_get_if_cached_misses_on_stale_version(self):
+        version = {"v": "v1"}
+        cache = ResidentCache(lambda: 1, version_fn=lambda: version["v"])
+        cache.get()
+        version["v"] = "v2"                    # a rebuild bumped the version
+        assert cache.get_if_cached() is None   # stale cached value counts as absent
+
+    def test_get_if_cached_none_after_invalidate(self):
+        cache = ResidentCache(lambda: [1], version_fn=lambda: "v1")
+        cache.get()
+        cache.invalidate()
+        assert cache.get_if_cached() is None
+
 
 class TestResidentCacheRegistry:
     def test_register_and_get(self):

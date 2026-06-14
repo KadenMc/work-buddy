@@ -48,6 +48,7 @@ class IndexPartition:
         configure_partition(partition, cfg)  # apply coverage etc. before build/search
         self._store = store
         self._cfg = cfg
+        self._residents = residents
         self._searcher = HybridSearcher(
             store, encoder, partition=partition.name,
             projection_schema=get_projection_schema(partition), cfg=cfg,
@@ -61,18 +62,40 @@ class IndexPartition:
     def name(self) -> str:
         return self._partition.name
 
-    def search(self, q: Query) -> list[Hit]:
-        return self._searcher.search(q)
+    def search(self, q: Query, *, block_until_warm: bool = True) -> list[Hit]:
+        return self._searcher.search(q, block_until_warm=block_until_warm)
 
     def search_many(
         self, queries: list[str], *, top_k: int = 10, method: str = "hybrid",
         filters: dict | None = None, scope: str | None = None,
         recency: bool = False, rrf_k: int | None = None, include_orphaned: bool = True,
+        block_until_warm: bool = True,
     ) -> list[list[Hit]]:
         return self._searcher.search_many(
             queries, top_k=top_k, method=method, filters=filters,
             scope=scope, recency=recency, rrf_k=rrf_k, include_orphaned=include_orphaned,
+            block_until_warm=block_until_warm,
         )
+
+    def is_warm(self) -> bool:
+        """True iff every dense projection's resident matrix is loaded. Non-blocking —
+        the readiness predicate behind the warming signal, on the serving hot path, so it
+        must stay O(projections) in RAM: ``ResidentCache.is_cached()`` is a pure in-memory
+        check (no DB). A lexical-only partition (no projections) is always warm.
+
+        A projection that legitimately has no vectors never loads, so it reads as "cold"
+        forever — a query against it costs one redundant warm-retry, then degrades
+        gracefully. That benign edge is deliberately accepted over probing vector counts
+        here: the count is a ``COUNT(DISTINCT) JOIN`` across the whole (all-partition)
+        ``doc_vectors`` table — far too heavy to run per query on the readiness path."""
+        schema = get_projection_schema(self._partition)
+        if not schema:
+            return True
+        for proj in schema:
+            cache = self._residents.get(f"{self.name}:{proj}")
+            if cache is None or not cache.is_cached():
+                return False
+        return True
 
     def hydrate(self, hits: list[Hit], **opts) -> list[Any]:
         return hydrate(self._partition, hits, **opts)
@@ -137,6 +160,10 @@ class UnifiedIndex:
     def store(self) -> "IndexStore":
         return self._store
 
+    @property
+    def config(self) -> IndexConfig:
+        return self._config
+
     def available(self) -> list[str]:
         return self._registry.names()
 
@@ -149,7 +176,10 @@ class UnifiedIndex:
             )
         return self._partitions[name]
 
-    def search(self, q: Query, partitions: list[str] | None = None) -> list[Hit]:
+    def search(
+        self, q: Query, partitions: list[str] | None = None, *,
+        block_until_warm: bool = True,
+    ) -> list[Hit]:
         # Default: search the partitions that actually have docs in the store.
         names = partitions if partitions is not None else (
             self._store.partitions() or self.available()
@@ -157,7 +187,7 @@ class UnifiedIndex:
         results: list[list[Hit]] = []
         for name in names:
             try:
-                hits = self.partition(name).search(q)
+                hits = self.partition(name).search(q, block_until_warm=block_until_warm)
             except Exception as exc:  # one partition failing must not kill the query
                 logger.warning("partition %r search failed: %s", name, exc)
                 continue
@@ -174,7 +204,7 @@ class UnifiedIndex:
         self, queries: list[str], partitions: list[str] | None = None, *,
         top_k: int = 10, method: str = "hybrid", filters: dict | None = None,
         scope: str | None = None, recency: bool = False, rrf_k: int | None = None,
-        include_orphaned: bool = True,
+        include_orphaned: bool = True, block_until_warm: bool = True,
     ) -> list[list[Hit]]:
         """Batched federated search — one ``list[Hit]`` per query, in order. Each
         partition is searched once (batched); per query, results federate across
@@ -188,7 +218,7 @@ class UnifiedIndex:
                 res = self.partition(name).search_many(
                     queries, top_k=top_k, method=method, filters=filters,
                     scope=scope, recency=recency, rrf_k=rrf_k,
-                    include_orphaned=include_orphaned,
+                    include_orphaned=include_orphaned, block_until_warm=block_until_warm,
                 )
             except Exception as exc:  # one partition failing must not kill the batch
                 logger.warning("partition %r search_many failed: %s", name, exc)
@@ -205,6 +235,38 @@ class UnifiedIndex:
             else:
                 out.append(MultiQueryFuser.fuse(per_q, k=fk, top_k=top_k))
         return out
+
+    def cold_partitions(self, partitions: list[str] | None = None) -> list[str]:
+        """The requested (or all built) partitions whose dense matrices aren't resident
+        yet — the ``warming`` set. Non-blocking. An unknown/failing partition is treated
+        as warm: we never signal warming for one we can't introspect."""
+        names = partitions if partitions is not None else (
+            self._store.partitions() or self.available()
+        )
+        cold: list[str] = []
+        for name in names:
+            try:
+                if not self.partition(name).is_warm():
+                    cold.append(name)
+            except Exception as exc:  # unknown/unregistered partition → not "warming"
+                logger.debug("cold_partitions: %r introspection failed: %s", name, exc)
+        return cold
+
+    def warm_eta_s(self, partitions: list[str]) -> float:
+        """Rough seconds-to-warm estimate for ``partitions`` from their document counts
+        (the matrix load is ~linear in row count). Feeds the warming signal's
+        ``retry_after_s`` so the client's one-shot retry waits a sensible interval. Uses
+        ``doc_count`` (a partition-indexed ``COUNT`` on ``documents``), NOT ``vector_count``
+        (a ``COUNT(DISTINCT) JOIN`` over the whole ``doc_vectors`` table) — the cheap proxy
+        is plenty for an ETA and keeps the warming response fast."""
+        total = 0
+        for name in partitions:
+            try:
+                total += self._store.doc_count(name)
+            except Exception:  # pragma: no cover — defensive
+                continue
+        eta = total / _WARM_LOAD_ROWS_PER_S
+        return float(min(max(eta, _WARM_ETA_FLOOR_S), _WARM_ETA_CAP_S))
 
     def hydrate(self, partition: str, hits: list[Hit], **opts) -> list[Any]:
         return self.partition(partition).hydrate(hits, **opts)
@@ -240,12 +302,26 @@ class UnifiedIndex:
         return IndexStatus(name=self.NAME, partitions=parts, size_on_disk_mb=size_mb)
 
 
+# Resident-matrix load throughput used to estimate warm ETA (rows/sec). Derived from the
+# observed vault load (~88k rows in ~27s ≈ 3300/s); rounded down so retry_after_s does not
+# under-shoot. Floor/cap keep the client's one-shot wait sane on tiny / huge partitions.
+_WARM_LOAD_ROWS_PER_S = 3000.0
+_WARM_ETA_FLOOR_S = 2.0
+_WARM_ETA_CAP_S = 60.0
+
+# Singleflight guard for on-demand warming: concurrent cold queries for the same partition
+# must spawn ONE background warm, not N (the thundering-herd mitigation).
+_warming_in_flight: set[str] = set()
+_warming_lock = threading.Lock()
+
+
 def prewarm_resident_matrices(
     config: IndexConfig | None = None,
     *,
+    only: list[str] | None = None,
     index_factory: Callable[[IndexConfig], UnifiedIndex] | None = None,
 ) -> dict[str, int]:
-    """Load every BUILT partition's resident dense matrices into RAM up front.
+    """Load BUILT partitions' resident dense matrices into RAM up front.
 
     The cold-start fix. Dense matrices are lazy-loaded on a partition's first search,
     so after the embedding service restarts the first search of a large partition pays
@@ -260,9 +336,11 @@ def prewarm_resident_matrices(
     GPU. Idempotent with the idle evictor. Never raises — a failing partition is logged
     and skipped.
 
-    ``index_factory`` is an injection seam for tests; production passes the resolved
-    config and lets it construct a :class:`UnifiedIndex` bound to the process-global
-    resident registry (the one the serving path reads).
+    ``only`` restricts warming to the named subset (still intersected with what's actually
+    built) — used by the on-demand warm a cold query triggers; ``None`` warms every built
+    partition (the startup path). ``index_factory`` is an injection seam for tests;
+    production passes the resolved config and lets it construct a :class:`UnifiedIndex`
+    bound to the process-global resident registry (the one the serving path reads).
 
     Returns ``{partition: n_projections_warmed}``.
     """
@@ -272,8 +350,11 @@ def prewarm_resident_matrices(
         return {}
     ui = index_factory(cfg) if index_factory is not None else UnifiedIndex(config=cfg)
     built = ui.store.partitions()
+    if only is not None:
+        wanted = set(only)
+        built = [p for p in built if p in wanted]
     if not built:
-        logger.debug("index prewarm: no built partitions; skipping")
+        logger.debug("index prewarm: no built partitions to warm; skipping")
         return {}
     # Warm the largest partitions first. Their matrices take longest to load (vault is
     # ~88k×768) and are exactly the ones whose cold-load penalty motivates prewarm, so a
@@ -303,6 +384,7 @@ def prewarm_resident_matrices(
 def start_prewarm(
     config: IndexConfig | None = None,
     *,
+    only: list[str] | None = None,
     index_factory: Callable[[IndexConfig], UnifiedIndex] | None = None,
     name: str = "index-prewarm",
 ) -> threading.Thread:
@@ -314,10 +396,43 @@ def start_prewarm(
     """
     def _run() -> None:
         try:
-            prewarm_resident_matrices(config, index_factory=index_factory)
+            prewarm_resident_matrices(config, only=only, index_factory=index_factory)
         except Exception as exc:  # pragma: no cover — prewarm already guards per-partition
             logger.warning("index prewarm thread failed: %s", exc)
 
     t = threading.Thread(target=_run, name=name, daemon=True)
+    t.start()
+    return t
+
+
+def warm_partitions_async(
+    cold: list[str],
+    *,
+    config: IndexConfig | None = None,
+    index_factory: Callable[[IndexConfig], UnifiedIndex] | None = None,
+) -> threading.Thread | None:
+    """Warm ``cold`` partitions in a background daemon, singleflighted per partition.
+
+    The on-demand counterpart to startup prewarm: a query that finds a partition cold
+    triggers this so the matrix is resident by the caller's one-shot retry. The
+    singleflight guard (``_warming_in_flight``) ensures concurrent cold queries for the
+    same partition spawn ONE warm, not one each. Returns the thread, or ``None`` when
+    every requested partition already has a warm in flight (nothing to do)."""
+    with _warming_lock:
+        todo = [p for p in cold if p not in _warming_in_flight]
+        _warming_in_flight.update(todo)
+    if not todo:
+        return None
+
+    def _run() -> None:
+        try:
+            prewarm_resident_matrices(config, only=todo, index_factory=index_factory)
+        except Exception as exc:  # pragma: no cover — prewarm already guards per-partition
+            logger.warning("index on-demand warm failed for %s: %s", todo, exc)
+        finally:
+            with _warming_lock:
+                _warming_in_flight.difference_update(todo)
+
+    t = threading.Thread(target=_run, name="index-warm-on-demand", daemon=True)
     t.start()
     return t

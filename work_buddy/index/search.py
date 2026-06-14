@@ -92,19 +92,22 @@ class HybridSearcher:
                 )
         return warmed
 
-    def search(self, q: Query) -> list[Hit]:
+    def search(self, q: Query, *, block_until_warm: bool = True) -> list[Hit]:
         if not (q.text or "").strip():
             return []
         exclude_orphaned = not q.include_orphaned
         allowed = self._allowed_ids(q.filters, q.scope, exclude_orphaned)
-        mats = self._encode_projections([q.text], q.method)
+        # Non-blocking mode: encode only the warm projections — a cold one's dense vector
+        # would be unused, so encoding it would needlessly block on the query model.
+        projset = None if block_until_warm else self._warm_projections()
+        mats = self._encode_projections([q.text], q.method, projset)
         qvec_by_proj = {
             p: (m[0] if m is not None and len(m) else None) for p, m in mats.items()
         }
         return self._score_one(
             q.text, qvec_by_proj, allowed=allowed, filters=q.filters, scope=q.scope,
             method=q.method, recency=q.recency, rrf_k=q.rrf_k, top_k=q.top_k,
-            exclude_orphaned=exclude_orphaned,
+            block_until_warm=block_until_warm, exclude_orphaned=exclude_orphaned,
         )
 
     def search_many(
@@ -118,6 +121,7 @@ class HybridSearcher:
         recency: bool = False,
         rrf_k: int | None = None,
         include_orphaned: bool = True,
+        block_until_warm: bool = True,
     ) -> list[list[Hit]]:
         """Batched search: ONE query-encode round-trip per projection for ALL queries,
         then per-query lexical + score + fuse against the (shared, resident) matrices.
@@ -129,7 +133,8 @@ class HybridSearcher:
         texts = [str(t or "") for t in queries]
         exclude_orphaned = not include_orphaned
         allowed = self._allowed_ids(filters, scope, exclude_orphaned)
-        mats = self._encode_projections(texts, method)  # batch-encode once per projection
+        projset = None if block_until_warm else self._warm_projections()
+        mats = self._encode_projections(texts, method, projset)  # batch-encode (warm-only if non-blocking)
         out: list[list[Hit]] = []
         for i, text in enumerate(texts):
             if not text.strip():
@@ -142,7 +147,7 @@ class HybridSearcher:
             out.append(self._score_one(
                 text, qvec_by_proj, allowed=allowed, filters=filters, scope=scope,
                 method=method, recency=recency, rrf_k=rrf_k, top_k=top_k,
-                exclude_orphaned=exclude_orphaned,
+                block_until_warm=block_until_warm, exclude_orphaned=exclude_orphaned,
             ))
         return out
 
@@ -160,15 +165,36 @@ class HybridSearcher:
             ).keys())
         return None
 
-    def _encode_projections(self, texts: list[str], method: str) -> "dict[str, object | None]":
-        """Batch query-encode all ``texts`` per projection → ``{proj: (N,D) | None}``.
+    def _warm_projections(self) -> "set[str]":
+        """Projection names whose resident matrix is loaded RIGHT NOW (non-blocking peek).
+
+        The serving path encodes only these in non-blocking mode: a cold projection's dense
+        vector would be unused (its matrix is skipped), so encoding it would block on the
+        query model for nothing — exactly the cost the warming path exists to avoid."""
+        warm: set[str] = set()
+        for proj in self._schema:
+            try:
+                if self._resident(proj).get_if_cached() is not None:
+                    warm.add(proj)
+            except Exception:  # pragma: no cover — peek is best-effort
+                pass
+        return warm
+
+    def _encode_projections(
+        self, texts: list[str], method: str, projections: "set[str] | None" = None,
+    ) -> "dict[str, object | None]":
+        """Batch query-encode ``texts`` per projection → ``{proj: (N,D) | None}``.
         A projection degrades to ``None`` (skipped for every query) when the encoder is
-        unavailable OR returns the wrong row count (mirrors the knowledge batch guard)."""
+        unavailable OR returns the wrong row count (mirrors the knowledge batch guard).
+        ``projections`` restricts encoding to a subset (the warm ones, in non-blocking
+        mode); ``None`` encodes the full schema."""
         mats: dict[str, object | None] = {}
         if method not in ("hybrid", "dense"):
             return mats
         n = len(texts)
         for proj_name, spec in self._schema.items():
+            if projections is not None and proj_name not in projections:
+                continue  # cold projection in non-blocking mode → no encode (lexical-only)
             qvecs = self._encoder.encode_query(texts, spec.kind, model_key=spec.model_key)
             mats[proj_name] = qvecs if (qvecs is not None and len(qvecs) == n) else None
         return mats
@@ -176,11 +202,17 @@ class HybridSearcher:
     def _score_one(
         self, text: str, qvec_by_proj: "dict[str, object | None]", *,
         allowed: "set[str] | None", filters, scope, method: str, recency: bool,
-        rrf_k: int | None, top_k: int, exclude_orphaned: bool = False,
+        rrf_k: int | None, top_k: int, block_until_warm: bool = True,
+        exclude_orphaned: bool = False,
     ) -> list[Hit]:
         """Score ONE query given its pre-encoded per-projection vectors. The retrieval
         body shared by ``search`` (1 query) and ``search_many`` (N) — lexical + dense
-        fuse + hydrate + recency, identical to the original single-query path."""
+        fuse + hydrate + recency, identical to the original single-query path.
+
+        ``block_until_warm`` controls the dense side's cold behavior: True (default) loads
+        a not-yet-resident matrix inline (the original blocking semantics); False peeks
+        without loading, so a cold projection degrades to lexical-only for this query and
+        the matrix is left to a background warm — the non-blocking serving mode."""
         if not (text or "").strip():
             return []
         pool = max(top_k * self._cfg.pool_multiplier, self._cfg.pool_floor)
@@ -205,9 +237,10 @@ class HybridSearcher:
                 qvec = qvec_by_proj.get(proj_name)
                 if qvec is None:
                     continue  # service down for this signal, or no encode → degrade
-                loaded = self._resident(proj_name).get()
+                resident = self._resident(proj_name)
+                loaded = resident.get() if block_until_warm else resident.get_if_cached()
                 if loaded is None:
-                    continue  # no vectors for this projection yet
+                    continue  # no vectors, or cold matrix in non-blocking mode → lexical-only
                 matrix, doc_ids = loaded
                 scores = score_dense(qvec, matrix, doc_ids, pool=spec.pool)
                 if allowed is not None:

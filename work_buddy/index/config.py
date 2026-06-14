@@ -133,6 +133,12 @@ class IndexConfig:
     # ``enabled`` AND its gate are true — so each consumer can be staged live
     # independently even while ``enabled`` is already on for another. Default off.
     consumers: dict[str, bool] = field(default_factory=dict)
+    # Kill-switch for the cold-start warming signal. When true (default), a search that
+    # finds a partition's dense matrix not-yet-resident serves lexical-only for it,
+    # triggers a background warm, and returns a ``warming`` marker so the client can wait
+    # once and retry against the now-warm matrix. False reverts to the inline blocking
+    # load (the matrix loads within the request, which can exceed the request timeout).
+    warming_signal: bool = True
 
     def partition(self, name: str) -> PartitionConfig:
         """Config for ``name`` — falls back to defaults for an unlisted partition."""
@@ -187,4 +193,5 @@ def load_index_config(cfg: dict[str, Any] | None = None) -> IndexConfig:
         db_path=db_path,
         partitions=partitions,
         consumers=consumers,
+        warming_signal=bool(raw.get("warming_signal", True)),
     )
