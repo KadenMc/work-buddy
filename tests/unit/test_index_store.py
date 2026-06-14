@@ -46,6 +46,20 @@ class TestUpsertAndLexical:
         hits = store.search_lexical("alpha")
         assert hits["knowledge:a"] >= hits["knowledge:b"]
 
+    def test_fts_weights_override_reweights_body(self, store):
+        # Same corpus as the default-weights test: 'alpha' in a's title, b's body.
+        store.upsert_documents([
+            _doc("knowledge:a", name="alpha", body="filler text"),
+            _doc("knowledge:b", name="other", body="alpha appears in body only"),
+        ], item_id="seed")
+        # Body-favoring weights (title=1, body=3) invert the default title bias:
+        # the body match (b) now ranks at least as high as the title match (a).
+        hits = store.search_lexical("alpha", weights=(1.0, 3.0, 1.0))
+        assert hits["knowledge:b"] >= hits["knowledge:a"]
+        # weights=None falls back to the store default (title-leaning) — unchanged.
+        default_hits = store.search_lexical("alpha", weights=None)
+        assert default_hits["knowledge:a"] >= default_hits["knowledge:b"]
+
     def test_partition_scoping(self, store):
         store.upsert_documents([_doc("knowledge:a", name="shared term")], item_id="i1")
         store.upsert_documents(

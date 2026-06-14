@@ -29,6 +29,11 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
+# A per-source-capped chunk is only displaced by a DIFFERENT source scoring at least this
+# fraction of it — so a dominant doc with no competitive alternative keeps its slots, while
+# flooding is broken up when real alternatives exist. See PartitionConfig.max_per_source.
+_CAP_COMPETITIVE_RATIO = 0.9
+
 
 class HybridSearcher:
     """Per-partition hybrid searcher.
@@ -199,6 +204,52 @@ class HybridSearcher:
             mats[proj_name] = qvecs if (qvecs is not None and len(qvecs) == n) else None
         return mats
 
+    def _cap_by_source(
+        self, ranked: list[str], scores: "dict[str, float]",
+        docs: "dict[str, dict]", cap: int, top_k: int,
+    ) -> list[str]:
+        """Select up to top_k from score-sorted ``ranked``, allowing at most ``cap`` hits
+        per source document (grouped by ``metadata.source_path``).
+
+        Score-guarded: an over-cap chunk is deferred only when a DIFFERENT under-cap source
+        still scores >= ``_CAP_COMPETITIVE_RATIO`` of it — so a dominant doc with no
+        competitive alternative keeps its slots (single-doc queries are preserved), while a
+        flooding doc is capped when real alternatives exist. Deferred chunks backfill the
+        tail if the cap would otherwise return fewer than top_k.
+        """
+        def src(did: str) -> str:
+            return (docs.get(did, {}).get("metadata") or {}).get("source_path") or did
+
+        want = max(top_k, 1)
+        chosen: list[str] = []
+        chosen_set: set[str] = set()
+        counts: dict[str, int] = {}
+        deferred: list[str] = []
+        for did in ranked:
+            if len(chosen) >= want:
+                deferred.append(did)
+                continue
+            s = src(did)
+            if counts.get(s, 0) < cap:
+                chosen.append(did); chosen_set.add(did); counts[s] = counts.get(s, 0) + 1
+                continue
+            # over-cap: keep it unless a competitive different-source candidate remains
+            thr = _CAP_COMPETITIVE_RATIO * scores[did]
+            has_alt = any(
+                d2 != did and d2 not in chosen_set
+                and counts.get(src(d2), 0) < cap and scores[d2] >= thr
+                for d2 in ranked
+            )
+            if has_alt:
+                deferred.append(did)
+            else:
+                chosen.append(did); chosen_set.add(did); counts[s] = counts.get(s, 0) + 1
+        for did in deferred:  # backfill (already score-ordered) to fill top_k
+            if len(chosen) >= want:
+                break
+            chosen.append(did)
+        return chosen[:want]
+
     def _score_one(
         self, text: str, qvec_by_proj: "dict[str, object | None]", *,
         allowed: "set[str] | None", filters, scope, method: str, recency: bool,
@@ -225,7 +276,7 @@ class HybridSearcher:
         if method in ("hybrid", "lexical"):
             lex = self._store.search_lexical(
                 text, partition=self._partition, filters=filters, scope=scope, top_k=pool,
-                exclude_orphaned=exclude_orphaned,
+                weights=self._cfg.fts_weights, exclude_orphaned=exclude_orphaned,
             )
             if lex:
                 rankings.append(lex)
@@ -258,12 +309,23 @@ class HybridSearcher:
         else:
             fused = rrf_fuse(rankings, k=rrf_k_val)
 
-        top_ids = sorted(fused, key=fused.get, reverse=True)[: max(top_k, 1)]
-        if not top_ids:
+        ranked = sorted(fused, key=fused.get, reverse=True)
+        if not ranked:
             return []
 
-        # --- Hydrate (display + metadata + timestamp) ---
-        docs = self._store.load_documents(partition=self._partition, doc_ids=top_ids)
+        # --- Per-source diversity cap (opt-in) + hydrate (display + metadata + timestamp) ---
+        # When capping, hydrate the whole candidate pool (the cap needs each candidate's
+        # source_path) and reuse it for the final hits — no second load.
+        if self._cfg.max_per_source:
+            docs = self._store.load_documents(partition=self._partition, doc_ids=ranked)
+            top_ids = self._cap_by_source(
+                ranked, fused, docs, self._cfg.max_per_source, top_k,
+            )
+        else:
+            top_ids = ranked[: max(top_k, 1)]
+            docs = self._store.load_documents(partition=self._partition, doc_ids=top_ids)
+        if not top_ids:
+            return []
         hits: list[Hit] = []
         timestamps: dict[str, float | None] = {}
         for did in top_ids:

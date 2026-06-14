@@ -279,7 +279,16 @@ index:
     task_note:
       coverage: all
     # conversation: { rrf_k: 60, recency: true, coverage: all }
-    # vault:        { rrf_k: 60, coverage: all }
+    # vault chunks one file into many heading-sections, and its "title" field is a navigational
+    # heading breadcrumb rather than content. Two knobs keep results relevant + diverse:
+    #   fts_weights — de-rank the breadcrumb below the body so lexical search ranks on content
+    #     (the title-leaning default would over-rank breadcrumb matches and drift off-topic).
+    #   max_per_source — cap per-document hits so one chunk-heavy file can't flood the top-k
+    #     (score-guarded: a genuinely dominant doc with no competitive alternative keeps slots).
+    vault:
+      rrf_k: 60
+      fts_weights: [1.0, 2.0, 1.0]   # (title, body, tags) bm25 column weights
+      max_per_source: 2
   # Per-CONSUMER routing gates: a consumer routes to the consolidated index only when
   # `enabled` AND its gate are both true. Lets each consumer be staged live independently
   # even while `enabled` is already on for another (the dev-document scan reads `enabled`

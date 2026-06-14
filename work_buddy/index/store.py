@@ -483,19 +483,20 @@ class IndexStore:
     def search_lexical(
         self, query: str, *, partition: str | None = None,
         filters: dict[str, Any] | None = None, scope: str | None = None,
-        weights: tuple[float, float, float] = _DEFAULT_FTS_WEIGHTS, top_k: int = 50,
+        weights: tuple[float, float, float] | None = None, top_k: int = 50,
         exclude_orphaned: bool = False,
     ) -> dict[str, float]:
         """FTS5 bm25 lexical search → ``{doc_id: score}`` max-normalized to [0,1].
 
         Higher score = better (same shape as the IR engine's BM25 → ready for RRF).
-        ``weights`` are the (title, body, tags) bm25 column weights. ``exclude_orphaned``
-        drops retained-but-source-gone docs (a live-only view).
+        ``weights`` are the (title, body, tags) bm25 column weights; ``None`` uses
+        ``_DEFAULT_FTS_WEIGHTS``. ``exclude_orphaned`` drops retained-but-source-gone
+        docs (a live-only view).
         """
         match = _fts_match_expr(query)
         if match is None:
             return {}
-        wt, wb, wg = weights
+        wt, wb, wg = weights or _DEFAULT_FTS_WEIGHTS
         meta_sql, meta_params = _metadata_where(filters)
         conn = self._connect()
         try:
