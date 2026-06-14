@@ -54,7 +54,9 @@ class IndexPartition:
             projection_schema=get_projection_schema(partition), cfg=cfg,
             residents=residents,
         )
-        self._builder = IndexBuilder(store, encoder, partition, residents=residents)
+        self._builder = IndexBuilder(
+            store, encoder, partition, cfg=cfg, residents=residents
+        )
 
     @property
     def name(self) -> str:
@@ -66,12 +68,12 @@ class IndexPartition:
     def search_many(
         self, queries: list[str], *, top_k: int = 10, method: str = "hybrid",
         filters: dict | None = None, scope: str | None = None,
-        recency: bool = False, rrf_k: int | None = None,
+        recency: bool = False, rrf_k: int | None = None, include_orphaned: bool = True,
         block_until_warm: bool = True,
     ) -> list[list[Hit]]:
         return self._searcher.search_many(
             queries, top_k=top_k, method=method, filters=filters,
-            scope=scope, recency=recency, rrf_k=rrf_k,
+            scope=scope, recency=recency, rrf_k=rrf_k, include_orphaned=include_orphaned,
             block_until_warm=block_until_warm,
         )
 
@@ -202,7 +204,7 @@ class UnifiedIndex:
         self, queries: list[str], partitions: list[str] | None = None, *,
         top_k: int = 10, method: str = "hybrid", filters: dict | None = None,
         scope: str | None = None, recency: bool = False, rrf_k: int | None = None,
-        block_until_warm: bool = True,
+        include_orphaned: bool = True, block_until_warm: bool = True,
     ) -> list[list[Hit]]:
         """Batched federated search — one ``list[Hit]`` per query, in order. Each
         partition is searched once (batched); per query, results federate across
@@ -216,7 +218,7 @@ class UnifiedIndex:
                 res = self.partition(name).search_many(
                     queries, top_k=top_k, method=method, filters=filters,
                     scope=scope, recency=recency, rrf_k=rrf_k,
-                    block_until_warm=block_until_warm,
+                    include_orphaned=include_orphaned, block_until_warm=block_until_warm,
                 )
             except Exception as exc:  # one partition failing must not kill the batch
                 logger.warning("partition %r search_many failed: %s", name, exc)

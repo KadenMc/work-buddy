@@ -95,7 +95,8 @@ class HybridSearcher:
     def search(self, q: Query, *, block_until_warm: bool = True) -> list[Hit]:
         if not (q.text or "").strip():
             return []
-        allowed = self._allowed_ids(q.filters, q.scope)
+        exclude_orphaned = not q.include_orphaned
+        allowed = self._allowed_ids(q.filters, q.scope, exclude_orphaned)
         # Non-blocking mode: encode only the warm projections — a cold one's dense vector
         # would be unused, so encoding it would needlessly block on the query model.
         projset = None if block_until_warm else self._warm_projections()
@@ -106,7 +107,7 @@ class HybridSearcher:
         return self._score_one(
             q.text, qvec_by_proj, allowed=allowed, filters=q.filters, scope=q.scope,
             method=q.method, recency=q.recency, rrf_k=q.rrf_k, top_k=q.top_k,
-            block_until_warm=block_until_warm,
+            block_until_warm=block_until_warm, exclude_orphaned=exclude_orphaned,
         )
 
     def search_many(
@@ -119,6 +120,7 @@ class HybridSearcher:
         scope: str | None = None,
         recency: bool = False,
         rrf_k: int | None = None,
+        include_orphaned: bool = True,
         block_until_warm: bool = True,
     ) -> list[list[Hit]]:
         """Batched search: ONE query-encode round-trip per projection for ALL queries,
@@ -129,7 +131,8 @@ class HybridSearcher:
         dev-document scan relies on). Returns one ``list[Hit]`` per input query, in order.
         """
         texts = [str(t or "") for t in queries]
-        allowed = self._allowed_ids(filters, scope)
+        exclude_orphaned = not include_orphaned
+        allowed = self._allowed_ids(filters, scope, exclude_orphaned)
         projset = None if block_until_warm else self._warm_projections()
         mats = self._encode_projections(texts, method, projset)  # batch-encode (warm-only if non-blocking)
         out: list[list[Hit]] = []
@@ -144,18 +147,21 @@ class HybridSearcher:
             out.append(self._score_one(
                 text, qvec_by_proj, allowed=allowed, filters=filters, scope=scope,
                 method=method, recency=recency, rrf_k=rrf_k, top_k=top_k,
-                block_until_warm=block_until_warm,
+                block_until_warm=block_until_warm, exclude_orphaned=exclude_orphaned,
             ))
         return out
 
     # -- internals shared by search + search_many ------------------------------
 
-    def _allowed_ids(self, filters, scope) -> "set[str] | None":
+    def _allowed_ids(self, filters, scope, exclude_orphaned=False) -> "set[str] | None":
         """Allowed-id set for filter-then-rank on the dense side (lexical filters in SQL).
-        Independent of query text, so it's computed once per (filters, scope)."""
-        if filters or scope:
+        Independent of query text, so it's computed once per (filters, scope, orphan-mode).
+        Returns a set whenever ANY restriction applies — including orphan exclusion alone,
+        so the dense path honors a live-only view even with no other filters."""
+        if filters or scope or exclude_orphaned:
             return set(self._store.load_documents(
                 partition=self._partition, filters=filters, scope=scope,
+                exclude_orphaned=exclude_orphaned,
             ).keys())
         return None
 
@@ -197,6 +203,7 @@ class HybridSearcher:
         self, text: str, qvec_by_proj: "dict[str, object | None]", *,
         allowed: "set[str] | None", filters, scope, method: str, recency: bool,
         rrf_k: int | None, top_k: int, block_until_warm: bool = True,
+        exclude_orphaned: bool = False,
     ) -> list[Hit]:
         """Score ONE query given its pre-encoded per-projection vectors. The retrieval
         body shared by ``search`` (1 query) and ``search_many`` (N) — lexical + dense
@@ -218,6 +225,7 @@ class HybridSearcher:
         if method in ("hybrid", "lexical"):
             lex = self._store.search_lexical(
                 text, partition=self._partition, filters=filters, scope=scope, top_k=pool,
+                exclude_orphaned=exclude_orphaned,
             )
             if lex:
                 rankings.append(lex)

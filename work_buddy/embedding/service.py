@@ -929,6 +929,7 @@ def index_search_endpoint():
             scope=data.get("scope"),
             recency=data.get("recency", False),
             rrf_k=data.get("rrf_k"),
+            include_orphaned=data.get("include_orphaned", True),
         )
         ui = UnifiedIndex()
         partitions = data.get("partitions")
@@ -985,6 +986,7 @@ def index_search_many_endpoint():
             scope=data.get("scope"),
             recency=data.get("recency", False),
             rrf_k=data.get("rrf_k"),
+            include_orphaned=data.get("include_orphaned", True),
             block_until_warm=block,
         )
         results = [
