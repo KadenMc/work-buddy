@@ -21,13 +21,18 @@ def summary_search_op(
     *,
     scope: str | None = None,
     top_k: int = 8,
-    drill: bool = True,
+    drill: bool = False,
     drill_top_k: int = 5,
     drill_per_item_top_k: int = 5,
     method: str = "keyword,semantic",
 ) -> dict[str, Any]:
     """Coarse-to-fine summary search — surfaces matching summary nodes and
-    optionally drills into their source items for raw-span hits."""
+    optionally drills into their source items for raw-span hits.
+
+    ``drill`` defaults to False: a locating pass returns only the compact
+    ranking layer (``stage1_hits`` + ``candidate_items``, ~10 KB). Pass
+    ``drill=True`` to also inline raw spans for the top items — opt into the
+    larger payload once you've picked a candidate."""
     from work_buddy.summarization.funnel import summary_search
 
     return summary_search(

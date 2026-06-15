@@ -30,5 +30,5 @@ Both delegate to `work_buddy.ir.search.search` for the actual ranking. Sources a
 ## Related
 
 - [context_search](context/context_search) — markdown twin
-- [summary_search](summarization/summary_search) — pre-find compatible alias, `find(source="summary", drill=True)` equivalent
+- [summary_search](summarization/summary_search) — pre-find compatible alias, the `find(source="summary")` funnel (defaults `drill=False`)
 - [drill_tree](disclosure/drill_tree) — canonical tree navigation (walk's underlying op)
