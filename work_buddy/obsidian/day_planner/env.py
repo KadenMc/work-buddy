@@ -121,10 +121,17 @@ def get_todays_plan(journal_path: str) -> dict[str, Any]:
     - unscheduled: list[dict] — entries without time ranges
     - entry_count: int — total entries (scheduled + unscheduled)
     """
-    content = bridge.read_file(journal_path)
+    # read_file_raw distinguishes genuine absence (404 → None) from a transient
+    # bridge failure (raises a typed ObsidianError). A transient must NOT be
+    # reported as "no plan" — a caller could act on found=False (skip display,
+    # or regenerate from scratch). We let the typed exception propagate: the
+    # @bridge_retry-wrapped day_planner capability replays it, and the
+    # best-effort collector catches it and renders "unavailable".
+    content = bridge.read_file_raw(journal_path)
     if content is None:
+        # 404 — the journal genuinely has no file for this date.
         return {"found": False, "entries": [], "unscheduled": [],
-                "entry_count": 0, "reason": "Could not read journal file"}
+                "entry_count": 0, "reason": "No journal file for this date"}
 
     bounds = _get_section_bounds(content)
     if bounds is None:
@@ -187,9 +194,13 @@ def write_plan(
 
     Returns dict with success, entries_written, journal_path.
     """
-    content = bridge.read_file(journal_path)
+    # read_file_raw raises a typed ObsidianError on a transient (propagates to
+    # the @bridge_retry-wrapped day_planner capability, which replays the
+    # write); 404 → None means the journal file genuinely does not exist.
+    content = bridge.read_file_raw(journal_path)
     if content is None:
-        return {"success": False, "reason": "Could not read journal file"}
+        return {"success": False,
+                "reason": f"Journal file does not exist: {journal_path}"}
 
     bounds = _get_section_bounds(content)
     if bounds is None:

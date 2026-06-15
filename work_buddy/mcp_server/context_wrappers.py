@@ -1858,6 +1858,9 @@ def day_planner(
 
         if action == "generate_and_write":
             from work_buddy.obsidian.day_planner import trigger_resync, write_plan
+            # write_plan raises a typed ObsidianError on a transient bridge
+            # failure; it propagates to this capability's @bridge_retry, so we
+            # don't need to inspect the nested write_result for transience.
             write_result = write_plan(journal_path, entries)
             trigger_resync()
             result["write_result"] = write_result

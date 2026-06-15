@@ -343,12 +343,24 @@ def reconcile_tasks() -> dict[str, Any]:
     total_actions = (
         len(report.created) + len(report.deleted) + sum(resolved.values())
     )
+    # The mass-delete circuit-breaker tripping is NOT a healthy sync — a
+    # tripped pass does no deletes, so total_actions could be 0 and read as
+    # "ok". Force a visible "degraded" status (the breaker also logs at ERROR)
+    # so the trip can't hide behind a green badge. (Stamping the freshness row
+    # itself requires a task_sync_status schema column — tracked follow-up.)
+    if report.aborted_bulk_delete is not None:
+        status = "degraded"
+    elif total_actions == 0:
+        status = "ok"
+    else:
+        status = "synced"
     return {
-        "status": "ok" if total_actions == 0 else "synced",
+        "status": status,
         "created": len(report.created),
         "deleted": len(report.deleted),
         **resolved,
         "tag_rows_written": getattr(db, "_last_tag_rows", 0),
         "errors": report.errors,
         "warnings": report.warnings,
+        "aborted_bulk_delete": report.aborted_bulk_delete,
     }

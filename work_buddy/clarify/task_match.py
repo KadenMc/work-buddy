@@ -119,7 +119,11 @@ def _read_task_texts() -> dict[str, str]:
     """Read task descriptions from master task list, keyed by task ID."""
     from work_buddy.obsidian import bridge
 
-    content = bridge.read_file("tasks/master-task-list.md")
+    # read_file_raw raises a typed ObsidianError on a transient bridge failure
+    # (propagates to the triage / drill-down caller) rather than returning {} =
+    # "no tasks" — a false-empty here risks proposing a duplicate of an
+    # existing task. A genuine 404 / empty file → falsy → {} (really no tasks).
+    content = bridge.read_file_raw("tasks/master-task-list.md")
     if not content:
         return {}
 
