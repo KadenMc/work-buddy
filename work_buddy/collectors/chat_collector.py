@@ -462,6 +462,42 @@ def _format_duration(start: str | None, end: str | None) -> str:
         return ""
 
 
+def _parse_iso(value: str | None) -> datetime | None:
+    """Parse an ISO timestamp (tolerating a trailing ``Z``) to a datetime."""
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return None
+
+
+def _format_session_when(
+    start: str | None, end: str | None, fallback: str = ""
+) -> str:
+    """Render when a conversation actually happened, from its message timestamps.
+
+    Prefers the conversation's own ``start_time``/``end_time`` (the
+    authoritative "when did this happen" signal, parsed from the message
+    timestamps) over the JSONL file mtime. The file mtime drifts to the
+    present whenever a session is resumed or rewritten, so it does NOT
+    reflect when the conversation took place — rendering it as the session
+    time silently misdates resumed sessions by days. Falls back to
+    *fallback* only when neither timestamp is available.
+    """
+    s = _parse_iso(start)
+    e = _parse_iso(end)
+    if s and e:
+        if s.date() == e.date():
+            return f"{s.strftime('%Y-%m-%d %H:%M')}–{e.strftime('%H:%M')}"
+        return f"{s.strftime('%Y-%m-%d %H:%M')}–{e.strftime('%Y-%m-%d %H:%M')}"
+    if s:
+        return s.strftime("%Y-%m-%d %H:%M")
+    if e:
+        return e.strftime("%Y-%m-%d %H:%M")
+    return fallback
+
+
 def _get_claude_code_conversations(
     days: int,
     project_filter: list[str] | None = None,
@@ -617,8 +653,13 @@ def collect(cfg: dict[str, Any]) -> str:
             lines.append(
                 f"### [{conv['project_name']}] {conv.get('full_session_id', conv['session_id'])}"
             )
+            session_when = _format_session_when(
+                conv.get("start_time"),
+                conv.get("end_time"),
+                fallback=conv.get("modified", ""),
+            )
             stats_parts = [
-                conv['modified'],
+                session_when,
                 f"{conv['user_msg_count']} user msgs",
                 f"{conv.get('assistant_text_count', conv.get('assistant_msg_count', 0))} responses",
                 f"{conv['tool_use_count']} tool calls",
@@ -793,7 +834,11 @@ def search_conversations(
         lines.append(f"### [{conv.get('project_name', '?')}] {conv.get('full_session_id', conv['session_id'])}")
 
         stats = [
-            conv.get("modified", ""),
+            _format_session_when(
+                conv.get("start_time"),
+                conv.get("end_time"),
+                fallback=conv.get("modified", ""),
+            ),
             f"{conv['user_msg_count']} user msgs",
             f"{conv['tool_use_count']} tool calls",
         ]
