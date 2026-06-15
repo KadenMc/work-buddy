@@ -39,9 +39,10 @@ context bundle stays robust during cold-start.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+
+from work_buddy.timefmt import format_session_span
 
 
 def collect(cfg: dict[str, Any]) -> str:
@@ -231,25 +232,5 @@ def _empty(reason: str) -> str:
 
 
 def _format_time_range(start: str | None, end: str | None) -> str:
-    """Render a compact ``HH:MM–HH:MM`` (same-day) or date range."""
-    if not start and not end:
-        return "—"
-    s = _parse_iso(start) if start else None
-    e = _parse_iso(end) if end else None
-
-    if s and e:
-        if s.date() == e.date():
-            return f"{s.strftime('%Y-%m-%d %H:%M')}–{e.strftime('%H:%M')}"
-        return f"{s.strftime('%Y-%m-%d %H:%M')}–{e.strftime('%Y-%m-%d %H:%M')}"
-    if s:
-        return s.strftime("%Y-%m-%d %H:%M")
-    if e:
-        return e.strftime("%Y-%m-%d %H:%M")
-    return "—"
-
-
-def _parse_iso(value: str) -> datetime | None:
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except (ValueError, AttributeError):
-        return None
+    """Render a compact ``HH:MM–HH:MM`` (same-day) or date range, in local time."""
+    return format_session_span(start, end, empty="—")

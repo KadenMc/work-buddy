@@ -6,6 +6,12 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from work_buddy.timefmt import (
+    format_session_span,
+    parse_iso,
+    to_local_naive,
+)
+
 # Cache for parsed JSONL summaries — avoids re-parsing unchanged files.
 # Bump _CACHE_VERSION when the parsed schema changes (new fields, renamed keys, etc.)
 # to auto-invalidate stale entries.
@@ -72,6 +78,22 @@ def _cache_key(path: Path) -> str:
         return ""
 
 
+def _parse_specstory_filename_ts(ts_str: str) -> datetime | None:
+    """Parse a SpecStory filename timestamp (e.g. ``2026-04-01_15-44-10Z``).
+
+    Returns a UTC-aware datetime, or ``None`` if the stamp doesn't parse. The
+    trailing ``Z`` is optional; a stamp without an offset is assumed UTC.
+    """
+    norm = ts_str.replace("Z", "+0000")
+    for fmt in ("%Y-%m-%d_%H-%M-%S%z", "%Y-%m-%d_%H-%M-%S"):
+        try:
+            dt = datetime.strptime(norm, fmt)
+            return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+    return None
+
+
 def _find_specstory_files(
     repos_root: Path, days: int, since: str | None = None, until: str | None = None,
 ) -> list[dict]:
@@ -103,12 +125,22 @@ def _find_specstory_files(
             # Format: 2026-04-01_15-44-10Z-agent-instructions-modification.md
             name = md_file.stem
             ts_match = re.match(r"(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}Z?)-(.*)", name)
+            real_dt = None
             if ts_match:
-                ts_str = ts_match.group(1)
+                real_dt = _parse_specstory_filename_ts(ts_match.group(1))
                 title_slug = ts_match.group(2).replace("-", " ").title()
             else:
-                ts_str = mtime.strftime("%Y-%m-%d %H:%M")
                 title_slug = name
+
+            # Window on the session's real time (the filename stamp) when we
+            # have it; the mtime check above is only a cheap pre-filter. Fall
+            # back to the mtime decision (already passed) when the filename has
+            # no parseable timestamp, so undated sessions aren't dropped.
+            if real_dt is not None and (real_dt < cutoff or real_dt > upper):
+                continue
+
+            # Display the session's real local time, falling back to mtime.
+            ts_str = to_local_naive(real_dt or mtime).strftime("%Y-%m-%d %H:%M")
 
             # Read first user message as preview
             preview = _extract_preview(md_file)
@@ -229,8 +261,8 @@ def _parse_claude_history(
     # Convert to list and sort by start time
     result = sorted(sessions.values(), key=lambda x: x["start"], reverse=True)
     for s in result:
-        s["start_str"] = datetime.fromtimestamp(
-            s["start"] / 1000, tz=timezone.utc
+        s["start_str"] = to_local_naive(
+            datetime.fromtimestamp(s["start"] / 1000, tz=timezone.utc)
         ).strftime("%Y-%m-%d %H:%M")
         # Extract project name from path
         if s["project"]:
@@ -462,20 +494,10 @@ def _format_duration(start: str | None, end: str | None) -> str:
         return ""
 
 
-def _parse_iso(value: str | None) -> datetime | None:
-    """Parse an ISO timestamp (tolerating a trailing ``Z``) to a datetime."""
-    if not value:
-        return None
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except (ValueError, AttributeError):
-        return None
-
-
 def _format_session_when(
     start: str | None, end: str | None, fallback: str = ""
 ) -> str:
-    """Render when a conversation actually happened, from its message timestamps.
+    """Render when a conversation actually happened, in the user's local time.
 
     Prefers the conversation's own ``start_time``/``end_time`` (the
     authoritative "when did this happen" signal, parsed from the message
@@ -485,17 +507,7 @@ def _format_session_when(
     time silently misdates resumed sessions by days. Falls back to
     *fallback* only when neither timestamp is available.
     """
-    s = _parse_iso(start)
-    e = _parse_iso(end)
-    if s and e:
-        if s.date() == e.date():
-            return f"{s.strftime('%Y-%m-%d %H:%M')}–{e.strftime('%H:%M')}"
-        return f"{s.strftime('%Y-%m-%d %H:%M')}–{e.strftime('%Y-%m-%d %H:%M')}"
-    if s:
-        return s.strftime("%Y-%m-%d %H:%M")
-    if e:
-        return e.strftime("%Y-%m-%d %H:%M")
-    return fallback
+    return format_session_span(start, end, fallback=fallback)
 
 
 def _get_claude_code_conversations(
@@ -573,6 +585,21 @@ def _get_claude_code_conversations(
             if not summary:
                 continue
 
+            # Window on the conversation's real time, not the file mtime. A
+            # resumed session has a present-day mtime but old message
+            # timestamps; the mtime check above is only a cheap pre-filter to
+            # avoid parsing every JSONL. Include the session iff its real
+            # [start, end] overlaps the requested window. Fall back to the
+            # mtime decision (already passed above) when neither timestamp
+            # parses, so timestamp-less sessions aren't silently dropped.
+            s_real = parse_iso(summary.get("start_time"))
+            e_real = parse_iso(summary.get("end_time"))
+            if s_real or e_real:
+                s_eff = s_real or e_real
+                e_eff = e_real or s_real
+                if e_eff < cutoff or s_eff > upper:
+                    continue
+
             # Derive readable project name from slug
             # Slugs look like "C--path-to-repos-work-buddy"
             # The slug is the path with separators replaced by dashes
@@ -582,7 +609,7 @@ def _get_claude_code_conversations(
             summary_copy = dict(summary)
             summary_copy["project_slug"] = project_slug
             summary_copy["project_name"] = project_name
-            summary_copy["modified"] = mtime.strftime("%Y-%m-%d %H:%M")
+            summary_copy["modified"] = to_local_naive(mtime).strftime("%Y-%m-%d %H:%M")
             results.append(summary_copy)
 
     if cache_dirty:
@@ -624,7 +651,7 @@ def collect(cfg: dict[str, Any]) -> str:
     lines = [
         "# Chat Summary",
         "",
-        f"*Collected: {now.strftime('%Y-%m-%d %H:%M UTC')}*",
+        f"*Collected: {to_local_naive(now).strftime('%Y-%m-%d %H:%M')}*",
         "",
     ]
 

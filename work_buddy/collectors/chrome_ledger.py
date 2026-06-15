@@ -29,6 +29,7 @@ from urllib.parse import urlparse
 
 from work_buddy.config import load_config
 from work_buddy.paths import resolve
+from work_buddy.timefmt import to_local_naive
 
 logger = logging.getLogger(__name__)
 
@@ -133,8 +134,7 @@ def _parse_ts(iso_str: str) -> datetime:
     """Parse an ISO timestamp string to a naive datetime."""
     dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
     if dt.tzinfo is not None:
-        from work_buddy.config import USER_TZ
-        dt = dt.astimezone(USER_TZ).replace(tzinfo=None)
+        dt = to_local_naive(dt)
     return dt
 
 

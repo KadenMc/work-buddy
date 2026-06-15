@@ -5,6 +5,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from work_buddy.timefmt import to_local_naive
+
 
 def _run_git(repo_path: Path, *args: str, timeout: int = 15) -> str:
     """Run a git command in a repo and return stdout, or empty string on failure."""
@@ -195,7 +197,7 @@ def collect(
     lines = [
         "# Git Summary",
         "",
-        f"*Collected: {now.strftime('%Y-%m-%d %H:%M UTC')}{mode_note}",
+        f"*Collected: {to_local_naive(now).strftime('%Y-%m-%d %H:%M')}{mode_note}",
         f"*Scanned {len(repos)} repositories under `{repos_root}`*",
         "",
     ]

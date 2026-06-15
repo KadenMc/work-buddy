@@ -23,6 +23,7 @@ from work_buddy.journal import (
     journal_path_for_date,
     user_now,
 )
+from work_buddy.timefmt import to_local_naive
 
 
 # ---------------------------------------------------------------------------
@@ -316,8 +317,7 @@ def _collect_git_events(
                 # Convert to user's local timezone, then strip tzinfo for
                 # consistency with journal entries (which are naive local times)
                 if ts.tzinfo is not None:
-                    from work_buddy.config import USER_TZ
-                    ts = ts.astimezone(USER_TZ).replace(tzinfo=None)
+                    ts = to_local_naive(ts)
             except ValueError:
                 continue
 
@@ -355,8 +355,7 @@ def _collect_chat_events(
         try:
             ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
             if ts.tzinfo is not None:
-                from work_buddy.config import USER_TZ
-                ts = ts.astimezone(USER_TZ).replace(tzinfo=None)
+                ts = to_local_naive(ts)
         except ValueError:
             continue
 
@@ -437,8 +436,7 @@ def _collect_vault_events(
                 ts_utc = datetime.strptime(f["modified"], "%Y-%m-%d %H:%M").replace(
                     tzinfo=_tz.utc
                 )
-                from work_buddy.config import USER_TZ
-                ts = ts_utc.astimezone(USER_TZ).replace(tzinfo=None)
+                ts = to_local_naive(ts_utc)
             except (ValueError, KeyError):
                 continue
             files.append({"path": f["path"].replace("\\", "/"), "ts": ts})
@@ -495,8 +493,7 @@ def _get_ledger_recent(
                     f["last_modified"].replace("Z", "+00:00")
                 )
                 if ts.tzinfo is not None:
-                    from work_buddy.config import USER_TZ
-                    ts = ts.astimezone(USER_TZ).replace(tzinfo=None)
+                    ts = to_local_naive(ts)
             except (ValueError, KeyError):
                 continue
             files.append({"path": f["path"], "ts": ts})
@@ -534,8 +531,7 @@ def _collect_chrome_events(
         try:
             ts = datetime.fromisoformat(time_str.replace("Z", "+00:00"))
             if ts.tzinfo is not None:
-                from work_buddy.config import USER_TZ
-                ts = ts.astimezone(USER_TZ).replace(tzinfo=None)
+                ts = to_local_naive(ts)
         except ValueError:
             continue
 
@@ -567,8 +563,7 @@ def _collect_chrome_events(
         try:
             ts = datetime.fromisoformat(first_seen.replace("Z", "+00:00"))
             if ts.tzinfo is not None:
-                from work_buddy.config import USER_TZ
-                ts = ts.astimezone(USER_TZ).replace(tzinfo=None)
+                ts = to_local_naive(ts)
         except ValueError:
             continue
 
