@@ -15,9 +15,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import time as _time
 import uuid
+import weakref
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path, PurePath
 from typing import Any
@@ -54,8 +56,18 @@ def _conductor():
 # Mcp-Session-Id header on streamable-http transport).  When an agent calls
 # wb_init(session_id), we store the mapping so all subsequent tool calls
 # from that MCP session can be routed to the correct agent session directory.
-
-_SESSION_REGISTRY: dict[int, str] = {}  # id(ctx.session) → agent_session_id
+#
+# Keyed on the ``ctx.session`` OBJECT (a ``WeakKeyDictionary``), not on
+# ``id(ctx.session)``. A Python ``id()`` is a memory address that CPython
+# reuses once the original object is garbage-collected: a dict keyed on the
+# integer never evicts dead entries, so a reconnected connection whose new
+# session object lands at a freed address would resolve to the *previous*
+# session's agent id — and route that agent's consent grants to a DB it never
+# queries. Keying on object identity makes a reused address a distinct key,
+# and the weak reference auto-evicts the entry when the session object dies,
+# so an unregistered connection resolves to None (forcing a clean re-init)
+# rather than inheriting a stale mapping.
+_SESSION_REGISTRY: "weakref.WeakKeyDictionary[Any, str]" = weakref.WeakKeyDictionary()
 
 
 def _register_session(ctx: Context, agent_session_id: str) -> None:
@@ -66,7 +78,7 @@ def _register_session(ctx: Context, agent_session_id: str) -> None:
     post-restart reconnect point, so this is where the conductor sweeps
     any workflow-consent blanket orphaned by a server restart.
     """
-    _SESSION_REGISTRY[id(ctx.session)] = agent_session_id
+    _SESSION_REGISTRY[ctx.session] = agent_session_id
     # Re-couple workflow-consent lifetime to the run record: if a server
     # restart wiped the in-memory run map but left this session's blanket
     # grant live in consent.db, revoke it now. No-op when a run is active
@@ -76,7 +88,7 @@ def _register_session(ctx: Context, agent_session_id: str) -> None:
 
 def _resolve_session(ctx: Context) -> str | None:
     """Look up the agent session ID for this MCP connection."""
-    return _SESSION_REGISTRY.get(id(ctx.session))
+    return _SESSION_REGISTRY.get(ctx.session)
 
 
 def _auto_init_from_header(ctx: Context) -> str | None:
@@ -457,6 +469,39 @@ def _check_missing_consent(
         return missing
 
 
+def _warn_consent_session_fallback(
+    where: str, label: str, fell_back_to: str | None,
+) -> None:
+    """Record that a consent request was created with no agent session id.
+
+    The agent session must be resolved at request-creation time so an
+    out-of-band approval (Telegram callback, Obsidian-modal click after the
+    in-window poll exits) routes the grant to the agent's ``consent.db`` via
+    ``callback_session_id``. With no session resolved, the request falls back
+    to the bootstrap session (or None), and the grant lands in a DB the agent
+    never queries — the wrong-session-routing failure mode. Production
+    dispatch always passes the agent session id; reaching this path means a
+    direct Python caller bypassed the gateway, or a connection slipped through
+    uninitialized. Emit a warning + audit line so the mis-route is greppable
+    instead of silent.
+    """
+    target = (fell_back_to or "")[:8] or "none"
+    logging.getLogger(__name__).warning(
+        "consent request for %s (%s) created with no agent session id — "
+        "callback routed to fallback session %s; out-of-band grants may "
+        "miss the agent's DB",
+        label, where, target,
+    )
+    try:
+        from work_buddy.consent import _audit_log
+        _audit_log(
+            "CONSENT_SESSION_FALLBACK", label,
+            f"where={where} | fallback_session={target}",
+        )
+    except Exception:  # pragma: no cover — observability must never block
+        pass
+
+
 def _auto_consent_request(
     operations: list[str],
     capability_name: str,
@@ -529,6 +574,10 @@ def _auto_consent_request(
     # never sees it. Every wb_run dispatch site passes the agent's
     # session id explicitly; the env fallback exists for back-compat.
     callback_session_id = session_id or os.environ.get("WORK_BUDDY_SESSION_ID")
+    if session_id is None:
+        _warn_consent_session_fallback(
+            "_auto_consent_request", capability_name, callback_session_id,
+        )
 
     # Create the consent request (uses notification substrate)
     record = create_consent_request(
@@ -856,6 +905,16 @@ def _auto_workflow_consent_request(
     from work_buddy.notifications.dispatcher import SurfaceDispatcher
 
     consent_ops, max_risk = _collect_workflow_consent_ops(entry)
+
+    if session_id is None:
+        # No agent session resolved — the resulting notification's
+        # callback_session_id is None, so an out-of-band approval routes
+        # the class grant to the cache's default (bootstrap) DB instead of
+        # the agent's. Production dispatch always passes the agent session;
+        # surface the gap rather than mis-route silently.
+        _warn_consent_session_fallback(
+            "_auto_workflow_consent_request", f"workflow:{workflow_name}", None,
+        )
 
     # Low-weight workflow auto-bypass. If no consent-gated ops were
     # declared, OR all declared ops are low-risk, the workflow runs
