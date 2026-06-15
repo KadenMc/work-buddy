@@ -67,7 +67,7 @@ Universal structured IR search. Two return modes:
 
 - Use **`find`** when downstream code needs the structured hits — chaining into `walk` / `drill_tree`, computing aggregates, building UI lists, etc.
 - Use **`context_search`** when you want markdown-formatted output for human eyeballs. Same underlying engine.
-- Use **`summary_search`** for back-compat code that depends on the funnel-shape return; it's now an alias for `find(source="summary", drill=True)`.
+- Use **`summary_search`** for back-compat code that depends on the funnel-shape return; it's the `source="summary"` form of `find` and, like `find`, defaults `drill=False` (pass `drill=True` for the raw-span drill).
 - Use **`walk`** (or **`drill_tree`**) when you already have a node id and want to navigate by id, not by query.
 
 ## Sources with drill handlers today

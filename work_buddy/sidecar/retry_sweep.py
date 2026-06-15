@@ -457,6 +457,18 @@ class RetrySweep:
                 _principal_ctx = consent_principal(replay_of(originating))
             else:
                 _principal_ctx = nullcontext()
+            # Keep an idempotency-bearing replay (e.g. task_create) on its
+            # original note identity even when the consent wait outran the
+            # cache TTL, so the sweep heals rather than orphaning a note.
+            try:
+                from work_buddy.obsidian.tasks.mutations import (
+                    refresh_idempotency_on_replay,
+                )
+                refresh_idempotency_on_replay(
+                    record.get("name"), record.get("params", {}),
+                )
+            except Exception:  # pragma: no cover — never break a sweep
+                pass
             try:
                 with _principal_ctx:
                     result = entry.callable(**record.get("params", {}))

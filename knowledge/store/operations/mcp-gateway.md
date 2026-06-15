@@ -37,6 +37,7 @@ Before writing Python to interact with the vault, tasks, journal, contracts, mem
 | `mcp__work-buddy__wb_advance(workflow_run_id, result)` | Step through multi-step workflows. |
 | `mcp__work-buddy__wb_status()` | Check system health and active workflows. |
 | `mcp__work-buddy__wb_step_result(workflow_run_id, step_id, key?)` | Retrieve full step result data elided by the visibility system. |
+| `mcp__work-buddy__wb_capability_result(operation_id, key?)` | Retrieve the full result of a capability call that the dispatch-size cap truncated to a marker — whole, or a single top-level key. The capability-side twin of `wb_step_result`. |
 
 These are **MCP tools**, not Python functions. They appear in the tool list as `mcp__work-buddy__wb_run`, `mcp__work-buddy__wb_search`, etc. **Always prefer these MCP tools over Python code** for work-buddy capabilities and workflows.
 
@@ -94,6 +95,8 @@ Every `wb_run` dispatch runs under an operation-appropriate wall-time budget and
 - **`obsidian_bridge_circuit_open`** (also `bridge_circuit_open: true`) — Obsidian-bridge capabilities are governed by a shared circuit breaker. After repeated bridge failures the breaker opens and sheds further bridge calls instead of hammering a struggling bridge; it admits a probe again automatically after a short cooldown. If you see this, the bridge is unhealthy (check that Obsidian is running with the bridge plugin enabled) — wait and retry rather than looping immediately.
 
 A capability whose bridge is momentarily down fails fast per call with an actionable error and recovers the instant the bridge returns — no registry reload needed.
+
+An oversized result is also handled gracefully rather than blowing the response: when a capability's serialized result exceeds the inline cap (`gateway.result_cap_chars`, default 100000), `wb_run` returns a `{_truncated, _size, _keys, _operation_id, _message}` marker instead of the full payload. The full result is preserved in the operation record — retrieve it whole or by a single top-level key with `wb_capability_result(operation_id[, key])`. This is the capability-dispatch analogue of the workflow visibility system's `wb_step_result`.
 
 ## Gaps are OK to surface
 

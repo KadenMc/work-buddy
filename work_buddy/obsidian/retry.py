@@ -602,6 +602,17 @@ def obsidian_retry(
             else:
                 _orig_token = None
                 _principal_ctx = nullcontext()
+            # Keep an idempotency-bearing replay (e.g. task_create) on its
+            # original note identity, even if the consent wait outran the
+            # cache TTL — otherwise a successful replay mints a fresh UUID
+            # and orphans the first note.
+            try:
+                from work_buddy.obsidian.tasks.mutations import (
+                    refresh_idempotency_on_replay,
+                )
+                refresh_idempotency_on_replay(capability, params)
+            except Exception:  # pragma: no cover — never break a replay
+                pass
             try:
                 with _principal_ctx:
                     result = entry.callable(**params)

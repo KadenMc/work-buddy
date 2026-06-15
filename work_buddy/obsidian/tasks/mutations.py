@@ -493,6 +493,67 @@ def _record_idempotent_create_ids(
         )
 
 
+def _refresh_idempotent_create_ids(key: str) -> bool:
+    """Bump an existing cache entry's ``ts``, IGNORING expiry.
+
+    Keeps an in-flight retry chain's (task_id, note_uuid) alive past the
+    wall-clock TTL. Reads the raw file regardless of age (entries are never
+    pruned), re-stamps it, and rewrites. No-op (returns False) when no file
+    exists or it's unreadable; returns True on a successful refresh.
+    """
+    cache_path = _idempotency_dir() / f"{key}.json"
+    if not cache_path.exists():
+        return False
+    try:
+        cached = json.loads(cache_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    cached["ts"] = time.time()
+    try:
+        cache_path.write_text(json.dumps(cached), encoding="utf-8")
+    except OSError:  # pragma: no cover — defensive
+        return False
+    return True
+
+
+def refresh_idempotency_on_replay(
+    capability_name: str,
+    params: dict[str, Any],
+) -> None:
+    """Retry-path hook: keep a ``task_create`` replay on one note identity.
+
+    The idempotency cache maps a params-hash to the minted (task_id,
+    note_uuid) so retries reuse the same note instead of orphaning. It
+    carries a wall-clock TTL (``_IDEMPOTENCY_TTL_SEC``) so genuinely
+    distinct identical-text creates eventually get fresh IDs — but a
+    consent-gated create can wait on human approval longer than the TTL,
+    after which the successful replay would miss the cache and mint a NEW
+    UUID, orphaning the first note. Re-stamping the entry (ignoring expiry)
+    right before each replay keeps the active chain on one UUID. The TTL is
+    preserved for the distinct-create case (only an active retry re-stamps).
+
+    No-op for non-idempotent capabilities and when no entry exists.
+    """
+    if capability_name != "task_create":
+        return
+    try:
+        namespace_tags = _normalize_tags(
+            params.get("tags") or [], validate_project_slugs=False,
+        )
+        key = _create_task_idempotency_key(
+            task_text=params.get("task_text", ""),
+            summary=params.get("summary"),
+            project=params.get("project"),
+            urgency=params.get("urgency", "medium"),
+            contract=params.get("contract"),
+            tags=namespace_tags,
+            due_date=params.get("due_date"),
+        )
+        _refresh_idempotent_create_ids(key)
+    except Exception as exc:  # pragma: no cover — never break a replay
+        logger.debug("refresh_idempotency_on_replay failed: %s", exc)
+
+
 def _prepend_task(content: str, task_line: str) -> str:
     """Insert a new task line at the top of the task list.
 

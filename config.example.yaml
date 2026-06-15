@@ -8,6 +8,13 @@ repos_root: "/path/to/your/repos"
 bundles_dir: "bundles"
 timezone: "America/New_York"   # IANA timezone for your location
 
+# MCP gateway behavior.
+gateway:
+  # Max serialized chars of a capability result returned inline over MCP.
+  # Oversized results are replaced with a truncation marker; the full result
+  # stays in the operation record and is retrievable via wb_capability_result.
+  result_cap_chars: 100000
+
 # Centralized data directory for artifacts, runtime state, caches, and databases.
 # Relative to repo root, or absolute path. Default: ".data" (dot-prefixed —
 # Obsidian treats dot-prefixed directories as system folders and skips them,

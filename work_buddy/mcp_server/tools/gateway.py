@@ -252,6 +252,122 @@ def _load_operation(op_id: str) -> dict[str, Any] | None:
 
 
 # ---------------------------------------------------------------------------
+# Capability-result size cap
+# ---------------------------------------------------------------------------
+# The workflow conductor caps *step* results (``_cap_step_results`` /
+# ``_STEP_RESULT_CAP``) so a large intermediate doesn't blow the MCP
+# response. Direct ``wb_run`` capability results had no equivalent budget,
+# so an oversized return (e.g. ``summary_search`` drilling verbose sessions)
+# could exceed the client's token ceiling. The full result is already
+# persisted to the operation record by ``_complete_operation``; the cap only
+# governs what is returned inline, and ``wb_capability_result`` retrieves the
+# rest on demand. Mirrors the conductor's ``_truncated/_size/_keys/_message``
+# shape so agents see one familiar truncation contract everywhere.
+
+_DEFAULT_CAPABILITY_RESULT_CAP = 100_000
+
+
+def _capability_result_cap() -> int:
+    """Resolve the inline result-size cap (chars) from config, default 100k."""
+    try:
+        from work_buddy.config import load_config
+        val = load_config().get("gateway", {}).get("result_cap_chars")
+        if isinstance(val, int) and val > 0:
+            return val
+    except Exception:  # pragma: no cover — config read is best-effort
+        pass
+    return _DEFAULT_CAPABILITY_RESULT_CAP
+
+
+def _cap_capability_result(result: Any, op_id: str) -> Any:
+    """Truncate an oversized capability result for inline MCP return.
+
+    The full result is in the op record; an agent recovers it via
+    ``wb_capability_result(operation_id, key)``. Returns the result
+    unchanged when it fits, otherwise a truncation marker.
+    """
+    cap = _capability_result_cap()
+    try:
+        serialized = json.dumps(result, default=_json_default)
+    except (TypeError, ValueError):
+        serialized = str(result)
+    if len(serialized) <= cap:
+        return result
+    return {
+        "_truncated": True,
+        "_size": len(serialized),
+        "_keys": list(result.keys()) if isinstance(result, dict) else None,
+        "_operation_id": op_id,
+        "_message": (
+            f"Result too large ({len(serialized):,} chars, cap {cap:,}). "
+            f"Full result is in the operation record. Retrieve it with "
+            f"wb_capability_result(operation_id='{op_id}'[, key=...])."
+        ),
+    }
+
+
+def _capability_result_payload(op_id: str, key: str | None) -> dict[str, Any]:
+    """Backing logic for the ``wb_capability_result`` tool.
+
+    Reads the op record's stored result and returns it whole or by key,
+    applying the same per-value cap so a single huge key can't blow the
+    response either. Mirrors ``conductor.get_step_result``.
+    """
+    record = _load_operation(op_id)
+    if record is None:
+        return {"error": f"Operation {op_id!r} not found"}
+    result = record.get("result")
+    if result is None:
+        return {
+            "error": f"No result stored for operation {op_id!r}",
+            "status": record.get("status"),
+            "op_error": record.get("error"),
+        }
+    cap = _capability_result_cap()
+    if key is not None:
+        if isinstance(result, dict) and key in result:
+            value = result[key]
+            try:
+                serialized = json.dumps(value, default=_json_default)
+            except (TypeError, ValueError):
+                serialized = str(value)
+            if len(serialized) > cap:
+                return {
+                    "operation_id": op_id,
+                    "key": key,
+                    "_truncated": True,
+                    "_size": len(serialized),
+                    "_message": (
+                        f"Key value too large ({len(serialized):,} chars). "
+                        f"Full data is in the operation record on disk."
+                    ),
+                }
+            return {"operation_id": op_id, "key": key, "value": value}
+        available = list(result.keys()) if isinstance(result, dict) else []
+        return {
+            "error": f"Key {key!r} not found in result",
+            "operation_id": op_id,
+            "available_keys": available,
+        }
+    try:
+        serialized = json.dumps(result, default=_json_default)
+    except (TypeError, ValueError):
+        serialized = str(result)
+    if len(serialized) > cap:
+        return {
+            "operation_id": op_id,
+            "_truncated": True,
+            "_size": len(serialized),
+            "_keys": list(result.keys()) if isinstance(result, dict) else None,
+            "_message": (
+                f"Result too large ({len(serialized):,} chars). Use the 'key' "
+                f"parameter to retrieve specific keys."
+            ),
+        }
+    return {"operation_id": op_id, "result": result}
+
+
+# ---------------------------------------------------------------------------
 # Auto-consent: pre-flight + fallback consent handling
 # ---------------------------------------------------------------------------
 # Instead of returning ConsentRequired errors for the agent to orchestrate
@@ -2207,7 +2323,9 @@ def register_tools(mcp: FastMCP) -> None:
         success_response: dict[str, Any] = {
             "type": "result",
             "capability": capability,
-            "result": result,
+            # Full result is persisted in the op record above; cap the inline
+            # copy so an oversized return can't blow the MCP token ceiling.
+            "result": _cap_capability_result(result, op_id),
             "operation_id": op_id,
         }
         if _registry_auto_recovered:
@@ -2309,6 +2427,32 @@ def register_tools(mcp: FastMCP) -> None:
             return gate
         result = await asyncio.to_thread(
             _conductor().get_step_result, workflow_run_id, step_id, key,
+        )
+        return _prepare(result)
+
+    @mcp.tool()
+    async def wb_capability_result(
+        operation_id: str,
+        key: str | None = None,
+        ctx: Context = None,
+    ) -> dict:
+        """Retrieve the full result of a capability call that was truncated.
+
+        When a ``wb_run`` capability result exceeds the inline size cap, the
+        response is replaced with a ``_truncated`` marker carrying the
+        ``operation_id``. Call this to fetch the full result from the
+        operation record — whole, or a single top-level ``key`` (the
+        capability-side twin of ``wb_step_result``).
+
+        Args:
+            operation_id: The ``operation_id`` from the truncated response.
+            key: Optional — retrieve only this top-level key from the result.
+        """
+        gate = _require_init(ctx)
+        if gate:
+            return gate
+        result = await asyncio.to_thread(
+            _capability_result_payload, operation_id, key,
         )
         return _prepare(result)
 
@@ -2557,6 +2701,17 @@ def retry_operation(operation_id: str) -> dict[str, Any]:
                     record.get("originating_session_id"),
                 )
             else:
+                # Keep an idempotency-bearing replay (e.g. task_create) on
+                # its original note identity even if the consent wait outran
+                # the cache TTL — otherwise a successful replay mints a fresh
+                # UUID and orphans the first note.
+                try:
+                    from work_buddy.obsidian.tasks.mutations import (
+                        refresh_idempotency_on_replay,
+                    )
+                    refresh_idempotency_on_replay(cap_name, record["params"])
+                except Exception:  # pragma: no cover — never break a replay
+                    pass
                 # Bind a REPLAY principal so the decorator's is_granted
                 # check resolves against the originating agent's DB and
                 # rides individual grants only (no workflow time-travel).

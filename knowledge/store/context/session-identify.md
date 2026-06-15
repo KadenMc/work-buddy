@@ -57,44 +57,39 @@ Ask for, or extract from their message:
 
 If the user already wrote a structured handoff, use it verbatim — don't re-elicit.
 
-### 2. Coarse-to-fine via `summary_search` (a.k.a. `find` with `source="summary", drill=true`)
+### 2. Rank first, then drill the winner — via `summary_search`
 
-Run `summary_search` with the user's strongest topic phrase. This is the **load-bearing step** — it ranks the cheap compressed layer (per-session TLDRs + topic titles/summaries/keywords) and then drills into the top items' raw spans in one call:
+**Rank-first.** Run `summary_search` with `drill=False` (the default) for the *locating* pass. It ranks the cheap compressed layer (per-session TLDRs + topic titles/summaries/keywords) and returns only `stage1_hits` + `candidate_items` (~10 KB) — enough to pick the session. Do **not** drill in this pass: the drill stage inlines raw transcript and, over verbose sessions, can be 100×+ larger and blow the result budget (oversized results are capped to a marker you'd then have to retrieve anyway).
 
 ```
 mcp__work-buddy__wb_run("summary_search", {
   "query": "<topic phrase>",
   "scope": "conversation_session",
-  "top_k": 12,
-  "drill": true,
-  "drill_top_k": 4,
-  "drill_per_item_top_k": 5
+  "top_k": 12
 })
 ```
 
-The equivalent under the universal verb name:
+For multi-keyword handoffs, fire 2-3 of these `drill=False` calls **in parallel** with distinct phrasings (specific identifier, conceptual phrase, file-path needle). Aggregate `candidate_items` across calls — this is cheap because nothing is drilled.
 
-```
-mcp__work-buddy__wb_run("find", {
-  "query": "<topic phrase>",
-  "source": "summary",
-  "scope": "conversation_session",
-  "drill": true,
-  "top_k": 12,
-  "drill_top_k": 4,
-  "drill_per_item_top_k": 5
-})
-```
-
-Both ops return the same funnel-shape dict — use whichever name reads naturally.
-
-Returned shape (every key always present):
-- **`stage1_hits`** — per-node summary hits. Each entry has `item_id` (the session id), `level` (0 = root tldr; 1 = topic), `title`, `summary` (preview), `score`, `source_ref` (the span pointer for level-1 topics), `generated_at`, `model`.
-- **`candidate_items`** — deduplicated per-session aggregates, ranked by `best_score`. Each has `namespace`, `item_id`, `best_score`, `n_hits`, `top_titles`.
-- **`drilled`** — dict mapping each top-`drill_top_k` `item_id` to its `session_search` result (`hits` with `turn_range` + message text).
+Returned shape (rank-first):
+- **`stage1_hits`** — per-node summary hits. Each entry has `item_id` (the session id), `level` (0 = root tldr; 1 = topic), `title`, `summary` (preview), `score`, `source_ref`, `drill_node_id`, `generated_at`, `model`.
+- **`candidate_items`** — deduplicated per-session aggregates, ranked by `best_score`, each with `namespace`, `item_id`, `best_score`, `n_hits`, `top_titles`, `drill_node_id`.
+- **`drilled`** — empty (`{}`) when `drill=False`.
 - **`error`** present only when stage 1 failed (e.g. embedding service down).
 
-For multi-keyword handoffs, fire 2-3 `summary_search` calls **in parallel** with distinct phrasings (specific identifier, conceptual phrase, file-path needle). Aggregate `candidate_items` across calls before drilling further.
+**Then drill the winner.** Once the ranking points at ONE (or two) candidate(s), pull their raw spans — either re-run `summary_search` with `drill=True, drill_top_k=1` for just that candidate, or hand the hit's `drill_node_id` to `drill_tree`/`session_expand` (the find→walk→read flow). Drilling a single chosen winner keeps the raw payload bounded; drilling the whole top-N up front is what causes oversized returns.
+
+```
+mcp__work-buddy__wb_run("summary_search", {
+  "query": "<topic phrase>",
+  "scope": "conversation_session",
+  "drill": true,
+  "drill_top_k": 1,
+  "drill_per_item_top_k": 5
+})
+```
+
+`find(source="summary", ...)` is the same funnel under the universal verb name — both default `drill=False`; use whichever reads naturally.
 
 ### 3. Fallback: raw-span sweep when summaries miss
 
@@ -141,7 +136,7 @@ Return:
 
 ## Tips
 
-- `summary_search` is the load-bearing step. Spend phrasing effort there; don't over-drill into a weak candidate.
+- The rank-first `summary_search` (`drill=False`) is the load-bearing step. Spend phrasing effort there; drill only the winner, never the whole top-N.
 - Resumed-session forks share content but have distinct UUIDs. Pick the longest / latest fork as the canonical one to cite.
 - The 8-char session prefix is canonical for display; the full UUID is canonical for storage. Always show the full UUID once in the report.
 - If `summary_search` returns nothing, check whether the IR `summary` index is built via `ir_index(action='status', source='summary')`. If `dense_eligible_docs` is 0, the embedding service is down; fall back to `context_search` (raw-span sweep).

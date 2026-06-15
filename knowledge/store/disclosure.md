@@ -32,7 +32,7 @@ The full system has three verbs: **search by topic**, **walk by id**, **read seq
 
 When you have a topic and want to land on the right turns:
 
-1. **Find by topic** — `summary_search(query, scope="conversation_session")` ranks summary nodes (the compressed layer: TLDRs + topic titles + keywords). Each hit carries a pre-built `drill_node_id` field that pairs directly with `drill_tree`. By default the funnel also drills the top hits into their raw spans via `session_search`, so a single call returns both the coarse ranking and the load-bearing turns.
+1. **Find by topic** — `summary_search(query, scope="conversation_session")` ranks summary nodes (the compressed layer: TLDRs + topic titles + keywords). Each hit carries a pre-built `drill_node_id` field that pairs directly with `drill_tree`. The funnel returns only this compact ranking by default (`drill=False`); pass `drill=True` to also inline the top items' raw spans via `session_search` — opt into that once you've picked a candidate, since drilling the whole top-N can produce oversized payloads.
 2. **Walk by id** — if the funnel's stage-2 drill missed nuance or you want the whole topic outline for a candidate session, `drill_tree(domain="summary", node_id="conversation_session:<sid>", depth="summary")` returns the full tldr + every topic with its summary in one cheap read. For deeper exploration of one topic: `drill_tree(..., node_id="...#n<ordinal>", depth="full")`.
 3. **Read sequentially** — once the agent has a session id and a turn range from the drill stage, `session_get(session_id, offset, limit)` browses raw turns and `session_expand(session_id, message_index, span=5)` zooms around a specific turn.
 

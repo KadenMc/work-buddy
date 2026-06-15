@@ -53,7 +53,7 @@ parents:
 
 Coarse-to-fine retrieval funnel over the IR `summary` index.
 
-`summary_search` is equivalent to [`find`](../search/find)`(source="summary", drill=True)` — both return the same funnel-shape dict. `find` is the universal verb; `summary_search` is the back-compat alias maintained indefinitely.
+`summary_search` is the `source="summary"` form of [`find`](../search/find) — both return the same funnel-shape dict and both default `drill=False` (rank-first; pass `drill=True` to inline raw spans). `find` is the universal verb; `summary_search` is the back-compat alias maintained indefinitely.
 
 **When to reach for this vs. other tools**:
 

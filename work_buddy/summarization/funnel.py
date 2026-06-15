@@ -88,7 +88,7 @@ def summary_search(
     *,
     scope: str | None = None,
     top_k: int = 8,
-    drill: bool = True,
+    drill: bool = False,
     drill_top_k: int = 5,
     drill_per_item_top_k: int = 5,
     method: str = "keyword,semantic",
@@ -105,7 +105,9 @@ def summary_search(
             ``context_search`` / ``agent_docs`` vocabulary — it's a
             doc-id prefix filter on the IR index.
         top_k: Stage-1 (coarse) cap — how many summary nodes to consider.
-        drill: When True, run stage 2 over candidates.
+        drill: When True, run stage 2 over candidates. Defaults to False —
+            the locating pass returns only the compact ranking layer; raw
+            spans are an explicit opt-in to avoid oversized payloads.
         drill_top_k: How many distinct items to drill into (deduplicated
             from `top_k` stage-1 hits by `item_id`, ranked by best score).
         drill_per_item_top_k: How many raw-span hits to return per drilled item.
