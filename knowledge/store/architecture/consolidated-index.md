@@ -126,10 +126,11 @@ rather than colliding on the shared DB. Default is incremental (`force=false`).
 
 ## Search
 
-`HybridSearcher` (`search.py`) fuses three signals: FTS5 `bm25()` (per-field title/body/tags
-weights) ⊕ per-projection dense cosine (over the resident matrix) ⊕ **Reciprocal Rank Fusion**
-(per-partition `rrf_k`). Metadata filters are **pushed down** (filter-then-rank, so a tight
-filter still returns a full top-N), with optional recency bias. `UnifiedIndex.search` /
+`HybridSearcher` (`search.py`) fuses three signals: FTS5 `bm25()` (title/body/tags column
+weights, per-partition via `fts_weights`) ⊕ per-projection dense cosine (over the resident
+matrix) ⊕ **Reciprocal Rank Fusion** (per-partition `rrf_k`). Metadata filters are **pushed
+down** (filter-then-rank, so a tight filter still returns a full top-N), with optional recency
+bias and an optional per-source diversity cap (`max_per_source`). `UnifiedIndex.search` /
 `search_many` federate a query across partitions.
 
 ## Config + flags
@@ -144,11 +145,19 @@ index:
       rrf_k: 20                    # per-partition fusion constant
       recency: false               # recency bias on/off
       coverage: active             # "active" (working set) | "all" (incl. archived/closed)
+      fts_weights: null            # FTS5 bm25 (title, body, tags) column weights; null = default (3,1,2)
+      max_per_source: null         # cap top-k hits per source document (diversity); null = uncapped
 ```
 
 `coverage` selects how much of a source's history a partition indexes; query-time
 `Query.filters` then narrow within it (so one corpus serves both retrospective and
 live-work queries). See `HISTORY-PARTITION-COVERAGE` design notes.
+
+`fts_weights` overrides the default title-leaning FTS column weights for a partition whose
+`title` field is not its most relevant text — e.g. vault, where the "title" is a navigational
+heading breadcrumb, so it ranks body content above it. `max_per_source` caps how many top-k
+hits may share one source document so a chunk-heavy file can't flood results; it is
+score-guarded, so a genuinely dominant document with no competitive alternative keeps its slots.
 
 ## Capabilities, crons, endpoints
 

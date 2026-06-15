@@ -43,6 +43,22 @@ class PartitionConfig:
     content_weight: float = 0.7
     pool_multiplier: int = 5      # candidate pool = max(top_k * mult, floor)
     pool_floor: int = 50
+    # Per-partition FTS5 bm25 COLUMN weights ``(title, body, tags)`` for lexical search.
+    # None → the store's ``_DEFAULT_FTS_WEIGHTS`` (title-leaning). This is the consolidated
+    # 3-column knob — distinct from a partition's source-level ``field_weights()``, which
+    # weights the source's OWN fields before they collapse into these 3 canonical columns
+    # (and which the IR engine, not this index, applies). Set it to rebalance a partition
+    # whose chunks don't fit the title-heavy default — e.g. vault, whose "title" is a
+    # navigational heading breadcrumb, not content. Search-time only (no rebuild to change it).
+    fts_weights: tuple[float, float, float] | None = None
+    # Per-source diversity cap: at most this many top-k hits may share one source document
+    # (grouped by ``metadata.source_path``), so a chunk-heavy doc can't flood the results.
+    # None → no cap (current behavior). The cap is SCORE-GUARDED: an over-cap chunk is only
+    # displaced when a different source scores within ``_CAP_COMPETITIVE_RATIO`` of it — so a
+    # genuinely dominant doc (no competitive alternative) keeps its slots, while flooding is
+    # broken up when real alternatives exist. Query-time only (no rebuild). Opt-in per
+    # partition — vault chunks heavily (one doc → many sections); flat sources don't need it.
+    max_per_source: int | None = None
     recency: bool = False
     recency_half_life_days: float = 14.0
     recency_floor: float = 0.15
@@ -83,6 +99,8 @@ class PartitionConfig:
             content_weight=float(raw.get("content_weight", defaults.content_weight)),
             pool_multiplier=int(raw.get("pool_multiplier", defaults.pool_multiplier)),
             pool_floor=int(raw.get("pool_floor", defaults.pool_floor)),
+            fts_weights=cls._parse_fts_weights(raw),
+            max_per_source=cls._parse_max_per_source(raw),
             recency=bool(raw.get("recency", defaults.recency)),
             recency_half_life_days=float(
                 raw.get("recency_half_life_days", defaults.recency_half_life_days)
@@ -92,6 +110,31 @@ class PartitionConfig:
             retention=retention,
             retention_ttl_days=retention_ttl_days,
         )
+
+    @staticmethod
+    def _parse_fts_weights(raw: dict[str, Any]) -> tuple[float, float, float] | None:
+        """Normalize ``fts_weights`` (a list/tuple of exactly 3 numbers) → a float tuple.
+        Anything else (absent, wrong length, non-numeric) → None → the store default, so a
+        malformed value can never silently distort lexical ranking."""
+        w = raw.get("fts_weights")
+        if not isinstance(w, (list, tuple)) or len(w) != 3:
+            return None
+        try:
+            return (float(w[0]), float(w[1]), float(w[2]))
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _parse_max_per_source(raw: dict[str, Any]) -> int | None:
+        """Normalize ``max_per_source`` → a positive int, or None (no cap / off).
+        A non-positive or non-integer value degrades to None so a typo can't silently
+        truncate results."""
+        v = raw.get("max_per_source")
+        try:
+            n = int(v)
+        except (TypeError, ValueError):
+            return None
+        return n if n > 0 else None
 
     @staticmethod
     def _parse_retention(

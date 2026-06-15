@@ -91,6 +91,29 @@ class TestConfigParsing:
         assert PartitionConfig.from_dict("x", {"retention": "bogus"}).retention == "track_source"
 
 
+class TestFtsWeightsParsing:
+    def test_default_is_none(self):
+        # None → the store's _DEFAULT_FTS_WEIGHTS, i.e. current behavior unchanged.
+        assert PartitionConfig.from_dict("x", {}).fts_weights is None
+
+    def test_valid_triple(self):
+        c = PartitionConfig.from_dict("vault", {"fts_weights": [1.0, 2.0, 1.0]})
+        assert c.fts_weights == (1.0, 2.0, 1.0)
+
+    def test_ints_coerced_to_float(self):
+        assert PartitionConfig.from_dict("x", {"fts_weights": [1, 2, 3]}).fts_weights == (1.0, 2.0, 3.0)
+
+    def test_wrong_length_degrades_to_none(self):
+        assert PartitionConfig.from_dict("x", {"fts_weights": [1, 2]}).fts_weights is None
+        assert PartitionConfig.from_dict("x", {"fts_weights": [1, 2, 3, 4]}).fts_weights is None
+
+    def test_non_numeric_degrades_to_none(self):
+        assert PartitionConfig.from_dict("x", {"fts_weights": ["a", "b", "c"]}).fts_weights is None
+
+    def test_non_list_degrades_to_none(self):
+        assert PartitionConfig.from_dict("x", {"fts_weights": "1,2,3"}).fts_weights is None
+
+
 class TestPrune:
     def test_track_source_deletes_dropped(self, store):
         part = FakePartition({"a": {"hash": "1"}, "b": {"hash": "1"}})

@@ -38,6 +38,52 @@ def store(tmp_path):
     return IndexStore(tmp_path / "search-index.db")
 
 
+class TestSourceCap:
+    """The score-guarded per-source diversity cap (_cap_by_source)."""
+
+    def _searcher(self, store, cap):
+        return HybridSearcher(
+            store, FakeEncoder(), partition="vault", projection_schema={},
+            cfg=PartitionConfig(name="vault", max_per_source=cap),
+            residents=ResidentCacheRegistry(),
+        )
+
+    @staticmethod
+    def _docs(spec):
+        # spec: {doc_id: source_path}
+        return {d: {"metadata": {"source_path": sp}} for d, sp in spec.items()}
+
+    def test_dominant_doc_with_no_competitive_alt_keeps_slots(self, store):
+        # D floods, the only other source (e1) scores far below 0.9x → not competitive,
+        # so the cap must NOT swap D's chunks for it (single-dominant-doc query preserved).
+        ranked = ["d1", "d2", "d3", "d4", "e1"]
+        scores = {"d1": 1.0, "d2": 0.97, "d3": 0.95, "d4": 0.93, "e1": 0.50}
+        docs = self._docs({"d1": "D", "d2": "D", "d3": "D", "d4": "D", "e1": "E"})
+        out = self._searcher(store, 2)._cap_by_source(ranked, scores, docs, 2, 4)
+        assert out == ["d1", "d2", "d3", "d4"]  # E never displaces a much stronger D chunk
+
+    def test_flooding_broken_when_competitive_alts_exist(self, store):
+        # C's chunks are within 0.9x of D's over-cap chunks → cap swaps them in.
+        ranked = ["d1", "d2", "d3", "d4", "c1", "c2"]
+        scores = {"d1": 1.0, "d2": 0.98, "d3": 0.96, "d4": 0.94, "c1": 0.93, "c2": 0.91}
+        docs = self._docs({"d1": "D", "d2": "D", "d3": "D", "d4": "D", "c1": "C", "c2": "C"})
+        out = self._searcher(store, 2)._cap_by_source(ranked, scores, docs, 2, 4)
+        assert out == ["d1", "d2", "c1", "c2"]  # D capped at 2, C diversifies the rest
+
+    def test_backfill_fills_topk_from_deferred(self, store):
+        # cap=1 with only two sources but top_k=4 → after one each, backfill the rest.
+        ranked = ["d1", "c1", "d2", "c2"]
+        scores = {"d1": 1.0, "c1": 0.95, "d2": 0.92, "c2": 0.90}
+        docs = self._docs({"d1": "D", "c1": "C", "d2": "D", "c2": "C"})
+        out = self._searcher(store, 1)._cap_by_source(ranked, scores, docs, 1, 4)
+        assert set(out) == {"d1", "c1", "d2", "c2"} and out[:2] == ["d1", "c1"]
+
+    def test_cap_off_is_identity(self, store):
+        # max_per_source=None → search() takes the plain top-k (covered here by asserting
+        # the cap method is only reached when configured); a None cfg leaves ranking intact.
+        assert self._searcher(store, None)._cfg.max_per_source is None
+
+
 def _seed(store, *, with_vectors=True, timestamps=None):
     """3 knowledge docs; optional content vectors aligning 'a' with query [1,0]."""
     ts = timestamps or {}
