@@ -1433,9 +1433,12 @@ def archive_completed(
 
     Also marks tasks as archived in the store.
     """
-    content = bridge.read_file(MASTER_TASK_FILE)
+    # read_file_raw raises a typed transient (→ @bridge_retry) rather than
+    # conflating "bridge blinked" with "file absent"; a 404 here means the
+    # master list itself is genuinely missing — a real, non-transient failure.
+    content = bridge.read_file_raw(MASTER_TASK_FILE)
     if content is None:
-        return bridge_failure(f"Could not read {MASTER_TASK_FILE}")
+        return {"success": False, "message": f"{MASTER_TASK_FILE} does not exist"}
 
     lines = content.split("\n")
     today = date.today()
@@ -1473,7 +1476,12 @@ def archive_completed(
     archive_header = f"\n## Archived {today.isoformat()}\n\n"
     archive_content = archive_header + "\n".join(archive_lines) + "\n"
 
-    existing_archive = bridge.read_file(ARCHIVE_FILE)
+    # read_file_raw raises a typed transient (→ @bridge_retry replays the whole
+    # archive once the bridge recovers), so a transient can never reach the
+    # fresh-header branch below and clobber existing archive history. A 404 →
+    # None means the archive file genuinely does not exist yet (first-ever
+    # archive), which the fresh-header branch handles correctly.
+    existing_archive = bridge.read_file_raw(ARCHIVE_FILE)
 
     # Slice C.6: idempotency guard against partial-retry double-archiving.
     # Pre-fix risk (acknowledged in the previous comment): if the

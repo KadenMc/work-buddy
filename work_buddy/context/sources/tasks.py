@@ -165,7 +165,18 @@ def _collect_tasks(
     try:
         task_texts = _read_task_texts()
     except Exception as exc:
-        logger.debug("tasks source: _read_task_texts failed: %s", exc)
+        # Best-effort display source: stay resilient (don't break the bundle),
+        # but make a transient bridge failure observable rather than silently
+        # rendering "0 tasks". The decision-driving callers of _read_task_texts
+        # (triage match, drill_down) let the transient propagate instead.
+        from work_buddy.obsidian.errors import ObsidianError
+        if isinstance(exc, ObsidianError):
+            logger.warning(
+                "tasks source: bridge transient reading task texts (%s) — "
+                "task list shown empty this cycle, will self-heal", exc,
+            )
+        else:
+            logger.debug("tasks source: _read_task_texts failed: %s", exc)
         task_texts = {}
 
     rows: list[dict[str, Any]] = []
@@ -271,12 +282,11 @@ def _read_task_note(task_id: str) -> str | None:
     note_uuid = task.get("note_uuid")
     if not note_uuid:
         return None
-    try:
-        from work_buddy.obsidian import bridge
-        return bridge.read_file(f"tasks/notes/{note_uuid}.md")
-    except Exception as exc:
-        logger.debug("tasks source: read_file failed for %s: %s", task_id, exc)
-        return None
+    from work_buddy.obsidian import bridge
+    # read_file_raw raises a typed ObsidianError on a transient (let it
+    # propagate so drill_down surfaces "unavailable" rather than a false "no
+    # note found"); a genuine 404 → None means the note really doesn't exist.
+    return bridge.read_file_raw(f"tasks/notes/{note_uuid}.md")
 
 
 def _cap_for_depth(depth: ContextDepth) -> int:

@@ -391,6 +391,34 @@ class MarkdownDB(ABC):
         #        wipe the store).
         orphans_in_store = sorted(store_ids - parsed_ids)
         intact_no_artifact: list[str] = []
+
+        # Mass-delete circuit-breaker (defense-in-depth). "markdown is
+        # canonical" means a store row absent from the parse gets soft-deleted
+        # — correct only if the parse is trustworthy. If a single pass would
+        # delete more than max(20, 50%) of the live store, that's the signature
+        # of a DEGRADED READ (a bridge blink, a partial/truncated read, a
+        # parser/ID-scheme regression) rather than a real bulk deletion — real
+        # users don't clear most of their list in one ~10-minute sync tick.
+        # Refuse the deletes this pass (creates + field-drift below still run)
+        # and record it; the next reconcile retries with hopefully-sane input.
+        #
+        # Keying on delete MAGNITUDE (not "parse == 0") is deliberate: an empty
+        # parse is just the limiting case (orphans == whole store), and the
+        # dangerous real failures (partial read / parser regression) leave a
+        # small-but-nonzero parse that a zero-check would miss. The floor of 20
+        # lets small stores delete normally — a 1-of-1 orphan is not a "mass"
+        # delete — which is the correct, low-false-positive behavior.
+        _delete_threshold = max(20, len(store_ids) // 2)
+        if len(orphans_in_store) > _delete_threshold:
+            logger.error(
+                "markdown_db[%s]: refusing implausible mass-delete (%d of %d "
+                "live rows) — treating as a degraded read, not a real bulk "
+                "deletion. Skipping orphan deletes this pass.",
+                self.table_name, len(orphans_in_store), len(store_ids),
+            )
+            report.aborted_bulk_delete = (len(orphans_in_store), len(store_ids))
+            orphans_in_store = []  # no-op the delete loop below
+
         for pk in orphans_in_store:
             if self.markdown_exists(pk):
                 logger.warning(

@@ -273,15 +273,20 @@ def write_at_location(
 def _read_note(vault_rel_path: str, abs_path: Path) -> str | None:
     """Read a note, preferring Obsidian bridge, falling back to direct read."""
     try:
-        from work_buddy.obsidian.bridge import read_file, is_available
+        from work_buddy.obsidian.bridge import read_file_raw, is_available
         if is_available():
-            content = read_file(vault_rel_path)
+            # read_file_raw raises a typed ObsidianError on a transient — it is
+            # intentionally NOT caught here, so the write is retried rather than
+            # computing the insertion position from a possibly-stale on-disk
+            # copy. A genuine 404 → None falls through to the direct read.
+            content = read_file_raw(vault_rel_path)
             if content is not None:
                 return content
-    except Exception:
-        pass
+    except ImportError:
+        pass  # bridge module unavailable — fall back to the direct read
 
-    # Direct fallback
+    # Direct fallback — used when the bridge app/module is unavailable, or for
+    # a genuinely-absent file (404).
     try:
         return abs_path.read_text(encoding="utf-8")
     except OSError:

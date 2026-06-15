@@ -225,6 +225,11 @@ class ReconcileReport:
     # state — e.g. a store row whose markdown file is present but failed
     # to parse (left intact, not deleted).
     warnings: list[str] = field(default_factory=list)
+    # Set by the mass-delete circuit-breaker when reconcile_drift refused an
+    # implausibly large orphan-delete batch (degraded read, not a real bulk
+    # deletion): (would_delete_count, live_store_count). None = breaker did
+    # not trip.
+    aborted_bulk_delete: tuple[int, int] | None = None
 
     @property
     def changed(self) -> bool:
@@ -244,5 +249,6 @@ class ReconcileReport:
             "drift": {k: list(v) for k, v in self.drift.items()},
             "errors": list(self.errors),
             "warnings": list(self.warnings),
+            "aborted_bulk_delete": self.aborted_bulk_delete,
             "changed": self.changed,
         }

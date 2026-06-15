@@ -472,15 +472,49 @@ def get_tag_files(tag: str) -> list[str]:
 
 
 def read_file(path: str) -> str | None:
-    """Read a file's content by vault-relative path.
+    """Read a file's content by vault-relative path (best-effort).
 
     Returns file content string, or None if not found / bridge unavailable.
+
+    This collapses "file genuinely absent" and "transient bridge failure" into
+    the same ``None`` — fine for best-effort reads (display, logging,
+    collectors) where a transient empty is harmless and self-heals next run.
+    For any read where a transient ``None`` would drive a consequential
+    "absent/empty" decision (skip a write, report "not found", delete an
+    orphan), use :func:`read_file_raw` instead, which distinguishes the two.
     """
     encoded = urllib.parse.quote(path, safe="/")
     result = _request("GET", f"/files/{encoded}", retries=1)
     if result is None:
         return None
     return result.get("content")
+
+
+def read_file_raw(path: str) -> str | None:
+    """Read a file, distinguishing genuine absence from a transient failure.
+
+    The read-path analogue of :func:`write_file_raw`: routes through
+    :func:`_request_with_status`, which raises typed ``ObsidianError``s rather
+    than swallowing failures into ``None``.
+
+    - 2xx → returns the file content.
+    - genuine 404 (file absent) → returns ``None``.
+    - any transient/structural failure (``ObsidianTimeout``,
+      ``ObsidianUnreachable`` + subclasses, ``ObsidianServerError``, or any
+      other 4xx) → RAISES the typed exception, so a ``@bridge_retry``-wrapped
+      caller (or the gateway) retries/classifies it like a write.
+
+    Use this — NOT :func:`read_file` — in any consumer where a transient
+    ``None`` would be misread as "the file/section/task is absent".
+    """
+    encoded = urllib.parse.quote(path, safe="/")
+    try:
+        _status, body = _request_with_status("GET", f"/files/{encoded}")
+    except ObsidianRefused as exc:
+        if exc.status == 404:
+            return None  # genuine absence — the file does not exist
+        raise  # other 4xx — structural refusal, permanent; let it propagate
+    return (body or {}).get("content")
 
 
 # ---------------------------------------------------------------------------

@@ -48,6 +48,16 @@ def _run_js(
     for placeholder, value in (replacements or {}).items():
         js = js.replace(placeholder, value)
     result = bridge.eval_js(js, timeout=timeout)
+    if result is None:
+        # eval_js returns None on a transient bridge failure (require_available
+        # passed, but the eval call itself timed out / the bridge blinked).
+        # Raise a typed transient so callers (e.g. get_calendars) don't crash
+        # on result.get(...) and the gateway retries — never treat it as an
+        # empty/absent result.
+        from work_buddy.obsidian.errors import ObsidianTimeout
+        raise ObsidianTimeout(
+            f"calendar eval_js returned None (bridge transient): {snippet_name}"
+        )
     if isinstance(result, dict) and "error" in result:
         raise RuntimeError(f"Google Calendar error: {result['error']}")
     return result
