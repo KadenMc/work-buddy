@@ -15,7 +15,7 @@ Output format (markdown, prompt-ready). Session-level only by default::
       Commits: deadbee Add NeverExpires trigger; cafebab Refactor foo
       Uncommitted: tests/unit/test_x.py (M)
 
-    ### secondbrain
+    ### myvault
     - 14:05–14:22 [88a01ab2] 6 turns, no commits, no dirty files
 
 With ``include_topics=True`` (v2 P6 / PRD F15 / OQ5 resolution), each

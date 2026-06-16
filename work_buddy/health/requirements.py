@@ -62,7 +62,7 @@ class RequirementDef:
             dashboard form can pre-fill the field's current value.
         fix_preview: One-line description of what the fix will do, shown in the
             confirm popover before the user commits. E.g. "Will create
-            C:\\Vaults\\SecondBrain\\journal\\". Null = no preview shown.
+            <vault-root>\\journal\\". Null = no preview shown.
         fix_agent_brief: For agent_handoff, the prompt the spawned Claude Code
             session receives. Should explain what the user is trying to fix and
             what the agent is empowered to do. Null = use a generic brief built
