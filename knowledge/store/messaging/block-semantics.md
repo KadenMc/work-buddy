@@ -41,6 +41,20 @@ A read, normal/low-priority message does **not** block — it surfaced once and 
 done. A message in any non-`pending` status never blocks: it is excluded at the
 query level and pruned on the normal TTL.
 
+## Automated callbacks never block
+
+Some pending messages are automated acknowledgements of an action the recipient
+itself initiated — e.g. a consent grant a UI surface echoes back into the inbox
+for the sidecar to record. They are plumbing, not action items for the agent, so
+the Stop hook excludes them outright: any message carrying a tag in
+`NON_BLOCKING_TAGS` (`work_buddy/messaging/models.py`; currently
+`{"consent-callback"}`) is skipped on the Stop path even at high priority and even
+before it has been read, so it costs no read or resolve. Such messages still
+appear in the non-blocking SessionStart / UserPromptSubmit summaries as context,
+and the sidecar resolves them out of the pending set on its own. This differs from
+the born-resolved notifications below: a callback stays `pending` (the sidecar
+still needs to process it) but is filtered from the block by tag, not by status.
+
 ## Notifications are born resolved
 
 Fire-and-forget notifications are created with a terminal status so they never

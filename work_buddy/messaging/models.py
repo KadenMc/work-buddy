@@ -314,6 +314,29 @@ def create_reply(
 # priority (pure block-on-unread semantics).
 BLOCK_UNTIL_RESOLVED_PRIORITIES = {"high", "urgent"}
 
+# Tags marking messages that are automated callbacks/acknowledgements of an
+# action the recipient itself initiated (e.g. a consent grant echoed back from
+# a UI surface for the sidecar to record). They carry no action item for the
+# agent, so they must never block the Stop hook — even at high priority.
+NON_BLOCKING_TAGS = frozenset({"consent-callback"})
+
+
+def _is_nonblocking_ack(m: dict) -> bool:
+    """True if the message is an automated callback that must not block the Stop hook.
+
+    Tags are stored as a JSON string (or NULL) in the ``tags`` column, so they
+    are parsed here rather than read as a list.
+    """
+    raw = m.get("tags")
+    if not raw:
+        return False
+    try:
+        tags = json.loads(raw)
+    except (ValueError, TypeError):
+        return False
+    return bool(NON_BLOCKING_TAGS.intersection(tags))
+
+
 def summarize_pending(
     conn: sqlite3.Connection,
     recipient: str,
@@ -338,6 +361,11 @@ def summarize_pending(
     next render returns empty and the block releases. The non-blocking summaries
     (SessionStart / UserPromptSubmit) leave it False and still show read-but-recent
     messages as context.
+
+    When ``unread_only`` is True, messages tagged with a ``NON_BLOCKING_TAGS``
+    tag (automated callbacks such as consent grants, which are plumbing for the
+    sidecar rather than action items for the agent) are excluded entirely so they
+    never block the Stop hook. They still appear in the non-blocking summaries.
     """
     if ttl_days is None:
         from work_buddy.config import load_config
@@ -356,6 +384,12 @@ def summarize_pending(
     filtered = []
     new_count = 0
     for m in msgs:
+        # Automated callbacks (e.g. consent grants) are plumbing for the sidecar,
+        # not action items for the agent — never let them block the Stop hook.
+        # Scoped to unread_only so the non-blocking context summaries still show
+        # them; the sidecar resolves them out of the pending set on its own.
+        if unread_only and _is_nonblocking_ack(m):
+            continue
         recipient_readers = _get_recipient_readers(conn, m["id"], recipient)
         is_read = len(recipient_readers) > 0
         m["_read"] = is_read

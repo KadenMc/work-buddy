@@ -271,3 +271,45 @@ class TestSummarizePending:
         create_message(conn, sender="a", recipient="b", type="task", subject="Hi")
         result = summarize_pending(conn, "b", session="s1", include_instructions=True)
         assert "/tmp/wb/resolve" in result
+
+    @freeze_time("2026-04-12T12:00:00+00:00")
+    def test_nonblocking_callback_never_blocks_stop_hook(self, tmp_messaging_db):
+        """A consent-callback message must never block the Stop hook — not even once."""
+        conn, _ = tmp_messaging_db
+        create_message(
+            conn, sender="obsidian-consent-modal", recipient="b",
+            type="result", subject="consent_grant", priority="high",
+            tags=["consent-callback", "from-obsidian"],
+        )
+        # Excluded on the very first render (no unread tax) and on every render after.
+        first = summarize_pending(conn, "b", session="s1", include_instructions=False, unread_only=True)
+        assert first == ""
+        second = summarize_pending(conn, "b", session="s1", include_instructions=False, unread_only=True)
+        assert second == ""
+
+    @freeze_time("2026-04-12T12:00:00+00:00")
+    def test_untagged_high_priority_still_blocks(self, tmp_messaging_db):
+        """The discriminator is the tag, not the priority/subject: untagged high still blocks."""
+        conn, _ = tmp_messaging_db
+        create_message(
+            conn, sender="obsidian-consent-modal", recipient="b",
+            type="result", subject="consent_grant", priority="high",
+        )
+        first = summarize_pending(conn, "b", session="s1", include_instructions=False, unread_only=True)
+        assert "consent_grant" in first  # surfaces, auto-marks read
+        # High priority keeps blocking after read (would only release via resolve).
+        second = summarize_pending(conn, "b", session="s1", include_instructions=False, unread_only=True)
+        assert "consent_grant" in second
+
+    @freeze_time("2026-04-12T12:00:00+00:00")
+    def test_nonblocking_callback_visible_in_context_summary(self, tmp_messaging_db):
+        """Excluded only from the Stop-hook path: non-blocking summaries still show it."""
+        conn, _ = tmp_messaging_db
+        create_message(
+            conn, sender="obsidian-consent-modal", recipient="b",
+            type="result", subject="consent_grant", priority="high",
+            tags=["consent-callback", "from-obsidian"],
+        )
+        # unread_only=False (SessionStart / UserPromptSubmit) keeps it as context.
+        summary = summarize_pending(conn, "b", session="s1", include_instructions=False, unread_only=False)
+        assert "consent_grant" in summary
